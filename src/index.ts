@@ -8,6 +8,8 @@ import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type Extensi
 import { Type } from 'typebox';
 import { atomicWrite, Memory } from './memory.ts';
 import { createCompressor } from './compactor.ts';
+import { writeCompactorDiagnostic } from './compactor-diagnostics.ts';
+import { assertContextFits, needsRunRefresh, retainedRun } from './run-context.ts';
 import { createProfile, instructions, lastProfile, listProfiles, loadConfig, lockProfile, modelFor, profilePath, rememberProfile, saveConfig, ProfileBusyError, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { cachePayload, record } from './cache.ts';
@@ -190,10 +192,14 @@ export default function optchat(pi: ExtensionAPI) {
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
+      let diagnosticsFailed = false;
       const memory = new Memory(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', mainProvider), message => {
         usage.compression(message, 'compactor', sessionId);
         status(ctx);
-      }, () => config.summaryAcceptBytes, shared), warning => ctx.ui.notify(warning, 'error'));
+      }, () => config.summaryAcceptBytes, shared, diagnostic => {
+        try { writeCompactorDiagnostic(dir, diagnostic); }
+        catch (error) { if (!diagnosticsFailed) { diagnosticsFailed = true; ctx.ui.notify(`Could not save compactor diagnostics: ${errorText(error)}`, 'warning'); } }
+      }), warning => ctx.ui.notify(warning, 'error'));
       openingMemory = memory;
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
@@ -212,7 +218,8 @@ export default function optchat(pi: ExtensionAPI) {
       closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
-      ctx.ui.notify(`OptChat · ${name} · ${memory.root.length} messages\nCompactor: ${config.compactor.provider}/${config.compactor.model} (${config.compactor.thinking})`, 'info');
+      const compactor = modelFor(config, 'compactor', mainProvider);
+      ctx.ui.notify(`OptChat · ${name} · ${memory.root.length} messages\nCompactor: ${compactor.provider}/${compactor.model} (${compactor.thinking})`, 'info');
       const queuedReports = [...reports];
       if (!pendingImport(dir)) recovery = children.recoverHandoffs().catch(error => ctx.ui.notify(`Handoff recovery: ${errorText(error)}`, 'error'));
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r.text, r.count); });
@@ -355,6 +362,19 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (bounded !== event.message) return { message: bounded };
   });
+  const memoryView = async (ctx: ExtensionContext, signal = ctx.signal) => {
+    const a = required();
+    let shown: string | undefined;
+    const show = () => {
+      const error = a.memory.lastError;
+      const text = `Waiting for OptChat summaries…${error ? ` failing: ${oneLine(error)}${error.includes('/optchat') ? '' : ' (see /optchat model)'}` : ''}`;
+      if (text !== shown) ctx.ui.setWorkingMessage(shown = text);
+    };
+    show();
+    const unsubscribe = a.memory.onChange(show);
+    try { await a.memory.settle(signal); } finally { unsubscribe(); ctx.ui.setWorkingMessage(); }
+    return a.memory.render();
+  };
   pi.on('context_with_system', async (event, ctx) => {
     try {
       if (!active) return; // Plain Pi run: pass context through unmodified.
@@ -362,21 +382,27 @@ export default function optchat(pi: ExtensionAPI) {
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
       if (view === undefined) {
-        // A misconfigured summarizer retries forever, so say why instead of spinning silently.
-        let shown: string | undefined;
-        const show = () => {
-          const error = a.memory.lastError;
-          const text = `Waiting for OptChat summaries…${error ? ` failing: ${oneLine(error)}${error.includes('/optchat') ? '' : ' (see /optchat model)'}` : ''}`;
-          if (text !== shown) ctx.ui.setWorkingMessage(shown = text);
-        };
-        show();
-        const unsubscribe = a.memory.onChange(show);
-        try { await a.memory.settle(ctx.signal); } finally { unsubscribe(); ctx.ui.setWorkingMessage(); }
-        view = a.memory.render(); // Capture old history before logging the new input.
+        view = await memoryView(ctx); // Capture old history before logging the new input.
         flush();
       }
       const system = stateless(promptFor(prompt, a.config));
-      return { messages: buildContext(event.messages, run, view, system.prompt, previous, system.state) };
+      let messages = buildContext(event.messages, run, view, system.prompt, previous, system.state);
+      const window = ctx.model?.contextWindow;
+      if (window && needsRunRefresh(messages, run, window)) {
+        const kept = retainedRun(run);
+        if (kept.length < run.length || previous.length) {
+          flush();
+          const refreshed = await memoryView(ctx);
+          if (!a.memory.ready) throw new Error('OptChat cannot refresh this run while summaries are missing. Originals are preserved; fix the compactor and continue in a new turn.');
+          const next = buildContext(event.messages, kept, refreshed, system.prompt, [], system.state);
+          assertContextFits(next, window);
+          view = refreshed; run = kept; logged = run.length; previous = [];
+          messages = next;
+          ctx.ui.notify('OptChat refreshed this long run from its memory tree; original messages remain available through zoom.', 'info');
+        }
+        assertContextFits(messages, window);
+      }
+      return { messages };
     } catch (error) {
       // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
       ctx.abort();
@@ -387,9 +413,19 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload) : event.payload);
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
-  pi.on('session_before_compact', (_event, ctx) => {
-    ctx.ui.notify('OptChat manages history between turns. Pi compaction is disabled; an exceptionally long single run may require stopping and continuing in a new turn.', 'info');
-    return { cancel: true };
+  pi.on('session_before_compact', async (event, ctx) => {
+    if (!active) return; // Unbound Pi keeps its own compaction policy.
+    try {
+      flush();
+      const summary = await memoryView(ctx, event.signal);
+      if (!active.memory.ready) throw new Error('OptChat summaries are missing; refusing to replace unsummarized history. See compactor-diagnostics.jsonl.');
+      // Pi needs a real boundary to clear stale usage/overflow recovery. Store the existing tree view, never a second lossy summary.
+      return { compaction: { summary, firstKeptEntryId: event.preparation.firstKeptEntryId,
+        tokensBefore: event.preparation.tokensBefore, details: { optchat: true } } };
+    } catch (error) {
+      ctx.ui.notify(errorText(error), 'error');
+      return { cancel: true };
+    }
   });
   const collectUsage = (ctx: ExtensionContext) => {
     try { active?.usage.backfill(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId()); }

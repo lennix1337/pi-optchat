@@ -9,7 +9,7 @@ export async function checkpoint(directory: string) {
   const git = (args: string[]) => exec('git', ['-C', directory, ...args], { maxBuffer: 1_000_000 });
   if (!existsSync(join(directory, '.git'))) await git(['init', '-q', '-b', 'main']);
   if (!existsSync(join(directory, '.gitignore'))) atomicWrite(join(directory, '.gitignore'), '/runs/\n/memory.html\n/usage.jsonl\n*.tmp\n');
-  await git(['add', '-A', '--', '.']);
+  await git(['add', '-A', '--', '.', ':!compactor-diagnostics.jsonl', ':!compactor-diagnostics.jsonl.1']);
   const status = await git(['diff', '--cached', '--name-only']);
   if (!status.stdout.trim()) return;
   await git(['-c', 'user.name=OptChat', '-c', 'user.email=optchat@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Save OptChat memory']);

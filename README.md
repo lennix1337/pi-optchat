@@ -73,12 +73,24 @@ To switch with the account, list alternates in the profile's `config.json`. Whil
 
 ```json
 "alternates": {
-  "compactor": [{ "provider": "openai-codex", "model": "gpt-6-luna", "thinking": "max" }],
-  "subagent": [{ "provider": "openai-codex", "model": "gpt-6-luna", "thinking": "max" }]
+  "compactor": [{ "provider": "openai-codex", "model": "gpt-6-luna", "thinking": "high" }],
+  "subagent": [{ "provider": "openai-codex", "model": "gpt-6-luna", "thinking": "xhigh" }]
 }
 ```
 
 Compression and subagents make extra model requests with your provider credentials.
+
+## Long runs and compactor diagnostics
+
+A long execution refreshes its context from the **same memory tree**, between complete tool exchanges, when its active transcript exceeds 128 KB or approaches the selected model's input budget. Original messages are logged first. Live user instructions and the last complete assistant/tool exchange remain exact; older executed exchanges stay available through `zoom`. This changes neither the tree algorithm nor its 128/64 KB view and 512-byte summaries.
+
+Pi's automatic or manual compaction stores a snapshot of that existing view, with Pi's safe transcript boundary; it does not call a second summarizer or normally cancel compaction. Unbound Pi sessions retain Pi's own policy. A refresh refuses to drop unsummarized results if the compactor is failing. An input or retained exchange that cannot fit requires a smaller input or larger-context model, rather than silently losing data. Token checks use provider usage when available and Pi's size estimate otherwise, not an exact tokenizer.
+
+Compactors keep the turns' system prompt and tool schemas for caching, but request `toolChoice: none`. Empty replies, tool calls and truncated responses are rejected, not saved as summaries. Failed nodes still retry on the next message, as in the recipe; no model/effort switch or immediate retry loop is added.
+
+Each attempt writes safe metadata to `<profile>/compactor-diagnostics.jsonl`: node, provider/model/API, requested/effective effort, duration, request sizes, event counts, HTTP status/request ID when available, native response status/ID, incomplete/error code, native content types/text byte counts, normalized stop reason, response block types/lengths and token usage. Native text bytes versus parsed text bytes help distinguish empty provider output from dropped SDK text. Exceptions are categorized, not copied into this log. No prompts, message/summary text, reasoning text, tool arguments, authorization headers or tokens are recorded. Two rotating files are bounded to approximately 1 MB each and excluded from memory Git checkpoints.
+
+If `Compactor returned no text` recurs, keep the matching diagnostic row (node and timestamp); an HTTP 200 alone does not prove a usable summary. The intermittent historical Luna failures have not been reproduced in controlled live tests, so their cause is not yet established.
 
 ## Settings
 

@@ -6,6 +6,7 @@ import { bytes, NODE, start, type Compressor, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
 import { IMPORT_GUIDANCE } from './import/guidance.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
+import { CompactorTrace, type CompactorDiagnostic } from './compactor-diagnostics.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
 /** A level the model can't take would be sent as no level, which Sonnet 5.5 runs at high effort; Pi's own sessions clamp the same way. */
@@ -60,10 +61,20 @@ function primeFirst() {
 }
 /** What a compaction shares with the turns (recipe §4): the same system prompt and tools, never called. */
 export interface Shared { systemPrompt: string; tools?: Tool[] }
+function summaryText(reply: AssistantMessage, detail: string) {
+  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor ${reply.stopReason} (${detail})`);
+  if (reply.stopReason === 'length') throw new Error(`Compactor response truncated (${detail}).`);
+  if (reply.content.some(block => block.type === 'toolCall')) throw new Error(`Compactor returned a tool call instead of a summary (${detail}).`);
+  // A line can copy its id+n| head from the view.
+  const line = reply.content.filter(block => block.type === 'text').map(block => block.text).join('').trim().replace(/^\d+\+\d+\|\s*/, '');
+  if (!line) throw new Error(`Compactor returned no text (${detail}; blocks=${reply.content.map(block => block.type).join(',') || 'none'}). See compactor-diagnostics.jsonl.`);
+  return line;
+}
 /** The model is asked for 512 bytes; `accepted` is the longest line kept without a retry (the profile's summary size tolerance).
  * `shared` is the turns' prompt and tools once a turn has built them; until then, the recipe's prompt alone. */
 export function createCompressor(registry: ModelRegistry, choice: () => ModelChoice,
-  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes, shared: () => Shared | undefined = () => undefined): Compressor {
+  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes, shared: () => Shared | undefined = () => undefined,
+  diagnose: (diagnostic: CompactorDiagnostic) => void = () => {}): Compressor {
   const gate = primeFirst();
   return async (input, signal) => {
     const selected = choice();
@@ -79,22 +90,28 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     for (let attempt = 0; attempt < 5; attempt++) {
       const warmed = prefix ? await gate(prefix, signal) : () => {};
       let reply: AssistantMessage;
+      const trace = new CompactorTrace(input, model, selected.thinking, thinking, attempt + 1, base.tools?.length ?? 0);
       try {
         const stream = registry.streamSimple(model, { ...base, messages }, {
           // A shared session id is the OpenAI prompt-cache key; SSE because over a websocket Codex would chain unrelated parallel calls on one cached connection.
           sessionId: 'optchat-compactor', transport: 'sse',
-          reasoning: thinking, signal, cacheRetention: 'short',
-          onPayload: payload => model.api === 'anthropic-messages' ? cachePayload(payload) : payload,
+          reasoning: thinking, signal, cacheRetention: 'short', toolChoice: 'none',
+          onPayload: payload => {
+            const cached = model.api === 'anthropic-messages' ? cachePayload(payload) : payload;
+            trace.payload(cached); return cached;
+          },
+          onResponse: response => trace.response(response),
+          onProviderStreamEvent: event => trace.native(event),
         });
         // The cache entry is usable once the response starts: Pi emits 'start' when the response headers arrive, 'error' if the request failed.
-        for await (const event of stream) { warmed(event.type !== 'error'); break; }
+        for await (const event of stream) { trace.event(event); warmed(event.type !== 'error'); }
         reply = await stream.result();
-      } finally { warmed(false); }
+        trace.result(reply);
+      } catch (error) { trace.failure(error); throw error; }
+      finally { warmed(false); diagnose(trace.finish()); }
       onUsage(reply);
-      if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor ${reply.stopReason}`);
-      // The compactions' view shows each line under its id+n| head, which a line can copy.
-      const line = reply.content.filter(c => c.type === 'text').map(c => c.text).join('').trim().replace(/^\d+\+\d+\|\s*/, '');
-      if (!line) throw new Error('Compactor returned no text.');
+      const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}, raw=${trace.diagnostic.rawStopReason ?? 'unknown'}`;
+      const line = summaryText(reply, detail);
       tries.push(line);
       // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces.
       if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;

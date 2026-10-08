@@ -62,7 +62,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string;
   };
   const bindings = () => manager.getEntries().flatMap(e => e.type === 'custom' && e.customType === 'optchat.profile' ? [e.data] : []);
   const close = async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); };
-  return { ask, bindings, close, errors, sent };
+  return { ask, bindings, close, errors, sent, compact: () => session.compact() };
 }
 
 test('a headless run without a binding or --optchat-profile is plain Pi: it answers, and no profile is picked or created', async () => {
@@ -122,4 +122,16 @@ test('a requested profile that cannot open fails visibly and does not run withou
       } finally { await pi.close(); }
     }
   } finally { process.exitCode = undefined; await unlock(); }
+});
+
+test('an unbound Pi session still uses its own manual compaction instead of OptChat cancellation', async () => {
+  const pi = await headless('print');
+  try {
+    await pi.ask('Synthetic long input. ' + 'padding '.repeat(11000));
+    await pi.ask('Summarize briefly.');
+    const compact = await pi.compact();
+    assert.doesNotMatch(compact.summary, /^<chat>/);
+    assert.ok(pi.sent.length > 2, 'plain Pi calls its own summary model');
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
 });
