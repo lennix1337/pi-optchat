@@ -9,7 +9,9 @@ import { atomicWrite } from './memory.ts';
 import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
 
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice }
+export type Role = 'compactor' | 'subagent';
+/** alternates: models a role switches to while the main model is on their provider, e.g. a Codex model when Pi is on a Codex account. */
+export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>> }
 export const defaults: ProfileConfig = {
   compactor: { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'xhigh' }, // The recipe's: a cheap model at xhigh effort.
   subagent: { provider: 'anthropic', model: 'claude-opus-5-5', thinking: 'high' },
@@ -36,10 +38,18 @@ function modelChoice(value: unknown): value is ModelChoice {
   return record(value) && typeof value.provider === 'string' && typeof value.model === 'string'
     && THINKING.some(level => level === value.thinking);
 }
+const alternates = (value: unknown): value is ProfileConfig['alternates'] => value === undefined
+  || record(value) && Object.entries(value).every(([role, list]) => (role === 'compactor' || role === 'subagent') && Array.isArray(list) && list.every(modelChoice));
+/** The role's model for the provider the main model is on: the first alternate on that provider, else the role's own choice. */
+export function modelFor(config: ProfileConfig, role: Role, mainProvider: string | undefined): ModelChoice {
+  const own = config[role];
+  if (mainProvider === undefined || own.provider === mainProvider) return own;
+  return config.alternates?.[role]?.find(choice => choice.provider === mainProvider) ?? own;
+}
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
-  if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent)) throw new Error(`Invalid profile config: ${dir}/config.json`);
-  try { return { compactor: value.compactor, subagent: value.subagent, ...readSettings(value) }; }
+  if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)) throw new Error(`Invalid profile config: ${dir}/config.json`);
+  try { return { compactor: value.compactor, subagent: value.subagent, ...(value.alternates ? { alternates: value.alternates } : {}), ...readSettings(value) }; }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
 export function instructions(dir: string) { return readFileSync(join(dir, 'AGENTS.md'), 'utf8'); }

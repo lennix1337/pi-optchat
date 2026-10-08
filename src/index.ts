@@ -8,7 +8,7 @@ import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type Extensi
 import { Type } from 'typebox';
 import { atomicWrite, Memory } from './memory.ts';
 import { createCompressor } from './compactor.ts';
-import { createProfile, instructions, lastProfile, listProfiles, loadConfig, lockProfile, profilePath, rememberProfile, saveConfig, ProfileBusyError, type ProfileConfig } from './profiles.ts';
+import { createProfile, instructions, lastProfile, listProfiles, loadConfig, lockProfile, modelFor, profilePath, rememberProfile, saveConfig, ProfileBusyError, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -51,6 +51,7 @@ interface Active { name: string; dir: string; config: ProfileConfig; memory: Mem
 
 export default function optchat(pi: ExtensionAPI) {
   let active: Active | undefined;
+  let mainProvider: string | undefined; // Picks each role's alternate model, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
   let joined: Awaited<ReturnType<typeof joinHeadless>> | undefined;
@@ -182,13 +183,14 @@ export default function optchat(pi: ExtensionAPI) {
     let openingMemory: Memory | undefined;
     try {
       const config = loadConfig(dir);
+      mainProvider = ctx.model?.provider;
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
-      const memory = new Memory(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => config.compactor, message => {
+      const memory = new Memory(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', mainProvider), message => {
         usage.compression(message, 'compactor', sessionId);
         status(ctx);
       }, () => config.summaryAcceptBytes, shared), warning => ctx.ui.notify(warning, 'error'));
@@ -196,9 +198,9 @@ export default function optchat(pi: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
+      const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', mainProvider), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
-          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => config.compactor, message => usage.compression(message, 'compactor', sessionId)) });
+          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', mainProvider), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -269,6 +271,7 @@ export default function optchat(pi: ExtensionAPI) {
     // Pi sets its own title once every session_start handler has finished, so put ours back afterwards.
     for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
   });
+  pi.on('model_select', event => { mainProvider = event.model.provider; });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
   pi.on('session_shutdown', stop);
   pi.on('session_before_switch', () => remote || importing || active?.children.active ? { cancel: true } : undefined);
@@ -492,7 +495,7 @@ export default function optchat(pi: ExtensionAPI) {
           if (!job) return;
         }
         if (!closed) { await a.memory.close(); closed = true; }
-        const compress = createCompressor(ctx.modelRegistry, () => a.config.compactor, message => {
+        const compress = createCompressor(ctx.modelRegistry, () => modelFor(a.config, 'compactor', mainProvider), message => {
           a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
         }, () => a.config.summaryAcceptBytes, shared);
         const completed = await showProgress(ctx, job, (signal, progress) => runImport(a.dir, compress, signal, progress), signal);

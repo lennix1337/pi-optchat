@@ -69,6 +69,15 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 
 Subagent and compactor settings are saved per profile and do not follow the main model. If you use other providers, change them before chatting. Authentication uses Pi's existing provider login.
 
+To switch with the account, list alternates in the profile's `config.json`. While the main model is on an alternate's provider, the role uses that alternate; otherwise its own choice:
+
+```json
+"alternates": {
+  "compactor": [{ "provider": "openai-codex", "model": "gpt-6-luna", "thinking": "max" }],
+  "subagent": [{ "provider": "openai-codex", "model": "gpt-6-luna", "thinking": "max" }]
+}
+```
+
 Compression and subagents make extra model requests with your provider credentials.
 
 ## Settings
