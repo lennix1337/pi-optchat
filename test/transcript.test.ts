@@ -9,7 +9,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { asUser, buildContext, PREVIOUS_EXCHANGE, previousExchange, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from '../src/transcript.ts';
-import { COMPACT } from '../src/prompts.ts';
+import { isCompaction } from './support.ts';
 import { emptyUsage } from '../src/usage.ts';
 
 const user = (content: UserMessage['content']): UserMessage => ({ role: 'user', content, timestamp: 1 });
@@ -111,7 +111,7 @@ test('real Pi lifecycle retains one exchange across tool calls and resume, witho
   try {
     createProfile('fixture');
     const config = loadConfig(profilePath('fixture'));
-    saveConfig(profilePath('fixture'), { ...config, compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
+    saveConfig(profilePath('fixture'), { ...config, compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, previousExchange: true });
     const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null,
       modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
     runtime.registerProvider('fixture', {
@@ -119,7 +119,7 @@ test('real Pi lifecycle retains one exchange across tool calls and resume, witho
       models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
       streamSimple(model, context) {
-        const compression = context.messages.some(m => m.role === 'system' && m.content === COMPACT);
+        const compression = isCompaction(context);
         const snapshot = structuredClone(context);
         snapshot.messages = snapshot.messages.filter(m => m.role !== 'system');
         if (!compression) captured.push(snapshot);
@@ -245,7 +245,7 @@ test('another extension\'s shown custom message starts a turn and stays in memor
   let session: Awaited<ReturnType<typeof createAgentSession>>['session'] | undefined;
   try {
     createProfile('fixture');
-    saveConfig(profilePath('fixture'), { ...loadConfig(profilePath('fixture')), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
+    saveConfig(profilePath('fixture'), { ...loadConfig(profilePath('fixture')), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, previousExchange: true });
     const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null,
       modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
     runtime.registerProvider('fixture', {
@@ -253,7 +253,7 @@ test('another extension\'s shown custom message starts a turn and stays in memor
       models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
       streamSimple(model, context) {
-        const compression = context.messages.some(m => m.role === 'system' && m.content === COMPACT);
+        const compression = isCompaction(context);
         if (!compression) captured.push(context.messages.filter(m => m.role !== 'system'));
         const reply = answer(compression ? 'Summary.' : `Answer to: ${textContent(context.messages.at(-1)?.content).split('</chat>').at(-1)?.trim()}`);
         reply.api = model.api; reply.provider = model.provider; reply.model = model.id;
@@ -323,8 +323,8 @@ test('main agent keeps Pi\'s AGENTS.md files and skills, with profile instructio
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
       streamSimple(model, context) {
         const system = textContent(context.messages.find(m => m.role === 'system')?.content);
-        if (system !== COMPACT) systems.push(system);
-        const reply = answer(system === COMPACT ? 'Summary.' : 'Done.');
+        if (!isCompaction(context)) systems.push(system);
+        const reply = answer(isCompaction(context) ? 'Summary.' : 'Done.');
         reply.api = model.api; reply.provider = model.provider; reply.model = model.id;
         const stream = createAssistantMessageEventStream();
         queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message: reply }); stream.end(); });
@@ -418,14 +418,14 @@ async function waitForSummaries(failure: string | undefined, shown: (working: (s
       models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
       streamSimple(model, context, options) {
-        const compression = context.messages.some(m => m.role === 'system' && m.content === COMPACT);
+        const compression = isCompaction(context);
         if (!compression) asked.push(context.messages.map(m => textContent(m.content)).join('\n'));
         const reply = answer(compression ? 'Summary.' : 'Done.'); reply.api = model.api; reply.provider = model.provider; reply.model = model.id;
         const stream = createAssistantMessageEventStream();
         if (compression && failure) {
           reply.stopReason = 'error'; reply.errorMessage = failure;
           // Fail only once the turn is waiting, so the message has to change while it is shown.
-          const fail = () => working.at(-1) === 'Waiting for OptChat summaries…' ? (stream.push({ type: 'error', reason: 'error', error: reply }), stream.end()) : options?.signal?.aborted || setTimeout(fail, 10);
+          const fail = () => working.at(-1) === 'Waiting for OptChat summaries…' ? (stream.push({ type: 'error', reason: 'error', error: reply }), stream.end()) : options?.signal?.aborted ? (stream.push({ type: 'error', reason: 'aborted', error: reply }), stream.end()) : setTimeout(fail, 10);
           fail();
         } else if (compression) {
           reply.stopReason = 'aborted'; reply.errorMessage = 'closed';

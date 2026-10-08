@@ -44,9 +44,11 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-test('a summary up to 640 bytes is kept; one over 640 is retried', async () => {
-  assert.deepEqual(await attempts(640), { calls: 1, bytes: 640 });
-  assert.deepEqual(await attempts(641), { calls: 2, bytes: 400 });
+test('by default a line over 512 bytes is retried, as in the recipe; a raised tolerance keeps one up to it', async () => {
+  assert.deepEqual(await attempts(512), { calls: 1, bytes: 512 });
+  assert.deepEqual(await attempts(513), { calls: 2, bytes: 400 });
+  assert.deepEqual(await attempts(640, { accepted: 640 }), { calls: 1, bytes: 640 });
+  assert.deepEqual(await attempts(641, { accepted: 640 }), { calls: 2, bytes: 400 });
 });
 
 test('the profile\'s summary size tolerance decides when a line is retried', async () => {
@@ -61,8 +63,8 @@ test('a thinking level the model can\'t take is clamped like Pi does, not sent a
 
 test('a merge that is not smaller than the two lines it replaces is retried', async () => {
   const children = ['a'.repeat(280), 'b'.repeat(280)].join('\n'); // 561 bytes
-  assert.deepEqual(await attempts(590, { source: children, merge: true }), { calls: 2, bytes: 400 });
-  assert.deepEqual(await attempts(590, { source: 'c'.repeat(1000), merge: true }), { calls: 1, bytes: 590 });
+  assert.deepEqual(await attempts(590, { source: children, merge: true, accepted: 640 }), { calls: 2, bytes: 400 });
+  assert.deepEqual(await attempts(590, { source: 'c'.repeat(1000), merge: true, accepted: 640 }), { calls: 1, bytes: 590 });
 });
 
 test('the task is the recipe\'s, with a 512-dash ruler for the size, and a merge names its lines and messages', () => {

@@ -382,7 +382,7 @@ test('a message\'s node starts once fewer than 8 lines before it are unbuilt, so
   } finally { calls.forEach(c => c.release()); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a summary sees the built lines after one still being built, such as an echo\'s own tool call', async () => {
+test('a compaction\'s view stops at the first line not built yet, so no call sees a placeholder', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-gaps-'));
   const calls: { input: Compression; release: () => void }[] = [];
   const memory = new Memory(dir, input => new Promise(resolve => calls.push({ input, release: () => resolve('s'.repeat(300)) })), () => {});
@@ -392,8 +392,7 @@ test('a summary sees the built lines after one still being built, such as an ech
     memory.append('echo', `contents ${'.'.repeat(600)}`);
     await new Promise(resolve => setTimeout(resolve, 20));
     const echo = calls.find(c => c.input.part.i === 2)!.input.context;
-    assert.match(echo, /^0\+1\|\(not summarized yet: zoom it\)$/m);
-    assert.match(echo, /^1\+1\|tool: read src\/memory\.ts$/m);
+    assert.equal(echo, '<chat>\n\n</chat>', 'message 0 is still being built, so the view ends before it');
   } finally { calls.forEach(c => c.release()); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -543,20 +542,23 @@ test('a new message is summarized without rescanning every built node', async ()
   } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('merges that keep failing are queued, so a new message never scans their level of the tree', async () => {
+test('merges that keep failing are queued and tried again at the next message, which never scans the tree for them', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-queue-'));
   // Each 300-byte message is its own line, and merging two needs the compactor, which refuses. The budget keeps the view from merging.
-  const memory = new Memory(dir, async () => { throw new Error('refused'); }, () => {}, 10_000_000, 8, 60_000);
+  let refused = 0;
+  const memory = new Memory(dir, async () => { refused++; throw new Error('refused'); }, () => {}, 10_000_000, 8, 60_000);
   const idle = async () => { while (memory.pending || memory.active) await new Promise(resolve => setTimeout(resolve, 5)); };
   try {
     for (let i = 0; i < 200; i++) memory.append('user', `${i} ${'.'.repeat(300)}`);
     await idle();
     const get = memory.tree.get;
-    let lookups = 0;
+    let lookups = 0; refused = 0;
     memory.tree.get = function (this: typeof memory.tree, key) { lookups++; return get.call(this, key); };
     memory.append('user', `one more ${'.'.repeat(300)}`);
     await idle();
-    assert.ok(lookups < 100, `${lookups} tree lookups for one new message, with all 100 merges failing`);
+    assert.equal(refused, 100, 'each failed merge is tried once more, and nothing else');
+    // A retry reads its two halves and its own view (up to 201 lines here); a scan for work would read the whole tree for each.
+    assert.ok(lookups < 100 * 250, `${lookups} tree lookups for one new message, with all 100 merges failing`);
   } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

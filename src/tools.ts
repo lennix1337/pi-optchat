@@ -27,12 +27,25 @@ export function searchPage(memory: Memory, text: string, before?: number) {
   return `${hits.length} ${older}${hits.length === 1 ? 'message contains' : 'messages contain'} "${text}", newest first:\n${lines.join('\n')}${more}`;
 }
 
-export function memoryTools(memory: () => Memory) {
+/** One page of a subagent's chat, as a long message comes (recipe §6). */
+function chatPage(text: string, offset = 0, limit = PAGE) {
+  const to = Math.min(text.length, offset + Math.min(limit, PAGE));
+  return text.slice(offset, to) + (to < text.length ? `\n[showing characters ${offset}-${to} of ${text.length}; next page: offset ${to}]` : '');
+}
+
+/** `agent` gives a subagent's whole chat by its id: its own steps stay in its own log, out of the main chat. */
+export function memoryTools(memory: () => Memory, agent?: (id: string) => string) {
   return [
-    { name: 'zoom', label: 'Zoom memory', description: `Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole. A message over ${PAGE.toLocaleString('en-US')} characters comes in pages; offset and limit (characters) read any part of it, and are not needed for a shorter one. A message's images come back with it.`,
-      parameters: Type.Object({ id: Type.Integer({ minimum: 0 }), n: Type.Integer({ minimum: 1 }),
+    { name: 'zoom', label: 'Zoom memory', description: `Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole. A message over ${PAGE.toLocaleString('en-US')} characters comes in pages; offset and limit (characters) read any part of it, and are not needed for a shorter one. A message's images come back with it. agent (a subagent's id, alone or with offset and limit) gives that subagent's whole chat instead.`,
+      parameters: Type.Object({ id: Type.Optional(Type.Integer({ minimum: 0 })), n: Type.Optional(Type.Integer({ minimum: 1 })), agent: Type.Optional(Type.String({ minLength: 1 })),
         offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: PAGE })) }),
-      async execute(_id: string, args: { id: number; n: number; offset?: number; limit?: number }) {
+      async execute(_id: string, args: { id?: number; n?: number; agent?: string; offset?: number; limit?: number }) {
+        if (args.agent !== undefined) {
+          const chat = agent?.(args.agent);
+          if (!chat) throw new Error(`No chat of a subagent ${args.agent}.`);
+          return result(chatPage(chat, args.offset, args.limit));
+        }
+        if (args.id === undefined || args.n === undefined) throw new Error('zoom takes id and n, or agent.');
         const m = memory(), text = m.zoom(args.id, args.n, args.offset, args.limit), page = result(text);
         // A message's images come back with its text, as read returns a PNG; summaries stay text.
         return args.n === 1 ? { ...page, content: [...page.content, ...loadImages(m.directory, text)] } : page;

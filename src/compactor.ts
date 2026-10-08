@@ -1,7 +1,7 @@
-import { clampThinkingLevel, type Api, type AssistantMessage, type Message, type Model } from '@earendil-works/pi-ai';
+import { clampThinkingLevel, type Api, type AssistantMessage, type Message, type Model, type Tool } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
-import { COMPACT } from './prompts.ts';
+import { PROMPT } from './recipe-prompt.ts';
 import { bytes, NODE, start, type Compressor, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
 import { IMPORT_GUIDANCE } from './import/guidance.ts';
@@ -52,9 +52,12 @@ function primeFirst() {
     };
   };
 }
-/** The model is asked for 512 bytes; `accepted` is the longest line kept without a retry (the profile's summary size tolerance). */
+/** What a compaction shares with the turns (recipe §4): the same system prompt and tools, never called. */
+export interface Shared { systemPrompt: string; tools?: Tool[] }
+/** The model is asked for 512 bytes; `accepted` is the longest line kept without a retry (the profile's summary size tolerance).
+ * `shared` is the turns' prompt and tools once a turn has built them; until then, the recipe's prompt alone. */
 export function createCompressor(registry: ModelRegistry, choice: () => ModelChoice,
-  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes): Compressor {
+  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes, shared: () => Shared | undefined = () => undefined): Compressor {
   const gate = primeFirst();
   return async (input, signal) => {
     const selected = choice();
@@ -65,12 +68,13 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: step }], timestamp: Date.now() }];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
+    const base = shared() ?? { systemPrompt: PROMPT };
     const tries: string[] = [];
     for (let attempt = 0; attempt < 5; attempt++) {
       const warmed = prefix ? await gate(prefix, signal) : () => {};
       let reply: AssistantMessage;
       try {
-        const stream = registry.streamSimple(model, { systemPrompt: COMPACT, messages }, {
+        const stream = registry.streamSimple(model, { ...base, messages }, {
           // A shared session id is the OpenAI prompt-cache key; SSE because over a websocket Codex would chain unrelated parallel calls on one cached connection.
           sessionId: 'optchat-compactor', transport: 'sse',
           reasoning: thinking, signal, cacheRetention: 'short',

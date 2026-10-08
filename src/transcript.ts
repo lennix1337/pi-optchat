@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { getCurrentSystemMessage, type SystemMessage, type UserMessage } from '@earendil-works/pi-ai';
-import { CAP, cap, type Memory } from './memory.ts';
+import { CAP, PAGE, cap, type Memory } from './memory.ts';
 import { record } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
 import { imageRef, isImage } from './images.ts';
@@ -45,12 +45,28 @@ export function asUser(message: AgentMessage): AgentMessage {
   if (first?.type === 'text') return { role: 'user', content: [{ ...first, text: tag + first.text }, ...rest], timestamp };
   return { role: 'user', content: [{ type: 'text', text: tag.trimEnd() }, ...content], timestamp };
 }
+/** A long text is never cut: it is logged as several messages in a row (recipe §1), each as long as one zoom page. */
+export function pieces(text: string) {
+  const parts: string[] = [];
+  for (let at = 0; at < text.length;) {
+    let to = Math.min(text.length, at + PAGE);
+    if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to--; // Never split a surrogate pair.
+    parts.push(text.slice(at, to)); at = to;
+  }
+  return parts.length ? parts : [text];
+}
+/** Per-turn state goes after the view, never in the system prompt (recipe §6), so the prompt is cached whatever the directory:
+ * Pi's working-directory section moves out of the prompt. */
+export function stateless(prompt: string) {
+  const section = /\n*<cwd>\n([^\n]*)\n<\/cwd>/.exec(prompt);
+  return section ? { prompt: prompt.replace(section[0], ''), state: `Working directory: ${section[1]}` } : { prompt, state: undefined };
+}
 export function logMessage(memory: Memory, message: AgentMessage, receipt?: string) {
   const date = new Date(message.timestamp).toISOString();
-  if (message.role === 'user') memory.append(receipt?.startsWith(REPORT_RECEIPT) ? 'work' : 'user', textContent(message.content), date, receipt);
+  if (message.role === 'user') for (const text of pieces(textContent(message.content))) memory.append(receipt?.startsWith(REPORT_RECEIPT) ? 'work' : 'user', text, date, receipt);
   else if (message.role === 'assistant') {
     for (const block of message.content) {
-      if (block.type === 'text' && block.text.trim()) memory.append('talk', block.text, date);
+      if (block.type === 'text' && block.text.trim()) for (const text of pieces(block.text)) memory.append('talk', text, date);
       if (block.type === 'toolCall') memory.append('tool', `${block.name} ${JSON.stringify(block.arguments)}`, date);
     }
     if (message.stopReason === 'error' || message.stopReason === 'aborted')
@@ -126,7 +142,7 @@ function latestExchange(branch: readonly SessionEntry[]) {
 
 /** Keep one completed exchange plus the current run; all other history comes from the view. */
 export function buildContext(canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string,
-  previous: readonly AgentMessage[] = []): AgentMessage[] {
+  previous: readonly AgentMessage[] = [], state?: string): AgentMessage[] {
   const system = getCurrentSystemMessage(canonical);
   const head: SystemMessage = { role: 'system', content: prompt, toolsAdded: system?.toolsAdded, timestamp: 0 };
   if (!run.some(m => m.role === 'user')) throw new Error('OptChat has no current user message; refusing to send historical context.');
@@ -134,7 +150,7 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
   const messages = [...previous, ...run].filter(m => m.role !== 'system').map(message => {
     if (message.role !== 'user' || injected) return message;
     injected = true;
-    return { ...message, content: [{ type: 'text' as const, text: view }, ...(typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content)] };
+    return { ...message, content: [{ type: 'text' as const, text: view }, ...(state ? [{ type: 'text' as const, text: state }] : []), ...(typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content)] };
   });
   return [head, ...messages];
 }

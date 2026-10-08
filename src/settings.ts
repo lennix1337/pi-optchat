@@ -11,8 +11,8 @@ export const SETTINGS = {
   groupReports: { kind: 'toggle', label: 'Group subagent reports', default: false,
     description: 'Off: each subagent reports as soon as it finishes, as in Victor\'s recipe. On: the subagents started by one spawn report together, in one message once the last of them finishes.',
     applies: 'Applies to the next spawn.' },
-  previousExchange: { kind: 'toggle', label: 'Previous exchange', default: true,
-    description: 'Send your last request and its answer in full with the next turn, so a follow-up reads the exact wording. Off: memory view only, as in Victor\'s recipe. On by default: a study found it costs little and saves zooms.',
+  previousExchange: { kind: 'toggle', label: 'Previous exchange', default: false,
+    description: 'Send your last request and its answer in full with the next turn, so a follow-up reads the exact wording. Off: memory view only, as in Victor\'s recipe, where nothing carries over between turns.',
     applies: 'Applies from the next turn.' },
   previousExchangeKB: { kind: 'number', label: 'Previous exchange limit', default: 16, min: 1, unit: 'KB',
     description: 'A larger last exchange, usually a big paste, is left out and the model zooms into memory instead.',
@@ -20,8 +20,8 @@ export const SETTINGS = {
   memorySearch: { kind: 'toggle', label: 'Memory search', default: false,
     description: 'Give agents a search tool that finds original messages by plain text, newest first, for exact names, numbers, paths or errors the view doesn\'t show. Off: zoom and date only, as in Victor\'s recipe. Turning it on or off makes the next turn re-cache its prompt once.',
     applies: 'Applies from the next turn, and to subagents started or resumed after this.' },
-  summaryAcceptBytes: { kind: 'number', label: 'Summary size tolerance', default: NODE * 1.25, min: NODE, unit: 'bytes',
-    description: `The compactor is always asked for ${NODE}-byte lines; a longer line up to this size is kept instead of retried. ${NODE}: strict, as in Victor's recipe. The default saves retries for a little more view space.`,
+  summaryAcceptBytes: { kind: 'number', label: 'Summary size tolerance', default: NODE, min: NODE, unit: 'bytes',
+    description: `The compactor is always asked for ${NODE}-byte lines; a longer line up to this size is kept instead of retried. ${NODE}: strict, as in Victor's recipe. A higher value saves retries for a little more view space.`,
     applies: 'Applies to the next summary.' },
 } as const;
 

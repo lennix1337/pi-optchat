@@ -2,7 +2,7 @@
 
 ## Victor Taelin's OptChat recipe
 
-The OptChat memory design and the prompt strings in `src/prompts.ts`
+The OptChat memory design and the prompt strings in `src/recipe-prompt.ts` and `src/prompts.ts`
 (adapted) come from Victor Taelin's publicly shared implementation recipe:
 
 https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449

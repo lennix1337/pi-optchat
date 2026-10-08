@@ -65,7 +65,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | --- | --- | --- |
 | Main agent | Whatever is selected in Pi | `/model` |
 | Subagents | Anthropic Opus 5.5, high | `/optchat agents model` |
-| Compactor (summaries, imports, handoffs) | Anthropic Sonnet 5.5, medium | `/optchat model` |
+| Compactor (summaries, imports, handoffs) | Anthropic Haiku 5.5, xhigh (the recipe's cheap model) | `/optchat model` |
 
 Subagent and compactor settings are saved per profile and do not follow the main model. If you use other providers, change them before chatting. Authentication uses Pi's existing provider login.
 
@@ -73,19 +73,19 @@ Compression and subagents make extra model requests with your provider credentia
 
 ## Settings
 
-`/optchat settings` opens this profile's settings. Each row shows its value and default, the selected row says what it does and when a change applies, and a change is saved right away to the profile's `config.json`. Defaults follow Victor's recipe, except Previous exchange, Summary size tolerance and Group subagent reports, which keep OptChat's earlier behaviour.
+`/optchat settings` opens this profile's settings. Each row shows its value and default, the selected row says what it does and when a change applies, and a change is saved right away to the profile's `config.json`. Defaults follow Victor's recipe.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Compactor model | Sonnet 5.5, medium | Same as `/optchat model`. Applies to the next summary. |
+| Compactor model | Haiku 5.5, xhigh | Same as `/optchat model`. Applies to the next summary. |
 | Subagent model | Opus 5.5, high | Same as `/optchat agents model`. Applies to new subagents. |
 | Subagent levels | 1 | 1: only the main agent starts subagents. 2 or more: subagents may start their own, that many levels deep. Applies to subagents started or resumed after the change. |
 | Max active agents | 8 | Subagents running at once in the profile, all levels together, so it also caps how deep a chain can go. |
 | Group subagent reports | off | Off: each subagent reports as soon as it finishes (the recipe). On: the subagents started by one spawn report together, in one message once the last of them finishes. Applies to the next spawn. |
-| Previous exchange | on | Replays your last request and answer in full with the next turn (see below). Off is the recipe. |
+| Previous exchange | off | On: replays your last request and answer in full with the next turn, left out when over the limit. Off is the recipe: nothing carries over between turns. |
 | Previous exchange limit | 16 KB | A larger last exchange is left out. |
-| Memory search | off | Gives the agent, and subagents started or resumed after the change, a `search` tool over your original messages (see below). Off is the recipe: zoom and date only. Applies from the next turn. |
-| Summary size tolerance | 640 bytes | The compactor is always asked for 512-byte lines; a longer line up to this size is kept instead of retried. 512 is the recipe's strict rule. |
+| Memory search | off | Gives the agent, and subagents started or resumed after the change, a `search` tool over your original messages: plain text matching, newest first, never the summaries. Off is the recipe: zoom and date only. Applies from the next turn. |
+| Summary size tolerance | 512 bytes | The compactor is always asked for 512-byte lines; a longer line up to this size is kept instead of retried. 512 is the recipe's strict rule. |
 
 Numbers must be whole numbers of at least 1 (512 for the summary size tolerance). Missing keys in an older `config.json` take their defaults.
 
@@ -223,18 +223,30 @@ To delete a profile, delete its folder. Your original Pi sessions are kept in Pi
 - **Restarts**: unsent inputs are recovered into memory, and pending subagent reports are delivered. Interrupted subagents are not restarted.
 - **Prompt-template inputs** can be saved twice: expanded, and later in their original form as an unanswered input, because Pi expands them after the input journal records them. Skill commands (`/skill:name`) are matched back to their journaled input and don't have this problem. Plain text chat is unaffected.
 
-## How it differs from the recipe
+## How it follows the recipe
 
-`src/prompts.ts` holds the recipe's prompts, lightly adapted. The main agent's turn rules are the revised recipe's (2026-10-08) word for word, without its paragraph on computers, and with reports starting "[id] " instead of "[Name]"; the view doc keeps the original's description of the view, drops its "No message appears in full" line (untrue with Previous exchange on) and its list of when to zoom, adds one sentence on zooming out from a message to the summaries above it, and ends with the revised recipe's rule that the view is the truth and zoom the only way through it; the compactor prompt is the revised recipe's intro, view and Compactions sections, with OptChat's kinds (`talk` for replies, subagent reports as `work`) and without its turn-only sections; unlike the recipe, the compactor doesn't get your instructions, since an A/B found they added nothing (#112); and the subagent prompt is the original's. OptChat keeps the recipe's numbers: 512-byte summary nodes (by default summaries up to 640 bytes are accepted without a retry, as long as they are smaller than what they replace; see Summary size tolerance), a memory view that grows a line per message and, past 128,000 bytes, merges in one batch down to 64,000 (so between batches it only grows at its end and each turn reads the last one's view from the cache; the view is saved and reloaded as it was), binary merges, 8 compression workers, fixed retry delays, 5 shortening attempts, and a 30,000-character tool output cap. Compactions get their own view, as in the 2026-10-08 revision of the recipe: the memory view merged further, to between 16,000 and 32,000 bytes with the same sawtooth, ending at the line being built. A message's summary starts once fewer than 8 lines before it are unsummarized, so up to 8 compactions run at once on one cached view. An import logs its messages the same way, waiting only while 8 messages and due merges are unbuilt, so the merges keep up. Where the recipe ends a compaction's view at the first line not summarized yet, OptChat shows that line as a placeholder and keeps the lines after it: cutting there also hid the short lines that follow, such as an echo's own tool call, and an A/B on real turns scored those summaries lower (see #101). The compactor's task and its "Too long" retry are the recipe's, verbatim, with a 512-dash ruler for the size. Anthropic requests split the view into blocks of 4 lines with cache marks on the last whole one and on the blocks 20 and 40 before it, so a turn that adds up to 240 lines of tool calls and results still reads the last view from the cache, and when that view is not cached yet, one compactor call goes first and the others wait until it starts answering, so they read the cache instead of each writing it. See `docs/victor-recipe.md` for notes.
+OptChat follows [Victor Taelin's recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449) (the 2026-10-08 revision) by default:
 
-Each run's context is the memory view, the previous exchange, and your new message. Deliberate additions (the ones that change the recipe's behaviour are settings, see [Settings](#settings)):
+- **The log**: append-only and flushed at each write, one owner per profile, no thoughts, tool output clipped to 30,000 characters (head and tail). A longer text is never cut: it is logged as several messages in a row, 25,000 characters each, so every one opens whole with `zoom(id, 1)`.
+- **The tree**: 512-byte nodes, a source that fits is its own node without a model call, each node built once and logged.
+- **The view**: `id+n|text` lines without dates. It grows a line per message and, past 128,000 bytes, merges its most due pairs (`(T - last) / 2^l`, oldest first among equals, only pairs whose parent is built) in one batch down to 64,000. It is saved to `view.json` and loaded at start, never rebuilt.
+- **One prompt**: `src/recipe-prompt.ts` holds the recipe's system prompt for turns and compactions, verbatim but for the agent's name, its kinds (`talk` for replies, reports starting "[id] "), `zoom(agent: "id")` for the recipe's `zoom("Name")`, and no paragraph on computers. Your instructions follow it.
+- **Turns**: a turn waits for the summaries before it, renders the view before logging your message, and starts from a fresh context: nothing carries over. Per-turn state (the working directory) goes after the view, not in the system prompt.
+- **Compactions**: a call like a turn, with the turns' system prompt and tools (never called) once a turn has built them, then its own view (the chat's merged further, to 16,000-32,000 bytes, ending at the node and stopping at the first line not built yet) and the recipe's task, verbatim, with its 512-dash ruler. A line over 512 bytes gets the recipe's "Too long" retry, up to 5 tries, keeping the shortest. Up to 8 run at once; a message's node starts once fewer than 8 lines before it are unbuilt; ready nodes are queued, never searched for. A failed call is tried again at the next message.
+- **The cache** (Anthropic): the view in blocks of 4 lines, a mark on the last whole block and one at the request's end, 5-minute entries, no keep-alive pings; one compaction primes a cold prefix and the others wait until it starts answering.
+- **Subagents**: a fresh call whose first message is the view, then its task; its steps stay in its own log (`zoom(agent: "id")`), and its final reply comes back as one `work` message. The main agent never waits or polls.
 
-1. **Previous exchange kept verbatim.** Your last request (with any steering) and the final answer are included in full, so "why is that?" refers to what you actually read. Tool calls and reasoning are not carried over. It comes on top of the 128,000-byte view. If it is over 16,000 bytes (about 4,000 tokens, usually a big paste; Previous exchange limit) it is left out entirely, and the model relies on the view and zoom as in Victor's recipe. A new Pi session starts with the memory view only.
-2. **Subagents** are built in with Pi's SDK rather than a separate package. With Subagent levels above 1 they can delegate further.
-3. **Memory search** (off by default). With the setting on, the agent also gets `search(text, before?)`: plain, case-insensitive text matching over the original messages, never the summaries (a summary can be wrong, and one fact repeats at every level of the tree), skipping logged zoom and search results. It returns 20 hits at a time, newest first, each with its id, the view line that holds it when that is a summary (`1234 (in 1024+256)`), its date and a snippet; `before: id` pages back, and `zoom(id, 1)` reads a hit. One line about it is added to the system prompt, and the rule that zoom is the only way through memory names search too. Turning it on or off changes the cached prompt once.
-4. **Large messages.** `zoom(id, 1)` returns a message over 25,000 characters in pages, `[showing characters 0-25000 of 92000; next page: offset 25000]`, and `offset`/`limit` read any part of one (used on a shorter message, the page adds a note that it fits in one zoom); the recipe returns it whole, where the 30,000-character tool output cap cut out its middle.
-5. **Profiles**, the **inspector**, the **usage ledger**, **import**, and **connected windows** are additions. Import adds historical-record guidance to the prompts.
-6. **Not done**: computer use and hosting on an always-on machine.
+Where it still differs:
+
+1. **Settings** turn on what the recipe leaves out, all off by default: Previous exchange (your last request and its answer replayed in full with the next turn, left out over the limit), Memory search (a `search` tool over the original messages), a Summary size tolerance above 512 bytes, and Group subagent reports.
+2. **Two more cache marks**, 20 and 40 blocks before the last whole one: Anthropic looks back only 20 blocks from a mark, so with the recipe's single view mark a turn that added more than 80 lines of tool calls made the next turn rewrite the whole view.
+3. **A retry timer**: besides the retry at the next message, a failed compaction is tried again after 10 seconds, so an import or a turn waiting on it is not left stuck when no message comes.
+4. **Subagents have their own system prompt** (`src/prompts.ts`), and are built in with Pi's SDK. With Subagent levels above 1 they can delegate further.
+5. **Pi's own prompt sections** (your global and repository `AGENTS.md` files and skills) stay in the system prompt, before the profile's instructions.
+6. **Imports, profiles, the inspector, the usage ledger, images and connected windows** are additions. An import logs each imported message whole, and adds historical-record guidance to its compactions.
+7. **Not done**: computer use and hosting on an always-on machine.
+
+See `docs/victor-recipe.md` for the mapping to the source files.
 
 ## Development
 

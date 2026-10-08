@@ -8,7 +8,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { SUBAGENT, VIEW_DOC } from './prompts.ts';
 import { allowSearch, memoryTools, SEARCH_DOC, searchTool } from './tools.ts';
-import { type Memory } from './memory.ts';
+import { cap, type Memory } from './memory.ts';
 import type { ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
 import { RunHistory, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
@@ -107,6 +107,12 @@ export class Children {
     if (live) return [...live.session.messages, ...(live.streaming ? [live.streaming] : [])];
     const file = this.history.records.get(id)?.sessionFile;
     return file ? sessionMessages(file) : [];
+  }
+  /** An agent's whole chat as text, for zoom(agent): its replies, tool calls and their results. */
+  chat(id: string) {
+    return this.messages(id).map(m => m.role === 'assistant'
+      ? m.content.flatMap(block => block.type === 'text' && block.text.trim() ? [`talk: ${block.text}`] : block.type === 'toolCall' ? [`tool: ${block.name} ${JSON.stringify(block.arguments)}`] : []).join('\n\n')
+      : m.role === 'toolResult' ? `echo: ${cap(`: ${textContent(m.content)}`)}` : m.role === 'user' ? `user: ${textContent(m.content)}` : '').filter(Boolean).join('\n\n');
   }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private changed() { for (const listener of this.listeners) listener(); }
@@ -238,7 +244,7 @@ export class Children {
     await loader.reload();
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
-      customTools: [...memoryTools(() => this.memory), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected)],
+      customTools: [...memoryTools(() => this.memory, agent => this.chat(agent)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected)],
       excludeTools: delegates ? [] : ['spawn', 'tell'],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.

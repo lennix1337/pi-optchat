@@ -197,6 +197,8 @@ export class Memory {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
     if (!this.lastSeenBytes.has(file)) this.checkLog(file);
     this.lastSeenBytes.set(file, appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0));
+    // A failed call is tried again at the next message (recipe §4); the timer only covers a chat that has gone quiet.
+    this.retryAt.clear();
     this.root.push(entry); this.push(entry.i); if (this.fit()) this.save(); this.schedule();
     return entry;
   }
@@ -312,11 +314,10 @@ export class Memory {
     if (!this.retryAt.size) this.lastError = undefined;
     if (this.fit()) this.save();
   }
-  /** The compactions' view up to the node. A line still being built shows as a placeholder instead of ending the view: an A/B on
-   * real turns (#101) found that cutting there also hid the built lines after it, such as an echo's own tool call. */
+  /** The compactions' view up to the node. It stops at the first unbuilt line, so no call ever sees a placeholder (recipe §4). */
   private compactionView(part: Part) {
     const boundary = part.l === 0 ? start(part) : end(part), lines: string[] = [];
-    for (const p of this.compaction.parts) { if (end(p) > boundary) break; lines.push(`${start(p)}+${2 ** p.l}|${flat(this.text(p))}`); }
+    for (const p of this.compaction.parts) { if (end(p) > boundary || !this.node(p)) break; lines.push(`${start(p)}+${2 ** p.l}|${flat(this.text(p))}`); }
     return `${VIEW_OPEN}${lines.join('\n')}\n</chat>`;
   }
   private queueParent({ l, i }: Part) {
