@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { execFileSync } from 'node:child_process';
@@ -98,7 +99,7 @@ test('Codex imports user messages and final answers once, excluding commentary, 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-const codexFixture = new URL('./fixtures/codex-rollout.jsonl', import.meta.url).pathname;
+const codexFixture = fileURLToPath(new URL('./fixtures/codex-rollout.jsonl', import.meta.url));
 const receipt = (...identity: unknown[]) => `import:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 const body = (e: ImportedEntry) => e.text.slice(e.text.indexOf(']\n') + 2);
 
@@ -429,7 +430,8 @@ test('a selected transcript disappearing warns without importing it; cancellatio
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('ChatGPT ZIP reads numbered conversation files without extracting other archive data', async () => {
+const hasZip = (() => { try { execFileSync('zip', ['-v'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+test('ChatGPT ZIP reads numbered conversation files without extracting other archive data', { skip: !hasZip && 'needs the zip command' }, async () => {
   const dir = temp(), file = join(dir, 'conversations_1.json'), zip = join(dir, 'export.zip');
   writeFileSync(file, JSON.stringify([{ id: 'zip-chat', title: 'ZIP fixture', create_time: 100, mapping: {
     u: { parent: null, message: { id: 'u', author: { role: 'user' }, create_time: 100, content: { parts: ['zip fixture message'] } } },

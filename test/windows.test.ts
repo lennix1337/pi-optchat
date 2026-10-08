@@ -512,6 +512,7 @@ for (const scenario of ['before-first-tick', 'after-reply', 'missing-transcript'
     });
     const close = await serveWindows(f.dir, f.children, () => true, async text => { f.reports.push(text); });
     const client = await connectWindow(f.dir, event => events.push(event), () => {});
+    await until(() => tick !== undefined); // The owner may accept the connection after the client sees it open.
     interval.mock.restore();
     try {
       await client.request('start', scenario === 'after-reply' ? 'Hello' : 'provider-failure', f.dir);

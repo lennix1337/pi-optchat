@@ -613,12 +613,12 @@ test('close() does not wait for a spawn that is still waiting for memory to be s
 
 test('a task cwd may start with ~ or be relative to the spawning agent; a missing one is refused', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-cwd-'));
-  const oldHome = process.env.HOME;
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE; // Windows reads the home from USERPROFILE
   mkdirSync(join(dir, 'home', 'project'), { recursive: true });
   mkdirSync(join(dir, 'main', 'sub'), { recursive: true });
   const children = await quickChildren(dir);
   try {
-    process.env.HOME = join(dir, 'home');
+    process.env.HOME = process.env.USERPROFILE = join(dir, 'home');
     const [home, relative] = await children.spawn([{ task: 'home', cwd: '~/project' }, { task: 'relative', cwd: 'sub' }], join(dir, 'main'));
     assert.equal(children.live(home)?.info.cwd, join(dir, 'home', 'project'));
     assert.equal(children.live(relative)?.info.cwd, join(dir, 'main', 'sub'));
@@ -626,6 +626,7 @@ test('a task cwd may start with ~ or be relative to the spawning agent; a missin
     await until(() => !children.active);
   } finally {
     if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile;
     await children.close(); rmSync(dir, { recursive: true, force: true });
   }
 });

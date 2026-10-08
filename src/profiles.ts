@@ -1,4 +1,5 @@
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -52,17 +53,23 @@ export class ProfileBusyError extends Error {
   constructor(readonly owner: string) { super(`Profile already running: ${owner}`); }
 }
 /** Lives in the profile itself, so every Pi on this profile finds the same socket whatever its TMPDIR. Git skips sockets, so checkpoints never see it. */
-export const profileSocket = (dir: string, purpose: 'lock' | 'windows' = 'lock') => join(dir, `${purpose}.sock`);
+export const profileSocket = (dir: string, purpose: 'lock' | 'windows' = 'lock') => WINDOWS
+  ? `\\\\.\\pipe\\optchat-${createHash('sha256').update(resolve(dir).toLowerCase()).digest('hex').slice(0, 32)}-${purpose}`
+  : join(dir, `${purpose}.sock`);
+// Node on Windows listens only on named pipes. A pipe is named after the profile directory, is no file, and disappears with its owner, so nothing is ever stale.
+const WINDOWS = process.platform === 'win32';
 
 // sun_path is 104 bytes on macOS and 108 elsewhere, both including the NUL. Node 22 binds a truncated path instead of failing, so the length is checked before listen.
 export const SOCKET_PATH_LIMIT = process.platform === 'darwin' ? 103 : 107;
 export function checkSocketPath(path: string) {
+  if (WINDOWS) return;
   const length = Buffer.byteLength(path);
   if (length > SOCKET_PATH_LIMIT) throw new Error(`Cannot listen on the profile socket: its path is ${length} bytes, over this system's limit of ${SOCKET_PATH_LIMIT}. Set OPTCHAT_HOME to a shorter directory: ${path}`);
 }
 
 /** A socket that may be replaced; a file that only shares its name is refused, never deleted. */
 function existingSocket(path: string) {
+  if (WINDOWS) return undefined;
   let stat; try { stat = lstatSync(path); } catch { return undefined; }
   if (!stat.isSocket()) throw new Error(`${path} is not an OptChat socket. Move it out of the profile and try again.`);
   return stat;
@@ -83,19 +90,24 @@ export async function lockProfile(dir: string, description: string) {
   catch (error) {
     if (!(error instanceof Error) || !('code' in error) || error.code !== 'EADDRINUSE') throw error;
     const before = existingSocket(socketPath);
-    if (!before) throw new Error('Profile lock changed; try again.');
+    if (!before && !WINDOWS) throw new Error('Profile lock changed; try again.');
     const owner = await new Promise<string | undefined>((resolve, reject) => {
       const socket = createConnection(socketPath); let message = '';
       socket.setTimeout(1500, () => { socket.destroy(); reject(new Error('Profile lock did not respond; refusing to steal it.')); });
       socket.on('data', data => { message += data.toString(); });
       socket.on('end', () => resolve(message || 'another Pi instance'));
-      socket.on('error', e => { if ('code' in e && e.code === 'ECONNREFUSED') resolve(undefined); else reject(e); });
+      // A pipe whose owner just exited is gone (ENOENT) rather than refusing.
+      socket.on('error', e => { if ('code' in e && (e.code === 'ECONNREFUSED' || (WINDOWS && e.code === 'ENOENT'))) resolve(undefined); else reject(e); });
     });
     if (owner !== undefined) throw new ProfileBusyError(owner);
-    if (statSync(socketPath).ino !== before.ino) throw new Error('Profile lock changed; try again.');
-    unlinkSync(socketPath); await listen();
+    if (before) {
+      if (statSync(socketPath).ino !== before.ino) throw new Error('Profile lock changed; try again.');
+      unlinkSync(socketPath);
+    }
+    await listen();
   }
   const unlock = () => new Promise<void>(resolve => server.close(() => resolve()));
+  if (WINDOWS) return unlock;
   try { chmodSync(socketPath, 0o600); } catch (error) { await unlock(); throw error; }
   return unlock;
 }

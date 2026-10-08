@@ -177,13 +177,15 @@ export async function serveWindows(directory: string, children: Children, availa
     });
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(path, () => { server.off('error', reject); resolve(); }); });
-  chmodSync(path, 0o600);
+  if (process.platform !== 'win32') chmodSync(path, 0o600);
   return async () => {
     closing = true;
     const closed = new Promise<void>(resolve => server.close(() => resolve()));
+    // Windows reports the server closed before its connections; their cleanup is only tracked once each has closed.
+    const gone = [...connections].map(socket => new Promise<void>(resolve => socket.once('close', () => resolve())));
     for (const socket of connections) socket.destroy();
-    await closed;
-    await Promise.allSettled([...work]);
+    await closed; await Promise.all(gone);
+    while (work.size) await Promise.allSettled([...work]);
   };
 }
 

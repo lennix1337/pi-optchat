@@ -521,7 +521,8 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (action === 'browse') {
       const a = required(), file = exportBrowser(a.memory, a.name, a.dir);
-      if (ctx.hasUI) execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [file], error => { if (error) ctx.ui.notify(`Open ${file}`, 'info'); });
+      const opener = process.platform === 'win32' ? { command: 'cmd', args: ['/c', 'start', '', file] } : { command: process.platform === 'darwin' ? 'open' : 'xdg-open', args: [file] };
+      if (ctx.hasUI) execFile(opener.command, opener.args, error => { if (error) ctx.ui.notify(`Open ${file}`, 'info'); });
       ctx.ui.notify(file, 'info'); return;
     }
     if (action) throw new Error('Use /optchat [profile|settings|model|agents|usage|activity|instructions|browse|import].');

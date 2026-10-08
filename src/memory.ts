@@ -43,9 +43,11 @@ export function atomicWrite(file: string, text: string | Uint8Array) {
   mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
   writeFileSync(temporary, text, { mode: 0o600 });
-  const fd = openSync(temporary, 'r');
+  // Windows flushes only a handle opened for writing, and cannot open a directory to flush it.
+  const fd = openSync(temporary, 'r+');
   try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, file);
+  if (process.platform === 'win32') return;
   const parent = openSync(resolve(file, '..'), 'r');
   try { fsyncSync(parent); } finally { closeSync(parent); }
 }
