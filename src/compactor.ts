@@ -30,7 +30,7 @@ export function task({ source, part }: { source: string; part: Part }) {
 }
 const WARM_MS = 4 * 60_000; // Anthropic's short cache lives 5 minutes from its last use.
 
-/** Parallel calls can't read a cache entry that isn't written yet, so one call primes a cold prefix and the rest wait until it answers.
+/** Parallel calls can't read a cache entry that isn't written yet, so one call primes a cold prefix and the rest wait until its response starts (recipe §3.3).
  * Parallel compactions end their views at different messages, so a call also waits for a primer of a shorter prefix of its own view. */
 function primeFirst() {
   const warm = new Map<string, number | Promise<void>>();
@@ -85,8 +85,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
           reasoning: thinking, signal, cacheRetention: 'short',
           onPayload: payload => model.api === 'anthropic-messages' ? cachePayload(payload) : payload,
         });
-        // The cache entry is usable once the model starts answering.
-        for await (const event of stream) if (event.type !== 'start') { warmed(event.type !== 'error'); break; }
+        // The cache entry is usable once the response starts: Pi emits 'start' when the response headers arrive, 'error' if the request failed.
+        for await (const event of stream) { warmed(event.type !== 'error'); break; }
         reply = await stream.result();
       } finally { warmed(false); }
       onUsage(reply);

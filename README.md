@@ -35,7 +35,7 @@ To uninstall, run `pi remove git:github.com/jonaslsaa/pi-optchat`. Profile data 
 2. Choose **+ Create profile** and name it, for example `work`.
 3. Chat normally.
 
-The footer shows the active profile. Memory follows the profile across directories and Pi sessions. New sessions show the profile picker with the last-used profile first; resumed sessions restore their profile.
+The footer shows the active profile. Memory follows the profile across directories and Pi sessions. New sessions show the profile picker with the last-used profile first; resumed sessions restore their profile. To skip the picker, set `OPTCHAT_PROFILE=work` in your environment: interactive sessions then open that profile directly (if it is busy, you get the usual connect choice). Headless runs ignore it and still need `--optchat-profile`.
 
 For headless use (`pi -p`, `--mode rpc`, other extensions' runners), pass `--optchat-profile work`. Without it, and without a saved profile in a resumed session, a headless run is plain Pi with no OptChat memory. If the requested profile can't open (misspelled, deleted, or open in another Pi), the run reports the error and doesn't answer.
 
@@ -141,7 +141,7 @@ Guidance shows as queued until delivered, or undelivered if the child stops firs
 
 ![Usage page](docs/screenshots/usage.png)
 
-**Activity** is a memory gauge: how many messages the profile holds and how much of the 128 KB view they fill, then either **Settled** or **Catching up · 12 of 40 summaries** with a progress bar counted from when the backlog last grew from empty. If summarizing keeps failing, the last error and the retry countdown show under it. A turn waiting for summaries shows the same error next to its spinner, usually a summarizer model you aren't logged in to (`/optchat model`). Once every summary it waits for has failed, the turn goes on, with "(not summarized yet: zoom it)" in place of the missing lines, and the failed summaries keep retrying in the background. It also counts running agents, and interrupted ones waiting for you; their list is on Agents. While summaries or agents are at work, the bar's Activity item gets a **●**.
+**Activity** is a memory gauge: how many messages the profile holds and how much of the 128 KB view they fill, then either **Settled** or **Catching up · 12 of 40 summaries** with a progress bar counted from when the backlog last grew from empty. If summarizing keeps failing, the last error and the retry countdown show under it. A turn waiting for summaries shows the same error next to its spinner, usually a summarizer model you aren't logged in to (`/optchat model`). Once every summary it waits for has failed, the turn goes on, with "(not summarized yet: zoom it)" in place of the missing lines, and the failed summaries are tried again with your next message. It also counts running agents, and interrupted ones waiting for you; their list is on Agents. While summaries or agents are at work, the bar's Activity item gets a **●**.
 
 ![Activity page](docs/screenshots/activity.png)
 
@@ -233,21 +233,20 @@ OptChat follows [Victor Taelin's recipe](https://gist.github.com/VictorTaelin/91
 - **One prompt**: `src/recipe-prompt.ts` holds the recipe's system prompt for turns and compactions, verbatim but for the agent's name, its kinds (`talk` for replies, reports starting "[id] "), `zoom(agent: "id")` for the recipe's `zoom("Name")`, and no paragraph on computers. Your instructions follow it.
 - **Turns**: a turn waits for the summaries before it, renders the view before logging your message, and starts from a fresh context: nothing carries over. Per-turn state (the working directory) goes after the view, not in the system prompt.
 - **Compactions**: a call like a turn, with the turns' system prompt and tools (never called) once a turn has built them, then its own view (the chat's merged further, to 16,000-32,000 bytes, ending at the node and stopping at the first line not built yet) and the recipe's task, verbatim, with its 512-dash ruler. A line over 512 bytes gets the recipe's "Too long" retry, up to 5 tries, keeping the shortest. Up to 8 run at once; a message's node starts once fewer than 8 lines before it are unbuilt; ready nodes are queued, never searched for. A failed call is tried again at the next message.
-- **The cache** (Anthropic): the view in blocks of 4 lines, a mark on the last whole block and one at the request's end, 5-minute entries, no keep-alive pings; one compaction primes a cold prefix and the others wait until it starts answering.
+- **The cache** (Anthropic): the view in blocks of 4 lines, a mark on the last whole block and one at the request's end, 5-minute entries, no keep-alive pings; one compaction primes a cold prefix and the others wait until its response starts.
 - **Subagents**: a fresh call whose first message is the view, then its task; its steps stay in its own log (`zoom(agent: "id")`), and its final reply comes back as one `work` message. The main agent never waits or polls.
 
 Where it still differs:
 
 1. **Settings** turn on what the recipe leaves out, all off by default: Previous exchange (your last request and its answer replayed in full with the next turn, left out over the limit), Memory search (a `search` tool over the original messages), a Summary size tolerance above 512 bytes, and Group subagent reports.
 2. **Two more cache marks**, 20 and 40 blocks before the last whole one: Anthropic looks back only 20 blocks from a mark, so with the recipe's single view mark a turn that added more than 80 lines of tool calls made the next turn rewrite the whole view.
-3. **A retry timer**: besides the retry at the next message, a failed compaction is tried again after 10 seconds, so an import or a turn waiting on it is not left stuck when no message comes.
-4. **Subagents have their own system prompt** (`src/prompts.ts`), and are built in with Pi's SDK. With Subagent levels above 1 they can delegate further.
-5. **Pi's own prompt sections** (your global and repository `AGENTS.md` files and skills) stay in the system prompt, before the profile's instructions.
-6. **Imports, profiles, the inspector, the usage ledger, images and connected windows** are additions. An import logs each imported message whole, and adds historical-record guidance to its compactions.
-7. **A message's compaction task names its kind** ("compress message 6, kind echo, ...") and says to summarize `<input>` alone: Haiku sometimes folded the `<chat>` lines before a message into its summary, under the wrong kind.
-8. **Blocks start on their own paragraph**: the working directory, your message and a compaction's task begin with a blank line, because some providers (OpenAI's Responses API) join a message's text blocks with nothing between them (`</chat>Working directory: C:/Users/youok ...`).
-9. **`zoom(id, 1)` answers under `id+1|`**, the line it opens, as the view would show it.
-10. **Not done**: computer use and hosting on an always-on machine.
+3. **Subagents have their own system prompt** (`src/prompts.ts`), and are built in with Pi's SDK. With Subagent levels above 1 they can delegate further.
+4. **Pi's own prompt sections** (your global and repository `AGENTS.md` files and skills) stay in the system prompt, before the profile's instructions.
+5. **Imports, profiles, the inspector, the usage ledger, images and connected windows** are additions. An import logs each imported message whole, adds historical-record guidance to its compactions, and retries a failed summary after 10 seconds, since no next message comes to retry it.
+6. **A message's compaction task names its kind** ("compress message 6, kind echo, ...") and says to summarize `<input>` alone: Haiku sometimes folded the `<chat>` lines before a message into its summary, under the wrong kind.
+7. **Blocks start on their own paragraph**: the working directory, your message and a compaction's task begin with a blank line, because some providers (OpenAI's Responses API) join a message's text blocks with nothing between them (`</chat>Working directory: C:/Users/youok ...`).
+8. **`zoom(id, 1)` answers under `id+1|`**, the line it opens, as the view would show it.
+9. **Not done**: computer use and hosting on an always-on machine.
 
 See `docs/victor-recipe.md` for the mapping to the source files.
 

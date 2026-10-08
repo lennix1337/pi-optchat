@@ -164,7 +164,7 @@ export class Memory {
 
   constructor(readonly directory: string, private readonly compress: Compressor,
     private readonly warn: (s: string) => void = console.error,
-    readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs = 10_000) {
+    readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number) {
     this.chat = new Sawtooth(budget, budget / 2, part => this.node(part));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
     for (const sub of ['main', 'tree']) mkdirSync(join(directory, sub), { recursive: true, mode: 0o700 });
@@ -197,7 +197,7 @@ export class Memory {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
     if (!this.lastSeenBytes.has(file)) this.checkLog(file);
     this.lastSeenBytes.set(file, appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0));
-    // A failed call is tried again at the next message (recipe §4); the timer only covers a chat that has gone quiet.
+    // A failed call is tried again at the next message (recipe §4). Only an import, which has no next message, also retries on a timer.
     this.retryAt.clear();
     this.root.push(entry); this.push(entry.i); if (this.fit()) this.save(); this.schedule();
     return entry;
@@ -275,8 +275,8 @@ export class Memory {
         if (this.stopped) return;
         this.lastError = error instanceof Error ? error.message : String(error);
         if (!this.reported.has(id)) { this.reported.add(id); this.warn(`Compactor ${start(part)}+${2 ** part.l}: ${this.lastError}`); }
-        this.retryAt.set(id, Date.now() + this.retryMs);
-        if (!this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, this.retryMs);
+        this.retryAt.set(id, this.retryMs ? Date.now() + this.retryMs : Infinity);
+        if (this.retryMs && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, this.retryMs);
       // Schedule before telling waiters, so a turn never mistakes the gap before the next pump for a stall.
       }).finally(() => { this.busy.delete(id); this.schedule(); this.events.emit('change'); });
       this.busy.set(id, promise);
@@ -293,7 +293,7 @@ export class Memory {
       run(part);
     }
     // A later failure can have a later deadline than the timer installed by the first.
-    const deadlines = [...this.retryAt.values()].filter(t => t > now);
+    const deadlines = [...this.retryAt.values()].filter(t => t > now && Number.isFinite(t));
     if (deadlines.length && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, Math.max(1, Math.min(...deadlines) - now));
     if (this.stalled) this.events.emit('change');
   }

@@ -236,7 +236,9 @@ export default function optchat(pi: ExtensionAPI) {
     const flag = pi.getFlag('optchat-profile');
     try {
       if (boundName && typeof flag === 'string' && flag !== boundName) throw new Error(`Session belongs to ${boundName}; cannot resume it as ${flag}.`);
-      let name = boundName ?? (typeof flag === 'string' ? flag : await chooseProfile(ctx));
+      // OPTCHAT_PROFILE skips the picker in the TUI only: headless runs (other tools' `pi -p`) must not land in a personal memory unasked.
+      const preset = ctx.mode === 'tui' ? process.env.OPTCHAT_PROFILE?.trim() || undefined : undefined;
+      let name = boundName ?? (typeof flag === 'string' ? flag : preset ?? await chooseProfile(ctx));
       // Only plain `pi -p` joins: JSON and RPC output carry Pi's own events, which a joined reply would bypass.
       const connect = ctx.mode === 'print' ? connectMode() : 'off';
       if (connect === 'join' && !name) { process.exitCode = 1; throw new Error('--optchat-connect join needs a profile: pass --optchat-profile'); }

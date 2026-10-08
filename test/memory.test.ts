@@ -40,6 +40,23 @@ test('tree covers all history, fits incrementally, and exact originals survive r
   } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('without a retry delay, a failed summary is tried again at the next message, as in the recipe', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-test-')); let attempts = 0;
+  const memory = new Memory(dir, async input => { if (++attempts === 1) throw new Error('model unavailable'); return input.source.slice(0, 100); }, () => {});
+  try {
+    memory.append('user', 'large message '.repeat(100));
+    await memory.settle(AbortSignal.timeout(2000));
+    assert.equal(memory.lastError, 'model unavailable');
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(attempts, 1, 'no timer retries it');
+    assert.equal(memory.progress().retryIn, undefined);
+    memory.append('user', 'next');
+    await memory.settle(AbortSignal.timeout(2000));
+    assert.equal(attempts, 2, 'the next message retries it');
+    assert.ok(memory.ready); assert.equal(memory.lastError, undefined);
+  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a turn waits for pending summaries, goes on once they have all failed, and failures keep retrying', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-')); let attempts = 0;
   let release = () => {};

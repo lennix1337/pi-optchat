@@ -9,7 +9,7 @@ import { createCompressor } from '../src/compactor.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { textContent } from '../src/transcript.ts';
 
-/** A fake Anthropic model whose calls answer and finish only when the test says so. */
+/** A fake Anthropic model whose responses start (or fail) and finish only when the test says so. */
 async function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-compactor-'));
   const calls: { source: string; answer: () => void; finish: () => void; fail: () => void }[] = [];
@@ -22,7 +22,6 @@ async function setup() {
       const source = textContent(context.messages.findLast(m => m.role === 'user')?.content).split('\n').at(-2) ?? ''; // the last input line, before </input>
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: `summary of ${source}` }], api: model.api, provider: model.provider,
         model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
-      stream.push({ type: 'start', partial: message });
       const step = <T>() => { let resolve = (_: T) => {}; return { promise: new Promise<T>(r => { resolve = r; }), resolve }; };
       const answered = step<boolean>(), finished = step<void>();
       calls.push({ source, answer: () => answered.resolve(true), fail: () => answered.resolve(false), finish: () => finished.resolve() });
@@ -31,6 +30,7 @@ async function setup() {
           message.stopReason = 'error'; message.errorMessage = 'overloaded';
           stream.push({ type: 'error', reason: 'error', error: message }); return stream.end();
         }
+        stream.push({ type: 'start', partial: message });
         stream.push({ type: 'text_delta', contentIndex: 0, delta: 'summary', partial: message });
         await finished.promise;
         stream.push({ type: 'done', reason: 'stop', message }); stream.end();
@@ -47,14 +47,14 @@ async function setup() {
   return { calls, run, settle, view };
 }
 
-test('parallel calls on a cold view wait until one call has started answering, and a warm view skips the wait', async () => {
+test('parallel calls on a cold view wait until one call has a response started, and a warm view skips the wait', async () => {
   const { calls, run, settle, view } = await setup();
   const replies = ['a', 'b', 'c'].map(source => run(source));
   await settle();
   assert.deepEqual(calls.map(c => c.source), ['a'], 'only the primer starts while the shared view is cold');
   calls[0].answer();
   await settle();
-  assert.deepEqual(calls.map(c => c.source), ['a', 'b', 'c'], 'the rest start together once the primer answers, before it finishes');
+  assert.deepEqual(calls.map(c => c.source), ['a', 'b', 'c'], 'the rest start together once the primer response starts, before it finishes');
   calls.forEach(c => { c.answer(); c.finish(); });
   assert.deepEqual(await Promise.all(replies), ['summary of a', 'summary of b', 'summary of c']);
   const warm = run('d', view.replace('</chat>', 'user: one new line\n</chat>'));

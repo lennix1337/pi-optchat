@@ -25,7 +25,7 @@ for (const name of ['work', 'personal']) {
 rememberProfile('personal');
 
 /** A headless Pi (print or RPC) whose model answers "OK to: <prompt>" and records what each call was sent. */
-async function headless(mode: 'print' | 'rpc', options: { flag?: string; bound?: string; connect?: string } = {}) {
+async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string; bound?: string; connect?: string } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], errors: string[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -87,6 +87,23 @@ test('--optchat-profile still opens that profile headlessly', async () => {
     assert.deepEqual(pi.bindings(), [{ name: 'work' }]);
     assert.match(pi.sent[0], /You are OptChat/);
   } finally { await pi.close(); }
+});
+
+test('OPTCHAT_PROFILE opens that profile in the TUI without the picker, and headless runs ignore it', async () => {
+  process.env.OPTCHAT_PROFILE = 'work';
+  try {
+    const tui = await headless('tui');
+    try {
+      assert.match(await tui.ask('Say OK') ?? '', /^OK to: <chat>[^]*Say OK$/);
+      assert.deepEqual(tui.errors, []);
+      assert.deepEqual(tui.bindings(), [{ name: 'work' }]);
+    } finally { await tui.close(); }
+    const print = await headless('print');
+    try {
+      assert.equal(await print.ask('Say OK'), 'OK to: Say OK');
+      assert.deepEqual(print.bindings(), []);
+    } finally { await print.close(); }
+  } finally { delete process.env.OPTCHAT_PROFILE; }
 });
 
 test('a requested profile that cannot open fails visibly and does not run without memory', async () => {
