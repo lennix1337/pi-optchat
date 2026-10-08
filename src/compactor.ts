@@ -18,7 +18,12 @@ const RULER = '-'.repeat(NODE);
 const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
 /** The recipe's compaction task, verbatim. */
 export function task({ source, part }: { source: string; part: Part }) {
-  if (!part.l) return `Compaction: compress message ${part.i} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n<input>\n${source}\n</input>`;
+  if (!part.l) {
+    // Cheap models summarized a message together with the <chat> lines before it, under their kind: the task names both.
+    const kind = /^(\w+): /.exec(source)?.[1];
+    return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
+      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n<input>\n${source}\n</input>`;
+  }
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };
   return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most\n512 bytes (about 70 words), the length of this ruler:\n${RULER}\n`
     + `<chat> may hold their messages, ${start(part)} to ${start(part) + 2 ** part.l - 1}, in more detail: take details\nof them from there too.\n<input>\n${source}\n</input>`;
@@ -65,7 +70,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     if (!model) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
     const thinking = reasoningFor(model, selected.thinking);
     const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${task(input)}`;
-    const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: step }], timestamp: Date.now() }];
+    const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };

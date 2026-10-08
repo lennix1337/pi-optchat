@@ -140,7 +140,9 @@ function latestExchange(branch: readonly SessionEntry[]) {
   return latest;
 }
 
-/** Keep one completed exchange plus the current run; all other history comes from the view. */
+/** Keep one completed exchange plus the current run; all other history comes from the view. Some providers (OpenAI's
+ * Responses API) join a message's text blocks with nothing between them, so the blocks after the view start on their own
+ * paragraph; the view's own block stays byte for byte, so its cache blocks don't move. */
 export function buildContext(canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string,
   previous: readonly AgentMessage[] = [], state?: string): AgentMessage[] {
   const system = getCurrentSystemMessage(canonical);
@@ -150,7 +152,11 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
   const messages = [...previous, ...run].filter(m => m.role !== 'system').map(message => {
     if (message.role !== 'user' || injected) return message;
     injected = true;
-    return { ...message, content: [{ type: 'text' as const, text: view }, ...(state ? [{ type: 'text' as const, text: state }] : []), ...(typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content)] };
+    const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
+    const paragraph = <T extends (typeof content)[number]>(block: T): T => block.type === 'text' ? { ...block, text: `\n\n${block.text}` } : block;
+    const [first, ...others] = content;
+    return { ...message, content: [{ type: 'text' as const, text: view }, ...(state ? [{ type: 'text' as const, text: `\n\n${state}` }] : []),
+      ...(first ? [paragraph(first)] : []), ...others] };
   });
   return [head, ...messages];
 }

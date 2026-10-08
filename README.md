@@ -244,7 +244,10 @@ Where it still differs:
 4. **Subagents have their own system prompt** (`src/prompts.ts`), and are built in with Pi's SDK. With Subagent levels above 1 they can delegate further.
 5. **Pi's own prompt sections** (your global and repository `AGENTS.md` files and skills) stay in the system prompt, before the profile's instructions.
 6. **Imports, profiles, the inspector, the usage ledger, images and connected windows** are additions. An import logs each imported message whole, and adds historical-record guidance to its compactions.
-7. **Not done**: computer use and hosting on an always-on machine.
+7. **A message's compaction task names its kind** ("compress message 6, kind echo, ...") and says to summarize `<input>` alone: Haiku sometimes folded the `<chat>` lines before a message into its summary, under the wrong kind.
+8. **Blocks start on their own paragraph**: the working directory, your message and a compaction's task begin with a blank line, because some providers (OpenAI's Responses API) join a message's text blocks with nothing between them (`</chat>Working directory: C:/Users/youok ...`).
+9. **`zoom(id, 1)` answers under `id+1|`**, the line it opens, as the view would show it.
+10. **Not done**: computer use and hosting on an always-on machine.
 
 See `docs/victor-recipe.md` for the mapping to the source files.
 

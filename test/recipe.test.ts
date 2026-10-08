@@ -62,7 +62,7 @@ test('per-turn state leaves the system prompt and follows the view', () => {
   assert.deepEqual(stateless(PROMPT), { prompt: PROMPT, state: undefined });
   const [head, first] = buildContext([], [{ role: 'user', content: 'Hello.', timestamp: 1 }], '<chat>\n\n</chat>', prompt, [], state);
   assert.equal(head.role === 'system' && head.content, prompt);
-  assert.deepEqual(first.role === 'user' && first.content, [{ type: 'text', text: '<chat>\n\n</chat>' }, { type: 'text', text: state }, { type: 'text', text: 'Hello.' }]);
+  assert.deepEqual(first.role === 'user' && first.content, [{ type: 'text', text: '<chat>\n\n</chat>' }, { type: 'text', text: `\n\n${state}` }, { type: 'text', text: '\n\nHello.' }]);
 });
 
 test('a long text is never cut: it is logged as several messages in a row', async () => {
