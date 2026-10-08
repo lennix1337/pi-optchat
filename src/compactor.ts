@@ -17,12 +17,13 @@ export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
 const RULER = '-'.repeat(NODE);
 const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
 /** The recipe's compaction task, verbatim. */
-export function task({ source, part }: { source: string; part: Part }) {
+export function task({ source, part, result }: { source: string; part: Part; result?: string }) {
   if (!part.l) {
     // Cheap models summarized a message together with the <chat> lines before it, under their kind: the task names both.
     const kind = /^(\w+): /.exec(source)?.[1];
     return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
-      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n<input>\n${source}\n</input>`;
+      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n<input>\n${source}\n</input>`
+      + (result === undefined ? '' : `\nThe call's result is in <result>: say in a few words what it found or did.\n<result>\n${result}\n</result>`);
   }
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };
   return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most\n512 bytes (about 70 words), the length of this ruler:\n${RULER}\n`

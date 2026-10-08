@@ -14,7 +14,8 @@ export interface Entry { i: number; kind: Kind; text: string; size: number; date
 export interface Part { l: number; i: number }
 export interface Summary extends Part { text: string; size: number }
 /** `part` is the node to build: a message's leaf, or the merge of its two halves. */
-export interface Compression { context: string; source: string; part: Part; historical?: boolean }
+/** `result` is a tool call's result, so its summary can say what the call found. */
+export interface Compression { context: string; source: string; part: Part; historical?: boolean; result?: string }
 export type Compressor = (input: Compression, signal: AbortSignal) => Promise<string>;
 const key = ({ l, i }: Part) => l * 2 ** 40 + i;
 const UNBUILT = '(not summarized yet: zoom it)';
@@ -24,6 +25,11 @@ export const start = ({ l, i }: Part) => i * 2 ** l;
 export const end = (part: Part) => start(part) + 2 ** part.l;
 export const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
 const UNBUILT_BYTES = bytes(UNBUILT);
+/** The most of a tool result a call's summary task shows. */
+const RESULT = 12_000;
+const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
+/** A cheap model can head a summary with the kind of a <chat> line it copied, so the code sets the message's own. */
+export const labeled = (kind: Kind, text: string) => `${kind}: ${text.replace(KIND_HEAD, '')}`;
 export const flat = (s: string) => s.replace(/[\r\n]+/g, ' ');
 const lineBytes = (s: string) => bytes(flat(s));
 const notice = (omitted: number) => `\n[${omitted} characters omitted; head and tail retained]\n`;
@@ -158,6 +164,8 @@ export class Memory {
   private peak = 0;
   private scheduled = false;
   private stopped = false;
+  /** Waiters that need every line now, so a call's summary stops waiting for its result. */
+  private flushing = 0;
   private readonly chat: Sawtooth;
   private readonly compaction: Sawtooth;
   lastError?: string;
@@ -286,6 +294,7 @@ export class Memory {
     for (const i of this.unbuilt) {
       if (ahead++ === AHEAD) break;
       if (this.busy.size >= this.jobs) return;
+      if (!this.flushing && this.awaitingResult(i)) continue;
       run({ l: 0, i });
     }
     for (const part of this.merges.values()) {
@@ -299,12 +308,29 @@ export class Memory {
   }
   /** Nothing is being built, nothing more can start, and something failed: only a retry can make progress. */
   private get stalled() { return this.busy.size === 0 && !this.scheduled && this.retryAt.size > 0; }
+  /** The results logged for a run of parallel calls follow it in call order: tool A, tool B, echo A, echo B. */
+  private resultOf(i: number) {
+    let first = i, last = i;
+    while (this.root[first - 1]?.kind === 'tool') first--;
+    while (this.root[last + 1]?.kind === 'tool') last++;
+    const echo = this.root[last + 1 + i - first];
+    return echo?.kind === 'echo' ? echo.text : undefined;
+  }
+  /** A call's summary waits for its result, while only calls and results follow it. */
+  private awaitingResult(i: number) {
+    if (this.root[i].kind !== 'tool' || this.resultOf(i) !== undefined) return false;
+    for (let j = i + 1; j < this.root.length; j++) if (this.root[j].kind !== 'tool' && this.root[j].kind !== 'echo') return false;
+    return true;
+  }
   private async build(part: Part) {
     const source = part.l === 0 ? `${this.root[part.i].kind}: ${this.root[part.i].text}`
       : [0, 1].map(offset => this.text({ l: part.l - 1, i: 2 * part.i + offset })).join('\n');
     const mergeSource = part.l > 0 ? [0, 1].map(offset => flat(this.text({ l: part.l - 1, i: 2 * part.i + offset }))).join('\n') : source;
-    const text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
-      historical: this.root.slice(start(part), end(part)).some(entry => !!entry.origin) }, this.controller.signal)).trim();
+    const result = part.l === 0 && this.root[part.i].kind === 'tool' ? this.resultOf(part.i) : undefined;
+    let text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
+      historical: this.root.slice(start(part), end(part)).some(entry => !!entry.origin), ...(result === undefined ? {} : { result: cap(result, RESULT) }) },
+      this.controller.signal)).trim();
+    if (text && part.l === 0 && text !== source) text = labeled(this.root[part.i].kind, text);
     if (this.stopped) return;
     if (!text) throw new Error('Compactor returned an empty summary.');
     const node = { ...part, text, size: lineBytes(text) };
@@ -335,8 +361,10 @@ export class Memory {
       : this.ready || this.stalled;
     if (done()) return;
     if (this.stopped || signal?.aborted) throw new Error('Memory wait cancelled.');
+    const flush = until !== 'ahead';
+    if (flush) { this.flushing++; this.schedule(); }
     await new Promise<void>((resolve, reject) => {
-      const cleanup = () => { this.events.off('change', check); signal?.removeEventListener('abort', abort); };
+      const cleanup = () => { if (flush) this.flushing--; this.events.off('change', check); signal?.removeEventListener('abort', abort); };
       const abort = () => { cleanup(); reject(new Error('Memory wait cancelled.')); };
       const check = () => { if (this.stopped) abort(); else if (done()) { cleanup(); resolve(); } };
       this.events.on('change', check); signal?.addEventListener('abort', abort, { once: true }); check();

@@ -352,13 +352,13 @@ test('the view is saved and loaded as it was, and rebuilt only when the saved on
 test('compactions get their own view, a quarter of the budget at most, that ends at the node and between its batches only grows', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-context-'));
   const leaves: (Compression & { view: Part[] })[] = [];
-  const memory: Memory = new Memory(dir, async input => { if (!input.part.l) leaves.push({ ...input, view: [...memory.view] }); return 's'.repeat(300); }, () => {}, 32000);
+  const memory: Memory = new Memory(dir, async input => { if (!input.part.l) leaves.push({ ...input, view: [...memory.view] }); return input.part.l ? 's'.repeat(300) : `user: ${'s'.repeat(294)}`; }, () => {}, 32000);
   try {
     for (let i = 0; i < 400; i++) { memory.append('user', `${i} ${'.'.repeat(600)}`); await memory.settle(AbortSignal.timeout(5000), 'tree'); }
     let rewrites = 0, previous = '', total = 0, chatBatches = 0;
     for (const [k, { context, part, view }] of leaves.entries()) {
       const lines = context.slice('<chat>\n'.length, -'\n</chat>'.length).split('\n').filter(Boolean);
-      assert.ok(lines.every(line => /^\d+\+\d+\|s+$/.test(line)), 'built lines only, under their id+n| heads');
+      assert.ok(lines.every(line => /^\d+\+\d+\|(user: )?s+$/.test(line)), 'built lines only, under their id+n| heads');
       if (lines.length) assert.equal(lines.reduce((n, line) => n + Number(line.split(/[+|]/)[1]), 0), part.i, 'the lines tile the chat up to the message');
       for (const line of lines) {
         const [id, n] = line.split(/[+|]/).map(Number);
@@ -745,5 +745,32 @@ test('view size counts the flattened text that render emits, for new and reloade
     await memory.close();
     memory = new Memory(dir, async () => 'x');
     assert.equal(memory.size, measured(memory), 'loaded from the tree');
+  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a call is summarized with its result, and the code sets each summary kind', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
+  const calls: Compression[] = [];
+  const memory = new Memory(dir, async input => { calls.push(input); return `user: summary of ${input.part.i}`; }, () => {});
+  try {
+    const big = (s: string) => `${s} ${'x'.repeat(600)}`;
+    memory.append('user', big('ask'));
+    memory.append('tool', big('bash A'));
+    memory.append('tool', big('bash B'));
+    await new Promise(r => setTimeout(r, 20));
+    assert.ok(!calls.some(c => c.part.i === 1 || c.part.i === 2), 'calls wait for their results');
+    memory.append('echo', 'bash: result A');
+    memory.append('echo', 'bash: result B');
+    memory.append('talk', big('done'));
+    await memory.settle(AbortSignal.timeout(2000), 'tree');
+    assert.equal(calls.find(c => c.part.i === 1)?.result, 'bash: result A');
+    assert.equal(calls.find(c => c.part.i === 2)?.result, 'bash: result B');
+    assert.equal(calls.find(c => c.part.i === 0)?.result, undefined);
+    assert.equal(memory.node({ l: 0, i: 1 })?.text, 'tool: summary of 1');
+    assert.equal(memory.node({ l: 0, i: 5 })?.text, 'talk: summary of 5');
+    assert.equal(memory.node({ l: 0, i: 3 })?.text, 'echo: bash: result A', 'short messages stay verbatim');
+    memory.append('tool', big('last call'));
+    await memory.settle(AbortSignal.timeout(2000));
+    assert.ok(memory.ready, 'a turn does not wait for a result that has not come');
   } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });

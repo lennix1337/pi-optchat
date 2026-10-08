@@ -72,6 +72,8 @@ test('the task is the recipe\'s, with a 512-dash ruler for the size, and a merge
   assert.equal(task({ source: 'user: hi', part: { l: 0, i: 40 } }),
     `Compaction: compress message 40, kind user, into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${ruler}\n`
     + 'Summarize <input> alone, starting with "user:": the <chat> lines are other messages, never copy them in.\n<input>\nuser: hi\n</input>');
+  assert.ok(task({ source: 'tool: bash {}', part: { l: 0, i: 41 }, result: 'bash: ok' })
+    .endsWith('</input>\nThe call\'s result is in <result>: say in a few words what it found or did.\n<result>\nbash: ok\n</result>'));
   assert.equal(task({ source: 'a\nb', part: { l: 3, i: 5 } }),
     `Compaction: merge lines 40+4 and 44+4, adjacent, into one line of at most\n512 bytes (about 70 words), the length of this ruler:\n${ruler}\n`
     + `<chat> may hold their messages, 40 to 47, in more detail: take details\nof them from there too.\n<input>\na\nb\n</input>`);
