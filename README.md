@@ -49,6 +49,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/optchat profile` | Select or create a profile. Switching starts a fresh Pi session. |
 | `/optchat settings` | This profile's settings: models, subagent levels and limits, previous exchange, summary size tolerance. |
 | `/optchat model` | Compactor model and effort for this profile. Type to filter the models you are logged in to; the current one is marked. |
+| `/optchat fallback` | Per-provider models for the compactor: what it runs while the main model is on another provider. `/optchat agents fallback` does the same for subagents. |
 | `/optchat agents` | Live agent tree and saved run history. |
 | `/optchat agents model` | Subagent model and effort for this profile, picked the same way. |
 | `/optchat usage` | Token usage and cost estimates. |
@@ -67,9 +68,19 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | Subagents | Anthropic Opus 5.5, high | `/optchat agents model` |
 | Compactor (summaries, imports, handoffs) | Anthropic Haiku 5.5, xhigh (the recipe's cheap model) | `/optchat model` |
 
-Subagent and compactor settings are saved per profile and do not follow the main model. If you use other providers, change them before chatting. Authentication uses Pi's existing provider login.
+Subagent and compactor settings are saved per profile; the model each role *actually* uses follows the account the main model is on. Authentication uses Pi's existing provider login.
 
-To switch with the account, list alternates in the profile's `config.json`. While the main model is on an alternate's provider, the role uses that alternate; otherwise its own choice:
+Give each role a model per provider (**Per-provider fallbacks** in `/optchat settings`, or `/optchat fallback` · `/optchat agents fallback`):
+
+| Main model is on | Compactor or subagent runs |
+| --- | --- |
+| The provider of one of its fallbacks | That fallback's model, on the same account — numbered multi-account accounts included |
+| The role's own provider (`anthropic`, like the default) | The role's own model, on the same account |
+| Any other provider | The main model, at the lowest effort it takes |
+
+The last row is why a role never keeps asking an account you've run out of: with no entry for the main model's provider, it runs on the account already answering.
+
+A fallback may also be written by hand. One entry per provider family, so re-adding a family replaces its entry:
 
 ```json
 "alternates": {
@@ -99,7 +110,9 @@ If `Compactor returned no text` recurs, keep the matching diagnostic row (node a
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Compactor model | Haiku 5.5, xhigh | Same as `/optchat model`. Applies to the next summary. |
+| Compactor fallbacks | none | Per-provider models for the compactor, one per provider family. Same as `/optchat fallback`. Applies to the next summary. |
 | Subagent model | Opus 5.5, high | Same as `/optchat agents model`. Applies to new subagents. |
+| Subagent fallbacks | none | Per-provider models for subagents, one per provider family. Same as `/optchat agents fallback`. Applies to subagents started after this. |
 | Subagent levels | 1 | 1: only the main agent starts subagents. 2 or more: subagents may start their own, that many levels deep. Applies to subagents started or resumed after the change. |
 | Max active agents | 8 | Subagents running at once in the profile, all levels together, so it also caps how deep a chain can go. |
 | Group subagent reports | off | Off: each subagent reports as soon as it finishes (the recipe). On: the subagents started by one spawn report together, in one message once the last of them finishes. Applies to the next spawn. |
@@ -223,7 +236,7 @@ Profile data lives in `~/.optchat/profiles/<name>/` (override the root with `OPT
 | `active-memory.json`, `memories/<id>/` | After an import: pointer to the active `main/` and `tree/`. Older generations are kept. |
 | `imports/pending.json` | Resumable import state |
 | `AGENTS.md` | Profile instructions |
-| `config.json` | Compactor and subagent models |
+| `config.json` | Compactor and subagent models, their per-provider fallbacks, settings |
 | `pending-inputs.json`, `pending-reports.json` | Recovery journals |
 | `runs/` | Subagent sessions and run metadata |
 | `usage.jsonl` | Usage ledger |

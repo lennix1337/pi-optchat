@@ -1,7 +1,7 @@
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
-import { reasoningFor, type ModelChoice } from './compactor.ts';
+import { reasoningFor, resolveModel, type ModelChoice } from './compactor.ts';
 import type { RunInfo } from './runs.ts';
 import { textContent } from './transcript.ts';
 
@@ -32,8 +32,9 @@ function formatEvidence({ run, messages, transcriptError }: HandoffEvidence) {
 export function createHandoffSummarizer(registry: ModelRegistry, choice: () => ModelChoice,
   usage: (message: AssistantMessage) => void) {
   return async (run: RunInfo, messages: AgentMessage[], descendants: HandoffEvidence[] = []) => {
-    const selected = choice(), model = registry.find(selected.provider, selected.model);
-    if (!model) throw new Error('Profile compactor model unavailable');
+    const selected = choice(), resolved = resolveModel(registry, selected);
+    if (!resolved) throw new Error('Profile compactor model unavailable');
+    const model = resolved.model;
     const transcript = Buffer.from([{ run, messages }, ...descendants].map(formatEvidence).join('\n\n'));
     const maxTokens = Math.min(OUTPUT_TOKENS, model.maxTokens, Math.floor(model.contextWindow / 4));
     // Estimate four UTF-8 bytes per token, reserving 20% of the window for estimation

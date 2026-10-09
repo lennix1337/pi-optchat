@@ -9,7 +9,7 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 import { SUBAGENT, VIEW_DOC } from './prompts.ts';
 import { allowSearch, memoryTools, SEARCH_DOC, searchTool } from './tools.ts';
 import { cap, type Memory } from './memory.ts';
-import type { ModelChoice } from './compactor.ts';
+import { resolveModel, type ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
 import { RunHistory, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
 import { UsageLedger } from './usage.ts';
@@ -160,9 +160,10 @@ export class Children {
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
     const view = this.memory.render();
-    const selected = this.choice();
-    const model = this.registry.find(selected.provider, selected.model);
-    if (!model) throw new Error(`Subagent model unavailable: ${selected.provider}/${selected.model}`);
+    const chosen = this.choice();
+    const resolved = resolveModel(this.registry, chosen);
+    if (!resolved) throw new Error(`Subagent model unavailable: ${chosen.provider}/${chosen.model}`);
+    const selected = { ...chosen, provider: resolved.provider }, model = resolved.model;
     const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, selected, model, signal, cancelled }));
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;

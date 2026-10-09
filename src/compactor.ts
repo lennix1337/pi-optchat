@@ -1,6 +1,7 @@
 import { clampThinkingLevel, type Api, type AssistantMessage, type Message, type Model, type Tool } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
+import { accountGroup } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { bytes, NODE, start, type Compressor, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
@@ -9,6 +10,14 @@ import { DEFAULT_SETTINGS } from './settings.ts';
 import { CompactorTrace, type CompactorDiagnostic } from './compactor-diagnostics.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
+/** The chosen model, with the base provider as the fallback: a numbered account that does not publish the model still runs it on the family's base account. */
+export function resolveModel(registry: ModelRegistry, selected: ModelChoice): { provider: string; model: Model<Api> } | undefined {
+  const model = registry.find(selected.provider, selected.model);
+  if (model) return { provider: selected.provider, model };
+  const base = accountGroup(selected.provider);
+  const fallback = base === selected.provider ? undefined : registry.find(base, selected.model);
+  return fallback && { provider: base, model: fallback };
+}
 /** A level the model can't take would be sent as no level, which Sonnet 5.5 runs at high effort; Pi's own sessions clamp the same way. */
 export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
   const thinking = clampThinkingLevel(model, level);
@@ -78,8 +87,9 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
   const gate = primeFirst();
   return async (input, signal) => {
     const selected = choice();
-    const model = registry.find(selected.provider, selected.model);
-    if (!model) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
+    const resolved = resolveModel(registry, selected);
+    if (!resolved) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
+    const model = resolved.model;
     const thinking = reasoningFor(model, selected.thinking);
     const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${task(input)}`;
     const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];

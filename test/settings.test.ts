@@ -201,7 +201,7 @@ test('the settings page saves a valid number and explains an invalid one', () =>
     const type = (...keys: string[]) => { for (const key of keys) page.handleInput(key); };
     assert.match(page.render(100).join('\n'), /Subagent levels\s+1  default\n/);
     assert.match(page.render(100).join('\n'), /claude-haiku-4-5 · low  default claude-haiku-5-5 · xhigh/, 'a changed model shows its default too');
-    type('\x1b[B', '\x1b[B', '\r'); // down to Subagent levels, open it
+    type('\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\r'); // down past the fallback rows to Subagent levels, open it
     type('0', '\r');
     assert.match(page.render(100).join('\n'), /must be a whole number of 1 or more/);
     type('\x7f', 'x', '\r');
@@ -238,7 +238,7 @@ test('turning Previous exchange off also reaches a turn that a subagent report s
     const custom = (async (factory: (tui: unknown, theme: Theme, keys: unknown, done: (result: undefined) => void) => Component) => {
       let closed = false;
       const page = factory({ requestRender: () => {} }, plain, {}, () => { closed = true; });
-      for (const key of ['\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', ' ', '\x1b']) page.handleInput?.(key);
+      for (const key of ['\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', ' ', '\x1b']) page.handleInput?.(key);
       assert.ok(closed);
     }) as unknown as ExtensionUIContext['custom'];
     await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), custom }, mode: 'tui' });
@@ -282,7 +282,7 @@ test('Memory search turned on and off in /optchat settings adds and removes the 
     // The settings page, driven by keys: down to Memory search, toggle it, close.
     const custom = (async (factory: (tui: unknown, theme: Theme, keys: unknown, done: (result: undefined) => void) => Component) => {
       const page = factory({ requestRender: () => {} }, plain, {}, () => {});
-      for (const key of ['\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', ' ', '\x1b']) page.handleInput?.(key);
+      for (const key of ['\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', ' ', '\x1b']) page.handleInput?.(key);
     }) as unknown as ExtensionUIContext['custom'];
     await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), custom }, mode: 'tui' });
     // Pi declares the tools on the leading system message, next to the prompt.
@@ -304,6 +304,29 @@ test('Memory search turned on and off in /optchat settings adds and removes the 
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the fallbacks step adds a provider model and removes it again, saving the profile and showing it on the row', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-fallback-'));
+  try {
+    const config: ProfileConfig = { ...defaults, compactor: { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'low' } };
+    const page = settingsPage(plain, { profile: 'demo', config, save: next => saveConfig(dir, next),
+      models: [{ name: 'anthropic/claude-haiku-5-5', thinking: ['low', 'high'] }, { name: 'openai-codex/gpt-6-luna', thinking: ['low', 'high'] }] }, () => {});
+    const type = (...keys: string[]) => { for (const key of keys) page.handleInput(key); };
+    assert.match(page.render(100).join('\n'), /Compactor fallbacks\s+none/, 'no fallbacks yet');
+    type('\x1b[B', '\r'); // Compactor fallbacks, open it
+    type('\r'); // + Add a provider model
+    type('luna', '\r', '\r'); // filter to the Codex model, then its first thinking level
+    assert.deepEqual(config.alternates, { compactor: [{ provider: 'openai-codex', model: 'gpt-6-luna', thinking: 'low' }] });
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).alternates, config.alternates);
+    type('\x1b'); // close the step, refreshing its row
+    assert.match(page.render(100).join('\n'), /Compactor fallbacks\s+openai-codex\/gpt-6-luna · low/);
+    type('\r', '\x1b[B', '\r', '\r'); // reopen, choose "Remove a provider model", and remove the entry
+    assert.equal(config.alternates, undefined);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).alternates, undefined);
+    type('\x1b');
+    assert.match(page.render(100).join('\n'), /Compactor fallbacks\s+none/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the thinking step offers only levels the model takes, so Sonnet 5.5 has no "off" that would run at high effort', () => {

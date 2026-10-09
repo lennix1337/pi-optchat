@@ -1,11 +1,10 @@
 import { Container, fuzzyFilter, getKeybindings, Input, SelectList, SettingsList, Spacer, Text, type Component, type SelectItem, type SettingItem } from '@earendil-works/pi-tui';
 import { DynamicBorder, type ExtensionContext, type Theme } from '@earendil-works/pi-coding-agent';
-import { defaults, THINKING, type ProfileConfig } from './profiles.ts';
+import { defaults, removeAlternate, roleModel, setAlternate, THINKING, type MainModel, type ProfileConfig, type Role } from './profiles.ts';
 import { invalid, isNumberKey, SETTING_KEYS, SETTINGS, type NumberKey, type SettingKey } from './settings.ts';
 import type { ModelChoice } from './compactor.ts';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 
-type Role = 'compactor' | 'subagent';
 const ROLES: Record<Role, { label: string; description: string; applies: string }> = {
   compactor: { label: 'Compactor model', description: 'Writes memory summaries, imports and connected-window handoffs. Shortcut: /optchat model.', applies: 'Applies to the next summary.' },
   subagent: { label: 'Subagent model', description: 'Runs every subagent. Shortcut: /optchat agents model.', applies: 'Applies to subagents started after this.' },
@@ -26,6 +25,8 @@ interface Options {
   models: { name: string; thinking: readonly ThinkingLevel[] }[];
   /** Saves the whole profile config; throws if it can't be written. */
   save: (config: ProfileConfig) => void;
+  /** The main model the roles follow right now, so the page can show which model each one really uses. */
+  main?: MainModel;
 }
 
 /** A titled step inside the page: what it changes, the control, and its keys. */
@@ -106,6 +107,56 @@ class ModelStep extends Container {
   handleInput(data: string) { this.active.handleInput(data); }
 }
 
+/** One entry per provider family: the role's model on the account the main model is on. Add, change and remove stay inside the step; Esc closes it and refreshes the row. */
+class FallbackStep extends Container {
+  private active: { handleInput(data: string): void } = { handleInput: () => {} };
+  private readonly error = new Text('', 0, 0);
+  constructor(private readonly theme: Theme, private readonly role: Role, private readonly o: Options, private readonly close: (value: string) => void) {
+    super();
+    this.showList();
+  }
+  private entries() { return this.o.config.alternates?.[this.role] ?? []; }
+  private summary() { const entries = this.entries(); return entries.length ? entries.map(showModel).join('  ·  ') : 'none'; }
+  private showList() {
+    const { theme } = this, entries = this.entries(), name = ROLES[this.role].label.split(' ')[0].toLowerCase();
+    const items: SelectItem[] = [
+      ...entries.map((choice, index) => ({ value: `edit:${index}`, label: showModel(choice), description: `Used while the main model is on ${choice.provider}` })),
+      { value: 'add', label: '+ Add a provider model', description: 'One entry per provider family; adding its family again replaces the entry' },
+      ...(entries.length ? [{ value: 'remove', label: '− Remove a provider model', description: 'Choose the entry to delete' }] : []),
+    ];
+    const list = new SelectList(items, 10, listTheme(theme));
+    list.setSelectedIndex(entries.length);
+    list.onCancel = () => this.close(this.summary());
+    list.onSelect = item => {
+      if (item.value === 'add') this.showModel(undefined);
+      else if (item.value === 'remove') this.showRemove();
+      else this.showModel(entries[Number(item.value.slice('edit:'.length))]);
+    };
+    const description = `What the ${name} uses while the main model is on another provider, on that same account — numbered accounts included. Without an entry, the ${name} keeps its configured model, or runs the main model at its lowest effort.`;
+    this.show(step(theme, `${ROLES[this.role].label.split(' ')[0]} fallbacks`, description, list, 'Enter to choose · Esc to go back', [this.error]), data => list.handleInput(data));
+  }
+  private showRemove() {
+    const { theme } = this, entries = this.entries();
+    const list = new SelectList(entries.map((choice, index) => ({ value: String(index), label: showModel(choice) })), 10, listTheme(theme));
+    list.onCancel = () => this.showList();
+    list.onSelect = item => { this.apply({ ...this.o.config.alternates, [this.role]: removeAlternate(entries, entries[Number(item.value)]) }); this.showList(); };
+    this.show(step(theme, 'Remove a fallback', `The provider entry to remove. Esc leaves it in place.`, list, 'Enter to remove · Esc to go back'), data => list.handleInput(data));
+  }
+  private showModel(current: ModelChoice | undefined) {
+    const model = new ModelStep(this.theme, this.role, this.o.models, current ?? this.o.config[this.role],
+      choice => { this.apply({ ...this.o.config.alternates, [this.role]: setAlternate(this.entries(), choice) }); this.showList(); return undefined; },
+      () => this.showList());
+    this.show(model, data => model.handleInput(data));
+  }
+  private apply(alternates: ProfileConfig['alternates']) {
+    const kept = Object.fromEntries(Object.entries(alternates ?? {}).filter(([, list]) => list?.length));
+    const problem = update(this.o, { alternates: Object.keys(kept).length ? kept : undefined });
+    this.error.setText(problem ? this.theme.fg('error', problem) : '');
+  }
+  private show(box: Component, input: (data: string) => void) { this.clear(); this.addChild(box); this.active = { handleInput: input }; }
+  handleInput(data: string) { this.active.handleInput(data); }
+}
+
 /** Saves a change to the profile config and applies it in memory; returns the reason if it couldn't be written. */
 function update(o: Options, patch: Partial<ProfileConfig>) {
   try { o.save({ ...o.config, ...patch }); }
@@ -132,16 +183,25 @@ export function settingsPage(theme: Theme, o: Options, close: () => void, redraw
     if (!problem) notice.setText(theme.fg('success', `Saved ${what}. `) + theme.fg('muted', applies));
     return problem;
   };
-  const models = (['compactor', 'subagent'] as const).map((role): SettingItem => {
+  const models = (['compactor', 'subagent'] as const).flatMap((role): SettingItem[] => {
     const { label, description, applies } = ROLES[role];
-    return { id: role, label, description: `${description} Default ${showModel(defaults[role])}. ${applies}`,
-      currentValue: modelValue(theme, role, config[role]),
-      submenu: (_value, done) => new ModelStep(theme, role, o.models, config[role], choice => {
-        const problem = apply({ [role]: choice }, `${label.toLowerCase()} ${showModel(choice)}`, applies);
-        if (!problem) done(modelValue(theme, role, choice));
-        return problem;
-      }, () => done()),
-    };
+    const entries = config.alternates?.[role] ?? [];
+    const now = o.main ? ` Now ${roleModel(config, role, o.main)}.` : '';
+    return [
+      { id: role, label, description: `${description} Default ${showModel(defaults[role])}.${now} ${applies}`,
+        currentValue: modelValue(theme, role, config[role]),
+        submenu: (_value, done) => new ModelStep(theme, role, o.models, config[role], choice => {
+          const problem = apply({ [role]: choice }, `${label.toLowerCase()} ${showModel(choice)}`, applies);
+          if (!problem) done(modelValue(theme, role, choice));
+          return problem;
+        }, () => done()),
+      },
+      { id: `${role}Fallbacks`, label: `${label.replace(' model', ' fallbacks')}`,
+        description: `Models this role uses while the main model is on another provider, on that same account — numbered accounts included. Without an entry, the role keeps its configured model, or runs the main model at its lowest effort. Applies to the next call.`,
+        currentValue: entries.length ? entries.map(showModel).join('  ·  ') : theme.fg('dim', 'none'),
+        submenu: (_value, done) => new FallbackStep(theme, role, o, value => done(value)),
+      },
+    ];
   });
   const settings = SETTING_KEYS.map((key): SettingItem => {
     const spec = SETTINGS[key], base = { id: key, label: spec.label, description: `${spec.description} ${spec.applies}` };
@@ -183,6 +243,13 @@ export function modelPicker(theme: Theme, role: Role, o: Options, close: (choice
 
 export function showSettings(ctx: ExtensionContext, o: Options) {
   return ctx.ui.custom<void>((tui, theme, _keys, done) => settingsPage(theme, o, () => done(undefined), () => tui.requestRender()));
+}
+/** Just the fallbacks step, for /optchat fallback and /optchat agents fallback: closes on Esc. */
+export function showFallbacks(ctx: ExtensionContext, role: Role, o: Options) {
+  return ctx.ui.custom<void>((tui, theme, _keys, done) => {
+    const step = new FallbackStep(theme, role, o, () => done(undefined));
+    return Object.assign(frame(theme, 'OptChat', o.profile, [new Spacer(1), step]), { handleInput: (data: string) => { step.handleInput(data); tui.requestRender(); } });
+  });
 }
 export function showModelPicker(ctx: ExtensionContext, role: Role, o: Options) {
   return ctx.ui.custom<ModelChoice | undefined>((tui, theme, _keys, done) => modelPicker(theme, role, o, done, () => tui.requestRender()));

@@ -10,7 +10,7 @@ import { atomicWrite, Memory } from './memory.ts';
 import { createCompressor } from './compactor.ts';
 import { writeCompactorDiagnostic } from './compactor-diagnostics.ts';
 import { assertContextFits, needsRunRefresh, retainedRun } from './run-context.ts';
-import { createProfile, instructions, lastProfile, listProfiles, loadConfig, lockProfile, modelFor, profilePath, rememberProfile, saveConfig, ProfileBusyError, type ProfileConfig } from './profiles.ts';
+import { createProfile, instructions, lastProfile, listProfiles, loadConfig, lockProfile, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -32,7 +32,7 @@ import { joinHeadless, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
 import { createHandoffSummarizer } from './handoff.ts';
 import { mainTitle, TabTitle } from './title.ts';
-import { showModelPicker, showSettings } from './settings-page.ts';
+import { showFallbacks, showModelPicker, showSettings } from './settings-page.ts';
 
 const binding = 'optchat.profile';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
@@ -53,7 +53,7 @@ interface Active { name: string; dir: string; config: ProfileConfig; memory: Mem
 
 export default function optchat(pi: ExtensionAPI) {
   let active: Active | undefined;
-  let mainProvider: string | undefined; // Picks each role's alternate model, see modelFor.
+  let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
   let joined: Awaited<ReturnType<typeof joinHeadless>> | undefined;
@@ -185,7 +185,7 @@ export default function optchat(pi: ExtensionAPI) {
     let openingMemory: Memory | undefined;
     try {
       const config = loadConfig(dir);
-      mainProvider = ctx.model?.provider;
+      main = ctx.model && { provider: ctx.model.provider, model: ctx.model.id };
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
@@ -193,7 +193,7 @@ export default function optchat(pi: ExtensionAPI) {
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
       let diagnosticsFailed = false;
-      const memory = new Memory(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', mainProvider), message => {
+      const memory = new Memory(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => {
         usage.compression(message, 'compactor', sessionId);
         status(ctx);
       }, () => config.summaryAcceptBytes, shared, diagnostic => {
@@ -204,9 +204,9 @@ export default function optchat(pi: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', mainProvider), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
+      const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
-          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', mainProvider), message => usage.compression(message, 'compactor', sessionId)) });
+          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -218,8 +218,7 @@ export default function optchat(pi: ExtensionAPI) {
       closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
-      const compactor = modelFor(config, 'compactor', mainProvider);
-      ctx.ui.notify(`OptChat · ${name} · ${memory.root.length} messages\nCompactor: ${compactor.provider}/${compactor.model} (${compactor.thinking})`, 'info');
+      ctx.ui.notify(`OptChat · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
       const queuedReports = [...reports];
       if (!pendingImport(dir)) recovery = children.recoverHandoffs().catch(error => ctx.ui.notify(`Handoff recovery: ${errorText(error)}`, 'error'));
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r.text, r.count); });
@@ -278,7 +277,7 @@ export default function optchat(pi: ExtensionAPI) {
     // Pi sets its own title once every session_start handler has finished, so put ours back afterwards.
     for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
   });
-  pi.on('model_select', event => { mainProvider = event.model.provider; });
+  pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
   pi.on('session_shutdown', stop);
   pi.on('session_before_switch', () => remote || importing || active?.children.active ? { cancel: true } : undefined);
@@ -468,7 +467,7 @@ export default function optchat(pi: ExtensionAPI) {
   });
 
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */
-  const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config,
+  const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config, main,
     models: ctx.modelRegistry.getAvailable().map(m => ({ name: `${m.provider}/${m.id}`, thinking: getSupportedThinkingLevels(m) })).sort((x, y) => x.name.localeCompare(y.name)),
     save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); } });
   const pickModel = async (ctx: ExtensionContext, role: 'compactor' | 'subagent') => {
@@ -476,6 +475,12 @@ export default function optchat(pi: ExtensionAPI) {
     if (ctx.mode !== 'tui') throw new Error('Choosing a model requires interactive Pi. Edit config.json in the profile directory instead.');
     const choice = await showModelPicker(ctx, role, settingsOptions(ctx, a));
     if (choice) ctx.ui.notify(`${role}: ${choice.provider}/${choice.model} (${choice.thinking}); applies to new calls.`, 'info');
+  };
+  /** Per-provider fallbacks for a role: what it runs while the main model is on another provider. */
+  const pickFallbacks = async (ctx: ExtensionContext, role: 'compactor' | 'subagent') => {
+    const a = required();
+    if (ctx.mode !== 'tui') throw new Error('Choosing a fallback requires interactive Pi. Edit "alternates" in the profile config.json instead.');
+    await showFallbacks(ctx, role, settingsOptions(ctx, a));
   };
   const inspect = async (ctx: ExtensionContext, page: InspectorPage) => {
     if (inspectorController) return;
@@ -502,8 +507,8 @@ export default function optchat(pi: ExtensionAPI) {
     let action = args.trim();
     if (!action) {
       const a = active;
-      const info = a ? `${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending\nCompactor: ${a.config.compactor.model} (${a.config.compactor.thinking})\nAgents: ${a.config.subagent.model} (${a.config.subagent.thinking})\n${a.memory.lastError ?? ''}` : 'No active profile';
-      action = await ctx.ui.select(`OptChat\n${info}`, ['profile', 'settings', 'model', 'agents', 'usage', 'activity', 'instructions', 'browse', 'import']) ?? '';
+      const info = a ? `${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending\nCompactor: ${roleModel(a.config, 'compactor', main)}\nAgents: ${roleModel(a.config, 'subagent', main)}\n${a.memory.lastError ?? ''}` : 'No active profile';
+      action = await ctx.ui.select(`OptChat\n${info}`, ['profile', 'settings', 'model', 'fallback', 'agents', 'usage', 'activity', 'instructions', 'browse', 'import']) ?? '';
     }
     if (action === 'import') {
       const a = required();
@@ -531,7 +536,7 @@ export default function optchat(pi: ExtensionAPI) {
           if (!job) return;
         }
         if (!closed) { await a.memory.close(); closed = true; }
-        const compress = createCompressor(ctx.modelRegistry, () => modelFor(a.config, 'compactor', mainProvider), message => {
+        const compress = createCompressor(ctx.modelRegistry, () => modelFor(a.config, 'compactor', main), message => {
           a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
         }, () => a.config.summaryAcceptBytes, shared);
         const completed = await showProgress(ctx, job, (signal, progress) => runImport(a.dir, compress, signal, progress), signal);
@@ -561,6 +566,8 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (action === 'model') return pickModel(ctx, 'compactor');
     if (action === 'agents model') return pickModel(ctx, 'subagent');
+    if (action === 'fallback') return pickFallbacks(ctx, 'compactor');
+    if (action === 'agents fallback') return pickFallbacks(ctx, 'subagent');
     if (action === 'agents' || action === 'usage' || action === 'activity') return inspect(ctx, action);
     if (action === 'instructions') {
       const a = required();
@@ -574,7 +581,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.hasUI) execFile(opener.command, opener.args, error => { if (error) ctx.ui.notify(`Open ${file}`, 'info'); });
       ctx.ui.notify(file, 'info'); return;
     }
-    if (action) throw new Error('Use /optchat [profile|settings|model|agents|usage|activity|instructions|browse|import].');
+    if (action) throw new Error('Use /optchat [profile|settings|model|fallback|agents|agents model|agents fallback|usage|activity|instructions|browse|import].');
   };
   pi.registerCommand('complete', { description: 'End this connected conversation and hand off to the main agent', handler: async (_args, ctx) => {
     if (!remote) { ctx.ui.notify('/complete is for connected subagent windows.', 'info'); return; }
@@ -585,7 +592,7 @@ export default function optchat(pi: ExtensionAPI) {
     try { await remote.tell(args); } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
   } });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
-    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'agents', 'agents model', 'usage', 'activity', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
+    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
   });
 }

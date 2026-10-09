@@ -10,8 +10,10 @@ import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
 
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
 export type Role = 'compactor' | 'subagent';
-/** alternates: models a role switches to while the main model is on their provider, e.g. a Codex model when Pi is on a Codex account. */
+/** alternates: per-provider models a role uses while the main model is on that provider, e.g. a Codex model on a Codex account. */
 export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>> }
+/** The main model the roles follow, as Pi's model_select reports it. */
+export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
   compactor: { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'xhigh' }, // The recipe's: a cheap model at xhigh effort.
   subagent: { provider: 'anthropic', model: 'claude-opus-5-5', thinking: 'high' },
@@ -40,11 +42,37 @@ function modelChoice(value: unknown): value is ModelChoice {
 }
 const alternates = (value: unknown): value is ProfileConfig['alternates'] => value === undefined
   || record(value) && Object.entries(value).every(([role, list]) => (role === 'compactor' || role === 'subagent') && Array.isArray(list) && list.every(modelChoice));
-/** The role's model for the provider the main model is on: the first alternate on that provider, else the role's own choice. */
-export function modelFor(config: ProfileConfig, role: Role, mainProvider: string | undefined): ModelChoice {
+/** Multi-account rotates a provider by publishing numbered accounts as their own providers (`openai-codex-account-2`); the base id is their shared family. */
+export const accountGroup = (provider: string) => provider.replace(/-account-\d+$/, '');
+/** The role's model for the account the main model is on: the matching alternate, the role's own choice when it is on that provider's family, all addressed at the live account — and, with neither, the main model itself at the lowest effort it takes. */
+export function modelFor(config: ProfileConfig, role: Role, main: MainModel | undefined): ModelChoice {
   const own = config[role];
-  if (mainProvider === undefined || own.provider === mainProvider) return own;
-  return config.alternates?.[role]?.find(choice => choice.provider === mainProvider) ?? own;
+  if (main === undefined || own.provider === main.provider) return own;
+  const group = accountGroup(main.provider);
+  const alternates = config.alternates?.[role];
+  const alternate = alternates?.find(choice => choice.provider === main.provider) ?? alternates?.find(choice => accountGroup(choice.provider) === group);
+  const chosen = alternate ?? (accountGroup(own.provider) === group ? own : undefined);
+  // A numbered account: the role follows the account the main model is already serving on, not the base one it was configured with.
+  if (chosen) return accountGroup(chosen.provider) === group && main.provider !== group ? { ...chosen, provider: main.provider } : chosen;
+  // No choice for this provider: the main model, at the lowest effort it takes (clamped by the caller).
+  return { provider: main.provider, model: main.model, thinking: 'off' };
+}
+/** What a role will use right now: its configured model, and the effective one when the main model changes it. */
+export function roleModel(config: ProfileConfig, role: Role, main: MainModel | undefined) {
+  const show = (choice: ModelChoice) => `${choice.provider}/${choice.model} (${choice.thinking})`;
+  const own = config[role], effective = modelFor(config, role, main);
+  const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
+  return same(own, effective) ? show(own) : `${show(own)} → now ${show(effective)}`;
+}
+/** Adds or replaces a role's alternate for a provider family, so the role keeps one entry per family. */
+export function setAlternate(list: ModelChoice[] | undefined, choice: ModelChoice): ModelChoice[] {
+  const group = accountGroup(choice.provider);
+  return [...(list ?? []).filter(entry => accountGroup(entry.provider) !== group), choice];
+}
+/** Removes a role's alternate for the same family. */
+export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelChoice): ModelChoice[] {
+  const group = accountGroup(choice.provider);
+  return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
