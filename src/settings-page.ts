@@ -196,7 +196,7 @@ export function settingsPage(theme: Theme, o: Options, close: () => void, redraw
           return problem;
         }, () => done()),
       },
-      { id: `${role}Fallbacks`, label: `${label.replace(' model', ' fallbacks')}`,
+      { id: `${role}Fallbacks`, label: label.replace(' model', ' fallbacks'),
         description: `Models this role uses while the main model is on another provider, on that same account — numbered accounts included. Without an entry, the role keeps its configured model, or runs the main model at its lowest effort. Applies to the next call.`,
         currentValue: entries.length ? entries.map(showModel).join('  ·  ') : theme.fg('dim', 'none'),
         submenu: (_value, done) => new FallbackStep(theme, role, o, value => done(value)),
