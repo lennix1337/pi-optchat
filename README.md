@@ -60,6 +60,23 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/complete` | In a connected window: end the conversation and hand off to the main agent. |
 | `/tell-main <message>` | In a connected window: message the main agent. |
 
+## Zoom in Code Mode
+
+Prefer direct `zoom` for a single read or tree navigation: the next branch usually depends on the previous result. `n > 1` opens two child summaries; `n = 1` reads a message. Do not batch guesses at deeper nodes before reading their parent.
+
+Pi can already run independent direct tool calls in one turn. Code Mode is optional for several already-identified, independent text-only reads, not a requirement for parallelism. It returns only what the script emits. Await every call and emit each result with its id; `Promise.allSettled()` keeps successful reads when another fails:
+
+```js
+const ids = [10, 11]; // Two independent messages whose text fits the combined output budget.
+const results = await Promise.allSettled(ids.map(id => tools.zoom({ id, n: 1 })));
+results.forEach((result, i) => text({ id: ids[i], ...(result.status === 'fulfilled'
+  ? { result: result.value } : { error: String(result.reason) }) }));
+```
+
+Use character limits only when necessary, and follow next-page offsets until the needed text is read. Tiny pages create extra reads; oversized batches can truncate needed text. A successful nested call alone does not prove that its entire result reached the model. Pi's collapsed preview is separate: `Ctrl+O` expands it.
+
+**Images:** use direct `zoom`. Pi 1.1.0's Code Mode converts this tool's result to text and drops its image attachments, leaving only image references. A text-only batch is not equivalent to viewing the original message's images.
+
 ## Models
 
 | Role | Default | Change with |

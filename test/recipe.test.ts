@@ -79,6 +79,36 @@ test('a long text is never cut: it is logged as several messages in a row', asyn
   } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('independent zooms preserve complete text, bounded pages, and individual failures', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-zoom-batch-'));
+  const memory = new Memory(dir, async () => 'summary', () => {});
+  try {
+    memory.append('user', 'a'.repeat(2_000));
+    memory.append('talk', 'b'.repeat(2_000));
+    const [zoom] = memoryTools(() => memory);
+    assert.match(zoom.description, /Prefer direct zoom for a single read, dependent tree navigation, or images/);
+    assert.match(zoom.description, /Code Mode is optional for independent text-only reads/);
+    assert.match(zoom.description, /emit every result with its id/);
+    assert.match(zoom.description, /without unnecessary paging/);
+    assert.match(zoom.description, /drops zoom's image attachments in Code Mode/);
+    const replies = await Promise.allSettled([0, 99, 1].map(id => zoom.execute('call', { id, n: 1, limit: 100 })));
+    assert.equal(replies[1].status, 'rejected');
+    for (const [index, id, kind, character] of [[0, 0, 'user', 'a'], [2, 1, 'talk', 'b']] as const) {
+      const reply = replies[index];
+      assert.equal(reply.status, 'fulfilled');
+      if (reply.status === 'fulfilled') {
+        assert.equal(reply.value.content[0].type, 'text');
+        assert.equal(reply.value.content[0].text, `${id}+1|${kind}: ${character.repeat(100)}\n[showing characters 0-100 of 2000; next page: offset 100]`);
+      }
+    }
+    const whole = await Promise.all([0, 1].map(id => zoom.execute('whole', { id, n: 1 })));
+    assert.deepEqual(whole.map(reply => reply.content), [
+      [{ type: 'text', text: `0+1|user: ${'a'.repeat(2_000)}` }],
+      [{ type: 'text', text: `1+1|talk: ${'b'.repeat(2_000)}` }],
+    ]);
+  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('zoom(agent) gives a subagent\'s whole chat, in pages when it is long', async () => {
   const chats: Record<string, string> = { ab12cd34: 'user: task\n\ntalk: done', long: 'x'.repeat(PAGE + 10) };
   const [zoom] = memoryTools(() => { throw new Error('memory is not read for an agent\'s chat'); }, id => chats[id] ?? '');
