@@ -27,7 +27,7 @@ async function setup() {
       calls.push({ source, answer: () => answered.resolve(true), fail: () => answered.resolve(false), finish: () => finished.resolve() });
       void (async () => {
         if (!await answered.promise) {
-          message.stopReason = 'error'; message.errorMessage = 'overloaded';
+          message.stopReason = 'error'; message.errorMessage = 'synthetic provider rejection';
           stream.push({ type: 'error', reason: 'error', error: message }); return stream.end();
         }
         stream.push({ type: 'start', partial: message });
@@ -87,7 +87,7 @@ test('a failing primer releases the waiting calls instead of hanging them', { ti
   calls[1].answer();
   await settle();
   calls.slice(1).forEach(c => { c.answer(); c.finish(); });
-  assert.deepEqual(await Promise.all(replies), ['overloaded', 'summary of b', 'summary of c']);
+  assert.deepEqual(await Promise.all(replies), ['synthetic provider rejection', 'summary of b', 'summary of c']);
 });
 
 test('a waiting call that is cancelled stops at once without ever calling the model', { timeout: 5000 }, async () => {

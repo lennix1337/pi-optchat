@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { clampThinkingLevel, type Api, type AssistantMessage, type Message, type Model, type Tool } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
@@ -7,7 +8,7 @@ import { bytes, NODE, start, type Compressor, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
 import { IMPORT_GUIDANCE } from './import/guidance.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
-import { CompactorTrace, type CompactorDiagnostic } from './compactor-diagnostics.ts';
+import { CompactorTrace, errorCategory, type CompactorDiagnostic } from './compactor-diagnostics.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
 /** The chosen model, with the base provider as the fallback: a numbered account that does not publish the model still runs it on the family's base account. */
@@ -70,8 +71,13 @@ function primeFirst() {
 }
 /** What a compaction shares with the turns (recipe §4): the same system prompt and tools, never called. */
 export interface Shared { systemPrompt: string; tools?: Tool[] }
+function compactorError(error: unknown, detail: string) {
+  if (errorCategory(error) !== 'stream_interrupted') return error;
+  return new Error(`Compactor stream interrupted before a usable summary (${detail}); original messages are retained and the node will retry in the background.`, { cause: error });
+}
 function summaryText(reply: AssistantMessage, detail: string) {
-  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor ${reply.stopReason} (${detail})`);
+  if (reply.stopReason === 'error') throw compactorError(new Error(reply.errorMessage ?? `Compactor error (${detail})`), detail);
+  if (reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor aborted (${detail})`);
   if (reply.stopReason === 'length') throw new Error(`Compactor response truncated (${detail}).`);
   if (reply.content.some(block => block.type === 'toolCall')) throw new Error(`Compactor returned a tool call instead of a summary (${detail}).`);
   // A line can copy its id+n| head from the view.
@@ -97,10 +103,13 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
     const tries: string[] = [];
-    for (let attempt = 0; attempt < 5; attempt++) {
+    let request = 0, failures = 0, retryDelay = 0;
+    while (tries.length < 5) {
+      if (retryDelay) { await delay(retryDelay, undefined, { signal }); retryDelay = 0; }
+      signal.throwIfAborted();
       const warmed = prefix ? await gate(prefix, signal) : () => {};
-      let reply: AssistantMessage;
-      const trace = new CompactorTrace(input, model, selected.thinking, thinking, attempt + 1, base.tools?.length ?? 0);
+      let reply: AssistantMessage, line: string;
+      const trace = new CompactorTrace(input, model, selected.thinking, thinking, ++request, base.tools?.length ?? 0);
       try {
         const stream = registry.streamSimple(model, { ...base, messages }, {
           // A shared session id is the OpenAI prompt-cache key; SSE because over a websocket Codex would chain unrelated parallel calls on one cached connection.
@@ -117,11 +126,20 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
         for await (const event of stream) { trace.event(event); warmed(event.type !== 'error'); }
         reply = await stream.result();
         trace.result(reply);
-      } catch (error) { trace.failure(error); throw error; }
-      finally { warmed(false); diagnose(trace.finish()); }
-      onUsage(reply);
-      const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}, raw=${trace.diagnostic.rawStopReason ?? 'unknown'}`;
-      const line = summaryText(reply, detail);
+        onUsage(reply);
+        const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}, raw=${trace.diagnostic.rawStopReason ?? 'unknown'}`;
+        line = summaryText(reply, detail);
+      } catch (error) {
+        trace.failure(error);
+        const category = errorCategory(error);
+        // Retry failures before a usable response, not quota/auth errors or interrupted generated output.
+        if (!signal.aborted && failures < 2 && trace.diagnostic.httpStatus !== 200 &&
+          (category === 'connection_failure' || category === 'unavailable' || category === 'timeout')) {
+          retryDelay = 1000 * 2 ** failures++ + Math.floor(Math.random() * 250);
+          continue;
+        }
+        throw compactorError(error, `${model.provider}/${model.id}`);
+      } finally { warmed(false); diagnose(trace.finish(signal)); }
       tries.push(line);
       // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces.
       if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;
