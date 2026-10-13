@@ -110,12 +110,14 @@ export function profileSocket(dir: string, purpose: 'lock' | 'windows' = 'lock')
   return `${PIPE_PREFIX}optchat-${createHash('sha256').update(identity.toLowerCase()).digest('hex').slice(0, 16)}-${purpose}`;
 }
 
-// sun_path is 104 bytes on macOS and 108 elsewhere, both including the NUL; a Windows named pipe path is capped at 259 characters, which for the ASCII names OptChat generates is also its byte length. Node 22 binds a truncated socket instead of failing, so the length is checked before listen.
+// sun_path is 104 bytes on macOS and 108 elsewhere, both including the NUL; Windows named pipes are capped at 259 UTF-16 code units. Node 22 can bind a truncated POSIX socket instead of failing, so check before listening on every platform.
 export const SOCKET_PATH_LIMIT = process.platform === 'darwin' ? 103 : isWindows ? 259 : 107;
 export function checkSocketPath(path: string) {
-  if (isWindows) return;
-  const length = Buffer.byteLength(path);
-  if (length > SOCKET_PATH_LIMIT) throw new Error(`Cannot listen on the profile socket: its path is ${length} bytes, over this system's limit of ${SOCKET_PATH_LIMIT}. Set OPTCHAT_HOME to a shorter directory: ${path}`);
+  const length = isWindows ? path.length : Buffer.byteLength(path);
+  if (length > SOCKET_PATH_LIMIT) {
+    const unit = isWindows ? 'characters' : 'bytes';
+    throw new Error(`Cannot listen on the profile socket: its path is ${length} ${unit}, over this system's limit of ${SOCKET_PATH_LIMIT}. Set OPTCHAT_HOME to a shorter directory: ${path}`);
+  }
 }
 
 /** A socket that may be replaced; a file that only shares its name is refused, never deleted. A Windows pipe has no filesystem entry, so there is nothing to check or remove. */
