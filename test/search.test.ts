@@ -36,6 +36,42 @@ test('search finds original messages newest first, pages backwards, and never re
   } finally { await memory.close(); removeDir(dir); }
 });
 
+test('paged search reuses complete hit indexes and append invalidates them without changing page order', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oc-search-cache-'));
+  const memory = new Memory(dir, async () => 'summary', () => {});
+  try {
+    memory.append('user', 'needle oldest');
+    memory.append('talk', 'needle middle');
+    assert.deepEqual(memory.search('NEEDLE').map(entry => entry.i), [1, 0]);
+    assert.deepEqual(memory.search('needle', 1).map(entry => entry.i), [0]);
+
+    memory.append('user', 'needle newest');
+    assert.deepEqual(memory.search('needle').map(entry => entry.i), [2, 1, 0]);
+    assert.deepEqual(memory.search('NEEDLE', 2).map(entry => entry.i), [1, 0]);
+  } finally { await memory.close(); removeDir(dir); }
+});
+
+test('query-hit cache bounds both retained queries and total message indexes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oc-search-cache-bounds-'));
+  const memory = new Memory(dir, async () => 'summary', () => {});
+  const cache = memory as unknown as { searchCache: Map<string, number[]>; searchCacheHits: number };
+  try {
+    for (let i = 0; i < 20_002; i++) memory.root.push({ i, kind: 'user', text: `common bucket-${i % 7}`, date: '2026-01-01', size: 12 });
+    assert.equal(memory.search('common').length, 20_002);
+    assert.equal(cache.searchCache.has('common'), false, 'a broad result is not retained');
+    assert.equal(cache.searchCacheHits, 0);
+
+    for (let i = 0; i < 7; i++) memory.search(`bucket-${i}`);
+    assert.ok(cache.searchCacheHits <= 20_000, 'the combined cached result indexes stay within their budget');
+    assert.equal(cache.searchCache.has('bucket-0'), false, 'the oldest result is evicted when the index budget is full');
+    for (let i = 0; i < 9; i++) memory.search(`absent-${i}`);
+    assert.equal(cache.searchCache.size, 8);
+    assert.equal(cache.searchCache.has('absent-0'), false, 'the least recently used query is evicted');
+    assert.equal(cache.searchCache.has('absent-8'), true);
+    assert.ok(cache.searchCacheHits <= 20_000);
+  } finally { await memory.close(); removeDir(dir); }
+});
+
 test('a search hit names the view line that holds it, so the agent can zoom from there; a hit that is its own line does not', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-search-line-'));
   // 300-byte summaries in a 1,500-byte view: the four oldest messages fold into one line.
