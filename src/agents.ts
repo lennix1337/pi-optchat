@@ -593,9 +593,11 @@ export class Children {
     const eligible = [...this.history.records.values()].filter(run => run.connected && !this.running.has(run.id) && !run.handoff?.delivered);
     const recovery = (async () => {
       for (const run of eligible) {
-        run.handoff ??= { reason: 'owner-stopped' };
-        transition(run, run.handoff.reason === 'complete' ? 'completed' : 'interrupted'); this.save(run);
-        await this.deliverHandoff(run);
+        try {
+          run.handoff ??= { reason: 'owner-stopped' };
+          transition(run, run.handoff.reason === 'complete' ? 'completed' : 'interrupted'); this.save(run);
+          await this.deliverHandoff(run);
+        } catch (error) { this.warn(`Handoff recovery failed for ${run.id}: ${String(error)}`); }
       }
     })();
     this.completions.add(recovery);

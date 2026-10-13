@@ -332,22 +332,32 @@ test('SIGKILL of the client interrupts owner-hosted work and reports it', async 
   } finally { child.kill('SIGKILL'); await close(); await f.close(); }
 });
 
-test('pending handoffs survive failed delivery and restart without another model call', async () => {
+test('pending handoffs recover independently after one delivery fails, then retry without another model call', async () => {
   const f = await fixture();
   try {
-    const [id] = await f.children.spawn([{ task: 'Remember the user correction.' }], f.dir, undefined, undefined, true);
-    await until(() => f.children.history.records.get(id)?.state === 'waiting');
-    await f.children.finish(id, 'complete');
-    const run = f.children.history.records.get(id)!;
-    // Simulate the durable state left by an owner crash before producing its handoff.
-    run.state = 'waiting'; run.handoff = undefined; f.children.history.save(run);
-    const failing = new Children(f.memory, f.registry, f.choice, () => '', async () => { throw new Error('delivery unavailable'); }, () => {}, f.dir, f.options);
-    await assert.rejects(failing.recoverHandoffs(), /delivery unavailable/);
+    const ids = await f.children.spawn([{ task: 'Remember the first correction.' }, { task: 'Remember the second correction.' }], f.dir, undefined, undefined, true);
+    await until(() => ids.every(id => f.children.history.records.get(id)?.state === 'waiting'));
+    for (const id of ids) await f.children.finish(id, 'complete');
+    for (const id of ids) {
+      const run = f.children.history.records.get(id)!;
+      // Simulate the durable state left by an owner crash before producing its handoff.
+      run.state = 'waiting'; run.handoff = undefined; f.children.history.save(run);
+    }
+    const warnings: string[] = [], firstRecovery: string[] = [];
+    const failing = new Children(f.memory, f.registry, f.choice, () => '', async text => {
+      if (text.startsWith(`[${ids[0]}]`)) throw new Error('delivery unavailable');
+      firstRecovery.push(text);
+    }, text => warnings.push(text), f.dir, f.options);
+    await failing.recoverHandoffs();
+    assert.equal(firstRecovery.length, 1); assert.ok(firstRecovery[0].startsWith(`[${ids[1]}]`));
+    assert.equal(failing.history.records.get(ids[0])?.handoff?.delivered, undefined);
+    assert.equal(failing.history.records.get(ids[1])?.handoff?.delivered, true);
+    assert.ok(warnings.some(warning => warning.includes(ids[0]) && warning.includes('delivery unavailable')));
     const calls = f.summaries.length;
     const recovered: string[] = [];
     const restored = new Children(f.memory, f.registry, f.choice, () => '', async text => { recovered.push(text); }, () => {}, f.dir, f.options);
     await restored.recoverHandoffs(); await restored.recoverHandoffs();
-    assert.equal(recovered.length, 1); assert.match(recovered[0], /owner-stopped/);
+    assert.equal(recovered.length, 1); assert.ok(recovered[0].startsWith(`[${ids[0]}]`)); assert.match(recovered[0], /owner-stopped/);
     assert.equal(f.summaries.length, calls);
     await failing.close(); await restored.close();
   } finally { await f.close(); }
