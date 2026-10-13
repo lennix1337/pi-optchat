@@ -1,16 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { Children, STEERABLE, taskDirectory } from '../src/agents.ts';
+import { Children, taskDirectory } from '../src/agents.ts';
+import { STEERABLE } from '../src/prompts.ts';
 import type { Settings } from '../src/settings.ts';
 import { Memory } from '../src/memory.ts';
 import { RunHistory } from '../src/runs.ts';
 import { emptyUsage, UsageLedger } from '../src/usage.ts';
-import { textContent } from '../src/transcript.ts';
+import { runTranscript, textContent, withoutFullChat } from '../src/transcript.ts';
+import { removeDir } from './support.ts';
 
 /** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
 const nested = () => ({ subagentLevels: 3, maxAgents: 8 });
@@ -64,11 +66,15 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     await until(() => releases.size === 3);
     await until(() => !!children.live(slow)?.streaming);
     assert.ok(JSON.stringify(children.messages(slow)).includes('Working on slow'));
+    assert.match(runTranscript(children.transcript(slow) ?? []), /^user\|Your task:\nslow\ntalk\|Working on slow$/, 'a running child\'s chat so far');
+    assert.equal(children.transcript('gone0000'), undefined);
+    assert.equal(children.transcript(slow, fast), undefined, 'a child cannot read a sibling\'s chat');
     await children.tell(slow, 'Please include tests.');
     assert.equal(children.history.records.get(slow)?.guidance[0].state, 'queued');
     releases.get('fast')!();
     await until(() => reports.length === 1);
     assert.match(reports[0], new RegExp(`^\\[${fast}\\]`));
+    assert.ok(reports[0].endsWith(`\n\nFull chat: zoom("${fast}")`), 'the report says how to read the whole chat');
     assert.equal(children.history.records.get(slow)?.state, 'running', 'fast must report before slow finishes');
     await children.tell(stopped, 'This should remain undelivered.');
     await children.stop(stopped);
@@ -119,7 +125,7 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     await until(() => !children.active);
     for (const id of [stopRoot, stopChild, stopLeaf]) assert.equal(children.history.records.get(id)?.state, 'stopped');
     assert.deepEqual(warnings, []);
-  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); removeDir(dir); }
 });
 
 test('one spawn\'s reports arrive together once its last child finishes, also to a parent subagent', async () => {
@@ -151,7 +157,7 @@ test('one spawn\'s reports arrive together once its last child finishes, also to
   const settings: Partial<Settings> = { ...nested(), groupReports: true };
   let opening = () => { settings.groupReports = false; };
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
-    async (text, options) => { reports.push(text); counts.push(options?.count); }, () => {}, dir, { settings: () => settings, hold: (_batch, texts) => held.push(texts), createSession: options => {
+    async (text, options) => { reports.push(withoutFullChat(text)); counts.push(options?.count); }, () => {}, dir, { settings: () => settings, hold: (_batch, texts) => held.push(texts.map(withoutFullChat)), createSession: options => {
       opening(); opening = () => {};
       return createAgentSession({ ...options, modelRuntime: runtime });
     } });
@@ -167,10 +173,11 @@ test('one spawn\'s reports arrive together once its last child finishes, also to
     await until(() => state(a) === 'completed' && state(stopped) === 'stopped');
     await new Promise(r => setTimeout(r, 50));
     assert.deepEqual(reports, [], 'nothing is delivered while a sibling still runs');
-    assert.deepEqual(held.at(-1), [`[${a}] a done`, `[${stopped}] stopped done`], 'finished reports are journaled at once, so a crash cannot lose them');
+    const stopReport = `[${stopped}] Stopped by the user. They ended it on purpose, so it did not fail: do not redo or delegate this task again unless they ask. Its chat is kept, so tell resumes it where it stopped.\n\nIts last message before the stop:\nstopped done`;
+    assert.deepEqual(held.at(-1), [`[${a}] a done`, stopReport], 'finished reports are journaled at once, so a crash cannot lose them');
     releases.get('b')!();
     await until(() => !children.active);
-    assert.deepEqual(reports, [`[${a}] a done\n\n[${b}] b done\n\n[${stopped}] stopped done`], 'one message, in spawn order');
+    assert.deepEqual(reports, [`[${a}] a done\n\n[${b}] b done\n\n${stopReport}`], 'one message, in spawn order');
     assert.deepEqual(counts, [3]);
     assert.deepEqual(held.at(-1), [], 'delivered, the held reports leave the journal');
     const journaled = held.length;
@@ -184,9 +191,57 @@ test('one spawn\'s reports arrive together once its last child finishes, also to
     await until(() => state(x) === 'completed');
     releases.get('y')!();
     await until(() => !children.active);
+    assert.ok(children.transcript(x, boss)?.length, 'a parent reads its child\'s chat');
+    assert.equal(children.transcript(boss, x), undefined, 'a child cannot read its parent\'s chat');
     assert.equal(reports.at(-1), `[${boss}] boss heard: [${x}] x done\n\n[${y}] y done`, 'the parent is woken once, with both reports');
     assert.equal(held.length, journaled, 'a parent subagent holds its children\'s reports itself; they would not outlive it');
-  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('a subagent whose turn ends in an error still waits for its children and reads their reports', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-errored-parent-'));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const reports: string[] = [], releases = new Map<string, () => void>();
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+  runtime.registerProvider('optchat-test', {
+    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+    models: [{ id: 'child', name: 'Synthetic child', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+    streamSimple(model, context, options) {
+      const stream = createAssistantMessageEventStream();
+      const task = textContent(context.messages.find(m => m.role === 'user')?.content).split('Your task:\n').at(-1) ?? '';
+      const last = context.messages.at(-1), first = !context.messages.some(m => m.role === 'assistant');
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: first ? `${task} done` : `${task} heard: ${textContent(last && 'content' in last ? last.content : '')}` }],
+        api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
+      void (async () => {
+        if (first) await new Promise<void>(resolve => {
+          releases.set(task, resolve); options?.signal?.addEventListener('abort', () => resolve(), { once: true });
+          if (options?.signal?.aborted) resolve();
+        });
+        if (options?.signal?.aborted) { message.stopReason = 'aborted'; stream.push({ type: 'error', reason: 'aborted', error: message }); }
+        else if (first && task === 'boss') { message.stopReason = 'error'; message.errorMessage = 'invalid request (400)'; stream.push({ type: 'error', reason: 'error', error: message }); }
+        else stream.push({ type: 'done', reason: 'stop', message });
+        stream.end();
+      })();
+      return stream;
+    },
+  });
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
+    async text => { reports.push(withoutFullChat(text)); }, () => {}, dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+  const state = (id: string) => children.history.records.get(id)?.state;
+  try {
+    const [boss] = await children.spawn([{ task: 'boss' }], dir);
+    const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
+    await until(() => releases.has('boss') && releases.has('worker'));
+    releases.get('boss')!();
+    await until(() => state(boss) !== 'running');
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(state(worker), 'running', 'the error ends the parent\'s turn, not its child');
+    assert.deepEqual(reports, []);
+    releases.get('worker')!();
+    await until(() => !children.active);
+    assert.equal(state(boss), 'completed');
+    assert.deepEqual(reports, [`[${boss}] boss heard: [${worker}] worker done`], 'the parent reads its child\'s report and answers it');
+  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); removeDir(dir); }
 });
 
 test('children get the main agent\'s extensions, AGENTS.md files and skills, but never another copy of OptChat', async () => {
@@ -230,7 +285,7 @@ test('children get the main agent\'s extensions, AGENTS.md files and skills, but
     assert.ok(system.includes(STEERABLE), 'children are told not to block steering with long commands');
     const order = ['GLOBAL_RULES', 'REPO_RULES', 'PROFILE_RULES'].map(rule => system.lastIndexOf(rule));
     assert.ok(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])), 'global, then repo AGENTS.md, then profile instructions last');
-  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(join(agentDir, 'settings.json'), { force: true }); rmSync(join(agentDir, 'AGENTS.md'), { force: true }); rmSync(join(agentDir, 'extensions'), { recursive: true, force: true }); rmSync(join(agentDir, 'skills'), { recursive: true, force: true }); }
+  } finally { removeDir(dir); rmSync(join(agentDir, 'settings.json'), { force: true }); rmSync(join(agentDir, 'AGENTS.md'), { force: true }); removeDir(join(agentDir, 'extensions')); removeDir(join(agentDir, 'skills')); }
 });
 
 test('children can message their parent mid-run: the main agent, an idle parent, or a busy one', async () => {
@@ -268,7 +323,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     },
   });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
-    async text => { reports.push(text); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    async text => { reports.push(withoutFullChat(text)); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const heard = (id: string, from: string) => children.messages(id).some(m => m.role === 'assistant' && textContent(m.content).includes(`heard: [${from}] Message from subagent (still running): question from`));
   try {
     // Top-level child: the message reaches the main agent before the final report.
@@ -304,7 +359,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     assert.ok(heard(busy, busyChild), 'busy parent sees the message after its current turn');
     assert.equal(reports.length, 4);
     assert.deepEqual(warnings, []);
-  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); removeDir(dir); }
 });
 
 test('a child that fails to clean up still reports, is disposed, and frees its slot', async () => {
@@ -336,7 +391,7 @@ test('a child that fails to clean up still reports, is disposed, and frees its s
     },
   });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
-    async text => { reports.push(text); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    async text => { reports.push(withoutFullChat(text)); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const breakDispose = (id: string) => {
     const session = children.live(id)!.session, dispose = session.dispose.bind(session);
     session.dispose = () => { dispose(); throw new Error('dispose failed'); };
@@ -375,7 +430,7 @@ test('a child that fails to clean up still reports, is disposed, and frees its s
     assert.deepEqual(warnings.toSorted(), [
       'Subagent cleanup failed: Error: dispose failed', 'Subagent cleanup failed: Error: dispose failed', 'Subagent cleanup failed: Error: shutdown hook failed',
     ]);
-  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); removeDir(dir); }
 });
 
 test('a batch that fails mid-launch rolls back every launched child even when their cleanup throws', async () => {
@@ -414,7 +469,7 @@ test('a batch that fails mid-launch rolls back every launched child even when th
     // All slots are free again: a full batch is refused for its own launch error, not the profile limit.
     created = 2;
     await assert.rejects(children.spawn(Array.from({ length: 8 }, (_, i) => ({ task: `again ${i}` })), dir), /session store unavailable/);
-  } finally { await children.close(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); await memory.close(); removeDir(dir); }
 });
 
 test('a child stopped before its first request ends stopped without running its task', async () => {
@@ -447,11 +502,11 @@ test('a child stopped before its first request ends stopped without running its 
     assert.equal(records.find(r => r.task === 'first')?.state, 'stopped');
     assert.equal(records.find(r => r.task === 'second')?.state, 'completed');
     assert.deepEqual(asked, ['second'], 'the stopped child never sent its task to the model');
-  } finally { await children.close(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); await memory.close(); removeDir(dir); }
 });
 
 /** Children whose model works on its task until aborted, and answers any later message at once. */
-async function busyChildren(dir: string, reports: string[]) {
+async function busyChildren(dir: string, reports: string[], options: { settings?: () => Partial<Settings>; onReport?: (text: string) => void } = {}) {
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   const asked: string[][] = [];
   runtime.registerProvider('optchat-test', {
@@ -474,9 +529,10 @@ async function busyChildren(dir: string, reports: string[]) {
       return stream;
     },
   });
-  const children = new Children(new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {}), new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
-    async text => { reports.push(text); }, () => {}, join(dir, 'profile'), { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
-  return { children, asked };
+  const memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {});
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
+    async text => { reports.push(withoutFullChat(text)); options.onReport?.(text); }, () => {}, join(dir, 'profile'), { settings: options.settings ?? nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+  return { children, asked, memory };
 }
 
 test('interrupting a child aborts its step and continues with the queued messages; with none queued it waits for the next one', async () => {
@@ -504,7 +560,7 @@ test('interrupting a child aborts its step and continues with the queued message
     await until(() => !children.active);
     assert.equal(children.history.records.get(idle)?.state, 'completed');
     assert.equal(reports.at(-1), `[${idle}] Now doing: Carry on.`, 'the next message resumes it');
-  } finally { await children.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); removeDir(dir); }
 });
 
 test('a message sent while an interrupt is still settling is not lost; a stop during that time wins', async () => {
@@ -527,7 +583,74 @@ test('a message sent while an interrupt is still settling is not lost; a stop du
     await until(() => children.history.records.get(stopped)?.state === 'stopped');
     assert.ok(!asked.flat().some(text => text.startsWith('Interrupted by the user:')), 'no turn starts after the stop');
     assert.equal(children.history.records.get(stopped)?.guidance[0].state, 'undelivered');
-  } finally { await children.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('a stopped agent\'s report says who stopped it and that tell resumes it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-stop-report-'));
+  const reports: string[] = [];
+  const { children, asked, memory } = await busyChildren(dir, reports);
+  const report = (id: string) => reports.findLast(r => r.startsWith(`[${id}]`));
+  try {
+    const [busy, idle] = await children.spawn([{ task: 'busy' }, { task: 'idle' }], dir);
+    const [boss] = await children.spawn([{ task: 'boss' }], dir);
+    const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
+    await until(() => asked.length === 4);
+    await children.stop(busy);
+    await until(() => report(busy) !== undefined);
+    assert.match(report(busy)!, new RegExp(`^\\[${busy}\\] Stopped by the user\\. .*do not redo or delegate this task again unless they ask\\. .*tell resumes it`), 'Ctrl+X reads as the user\'s choice, not a failure');
+    assert.match(await children.tell(busy, 'Carry on.'), /resumed it/);
+    await until(() => report(busy) === `[${busy}] Now doing: Carry on.`);
+
+    await children.stop(boss);
+    await until(() => report(boss) !== undefined && children.history.records.get(worker)?.state === 'stopped');
+    assert.match(report(boss)!, /Stopped by the user\./);
+    assert.match(children.history.records.get(worker)?.report ?? '', /^Stopped because the agent that started it stopped or ended\./, 'a descendant records why it stopped');
+
+    assert.equal(await children.interrupt(idle), 'paused');
+    await until(() => children.history.records.get(idle)?.state === 'paused');
+    await children.close();
+    const closed = memory.root.filter(e => e.kind === 'work' && e.text.startsWith(`[${idle}]`)).map(e => withoutFullChat(e.text));
+    assert.equal(closed.length, 1);
+    assert.match(closed[0], /^\[\w+\] Stopped because Pi closed or reloaded while it waited for the user\. It is not resumed on its own; .*tell resumes it/, 'a paused run Pi stops on close says so, since it is not resumed on its own');
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('a child still at work when its parent\'s run throws is stopped, and its report says its parent ended', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-stop-parent-'));
+  const reports: string[] = [];
+  const { children, asked } = await busyChildren(dir, reports);
+  try {
+    const [boss] = await children.spawn([{ task: 'boss' }], dir);
+    const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
+    await until(() => asked.length === 2);
+    children.live(boss)!.session.prompt = async () => { throw new Error('boom'); };
+    await children.tell(boss, 'Go on.', 'user');
+    assert.equal(await children.interrupt(boss), 'continued');
+    await until(() => !children.active);
+    assert.equal(children.history.records.get(boss)?.state, 'failed');
+    assert.equal(children.history.records.get(worker)?.state, 'stopped');
+    assert.match(children.history.records.get(worker)?.report ?? '', /^Stopped because the agent that started it stopped or ended\./, 'not taken for a user stop');
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('a run stopped while its next request throws still reports its last message under the stop text', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-stop-throw-'));
+  const reports: string[] = [];
+  const { children, asked } = await busyChildren(dir, reports);
+  try {
+    const [id] = await children.spawn([{ task: 'busy' }], dir);
+    await until(() => asked.length === 1);
+    const session = children.live(id)!.session;
+    let before: string | undefined;
+    session.prompt = async () => { before = session.getLastAssistantText(); await children.stop(id); throw new Error('boom'); };
+    await children.tell(id, 'Go on.', 'user');
+    assert.equal(await children.interrupt(id), 'continued');
+    await until(() => !children.active);
+    assert.equal(children.history.records.get(id)?.state, 'stopped');
+    assert.ok(before);
+    assert.equal(reports.at(-1), `[${id}] Stopped by the user. They ended it on purpose, so it did not fail: do not redo or delegate this task again unless they ask. Its chat is kept, so tell resumes it where it stopped.\n\nIts last message before the stop:\n${before}`);
+  } finally { await children.close(); removeDir(dir); }
 });
 
 test('the user can take their newest queued message back; the rest stays queued in order', async () => {
@@ -544,7 +667,7 @@ test('the user can take their newest queued message back; the rest stays queued 
     const session = children.live(id)!.session;
     await until(() => session.getSteeringMessages().length === 2);
     assert.deepEqual(session.getSteeringMessages(), ['First.', 'Main agent note.']);
-  } finally { await children.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); removeDir(dir); }
 });
 
 test('taking back a message whose text is queued twice keeps the queue and its records in the same order', async () => {
@@ -560,7 +683,7 @@ test('taking back a message whose text is queued twice keeps the queue and its r
     const session = children.live(id)!.session;
     await until(() => session.getSteeringMessages().length === 2);
     assert.deepEqual(children.history.records.get(id)?.guidance.map(g => g.text), [...session.getSteeringMessages()]);
-  } finally { await children.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); removeDir(dir); }
 });
 
 test('an interrupt right after taking a message back delivers each remaining message once', async () => {
@@ -576,7 +699,148 @@ test('an interrupt right after taking a message back delivers each remaining mes
     await until(() => reports.length === 1);
     assert.match(reports[0], /Now doing: Interrupted by the user:\n\nA\.\n\nB\.$/);
     assert.deepEqual(asked.at(-1)?.filter(text => text.includes('B.')).length, 1, 'B arrives once, not also as steering');
-  } finally { await children.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('deleting a running agent stops it and the agents it started, delivers its report, then removes their files for good', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-delete-'));
+  const reports: string[] = [];
+  const { children, asked, memory } = await busyChildren(dir, reports);
+  const deleted = () => memory.root.filter(e => e.kind === 'work' && e.text.endsWith('deleted by the user')).map(e => e.text);
+  try {
+    const [boss, done] = await children.spawn([{ task: 'boss' }, { task: 'done' }], dir);
+    const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
+    await until(() => asked.length === 3);
+    const files = (id: string) => [join(dir, 'profile', 'runs', `${id}.optchat.json`), children.history.records.get(id)!.sessionFile!];
+    const doomed = [...files(boss), ...files(worker)];
+    assert.ok(doomed.every(file => existsSync(file)));
+    await children.remove(boss);
+    assert.ok(!children.live(boss) && !children.live(worker), 'both stopped');
+    assert.deepEqual(reports, [`[${boss}] Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.`],
+      'the report still reached the main agent, and says the task was dropped on purpose');
+    assert.ok(!children.history.records.has(boss) && !children.history.records.has(worker));
+    assert.deepEqual(deleted(), [], 'its report says so: nothing more is logged');
+    assert.ok(doomed.every(file => !existsSync(file)), 'metadata and transcripts are gone');
+    await assert.rejects(children.tell(boss, 'Come back.'), /No running subagent/);
+
+    await children.stop(done);
+    await until(() => !children.active);
+    const finished = files(done);
+    await children.remove(done);
+    assert.ok(finished.every(file => !existsSync(file)));
+    assert.equal(reports.length, 2, 'a finished run is deleted without another report');
+    assert.deepEqual(deleted(), [`[${done}] deleted by the user`], 'so memory hears of it right away, without a turn');
+
+    // A tell that is still resuming a finished run when it is deleted makes it live again, so its own report says so.
+    const [again] = await children.spawn([{ task: 'again' }], dir);
+    await until(() => asked.length === 4);
+    await children.stop(again);
+    await until(() => !children.active);
+    const resumed = children.tell(again, 'One more thing.');
+    await children.remove(again);
+    await resumed.catch(() => {});
+    assert.match(reports.at(-1) ?? '', new RegExp(`^\\[${again}\\] Deleted by the user while it was working`));
+    assert.deepEqual(deleted(), [`[${done}] deleted by the user`], 'not logged a second time');
+    assert.equal(new RunHistory(join(dir, 'profile')).records.size, 0, 'nothing comes back at the next start');
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('deleting a parent while its child is still being deleted finishes both deletes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-delete-overlap-'));
+  const { children, asked } = await busyChildren(dir, []);
+  try {
+    const [boss] = await children.spawn([{ task: 'boss' }], dir);
+    const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
+    await until(() => asked.length === 2);
+    // The child's own delete stalls before its stop, so the parent's delete finishes first and deletes the child's files.
+    const stop = children.stop.bind(children);
+    let release = () => {}, stalled = false;
+    children.stop = async id => { if (id === worker && !stalled) { stalled = true; await new Promise<void>(resolve => { release = resolve; }); } return stop(id); };
+    const first = children.remove(worker);
+    await until(() => stalled);
+    await children.remove(boss);
+    await assert.rejects(children.tell(worker, 'Come back.'), /being deleted/, 'the child stays marked while its own delete runs');
+    release();
+    await first;
+    assert.equal(children.history.records.size, 0);
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('a tell that arrives while an agent is being deleted does not resume it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-delete-tell-'));
+  let told: Promise<string> | undefined;
+  const { children, asked } = await busyChildren(dir, [], { onReport: text => { told ??= children.tell(text.slice(1, 9), 'One more thing.'); } });
+  try {
+    const [id] = await children.spawn([{ task: 'busy' }], dir);
+    await until(() => asked.length === 1);
+    await children.remove(id);
+    assert.ok(told, 'the main agent answered the stop report while the deletion waited for it');
+    await assert.rejects(told, /being deleted/);
+    assert.ok(!children.active && !children.history.records.has(id));
+    assert.equal(asked.length, 1, 'the run never started another turn');
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('with grouped reports, deleting one child of a spawn still lets its siblings report together', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-delete-group-'));
+  const reports: string[] = [];
+  const { children, asked } = await busyChildren(dir, reports, { settings: () => ({ ...nested(), groupReports: true }) });
+  try {
+    const [a, b] = /^Started: (.+?)\./.exec(await children.start([{ task: 'a' }, { task: 'b' }], dir))![1].split(', ');
+    await until(() => asked.length === 2);
+    await children.remove(a);
+    assert.deepEqual(reports, [], 'held until the sibling finishes');
+    await children.tell(b, 'Wrap up.', 'user');
+    assert.equal(await children.interrupt(b), 'continued');
+    await until(() => !children.active);
+    assert.equal(reports.length, 1);
+    assert.match(reports[0], new RegExp(`^\\[${a}\\] .*\\n\\n\\[${b}\\] `, 's'), 'the deleted child\'s stop report is in the batch');
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('with grouped reports, a child the user pauses lets its siblings report together, and reports on its own later', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-pause-group-'));
+  const reports: string[] = [];
+  const { children, asked } = await busyChildren(dir, reports, { settings: () => ({ ...nested(), groupReports: true }) });
+  try {
+    const [a, b] = /^Started: (.+?)\./.exec(await children.start([{ task: 'a' }, { task: 'b' }], dir))![1].split(', ');
+    await until(() => asked.length === 2);
+    assert.equal(await children.interrupt(a), 'paused');
+    await until(() => children.history.records.get(a)?.state === 'paused');
+    await children.tell(b, 'Wrap up.', 'user');
+    assert.equal(await children.interrupt(b), 'continued');
+    await until(() => reports.length > 0);
+    assert.deepEqual(reports, [`[${a}] Interrupted by the user; it waits for their next message, so no report until then.\n\n[${b}] Now doing: Interrupted by the user:\n\nWrap up.`],
+      'the paused child\'s note takes its place in the batch, so its sibling\'s report is not held');
+    await children.tell(a, 'Carry on.', 'user');
+    await until(() => !children.active);
+    assert.deepEqual(reports.slice(1), [`[${a}] Now doing: Carry on.`], 'resumed by the user, it reports on its own');
+
+    // Under a parent subagent, a pause that completes the batch wakes the waiting parent with it.
+    const [boss] = await children.spawn([{ task: 'boss' }], dir);
+    await until(() => asked.length === 5);
+    const [x, y] = await children.spawn([{ task: 'x' }, { task: 'y' }], dir, undefined, boss);
+    await until(() => asked.length === 7);
+    await children.tell(boss, 'Wait for them.', 'user');
+    assert.equal(await children.interrupt(boss), 'continued');
+    await children.tell(y, 'Wrap up.', 'user');
+    assert.equal(await children.interrupt(y), 'continued');
+    await until(() => children.history.records.get(y)?.state === 'completed' && children.history.records.get(boss)?.state === 'waiting');
+    assert.equal(await children.interrupt(x), 'paused');
+    await until(() => asked.some(typed => typed.at(-1)?.startsWith(`[${x}] Interrupted by the user`)));
+    assert.match(asked.at(-1)!.at(-1)!, new RegExp(`^\\[${x}\\] Interrupted by the user.*\\n\\n\\[${y}\\] Now doing: `, 's'));
+  } finally { await children.close(); removeDir(dir); }
+});
+
+test('a connected run whose handoff has not been delivered is kept', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-delete-handoff-'));
+  const { children } = await busyChildren(dir, []);
+  try {
+    children.history.save({ id: 'window', task: 'talk', cwd: dir, model: 'test', thinking: 'high', parentSession: '', depth: 1, started: 1, ended: 2,
+      state: 'interrupted', connected: true, handoff: { reason: 'disconnected' }, guidance: [] });
+    await assert.rejects(children.remove('window'), /handoff has not reached the main agent/);
+    assert.ok(existsSync(join(dir, 'profile', 'runs', 'window.optchat.json')));
+  } finally { await children.close(); removeDir(dir); }
 });
 
 async function quickChildren(dir: string, memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {})) {
@@ -608,26 +872,26 @@ test('close() does not wait for a spawn that is still waiting for memory to be s
     assert.ok(closed, 'close() is still waiting for the spawn');
     await memory.close();
     await refused;
-  } finally { await memory.close(); await children.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); await children.close(); removeDir(dir); }
 });
 
 test('a task cwd may start with ~ or be relative to the spawning agent; a missing one is refused', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-cwd-'));
-  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE; // Windows reads the home from USERPROFILE
-  mkdirSync(join(dir, 'home', 'project'), { recursive: true });
+  // os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so the test must point both at its sandbox.
+  const sandboxHome = join(dir, 'home'), saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  mkdirSync(join(sandboxHome, 'project'), { recursive: true });
   mkdirSync(join(dir, 'main', 'sub'), { recursive: true });
   const children = await quickChildren(dir);
   try {
-    process.env.HOME = process.env.USERPROFILE = join(dir, 'home');
+    process.env.HOME = process.env.USERPROFILE = sandboxHome;
     const [home, relative] = await children.spawn([{ task: 'home', cwd: '~/project' }, { task: 'relative', cwd: 'sub' }], join(dir, 'main'));
-    assert.equal(children.live(home)?.info.cwd, join(dir, 'home', 'project'));
+    assert.equal(children.live(home)?.info.cwd, join(sandboxHome, 'project'));
     assert.equal(children.live(relative)?.info.cwd, join(dir, 'main', 'sub'));
     await assert.rejects(children.spawn([{ task: 'typo', cwd: '~/projcet' }], join(dir, 'main')), /No such directory/);
     await until(() => !children.active);
   } finally {
-    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
-    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile;
-    await children.close(); rmSync(dir, { recursive: true, force: true });
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await children.close(); removeDir(dir);
   }
 });
 
@@ -643,8 +907,8 @@ test('a broken package.json above an installed extension does not block spawning
     assert.ok(children.live(id)?.session.getAllTools().some(t => t.name === 'installed_web'));
     await until(() => !children.active);
   } finally {
-    await children.close(); rmSync(dir, { recursive: true, force: true });
-    rmSync(join(agentDir, 'package.json'), { force: true }); rmSync(join(agentDir, 'extensions'), { recursive: true, force: true });
+    await children.close(); removeDir(dir);
+    rmSync(join(agentDir, 'package.json'), { force: true }); removeDir(join(agentDir, 'extensions'));
   }
 });
 

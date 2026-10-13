@@ -1,12 +1,12 @@
-import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { clampThinkingLevel, type Api, type AssistantMessage, type Message, type Model, type Tool } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { accountGroup } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
-import { bytes, NODE, start, type Compressor, type Part } from './memory.ts';
+import { IMPORT_GUIDANCE, compaction, tooLong } from './prompts.ts';
+import { bytes, NODE, start, type Compressor, type Compression, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
-import { IMPORT_GUIDANCE } from './import/guidance.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
 import { CompactorTrace, errorCategory, type CompactorDiagnostic } from './compactor-diagnostics.ts';
 
@@ -24,33 +24,34 @@ export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
   const thinking = clampThinkingLevel(model, level);
   return thinking === 'off' ? undefined : thinking;
 };
+
 /** Models can't count bytes, so the task shows the limit as a ruler; a real sample line got its content copied (recipe §4). */
 const RULER = '-'.repeat(NODE);
 const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
-/** The recipe's compaction task, verbatim. */
-export function task({ source, part, result }: { source: string; part: Part; result?: string }) {
+/** The recipe's compaction task. A tool result also gets the call that produced it, plus its output. */
+export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string } }) {
+  const { source, part, result, call } = input;
+  const callContext = call ? `\nThe call is in <call>: context, like <chat>.\n<call>\n${call.text}\n</call>` : '';
   if (!part.l) {
-    // Cheap models summarized a message together with the <chat> lines before it, under their kind: the task names both.
     const kind = /^(\w+): /.exec(source)?.[1];
     return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
       + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n<input>\n${source}\n</input>`
-      + (result === undefined ? '' : `\nThe call's result is in <result>: say in a few words what it found or did.\n<result>\n${result}\n</result>`);
+      + callContext + (result === undefined ? '' : `\nThe call's result is in <result>: say in a few words what it found or did.\n<result>\n${result}\n</result>`);
   }
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };
   return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most\n512 bytes (about 70 words), the length of this ruler:\n${RULER}\n`
     + `<chat> may hold their messages, ${start(part)} to ${start(part) + 2 ** part.l - 1}, in more detail: take details\nof them from there too.\n<input>\n${source}\n</input>`;
 }
+
 const WARM_MS = 4 * 60_000; // Anthropic's short cache lives 5 minutes from its last use.
 
-/** Parallel calls can't read a cache entry that isn't written yet, so one call primes a cold prefix and the rest wait until its response starts (recipe §3.3).
- * Parallel compactions end their views at different messages, so a call also waits for a primer of a shorter prefix of its own view. */
+/** Parallel calls can't read a cache entry that isn't written yet, so one call primes a cold prefix and the rest wait until its response starts. */
 function primeFirst() {
   const warm = new Map<string, number | Promise<void>>();
   return async (prefix: string, signal: AbortSignal) => {
     const priming = () => { for (const [k, state] of warm) if (typeof state !== 'number' && prefix.startsWith(k)) return state; };
     for (let state = warm.get(prefix) ?? priming(); state !== undefined; state = warm.get(prefix) ?? priming()) {
       if (typeof state === 'number') { if (Date.now() - state < WARM_MS) break; warm.delete(prefix); continue; }
-      // A cancelled waiter leaves at once instead of waiting for someone else's primer.
       signal.throwIfAborted();
       let wake = () => {};
       const aborted = new Promise<void>(resolve => { wake = resolve; });
@@ -69,7 +70,7 @@ function primeFirst() {
     };
   };
 }
-/** What a compaction shares with the turns (recipe §4): the same system prompt and tools, never called. */
+/** What a compaction shares with the turns: the same system prompt and tools (never called) once available. */
 export interface Shared { systemPrompt: string; tools?: Tool[] }
 function compactorError(error: unknown, detail: string) {
   if (errorCategory(error) !== 'stream_interrupted') return error;
@@ -80,73 +81,96 @@ function summaryText(reply: AssistantMessage, detail: string) {
   if (reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor aborted (${detail})`);
   if (reply.stopReason === 'length') throw new Error(`Compactor response truncated (${detail}).`);
   if (reply.content.some(block => block.type === 'toolCall')) throw new Error(`Compactor returned a tool call instead of a summary (${detail}).`);
-  // A line can copy its id+n| head from the view.
   const line = reply.content.filter(block => block.type === 'text').map(block => block.text).join('').trim().replace(/^\d+\+\d+\|\s*/, '');
   if (!line) throw new Error(`Compactor returned no text (${detail}; blocks=${reply.content.map(block => block.type).join(',') || 'none'}). See compactor-diagnostics.jsonl.`);
   return line;
 }
-/** The model is asked for 512 bytes; `accepted` is the longest line kept without a retry (the profile's summary size tolerance).
- * `shared` is the turns' prompt and tools once a turn has built them; until then, the recipe's prompt alone. */
+function retryable(error: unknown, trace: CompactorTrace, failures: number, retries: readonly number[], signal: AbortSignal) {
+  const message = typeof error === 'object' && error !== null && 'errorMessage' in error && typeof error.errorMessage === 'string' ? error.errorMessage : undefined;
+  const assistantReply = message !== undefined && typeof error === 'object' && error !== null && 'role' in error;
+  const category = errorCategory(message ?? error);
+  const interruptedBeforeResponse = category === 'stream_interrupted' && assistantReply
+    && !trace.diagnostic.events.start && trace.diagnostic.nativeStatus === undefined;
+  return !signal.aborted && failures < retries.length && trace.diagnostic.httpStatus !== 200
+    && (category === 'connection_failure' || category === 'unavailable' || category === 'timeout' || interruptedBeforeResponse);
+}
+/** The model is asked for 512-byte lines; shared keeps turn prompts/tools aligned and each attempt records metadata only. */
 export function createCompressor(registry: ModelRegistry, choice: () => ModelChoice,
-  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes, shared: () => Shared | undefined = () => undefined,
-  diagnose: (diagnostic: CompactorDiagnostic) => void = () => {}): Compressor {
+  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes,
+  sharedOrRetries: (() => Shared | undefined) | readonly number[] = () => undefined,
+  diagnose: (diagnostic: CompactorDiagnostic) => void = () => {}, retryDelays: readonly number[] = [1000, 2000]): Compressor {
   const gate = primeFirst();
+  const shared = typeof sharedOrRetries === 'function' ? sharedOrRetries : () => undefined;
+  const retries = typeof sharedOrRetries === 'function' ? retryDelays : sharedOrRetries;
   return async (input, signal) => {
-    const selected = choice();
-    const resolved = resolveModel(registry, selected);
+    const selected = choice(), resolved = resolveModel(registry, selected);
     if (!resolved) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
-    const model = resolved.model;
-    const thinking = reasoningFor(model, selected.thinking);
+    const model = resolved.model, thinking = reasoningFor(model, selected.thinking);
     const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${task(input)}`;
     const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
     const tries: string[] = [];
-    let request = 0, failures = 0, retryDelay = 0;
-    while (tries.length < 5) {
-      if (retryDelay) { await delay(retryDelay, undefined, { signal }); retryDelay = 0; }
-      signal.throwIfAborted();
-      const warmed = prefix ? await gate(prefix, signal) : () => {};
-      let reply: AssistantMessage, line: string;
-      const trace = new CompactorTrace(input, model, selected.thinking, thinking, ++request, base.tools?.length ?? 0);
-      try {
-        const stream = registry.streamSimple(model, { ...base, messages }, {
-          // A shared session id is the OpenAI prompt-cache key; SSE because over a websocket Codex would chain unrelated parallel calls on one cached connection.
-          sessionId: 'optchat-compactor', transport: 'sse',
-          reasoning: thinking, signal, cacheRetention: 'short', toolChoice: 'none',
-          onPayload: payload => {
-            const cached = model.api === 'anthropic-messages' ? cachePayload(payload) : payload;
-            trace.payload(cached); return cached;
-          },
-          onResponse: response => trace.response(response),
-          onProviderStreamEvent: event => trace.native(event),
-        });
-        // The cache entry is usable once the response starts: Pi emits 'start' when the response headers arrive, 'error' if the request failed.
-        for await (const event of stream) { trace.event(event); warmed(event.type !== 'error'); }
-        reply = await stream.result();
-        trace.result(reply);
-        onUsage(reply);
-        const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}, raw=${trace.diagnostic.rawStopReason ?? 'unknown'}`;
-        line = summaryText(reply, detail);
-      } catch (error) {
-        trace.failure(error);
-        const category = errorCategory(error);
-        // Retry failures before a usable response, not quota/auth errors or interrupted generated output.
-        if (!signal.aborted && failures < 2 && trace.diagnostic.httpStatus !== 200 &&
-          (category === 'connection_failure' || category === 'unavailable' || category === 'timeout')) {
-          retryDelay = 1000 * 2 ** failures++ + Math.floor(Math.random() * 250);
-          continue;
+    let request = 0, failures = 0, attempts = 0;
+    const ask = async (): Promise<AssistantMessage> => {
+      for (;;) {
+        signal.throwIfAborted();
+        const warmed = prefix ? await gate(prefix, signal) : () => {};
+        const trace = new CompactorTrace(input, model, selected.thinking, thinking, ++request, base.tools?.length ?? 0);
+        let reply: AssistantMessage | undefined, failure: unknown;
+        let responded = false;
+        try {
+          const stream = registry.streamSimple(model, { ...base, messages }, {
+            sessionId: 'optchat-compactor', transport: 'sse', reasoning: thinking, signal, cacheRetention: 'short', toolChoice: 'none',
+            onPayload: payload => { const cached = model.api === 'anthropic-messages' ? cachePayload(payload) : payload; trace.payload(cached); return cached; },
+            onResponse: response => trace.response(response),
+            onProviderStreamEvent: event => trace.native(event),
+          });
+          for await (const event of stream) {
+            trace.event(event);
+            if (!responded) {
+              responded = true;
+              warmed(event.type !== 'error');
+            }
+          }
+          reply = await stream.result();
+          trace.result(reply);
+          onUsage(reply);
+        } catch (error) {
+          failure = error;
+          trace.failure(error);
+        } finally {
+          if (!responded) warmed(false);
+          diagnose(trace.finish(signal));
         }
-        throw compactorError(error, `${model.provider}/${model.id}`);
-      } finally { warmed(false); diagnose(trace.finish(signal)); }
+        const retryError = failure ?? (reply?.stopReason === 'error' ? reply : undefined);
+        if (retryError !== undefined) {
+          signal.throwIfAborted();
+          if (retryable(retryError, trace, failures, retries, signal)) {
+            await sleep(retries[failures++], undefined, { signal });
+            continue;
+          }
+          const detail = `${model.provider}/${model.id}`;
+          throw compactorError(failure ?? new Error(reply?.errorMessage ?? 'Compactor error'), detail);
+        }
+        if (!reply) throw new Error('Compactor produced no response.');
+        return reply;
+      }
+    };
+    while (attempts < 5) {
+      attempts++;
+      const reply = await ask();
+      const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}`;
+      if (reply.stopReason === 'length' || reply.content.some(block => block.type === 'toolCall')) continue;
+      const line = summaryText(reply, detail);
       tries.push(line);
-      // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces.
       if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;
       messages.push(reply);
       const cut = Buffer.from(line).subarray(0, NODE).toString('utf8').replace(/\uFFFD$/, '');
-      messages.push({ role: 'user', content: `Too long: your line is ${bytes(line)} bytes, over the 512-byte limit. Write\nthe whole line again for the same <input>, cutting just enough of the\nleast valuable items to fit before this cut:\n${cut}| ← LIMIT`, timestamp: Date.now() });
+      messages.push({ role: 'user', content: tooLong(bytes(line), cut), timestamp: Date.now() });
     }
+    if (!tries.length) throw new Error('Compactor returned no whole line in 5 tries.');
     return tries.reduce((a, b) => bytes(a) <= bytes(b) ? a : b);
   };
 }

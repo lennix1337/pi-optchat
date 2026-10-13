@@ -1,6 +1,5 @@
-import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { FileStore, storeFor, type Saved, type Store } from './store.ts';
 
 export const NODE = 512;
 export const VIEW = 128_000;
@@ -13,14 +12,12 @@ export interface Origin { source: 'claude' | 'claude-memory' | 'codex' | 'pi' | 
 export interface Entry { i: number; kind: Kind; text: string; size: number; date: string; receipt?: string; origin?: Origin }
 export interface Part { l: number; i: number }
 export interface Summary extends Part { text: string; size: number }
-/** `part` is the node to build: a message's leaf, or the merge of its two halves. */
-/** `result` is a tool call's result, so its summary can say what the call found. */
-export interface Compression { context: string; source: string; part: Part; historical?: boolean; result?: string }
+/** `part` is the node to build: a message's leaf, or the merge of its two halves. A tool result can carry the call it answers;
+ * a call can carry its output once available, so its summary preserves what it found. */
+export interface Compression { context: string; source: string; part: Part; historical?: boolean; result?: string; call?: { i: number; text: string } }
 export type Compressor = (input: Compression, signal: AbortSignal) => Promise<string>;
 const key = ({ l, i }: Part) => l * 2 ** 40 + i;
 const UNBUILT = '(not summarized yet: zoom it)';
-/** A message's node starts once fewer than this many lines before it are unbuilt (recipe §4). */
-const AHEAD = 8;
 export const start = ({ l, i }: Part) => i * 2 ** l;
 export const end = (part: Part) => start(part) + 2 ** part.l;
 export const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
@@ -42,21 +39,7 @@ export function cap(text: string, limit = CAP) {
   const tail = text.slice(/[\udc00-\udfff]/.test(text[text.length - half]) ? text.length - half + 1 : text.length - half);
   return head + notice(text.length - head.length - tail.length) + tail;
 }
-export function localDay(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-export function atomicWrite(file: string, text: string | Uint8Array) {
-  mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600 });
-  // Windows flushes only a handle opened for writing, and cannot open a directory to flush it.
-  const fd = openSync(temporary, 'r+');
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(temporary, file);
-  if (process.platform === 'win32') return;
-  const parent = openSync(resolve(file, '..'), 'r');
-  try { fsyncSync(parent); } finally { closeSync(parent); }
-}
+
 /** The index of the view's most due pair of sibling lines whose parent is built, or -1 (recipe §3.2). A pair is as due as
  * long ago it ended, in its own line size; equal pairs go oldest first. This is the order of Taelin's rollback push. */
 export function mostDue(view: readonly Part[], total: number, built: (part: Part) => boolean) {
@@ -103,33 +86,6 @@ class Sawtooth {
     return this.parts.length < lines;
   }
 }
-const otherWriter = (file: string) => new Error(`Another process wrote ${file}. Close every other Pi on this profile and restart Pi; nothing was written.`);
-/** With `size`, refuses to append unless the file still has that size. A last line left without its newline is ended first. Returns the new size. */
-export function appendJson(file: string, value: unknown, size?: number) {
-  const fd = openSync(file, 'a+', 0o600);
-  try {
-    const length = fstatSync(fd).size, last = Buffer.alloc(1);
-    if (size !== undefined && length !== size) throw otherWriter(file);
-    const torn = length > 0 && readSync(fd, last, 0, 1, length - 1) === 1 && last[0] !== 0x0a;
-    const data = Buffer.from((torn ? '\n' : '') + JSON.stringify(value) + '\n');
-    if (writeSync(fd, data) !== data.length) throw new Error(`Incomplete write: ${file}`);
-    fsyncSync(fd);
-    return fstatSync(fd).size;
-  } finally { closeSync(fd); }
-}
-function records(dir: string, warn: (s: string) => void): unknown[] {
-  if (!existsSync(dir)) return [];
-  const result: unknown[] = [];
-  for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort()) {
-    const file = join(dir, name);
-    for (const [index, line] of readFileSync(file, 'utf8').split('\n').entries()) {
-      if (!line.trim()) continue;
-      try { result.push(JSON.parse(line)); }
-      catch { warn(`Skipped damaged JSON at ${file}:${index + 1}`); }
-    }
-  }
-  return result;
-}
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -155,7 +111,6 @@ export class Memory {
   private readonly busy = new Map<number, Promise<void>>();
   private readonly retryAt = new Map<number, number>();
   private readonly reported = new Set<number>();
-  private readonly lastSeenBytes = new Map<string, number>();
   /** Messages without their node, and merges whose halves are built, oldest first, so the scheduler never scans the tree for work (recipe §4). */
   private readonly unbuilt = new Set<number>();
   private readonly merges = new Map<number, Part>();
@@ -168,20 +123,34 @@ export class Memory {
   private flushing = 0;
   private readonly chat: Sawtooth;
   private readonly compaction: Sawtooth;
+  /** The last store write still running, if any. Once an append fails, later writes are skipped and appends throw, as after a failed file write. */
+  private writing?: Promise<void>;
+  private failed?: string;
+  /** Where this memory's local files live: all of it for a FileStore, and the browser page, runs and imports for any store. */
+  readonly directory: string;
+  readonly store: Store;
   lastError?: string;
 
-  constructor(readonly directory: string, private readonly compress: Compressor,
+  /** Opens the memory in `directory` through the store `storeFor` picks, after its load. */
+  static async open(directory: string, compress: Compressor, warn: (s: string) => void = console.error, budget = VIEW, jobs = 8, retryMs?: number) {
+    const store = storeFor(directory, warn);
+    return new Memory({ directory, store, saved: await store.load() }, compress, warn, budget, jobs, retryMs);
+  }
+  /** A directory alone opens a FileStore there. `jobs`: summaries built at once, and how many unbuilt lines a new message's node
+   * waits behind. Chat keeps 8; imports pass the "Import: summaries at once" setting. */
+  constructor(source: string | { directory: string; store: Store; saved: Saved }, private readonly compress: Compressor,
     private readonly warn: (s: string) => void = console.error,
     readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number) {
     this.chat = new Sawtooth(budget, budget / 2, part => this.node(part));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
-    for (const sub of ['main', 'tree']) mkdirSync(join(directory, sub), { recursive: true, mode: 0o700 });
-    const main = join(directory, 'main'), log = records(main, warn);
-    for (const name of readdirSync(main).filter(n => n.endsWith('.jsonl'))) this.lastSeenBytes.set(join(main, name), statSync(join(main, name)).size);
+    let saved: Saved;
+    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; saved = store.load(); }
+    else ({ directory: this.directory, store: this.store, saved } = source);
+    const log = saved.entries;
     const entries = log.every(isEntry) ? log.sort((a, b) => a.i - b.i) : undefined;
     if (!entries || entries.some((entry, i) => entry.i !== i)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.');
     for (const value of entries) this.root.push({ ...value, size: bytes(`${value.kind}: ${value.text}`) });
-    for (const value of records(join(directory, 'tree'), warn)) {
+    for (const value of saved.tree) {
       if (!isSummary(value) || value.l < 0 || value.i < 0 || end(value) > this.root.length)
         throw new Error('Invalid OptChat summary record.');
       this.tree.set(key(value), { ...value, size: lineBytes(value.text) });
@@ -189,36 +158,45 @@ export class Memory {
     for (const node of this.tree.values()) this.queueParent(node);
     for (let i = 0; i < this.root.length; i++) if (!this.node({ l: 0, i })) this.unbuilt.add(i);
     // Refolding the log gives a different view than the live one, and every cache entry would miss, so the view is saved.
-    const loaded = this.load();
+    const loaded = this.load(saved.view);
     for (const part of this.view) this.compaction.push(part);
     this.compaction.fit(loaded, true);
     for (let i = loaded; i < this.root.length; i++) { this.push(i); this.fit(i + 1); }
     this.fit(); this.save(); this.schedule();
   }
-  private checkLog(next: string) {
-    const main = dirname(next), names = readdirSync(main).filter(n => n.endsWith('.jsonl'));
-    if (names.length !== this.lastSeenBytes.size || names.some(n => statSync(join(main, n)).size !== this.lastSeenBytes.get(join(main, n)))) throw otherWriter(next);
-  }
   append(kind: Kind, text: string, date = new Date().toISOString(), receipt?: string, origin?: Origin) {
     if (this.stopped) throw new Error('Memory is closed.');
+    if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
     const entry: Entry = { i: this.root.length, kind, text, date, size: bytes(`${kind}: ${text}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
-    const file = join(this.directory, 'main', `${localDay()}.jsonl`);
-    if (!this.lastSeenBytes.has(file)) this.checkLog(file);
-    this.lastSeenBytes.set(file, appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0));
     // A failed call is tried again at the next message (recipe §4). Only an import, which has no next message, also retries on a timer.
     this.retryAt.clear();
+    void this.enqueue(() => this.store.append(entry), error => {
+      this.failed ??= error instanceof Error ? error.message : String(error);
+      this.warn(`Memory could not be saved: ${this.failed}`);
+    });
     this.root.push(entry); this.push(entry.i); if (this.fit()) this.save(); this.schedule();
     return entry;
   }
   node(part: Part) { return this.tree.get(key(part)); }
   private text(part: Part) { return this.node(part)?.text ?? UNBUILT; }
+  /** Runs a store write at once when none is running, so a store that finishes its writes as it returns (FileStore) throws here
+   * as before; otherwise after the running ones, so writes land in the order Memory makes them. Returns the queued write, settled
+   * through `failed`, unless it finished at once. */
+  private enqueue(write: () => Promise<void> | undefined, failed: (error: unknown) => void) {
+    const run = () => this.failed ? undefined : write();
+    const started = this.writing ? this.writing.then(run) : run();
+    if (!started) return;
+    const settled = started.catch(failed);
+    const tail: Promise<void> = settled.catch(() => {}).then(() => { if (this.writing === tail) this.writing = undefined; });
+    this.writing = tail;
+    return settled;
+  }
   /** Takes the saved view if it still tiles the log from the start, and returns how many messages it covers. */
-  private load() {
-    const file = join(this.directory, 'view.json');
-    if (!existsSync(file)) return 0;
-    const rebuild = () => { this.warn(`Rebuilt the memory view: ${file} does not match the log.`); return 0; };
+  private load(view: string | undefined) {
+    if (view === undefined) return 0;
+    const rebuild = () => { this.warn('Rebuilt the memory view: the saved one does not match the log.'); return 0; };
     let saved: unknown;
-    try { saved = JSON.parse(readFileSync(file, 'utf8')); } catch { return rebuild(); }
+    try { saved = JSON.parse(view); } catch { return rebuild(); }
     if (!Array.isArray(saved)) return rebuild();
     const parts: Part[] = [];
     let covered = 0;
@@ -235,8 +213,9 @@ export class Memory {
   /** Saved when it merges: a view that only grew is the saved one plus a line per later message, as `load` replays it.
    * The log stays authoritative, so a failed save only warns. */
   private save() {
-    try { atomicWrite(join(this.directory, 'view.json'), JSON.stringify(this.view.map(p => [p.l, p.i]))); }
-    catch (error) { this.warn(`Could not save the memory view: ${error instanceof Error ? error.message : String(error)}`); }
+    const failed = (error: unknown) => { this.warn(`Could not save the memory view: ${error instanceof Error ? error.message : String(error)}`); };
+    try { void this.enqueue(() => this.store.saveView(JSON.stringify(this.view.map(p => [p.l, p.i]))), failed); }
+    catch (error) { failed(error); }
   }
   private push(i: number) {
     const part = { l: 0, i };
@@ -289,10 +268,10 @@ export class Memory {
       }).finally(() => { this.busy.delete(id); this.schedule(); this.events.emit('change'); });
       this.busy.set(id, promise);
     };
-    // A message's node starts once fewer than AHEAD lines before it are unbuilt; a merge, once both halves are built.
+    // A message's node starts once fewer than `jobs` lines before it are unbuilt; a merge, once both halves are built.
     let ahead = 0;
     for (const i of this.unbuilt) {
-      if (ahead++ === AHEAD) break;
+      if (ahead++ === this.jobs) break;
       if (this.busy.size >= this.jobs) return;
       if (!this.flushing && this.awaitingResult(i)) continue;
       run({ l: 0, i });
@@ -327,20 +306,36 @@ export class Memory {
       : [0, 1].map(offset => this.text({ l: part.l - 1, i: 2 * part.i + offset })).join('\n');
     const mergeSource = part.l > 0 ? [0, 1].map(offset => flat(this.text({ l: part.l - 1, i: 2 * part.i + offset }))).join('\n') : source;
     const result = part.l === 0 && this.root[part.i].kind === 'tool' ? this.resultOf(part.i) : undefined;
+    const call = part.l === 0 ? this.callOf(part.i) : undefined;
     let text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
-      historical: this.root.slice(start(part), end(part)).some(entry => !!entry.origin), ...(result === undefined ? {} : { result: cap(result, RESULT) }) },
-      this.controller.signal)).trim();
+      historical: this.root.slice(start(part), end(part)).some(entry => !!entry.origin),
+      ...(result === undefined ? {} : { result: cap(result, RESULT) }),
+      ...(call ? { call: { i: call.i, text: cap(`tool: ${call.text}`, 4000) } } : {}) }, this.controller.signal)).trim();
+    // A model may copy a differently tagged line from <chat>; the source message keeps its own kind.
     if (text && part.l === 0 && text !== source) text = labeled(this.root[part.i].kind, text);
     if (this.stopped) return;
     if (!text) throw new Error('Compactor returned an empty summary.');
     const node = { ...part, text, size: lineBytes(text) };
-    appendJson(join(this.directory, 'tree', `${localDay()}.jsonl`), node);
+    // A failed node write fails the build, which is retried.
+    const written = this.enqueue(() => this.store.appendNode(node), error => { throw error; });
+    if (written) await written;
     this.tree.set(key(part), node); this.retryAt.delete(key(part)); this.merges.delete(key(part)); this.queueParent(part);
     if (!part.l) { this.unbuilt.delete(part.i); this.chat.built(part.i); this.compaction.built(part.i); }
     if (!this.retryAt.size) this.lastError = undefined;
     if (this.fit()) this.save();
   }
-  /** The compactions' view up to the node. It stops at the first unbuilt line, so no call ever sees a placeholder (recipe §4). */
+  /** The tool call a result answers: a run of calls is followed by their results in the same order. A result that doesn't
+   * start with the call's tool name (an `Agent error`, an odd import) has none. */
+  private callOf(i: number) {
+    if (this.root[i].kind !== 'echo') return;
+    let results = i;
+    while (this.root[results - 1]?.kind === 'echo') results--;
+    let calls = results;
+    while (this.root[calls - 1]?.kind === 'tool') calls--;
+    const call = calls + i - results < results ? this.root[calls + i - results] : undefined;
+    return call && this.root[i].text.startsWith(`${call.text.split(' ', 1)[0]}:`) ? call : undefined;
+  }
+  /** The compactions' view ends before the first unbuilt line so an unbuilt placeholder cannot distort a summary. */
   private compactionView(part: Part) {
     const boundary = part.l === 0 ? start(part) : end(part), lines: string[] = [];
     for (const p of this.compaction.parts) { if (end(p) > boundary || !this.node(p)) break; lines.push(`${start(p)}+${2 ** p.l}|${flat(this.text(p))}`); }
@@ -357,7 +352,7 @@ export class Memory {
    * stream of them would otherwise take every worker and the views could never merge. */
   async settle(signal?: AbortSignal, until: 'turn' | 'tree' | 'ahead' = 'turn'): Promise<void> {
     const done = () => until === 'tree' ? this.ready && this.busy.size === 0 && this.tree.size === this.expectedNodes()
-      : until === 'ahead' ? this.unbuilt.size + this.merges.size < AHEAD
+      : until === 'ahead' ? this.unbuilt.size + this.merges.size < this.jobs
       : this.ready || this.stalled;
     if (done()) return;
     if (this.stopped || signal?.aborted) throw new Error('Memory wait cancelled.');
@@ -390,7 +385,8 @@ export class Memory {
       let to = Math.min(text.length, from + page);
       // A one-unit page on a pair takes the whole pair, so the next offset always moves forward.
       if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to += to - 1 === from ? 1 : -1;
-      return `${id}+1|${kind}: ${text.slice(from, to)}\n[showing characters ${from}-${to} of ${text.length}${to < text.length ? `; next page: offset ${to}` : ''}]`;
+      const hint = text.length <= PAGE ? `\n[note: this message is only ${text.length.toLocaleString('en-US')} characters and fits in one zoom; offset/limit are for messages over ${PAGE.toLocaleString('en-US')}]` : '';
+      return `${id}+1|${kind}: ${text.slice(from, to)}\n[showing characters ${from}-${to} of ${text.length}${to < text.length ? `; next page: offset ${to}` : ''}]${hint}`;
     }
     if (offset !== undefined) throw new Error('offset and limit page one message: use them with n = 1.');
     const l = Math.log2(n) - 1, i = 2 * id / n;
@@ -417,6 +413,6 @@ export class Memory {
   }
   async close() {
     this.stopped = true; this.controller.abort(); clearTimeout(this.retryTimer);
-    this.events.emit('change'); await Promise.allSettled(this.busy.values());
+    this.events.emit('change'); await Promise.allSettled(this.busy.values()); await this.writing;
   }
 }

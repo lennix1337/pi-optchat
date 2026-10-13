@@ -3,15 +3,17 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { execFileSync } from 'node:child_process';
+import { crc32, deflateRawSync } from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { Memory, bytes, localDay, type Compressor } from '../src/memory.ts';
+import { Memory, bytes, type Compressor } from '../src/memory.ts';
+import { localDay } from '../src/store.ts';
 import { scanLocal, scanChatGPT, scanClaudeMemories, readConversation, timestamp, type Conversation, type ImportedEntry } from '../src/import/sources.ts';
 import { prepareImport, runImport, memoryDirectory, pendingImport, discardImport, deduplicate, chronological } from '../src/import/job.ts';
 import { chooseImport, showProgress } from '../src/import/ui.ts';
+import { removeDir } from './support.ts';
 
 const date = '2026-01-02T12:00:00.000Z';
 const short: Compressor = async () => 'Historical decision summarized';
@@ -43,7 +45,7 @@ test('Claude imports user messages and final replies, omitting tool loops and re
     assert.equal(parsed.entries[0].date, date);
     const renamed = await readConversation({ ...conversation('claude', file), title: 'Renamed', project: '/moved' });
     assert.deepEqual(renamed.entries.map(e => e.receipt), parsed.entries.map(e => e.receipt));
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Claude slash and shell commands stay as typed, with or without arguments, and their local output is dropped', async () => {
@@ -69,7 +71,7 @@ test('Claude slash and shell commands stay as typed, with or without arguments, 
     assert.equal(parsed.entries[2].receipt, `import:${createHash('sha256').update(JSON.stringify(['claude', 'conversation-1', 'skill', 'user', raw])).digest('hex')}`, 'the receipt still hashes the raw text');
     const scan = await scanLocal('claude', [dir]);
     assert.equal(scan.conversations[0].title, '/compact', 'the title is the command as typed, not its markup');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Codex imports user messages and final answers once, excluding commentary, tools and agent traffic', async () => {
@@ -96,7 +98,7 @@ test('Codex imports user messages and final answers once, excluding commentary, 
     assert.match(parsed.entries[1].text, /ANSWER/);
     assert.equal(parsed.warnings.length, 1);
     assert.equal(new Set(parsed.entries.map(e => e.receipt)).size, 2);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 const codexFixture = fileURLToPath(new URL('./fixtures/codex-rollout.jsonl', import.meta.url));
@@ -125,7 +127,7 @@ test('Codex titles and entries skip the context Codex injects, and keep what the
     const raw = '<environment_context>\n  <cwd>/home/dev/synthetic-app</cwd>\n</environment_context>\nNow document the flag in the README.';
     assert.equal(parsed.entries[2].receipt, receipt('codex', c.id, 'msg-3', 'user', raw), 'the receipt still hashes the raw text');
     assert.equal(parsed.entries[0].receipt, receipt('codex', c.id, 'msg-1', 'user', 'Add a --dry-run flag to the sync command.'));
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Codex phase markers exclude commentary and commit explicit final answers immediately', async () => {
@@ -143,7 +145,7 @@ test('Codex phase markers exclude commentary and commit explicit final answers i
     const parsed = await readConversation(conversation('codex', file));
     assert.deepEqual(parsed.entries.map(e => e.origin?.message), ['answer']);
     assert.deepEqual(parsed.warnings, []);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('legacy Claude replies survive tool loops while interrupted text and distinct repeated requests are handled correctly', async () => {
@@ -165,7 +167,20 @@ test('legacy Claude replies survive tool loops while interrupted text and distin
     const parsed = await readConversation(conversation('claude', file));
     assert.deepEqual(parsed.entries.map(e => e.origin?.message), ['u1', 'answer', 'u2', 'u3']);
     assert.doesNotMatch(JSON.stringify(parsed.entries), /NOISE|Checking now|Unfinished reply|Truncated reply/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
+});
+
+const claudeFixture = fileURLToPath(new URL('./fixtures/claude-transcript.jsonl', import.meta.url));
+
+test('a current Claude Code transcript drops interrupt markers with their cut-off reply, and keeps messages typed while Claude works, once', async () => {
+  const parsed = await readConversation(conversation('claude', claudeFixture));
+  assert.deepEqual(parsed.entries.map(e => [e.kind, e.origin?.message]),
+    [['user', 'u1'], ['user', 'u2'], ['user', 'q1'], ['user', 'u3'], ['user', 'q4'], ['talk', 'a6:0'], ['user', 'u4'], ['user', 'u5'], ['talk', 'a8:0']]);
+  assert.deepEqual(parsed.entries.filter(e => e.kind === 'user').map(e => e.text.slice(e.text.indexOf(']\n') + 2)),
+    ['Write the deploy plan for the sync service.', 'Shorter, three steps.', 'Also skip the staging step.', 'Go on without deploying.', 'And log each step.', 'Now write the changelog.', 'Mention the API change.']);
+  assert.equal(parsed.entries[2].date, '2026-03-04T09:00:07.000Z');
+  assert.doesNotMatch(JSON.stringify(parsed.entries), /Request interrupted|step 1 of 12|task-notification|teammate-message/);
+  assert.deepEqual(parsed.warnings, []);
 });
 
 test('legacy Codex replies are superseded by later work and discarded on interruption', async () => {
@@ -181,7 +196,7 @@ test('legacy Codex replies are superseded by later work and discarded on interru
   try {
     const parsed = await readConversation(conversation('codex', file));
     assert.deepEqual(parsed.entries.map(e => e.origin?.message), ['u1', 'a1', 'u2', 'a2', 'u3']);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Codex discovery and parsing exclude delegated sessions while keeping user forks', async () => {
@@ -196,7 +211,7 @@ test('Codex discovery and parsing exclude delegated sessions while keeping user 
     assert.deepEqual(scan.conversations.map(c => c.file), [parent]);
     assert.equal((await readConversation(conversation('codex', child))).entries.length, 0);
     assert.equal((await readConversation(scan.conversations[0])).entries.length, 1);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 /** Pi and OMP session entries: one id/parentId tree, written in file order. */
@@ -256,7 +271,7 @@ test('Pi / OMP imports what the user typed and the replies that ended a turn, an
       /SECRET|intermediate|TOOL OUTPUT|TEXT BEFORE|REMINDER|NUDGE|SYNTHETIC|MENTIONED|BACKGROUND|OUTPUT|SKILL BODY|ABORTED|FAILED|COMPACTION|RENAMED/);
     assert.deepEqual(parsed.warnings, []);
     assert.equal(parsed.entries[0].text.split('\n')[0], `[Historical pi · 2026-01-02 12:00Z · conversation- · Fixture]`);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('a Pi / OMP fork adds only its new messages, though it copies the earlier ones under a new session id', async () => {
@@ -269,7 +284,7 @@ test('a Pi / OMP fork adds only its new messages, though it copies the earlier o
     const { added, skipped } = deduplicate([], [...await read(original, 'original'), ...await read(fork, 'fork')]);
     assert.deepEqual(added.map(body), ['first question', 'first answer', 'question on the fork']);
     assert.equal(skipped, 2);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Pi / OMP discovery skips sessions that ran under OptChat and the subagent logs stored beside a session', async () => {
@@ -292,7 +307,7 @@ test('Pi / OMP discovery skips sessions that ran under OptChat and the subagent 
     assert.ok(scan.conversations.every(c => c.date === '2026-01-02T12:05:00.000Z'), 'the start is the first message the user typed');
     assert.match(scan.note ?? '', /^1 session ran under OptChat/);
     assert.deepEqual(scan.warnings, []);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { removeDir(root); }
 });
 
 test('ChatGPT keeps user messages and final replies on each branch with stable identities', async () => {
@@ -320,7 +335,7 @@ test('ChatGPT keeps user messages and final replies on each branch with stable i
     assert.notEqual(changed.entries.at(-1)?.receipt, parsed.entries.at(-1)?.receipt);
     const backToOriginal = await readConversation({ ...scan.conversations[0], exported: { ...exported, update_time: 400 } });
     assert.notEqual(backToOriginal.entries.at(-1)?.receipt, parsed.entries.at(-1)?.receipt);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Claude discovery keeps the parent conversation and skips modern, legacy, and sidechain child logs', async () => {
@@ -345,7 +360,7 @@ test('Claude discovery keeps the parent conversation and skips modern, legacy, a
     assert.match(parsed.entries[1].text, /Child reported useful findings/);
     assert.deepEqual(scan.warnings, []);
     await assert.rejects(scanLocal('claude', [dir], AbortSignal.abort()));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { removeDir(root); }
 });
 
 test('a resumed Claude session adds only its new messages, also over entries an older import stored with another header', async () => {
@@ -365,7 +380,7 @@ test('a resumed Claude session adds only its new messages, also over entries an 
     // An older import stored the original with a longer header and the command as Claude Code logged it.
     const stored = a.map((e, i) => ({ ...e, i, size: 0, text: `[Historical claude · ${e.date} · conversation aaaa · Fixture]\n${body(e) === '/model opus' ? model : body(e)}` }));
     assert.deepEqual(deduplicate(stored, b).added.map(body), ['q3', 'r3', 'q2 edited'], 'a uuid with other text is another message');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('Claude discovery checks late sidechain markers without extending metadata extraction or Codex scanning', async () => {
@@ -389,7 +404,7 @@ test('Claude discovery checks late sidechain markers without extending metadata 
     const codex = await scanLocal('codex', [dir]);
     assert.deepEqual(codex.conversations.map(c => c.id), ['codex-parent']);
     assert.deepEqual(codex.warnings, []);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('discovery continues when listed files disappear before stat or stream open', async () => {
@@ -409,7 +424,7 @@ test('discovery continues when listed files disappear before stat or stream open
     assert.ok(scan.warnings.some(w => w.includes(beforeStat)));
     assert.ok(scan.warnings.some(w => w.includes(beforeOpen)));
     assert.ok(scan.warnings.every(w => w.includes('conversation skipped')));
-  } finally { patched.mock.restore(); syncBuiltinESMExports(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { patched.mock.restore(); syncBuiltinESMExports(); removeDir(dir); }
 });
 
 test('a selected transcript disappearing warns without importing it; cancellation and unrelated I/O errors still fail', async () => {
@@ -427,21 +442,61 @@ test('a selected transcript disappearing warns without importing it; cancellatio
     const reason = new Error('User cancelled');
     await assert.rejects(readConversation(scan.conversations[0], AbortSignal.abort(reason)), error => error === reason);
     await assert.rejects(readConversation(conversation('claude', dir)), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'EISDIR');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
-const hasZip = (() => { try { execFileSync('zip', ['-v'], { stdio: 'ignore' }); return true; } catch { return false; } })();
-test('ChatGPT ZIP reads numbered conversation files without extracting other archive data', { skip: !hasZip && 'needs the zip command' }, async () => {
+/** The ZIP fixture, built as bytes (local headers, data, central directory, EOCD), so no `zip` binary is needed. `crc` overrides the real CRC-32 to fake corruption. */
+const zipArchive = (members: { name: string; data: Buffer; stored?: boolean; crc?: number }[]) => {
+  const parts: Buffer[] = [], central: Buffer[] = [];
+  let offset = 0;
+  for (const m of members) {
+    const method = m.stored ? 0 : 8, data = m.stored ? m.data : deflateRawSync(m.data), name = Buffer.from(m.name), crc = m.crc ?? crc32(m.data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(m.data.length, 22); local.writeUInt16LE(name.length, 26);
+    parts.push(local, name, data);
+    const record = Buffer.alloc(46);
+    record.writeUInt32LE(0x02014b50, 0); record.writeUInt16LE(20, 4); record.writeUInt16LE(20, 6); record.writeUInt16LE(method, 10);
+    record.writeUInt32LE(crc, 16); record.writeUInt32LE(data.length, 20); record.writeUInt32LE(m.data.length, 24);
+    record.writeUInt16LE(name.length, 28); record.writeUInt32LE(offset, 42);
+    central.push(record, name);
+    offset += 30 + name.length + data.length;
+  }
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(members.length, 8); eocd.writeUInt16LE(members.length, 10);
+  eocd.writeUInt32LE(central.reduce((n, r) => n + r.length, 0), 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, ...central, eocd]);
+};
+const chatJson = (id: string, text: string) => Buffer.from(JSON.stringify([{ id, title: id, create_time: 100, mapping: {
+  u: { parent: null, message: { id: 'u', author: { role: 'user' }, create_time: 100, content: { parts: [text] } } } } }]));
+
+test('ChatGPT ZIP reads numbered conversation files without extracting other archive data', async () => {
   const dir = temp(), file = join(dir, 'conversations_1.json'), zip = join(dir, 'export.zip');
-  writeFileSync(file, JSON.stringify([{ id: 'zip-chat', title: 'ZIP fixture', create_time: 100, mapping: {
-    u: { parent: null, message: { id: 'u', author: { role: 'user' }, create_time: 100, content: { parts: ['zip fixture message'] } } },
-  } }]));
+  const data = chatJson('zip-chat', 'zip fixture message');
+  writeFileSync(file, data);
   try {
-    execFileSync('zip', ['-q', zip, 'conversations_1.json'], { cwd: dir }); rmSync(file);
+    writeFileSync(zip, zipArchive([{ name: 'conversations_1.json', data }, { name: 'notes.txt', data: Buffer.from('not a conversation') }]));
+    rmSync(file);
     const scan = await scanChatGPT(zip); assert.equal(scan.conversations.length, 1);
     const parsed = await readConversation(scan.conversations[0]); assert.equal(parsed.entries.length, 1);
     assert.match(parsed.entries[0].text, /zip fixture message/); assert.equal(existsSync(file), false);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
+});
+
+test('a ChatGPT ZIP reads stored and deflated members, and refuses a corrupt member or a file that is not a ZIP', async () => {
+  const dir = temp(), zip = join(dir, 'export.zip'), corrupt = join(dir, 'corrupt.zip'), fake = join(dir, 'fake.zip');
+  const stored = chatJson('stored-chat', 'stored member message'), deflated = chatJson('deflated-chat', 'deflated member message');
+  writeFileSync(zip, zipArchive([{ name: 'conversations_1.json', data: stored, stored: true }, { name: 'export/conversations_2.json', data: deflated }]));
+  writeFileSync(corrupt, zipArchive([{ name: 'conversations.json', data: stored, crc: (crc32(stored) ^ 1) >>> 0 }]));
+  writeFileSync(fake, 'not a zip at all');
+  try {
+    const scan = await scanChatGPT(zip);
+    assert.deepEqual(scan.conversations.map(c => [c.id, c.file]).sort(), [[`deflated-chat`, `${zip}:export/conversations_2.json`], ['stored-chat', `${zip}:conversations_1.json`]]);
+    for (const c of scan.conversations) assert.deepEqual(c.exported, JSON.parse(String(c.id === 'stored-chat' ? stored : deflated))[0]);
+    await assert.rejects(scanChatGPT(corrupt), /Could not read conversations\.json in .*Extract the ZIP and select the folder instead\./);
+    // The tool's own reason, not just the file name unzip prints first.
+    await assert.rejects(scanChatGPT(fake), /Could not read .*fake\.zip: (?!\[)\S.*\. Extract the ZIP and select the folder instead\./);
+  } finally { removeDir(dir); }
 });
 
 test('Claude memories import each topic file once as a dated note, and an edited file as a newer note', async () => {
@@ -472,7 +527,7 @@ test('Claude memories import each topic file once as a dated note, and an edited
     writeFileSync(pr, readFileSync(pr, 'utf8').replace('is open', 'is merged'));
     const { added } = deduplicate(existing, await read());
     assert.equal(added.length, 1); assert.match(added[0].text, /PR #7023 is merged/); assert.ok(added[0].date > date, 'edited note is dated by the read, not the scan');
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { removeDir(root); }
 });
 
 test('append activates only after complete indexing, retains original summaries, and repeated imports add nothing', async () => {
@@ -494,7 +549,13 @@ test('append activates only after complete indexing, retains original summaries,
     assert.match(activated.zoom(1, 1), /Imported one/);
     assert.deepEqual(deduplicate(activated.root, [entry('one')]), { added: [], skipped: 1 });
     assert.ok(existsSync(join(dir, 'main')));
-  } finally { await old.close(); await activated?.close(); rmSync(dir, { recursive: true, force: true }); }
+    // A second import starts from the generation the first one made, which the journal names as a portable path.
+    await activated.close();
+    prepareImport(dir, activated, [entry('two')], 'append');
+    await runImport(dir, short, AbortSignal.timeout(5000));
+    activated = new Memory(memoryDirectory(dir), short);
+    assert.deepEqual(activated.root.map(e => e.receipt).slice(1), ['import:one', 'import:two']);
+  } finally { await old.close(); await activated?.close(); removeDir(dir); }
 });
 
 test('paused imports retain completed summaries, resume from disk, and preserve prior generation through rebuild', async () => {
@@ -515,7 +576,7 @@ test('paused imports retain completed summaries, resume from disk, and preserve 
     assert.equal(current.root[0].receipt, 'import:a'); assert.equal(current.root.at(-1)?.text, 'native later');
     assert.ok(current.tree.size >= saved);
     assert.ok(readFileSync(join(dir, 'main', localDay() + '.jsonl'), 'utf8').includes('native later'));
-  } finally { await old.close(); await current?.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await old.close(); await current?.close(); removeDir(dir); }
 });
 
 test('discard leaves original memory active and a completed pointer swap can finish recovery idempotently', async () => {
@@ -536,10 +597,10 @@ test('discard leaves original memory active and a completed pointer swap can fin
     assert.ok(!existsSync(staged));
     assert.equal(memoryDirectory(dir), join(dir, job.target));
     assert.ok(existsSync(join(dir, 'imports', `${job.id}.json`)));
-  } finally { await old.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await old.close(); removeDir(dir); }
 });
 
-test('an import summarizes up to 8 messages at once, and its merges keep the compactions\' view in budget', async () => {
+for (const jobs of [undefined, 3, 16]) test(`an import summarizes ${jobs ?? '8 (default)'} messages at once, and its merges keep the compactions' view in budget`, async () => {
   // 120 summaries of 500 bytes overflow the compactions' 32 KB view, so it must merge while messages are still being logged.
   const dir = temp(), old = new Memory(dir, short);
   const imported = Array.from({ length: 120 }, (_, i) => entry(`m${i}`, date, `${i} ${'imported detail '.repeat(40)}`));
@@ -554,10 +615,10 @@ test('an import summarizes up to 8 messages at once, and its merges keep the com
   try {
     await old.close();
     assert.ok(prepareImport(dir, old, imported, 'append'));
-    await runImport(dir, compress, AbortSignal.timeout(20000));
-    assert.equal(peak, 8);
+    await runImport(dir, compress, AbortSignal.timeout(20000), jobs);
+    assert.equal(peak, jobs ?? 8);
     assert.ok(widest < 40_000, `compaction view reached ${widest} bytes`);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('append keeps the saved view with the tree, so the old view stays cached; rebuild starts without one', async () => {
@@ -570,7 +631,7 @@ test('append keeps the saved view with the tree, so the old view stays cached; r
     discardImport(dir);
     const rebuilt = prepareImport(dir, old, [entry('b')], 'rebuild'); assert.ok(rebuilt);
     assert.equal(existsSync(join(dir, rebuilt.target, 'view.json')), false);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('a staged plan with an invalid entry, or missing lines, is refused before anything is written', async () => {
@@ -590,7 +651,7 @@ test('a staged plan with an invalid entry, or missing lines, is refused before a
       assert.equal(memoryDirectory(dir), dir);
       assert.deepEqual(readdirSync(join(dir, job.target, 'main')), ['000-import.jsonl']);
     }
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('chronological rebuild keeps imported conversations and native turns together', () => {
@@ -611,7 +672,7 @@ test('a failed progress dialog cancels and joins its worker before returning', a
     }, new AbortController().signal), /UI closed/);
     assert.equal(stopped, true);
     assert.equal(memoryDirectory(dir), dir);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('preparation source dialog receives shutdown cancellation before staging any data', async () => {
@@ -623,7 +684,7 @@ test('preparation source dialog receives shutdown cancellation before staging an
     }, input: async () => undefined, confirm: async () => false, notify: () => {}, setWidget: () => {}, custom: async () => { throw new Error('unexpected picker'); } };
     const task = chooseImport({ ui }, 'test', memory, 'fixture', controller.signal); controller.abort();
     assert.equal(await task, undefined); assert.equal(pendingImport(dir), undefined);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('an imported message header names the source, the minute, 13 characters of the conversation id and the title, and the full id stays in the origin', async () => {
@@ -636,7 +697,7 @@ test('an imported message header names the source, the minute, 13 characters of 
       assert.equal(entry.text.split('\n')[0], `[Historical ${source} · 2026-01-02 12:00Z · ${id.slice(0, 13)} · Fixture]`);
       assert.equal(entry.origin?.conversation, id);
     }
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('a time without a zone is UTC whatever the machine zone', () => {
@@ -684,5 +745,5 @@ test('a Claude memory with a folded or literal YAML description imports the text
     assert.deepEqual(texts.get('literal')?.slice(1, 3), ['first line second line', '']);
     assert.deepEqual(texts.get('plain')?.slice(1, 3), ['one line', '']);
     for (const lines of texts.values()) assert.match(lines[0], /· type user · /, 'a key after the block still parses');
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { removeDir(root); }
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { createAssistantMessageEventStream, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -98,7 +99,7 @@ test('independent zooms preserve complete text, bounded pages, and individual fa
       assert.equal(reply.status, 'fulfilled');
       if (reply.status === 'fulfilled') {
         assert.equal(reply.value.content[0].type, 'text');
-        assert.equal(reply.value.content[0].text, `${id}+1|${kind}: ${character.repeat(100)}\n[showing characters 0-100 of 2000; next page: offset 100]`);
+        assert.equal(reply.value.content[0].text, `${id}+1|${kind}: ${character.repeat(100)}\n[showing characters 0-100 of 2000; next page: offset 100]\n[note: this message is only 2,000 characters and fits in one zoom; offset/limit are for messages over 25,000]`);
       }
     }
     const whole = await Promise.all([0, 1].map(id => zoom.execute('whole', { id, n: 1 })));
@@ -110,13 +111,17 @@ test('independent zooms preserve complete text, bounded pages, and individual fa
 });
 
 test('zoom(agent) gives a subagent\'s whole chat, in pages when it is long', async () => {
-  const chats: Record<string, string> = { ab12cd34: 'user: task\n\ntalk: done', long: 'x'.repeat(PAGE + 10) };
-  const [zoom] = memoryTools(() => { throw new Error('memory is not read for an agent\'s chat'); }, id => chats[id] ?? '');
-  const execute = zoom.execute as (id: string, args: { id?: number; n?: number; agent?: string; offset?: number }) => Promise<{ content: { type: string; text?: string }[] }>;
+  const chats: Record<string, readonly AgentMessage[]> = {
+    ab12cd34: [{ role: 'user', content: 'task', timestamp: 0 }],
+    long: [{ role: 'user', content: 'x'.repeat(PAGE + 10), timestamp: 0 }],
+  };
+  const [zoom] = memoryTools(() => { throw new Error('memory is not read for an agent\'s chat'); }, id => chats[id]);
+  const execute = zoom.execute as (id: string, args: { id?: number | string; n?: number; agent?: string; offset?: number }) => Promise<{ content: { type: string; text?: string }[] }>;
   const read = async (args: Parameters<typeof execute>[1]) => (await execute('call', args)).content.map(c => c.text ?? '').join('');
-  assert.equal(await read({ agent: 'ab12cd34' }), 'user: task\n\ntalk: done');
-  assert.equal(await read({ agent: 'long' }), `${'x'.repeat(PAGE)}\n[showing characters 0-${PAGE} of ${PAGE + 10}; next page: offset ${PAGE}]`);
-  assert.equal(await read({ agent: 'long', offset: PAGE }), 'x'.repeat(10));
-  await assert.rejects(read({ agent: 'nobody' }), /No chat of a subagent nobody/);
+  const short = 'user|task', long = `user|${'x'.repeat(PAGE + 10)}`;
+  assert.equal(await read({ agent: 'ab12cd34' }), `${short}\n[characters 0-${short.length} of ${short.length}]`);
+  assert.equal(await read({ agent: 'long' }), `${long.slice(0, PAGE)}\n[characters 0-${PAGE} of ${long.length}; go on with offset ${PAGE}]`);
+  assert.equal(await read({ agent: 'long', offset: PAGE }), `${long.slice(PAGE)}\n[characters ${PAGE}-${long.length} of ${long.length}]`);
+  await assert.rejects(read({ agent: 'nobody' }), /No run nobody/);
   await assert.rejects(read({}), /zoom takes id and n, or agent/);
 });

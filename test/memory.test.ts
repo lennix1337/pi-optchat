@@ -1,15 +1,20 @@
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, appendFileSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, appendFileSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Memory, appendJson, cap, CAP, start, end, bytes, localDay, mostDue, type Compression, type Part } from '../src/memory.ts';
+import { Memory, cap, CAP, start, end, bytes, mostDue, type Compression, type Part } from '../src/memory.ts';
+import { appendJson, localDay } from '../src/store.ts';
 import { lockProfile } from '../src/profiles.ts';
 import { splitView, cachePayload } from '../src/cache.ts';
 import { logMessage, buildContext, boundedMessage } from '../src/transcript.ts';
 import { Inbox } from '../src/inbox.ts';
+import { compaction } from '../src/prompts.ts';
 import type { ToolResultMessage } from '@earendil-works/pi-ai';
 import type { AssistantMessage, SystemMessage, UserMessage } from '@earendil-works/pi-ai';
+import { removeDir } from './support.ts';
 
 test('tree covers all history, fits incrementally, and exact originals survive restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
@@ -37,7 +42,7 @@ test('tree covers all history, fits incrementally, and exact originals survive r
     assert.deepEqual(memory.root.slice(0, 48).map(e => e.text), originals);
     assert.match(memory.zoom(17, 1), /valuable detail/);
     assert.throws(() => memory.zoom(3, 4), /No line/);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('without a retry delay, a failed summary is tried again at the next message, as in the recipe', async () => {
@@ -54,7 +59,7 @@ test('without a retry delay, a failed summary is tried again at the next message
     await memory.settle(AbortSignal.timeout(2000));
     assert.equal(attempts, 2, 'the next message retries it');
     assert.ok(memory.ready); assert.equal(memory.lastError, undefined);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a turn waits for pending summaries, goes on once they have all failed, and failures keep retrying', async () => {
@@ -80,7 +85,7 @@ test('a turn waits for pending summaries, goes on once they have all failed, and
     release();
     await memory.settle(AbortSignal.timeout(2000));
     assert.ok(memory.ready); assert.equal(memory.lastError, undefined);
-  } finally { release(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { release(); await memory.close(); removeDir(dir); }
 });
 
 test('a tree wait (imports) keeps waiting through failures', async () => {
@@ -90,7 +95,7 @@ test('a tree wait (imports) keeps waiting through failures', async () => {
     memory.append('user', 'large message '.repeat(100));
     await assert.rejects(memory.settle(AbortSignal.timeout(100), 'tree'), /cancelled/);
     await memory.settle(AbortSignal.timeout(100));
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a turn waits for the view to be built, not for merges that bring it under budget', async () => {
@@ -107,7 +112,7 @@ test('a turn waits for the view to be built, not for merges that bring it under 
     release();
     await memory.settle(AbortSignal.timeout(2000), 'tree');
     assert.ok(memory.size <= memory.budget);
-  } finally { release(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { release(); await memory.close(); removeDir(dir); }
 });
 
 test('progress counts summaries against the largest backlog since it was last empty', async () => {
@@ -127,7 +132,7 @@ test('progress counts summaries against the largest backlog since it was last em
     assert.deepEqual(memory.progress(), { done: 0, total: 0, retryIn: undefined }, 'resets when the backlog drains');
     memory.append('user', 'e'.repeat(600));
     assert.deepEqual(memory.progress(), { done: 0, total: 1, retryIn: undefined }, 'a new backlog starts from zero');
-  } finally { release(); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { release(); await memory.close(); removeDir(dir); }
 });
 
 test('torn final line is reported and the next append remains readable', async () => {
@@ -139,7 +144,7 @@ test('torn final line is reported and the next append remains readable', async (
   memory.append('user', 'second'); await memory.close();
   memory = new Memory(dir, async () => 'summary', () => {});
   try { assert.equal(warnings.length, 1); assert.deepEqual(memory.root.map(e => e.text), ['first', 'second']); }
-  finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await memory.close(); removeDir(dir); }
 });
 
 test('a second writer on one profile is refused before it writes, and the profile still opens', async () => {
@@ -155,7 +160,7 @@ test('a second writer on one profile is refused before it writes, and the profil
   } finally { await first.close(); await second.close(); }
   const reopened = new Memory(dir, compress, () => {});
   try { assert.deepEqual(reopened.root.map(e => e.text), ['from the first writer']); }
-  finally { await reopened.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await reopened.close(); removeDir(dir); }
 });
 
 test('a second writer that has seen today\'s file is refused after the other appends to it', async () => {
@@ -168,7 +173,7 @@ test('a second writer that has seen today\'s file is refused after the other app
   } finally { await first.close(); await second.close(); }
   const reopened = new Memory(dir, compress, () => {});
   try { assert.deepEqual(reopened.root.map(e => e.text), ['one', 'two']); }
-  finally { await reopened.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await reopened.close(); removeDir(dir); }
 });
 
 test('a day file that another process created first is caught, and an ordinary midnight rollover is not', async () => {
@@ -188,7 +193,7 @@ test('a day file that another process created first is caught, and an ordinary m
   } finally { mock.timers.reset(); await Promise.all(opened.map(m => m.close())); }
   const reopened = new Memory(dir, compress, () => {});
   try { assert.deepEqual(reopened.root.map(e => e.text), ['before midnight', 'after midnight', 'b on the third', 'b again']); }
-  finally { await reopened.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await reopened.close(); removeDir(dir); }
 });
 
 test('a second writer whose first write starts a new day file is refused when the other wrote an older day file', async () => {
@@ -204,7 +209,7 @@ test('a second writer whose first write starts a new day file is refused when th
   } finally { mock.timers.reset(); await Promise.all(opened.map(m => m.close())); }
   const reopened = new Memory(dir, compress, () => {});
   try { assert.deepEqual(reopened.root.map(e => e.text), ['a on the first']); }
-  finally { await reopened.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await reopened.close(); removeDir(dir); }
 });
 
 test('appendJson appends without a size, and with one it refuses a file of any other size', () => {
@@ -216,7 +221,7 @@ test('appendJson appends without a size, and with one it refuses a file of any o
     assert.equal(two, readFileSync(file).length);
     assert.throws(() => appendJson(file, { n: 3 }, one), /nothing was written/);
     assert.equal(readFileSync(file, 'utf8'), '{"n":1}\n{"n":2}\n');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('two writers that each summarize the same log leave a tree that still loads', async () => {
@@ -233,7 +238,7 @@ test('two writers that each summarize the same log leave a tree that still loads
   try {
     await reopened.settle(AbortSignal.timeout(5000), 'tree');
     assert.equal(reopened.root.length, 3); assert.equal(reopened.tree.size, a.tree.size);
-  } finally { await reopened.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await reopened.close(); removeDir(dir); }
 });
 
 test('a live profile cannot be opened by a second writer; other profiles can run', async () => {
@@ -242,9 +247,9 @@ test('a live profile cannot be opened by a second writer; other profiles can run
   try {
     await assert.rejects(lockProfile(dir, 'second writer'), /test owner/);
     mkdirSync(dir + '-other');
-    const other = await lockProfile(dir + '-other', 'other profile'); await other(); rmSync(dir + '-other', { recursive: true, force: true });
+    const other = await lockProfile(dir + '-other', 'other profile'); await other(); removeDir(dir + '-other');
   } finally { await unlock(); }
-  const again = await lockProfile(dir, 'after close'); await again(); rmSync(dir, { recursive: true, force: true });
+  const again = await lockProfile(dir, 'after close'); await again(); removeDir(dir);
 });
 
 test('the view goes in blocks of 4 lines, with marks on its last whole block, 20 and 40 blocks before it, and at the request\'s end', () => {
@@ -317,7 +322,7 @@ test('the view merges in one batch from its budget down to half, and between bat
       previous = [...memory.view];
     }
     assert.ok(batches >= 5 && batches <= 15, `${batches} batches over 120 messages`);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('the view is saved and loaded as it was, and rebuilt only when the saved one no longer tiles the log', async () => {
@@ -346,7 +351,7 @@ test('the view is saved and loaded as it was, and rebuilt only when the saved on
     assert.match(warnings.join('\n'), /Rebuilt the memory view/);
     assert.equal(start(memory.view[0]), 0); assert.equal(end(memory.view.at(-1)!), 17);
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'view.json'), 'utf8')), parts(memory));
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('compactions get their own view, a quarter of the budget at most, that ends at the node and between its batches only grows', async () => {
@@ -378,13 +383,13 @@ test('compactions get their own view, a quarter of the budget at most, that ends
     assert.ok(mean > 4000 && mean < 8000, `between an eighth and a quarter of the budget on average, not ${mean}`);
     // About one batch per 4,000 bytes of new lines (13 messages here), plus one per batch of the chat's view.
     assert.ok(rewrites >= 20 && rewrites <= 45, `${rewrites} rewrites over ${leaves.length} compactions`);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a message\'s node starts once fewer than 8 lines before it are unbuilt, so 8 run at once on one shared view', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-ahead-'));
   const calls: { input: Compression; release: () => void }[] = [];
-  const memory = new Memory(dir, input => new Promise(resolve => calls.push({ input, release: () => resolve('s'.repeat(300)) })), () => {}, 128000, 20);
+  const memory = new Memory(dir, input => new Promise(resolve => calls.push({ input, release: () => resolve('s'.repeat(300)) })), () => {}, 128000, 8);
   try {
     memory.append('user', `old ${'.'.repeat(600)}`); await new Promise(resolve => setTimeout(resolve, 20)); calls[0].release(); await memory.settle(AbortSignal.timeout(5000), 'tree');
     for (let i = 1; i <= 12; i++) memory.append('user', `${i} ${'.'.repeat(600)}`);
@@ -396,7 +401,7 @@ test('a message\'s node starts once fewer than 8 lines before it are unbuilt, so
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(calls.slice(9).filter(c => !c.input.part.l).map(c => c.input.part.i), [9]);
     calls.forEach(c => c.release());
-  } finally { calls.forEach(c => c.release()); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { calls.forEach(c => c.release()); await memory.close(); removeDir(dir); }
 });
 
 test('a compaction\'s view stops at the first line not built yet, so no call sees a placeholder', async () => {
@@ -410,7 +415,7 @@ test('a compaction\'s view stops at the first line not built yet, so no call see
     await new Promise(resolve => setTimeout(resolve, 20));
     const echo = calls.find(c => c.input.part.i === 2)!.input.context;
     assert.equal(echo, '<chat>\n\n</chat>', 'message 0 is still being built, so the view ends before it');
-  } finally { calls.forEach(c => c.release()); await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { calls.forEach(c => c.release()); await memory.close(); removeDir(dir); }
 });
 
 test('a view that cannot be saved only warns, since the log stays authoritative', async () => {
@@ -423,7 +428,7 @@ test('a view that cannot be saved only warns, since the log stays authoritative'
     assert.ok(memory.view.some(p => p.l > 0), 'the view merged');
     assert.match(warnings.join('\n'), /Could not save the memory view/);
     assert.equal(memory.lastError, undefined);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('next turn excludes old conversation; current tool loop and reasoning remain verbatim', async () => {
@@ -436,9 +441,11 @@ test('next turn excludes old conversation; current tool loop and reasoning remai
   const projected = buildContext([system, old, current, assistant], [current, assistant], '<chat>\n0+1|old summary\n</chat>', 'new system');
   assert.ok(!JSON.stringify(projected).includes('OLD FULL CONVERSATION'));
   assert.equal(projected[2], assistant);
+  assert.deepEqual(projected[1].role === 'user' && projected[1].content, [{ type: 'text', text: '<chat>\n0+1|old summary\n</chat>' }, { type: 'text', text: '\n\nnew question' }],
+    'the user\'s words start their own paragraph, since OpenAI joins text blocks with nothing between them');
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-')); const memory = new Memory(dir, async () => 'summary');
   try { logMessage(memory, assistant); assert.equal(memory.root.length, 1); assert.equal(memory.root[0].text, 'visible reply'); }
-  finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await memory.close(); removeDir(dir); }
 });
 
 test('tool images survive active-context truncation while text is bounded', () => {
@@ -466,7 +473,7 @@ test('crash recovery saves unconsumed inputs once, including append-before-ack c
     assert.equal(memory.root.length, 2);
     assert.equal(new Inbox(dir).recover(memory), 0);
     assert.equal(memory.root.length, 2);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('incremental view size and pending count match the rendered view across failures and restart', async () => {
@@ -491,7 +498,7 @@ test('incremental view size and pending count match the rendered view across fai
     memory = new Memory(dir, compress, () => {}, 4000, 8, 10);
     assert.equal(memory.pending, 0);
     assert.equal(memory.size, measured(memory));
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a retry that falls due while the compactor is scheduling still runs', async () => {
@@ -510,7 +517,7 @@ test('a retry that falls due while the compactor is scheduling still runs', asyn
         new Promise(resolve => { timer = setTimeout(resolve, 1000, 'hung'); })]);
       clearTimeout(timer);
       assert.equal(result, 'settled', `clock step ${step}`);
-    } finally { Date.now = now; await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+    } finally { Date.now = now; await memory.close(); removeDir(dir); }
   }
 });
 
@@ -539,7 +546,7 @@ test('loading a long profile does not re-measure the whole view for every messag
   try {
     assert.equal(memory.view.length, count);
     assert.ok(lookups < 10 * count, `${lookups} lookups to load ${count} messages`);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a new message is summarized without rescanning every built node', async () => {
@@ -556,7 +563,7 @@ test('a new message is summarized without rescanning every built node', async ()
     await memory.settle(AbortSignal.timeout(10000), 'tree');
     assert.equal(memory.pending, 0);
     assert.ok(lookups < count / 2, `${lookups} tree lookups for one new message over ${count}`);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('merges that keep failing are queued and tried again at the next message, which never scans the tree for them', async () => {
@@ -574,9 +581,9 @@ test('merges that keep failing are queued and tried again at the next message, w
     memory.append('user', `one more ${'.'.repeat(300)}`);
     await idle();
     assert.equal(refused, 100, 'each failed merge is tried once more, and nothing else');
-    // A retry reads its two halves and its own view (up to 201 lines here); a scan for work would read the whole tree for each.
+    // A retry reads its two halves and its own compaction view (up to 201 lines); it must not scan the whole tree per merge.
     assert.ok(lookups < 100 * 250, `${lookups} tree lookups for one new message, with all 100 merges failing`);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a message whose node keeps failing is queued, so later messages never scan the leaves after it', async () => {
@@ -595,7 +602,7 @@ test('a message whose node keeps failing is queued, so later messages never scan
     memory.append('user', `one more ${'.'.repeat(300)}`);
     await idle();
     assert.ok(lookups < 100, `${lookups} tree lookups for one new message, with message 0 failing`);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('an expanded /skill: command claims the input it came from, and only that one', () => {
@@ -609,7 +616,7 @@ test('an expanded /skill: command claims the input it came from, and only that o
     assert.equal(inbox.claimSkill('demox', 'go'), skill);
     assert.equal(inbox.claimSkill('demox', 'go'), undefined, 'an input is claimed once');
     assert.equal(inbox.claimSkill('demox'), plain);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('rebuilding a leaf that a saved parent already hides does not inflate the view size', async () => {
@@ -631,7 +638,7 @@ test('rebuilding a leaf that a saved parent already hides does not inflate the v
     assert.equal(memory.pending, 0);
     assert.equal(memory.size, measured(memory));
     assert.ok(memory.size <= 80);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a log whose day files sort against the order of the entries still opens, and a broken one does not', async () => {
@@ -662,7 +669,7 @@ test('a log whose day files sort against the order of the entries still opens, a
     writeFileSync(join(dir, 'main', '2026-10-05.jsonl'), entry(2));
     writeFileSync(join(dir, 'main', '2026-10-06.jsonl'), entry(0) + entry(3));
     assert.throws(() => new Memory(dir, compress, () => {}), /noncontiguous/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
 });
 
 test('an append ends an unterminated last line, in every file, and counts the byte it wrote', async () => {
@@ -673,7 +680,21 @@ test('an append ends an unterminated last line, in every file, and counts the by
     assert.equal(readFileSync(file, 'utf8'), '{"n":1}\n{"n":\n{"n":2}\n');
     assert.equal(size, readFileSync(file).length);
     assert.equal(appendJson(file, { n: 3 }, size), readFileSync(file).length);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeDir(dir); }
+});
+
+test('an append cut short leaves the file as it was, so the next append is not refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-short-')), file = join(dir, 'log.jsonl');
+  const write = fs.writeSync;
+  try {
+    const size = appendJson(file, { n: 1 });
+    mock.method(fs, 'writeSync', (fd: number, data: Buffer) => write(fd, data, 0, 3));
+    syncBuiltinESMExports();
+    assert.throws(() => appendJson(file, { n: 2 }, size), /Incomplete write/);
+    mock.restoreAll(); syncBuiltinESMExports();
+    assert.equal(readFileSync(file, 'utf8'), '{"n":1}\n');
+    assert.equal(appendJson(file, { n: 3 }, size), readFileSync(file).length);
+  } finally { mock.restoreAll(); syncBuiltinESMExports(); removeDir(dir); }
 });
 
 test('a torn tail that Memory loaded is repaired by its next append without tripping the write guard', async () => {
@@ -691,7 +712,7 @@ test('a torn tail that Memory loaded is repaired by its next append without trip
   } finally { await memory.close(); }
   memory = new Memory(dir, compress, () => {});
   try { assert.deepEqual(memory.root.map(e => e.text), ['first', 'second', 'third']); }
-  finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  finally { await memory.close(); removeDir(dir); }
 });
 
 test('a torn tail that another process wrote is refused, not repaired', async () => {
@@ -703,7 +724,7 @@ test('a torn tail that another process wrote is refused, not repaired', async ()
     const before = readFileSync(file, 'utf8');
     assert.throws(() => memory.append('user', 'second'), /Another process wrote .*nothing was written/);
     assert.equal(readFileSync(file, 'utf8'), before);
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 const wellFormed = (text: string) => Buffer.from(text).toString() === text;
@@ -745,7 +766,32 @@ test('view size counts the flattened text that render emits, for new and reloade
     await memory.close();
     memory = new Memory(dir, async () => 'x');
     assert.equal(memory.size, measured(memory), 'loaded from the tree');
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
+});
+
+test("a tool result's summary sees the raw call it answers, paired in order through parallel calls", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
+  const calls: Compression[] = [];
+  const memory = new Memory(dir, async input => { calls.push(input); return 'summary'; }, () => {});
+  const long = (s: string) => `${s} ${'x'.repeat(600)}`;
+  try {
+    memory.append('user', long('please read two files'));
+    memory.append('tool', long('read {"path":"a.ts"}'));
+    memory.append('tool', long('bash {"command":"ls"}'));
+    memory.append('echo', long('read: contents of a'));
+    memory.append('echo', long('bash: listing'));
+    memory.append('tool', long('edit {"path":"b.ts"}'));
+    memory.append('echo', long('Agent error: overloaded'));
+    await memory.settle(AbortSignal.timeout(5000), 'tree');
+    const leaf = (i: number) => calls.find(c => c.part.l === 0 && c.part.i === i)!;
+    assert.deepEqual([0, 1, 2, 5].map(i => leaf(i).call), [undefined, undefined, undefined, undefined]);
+    assert.equal(leaf(6).call, undefined);
+    assert.deepEqual([leaf(3).call?.i, leaf(4).call?.i], [1, 2]);
+    const task = compaction(leaf(4));
+    assert.match(task, /message 4 answers \(message 2,[^]*<call>\ntool: bash \{"command":"ls"\}[^]*<\/call>\n<input>\necho: bash: listing/);
+    assert.doesNotMatch(compaction(leaf(1)), /<call>/);
+    assert.doesNotMatch(leaf(4).context, /tool: bash/);
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a call is summarized with its result, and the code sets each summary kind', async () => {
@@ -772,5 +818,5 @@ test('a call is summarized with its result, and the code sets each summary kind'
     memory.append('tool', big('last call'));
     await memory.settle(AbortSignal.timeout(2000));
     assert.ok(memory.ready, 'a turn does not wait for a result that has not come');
-  } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await memory.close(); removeDir(dir); }
 });

@@ -6,14 +6,14 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { SUBAGENT, VIEW_DOC } from './prompts.ts';
-import { allowSearch, memoryTools, SEARCH_DOC, searchTool } from './tools.ts';
-import { cap, type Memory } from './memory.ts';
+import { allowSearch, CONNECTED, cutOffChildren, delegation, NO_DELEGATION, NOT_CONNECTED, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, VIEW_DOC } from './prompts.ts';
+import { memoryTools, searchTool } from './tools.ts';
+import { VIEW, type Memory } from './memory.ts';
 import { resolveModel, type ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
-import { RunHistory, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
+import { CUT_OFF, RunHistory, isRunning, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
 import { UsageLedger } from './usage.ts';
-import { textContent } from './transcript.ts';
+import { fullChat, refreshFraction, textContent } from './transcript.ts';
 import { Type } from 'typebox';
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
@@ -29,7 +29,18 @@ export interface LiveRun {
   requeueing?: Promise<void>;
   /** Shared by the children of one spawn whose reports are delivered together, in spawn order. */
   batch?: { ids: string[]; reports: Map<string, string> };
+  /** Why stop() ended it; the first stop wins. Unset for a connected run: its handoff says how it ended, and it cannot be resumed. */
+  stoppedBy?: StopCause;
 }
+/** `parent`: the agent that started it was stopped, or ended while it still worked. `pi`: Pi closed or reloaded while it was paused (working runs are cut off and resumed instead); a paused child whose parent still works gets `parent`, since close() stops that parent, which marks its descendants first. */
+type StopCause = 'user' | 'parent' | 'pi';
+// Said plainly: the aborted request's own error names no cause and reads as a failure.
+const STOPPED: Record<StopCause, string> = {
+  user: 'Stopped by the user. They ended it on purpose, so it did not fail: do not redo or delegate this task again unless they ask. Its chat is kept, so tell resumes it where it stopped.',
+  parent: 'Stopped because the agent that started it stopped or ended. Its chat is kept, so tell resumes it where it stopped.',
+  pi: 'Stopped because Pi closed or reloaded while it waited for the user. It is not resumed on its own; its chat is kept, so tell resumes it where it stopped.',
+};
+const stoppedReport = (cause: StopCause, text = '') => `${STOPPED[cause]}${text ? `\n\nIts last message before the stop:\n${text}` : ''}`;
 interface Options { parentSession?: string; usage?: UsageLedger; createSession?: typeof createAgentSession;
   /** Names of the built-in extensions the main session loaded (see `loadedBuiltins`). */
   builtins?: () => Iterable<string>;
@@ -55,8 +66,6 @@ export const taskDirectory = (cwd: string, path = '.', windows = process.platfor
   resolve(cwd, path.replace(windows ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/, homedir()));
 export const CWD_DOC = 'Project directory the subagent works in (~ allowed); its AGENTS.md files load from there. Defaults to your current directory.';
 const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
-/** Pi hands steering to a run only between tool calls, so one long command keeps the parent and the user from reaching it. */
-export const STEERABLE = 'Never block in a single command for more than about 60 seconds. To wait for something, poll in short separate tool calls (for example one `sleep 30` per call), so messages from your parent or the user can reach you between calls.';
 
 // Pi's CLI adds its built-in extensions (MCP, codemode, tool search) to its own session; SDK sessions such as
 // subagents must add them. Pi versions that do not export a factory simply do not get that extension.
@@ -70,6 +79,14 @@ export const builtinExtensions = (names: Iterable<string>): InlineExtension[] =>
   const create = Object.hasOwn(BUILTINS, name) ? (sdk as unknown as Record<string, unknown>)[BUILTINS[name]] : undefined;
   return typeof create === 'function' ? [{ name, factory: create(), replaceable: true, builtin: true }] : [];
 });
+/** Subagent transcripts are never summarized into the memory tree, so the mid-turn view refresh can't cover them; we rely on
+ * Pi's built-in compaction instead, set to start at about the main agent's Turn refresh threshold: that share of the window on top of the
+ * view in the task. If subagent quality drops after compaction, look into giving subagents their own summary tree (same refresh
+ * as the main agent) or a hybrid: Pi compaction plus a zoomable summarized transcript. With the threshold off, Pi's default applies. */
+export function subagentCompaction(contextWindow: number, fraction: number) {
+  if (!(fraction > 0)) return { enabled: true };
+  return { enabled: true, reserveTokens: Math.max(16_384, Math.round(contextWindow * (1 - fraction) - VIEW / 4)) };
+}
 export class Children {
   private readonly running = new Map<string, LiveRun>();
   readonly history: RunHistory;
@@ -77,6 +94,7 @@ export class Children {
   private closing = false;
   private launching = 0;
   private readonly resuming = new Set<string>();
+  private readonly deleting = new Set<string>();
   private settling = 0;
   private readonly launches = new Set<Promise<unknown>>();
   private readonly completions = new Set<Promise<void>>();
@@ -108,12 +126,13 @@ export class Children {
     const file = this.history.records.get(id)?.sessionFile;
     return file ? sessionMessages(file) : [];
   }
-  /** An agent's whole chat as text, for zoom(agent): its replies, tool calls and their results. */
-  chat(id: string) {
-    return this.messages(id).map(m => m.role === 'assistant'
-      ? m.content.flatMap(block => block.type === 'text' && block.text.trim() ? [`talk: ${block.text}`] : block.type === 'toolCall' ? [`tool: ${block.name} ${JSON.stringify(block.arguments)}`] : []).join('\n\n')
-      : m.role === 'toolResult' ? `echo: ${cap(`: ${textContent(m.content)}`)}` : m.role === 'user' ? `user: ${textContent(m.content)}` : '').filter(Boolean).join('\n\n');
+  /** A run's messages for zoom, live or finished; undefined for no such run. A subagent `reader` sees only its own descendants, as with tell. */
+  transcript(id: string, reader?: string) {
+    const known = reader ? this.history.descendants(reader).some(run => run.id === id) : this.running.has(id) || this.history.records.has(id);
+    return known ? this.messages(id) : undefined;
   }
+  /** Runs at work now: running, waiting for children, or stopping; not paused. */
+  get working() { return [...this.running.values()].filter(live => isRunning(live.info)).map(live => live.info); }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private changed() { for (const listener of this.listeners) listener(); }
   private save(info: RunInfo) { this.history.save(info); this.changed(); }
@@ -223,11 +242,10 @@ export class Children {
     thinking?: ModelChoice['thinking']; sessionManager: SessionManager }) {
     const { id, directory, depth, parentId, connected } = o;
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
-    const delegation = delegates ? `You may delegate parts of your assigned task with spawn when useful. Child reports arrive automatically after your current run ends; the harness keeps you alive to receive them. Never poll, sleep, or wait in a tool for children. Finish your current work and return; you will be prompted with their results. The profile allows ${maxAgents} active agents total.` : 'You are at the maximum delegation depth. Complete your task with your own tools.';
-    const instructions = [this.instructions(), delegation, STEERABLE, connected ? 'You are speaking directly with the user in a connected window. Continue this conversation across requests. Use tell_parent for questions or findings the main agent needs now. A handoff will be generated when the user completes or disconnects the window.'
-      : 'Use tell_parent only when your parent needs something now (a blocking question, an important early finding, or when asked to). Your final answer is delivered automatically; do not repeat it with tell_parent.'].filter(Boolean).join('\n\n');
+    const instructions = [this.instructions(), delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
-    const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(), compaction: { enabled: false }, cacheWarming: 'off' });
+    const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
+      compaction: subagentCompaction(o.model.contextWindow, refreshFraction(this.settings.refreshAt)), cacheWarming: 'off' });
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),
@@ -245,7 +263,7 @@ export class Children {
     await loader.reload();
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
-      customTools: [...memoryTools(() => this.memory, agent => this.chat(agent)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected)],
+      customTools: [...memoryTools(() => this.memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected)],
       excludeTools: delegates ? [] : ['spawn', 'tell'],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.
@@ -317,7 +335,10 @@ export class Children {
             // Nothing to hand over: the run waits for its next message instead of ending, and whoever waits on its report hears why.
             if (transition(info, 'paused')) {
               this.save(info);
-              if (!info.connected) await this.toParent(info.parentId, `[${info.id}] Interrupted by the user; it waits for their next message, so no report until then.`)
+              // In a grouped spawn the note takes the run's place, so its siblings' reports are not held until the user comes back; its later report arrives on its own.
+              const note = `[${info.id}] Interrupted by the user; it waits for their next message, so no report until then.`, batch = live.batch;
+              live.batch = undefined;
+              if (!info.connected) await (batch ? this.deliver(info, batch, note) : this.toParent(info.parentId, note))
                 .catch(error => this.warn(`Could not tell the parent about the interrupt: ${String(error)}`));
             }
             continue;
@@ -334,7 +355,8 @@ export class Children {
           continue;
         }
         const last = session.messages.findLast(m => m.role === 'assistant');
-        if (!paused && last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted')) break;
+        // An error ends the turn, not the run: children still at work report to it and it answers them, as the main agent does.
+        if (!paused && last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted') && !live.pendingReports.length && !this.directChildren(info.id).length) break;
         if (live.pendingGuidance.length) {
           transition(info, 'running'); this.save(info);
           await session.prompt(live.pendingGuidance.shift()!);
@@ -354,13 +376,15 @@ export class Children {
       const last = session.messages.findLast(m => m.role === 'assistant');
       transition(info, info.state === 'stopping' || last?.role === 'assistant' && last.stopReason === 'aborted' ? 'stopped'
         : last?.role === 'assistant' && last.stopReason === 'error' ? 'failed' : 'completed');
-      info.report = last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted')
-        ? `Task ${last.stopReason}: ${last.errorMessage ?? 'No details'}` : session.getLastAssistantText() || 'Finished without a text report.';
+      const text = session.getLastAssistantText();
+      info.report = info.state === 'stopped' && live.stoppedBy ? stoppedReport(live.stoppedBy, text)
+        : last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted') ? `Task ${last.stopReason}: ${last.errorMessage ?? 'No details'}` : text || 'Finished without a text report.';
     } catch (error) {
-      transition(info, info.state === 'stopping' ? 'stopped' : 'failed'); info.report = `${info.state}: ${String(error)}`;
+      transition(info, info.state === 'stopping' ? 'stopped' : 'failed');
+      info.report = info.state === 'stopped' && live.stoppedBy ? stoppedReport(live.stoppedBy, session.getLastAssistantText()) : `${info.state}: ${String(error)}`;
     } finally {
       const children = this.directChildren(info.id);
-      await Promise.allSettled(children.map(child => this.stop(child.info.id)));
+      await Promise.allSettled(children.map(child => this.stop(child.info.id, 'parent')));
       await Promise.allSettled(children.flatMap(child => child.completion ? [child.completion] : []));
       info.ended = Date.now();
       for (const g of info.guidance) if (g.state === 'queued') g.state = 'undelivered';
@@ -368,6 +392,13 @@ export class Children {
       // A failed dispose must neither keep the slot taken nor drop the report below.
       this.dispose(session); this.running.delete(info.id);
     }
+    if (info.cutOff) {
+      // Aborted by Pi closing, not by anyone's choice: no report now, the next start resumes it.
+      if (info.state === 'stopped' && transition(info, 'interrupted')) { info.report = CUT_OFF; this.save(info); return; }
+      delete info.cutOff; // It finished on its own while Pi was closing.
+    }
+    // Its cut-off children were named to it when it was resumed; having ended on its own, it no longer will resume them.
+    if (!this.closing) for (const run of this.history.descendants(info.id)) if (run.cutOff) { delete run.cutOff; this.save(run); }
     if (info.connected) {
       info.handoff ??= { reason: 'failed' };
       transition(info, info.handoff.reason === 'complete' ? 'completed' : 'interrupted');
@@ -375,10 +406,15 @@ export class Children {
       await this.deliverHandoff(info);
       return;
     }
+    // Said plainly, so the parent does not take the user's choice for a failure and delegate the task again.
+    if (this.deleting.has(info.id)) info.report = 'Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.';
     // A metadata failure must not suppress delivery of the actual result.
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
-    let text = `[${info.id}] ${info.report}`;
-    const batch = live.batch;
+    // A deleted run's transcript is gone.
+    await this.deliver(info, live.batch, `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`);
+  }
+  /** Sends a run's report to its parent; in a grouped spawn, only once every child of the spawn has one. */
+  private async deliver(info: RunInfo, batch: LiveRun['batch'], text: string) {
     let count: number | undefined;
     if (batch) {
       batch.reports.set(info.id, text);
@@ -388,7 +424,7 @@ export class Children {
     }
     if (info.parentId) {
       const parent = this.running.get(info.parentId);
-      if (parent && parent.info.state !== 'stopping') { parent.pendingReports.push(text); this.changed(); }
+      if (parent && parent.info.state !== 'stopping') { parent.pendingReports.push(text); parent.wake?.(); this.changed(); }
       return;
     }
     if (this.closing) this.memory.append('work', text);
@@ -401,6 +437,7 @@ export class Children {
   }
   /** `caller` is the agent sending a manager message: undefined for the main agent, else the parent subagent's ID. */
   async tell(id: string, message: string, source: 'manager' | 'user' = 'manager', caller?: string) {
+    if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
     const live = this.running.get(id);
     if (!live && source === 'manager' && this.history.records.has(id)) return this.track(this.resume(id, message, caller));
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) throw new Error(`${id} is finishing. Its report will arrive on its own${live.info.connected || source === 'user' ? '' : '; tell it again after that to resume it'}.`);
@@ -495,21 +532,53 @@ export class Children {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping.');
       }
       // The finished record stays untouched (and resumable) unless the new one is saved.
-      const { ended: _ended, ...rest } = run;
+      const { ended: _ended, cutOff: _cutOff, ...rest } = run;
+      const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
+      const prompt = cutOffChildren(text, cut);
       const info: RunInfo = { ...rest, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
-        guidance: [...run.guidance, { text, date: Date.now(), state: 'queued', from: 'manager' }] };
+        guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
       try { this.save(info); } catch (error) { this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error; }
       const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
       this.running.set(id, live);
       this.launching--; reserved = false;
       session.subscribe(event => this.observe(live, event));
-      const work = this.execute(live, text).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
+      const work = this.execute(live, prompt).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
         .finally(() => { this.completions.delete(work); this.changed(); });
       this.completions.add(work);
       live.completion = work;
     } finally { if (reserved) this.launching--; this.resuming.delete(id); }
     this.changed();
     return `${id} had finished, so I resumed it with its earlier conversation. Its new report will come back on its own.`;
+  }
+  /**
+   * Resumes the main agent's subagents that the last Pi close or crash cut off, then tells the main agent once.
+   * Cut-off children of a cut-off parent wait for it: resuming it names them, and its `tell` resumes them.
+   */
+  async resumeCutOff() {
+    const cut = [...this.history.records.values()].filter(run => run.cutOff).sort((a, b) => a.depth - b.depth || a.started - b.started).map(run => run.id);
+    const resumed: string[] = [], lines: string[] = [], orphans: string[] = [];
+    // Always the current record: a `tell` during startup may have resumed the run and replaced it meanwhile.
+    const current = (id: string) => { const run = this.history.records.get(id); return run?.cutOff ? run : undefined; };
+    const drop = (run: RunInfo) => { delete run.cutOff; this.save(run); };
+    for (const id of cut) {
+      const run = current(id);
+      if (!run) continue;
+      if (run.parentId) {
+        // Its parent was not cut off (it was paused, say) or could not be resumed: nobody else will mention it.
+        if (!this.history.records.get(run.parentId)?.cutOff && !this.running.has(run.parentId)) { orphans.push(`${run.id} (under ${run.parentId})`); drop(run); }
+        continue;
+      }
+      try { await this.track(this.resume(id, RESTARTED, undefined)); resumed.push(id); }
+      catch (error) {
+        const still = current(id);
+        if (!still) continue; // Resumed by someone else meanwhile.
+        lines.push(`Could not resume ${id}: ${error instanceof Error ? error.message : String(error)}`); drop(still);
+      }
+    }
+    if (orphans.length) lines.push(`Also cut off, but not resumed because their parent agent is not running: ${orphans.join(', ')}.`);
+    if (!resumed.length && !lines.length) return;
+    await this.report([`Pi restarted while subagents were working.${resumed.length ? ` Resumed ${resumed.join(', ')} from where ${resumed.length > 1 ? 'they' : 'it'} left off; ${this.settings.groupReports
+      ? 'grouped reports do not survive a restart, so each one reports on its own.' : 'reports arrive as usual.'}` : ''}`, ...lines].join('\n'));
   }
   async finish(id: string, reason: FinishReason) {
     const live = this.running.get(id);
@@ -552,13 +621,14 @@ export class Children {
           : `No transcript available. Run metadata: ${join(this.profileDirectory, 'runs', `${record.id}.optchat.json`)}`;
         return `[${record.id}] ${record.state}${record.parentId ? ` · parent ${record.parentId}` : ''}\n${location}${transcriptError ? `\nTranscript read failed: ${transcriptError}` : ''}`;
       }).join('\n');
-      handoff.text = `[${run.id}] Connected conversation ${handoff.reason === 'complete' ? 'completed by user' : `interrupted (${handoff.reason})`}. This describes the conversation ending, not proof that every task succeeded.\n${summary}\n${source}`;
+      handoff.text = `[${run.id}] Connected conversation ${handoff.reason === 'complete' ? 'completed by user' : `interrupted (${handoff.reason})`}. This describes the conversation ending, not proof that every task succeeded.\n${summary}\n${source}\n\n${fullChat(run.id)}`;
       run.report = handoff.text; this.save(run);
     }
     await this.report(handoff.text, { once: true });
     handoff.delivered = true; this.save(run);
   }
-  async stop(id: string) {
+  /** Ends a run and its descendants; `cause` is said in its report (the user's Ctrl+X by default). */
+  async stop(id: string, cause: StopCause = 'user') {
     const live = this.running.get(id);
     if (!live) throw new Error(`No running subagent ${id}.`);
     const descendants: LiveRun[] = [];
@@ -567,14 +637,45 @@ export class Children {
     const stopping = descendants.filter(run => transition(run.info, 'stopping'));
     for (const run of stopping) {
       if (run.info.connected) run.info.handoff ??= { reason: 'owner-stopped' };
+      else run.stoppedBy ??= run === live ? cause : 'parent';
       run.wake?.();
       try { this.save(run.info); } catch (error) { this.warn(`Could not save stop status: ${String(error)}`); }
     }
     await Promise.allSettled(stopping.map(run => run.session.abort()));
   }
+  /** The user's delete: stops the run and its descendants if they still work, lets their reports reach their parents, then deletes their files. */
+  async remove(id: string) {
+    if (!this.history.records.has(id)) throw new Error(`No subagent ${id}.`);
+    if (this.deleting.has(id)) throw new Error(`${id} is already being deleted.`);
+    // A run that is live while being deleted reports its own deletion, even one a tell was resuming; a finished one has nothing left to say, so memory is told here.
+    let reports = false;
+    const runs = () => [id, ...this.history.descendants(id).map(run => run.id)], marked = new Set<string>();
+    // An overlapping delete of a descendant keeps its own marks, so neither delete clears the other's.
+    const mark = () => { for (const run of runs()) if (!this.deleting.has(run)) { marked.add(run); this.deleting.add(run); } };
+    mark(); this.changed();
+    try {
+      // Launches and resumes register their runs before they settle, and a stopped parent can still have children launching.
+      for (;;) {
+        await Promise.allSettled(this.launches);
+        const live = runs().flatMap(run => this.running.get(run) ?? []);
+        if (!live.length) break;
+        if (live.some(run => run.info.id === id)) reports = true;
+        mark();
+        await Promise.allSettled(live.map(run => this.stop(run.info.id)));
+        await Promise.allSettled(live.map(run => run.completion));
+      }
+      mark();
+      const records = runs().flatMap(run => this.history.records.get(run) ?? []);
+      if (records.some(run => run.connected && !run.handoff?.delivered)) throw new Error(`${id} has a connected conversation whose handoff has not reached the main agent yet, so it was kept.`);
+      for (const run of records.reverse()) this.history.remove(run.id); // Children first, so a failure never leaves one without its parent.
+      if (!reports) this.memory.append('work', `[${id}] deleted by the user`);
+    } finally { for (const run of marked) this.deleting.delete(run); this.changed(); }
+  }
   async close() {
     this.closing = true;
-    await Promise.allSettled([...this.running.keys()].map(id => this.stop(id)));
+    // Only work in progress is picked up at the next start: not paused runs waiting for the user, runs being stopped, or connected windows (they hand off).
+    for (const { info } of this.running.values()) if (!info.connected && (info.state === 'running' || info.state === 'waiting')) info.cutOff = true;
+    await Promise.allSettled([...this.running.keys()].map(id => this.stop(id, 'pi')));
     await Promise.allSettled(this.launches);
     await Promise.allSettled(this.completions);
   }

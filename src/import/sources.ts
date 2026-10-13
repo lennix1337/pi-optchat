@@ -208,6 +208,23 @@ export async function scanLocal(source: 'claude' | 'codex' | 'pi', roots?: strin
   return { conversations: conversations.sort((a, b) => b.date.localeCompare(a.date)), warnings,
     note: underOptChat ? `${underOptChat} session${underOptChat === 1 ? '' : 's'} ran under OptChat and ${underOptChat === 1 ? 'is' : 'are'} already in a profile's memory; skipped.` : undefined };
 }
+/**
+ * Lists a ZIP, or reads one member, with the system's own tool, which checks CRCs and handles ZIP64: `unzip` on macOS and
+ * Linux, and on Windows the bsdtar in System32 since Windows 10 (by full path, because Git's GNU tar on PATH can't read ZIP).
+ */
+async function unzip(zip: string, member?: string, signal?: AbortSignal) {
+  const windows = process.platform === 'win32';
+  const tool = windows ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'unzip';
+  const args = member === undefined ? (windows ? ['-tf', zip] : ['-Z1', zip]) : windows ? ['-xOf', zip, member] : ['-p', zip, member];
+  try { return (await exec(tool, args, { signal, maxBuffer: member === undefined ? 10_000_000 : 1_000_000_000, windowsHide: true })).stdout; }
+  catch (error) {
+    if (signal?.aborted || !record(error)) throw error;
+    // unzip opens with a `[file]` line and wraps its message, so keep the first sentence after it.
+    const said = string(error.stderr)?.split(/\r?\n/).filter(line => !line.trim().startsWith('[')).join(' ').replace(/\s+/g, ' ').trim();
+    const reason = error.code === 'ENOENT' ? `${tool} was not found` : said?.match(/^.*?[.!](?=\s|$)/)?.[0] ?? (said?.slice(0, 200) || String(error.message));
+    throw new Error(`Could not read ${member === undefined ? zip : `${member} in ${zip}`}: ${reason.replace(/[.!]$/, '')}. Extract the ZIP and select the folder instead.`);
+  }
+}
 export async function scanChatGPT(input: string, signal?: AbortSignal): Promise<Scan> {
   const path = resolve(input.startsWith('~/') ? join(homedir(), input.slice(2)) : input);
   const info = await stat(path);
@@ -216,11 +233,8 @@ export async function scanChatGPT(input: string, signal?: AbortSignal): Promise<
   if (info.isDirectory()) {
     for (const file of await filesUnder(path, accept, signal)) documents.push({ file, content: await readFile(file, { encoding: 'utf8', signal }) });
   } else if (path.toLowerCase().endsWith('.zip')) {
-    const listing = await exec('unzip', ['-Z1', path], { signal, maxBuffer: 10_000_000 });
-    for (const name of listing.stdout.split('\n').filter(accept)) {
-      const result = await exec('unzip', ['-p', path, name], { signal, maxBuffer: 1_000_000_000 });
-      documents.push({ file: `${path}:${name}`, content: result.stdout });
-    }
+    for (const name of (await unzip(path, undefined, signal)).split(/\r?\n/).filter(accept))
+      documents.push({ file: `${path}:${name}`, content: await unzip(path, name, signal) });
   } else documents.push({ file: path, content: await readFile(path, { encoding: 'utf8', signal }) });
   if (!documents.length) throw new Error('No conversations.json or numbered conversation JSON files found. Select a ChatGPT export ZIP, extracted folder, or JSON file.');
   const conversations: Conversation[] = [], warnings: string[] = [];
@@ -406,8 +420,8 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
       add('export:selected-branch', 'note', `Selected ChatGPT branch in the ${snapshot} export snapshot ends at message ${String(c.exported?.current_node)}. Other branches are alternatives.`, snapshot);
     }
   } else {
-    let pending: ImportedEntry[] = [];
-    const finish = () => { entries.push(...pending); pending = []; };
+    let pending: ImportedEntry[] = [], queued: ImportedEntry[] = [];
+    const finish = () => { entries.push(...pending, ...queued); pending = []; queued = []; };
     const assistant = (parts: { id: string; content: string }[], date: string, final: boolean) => {
       pending = parts.flatMap(part => {
         const entry = imported(c, part.id, 'talk', part.content, date);
@@ -423,12 +437,23 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
         if (c.source === 'claude' && v.type === 'system' && v.subtype === 'compact_boundary') { pending = []; continue; }
         if (c.source === 'claude' && (v.isMeta === true || v.isCompactSummary === true)) continue;
         if (c.source === 'claude' && v.isSidechain === true) return { entries: [], warnings };
+        // A message typed while Claude works is logged as an attachment and sent with the next request. Only a prompt without
+        // isMeta from a human or no origin passes both of Claude Code's checks for a user's message (its display filter and X4t);
+        // the rest are task and agent notifications.
+        const q = c.source === 'claude' && v.type === 'attachment' ? v.attachment : undefined;
+        if (record(q) && q.type === 'queued_command' && q.commandMode === 'prompt' && q.isMeta !== true
+          && (q.origin === undefined || record(q.origin) && q.origin.kind === 'human')) {
+          const typed = text(q.prompt), entry = imported(c, string(v.uuid) ?? `line:${line}`, 'user', claudeCommand(typed) ?? typed, date, typed);
+          if (entry) queued.push(entry);
+        }
         if (c.source === 'claude' && ['user', 'assistant'].includes(String(v.type)) && record(v.message)) {
           const m = v.message, id = string(v.uuid) ?? `line:${line}`;
-          if (m.role === 'user' && typeof m.content === 'string' && /^\[Request interrupted by user(?: for tool use)?\]$/.test(m.content)) { pending = []; continue; }
+          // Claude Code 2.1 writes the marker as a one-block text array, older versions as a string.
+          if (m.role === 'user' && /^\[Request interrupted by user(?: for tool use)?\]$/.test(text(m.content))) { pending = []; queued = []; continue; }
           const blocks = Array.isArray(m.content) ? m.content : [];
           const toolActivity = blocks.some(b => record(b) && (['tool_use', 'server_tool_use', 'tool_result'].includes(String(b.type)) || String(b.type).endsWith('_tool_result')));
           if (toolActivity) pending = [];
+          if (m.role === 'assistant') { entries.push(...queued); queued = []; }
           const parts = typeof m.content === 'string' ? [{ id, content: m.content }] : blocks.flatMap((b, index) => {
             if (!record(b)) return [];
             if (['text', 'image', 'image_url', 'document'].includes(String(b.type))) {

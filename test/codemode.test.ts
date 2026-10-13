@@ -92,14 +92,14 @@ text(pages);`);
   const pages = JSON.parse(output(reply)) as { offset: number; text: string }[];
   assert.deepEqual(pages.map(p => p.offset), [0, 99, 199]);
   for (const p of pages) assert.equal(p.text, memory.zoom(0, 1, p.offset, 100));
-  const joined = pages.map(p => p.text.replace(/^0\+1\|user: /, '').replace(/\n\[showing characters[^\n]+\]$/, '')).join('');
+  const joined = pages.map(p => p.text.replace(/^0\+1\|user: /, '').replace(/\n\[showing characters[^\n]+\](?:\n\[note:[^\n]+\])?$/, '')).join('');
   assert.equal(joined, memory.root[0].text);
   assert.equal(h.count, 3);
 }));
 
 test('real Code Mode: direct zoom preserves images; text conversion drops them', () => withHost(async (h, memory, dir) => {
   const image = { type: 'image' as const, data: smallPng().toString('base64'), mimeType: 'image/png' };
-  await saveImages(dir, [image]);
+  await saveImages(memory.store, [image]);
   memory.append('user', textContent([{ type: 'text', text: 'look' }, image]));
   const direct = await h.direct({ id: 0, n: 1 });
   assert.deepEqual(direct.content.filter(c => c.type === 'image'), [image]);

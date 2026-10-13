@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { getCurrentSystemMessage, type SystemMessage, type UserMessage } from '@earendil-works/pi-ai';
-import { CAP, PAGE, cap, type Memory } from './memory.ts';
+import { CAP, PAGE, cap, flat, isView, type Memory } from './memory.ts';
+import { AT_WORK } from './prompts.ts';
 import { record } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
 import { imageRef, isImage } from './images.ts';
@@ -50,13 +51,12 @@ export function pieces(text: string) {
   const parts: string[] = [];
   for (let at = 0; at < text.length;) {
     let to = Math.min(text.length, at + PAGE);
-    if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to--; // Never split a surrogate pair.
+    if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to--;
     parts.push(text.slice(at, to)); at = to;
   }
   return parts.length ? parts : [text];
 }
-/** Per-turn state goes after the view, never in the system prompt (recipe §6), so the prompt is cached whatever the directory:
- * Pi's working-directory section moves out of the prompt. */
+/** Per-turn state goes after the view, never in the system prompt, so the prompt is cached regardless of working directory. */
 export function stateless(prompt: string) {
   const section = /\n*<cwd>\n([^\n]*)\n<\/cwd>/.exec(prompt);
   return section ? { prompt: prompt.replace(section[0], ''), state: `Working directory: ${section[1]}` } : { prompt, state: undefined };
@@ -140,11 +140,44 @@ function latestExchange(branch: readonly SessionEntry[]) {
   return latest;
 }
 
-/** Keep one completed exchange plus the current run; all other history comes from the view. Some providers (OpenAI's
- * Responses API) join a message's text blocks with nothing between them, so the blocks after the view start on their own
- * paragraph; the view's own block stays byte for byte, so its cache blocks don't move. */
+/** Ends every subagent report, so the parent knows it can check the report against what the child did. */
+export const fullChat = (id: string) => `Full chat: zoom("${id}")`;
+export const withoutFullChat = (text: string) => text.replace(/\n\nFull chat: zoom\("[\w-]+"\)$/gm, '');
+const TASK = '\n</chat>\n\nYour task:\n';
+/** Tool calls and results in a run transcript keep their head and tail, so a page holds many steps. */
+const STEP = 1_000;
+/** A subagent's chat for zoom, as `kind|text` lines: its task without the memory view, replies, tool calls and results, and what it was told. */
+export function runTranscript(messages: readonly AgentMessage[]) {
+  const task = messages.find(message => message.role === 'user');
+  return messages.flatMap(message => {
+    if (message.role === 'user') {
+      // Only the task prompt holds the memory view (src/agents.ts): `${view}\n\nYour task:\n${task}`.
+      const text = textContent(message.content, false), at = text.indexOf(TASK);
+      return [`user|${message === task && isView(text) && at >= 0 ? text.slice(at + '\n</chat>\n\n'.length) : text}`];
+    }
+    if (message.role === 'toolResult') return [`echo|${cap(`${message.toolName}: ${textContent(message.content, false)}`, STEP)}`];
+    if (message.role !== 'assistant') return [];
+    return [...message.content.flatMap(block => block.type === 'text' && block.text.trim() ? [`talk|${block.text}`]
+      : block.type === 'toolCall' ? [`tool|${cap(`${block.name} ${JSON.stringify(block.arguments)}`, STEP)}`] : []),
+    ...message.stopReason === 'error' || message.stopReason === 'aborted' ? [`echo|Agent ${message.stopReason}: ${message.errorMessage ?? 'No further details'}`] : []];
+  }).join('\n');
+}
+
+/** The status line naming running agents by id and the first words of their task; none while nothing runs. */
+export function atWork(runs: readonly { id: string; task: string }[]) {
+  if (!runs.length) return undefined;
+  return AT_WORK + runs.map(({ id, task }) => {
+    const words = flat(task).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
+    // Six words, but never more than 60 characters: a task can be one long word.
+    const preview = [...start].slice(0, 60).join('');
+    return `${id} "${preview}${words.length > 6 || preview.length < start.length ? '…' : ''}"`;
+  }).join(', ') + '.';
+}
+
+/** Keep one completed exchange plus the current run; all other history comes from the view.
+ * `state` follows the view; `status` goes last after cached content and only with new input. */
 export function buildContext(canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string,
-  previous: readonly AgentMessage[] = [], state?: string): AgentMessage[] {
+  previous: readonly AgentMessage[] = [], state?: string, status?: string): AgentMessage[] {
   const system = getCurrentSystemMessage(canonical);
   const head: SystemMessage = { role: 'system', content: prompt, toolsAdded: system?.toolsAdded, timestamp: 0 };
   if (!run.some(m => m.role === 'user')) throw new Error('OptChat has no current user message; refusing to send historical context.');
@@ -152,11 +185,56 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
   const messages = [...previous, ...run].filter(m => m.role !== 'system').map(message => {
     if (message.role !== 'user' || injected) return message;
     injected = true;
+    // OpenAI joins text blocks with nothing between them, so the user's words start their own paragraph after the view.
     const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
     const paragraph = <T extends (typeof content)[number]>(block: T): T => block.type === 'text' ? { ...block, text: `\n\n${block.text}` } : block;
-    const [first, ...others] = content;
+    const [first, ...rest] = content;
     return { ...message, content: [{ type: 'text' as const, text: view }, ...(state ? [{ type: 'text' as const, text: `\n\n${state}` }] : []),
-      ...(first ? [paragraph(first)] : []), ...others] };
+      ...(first ? [paragraph(first)] : []), ...rest] };
   });
-  return [head, ...messages];
+  return [head, ...messages, ...status && messages.at(-1)?.role !== 'toolResult' ? [{ role: 'user' as const, content: [{ type: 'text' as const, text: status }], timestamp: 0 }] : []];
+}
+
+/** Pi's own estimate for an image when it decides to compact: 4,800 characters, about 1,200 tokens. */
+const IMAGE_CHARS = 4_800;
+/** Characters a message adds to a request: its text, thinking, tool-call arguments and images, as Pi estimates them. Framing is left out. */
+export function messageChars(message: AgentMessage) {
+  if (!('content' in message)) return 0;
+  const { content } = message;
+  if (typeof content === 'string') return content.length;
+  return content.reduce((sum, block) => sum + (block.type === 'text' ? block.text.length : block.type === 'thinking' ? block.thinking.length
+    : block.type === 'toolCall' ? JSON.stringify(block.arguments).length : block.type === 'image' ? IMAGE_CHARS : 0), 0);
+}
+/** The share of the model's window the current turn's verbatim messages may fill before they move into memory (#146): the
+ * profile's Turn refresh threshold, unless `OPTCHAT_REFRESH_AT` gives one (0 turns it off). */
+export function refreshFraction(setting: number, env = process.env.OPTCHAT_REFRESH_AT) {
+  const override = env?.trim() ? Number(env) : NaN;
+  return Number.isFinite(override) ? override : setting;
+}
+/** That share in characters, at ~4 characters a token; none when off or the window is unknown. */
+export function refreshBudget(contextWindow: number | undefined, fraction: number) {
+  return contextWindow && fraction > 0 ? Math.floor(contextWindow * fraction * 4) : undefined;
+}
+const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
+/** Where a refresh would cut the run: the last model reply, so its tool calls and their results stay whole. 0 when there is none after the task. */
+export function lastStep(run: readonly AgentMessage[]) {
+  const task = run.findIndex(m => m.role === 'user'), step = run.findLastIndex(m => m.role === 'assistant');
+  return step > task && task >= 0 ? step : 0;
+}
+/** The run's new `keep` and the size it moves into the view, when what is sent since the last refresh passes the budget.
+ * What stays verbatim (the task and the last step) must fit in half the budget: a bigger last step, such as many parallel
+ * reads, would otherwise pass the budget again on the next call and refresh every call. It waits for a smaller step instead. */
+export function refreshPoint(run: readonly AgentMessage[], keep: number, budget: number | undefined) {
+  const cut = lastStep(run), task = run.find(m => m.role === 'user');
+  if (!budget || cut <= keep) return undefined;
+  const size = chars(run.slice(keep));
+  if (size <= budget || (task ? messageChars(task) : 0) + chars(run.slice(cut)) > budget / 2) return undefined;
+  return { cut, size };
+}
+/** The run as sent after a mid-turn refresh at `keep`: the task verbatim, then the run from `keep` on. Everything between is in the view. */
+export function refreshedRun(run: readonly AgentMessage[], keep: number, note: string): AgentMessage[] {
+  const task = run.find(m => m.role === 'user');
+  if (!keep || !task) return [...run];
+  const content = typeof task.content === 'string' ? [{ type: 'text' as const, text: task.content }] : task.content;
+  return [{ ...task, content: [...content, { type: 'text' as const, text: `\n\n${note}` }] }, ...run.slice(keep)];
 }

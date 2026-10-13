@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
@@ -8,6 +8,7 @@ import { saveImages } from '../src/images.ts';
 import { Memory, PAGE } from '../src/memory.ts';
 import { memoryTools } from '../src/tools.ts';
 import { logMessage, textContent } from '../src/transcript.ts';
+import { removeDir } from './support.ts';
 
 /** An RGB PNG whose pixels come from `pixel`. */
 function png(width: number, height: number, pixel: (x: number, y: number) => [number, number, number]) {
@@ -27,14 +28,14 @@ const image = (bytes: Buffer) => ({ type: 'image' as const, data: bytes.toString
 async function withMemory(run: (memory: Memory, dir: string) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-images-'));
   const memory = new Memory(dir, async () => 'summary', () => {});
-  try { await run(memory, dir); } finally { await memory.close(); rmSync(dir, { recursive: true, force: true }); }
+  try { await run(memory, dir); } finally { await memory.close(); removeDir(dir); }
 }
 
 test('an image is kept once, unchanged when small, and zoom(id, 1) returns it on the page that names it', () => withMemory(async (memory, dir) => {
   const small = image(png(4, 3, x => [x * 60, 0, 0]));
   const content = [{ type: 'text' as const, text: 'look' }, small, small];
-  await saveImages(dir, content);
-  await saveImages(dir, [small]);
+  await saveImages(memory.store, content);
+  await saveImages(memory.store, [small]);
   const files = readdirSync(join(dir, 'images'));
   assert.equal(files.length, 1);
   assert.equal(readFileSync(join(dir, 'images', files[0])).toString('base64'), small.data);
@@ -51,11 +52,11 @@ test('an image is kept once, unchanged when small, and zoom(id, 1) returns it on
   assert.equal(memory.root[2].text.match(/\[image /g)?.length, 2);
 }));
 
-test('a large image is shrunk to 2048 px on its long side and about 1.5 MB', () => withMemory(async (_memory, dir) => {
-  await saveImages(dir, [image(png(4000, 3000, (x, y) => [x % 256, y % 256, 128]))]);
+test('a large image is shrunk to 2048 px on its long side and about 1.5 MB', () => withMemory(async (memory, dir) => {
+  await saveImages(memory.store, [image(png(4000, 3000, (x, y) => [x % 256, y % 256, 128]))]);
   let seed = 1;
   const noise = () => (seed = seed * 1103515245 + 12345 & 0x7fffffff) >> 23;
-  await saveImages(dir, [image(png(2600, 1800, () => [noise(), noise(), noise()]))]);
+  await saveImages(memory.store, [image(png(2600, 1800, () => [noise(), noise(), noise()]))]);
   const [gradient, noisy] = readdirSync(join(dir, 'images')).map(file => ({ file, bytes: readFileSync(join(dir, 'images', file)) }))
     .sort((a, b) => a.bytes.length - b.bytes.length);
   assert.match(gradient.file, /\.png$/);

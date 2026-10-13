@@ -88,16 +88,16 @@ test('empty, tool-only, truncated and provider-error replies have distinct diagn
 
 test('interrupted streams are identified without saving partial text or adding immediate retries', async () => {
   for (const message of ['terminated', 'Codex stream ended without a stop reason', 'read ECONNRESET', 'UND_ERR_SOCKET']) {
-    for (const thrown of [false, true]) {
-      const result = await run([{ type: 'text', text: 'partial SECRET OUTPUT' }], 'error', { message, thrown });
-      assert.match(String(result.error), /stream interrupted before a usable summary/);
-      assert.match(String(result.error), /fixture\/fixture/);
-      assert.match(String(result.error), /original messages are retained/i);
-      assert.equal(result.line, undefined);
-      assert.equal(result.diagnostics.length, 1, 'no immediate provider retry');
-      assert.equal(result.diagnostics[0].errorCategory, 'stream_interrupted');
-      assert.doesNotMatch(JSON.stringify(result.diagnostics), /SECRET|ECONNRESET|terminated/);
-    }
+    // The provider has started the response: retain the interruption diagnosis and let memory retry later,
+    // rather than issuing another provider call after partial generated output.
+    const result = await run([{ type: 'text', text: 'partial SECRET OUTPUT' }], 'error', { message });
+    assert.match(String(result.error), /stream interrupted before a usable summary/);
+    assert.match(String(result.error), /fixture\/fixture/);
+    assert.match(String(result.error), /original messages are retained/i);
+    assert.equal(result.line, undefined);
+    assert.equal(result.diagnostics.length, 1, `no immediate provider retry after response start: ${message}`);
+    assert.equal(result.diagnostics[0].errorCategory, 'stream_interrupted');
+    assert.doesNotMatch(JSON.stringify(result.diagnostics), /SECRET|ECONNRESET|terminated/);
   }
 });
 

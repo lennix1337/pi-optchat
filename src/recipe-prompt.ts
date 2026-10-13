@@ -48,7 +48,8 @@ Messages the user sends while you work reach you between tool calls. Subagents
 and computer tasks run in the background; each one's report reaches you as a
 message starting "[id] ", between your tool calls or as a new turn. Never wait
 for one (no sleep, no polling): go on, or end your turn and tell the user what
-is running.
+is running. A message starting "[OptChat status]" is OptChat's own note on which
+agents are running, not the user.
 
 # Compactions
 

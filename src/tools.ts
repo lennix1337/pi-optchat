@@ -1,14 +1,11 @@
-import { Type } from 'typebox';
+import { Type, type Static } from 'typebox';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { flat, PAGE, start, type Memory } from './memory.ts';
 import { loadImages } from './images.ts';
+import { runTranscript } from './transcript.ts';
 export const result = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} });
 export const SEARCH_PAGE = 20;
 const SNIPPET = 200;
-/** Added after the view doc when Memory search is on. */
-export const SEARCH_DOC = '\n\nsearch(text) finds the original messages that contain text, newest first. Use it for an exact name, number, PR, path or error the view doesn\'t show, then zoom(id, 1) to read a hit. A hit is one message: zoom around it too, especially the messages after it, where the outcome usually is.';
-const ZOOM_ONLY = 'zoom is your only\nallowed mechanism ', ZOOM_AND_SEARCH = 'zoom and search are your only\nallowed mechanisms ';
-/** With Memory search on, the view doc allows search next to zoom; also turns a built prompt either way. */
-export const allowSearch = (prompt: string, on: boolean) => on ? prompt.replace(ZOOM_ONLY, ZOOM_AND_SEARCH) : prompt.replace(ZOOM_AND_SEARCH, ZOOM_ONLY);
 
 /** One page of hits, each with its id, the view line holding it, its date and a snippet around the first match; at most ~5 KB. */
 export function searchPage(memory: Memory, text: string, before?: number) {
@@ -27,33 +24,47 @@ export function searchPage(memory: Memory, text: string, before?: number) {
   return `${hits.length} ${older}${hits.length === 1 ? 'message contains' : 'messages contain'} "${text}", newest first:\n${lines.join('\n')}${more}`;
 }
 
-/** One page of a subagent's chat, as a long message comes (recipe §6). */
-function chatPage(text: string, offset = 0, limit = PAGE) {
-  const to = Math.min(text.length, offset + Math.min(limit, PAGE));
-  return text.slice(offset, to) + (to < text.length ? `\n[showing characters ${offset}-${to} of ${text.length}; next page: offset ${to}]` : '');
+const zoomParameters = Type.Object({ id: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.String({ minLength: 1 })])),
+  agent: Type.Optional(Type.String({ minLength: 1 })), n: Type.Optional(Type.Integer({ minimum: 1 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: PAGE })) });
+
+/** A page of a run's transcript, saying where the next one starts. */
+export function runPage(text: string, offset = 0, limit = PAGE) {
+  if (offset > text.length) throw new Error(`This transcript has ${text.length} characters; offset must be 0 to ${text.length}.`);
+  // Never split a surrogate pair: a page starts on its first half and ends after its second.
+  const from = /[\udc00-\udfff]/.test(text[offset] ?? '') ? offset - 1 : offset;
+  let to = Math.min(text.length, from + limit);
+  if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to += to - 1 === from ? 1 : -1;
+  return `${text.slice(from, to)}\n[characters ${from}-${to} of ${text.length}${to < text.length ? `; go on with offset ${to}` : ''}]`;
 }
 
-/** `agent` gives a subagent's whole chat by its id: its own steps stay in its own log, out of the main chat. */
-export function memoryTools(memory: () => Memory, agent?: (id: string) => string) {
+/** `runs` gives a subagent's messages by run id, live or finished; undefined for no such run. */
+export function memoryTools(memory: () => Memory, runs?: (id: string) => readonly AgentMessage[] | undefined) {
   return [
-    { name: 'zoom', label: 'Zoom memory', description: `Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, up to ${PAGE.toLocaleString('en-US')} characters. With n = 1, offset and limit (characters) can bound any message; follow next-page offsets when more is needed. A message's images come back with it. agent (a subagent's id, alone or with offset and limit) gives that subagent's whole chat instead. Prefer direct zoom for a single read, dependent tree navigation, or images. Code Mode is optional for independent text-only reads: await all calls and emit every result with its id; Promise.allSettled keeps successes when another call fails. Keep needed text within the combined output budget without unnecessary paging. Pi 1.1.0 drops zoom's image attachments in Code Mode.`,
-      parameters: Type.Object({ id: Type.Optional(Type.Integer({ minimum: 0 })), n: Type.Optional(Type.Integer({ minimum: 1 })), agent: Type.Optional(Type.String({ minLength: 1 })),
-        offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: PAGE })) }),
-      async execute(_id: string, args: { id?: number; n?: number; agent?: string; offset?: number; limit?: number }) {
-        if (args.agent !== undefined) {
-          const chat = agent?.(args.agent);
-          if (!chat) throw new Error(`No chat of a subagent ${args.agent}.`);
-          return result(chatPage(chat, args.offset, args.limit));
+    { name: 'zoom', label: 'Zoom memory', description: `Open the line id+n of the view into the two lines of n/2 under it; n = 1 (the default) gives the message whole. A message over ${PAGE.toLocaleString('en-US')} characters comes in pages; offset and limit (characters) read any part of it. A message's images come back with it. zoom(agent: "id") or zoom("<run id>") gives a subagent's whole chat so far, in the same pages. Prefer direct zoom for a single read, dependent tree navigation, or images. Code Mode is optional for independent text-only reads: await all calls and emit every result with its id; Promise.allSettled keeps successes when another call fails. Keep needed text within the combined output budget without unnecessary paging. Pi 1.1.0 drops zoom's image attachments in Code Mode.`,
+      parameters: zoomParameters,
+      async execute(_id: string, { id, agent, n = 1, offset, limit }: Static<typeof zoomParameters>) {
+        if (agent !== undefined && id !== undefined) throw new Error('Use either id or agent, not both.');
+        if (agent !== undefined) {
+          const messages = runs?.(agent);
+          if (!messages) throw new Error(`No run ${agent}.`);
+          return result(runPage(runTranscript(messages), offset, limit));
         }
-        if (args.id === undefined || args.n === undefined) throw new Error('zoom takes id and n, or agent.');
-        const m = memory(), text = m.zoom(args.id, args.n, args.offset, args.limit), page = result(text);
+        if (typeof id === 'string') {
+          const messages = runs?.(id);
+          if (messages) return result(runPage(runTranscript(messages), offset, limit));
+          // A model may quote a message id; eight digits can be a run id, so those never open a message.
+          if (!/^\d+$/.test(id) || id.length === 8) throw new Error(`No run ${id}.`);
+        }
+        if (id === undefined) throw new Error('zoom takes id and n, or agent.');
+        const m = memory(), text = m.zoom(Number(id), n, offset, limit), page = result(text);
         // A message's images come back with its text, as read returns a PNG; summaries stay text.
-        return args.n === 1 ? { ...page, content: [...page.content, ...loadImages(m.directory, text)] } : page;
+        return n === 1 ? { ...page, content: [...page.content, ...await loadImages(m.store, text)] } : page;
       } },
     { name: 'date', label: 'Memory date', description: 'The date and time of message id.',
       parameters: Type.Object({ id: Type.Integer({ minimum: 0 }) }),
       async execute(_id: string, args: { id: number }) { return result(memory().date(args.id)); } },
-  ];
+  ] as const;
 }
 
 export const searchTool = (memory: () => Memory) => ({ name: 'search', label: 'Search memory',

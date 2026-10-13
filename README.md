@@ -21,7 +21,7 @@ pi install npm:pi-web-access   # optional, for web search and page fetching
 
 Or from GitHub: `pi install git:github.com/jonaslsaa/pi-optchat`.
 
-Requirements: Pi 1.0.2 or compatible, Node.js 22.19+, and Git. Tested on macOS; the offline tests also run on Linux and Windows.
+Requirements: Pi 1.1.0 or compatible, Node.js 22.19+, and Git. Tested on macOS; the offline tests also run on Linux and Windows.
 
 Windows is supported natively, without WSL: install and start Pi as usual. There the profile lock and the connected-window channel are named pipes instead of socket files in the profile folder. Live use on Windows has so far covered headless memory (`pi -p --optchat-profile`); the interactive screens, connected windows and imports are covered by the offline tests only.
 
@@ -47,7 +47,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | --- | --- |
 | `/optchat` | Status and actions menu. |
 | `/optchat profile` | Select or create a profile. Switching starts a fresh Pi session. |
-| `/optchat settings` | This profile's settings: models, subagent levels and limits, previous exchange, summary size tolerance. |
+| `/optchat settings` | This profile's models and options, including turn refresh and import concurrency. |
 | `/optchat model` | Compactor model and effort for this profile. Type to filter the models you are logged in to; the current one is marked. |
 | `/optchat fallback` | Per-provider models for the compactor: what it runs while the main model is on another provider. `/optchat agents fallback` does the same for subagents. |
 | `/optchat agents` | Live agent tree and saved run history. |
@@ -110,7 +110,7 @@ Compression and subagents make extra model requests with your provider credentia
 
 ## Long runs and compactor diagnostics
 
-A long execution refreshes its context from the **same memory tree**, between complete tool exchanges, when its active transcript exceeds 128 KB or approaches the selected model's input budget. Original messages are logged first. Live user instructions and the last complete assistant/tool exchange remain exact; older executed exchanges stay available through `zoom`. This changes neither the tree algorithm nor its 128/64 KB view and 512-byte summaries.
+A long execution refreshes its context from the **same memory tree**, between complete tool exchanges, when its active transcript passes the configured **Turn refresh threshold** (30% of the selected model's context window by default). `OPTCHAT_REFRESH_AT` overrides it. Original messages are logged first. The task, live user instructions and last complete assistant/tool exchange remain exact; older executed exchanges stay available through `zoom`. This changes neither the tree algorithm nor its 128/64 KB view and 512-byte summaries.
 
 Pi's automatic or manual compaction stores a snapshot of that existing view, with Pi's safe transcript boundary; it does not call a second summarizer or normally cancel compaction. Unbound Pi sessions retain Pi's own policy. A refresh refuses to drop unsummarized results if the compactor is failing. An input or retained exchange that cannot fit requires a smaller input or larger-context model, rather than silently losing data. Token checks use provider usage when available and Pi's size estimate otherwise, not an exact tokenizer.
 
@@ -139,8 +139,10 @@ If `Compactor returned no text` or a stream interruption recurs, keep the matchi
 | Previous exchange limit | 16 KB | A larger last exchange is left out. |
 | Memory search | off | Gives the agent, and subagents started or resumed after the change, a `search` tool over your original messages: plain text matching, newest first, never the summaries. Off is the recipe: zoom and date only. Applies from the next turn. |
 | Summary size tolerance | 512 bytes | The compactor is always asked for 512-byte lines; a longer line up to this size is kept instead of retried. 512 is the recipe's strict rule. |
+| Import: summaries at once | 8 | Summaries an import builds at once, 1–64. Higher is faster but less accurate and uses more provider capacity; chat always runs 8. |
+| Turn refresh threshold | 30% | Move completed exchanges into memory and continue with a fresh context when a run reaches this share of the model window. 0% disables it. Applies from the next call. |
 
-Numbers must be whole numbers of at least 1 (512 for the summary size tolerance). Missing keys in an older `config.json` take their defaults.
+Numbers must be whole numbers of at least 1; the refresh threshold is 0–90%. Missing keys in an older `config.json` take their defaults.
 
 **Upgrading from 0.6.x:** subagent levels used to be fixed at 3 and now default to 1, so subagents no longer start their own subagents until you set Subagent levels to 2 or 3.
 
@@ -152,7 +154,7 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
 
 - Children get the profile's memory view (frozen at launch), its instructions, read-only `zoom`/`date`, and normal coding tools plus your installed extensions.
 - Children also get the Pi built-in extensions the main session loaded: MCP, codemode and tool search. Your MCP servers (`~/.pi/agent/mcp.json`, the project's `.pi/mcp.json`) work in subagents, with the sign-ins you made in Pi. If MCP is off in the main session (`--no-mcp`, `-builtin:mcp` in settings, or an extension that replaces `/mcp`), it is off in subagents too. Each subagent opens its own server connections (stdio servers start once per subagent) and closes them when it ends.
-- Each child reports to its parent as soon as it finishes, as one message starting `[id]`. A stopped or failed child reports its stop or error text. Turn **Group subagent reports** on to have the children of one spawn report together: when the last of them finishes, their reports reach the parent as one message, `[id] report` each, in spawn order. Each finished report is journaled right away, so if Pi dies before the rest finish, the reports it already has are delivered at the next start. Messages sent with `tell_parent`, connected windows and their handoffs are never held back, and a child resumed with `tell` reports on its own. The parent stays alive to receive reports; it never polls.
+- Each child reports to its parent as soon as it finishes, as one message starting `[id]`. A stopped or failed child reports its stop or error text. Turn **Group subagent reports** on to have the children of one spawn report together: when the last of them finishes, their reports reach the parent as one message, `[id] report` each, in spawn order. Each finished report is journaled right away, so if Pi dies before the rest finish, the reports it already has are delivered at the next start. Messages sent with `tell_parent`, connected windows and their handoffs are never held back, and a child resumed with `tell` reports on its own. The parent stays alive to receive reports; it never polls. A `[OptChat status]` note names currently working agents at the end of a new request; it is not user text. Use `zoom(agent: "id")` to inspect a live or saved agent transcript, in pages.
 - In the main chat, subagent messages and reports appear in a dark grey box labelled `↳ subagent <id> · still running` or `· report`, so they don't look like something you typed. The model still receives them as ordinary user messages; memory logs them as kind `work` (older logs hold them as `user` messages starting `[id]`). (One exception: reports recovered at startup, before your first message in the session, still show as plain user messages.)
 - The parent can send a running child guidance with `tell`, and the child can message its parent mid-run with `tell_parent` (a question, an early finding). It reaches the parent like a report, marked "still running": between tool calls if the parent is busy, or waking it if it's waiting.
 - `tell` to a finished child resumes it: the same agent (ID, parent, model, directory) reopens its saved transcript, gets the message as a new prompt, and sends a new report. This also works for children from earlier Pi sessions. Only the agent that started the child can resume it, and the resumed child takes one active slot. Connected windows can't be resumed, and a child whose transcript is missing must be spawned fresh.
@@ -175,7 +177,7 @@ An **Agents | Usage | Activity** bar sits below the input.
 
 Set a different shortcut with `OPTCHAT_INSPECT_KEY=ctrl+shift+a pi`. If another extension supplies a custom editor, OptChat leaves its Down key alone; use the shortcut or commands instead.
 
-**Agents** lists runs as a tree with state, elapsed time, current tool, and last activity. Navigate with **Up/Down**, **Page Up/Down**, **Home/End**, and press **M** to pick the subagent model.
+**Agents** lists runs as a tree with state, elapsed time, current tool, and last activity. Interrupted runs are resumed when the interactive profile opens again. Navigate with **Up/Down**, **Page Up/Down**, **Home/End**, and press **M** to pick the subagent model.
 
 **Enter** swaps the screen to that agent's conversation, drawn with Pi's own chat components, so it reads like the main chat: its task, replies, and collapsed tool calls, following live output. Typing and **Enter** send it guidance. Guidance from the main agent and reports from the agent's own agents show in labelled boxes, so only your own messages look typed. **Escape** goes back to the main chat.
 
@@ -272,7 +274,7 @@ To delete a profile, delete its folder. Your original Pi sessions are kept in Pi
 - **Use worktrees** when parallel agents edit the same repository; they share the filesystem.
 - **Instructions**: the main agent and subagents get Pi's usual global and repository `AGENTS.md` files and your skills, followed by the profile's `AGENTS.md`, which comes last and wins. OptChat replaces only Pi's opening prompt. Prompt templates work in the main session only.
 - **Images** you paste, or a tool returns, are kept in the profile's memory folder under `images/` (once each, shrunk to 2,048 px on the long side and about 1.5 MB with Pi's own resizer; smaller ones stay as they are). The log names each as `[image <hash>]`, and `zoom(id, 1)` returns a message's images with its text, so the agent can look again in a later turn. Summaries stay text. Imported conversations keep a text placeholder.
-- **Pi's auto-compaction is off.** A single very long run can still hit the model's context limit; stop it and continue in a new turn.
+- **Long runs**: Pi's auto-compaction is off for the main agent. Once the current run passes the **Turn refresh threshold** (30% of the model's context window by default), completed exchanges move into memory and the turn continues with a fresh window. The task and last whole tool exchange remain verbatim; earlier steps stay available through `zoom`. `OPTCHAT_REFRESH_AT` (a fraction, such as `0.3`; `0` disables refresh) overrides the profile setting. Subagents use Pi's own compaction at about the same point.
 - **Restarts**: unsent inputs are recovered into memory, and pending subagent reports are delivered. Interrupted subagents are not restarted.
 - **Prompt-template inputs** can be saved twice: expanded, and later in their original form as an unanswered input, because Pi expands them after the input journal records them. Skill commands (`/skill:name`) are matched back to their journaled input and don't have this problem. Plain text chat is unaffected.
 

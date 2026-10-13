@@ -20,13 +20,15 @@ async function fixture(errors: string[], abortOnFailure = false) {
   runtime.registerProvider('fixture', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-codex-responses',
     models: [{ id: 'fixture', name: 'Fixture', reasoning: true, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
-    streamSimple(model, context) {
+    streamSimple(model, context, options) {
       const error = errors[requests.length];
       requests.push(JSON.stringify(context)); times.push(Date.now());
       const stream = createAssistantMessageEventStream();
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: error ? 'partial text must not survive' : 'user: retained decision' }], api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), stopReason: error ? 'error' : 'stop', usage: emptyUsage(), ...(error ? { errorMessage: error } : {}) };
-      queueMicrotask(() => {
+      queueMicrotask(async () => {
+        // This case models a failure after the response started; it must not be retried even though its text says "terminated".
+        if (error === 'terminated') await options?.onResponse?.({ status: 200, headers: {} }, model);
         if (error) stream.push({ type: 'error', reason: 'error', error: message });
         else stream.push({ type: 'done', reason: 'stop', message });
         stream.end();
