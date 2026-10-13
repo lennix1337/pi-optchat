@@ -91,12 +91,12 @@ export class UsageLedger {
 }
 
 export function summarizeUsage(entries: UsageEntry[]) {
-  const total = emptyUsage(), groups = new Map<string, { role: UsageRole; model: string; usage: Usage }>();
+  const total = emptyUsage(), groups = new Map<string, { role: UsageRole; provider?: string; model: string; usage: Usage }>();
   for (const entry of entries) {
-    // By model name alone: older compactor records lack a provider and must still land in the same row.
-    const key = `${entry.role}:${entry.model}`;
+    // Provider is part of a model's identity; legacy records without it remain grouped under unknown.
+    const key = JSON.stringify([entry.role, entry.provider ?? '', entry.model]);
     let group = groups.get(key);
-    if (!group) { group = { role: entry.role, model: entry.model, usage: emptyUsage() }; groups.set(key, group); }
+    if (!group) { group = { role: entry.role, provider: entry.provider, model: entry.model, usage: emptyUsage() }; groups.set(key, group); }
     addUsage(group.usage, entry.usage); addUsage(total, entry.usage);
   }
   return { total, groups: [...groups.values()] };

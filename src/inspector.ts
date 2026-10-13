@@ -17,7 +17,7 @@ export const short = (n: number) => {
   while (unit < units.length - 1 && round(value) >= 1000) { value /= 1000; unit++; }
   return `${round(value)}${units[unit]}`;
 };
-const dollars = (n: number) => `$${n.toFixed(2)}`;
+const dollars = (n: number) => n > 0 && n < 0.0001 ? '<$0.0001' : `$${n.toFixed(n > 0 && n < 0.01 ? 4 : 2)}`;
 const cached = (u: Usage) => { const input = u.input + u.cacheRead + u.cacheWrite; return `${input ? Math.round(100 * u.cacheRead / input) : 0}%`; };
 const roleNames: Record<UsageRole, string> = { main: 'main', subagent: 'subagents', compactor: 'compactor', import: 'import' };
 export const elapsed = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms / 1000) % 60}s`;
@@ -139,10 +139,10 @@ export class Inspector implements Component, Focusable {
     const lines = [...wrapTextWithAnsi(tabs, width), ''];
     if (!entries.length) lines.push(color('muted', 'No usage in this period.'));
     else {
-      lines.push(`${color('accent', dollars(total.cost.total))} estimated · ${short(total.totalTokens)} tokens · ${cached(total)} cached`, '');
+      lines.push(`${color('accent', dollars(total.cost.total))} estimated API cost · ${short(total.totalTokens)} tokens · ${cached(total)} cached`, '');
       const order = ['main', 'subagent', 'compactor', 'import'] as const;
       const sorted = groups.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role) || b.usage.cost.total - a.usage.cost.total);
-      const rows = sorted.map((g, i) => [i && sorted[i - 1].role === g.role ? '' : roleNames[g.role], oneLine(g.model), dollars(g.usage.cost.total),
+      const rows = sorted.map((g, i) => [i && sorted[i - 1].role === g.role ? '' : roleNames[g.role], oneLine(`${g.provider ?? 'unknown'}/${g.model}`), dollars(g.usage.cost.total),
         `${total.cost.total ? Math.round(100 * g.usage.cost.total / total.cost.total) : 0}%`, short(g.usage.output), cached(g.usage)]);
       const header = ['', 'model', 'cost', 'share', 'out', 'cached'];
       const widths = header.map((h, c) => Math.max(h.length, ...rows.map(r => r[c].length)));
@@ -155,7 +155,7 @@ export class Inspector implements Component, Focusable {
     }
     const current = context();
     if (current != null) lines.push('', `${color('muted', 'Context now')} ${short(current)} tokens`);
-    lines.push('', color('dim', 'Estimated at API prices, not your subscription bill.'), ...usage.warnings.map(w => color('warning', w)));
+    lines.push('', color('dim', 'API-rate estimate, not a provider bill; $0.00 may mean unknown or zero model pricing.'), ...usage.warnings.map(w => color('warning', w)));
     return lines.flatMap(l => l ? wrapTextWithAnsi(l, width) : ['']);
   }
   /** Memory as a gauge: how full the view is, whether summaries are catching up, and how many agents run (their list is one Tab away). */
@@ -190,7 +190,10 @@ export class Inspector implements Component, Focusable {
       if (cursor >= this.top + this.height) this.top = cursor - this.height + 1;
       const rows = list.slice(this.top, this.top + this.height).map(run => {
         const live = children.live(run.id), tools = live ? [...live.tools.values()].map(t => t.name).join(', ') : '';
-        const status = live ? `${run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live.streaming ? 'responding' : 'working')} · ${elapsed(Date.now() - live.updated)} ago` : run.state;
+        const queued = run.guidance.filter(g => g.state === 'queued').length, undelivered = run.guidance.filter(g => g.state === 'undelivered').length;
+        const guidance = [queued && `${queued} message${queued === 1 ? '' : 's'} queued`, undelivered && `${undelivered} message${undelivered === 1 ? '' : 's'} not delivered`].filter(Boolean).join(' · ');
+        const activity = run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live?.streaming ? 'responding' : 'working');
+        const status = live ? `${guidance ? `${guidance} · ` : ''}${activity} · updated ${elapsed(Date.now() - live.updated)} ago` : `${run.state}${guidance ? ` · ${guidance}` : ''}`;
         return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${oneLine(run.task)}`, status, time: elapsed((run.ended ?? Date.now()) - run.started) };
       });
       // Columns: task (flexible) · status · duration (right-aligned); status yields first on narrow screens.

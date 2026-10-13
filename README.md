@@ -192,7 +192,7 @@ Set a different shortcut with `OPTCHAT_INSPECT_KEY=ctrl+shift+a pi`. If another 
 
 Guidance shows as queued until delivered, or undelivered if the child stops first. When you interrupt an agent with nothing queued, the agent that started it gets a one-line note instead of a report, so it isn't left waiting. Guidance you send is also saved in main memory. Reasoning is not shown. Transcripts stay browsable after restart, and browsing them makes no model calls.
 
-**Usage** shows this session, last hour, today, last 7 days, or all time (**Left/Right**): one row per role and model (main agent, subagents, compactor, imports) with estimated cost, share of the total, output tokens, and how much input came from the cache. Costs are API prices, not your subscription bill.
+**Usage** shows this session, last hour, today, last 7 days, or all time (**Left/Right**): one row per role, provider, and model (main agent, subagents, compactor, imports), with an estimated API cost, share of the total, output tokens, and how much input came from the cache. Older records without a provider are labeled `unknown`; sub-cent estimates remain visible.
 
 ![Usage page](docs/screenshots/usage.png)
 
@@ -200,7 +200,7 @@ Guidance shows as queued until delivered, or undelivered if the child stops firs
 
 ![Activity page](docs/screenshots/activity.png)
 
-- Costs are API-rate estimates, not your subscription bill. Unknown rates show zero.
+- Costs are model API-rate estimates, not provider bills. `$0.00` can mean a zero or missing model rate, not confirmed free usage.
 - Record counts are not request counts; retries and tool overhead can add records.
 - Main-agent tracking starts with v0.3.0 (resumed sessions are backfilled). Older records without a parent session are left out of **This session**.
 - All views are limited to the active profile.

@@ -40,6 +40,25 @@ test('usage keeps roles/sessions separate, includes caches, and survives replay 
   } finally { removeDir(dir); }
 });
 
+test('aggregation keeps provider identity and still reads legacy records without it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-providers-'));
+  const now = Date.now(), usage = { ...emptyUsage(), totalTokens: 10, cost: { ...emptyUsage().cost, total: 0.001 } };
+  try {
+    writeFileSync(join(dir, 'usage.jsonl'), JSON.stringify({ date: new Date(now).toISOString(), role: 'main', model: 'shared', usage }) + '\n');
+    let ledger = new UsageLedger(dir);
+    ledger.add({ date: new Date(now).toISOString(), role: 'main', provider: 'provider-a', model: 'shared', usage });
+    ledger.add({ date: new Date(now).toISOString(), role: 'main', provider: 'provider-b', model: 'shared', usage });
+    ledger = new UsageLedger(dir);
+    const summary = summarizeUsage(ledger.entries);
+    assert.deepEqual(summary.groups.map(({ provider, model }) => [provider, model]), [
+      [undefined, 'shared'], ['provider-a', 'shared'], ['provider-b', 'shared'],
+    ]);
+    assert.equal(summary.total.cost.total, 0.003);
+    assert.equal(summary.total.totalTokens, 30);
+    assert.deepEqual(ledger.warnings, []);
+  } finally { removeDir(dir); }
+});
+
 test('Pi forks preserve usage identity instead of charging inherited messages twice', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-fork-usage-'));
   try {

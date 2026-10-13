@@ -8,7 +8,7 @@ import { visibleWidth, type Component } from '@earendil-works/pi-tui';
 import { Children } from '../src/agents.ts';
 import { Memory } from '../src/memory.ts';
 import { fit, Inspector, short, type InspectorAction } from '../src/inspector.ts';
-import { UsageLedger } from '../src/usage.ts';
+import { emptyUsage, UsageLedger } from '../src/usage.ts';
 import { RunHistory } from '../src/runs.ts';
 import { mountNavigation } from '../src/navigation.ts';
 import { removeDir } from './support.ts';
@@ -42,12 +42,18 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     assert.match(inspector.render(100).join('\n'), /Enter open/);
     inspector.handleInput('\r');
     assert.deepEqual(actions, [{ open: 'run-99' }]);
-    const table = usagePage.render(100).filter(l => /main|compactor/.test(l));
-    // A provider-less older record shares its model's row; costs line up on the right.
-    assert.deepEqual(table.map(l => l.trim().split(/\s+/)), [['main', 'claude-opus-5-5', '$20.50', '24%', '164k', '90%'], ['compactor', 'claude-sonnet-5-5', '$63.35', '76%', '328k', '90%']]);
-    assert.equal(table[0].indexOf('$20.50') + 6, table[1].indexOf('$63.35') + 6);
+    const table = usagePage.render(100).filter(l => /claude-opus|claude-sonnet/.test(l));
+    // Provider identity separates same-named models; older records without it remain visible as unknown.
+    assert.deepEqual(table.map(l => l.trim().split(/\s+/)), [
+      ['main', 'anthropic/claude-opus-5-5', '$20.50', '24%', '164k', '90%'],
+      ['compactor', 'anthropic/claude-sonnet-5-5', '$60.00', '72%', '164k', '90%'],
+      ['unknown/claude-sonnet-5-5', '$3.35', '4%', '164k', '90%'],
+    ]);
+    assert.equal(table[0].indexOf('$20.50') + 6, table[1].indexOf('$60.00') + 6);
+    assert.match(usagePage.render(100).join('\n'), /estimated API cost/);
+    assert.match(usagePage.render(100).join('\n'), /not a provider bill/);
     // A model name read from disk can't break the table or send terminal codes.
-    assert.ok(usagePage.render(100).some(l => /evil \[2Jmodel +\$0\.00/.test(l)));
+    assert.ok(usagePage.render(100).some(l => /unknown\/evil \[2Jmodel +\$0\.00/.test(l)));
     assert.ok(usagePage.render(100).every(l => !l.includes('\x1b')));
     assert.doesNotMatch(usagePage.render(40).join('\n'), /claude-/);
     usagePage.handleInput('\x1b[C');
@@ -97,6 +103,50 @@ test('d twice deletes the selected agent and the agents it started; any other ke
     await until(() => !children.history.records.has('gone'));
     assert.match(selected(), /Task newest/);
   } finally { inspector.dispose(); await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('Usage keeps sub-cent API estimates visible and labels zero or unknown model rates', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-subcent-'));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const usage = new UsageLedger(dir), now = new Date().toISOString();
+  const add = (model: string, provider: string, cost: number) => usage.add({ date: now, role: 'main', model, provider, session: 'parent',
+    usage: { ...emptyUsage(), output: 1, totalTokens: 1, cost: { ...emptyUsage().cost, output: cost, total: cost } } });
+  add('small', 'provider-a', 0.0042); add('tiny', 'provider-b', 0.00003); add('unpriced', 'provider-c', 0);
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
+  const page = new Inspector({ profile: 'personal', session: 'parent', children, usage, memory, page: 'usage', rows: () => 40, redraw: () => {}, done: () => {},
+    color: (_tone, text) => text, context: () => undefined });
+  try {
+    const lines = page.render(140);
+    assert.ok(lines.some(line => line.includes('$0.0042 estimated API cost')));
+    assert.ok(lines.some(line => /provider-a\/small\s+\$0\.0042/.test(line)));
+    assert.ok(lines.some(line => /provider-b\/tiny\s+<\$0\.0001/.test(line)));
+    assert.ok(lines.some(line => /provider-c\/unpriced\s+\$0\.00/.test(line)));
+    assert.ok(lines.some(line => line.includes('$0.00 may mean unknown or zero model pricing')));
+  } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('agent rows distinguish queued and undelivered guidance from current activity', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-agent-guidance-status-'));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
+  const now = Date.now();
+  children.history.records.set('queued', { id: 'queued', task: 'queued task', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: now - 30_000, state: 'running',
+    guidance: [{ text: 'wait for this', date: now, state: 'queued', from: 'user' }] });
+  children.history.records.set('offline', { id: 'offline', task: 'offline task', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: now - 30_000, ended: now, state: 'interrupted',
+    guidance: [{ text: 'not delivered', date: now, state: 'undelivered', from: 'user' }] });
+  const fakeLive = { updated: now - 30_000, tools: new Map([['tool-1', { name: 'run_command', args: {}, started: now - 30_000 }]]) } as unknown as NonNullable<ReturnType<Children['live']>>;
+  Object.defineProperty(children, 'live', { value: (id: string) => id === 'queued' ? fakeLive : undefined });
+  const page = new Inspector({ profile: 'personal', session: 'parent', children, usage: new UsageLedger(dir), memory, page: 'agents', rows: () => 40, redraw: () => {}, done: () => {},
+    color: (_tone, text) => text, context: () => undefined });
+  try {
+    const rows = page.render(140);
+    const queued = rows.find(line => line.includes('queued task')) ?? '';
+    const offline = rows.find(line => line.includes('offline task')) ?? '';
+    assert.match(queued, /1 message queued · run_command · updated \d+s ago/);
+    assert.match(offline, /interrupted · 1 message not delivered/);
+  } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });
 
 test('Tab cycles Agents, Usage and Activity; Activity is a memory gauge with an agent count', async () => {
