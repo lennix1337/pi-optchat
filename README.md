@@ -323,6 +323,26 @@ npm test           # offline tests, no paid model calls
 npm run test:live  # paid Anthropic calls on synthetic data in a disposable profile
 ```
 
+### Agent latency benchmark
+
+`npm run benchmark:agents` makes real provider calls using synthetic tasks in a disposable
+profile under ignored `scratchpad/`; it never reads your chat or edits project files.
+It defaults to `openai-codex/gpt-6-luna`, comparing `medium` and `xhigh` in alternating
+order. Override with `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_REPEATS` (1–10, default 2).
+It uses your provider credentials and quota; run it explicitly, not in CI.
+
+Results are written to `scratchpad/agent-benchmark-results.json`. Each sample checks
+completion state and exact JSON output, recording memory settling, view rendering,
+session opening, first assistant activity, execution, and overall latency. First activity
+is not necessarily a visible token. Failed samples remain in the results and fail the run.
+Optional `Children` timing callbacks contain only phase names, IDs, durations, and prompt
+lengths—not prompts or tool contents—and callback failures do not interrupt execution.
+
+This small no-tool task measures startup and model overhead, not coding throughput.
+Compare repeated samples and quality before drawing conclusions; a single pair, cold
+startup, and provider caching can be misleading. Use representative coding tasks before
+claiming faster real-world work. Delete benchmark results when no longer needed.
+
 ### Publishing to npm
 
 Pi's [package directory](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) lists npm packages with the `pi-package` keyword, which the manifest already has. GitHub alone is not enough.

@@ -21,6 +21,7 @@ import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 
 export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
+  firstActivity?: boolean;
   tools: Map<string, { name: string; args: unknown; output?: unknown; started: number }>;
   pendingReports: string[]; pendingGuidance: string[]; wake?: () => void; completion?: Promise<void>;
   /** Set by the user's interrupt: the queued guidance the run continues with once its current step is aborted; with none, it pauses. */
@@ -41,7 +42,13 @@ const STOPPED: Record<StopCause, string> = {
   pi: 'Stopped because Pi closed or reloaded while it waited for the user. It is not resumed on its own; its chat is kept, so tell resumes it where it stopped.',
 };
 const stoppedReport = (cause: StopCause, text = '') => `${STOPPED[cause]}${text ? `\n\nIts last message before the stop:\n${text}` : ''}`;
+export interface AgentTiming {
+  phase: 'settle' | 'view' | 'open' | 'prompt' | 'first_activity' | 'tool' | 'finished' | 'delivered';
+  atMs: number; runId?: string; durationMs?: number; promptChars?: number;
+}
 interface Options { parentSession?: string; usage?: UsageLedger; createSession?: typeof createAgentSession;
+  /** Opt-in monotonic timings; contains no task, prompt, tool arguments or output. */
+  onTiming?: (event: AgentTiming) => void;
   /** Names of the built-in extensions the main session loaded (see `loadedBuiltins`). */
   builtins?: () => Iterable<string>;
   /** Journals the reports a main-agent spawn has so far while its other children still run (none: the batch was delivered), so a crash cannot lose them. */
@@ -136,10 +143,21 @@ export class Children {
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private changed() { for (const listener of this.listeners) listener(); }
   private save(info: RunInfo) { this.history.save(info); this.changed(); }
+  private timed(phase: AgentTiming['phase'], runId?: string, started?: number, promptChars?: number) {
+    if (!this.options.onTiming) return;
+    const atMs = performance.now();
+    try { this.options.onTiming({ phase, atMs, runId, ...(started === undefined ? {} : { durationMs: atMs - started }), ...(promptChars === undefined ? {} : { promptChars }) }); }
+    catch (error) { this.warn(`Could not record agent timing: ${String(error)}`); }
+  }
   private observe(live: LiveRun, event: AgentSessionEvent) {
     try {
       live.updated = Date.now();
-      if (event.type === 'message_update') live.streaming = event.message;
+      if (event.type === 'message_update') {
+        live.streaming = event.message;
+        if (!live.firstActivity && event.message.role === 'assistant') {
+          live.firstActivity = true; this.timed('first_activity', live.info.id);
+        }
+      }
       if (event.type === 'message_end') {
         live.streaming = undefined;
       }
@@ -149,11 +167,15 @@ export class Children {
         const guidance = live.info.guidance.find(g => g.state === 'queued' && g.text === text);
         if (guidance) { guidance.state = 'delivered'; this.save(live.info); }
       }
-      if (event.type === 'tool_execution_start') live.tools.set(event.toolCallId, { name: event.toolName, args: event.args, started: Date.now() });
+      if (event.type === 'tool_execution_start') live.tools.set(event.toolCallId, { name: event.toolName, args: event.args, started: performance.now() });
       if (event.type === 'tool_execution_update') {
         const tool = live.tools.get(event.toolCallId); if (tool) tool.output = event.partialResult;
       }
-      if (event.type === 'tool_execution_end') live.tools.delete(event.toolCallId);
+      if (event.type === 'tool_execution_end') {
+        const tool = live.tools.get(event.toolCallId);
+        if (tool) this.timed('tool', live.info.id, tool.started);
+        live.tools.delete(event.toolCallId);
+      }
       this.changed();
     } catch (error) { this.warn(`Could not record subagent activity: ${String(error)}`); }
   }
@@ -169,7 +191,8 @@ export class Children {
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
     if (this.closing) throw new Error('Profile is closing.');
     this.settling++;
-    try { await this.memory.settle(signal); } finally { this.settling--; }
+    const settlingAt = performance.now();
+    try { await this.memory.settle(signal); } finally { this.settling--; this.timed('settle', undefined, settlingAt); }
     const parent = parentId ? this.running.get(parentId) : undefined;
     const cancelled = () => this.closing || (parentId !== undefined && this.running.get(parentId)?.info.state !== 'running');
     if (parentId && (!parent || parent.info.state !== 'running')) throw new Error('The parent is no longer running.');
@@ -178,7 +201,9 @@ export class Children {
     if (depth > subagentLevels) throw new Error(`Delegation depth limit reached: this profile allows ${subagentLevels} level${subagentLevels === 1 ? '' : 's'} of subagents.`);
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
+    const renderingAt = performance.now();
     const view = this.memory.render();
+    this.timed('view', undefined, renderingAt, view.length);
     const chosen = this.choice();
     const resolved = resolveModel(this.registry, chosen);
     if (!resolved) throw new Error(`Subagent model unavailable: ${chosen.provider}/${chosen.model}`);
@@ -213,8 +238,10 @@ export class Children {
         signal?.throwIfAborted();
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd);
+        const openingAt = performance.now();
         const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
+        this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
           parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [], ...(connected ? { connected: true } : {}) };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
@@ -321,6 +348,8 @@ export class Children {
       // A stop that lands before the first prompt has no turn to abort, so it is honoured here.
       const state: RunState = info.state; // a local, so the loop below still sees later state changes
       if (this.closing || info.handoff || state === 'stopping') throw new Error('Stopped before its first request.');
+      live.firstActivity = false;
+      this.timed('prompt', info.id, undefined, prompt.length);
       await session.prompt(prompt);
       while (info.state !== 'stopping') {
         if (live.interruption) {
@@ -387,6 +416,7 @@ export class Children {
       await Promise.allSettled(children.map(child => this.stop(child.info.id, 'parent')));
       await Promise.allSettled(children.flatMap(child => child.completion ? [child.completion] : []));
       info.ended = Date.now();
+      this.timed('finished', info.id);
       for (const g of info.guidance) if (g.state === 'queued') g.state = 'undelivered';
       await this.shutdown(session);
       // A failed dispose must neither keep the slot taken nor drop the report below.
@@ -428,7 +458,7 @@ export class Children {
       return;
     }
     if (this.closing) this.memory.append('work', text);
-    else try { await this.report(text, { count }); }
+    else try { await this.report(text, { count }); this.timed('delivered', info.id); }
     catch (error) {
       this.memory.append('work', text);
       this.warn(`Subagent report saved but could not wake the parent: ${String(error)}`);

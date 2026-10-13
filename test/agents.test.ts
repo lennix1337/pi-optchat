@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { Children, taskDirectory } from '../src/agents.ts';
+import { Children, taskDirectory, type AgentTiming } from '../src/agents.ts';
 import { STEERABLE } from '../src/prompts.ts';
 import type { Settings } from '../src/settings.ts';
 import { Memory } from '../src/memory.ts';
@@ -30,6 +30,7 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   const usage = new UsageLedger(dir), reports: string[] = [], warnings: string[] = [];
   const releases = new Map<string, () => void>();
+  const timings: AgentTiming[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
@@ -60,7 +61,7 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
   });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async text => { reports.push(text); }, text => warnings.push(text), dir,
-    { settings: nested, usage, parentSession: 'parent-session', createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    { settings: nested, usage, parentSession: 'parent-session', onTiming: event => timings.push(event), createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   try {
     const [slow, fast, stopped] = await children.spawn([{ task: 'slow' }, { task: 'fast' }, { task: 'stop-me' }], dir);
     await until(() => releases.size === 3);
@@ -83,6 +84,11 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     releases.get('slow')!();
     await until(() => !children.active);
     assert.equal(reports.length, 3);
+    assert.ok(timings.some(e => e.phase === 'settle' && e.durationMs! >= 0));
+    assert.ok(timings.some(e => e.phase === 'view' && e.promptChars! >= 0));
+    assert.deepEqual(timings.filter(e => e.runId === fast).map(e => e.phase), ['open', 'prompt', 'first_activity', 'finished', 'delivered']);
+    assert.ok(timings.every((e, i) => !i || e.atMs >= timings[i - 1].atMs));
+    assert.ok(!JSON.stringify(timings).includes('Working on'), 'timings contain no task or response content');
     assert.equal(children.history.records.get(slow)?.guidance[0].state, 'delivered');
     assert.match(children.history.records.get(slow)?.report ?? '', /Guidance received/);
     assert.ok(usage.select('This session', 'parent-session').length >= 3);
