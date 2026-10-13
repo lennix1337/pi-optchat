@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { resolveModel } from '../src/compactor.ts';
-import { accountGroup, defaults, loadConfig, modelFor, removeAlternate, saveConfig, setAlternate } from '../src/profiles.ts';
+import { accountGroup, defaults, loadConfig, modelFor, removeAlternate, roleModel, saveConfig, setAlternate } from '../src/profiles.ts';
 
 const haiku = { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'high' } as const;
 const luna = { provider: 'openai-codex', model: 'gpt-6-luna', thinking: 'high' } as const;
@@ -13,7 +13,9 @@ const config = { ...defaults, compactor: haiku, subagent: haiku, alternates: { c
 
 test('a role uses its alternate while the main model is on that provider, and its own choice otherwise', () => {
   assert.deepEqual(modelFor(config, 'subagent', { provider: 'anthropic', model: 'claude-opus-5-5' }), haiku);
-  assert.deepEqual(modelFor(config, 'subagent', { provider: 'openai-codex', model: 'gpt-6.1-sol' }), luna);
+  const main = { provider: 'openai-codex', model: 'gpt-6.1-sol' };
+  assert.deepEqual(modelFor(config, 'subagent', main), luna);
+  assert.equal(roleModel(config, 'subagent', main), 'openai-codex/gpt-6-luna (high) (effective; configured anthropic/claude-haiku-5-5 (high))');
   assert.deepEqual(modelFor(config, 'compactor', { provider: 'google', model: 'gemini-3.8-flash' }),
     { provider: 'google', model: 'gemini-3.8-flash', thinking: 'off' }, 'no entry: the main model, at its lowest effort');
   assert.deepEqual(modelFor(config, 'subagent', undefined), haiku);

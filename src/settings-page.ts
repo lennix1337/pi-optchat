@@ -1,6 +1,6 @@
 import { Container, fuzzyFilter, getKeybindings, Input, SelectList, SettingsList, Spacer, Text, type Component, type SelectItem, type SettingItem } from '@earendil-works/pi-tui';
 import { DynamicBorder, type ExtensionContext, type Theme } from '@earendil-works/pi-coding-agent';
-import { defaults, removeAlternate, roleModel, setAlternate, THINKING, type MainModel, type ProfileConfig, type Role } from './profiles.ts';
+import { defaults, modelFor, removeAlternate, roleModel, setAlternate, THINKING, type MainModel, type ProfileConfig, type Role } from './profiles.ts';
 import { invalid, isNumberKey, percent, SETTING_KEYS, SETTINGS, type NumberKey, type SettingKey } from './settings.ts';
 import type { ModelChoice } from './compactor.ts';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
@@ -12,8 +12,12 @@ const ROLES: Record<Role, { label: string; description: string; applies: string 
 const modelName = (choice: ModelChoice) => `${choice.provider}/${choice.model}`;
 export const showModel = (choice: ModelChoice) => `${modelName(choice)} · ${choice.thinking}`;
 /** The value column: the model, then whether it is the default (shown short, without its provider). */
-const modelValue = (theme: Theme, role: Role, choice: ModelChoice) => `${showModel(choice)}${theme.fg('dim', showModel(choice) === showModel(defaults[role])
-  ? '  default' : `  default ${defaults[role].model} · ${defaults[role].thinking}`)}`;
+const sameModel = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
+const modelValue = (theme: Theme, role: Role, choice: ModelChoice, effective = choice) => {
+  const active = sameModel(choice, effective) ? showModel(choice) : `${showModel(effective)} active · configured ${showModel(choice)}`;
+  return `${active}${theme.fg('dim', showModel(choice) === showModel(defaults[role])
+    ? '  default' : `  default ${defaults[role].model} · ${defaults[role].thinking}`)}`;
+};
 const show = (key: SettingKey, value: number | boolean) => {
   const spec = SETTINGS[key];
   return typeof value === 'boolean' ? value ? 'on' : 'off' : spec.kind === 'percent' ? percent(value) : spec.kind === 'number' && spec.unit ? `${value} ${spec.unit}` : String(value);
@@ -196,10 +200,10 @@ export function settingsPage(theme: Theme, o: Options, close: () => void, redraw
     const now = o.main ? ` Now ${roleModel(config, role, o.main)}.` : '';
     return [
       { id: role, label, description: `${description} Default ${showModel(defaults[role])}.${now} ${applies}`,
-        currentValue: modelValue(theme, role, config[role]),
+        currentValue: modelValue(theme, role, config[role], modelFor(config, role, o.main)),
         submenu: (_value, done) => new ModelStep(theme, role, o.models, config[role], choice => {
           const problem = apply({ [role]: choice }, `${label.toLowerCase()} ${showModel(choice)}`, applies);
-          if (!problem) done(modelValue(theme, role, choice));
+          if (!problem) done(modelValue(theme, role, choice, modelFor(o.config, role, o.main)));
           return problem;
         }, () => done()),
       },

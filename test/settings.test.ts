@@ -213,6 +213,17 @@ test('the settings page saves a valid number and explains an invalid one', () =>
   } finally { removeDir(dir); }
 });
 
+test('the settings row puts the active provider fallback before its configured Haiku model', () => {
+  const config: ProfileConfig = { ...defaults,
+    subagent: { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'xhigh' },
+    alternates: { subagent: [{ provider: 'openai-codex', model: 'gpt-6-luna', thinking: 'xhigh' }] },
+  };
+  const page = settingsPage(plain, { profile: 'demo', config, main: { provider: 'openai-codex', model: 'gpt-6.1-sol' },
+    models: [{ name: 'anthropic/claude-haiku-5-5', thinking: ['high', 'xhigh'] }, { name: 'openai-codex/gpt-6-luna', thinking: ['high', 'xhigh'] }],
+    save: () => {} }, () => {});
+  assert.match(page.render(160).join('\n'), /Subagent model\s+openai-codex\/gpt-6-luna · xhigh active · configured anthropic\/claude-haiku-5-5 · xhigh/);
+});
+
 test('turning Previous exchange off also reaches a turn that a subagent report starts while idle', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-report-'));
   const oldHome = process.env.OPTCHAT_HOME;

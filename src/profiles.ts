@@ -74,7 +74,7 @@ export function roleModel(config: ProfileConfig, role: Role, main: MainModel | u
   const show = (choice: ModelChoice) => `${choice.provider}/${choice.model} (${choice.thinking})`;
   const own = config[role], effective = modelFor(config, role, main);
   const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
-  return same(own, effective) ? show(own) : `${show(own)} → now ${show(effective)}`;
+  return same(own, effective) ? show(own) : `${show(effective)} (effective; configured ${show(own)})`;
 }
 /** Adds or replaces a role's alternate for a provider family, so the role keeps one entry per family. */
 export function setAlternate(list: ModelChoice[] | undefined, choice: ModelChoice): ModelChoice[] {
