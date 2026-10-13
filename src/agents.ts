@@ -152,15 +152,7 @@ export class Children {
   private observe(live: LiveRun, event: AgentSessionEvent) {
     try {
       live.updated = Date.now();
-      if (event.type === 'message_update') {
-        live.streaming = event.message;
-        if (!live.firstActivity && event.message.role === 'assistant') {
-          live.firstActivity = true; this.timed('first_activity', live.info.id);
-        }
-      }
-      if (event.type === 'message_end') {
-        live.streaming = undefined;
-      }
+      this.observeMessage(live, event);
       if (event.type === 'turn_end' || event.type === 'agent_settled') this.options.usage?.backfill(live.session.sessionManager.getEntries(), live.info.parentSession, 'subagent', live.info.id);
       if (event.type === 'message_start' && event.message.role === 'user') {
         const text = textContent(event.message.content);
@@ -178,6 +170,15 @@ export class Children {
       }
       this.changed();
     } catch (error) { this.warn(`Could not record subagent activity: ${String(error)}`); }
+  }
+  /** Keep streaming state and first-response timing together, independent of tool and guidance tracking. */
+  private observeMessage(live: LiveRun, event: AgentSessionEvent) {
+    if (event.type === 'message_end') live.streaming = undefined;
+    if (event.type !== 'message_update') return;
+    live.streaming = event.message;
+    if (live.firstActivity || event.message.role !== 'assistant') return;
+    live.firstActivity = true;
+    this.timed('first_activity', live.info.id);
   }
   async spawn(tasks: { task: string; cwd?: string }[], cwd: string, signal?: AbortSignal, parentId?: string, connected = false) {
     return (await this.launch(tasks, cwd, signal, parentId, connected)).ids;

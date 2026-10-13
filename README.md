@@ -331,8 +331,12 @@ It defaults to `openai-codex/gpt-6-luna`, comparing `medium` and `xhigh` in alte
 order. Override with `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_REPEATS` (1–10, default 2).
 It uses your provider credentials and quota; run it explicitly, not in CI.
 
-Results are written to `scratchpad/agent-benchmark-results.json`. Each sample checks
-completion state and exact JSON output, recording memory settling, view rendering,
+Set `BENCH_TASK=coding` to repair a seeded invoice module against immutable regression
+tests. Coding trials verify the test file is unchanged and run the tests independently;
+invalid trials fail the benchmark rather than counting as speed improvements.
+
+Results are written to `scratchpad/agent-benchmark-<task>-results.json`. Each sample checks
+completion state and either JSON output or passing regression tests, recording memory settling, view rendering,
 session opening, first assistant activity, execution, and overall latency. First activity
 is not necessarily a visible token. Failed samples remain in the results and fail the run.
 Optional `Children` timing callbacks contain only phase names, IDs, durations, and prompt
@@ -340,8 +344,8 @@ lengths—not prompts or tool contents—and callback failures do not interrupt 
 
 This small no-tool task measures startup and model overhead, not coding throughput.
 Compare repeated samples and quality before drawing conclusions; a single pair, cold
-startup, and provider caching can be misleading. Use representative coding tasks before
-claiming faster real-world work. Delete benchmark results when no longer needed.
+startup, and provider caching can be misleading. The seeded coding workload is still synthetic,
+not evidence of production coding throughput. Delete benchmark results when no longer needed.
 
 ### Publishing to npm
 
