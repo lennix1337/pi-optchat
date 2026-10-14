@@ -8,10 +8,11 @@ import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works
 import { Children, taskDirectory, type AgentTiming } from '../src/agents.ts';
 import { STEERABLE } from '../src/prompts.ts';
 import type { Settings } from '../src/settings.ts';
-import { Memory } from '../src/memory.ts';
+import { Memory, PAGE } from '../src/memory.ts';
 import { RunHistory } from '../src/runs.ts';
 import { emptyUsage, UsageLedger } from '../src/usage.ts';
 import { runTranscript, textContent, withoutFullChat } from '../src/transcript.ts';
+import { memoryTools } from '../src/tools.ts';
 import { removeDir } from './support.ts';
 
 /** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
@@ -132,6 +133,75 @@ test('by default (Group subagent reports off), real SDK children stream, deliver
     for (const id of [stopRoot, stopChild, stopLeaf]) assert.equal(children.history.records.get(id)?.state, 'stopped');
     assert.deepEqual(warnings, []);
   } finally { for (const release of releases.values()) release(); await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('zoom(agent) pages a complete child tool result from its persisted session after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-child-output-'));
+  const agentDir = mkdtempSync(join(tmpdir(), 'optchat-child-agentdir-'));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const output = `HEAD-${'m'.repeat(PAGE)}MIDDLE-${'x'.repeat(PAGE)}TAIL`;
+  mkdirSync(join(agentDir, 'extensions'), { recursive: true });
+  writeFileSync(join(agentDir, 'extensions', 'large-output.js'), `export default pi => pi.registerTool({ name: 'large_output', label: 'Large output', description: 'Return a large fixture.', parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [{ type: 'text', text: ${JSON.stringify(output)} }], details: {} }) });\n`);
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+  runtime.registerProvider('optchat-test', {
+    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+    models: [{ id: 'child', name: 'Synthetic child', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+    streamSimple(model, context) {
+      const hasResult = context.messages.some(message => message.role === 'toolResult' && message.toolCallId === 'large-call');
+      const message: AssistantMessage = { role: 'assistant', content: hasResult ? [{ type: 'text', text: 'done' }]
+        : [{ type: 'toolCall', id: 'large-call', name: 'large_output', arguments: {} }],
+        api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: hasResult ? 'stop' : 'toolUse', usage: emptyUsage() };
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => { stream.push({ type: 'done', reason: hasResult ? 'stop' : 'toolUse', message }); stream.end(); });
+      return stream;
+    },
+  });
+  const options = { settings: nested, createSession: (opts: Parameters<typeof createAgentSession>[0]) => createAgentSession({ ...opts, modelRuntime: runtime }) };
+  const createChildren = () => new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
+    async () => {}, () => {}, dir, options);
+  let children = createChildren();
+  const zoom = memoryTools(() => memory, id => children.transcript(id))[0];
+  const text = async (args: Parameters<typeof zoom.execute>[1]) => (await zoom.execute('call', args)).content.flatMap(c => c.type === 'text' ? [c.text] : []).join('');
+  const recover = async (id: string) => {
+    let recovered = '', offset = 0, total: number | undefined;
+    while (total === undefined || offset < total) {
+      const page = await text({ agent: id, offset, limit: PAGE });
+      const marker = /\n\[characters (\d+)-(\d+) of (\d+)(?:; go on with offset \d+)?\]$/.exec(page);
+      assert.ok(marker, `zoom page ${offset} provides paging bounds`);
+      assert.equal(Number(marker[1]), offset);
+      total = Number(marker[3]);
+      recovered += page.slice(0, marker.index);
+      offset = Number(marker[2]);
+    }
+    return recovered;
+  };
+  try {
+    const [id] = await children.spawn([{ task: 'capture the fixture output' }], dir);
+    await until(() => children.history.records.get(id)?.state === 'completed');
+    const original = children.transcript(id);
+    assert.ok(original);
+    assert.ok(original.some(message => message.role === 'assistant' && message.content.some(block => block.type === 'toolCall' && block.id === 'large-call')));
+    assert.ok(original.some(message => message.role === 'toolResult' && message.toolCallId === 'large-call'));
+    const preview = await text({ agent: id });
+    assert.ok(preview.length < PAGE + 200, 'the default zoom response stays page-bounded');
+    assert.match(preview, /go on with offset \d+\]$/);
+    const transcript = runTranscript(original);
+    assert.ok(transcript.includes(`echo|large_output: ${output}`), 'child transcript retains the full output before paging');
+    assert.equal(await recover(id), transcript, 'head, middle, and tail are recoverable through zoom(agent)');
+
+    await children.close();
+    children = createChildren();
+    const restored = children.transcript(id);
+    assert.ok(restored, 'completed child messages are loaded from the saved session');
+    assert.ok(restored.some(message => message.role === 'toolResult' && textContent(message.content).includes('MIDDLE-')));
+    assert.equal(await recover(id), runTranscript(restored), 'restart does not lose tool output or paging');
+  } finally {
+    await children.close(); await memory.close();
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    removeDir(agentDir); removeDir(dir);
+  }
 });
 
 test('one spawn\'s reports arrive together once its last child finishes, also to a parent subagent', async () => {

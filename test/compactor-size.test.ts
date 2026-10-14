@@ -16,9 +16,9 @@ import { removeDir } from './support.ts';
 let sentReasoning: string | undefined;
 let sentStep = '';
 let sentRetry = '';
-/** A fake model whose first reply is `first` bytes long and whose retries fit. */
-async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', firstEnd, ends = 1 }:
-  { source?: string; merge?: boolean; accepted?: number; first?: string; firstEnd?: 'length' | 'toolUse'; ends?: number } = {}) {
+/** A fake model with a configurable first response and a fitting retry by default. */
+async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', retryText = 'x'.repeat(400), firstEnd, ends = 1 }:
+  { source?: string; merge?: boolean; accepted?: number; first?: string; retryText?: string; firstEnd?: 'length' | 'toolUse'; ends?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-size-'));
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   let calls = 0;
@@ -34,7 +34,7 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
       sentRetry = context.messages.length > 1 && last?.role === 'user' && typeof last.content === 'string' ? last.content : '';
       const stream = createAssistantMessageEventStream();
       const end = calls < ends ? firstEnd ?? 'stop' : 'stop';
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: calls++ ? 'x'.repeat(400) : text.repeat(first) },
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: calls++ ? retryText : text.repeat(first) },
         ...end === 'toolUse' ? [{ type: 'toolCall' as const, id: 'call-1', name: 'zoom', arguments: { id: 0 } }] : []], api: model.api,
         provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: end, usage: emptyUsage() };
       queueMicrotask(() => { stream.push({ type: 'done', reason: end, message }); stream.end(); });
@@ -54,6 +54,13 @@ test('by default a line over 512 bytes is retried, as in the recipe; a raised to
   assert.deepEqual(await attempts(513), { calls: 2, bytes: 400 });
   assert.deepEqual(await attempts(640, { accepted: 640 }), { calls: 1, bytes: 640 });
   assert.deepEqual(await attempts(641, { accepted: 640 }), { calls: 2, bytes: 400 });
+});
+
+test('after five over-limit replies, the shortest invalid summary is rejected', async () => {
+  await assert.rejects(
+    attempts(800, { source: 'x'.repeat(600), accepted: 512, retryText: 'y'.repeat(800) }),
+    /no acceptable summary in 5 attempts.*512 bytes.*smaller than the source/,
+  );
 });
 
 test('a reply cut off at the token limit, or one that calls a tool, is no summary: it is asked again', async () => {

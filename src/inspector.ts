@@ -1,6 +1,7 @@
 import { matchesKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable } from '@earendil-works/pi-tui';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Children } from './agents.ts';
+import type { ShellJobs } from './shells.ts';
 import type { Memory } from './memory.ts';
 import { isActiveRun, isRunning } from './runs.ts';
 import type { Usage } from '@earendil-works/pi-ai';
@@ -33,16 +34,17 @@ const spread = (left: string, right: string, width: number) => {
   const gap = width - visibleWidth(left) - visibleWidth(right);
   return gap >= 2 ? `${left}${' '.repeat(gap)}${right}` : left;
 };
-const pages = ['agents', 'usage', 'activity'] as const;
+const pages = ['agents', 'usage', 'activity', 'shells'] as const;
 export type InspectorPage = typeof pages[number];
-const pageNames: Record<InspectorPage, string> = { agents: 'Agents', usage: 'Usage', activity: 'Activity' };
-/** Tab order, wrapping around: Agents, Usage, Activity. */
+const pageNames: Record<InspectorPage, string> = { agents: 'Agents', usage: 'Usage', activity: 'Activity', shells: 'Shells' };
+/** Tab order, wrapping around: Agents, Usage, Activity, Shells. */
 export const nextPage = (page: InspectorPage, delta = 1) => pages[(pages.indexOf(page) + delta + pages.length) % pages.length];
 /** Closing the panel either picks the subagent model or opens one agent's conversation. */
 export type InspectorAction = 'model' | { open: string };
 type Tone = 'accent' | 'muted' | 'dim' | 'error' | 'warning' | 'border';
 interface Options {
   profile: string; session: string; children: Children; usage: UsageLedger; memory: Pick<Memory, 'root' | 'size' | 'budget' | 'lastError' | 'progress' | 'onChange'>; page: InspectorPage;
+  shells?: ShellJobs;
   rows: () => number; redraw: () => void; done: (action?: InspectorAction) => void;
   color: (tone: Tone, text: string) => string;
   context: () => number | null | undefined;
@@ -55,6 +57,9 @@ export class Inspector implements Component, Focusable {
   focused = true;
   private page: InspectorPage;
   private selected?: string;
+  private selectedShell?: string;
+  private shellOutput = false;
+  private confirmStop?: string;
   private top = 0;
   private scroll = 0;
   private lineCount = 0;
@@ -68,7 +73,7 @@ export class Inspector implements Component, Focusable {
   constructor(private readonly options: Options) {
     this.page = options.page;
     this.selected = options.children.history.list()[0]?.id;
-    this.unsubscribe = [options.children.subscribe(() => options.redraw()), options.memory.onChange(() => options.redraw())];
+    this.unsubscribe = [options.children.subscribe(() => options.redraw()), options.memory.onChange(() => options.redraw()), ...(options.shells ? [options.shells.subscribe(() => options.redraw())] : [])];
     this.timer = setInterval(() => { options.refreshUsage?.(); options.redraw(); }, 1000); this.timer.unref();
     options.signal?.addEventListener('abort', this.abort, { once: true });
     if (options.signal?.aborted) queueMicrotask(this.abort);
@@ -88,11 +93,17 @@ export class Inspector implements Component, Focusable {
   }
   handleInput(data: string) {
     if (this.ended) return;
+    if (matchesKey(data, 'escape') && this.page === 'shells' && (this.shellOutput || this.confirmStop)) {
+      if (this.confirmStop) this.confirmStop = undefined;
+      else { this.shellOutput = false; this.scroll = 0; }
+      this.options.redraw(); return;
+    }
     if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c')) return this.finish();
     const deleting = this.confirmDelete; this.confirmDelete = undefined; this.notice = '';
     if (matchesKey(data, 'tab')) {
-      this.page = nextPage(this.page); this.scroll = 0;
-    } else if (this.page === 'activity') this.scrollInput(data);
+      this.page = nextPage(this.page); this.scroll = 0; this.shellOutput = false; this.confirmStop = undefined;
+    } else if (this.page === 'shells') this.shellInput(data);
+    else if (this.page === 'activity') this.scrollInput(data);
     else if (this.page === 'usage') {
       if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
         const delta = matchesKey(data, 'left') ? -1 : 1;
@@ -128,6 +139,58 @@ export class Inspector implements Component, Focusable {
       this.scroll = matchesKey(data, 'home') ? 0 : matchesKey(data, 'end') ? this.lineCount : this.scroll + delta;
       this.scroll = Math.max(0, Math.min(this.scroll, this.lineCount - this.height));
     }
+  }
+  private shellInput(data: string) {
+    const jobs = this.options.shells?.list() ?? [];
+    const job = jobs.find(j => j.id === this.selectedShell) ?? jobs[0];
+    if (!job) return;
+    this.selectedShell = job.id;
+    if (this.confirmStop) {
+      if (matchesKey(data, 'return')) { this.options.shells?.stop(this.confirmStop); this.confirmStop = undefined; }
+      return;
+    }
+    if (data === 'k' && job.mode === 'background' && job.state === 'running') { this.confirmStop = job.id; return; }
+    if (this.shellOutput) { this.scrollInput(data); return; }
+    if (matchesKey(data, 'return')) { this.shellOutput = true; this.scroll = 0; return; }
+    const delta = matchesKey(data, 'up') ? -1 : matchesKey(data, 'down') ? 1 : matchesKey(data, 'pageUp') ? -this.height : matchesKey(data, 'pageDown') ? this.height : 0;
+    const index = jobs.findIndex(j => j.id === job.id);
+    this.selectedShell = jobs[matchesKey(data, 'home') ? 0 : matchesKey(data, 'end') ? jobs.length - 1 : Math.max(0, Math.min(jobs.length - 1, index + delta))]?.id;
+  }
+  private shellLines(width: number) {
+    const { color } = this.options;
+    const jobs = this.options.shells?.list() ?? [];
+    const job = jobs.find(j => j.id === this.selectedShell) ?? jobs[0];
+    this.selectedShell = job?.id;
+    const running = jobs.filter(j => j.state === 'running' || j.state === 'stopping').length;
+    let body: string[], info = `${running} active · ${jobs.length - running} finished`;
+    let hint = '↑↓ select · Enter output · Tab agents · Esc close';
+    if (this.shellOutput && job) {
+      const lines = [color('accent', oneLine(job.command)), color('muted', `${job.state} · ${job.mode} · ${job.owner ?? 'main'} · ${elapsed((job.ended ?? Date.now()) - job.started)}`), color('dim', oneLine(job.cwd)), '',
+        ...(job.output ? clean(job.output).split('\n') : [color('dim', 'No output yet.')])].flatMap(line => wrapTextWithAnsi(line, width));
+      this.lineCount = lines.length;
+      this.scroll = Math.max(0, Math.min(this.scroll, lines.length - this.height));
+      body = lines.slice(this.scroll, this.scroll + this.height);
+      info = `${job.state} · ${this.scroll + 1}–${Math.min(lines.length, this.scroll + this.height)} / ${lines.length}`;
+      hint = '↑↓ scroll · End latest · Esc list';
+    } else {
+      const index = Math.max(0, jobs.findIndex(j => j.id === this.selectedShell));
+      this.top = Math.max(0, Math.min(this.top, jobs.length - this.height));
+      if (index < this.top) this.top = index;
+      if (index >= this.top + this.height) this.top = index - this.height + 1;
+      body = jobs.slice(this.top, this.top + this.height).map(j => {
+        const duration = elapsed((j.ended ?? Date.now()) - j.started);
+        const fullMeta = `${j.state} · ${j.mode} · ${duration}`;
+        const meta = visibleWidth(fullMeta) + 16 <= width ? fullMeta : `${j.state} · ${duration}`;
+        const command = fit(oneLine(j.command), Math.max(1, width - visibleWidth(meta) - 4));
+        const row = spread(`${j.id === this.selectedShell ? '→' : ' '} ${command}`, meta, width);
+        return color(j.id === this.selectedShell ? 'accent' : j.state === 'failed' ? 'error' : 'muted', row);
+      });
+      if (!body.length) body = [color('muted', 'No shells this session.'), '', color('dim', 'Shell commands appear here while running.'), color('dim', 'Use shell_start for managed background execution.')];
+    }
+    if (job?.mode === 'background' && job.state === 'running') hint += ' · k stop';
+    else if (job?.mode === 'foreground' && job.state === 'running') hint += job.owner === 'main' ? ' · interrupt: close panel, then Pi Esc' : ' · interrupt via agent controls';
+    if (this.confirmStop) hint = 'Stop selected background shell? Enter stop · Esc cancel';
+    return { body, info, hint };
   }
   /** Period tabs, one headline, then an aligned table with a row per role and model. */
   private usageLines(width: number) {
@@ -175,12 +238,15 @@ export class Inspector implements Component, Focusable {
     const inner = Math.max(1, width - 2);
     let title = `OptChat · ${profile} · ${pageNames[this.page]}`;
     let info: string, body: string[], hint: string;
-    if (this.page !== 'agents') {
+    if (this.page === 'shells') {
+      const content = this.shellLines(inner);
+      body = content.body; info = content.info; hint = content.hint;
+    } else if (this.page !== 'agents') {
       const lines = this.page === 'usage' ? this.usageLines(inner) : this.activityLines(inner); this.lineCount = lines.length;
       this.scroll = Math.max(0, Math.min(this.scroll, lines.length - this.height));
       body = lines.slice(this.scroll, this.scroll + this.height);
       info = this.page === 'usage' || lines.length > this.height ? `${this.scroll + 1}–${Math.min(this.scroll + this.height, lines.length)} / ${lines.length}` : '';
-      hint = this.page === 'usage' ? '←→ period · ↑↓ scroll · Tab activity · Esc close' : '↑↓ scroll · Tab agents · Esc close';
+      hint = this.page === 'usage' ? '←→ period · ↑↓ scroll · Tab activity · Esc close' : '↑↓ scroll · Tab shells · Esc close';
     } else {
       const list = children.history.list();
       if (!this.selected) this.selected = list[0]?.id;

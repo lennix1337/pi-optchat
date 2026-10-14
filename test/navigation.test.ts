@@ -13,7 +13,7 @@ test('agent-bar focus preserves typing, autocomplete, and ordinary history navig
   input('\x1b[C'); input('\r');
   assert.deepEqual(opened, ['usage']); assert.equal(nav.selected, undefined);
   input('\x1b[B'); input('\x1b[D'); input('\r');
-  assert.deepEqual(opened, ['usage', 'activity'], 'Left from Agents wraps to Activity');
+  assert.deepEqual(opened, ['usage', 'shells'], 'Left from Agents wraps to Shells');
   input('\x1b[B'); assert.equal(input('h'), false); assert.equal(nav.selected, undefined);
   input('\x1b[B'); assert.equal(input('\x1b'), true); assert.equal(nav.selected, undefined);
   assert.equal(inspectorShortcut('ctrl+shift+a'), 'ctrl+shift+a');

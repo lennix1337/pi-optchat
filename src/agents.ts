@@ -18,6 +18,8 @@ import { Type } from 'typebox';
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
+import { inputTokenBudget } from './run-context.ts';
+import type { ShellJobs } from './shells.ts';
 
 export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
@@ -46,7 +48,7 @@ export interface AgentTiming {
   phase: 'settle' | 'view' | 'open' | 'prompt' | 'first_activity' | 'tool' | 'finished' | 'delivered';
   atMs: number; runId?: string; durationMs?: number; promptChars?: number;
 }
-interface Options { parentSession?: string; usage?: UsageLedger; createSession?: typeof createAgentSession;
+interface Options { parentSession?: string; usage?: UsageLedger; createSession?: typeof createAgentSession; shells?: ShellJobs;
   /** Opt-in monotonic timings; contains no task, prompt, tool arguments or output. */
   onTiming?: (event: AgentTiming) => void;
   /** Names of the built-in extensions the main session loaded (see `loadedBuiltins`). */
@@ -86,13 +88,13 @@ export const builtinExtensions = (names: Iterable<string>): InlineExtension[] =>
   const create = Object.hasOwn(BUILTINS, name) ? (sdk as unknown as Record<string, unknown>)[BUILTINS[name]] : undefined;
   return typeof create === 'function' ? [{ name, factory: create(), replaceable: true, builtin: true }] : [];
 });
-/** Subagent transcripts are never summarized into the memory tree, so the mid-turn view refresh can't cover them; we rely on
- * Pi's built-in compaction instead, set to start at about the main agent's Turn refresh threshold: that share of the window on top of the
- * view in the task. If subagent quality drops after compaction, look into giving subagents their own summary tree (same refresh
- * as the main agent) or a hybrid: Pi compaction plus a zoomable summarized transcript. With the threshold off, Pi's default applies. */
-export function subagentCompaction(contextWindow: number, fraction: number) {
-  if (!(fraction > 0)) return { enabled: true };
-  return { enabled: true, reserveTokens: Math.max(16_384, Math.round(contextWindow * (1 - fraction) - VIEW / 4)) };
+/** Child sessions use Pi's compactor: it estimates the current system message (prompt plus active `toolsAdded`) and all
+ * non-system messages, then compacts at `contextWindow - reserveTokens`. Keep that threshold within the same output-reserved,
+ * 5%-margin input budget as the main request, or earlier at the configured turn share plus the child's task view. */
+export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number) {
+  const inputBudget = inputTokenBudget(contextWindow, maxOutputTokens);
+  const turnBudget = fraction > 0 ? Math.floor(contextWindow * fraction + VIEW / 4) : inputBudget;
+  return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(inputBudget, turnBudget)) };
 }
 export class Children {
   private readonly running = new Map<string, LiveRun>();
@@ -153,6 +155,12 @@ export class Children {
     try {
       live.updated = Date.now();
       this.observeMessage(live, event);
+      if (event.type === 'tool_execution_start' && (event.toolName === 'bash' || event.toolName === 'powershell') && typeof event.args?.command === 'string')
+        this.options.shells?.begin(`${live.info.id}:${event.toolCallId}`, event.args.command, live.info.cwd, 'foreground', `agent ${live.info.id.slice(0, 8)}`);
+      if (event.type === 'tool_execution_update' && (event.toolName === 'bash' || event.toolName === 'powershell'))
+        this.options.shells?.update(`${live.info.id}:${event.toolCallId}`, textContent(event.partialResult?.content, false));
+      if (event.type === 'tool_execution_end' && (event.toolName === 'bash' || event.toolName === 'powershell'))
+        this.options.shells?.end(`${live.info.id}:${event.toolCallId}`, textContent(event.result?.content, false), event.isError);
       if (event.type === 'turn_end' || event.type === 'agent_settled') this.options.usage?.backfill(live.session.sessionManager.getEntries(), live.info.parentSession, 'subagent', live.info.id);
       if (event.type === 'message_start' && event.message.role === 'user') {
         const text = textContent(event.message.content);
@@ -273,7 +281,7 @@ export class Children {
     const instructions = [this.instructions(), delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
-      compaction: subagentCompaction(o.model.contextWindow, refreshFraction(this.settings.refreshAt)), cacheWarming: 'off' });
+      compaction: subagentCompaction(o.model.contextWindow, refreshFraction(this.settings.refreshAt), o.model.maxTokens), cacheWarming: 'off' });
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),

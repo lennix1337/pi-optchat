@@ -111,8 +111,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
-    const tries: string[] = [];
-    let request = 0, failures = 0, attempts = 0;
+    const limit = accepted();
+    let request = 0, failures = 0, attempts = 0, summaries = 0;
     const ask = async (): Promise<AssistantMessage> => {
       for (;;) {
         signal.throwIfAborted();
@@ -164,13 +164,13 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}`;
       if (reply.stopReason === 'length' || reply.content.some(block => block.type === 'toolCall')) continue;
       const line = summaryText(reply, detail);
-      tries.push(line);
-      if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;
+      summaries++;
+      if (bytes(line) <= limit && bytes(line) < bytes(input.source)) return line;
       messages.push(reply);
       const cut = Buffer.from(line).subarray(0, NODE).toString('utf8').replace(/\uFFFD$/, '');
       messages.push({ role: 'user', content: tooLong(bytes(line), cut), timestamp: Date.now() });
     }
-    if (!tries.length) throw new Error('Compactor returned no whole line in 5 tries.');
-    return tries.reduce((a, b) => bytes(a) <= bytes(b) ? a : b);
+    if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
+    throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; it must be smaller than the source).`);
   };
 }

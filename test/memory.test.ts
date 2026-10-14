@@ -729,7 +729,7 @@ test('a torn tail that another process wrote is refused, not repaired', async ()
 
 const wellFormed = (text: string) => Buffer.from(text).toString() === text;
 const pieces = (out: string) => {
-  const notice = out.match(/\n\[(\d+) characters omitted; head and tail retained\]\n/)!;
+  const notice = out.match(/\n\[(\d+) characters omitted; head and tail retained\. Zoom can recover the full output only when the original is durable\.\]\n/)!;
   return { claimed: Number(notice[1]), head: out.slice(0, notice.index), tail: out.slice(notice.index! + notice[0].length) };
 };
 

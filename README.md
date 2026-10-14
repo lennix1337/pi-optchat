@@ -163,9 +163,15 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
 - Stopping an agent stops its whole subtree. A failed parent stops its descendants.
 - Agents run inside the Pi process. Closing Pi stops them; there is no detached mode.
 
+## Context fidelity and request budgets
+
+Turn refresh keeps live user instructions and custom messages verbatim, including image-bearing tasks, while older executed exchanges move into memory. Tool-result previews stay bounded, but their complete text is persisted and recoverable with paged `zoom`; `zoom(agent)` likewise pages complete child-result text. Child transcripts remain text-only and do not recover image attachments.
+
+Request budgeting uses Pi's estimate of the assembled prompt, active tool schemas, memory and live messages, with the model's output allowance and an additional 5% margin reserved. Existing summary nodes can coarsen the view without deleting originals. If retained instructions still cannot fit, OptChat aborts explicitly rather than silently dropping them. These are conservative estimates, not exact provider tokenizer counts.
+
 ## Agents, usage and activity inspector
 
-An **Agents | Usage | Activity** bar sits below the input.
+An **Agents | Usage | Activity | Shells** bar sits below the input. **Shells** shows the active count, keeping it visible in a compact layout on narrow terminals.
 
 | Key | Action |
 | --- | --- |
@@ -173,9 +179,13 @@ An **Agents | Usage | Activity** bar sits below the input.
 | **Left/Right**, **Enter** | Pick and open a section |
 | **Escape**, **Up**, or typing | Back to the editor |
 | **F6** | Open Agents directly, keeping your draft |
-| **Tab** | Cycle Agents, Usage and Activity |
+| **Tab** | Cycle Agents, Usage, Activity and Shells |
 
 Set a different shortcut with `OPTCHAT_INSPECT_KEY=ctrl+shift+a pi`. If another extension supplies a custom editor, OptChat leaves its Down key alone; use the shortcut or commands instead.
+
+**Shells** (`/optchat shells`) lists this session's model-invoked Bash/PowerShell calls, including subagent calls and nested Code Mode calls when Pi emits their execution events. It shows command, state, foreground/background mode and duration; **Enter** opens bounded, scrollable output and the working directory. **End** jumps to the latest output; **Escape** returns to the list. Foreground shells keep their existing Pi/agent interruption controls; inspecting them never cancels a turn.
+
+For explicitly requested background work, the model can use **shell_start** (local Bash), **shell_status** and **shell_stop**. These jobs return immediately and remain inspectable after the turn ends. Select a running managed job, press **K**, then **Enter** to stop it; **Escape** cancels confirmation. Closing/reloading Pi or changing profiles stops managed jobs via Pi's native process-tree cancellation. History is memory-only, with the latest 50 finished jobs and a bounded output tail. `!`/`!!` commands, external processes and deliberately detached descendants are not tracked; this is not an OS process manager. Commands/output can contain sensitive data: do not share the panel without reviewing it.
 
 **Agents** lists runs as a tree with state, elapsed time, current tool, and last activity. Interrupted runs are resumed when the interactive profile opens again. Navigate with **Up/Down**, **Page Up/Down**, **Home/End**, and press **M** to pick the subagent model.
 

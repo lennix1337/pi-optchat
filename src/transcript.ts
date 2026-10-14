@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { getCurrentSystemMessage, type SystemMessage, type UserMessage } from '@earendil-works/pi-ai';
-import { CAP, PAGE, cap, flat, isView, type Memory } from './memory.ts';
+import { CAP, PAGE, cap, end, flat, isView, mostDue, start, type Memory, type Part } from './memory.ts';
+import { estimatedContextTokens } from './run-context.ts';
 import { AT_WORK } from './prompts.ts';
 import { record } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
@@ -61,7 +62,7 @@ export function stateless(prompt: string) {
   const section = /\n*<cwd>\n([^\n]*)\n<\/cwd>/.exec(prompt);
   return section ? { prompt: prompt.replace(section[0], ''), state: `Working directory: ${section[1]}` } : { prompt, state: undefined };
 }
-export function logMessage(memory: Memory, message: AgentMessage, receipt?: string) {
+export function logMessage(memory: Memory, message: AgentMessage, receipt?: string, original?: AgentMessage) {
   const date = new Date(message.timestamp).toISOString();
   if (message.role === 'user') for (const text of pieces(textContent(message.content))) memory.append(receipt?.startsWith(REPORT_RECEIPT) ? 'work' : 'user', text, date, receipt);
   else if (message.role === 'assistant') {
@@ -71,9 +72,11 @@ export function logMessage(memory: Memory, message: AgentMessage, receipt?: stri
     }
     if (message.stopReason === 'error' || message.stopReason === 'aborted')
       memory.append('echo', `Agent ${message.stopReason}: ${message.errorMessage ?? 'No further details'}`, date);
-  } else if (message.role === 'toolResult')
-    // A zoom's page already names the images it returns.
-    memory.append('echo', cap(`${message.toolName}: ${textContent(message.content, message.toolName !== 'zoom')}`), date);
+  } else if (message.role === 'toolResult') {
+    // Persist the original result; zoom pages it on demand, while boundedMessage keeps the live request small.
+    const result = original?.role === 'toolResult' ? original : message;
+    memory.append('echo', `${result.toolName}: ${textContent(result.content, result.toolName !== 'zoom')}`, date);
+  }
 }
 export function boundedMessage(message: AgentMessage): AgentMessage {
   if (message.role !== 'toolResult') return message;
@@ -144,9 +147,9 @@ function latestExchange(branch: readonly SessionEntry[]) {
 export const fullChat = (id: string) => `Full chat: zoom("${id}")`;
 export const withoutFullChat = (text: string) => text.replace(/\n\nFull chat: zoom\("[\w-]+"\)$/gm, '');
 const TASK = '\n</chat>\n\nYour task:\n';
-/** Tool calls and results in a run transcript keep their head and tail, so a page holds many steps. */
+/** Tool-call entries are capped so a page holds many steps; tool-result text stays complete for paging. */
 const STEP = 1_000;
-/** A subagent's chat for zoom, as `kind|text` lines: its task without the memory view, replies, tool calls and results, and what it was told. */
+/** A text-only subagent transcript for zoom(agent): tool-result text is complete, but image blocks are omitted. */
 export function runTranscript(messages: readonly AgentMessage[]) {
   const task = messages.find(message => message.role === 'user');
   return messages.flatMap(message => {
@@ -155,7 +158,7 @@ export function runTranscript(messages: readonly AgentMessage[]) {
       const text = textContent(message.content, false), at = text.indexOf(TASK);
       return [`user|${message === task && isView(text) && at >= 0 ? text.slice(at + '\n</chat>\n\n'.length) : text}`];
     }
-    if (message.role === 'toolResult') return [`echo|${cap(`${message.toolName}: ${textContent(message.content, false)}`, STEP)}`];
+    if (message.role === 'toolResult') return [`echo|${message.toolName}: ${textContent(message.content, false)}`];
     if (message.role !== 'assistant') return [];
     return [...message.content.flatMap(block => block.type === 'text' && block.text.trim() ? [`talk|${block.text}`]
       : block.type === 'toolCall' ? [`tool|${cap(`${block.name} ${JSON.stringify(block.arguments)}`, STEP)}`] : []),
@@ -178,6 +181,7 @@ export function atWork(runs: readonly { id: string; task: string }[]) {
  * `state` follows the view; `status` goes last after cached content and only with new input. */
 export function buildContext(canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string,
   previous: readonly AgentMessage[] = [], state?: string, status?: string): AgentMessage[] {
+  // `context_with_system` supplies the live system/tool deltas; replay them so Pi and our estimator receive the same active schemas.
   const system = getCurrentSystemMessage(canonical);
   const head: SystemMessage = { role: 'system', content: prompt, toolsAdded: system?.toolsAdded, timestamp: 0 };
   if (!run.some(m => m.role === 'user')) throw new Error('OptChat has no current user message; refusing to send historical context.');
@@ -193,6 +197,51 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
       ...(first ? [paragraph(first)] : []), ...rest] };
   });
   return [head, ...messages, ...status && messages.at(-1)?.role !== 'toolResult' ? [{ role: 'user' as const, content: [{ type: 'text' as const, text: status }], timestamp: 0 }] : []];
+}
+
+const VIEW_OPEN = '<chat>\n';
+const VIEW_CLOSE = '\n</chat>';
+/** Parses the captured tiled view, excluding entries logged after it was rendered. */
+function viewParts(view: string) {
+  if (!isView(view) || !view.endsWith(VIEW_CLOSE)) return;
+  const body = view.slice(VIEW_OPEN.length, -VIEW_CLOSE.length), lines = body ? body.split('\n') : [];
+  const parts: { part: Part; text: string }[] = [];
+  let covered = 0;
+  for (const line of lines) {
+    const match = /^(\d+)\+(\d+)\|(.*)$/.exec(line);
+    if (!match) return;
+    const at = Number(match[1]), size = Number(match[2]), level = Math.log2(size);
+    if (!Number.isSafeInteger(at) || !Number.isSafeInteger(size) || size < 1 || !Number.isInteger(level) || at % size) return;
+    const part = { l: level, i: at / size };
+    if (start(part) !== covered) return;
+    covered = end(part);
+    parts.push({ part, text: match[3] });
+  }
+  return parts;
+}
+/** Estimates the complete assembled request and coarsens only through already-built summary nodes. */
+export function budgetContext(memory: Memory, canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string, inputBudget: number,
+  previous: readonly AgentMessage[] = [], state?: string, status?: string): { messages: AgentMessage[]; tokens: number; fits: boolean } {
+  const build = (text: string) => buildContext(canonical, run, text, prompt, previous, state, status);
+  let messages = build(view), tokens = estimatedContextTokens(messages), best = { messages, tokens, fits: tokens <= inputBudget };
+  if (best.fits) return best;
+  const lines = viewParts(view);
+  if (!lines) return best;
+  const parts = lines.map(line => line.part);
+  while (parts.length > 1) {
+    const at = mostDue(parts, end(parts.at(-1)!), part => !!memory.node(part));
+    if (at < 0) break;
+    const first = parts[at], parent = { l: first.l + 1, i: first.i / 2 };
+    const summary = memory.node(parent);
+    if (!summary) break;
+    parts.splice(at, 2, parent);
+    lines.splice(at, 2, { part: parent, text: flat(summary.text) });
+    const text = `${VIEW_OPEN}${lines.map(({ part, text: line }) => `${start(part)}+${2 ** part.l}|${line}`).join('\n')}${VIEW_CLOSE}`;
+    messages = build(text); tokens = estimatedContextTokens(messages);
+    if (tokens <= inputBudget) return { messages, tokens, fits: true };
+    if (tokens < best.tokens) best = { messages, tokens, fits: false };
+  }
+  return best;
 }
 
 /** Pi's own estimate for an image when it decides to compact: 4,800 characters, about 1,200 tokens. */
@@ -231,10 +280,16 @@ export function refreshPoint(run: readonly AgentMessage[], keep: number, budget:
   if (size <= budget || (task ? messageChars(task) : 0) + chars(run.slice(cut)) > budget / 2) return undefined;
   return { cut, size };
 }
-/** The run as sent after a mid-turn refresh at `keep`: the task verbatim, then the run from `keep` on. Everything between is in the view. */
+/** The task, all live user/custom instructions, and the newest whole exchange stay exact across refresh. */
 export function refreshedRun(run: readonly AgentMessage[], keep: number, note: string): AgentMessage[] {
-  const task = run.find(m => m.role === 'user');
+  const task = run.find(message => message.role === 'user');
   if (!keep || !task) return [...run];
+  const retained = [...run.slice(0, keep).filter(message => message === task || message.role === 'user' || message.role === 'custom'),
+    ...run.slice(keep).filter(message => message !== task)];
   const content = typeof task.content === 'string' ? [{ type: 'text' as const, text: task.content }] : task.content;
-  return [{ ...task, content: [...content, { type: 'text' as const, text: `\n\n${note}` }] }, ...run.slice(keep)];
+  const refreshedTask = { ...task, content: [...content, { type: 'text' as const, text: `\n\n${note}` }] };
+  const taskAt = retained.indexOf(task);
+  if (taskAt < 0) retained.unshift(refreshedTask);
+  else retained[taskAt] = refreshedTask;
+  return retained;
 }

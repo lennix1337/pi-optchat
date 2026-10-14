@@ -18,7 +18,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm install -g @earendil-works/pi-coding-agent@1.1.0
+      - run: npm install -g @earendil-works/pi-coding-agent@1.2.0
       - id: upterm
         uses: owenthereal/action-upterm@v2
         with:

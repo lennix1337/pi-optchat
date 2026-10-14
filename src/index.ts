@@ -15,7 +15,8 @@ import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
+import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
+import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
 import { Children, CWD_DOC, loadedBuiltins } from './agents.ts';
@@ -28,6 +29,7 @@ import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
+import { ShellJobs, registerShells } from './shells.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -62,6 +64,8 @@ export const version = ((): string | undefined => {
 const brand = version ? `OptChat v${version}` : 'OptChat';
 
 export default function optchat(pi: ExtensionAPI) {
+  const shells = new ShellJobs();
+  registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); });
   let active: Active | undefined;
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
@@ -91,6 +95,8 @@ export default function optchat(pi: ExtensionAPI) {
   type Report = (typeof reports)[number];
   let idle = () => true;
   const receipts = new Map<AgentMessage, string>();
+  /** Keep the original result for durable memory; `run` retains the bounded copy sent back to the model. */
+  const fullToolResults = new WeakMap<AgentMessage, AgentMessage>();
   let checkpoints = Promise.resolve();
   let importing = false;
   let stopping = false;
@@ -141,7 +147,7 @@ export default function optchat(pi: ExtensionAPI) {
     while (logged < run.length) {
       const message = run[logged];
       const receipt = receipts.get(message);
-      logMessage(active.memory, message, receipt); logged++;
+      logMessage(active.memory, message, receipt, fullToolResults.get(message)); logged++;
       if (receipt && !receipt.startsWith(REPORT_RECEIPT)) active.inbox.acknowledge(receipt);
       receipts.delete(message);
       if (message.role === 'user') {
@@ -172,12 +178,13 @@ export default function optchat(pi: ExtensionAPI) {
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
+    await shells.close();
     if (!active) return;
     const old = active;
     try {
       await closeWindows?.(); closeWindows = undefined;
       await recovery;
-      await old.children.close(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
+      await old.children.close(); shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
       await old.memory.close(); await checkpoints;
       await checkpoint(old.dir);
     } finally {
@@ -225,7 +232,7 @@ export default function optchat(pi: ExtensionAPI) {
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
+        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, shells, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
@@ -234,7 +241,7 @@ export default function optchat(pi: ExtensionAPI) {
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
       active = { name, dir, config, memory, inbox, children, usage, unlock }; fault = undefined; idle = () => ctx.isIdle();
-      if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); });
+      if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
@@ -411,6 +418,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (!active || !runStarted) return;
     const bounded = boundedMessage(event.message);
     const message = asUser(bounded);
+    if (event.message.role === 'toolResult') fullToolResults.set(message, event.message);
     // Before the message is logged, so the image its text names is already there for zoom; zoom's own images are kept already.
     if (message.role === 'user' || message.role === 'toolResult' && message.toolName !== 'zoom') {
       try { await saveImages(active.memory.store, message.content); }
@@ -471,16 +479,28 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(PROMPT.slice(0, 40))) prompt = current;
       const system = stateless(promptFor(prompt, a.config));
-      const refresh = refreshPoint(run, keep, refreshBudget(ctx.model?.contextWindow, refreshFraction(a.config.refreshAt)));
-      if (refresh) {
-        const { cut, size } = refresh, began = Date.now();
-        ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
-        try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
-        if (!a.memory.ready) throw new Error('OptChat cannot refresh this run while summaries are missing. Originals are preserved; fix the compactor and continue in a new turn.');
-        view = a.memory.render(); keep = cut;
-        ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
+      const window = ctx.model?.contextWindow;
+      const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
+      const statusLine = atWork(a.children.working);
+      const refresh = refreshPoint(run, keep, refreshBudget(window, refreshFraction(a.config.refreshAt)));
+      let budgeted = inputBudget === undefined ? undefined
+        : budgetContext(a.memory, event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
+      if (refresh || budgeted && !budgeted.fits) {
+        const cut = refresh?.cut ?? lastStep(run);
+        if (cut > keep) {
+          const size = refresh?.size ?? run.slice(keep, cut).reduce((sum, message) => sum + messageChars(message), 0), began = Date.now();
+          ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
+          try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
+          if (!a.memory.ready) throw new Error('OptChat cannot refresh this run while summaries are missing. Originals are preserved; fix the compactor and continue in a new turn.');
+          view = a.memory.render(); keep = cut;
+          ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
+          budgeted = inputBudget === undefined ? undefined
+            : budgetContext(a.memory, event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
+        }
       }
-      return { messages: buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, atWork(a.children.working)) };
+      const messages = budgeted?.messages ?? buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine);
+      if (window) assertContextFits(messages, window, ctx.model?.maxTokens);
+      return { messages };
     } catch (error) {
       // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
       ctx.abort();
@@ -573,7 +593,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (importing) throw new Error('Close the import dialog before opening the inspector.');
       inspectorController = controller;
       const signal = inspectorController.signal;
-      const action = await showInspector(ctx, { profile: a.name, session: ctx.sessionManager.getSessionId(), children: a.children, usage: a.usage, memory: a.memory, page, signal,
+      const action = await showInspector(ctx, { profile: a.name, session: ctx.sessionManager.getSessionId(), children: a.children, usage: a.usage, memory: a.memory, shells, page, signal,
         refreshUsage: () => { collectUsage(ctx); try { a.children.collectUsage(); } catch (error) { ctx.ui.notify(`Could not save child usage: ${errorText(error)}`, 'error'); } },
       });
       if (signal.aborted) return;
@@ -660,7 +680,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (action === 'agents model') return pickModel(ctx, 'subagent');
     if (action === 'fallback') return pickFallbacks(ctx, 'compactor');
     if (action === 'agents fallback') return pickFallbacks(ctx, 'subagent');
-    if (action === 'agents' || action === 'usage' || action === 'activity') return inspect(ctx, action);
+    if (action === 'agents' || action === 'usage' || action === 'activity' || action === 'shells') return inspect(ctx, action);
     if (action === 'instructions') {
       const a = required();
       const edited = await ctx.ui.editor(`${a.name} · AGENTS.md`, instructions(a.dir));
@@ -673,7 +693,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.hasUI) execFile(isWindows ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open', [file], error => { if (error && (!isWindows || error.code === 'ENOENT')) ctx.ui.notify(`Open ${file}`, 'info'); });
       ctx.ui.notify(file, 'info'); return;
     }
-    if (action) throw new Error('Use /optchat [profile|settings|model|fallback|agents|agents model|agents fallback|usage|activity|instructions|browse|import].');
+    if (action) throw new Error('Use /optchat [profile|settings|model|fallback|agents|agents model|agents fallback|usage|activity|shells|instructions|browse|import].');
   };
   pi.registerCommand('complete', { description: 'End this connected conversation and hand off to the main agent', handler: async (_args, ctx) => {
     if (!remote) { ctx.ui.notify('/complete is for connected subagent windows.', 'info'); return; }
@@ -684,7 +704,7 @@ export default function optchat(pi: ExtensionAPI) {
     try { await remote.tell(args); } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
   } });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
-    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
+    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'shells', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
   });
 }

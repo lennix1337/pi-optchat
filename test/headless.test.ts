@@ -26,19 +26,23 @@ for (const name of ['work', 'personal']) {
 }
 rememberProfile('personal');
 
-/** A headless Pi (print or RPC) whose model answers "OK to: <prompt>" and records what each call was sent. */
+/** A headless Pi (print or RPC) with short synthetic compaction summaries and recorded model-turn requests. */
 async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
-  const sent: string[] = [], errors: string[] = [];
+  const sent: string[] = [], turns: string[] = [], errors: string[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   runtime.registerProvider('fixture', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
     models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
     streamSimple(model, context) {
-      sent.push(JSON.stringify(context.messages));
+      const request = JSON.stringify(context.messages);
+      sent.push(request);
       const last = context.messages.at(-1);
       const prompt = textContent(last && 'content' in last ? last.content : '');
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: `OK to: ${prompt}` }],
+      const compacting = prompt.includes('\n\nCompaction:');
+      if (!compacting) turns.push(request);
+      const text = compacting ? 'talk: OK' : `OK to: ${prompt}`;
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text }],
         api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
       const stream = createAssistantMessageEventStream();
       void ((prompt.includes('slow') ? options.hold : undefined) ?? Promise.resolve()).then(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
@@ -67,7 +71,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string;
   };
   const bindings = () => manager.getEntries().flatMap(e => e.type === 'custom' && e.customType === 'optchat.profile' ? [e.data] : []);
   const close = async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); };
-  return { ask, bindings, close, errors, notes, sent, compact: () => session.compact() };
+  return { ask, bindings, close, errors, notes, sent, turns, compact: () => session.compact() };
 }
 
 test('a headless run without a binding or --optchat-profile is plain Pi: it answers, and no profile is picked or created', async () => {
@@ -147,8 +151,8 @@ test('the model gets the system prompt Pi has now, with sections extensions load
   const pi = await headless('print', { flag: 'work', later });
   try {
     await pi.ask('Say OK');
-    assert.match(pi.sent[0], /You are OptChat/);
-    assert.match(pi.sent[0], /SECTION-FROM-LATER-EXTENSION/);
+    assert.match(pi.turns[0], /You are OptChat/);
+    assert.match(pi.turns[0], /SECTION-FROM-LATER-EXTENSION/);
   } finally { await pi.close(); }
 });
 

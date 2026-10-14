@@ -12,6 +12,7 @@ import { emptyUsage, UsageLedger } from '../src/usage.ts';
 import { RunHistory } from '../src/runs.ts';
 import { mountNavigation } from '../src/navigation.ts';
 import { removeDir } from './support.ts';
+import { ShellJobs } from '../src/shells.ts';
 
 // Children load installed extensions from Pi's agent dir; keep tests away from the user's real one.
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
@@ -149,7 +150,7 @@ test('agent rows distinguish queued and undelivered guidance from current activi
   } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });
 
-test('Tab cycles Agents, Usage and Activity; Activity is a memory gauge with an agent count', async () => {
+test('Tab cycles Agents, Usage, Activity and Shells; Activity is a memory gauge with an agent count', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-activity-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
@@ -172,6 +173,7 @@ test('Tab cycles Agents, Usage and Activity; Activity is a memory gauge with an 
       'Agents · 1 running']);
     children.history.records.set('paused', { id: 'paused', task: 'wait', cwd: dir, model: 'test', thinking: 'high', parentSession: 'parent', depth: 1, started: Date.now(), state: 'paused', guidance: [] });
     assert.equal(page().at(-1), 'Agents · 1 running · 1 interrupted', 'an interrupted agent is neither running nor finished');
+    inspector.handleInput('\t'); assert.equal(title(), 'OptChat · personal · Shells');
     inspector.handleInput('\t'); assert.equal(title(), 'OptChat · personal · Agents');
   } finally { inspector.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });
@@ -217,4 +219,58 @@ test('agent titles shorten at a word boundary with an ellipsis', () => {
 
 test('short numbers move up a unit instead of showing 1000', () => {
   assert.deepEqual([999, 999.6, 12_345, 164_000, 999_499, 999_500, 999_500_000, 2_400_000].map(short), ['999', '1k', '12.3k', '164k', '999k', '1M', '1B', '2.4M']);
+});
+
+test('Shells panel shows output safely, stays within narrow terminals and confirms individual stop', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-shell-ui-'));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
+  const shells = new ShellJobs();
+  const id = shells.start('node server.js', dir, async (signal, update) => {
+    update('Listening on 3000\n\x1b[2Junsafe control\n' + 'long output '.repeat(100));
+    await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+    return { output: 'Stopped', failed: false };
+  });
+  let done = false;
+  const inspector = new Inspector({ profile: 'test', session: 'session', children, usage: new UsageLedger(dir), memory, shells, page: 'shells',
+    rows: () => 24, redraw: () => {}, done: () => { done = true; }, color: (_tone, text) => text, context: () => undefined });
+  try {
+    await Promise.resolve();
+    assert.match(inspector.render(100).join('\n'), /node server.js.*running.*background/);
+    inspector.handleInput('\r');
+    assert.match(inspector.render(100).join('\n'), /Listening on 3000/);
+    for (const width of [30, 40, 80, 120]) {
+      const lines = inspector.render(width);
+      assert.ok(lines.every(line => visibleWidth(line) <= width));
+      assert.ok(lines.every(line => !line.includes('\x1b')));
+      assert.ok(lines.length <= 24);
+    }
+    inspector.handleInput('k'); assert.match(inspector.render(100).join('\n'), /Enter stop/);
+    inspector.handleInput('\x1b'); assert.equal(shells.list()[0].state, 'running');
+    inspector.handleInput('k'); inspector.handleInput('\r');
+    assert.equal(shells.list().find(j => j.id === id)?.state, 'stopping');
+    await shells.close(); assert.match(inspector.render(100).join('\n'), /stopped/);
+    inspector.handleInput('\x1b'); assert.equal(done, false, 'Escape returns from output to list');
+    inspector.handleInput('\x1b'); assert.equal(done, true);
+  } finally { inspector.dispose(); await shells.close(); await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('shell count remains visible on narrow footers and updates immediately', () => {
+  const shells = new ShellJobs(); let widget: Component | undefined, redraws = 0;
+  const children = { history: { list: () => [] }, subscribe: () => () => {} } as unknown as Children;
+  const memory = { progress: () => ({ done: 0, total: 0, retryIn: undefined }), onChange: () => () => {} };
+  const ctx = { ui: { getEditorComponent: () => () => undefined, setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => Component) => {
+    widget = factory?.({ requestRender() { redraws++; } }, { fg: (_tone: string, text: string) => text });
+  } } };
+  const unmount = mountNavigation(ctx as unknown as ExtensionContext, children, memory, 'f6', () => {}, shells);
+  try {
+    shells.begin('one', 'node server', '.', 'foreground');
+    assert.ok(redraws > 0);
+    for (const width of [30, 40, 80, 120]) {
+      const bar = widget?.render(width).join('') ?? '';
+      assert.match(bar, /Shells: 1/); assert.ok(visibleWidth(bar) <= width);
+    }
+    shells.end('one', 'done', false); assert.match(widget?.render(80).join('') ?? '', /Shells: 0/);
+  } finally { unmount(); }
 });

@@ -119,7 +119,7 @@ function message(e) {
 // The model sees a large message as its shortened node, so the view shows that and keeps the original one click away.
 function leaf(p) {
   const e = D.root[p.i], n = nodes.get('0:' + p.i);
-  if (!n || n.text === e.text) return message(e);
+  if (!n || n.text === e.kind + ': ' + e.text) return message(e);
   const el = $('article', 'block'), kids = $('div', 'children'), b = $('button', 'link', 'Show the original');
   el.dataset.k = '0:' + p.i; kids.hidden = true;
   el.append($('div', 'meta', who(e)[0] + ' · ' + when(p.i, p.i) + ' · shortened for the model'), $('p', 'summary', n.text), b, kids);
@@ -127,7 +127,7 @@ function leaf(p) {
   return el;
 }
 function block(p) {
-  if (p.l === 0) return message(D.root[p.i]);
+  if (p.l === 0) return leaf(p);
   const a = first(p), n = nodes.get(p.l + ':' + p.i), el = $('article', 'block');
   el.dataset.k = p.l + ':' + p.i;
   el.append($('div', 'meta', when(a, a + count(p) - 1) + ' · ' + count(p).toLocaleString() + ' messages: ' + mix(a, a + count(p))));

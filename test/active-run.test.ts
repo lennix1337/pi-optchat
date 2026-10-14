@@ -8,8 +8,9 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { Type } from 'typebox';
 import optchat from '../src/index.ts';
+import { buildContext } from '../src/transcript.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { retainedRun, needsRunRefresh, assertContextFits } from '../src/run-context.ts';
+import { estimatedContextTokens, inputTokenBudget, retainedRun, needsRunRefresh, assertContextFits } from '../src/run-context.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { isCompaction } from './support.ts';
 
@@ -30,6 +31,37 @@ test('the recipe-sized active-run cap and model safety budget both trigger refre
   assert.equal(needsRunRefresh([large], [large], 272000), true);
   assert.equal(needsRunRefresh([user], [user], 272000), false);
   assert.throws(() => assertContextFits([large], 10000), /context.*too large/i);
+});
+
+test('the conservative input budget leaves output and estimation reserve at supported window sizes', () => {
+  for (const window of [32_768, 128_000, 272_000]) {
+    assert.equal(inputTokenBudget(window, 8_192), window - 8_192 - Math.ceil(window * 0.05));
+  }
+});
+
+test('main assembly keeps the current prompt and only active Pi tool schemas inside the estimate', () => {
+  const removed = { name: 'old_tool', description: 'inactive', parameters: { type: 'object' } };
+  const zoom = { name: 'zoom', description: 'active tool schema', parameters: { type: 'object', properties: { id: { type: 'number' } } } };
+  const search = { name: 'search', description: 'new active schema', parameters: { type: 'object' } };
+  const canonical: AgentMessage[] = [
+    { role: 'system', content: 'old prompt', toolsAdded: [removed, zoom], timestamp: 0 } as AgentMessage,
+    { role: 'system', content: '', toolsRemoved: [removed], toolsAdded: [search], timestamp: 1 } as AgentMessage,
+  ];
+  const assembled = buildContext(canonical, [user], '<chat>\n</chat>', 'current complete prompt');
+  assert.equal(assembled[0]?.role, 'system');
+  assert.equal(assembled[0]?.content, 'current complete prompt');
+  assert.deepEqual(assembled[0]?.role === 'system' ? assembled[0].toolsAdded?.map(tool => tool.name) : [], ['zoom', 'search']);
+  assert.ok(estimatedContextTokens(assembled) > estimatedContextTokens(assembled.slice(1)), 'the estimate includes the prompt and active tool schemas');
+});
+
+test('assembled request budget includes the actual system prompt and tool schemas plus the model output reserve', () => {
+  const withOutputReserve = needsRunRefresh as (messages: readonly AgentMessage[], run: readonly AgentMessage[], window: number, maxTokens: number) => boolean;
+  const assertWithOutputReserve = assertContextFits as (messages: readonly AgentMessage[], window: number, maxTokens: number) => void;
+  const system = { role: 'system', content: 'system '.repeat(2000), timestamp: 0,
+    toolsAdded: Array.from({ length: 3 }, (_, i) => ({ name: `large_tool_${i}`, description: 'schema '.repeat(100), parameters: { type: 'object', properties: {} } })) } as AgentMessage;
+  const request: AgentMessage[] = [system, user];
+  assert.equal(withOutputReserve(request, [user], 10_000, 7_000), true, 'the full assembled request leaves insufficient input after output reserve');
+  assert.throws(() => assertWithOutputReserve(request, 10_000, 7_000), /context.*too large/i);
 });
 
 for (const failing of [false, true]) test(failing ? 'a long run refuses to drop unsummarized results when the compactor fails' : 'a long tool run refreshes through the existing tree, keeps originals and completes; automatic/manual Pi snapshots do not cancel', async () => {

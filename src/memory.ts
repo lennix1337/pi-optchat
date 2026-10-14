@@ -33,7 +33,7 @@ const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
 export const labeled = (kind: Kind, text: string) => `${kind}: ${text.replace(KIND_HEAD, '')}`;
 export const flat = (s: string) => s.replace(/[\r\n]+/g, ' ');
 const lineBytes = (s: string) => bytes(flat(s));
-const notice = (omitted: number) => `\n[${omitted} characters omitted; head and tail retained]\n`;
+const notice = (omitted: number) => `\n[${omitted} characters omitted; head and tail retained. Zoom can recover the full output only when the original is durable.]\n`;
 const VIEW_OPEN = '<chat>\n';
 export const isView = (text: string) => text.startsWith(VIEW_OPEN);
 export function cap(text: string, limit = CAP) {
@@ -312,7 +312,8 @@ export class Memory {
   private async build(part: Part) {
     const source = part.l === 0 ? `${this.root[part.i].kind}: ${this.root[part.i].text}`
       : [0, 1].map(offset => this.text({ l: part.l - 1, i: 2 * part.i + offset })).join('\n');
-    const mergeSource = part.l > 0 ? [0, 1].map(offset => flat(this.text({ l: part.l - 1, i: 2 * part.i + offset }))).join('\n') : source;
+    const mergeSource = part.l > 0 ? [0, 1].map(offset => flat(this.text({ l: part.l - 1, i: 2 * part.i + offset }))).join('\n')
+      : this.root[part.i].kind === 'echo' ? cap(source) : source;
     const result = part.l === 0 && this.root[part.i].kind === 'tool' ? this.resultOf(part.i) : undefined;
     const call = part.l === 0 ? this.callOf(part.i) : undefined;
     let text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
