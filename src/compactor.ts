@@ -31,18 +31,19 @@ export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
 const RULER = '-'.repeat(NODE);
 const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
 /** The recipe's compaction task. A tool result also gets the call that produced it, plus its output. */
-export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string } }) {
+export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string } }, targetBytes?: number) {
   const { source, part, result, call } = input;
+  const sizeHint = targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes (not characters), leaving room below the limit.\n`;
   const callContext = call ? `\nThe call is in <call>: context, like <chat>.\n<call>\n${call.text}\n</call>` : '';
   if (!part.l) {
     const kind = /^(\w+): /.exec(source)?.[1];
     return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
-      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n<input>\n${source}\n</input>`
+      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n${sizeHint}<input>\n${source}\n</input>`
       + callContext + (result === undefined ? '' : `\nThe call's result is in <result>: say in a few words what it found or did.\n<result>\n${result}\n</result>`);
   }
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };
   return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most\n512 bytes (about 70 words), the length of this ruler:\n${RULER}\n`
-    + `<chat> may hold their messages, ${start(part)} to ${start(part) + 2 ** part.l - 1}, in more detail: take details\nof them from there too.\n<input>\n${source}\n</input>`;
+    + `<chat> may hold their messages, ${start(part)} to ${start(part) + 2 ** part.l - 1}, in more detail: take details\nof them from there too.\n${sizeHint}<input>\n${source}\n</input>`;
 }
 
 const WARM_MS = 4 * 60_000; // Anthropic's short cache lives 5 minutes from its last use.
@@ -135,13 +136,15 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const selected = choice(), resolved = resolveModel(registry, selected);
     if (!resolved) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
     const model = resolved.model, thinking = reasoningFor(model, selected.thinking);
-    const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${task(input)}`;
+    const sourceBytes = bytes(input.source), limit = Math.min(accepted(), sourceBytes - 1);
+    const target = Math.floor(Math.min(NODE, limit) * 7 / 8);
+    const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${task(input, target)}`;
     const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
-    const limit = accepted();
     let request = 0, failures = 0, attempts = 0, summaries = 0;
+    let shortest: string | undefined;
     const ask = async (): Promise<AssistantMessage> => {
       for (;;) {
         signal.throwIfAborted();
@@ -203,12 +206,17 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       if (reply.stopReason === 'length' || reply.content.some(block => block.type === 'toolCall')) continue;
       const line = summaryText(reply, detail);
       summaries++;
-      if (bytes(line) <= limit && bytes(line) < bytes(input.source)) return line;
+      const size = bytes(line);
+      if (size <= limit) return line;
+      if (size < sourceBytes && (shortest === undefined || size < bytes(shortest))) shortest = line;
       messages.push(reply);
-      const cut = Buffer.from(line).subarray(0, NODE).toString('utf8').replace(/\uFFFD$/, '');
-      messages.push({ role: 'user', content: tooLong(bytes(line), cut), timestamp: Date.now() });
+      const cut = Buffer.from(line).subarray(0, limit).toString('utf8').replace(/\uFFFD$/, '');
+      messages.push({ role: 'user', content: tooLong(size, cut, limit, sourceBytes), timestamp: Date.now() });
     }
+    // Victor's recipe keeps the shortest near miss. Bound slack to 32 bytes, never
+    // accept a non-shrinking or partial result; the view accounts for actual bytes.
+    if (shortest !== undefined && bytes(shortest) <= limit + 32) return shortest;
     if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
-    throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; it must be smaller than the source).`);
+    throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; source ${sourceBytes} bytes; shortest ${shortest === undefined ? 'none' : bytes(shortest)}; it must be smaller than the source).`);
   };
 }

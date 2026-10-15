@@ -21,7 +21,7 @@ export const SETTINGS = {
     description: 'Give agents a search tool that finds original messages by plain text, newest first, for exact names, numbers, paths or errors the view doesn\'t show. Off: zoom and date only, as in Victor\'s recipe. Turning it on or off makes the next turn re-cache its prompt once.',
     applies: 'Applies from the next turn, and to subagents started or resumed after this.' },
   summaryAcceptBytes: { kind: 'number', label: 'Summary size tolerance', default: NODE, min: NODE, unit: 'bytes',
-    description: `The compactor is always asked for ${NODE}-byte lines; a longer line up to this size is kept instead of retried. ${NODE}: strict, as in Victor's recipe. A higher value saves retries for a little more view space.`,
+    description: `The compactor is always asked for ${NODE}-byte lines; a longer line up to this size is kept instead of retried. After five tries, a complete shrinking line at most 32 bytes above this size can be kept, following Victor's shortest-line fallback. A higher value accepts longer lines immediately.`,
     applies: 'Applies to the next summary.' },
   importJobs: { kind: 'number', label: 'Import: summaries at once', default: 8, min: 1, max: 64, unit: '',
     description: 'Summaries an import builds at once. With N at once, a summary can see up to N−1 lines not summarized yet before it, so higher is faster but a little less accurate (at 8 that costs about 0.8 points per summary, #108). Higher also hits your provider\'s rate limits harder; the compactor retries what is refused. Chat itself always runs 8.',

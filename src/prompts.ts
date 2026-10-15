@@ -189,10 +189,11 @@ of them from there too.
 ${source}
 </input>`;
 }
-/** Sent back when a compaction's line is over the limit; `cut` is the line truncated at the limit. */
-export const tooLong = (size: number, cut: string) => `Too long: your line is ${size} bytes, over the 512-byte limit. Write
-the whole line again for the same <input>, cutting just enough of the
-least valuable items to fit before this cut:
+/** Correction stays after the cached prefix; the cut is guidance, never saved as a summary. */
+export const tooLong = (size: number, cut: string, limit = NODE, sourceBytes?: number) => `Too long: your line is ${size} bytes, over the ${limit}-byte limit.${sourceBytes === undefined ? '' : ` The source is ${sourceBytes} bytes; the summary must be smaller.`}
+Write the whole line again for the same <input>. Aim for at most ${Math.floor(limit * 7 / 8)} UTF-8 bytes
+(not characters); preserve user decisions and verification status, omit lower-value details.
+Do not merely shave a few characters off. This cut is a size guide, not a summary to copy:
 ${cut}| ← LIMIT`;
 
 // System prompt of the handoff a connected conversation (a user chatting with a subagent in a second window) leaves

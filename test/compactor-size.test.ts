@@ -10,7 +10,7 @@ import { compaction, tooLong } from '../src/prompts.ts';
 import { createHandoffSummarizer } from '../src/handoff.ts';
 import type { RunInfo } from '../src/runs.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { bytes, NODE } from '../src/memory.ts';
+import { Memory, bytes, NODE } from '../src/memory.ts';
 import { estimatedContextTokens, inputTokenBudget } from '../src/run-context.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
@@ -20,9 +20,9 @@ let sentStep = '';
 let sentRetry = '';
 /** A fake model with a configurable first response and a fitting retry by default. */
 async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', retryText = 'x'.repeat(400), firstEnd, ends = 1,
-  contextWindow = 100000, maxTokens = 1000, shared, stats }:
+  contextWindow = 100000, maxTokens = 1000, shared, stats, replies, persist = false }:
   { source?: string; merge?: boolean; accepted?: number; first?: string; retryText?: string; firstEnd?: 'length' | 'toolUse'; ends?: number;
-    contextWindow?: number; maxTokens?: number; shared?: Shared; stats?: { calls: number } } = {}) {
+    contextWindow?: number; maxTokens?: number; shared?: Shared; stats?: { calls: number; prefixes?: string[] }; replies?: string[]; persist?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-size-'));
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   let calls = 0;
@@ -35,13 +35,14 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
       const request = context.messages.find(m => m.role === 'user')?.content;
       sentStep = Array.isArray(request) ? request.map(c => c.type === 'text' ? c.text : '').at(-1) ?? '' : request ?? '';
       const last = context.messages.at(-1);
-      if (stats) stats.calls = calls + 1;
+      if (stats) { stats.calls = calls + 1; stats.prefixes?.push(JSON.stringify([shared, context.messages[0]])); }
       sentRetry = context.messages.length > 1 && last?.role === 'user' && typeof last.content === 'string' ? last.content : '';
       const stream = createAssistantMessageEventStream();
       const end = calls < ends ? firstEnd ?? 'stop' : 'stop';
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: calls++ ? retryText : text.repeat(first) },
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: (replies?.[calls] ?? (calls ? retryText : text.repeat(first))) },
         ...end === 'toolUse' ? [{ type: 'toolCall' as const, id: 'call-1', name: 'zoom', arguments: { id: 0 } }] : []], api: model.api,
         provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: end, usage: emptyUsage() };
+      calls++;
       queueMicrotask(() => { stream.push({ type: 'done', reason: end, message }); stream.end(); });
       return stream;
     },
@@ -49,16 +50,34 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
   try {
     const compress = createCompressor(new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'compactor', thinking: 'off' }), undefined,
       accepted === undefined ? undefined : () => accepted, shared === undefined ? undefined : () => shared);
+    if (persist) {
+      const directory = join(dir, 'memory');
+      let memory = new Memory(directory, compress, () => {});
+      try {
+        memory.append('user', source.replace(/^user: /, ''));
+        await memory.settle(AbortSignal.timeout(2000), 'tree');
+        const summary = memory.node({ l: 0, i: 0 })!.text, view = memory.render();
+        assert.equal(memory.lastError, undefined);
+        assert.ok(memory.size >= bytes(summary), 'the view budgets actual bytes including the near miss');
+        await memory.close();
+        memory = new Memory(directory, async () => { throw new Error('saved nodes must not be rebuilt'); }, () => {});
+        await memory.settle(AbortSignal.timeout(2000), 'tree');
+        assert.equal(memory.render(), view, 'restart keeps the exact saved view for prefix caching');
+        assert.equal(memory.zoom(0, 1), `0+1|${source}`, 'the exact original remains zoomable');
+        return { calls, bytes: bytes(memory.node({ l: 0, i: 0 })!.text) };
+      } finally { await memory.close(); }
+    }
     const line = await compress({ context: '<chat>\n</chat>', source, part: merge ? { l: 1, i: 0 } : { l: 0, i: 0 } }, new AbortController().signal);
-    return { calls, bytes: line.length };
+    return { calls, bytes: bytes(line) };
   } finally { removeDir(dir); }
 }
 
 function compactorMessages(source: string, shared: Shared): AgentMessage[] {
   const context = '<chat>\n</chat>', part = { l: 0, i: 0 };
+  const step = task({ source, part }, 448);
   return [
     { role: 'system', content: shared.systemPrompt, toolsAdded: shared.tools, timestamp: 0 },
-    { role: 'user', content: [{ type: 'text', text: context }, { type: 'text', text: `\n\n${task({ source, part })}` }], timestamp: 0 },
+    { role: 'user', content: [{ type: 'text', text: context }, { type: 'text', text: `\n\n${step}` }], timestamp: 0 },
   ];
 }
 function contextWindow(maxTokens: number, fitting: number[], overflowing: number) {
@@ -97,7 +116,7 @@ test('the compactor checks correction retries after prior summaries accumulate',
   const reply: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: summary }], api: 'openai-completions',
     provider: 'optchat-test', model: 'compactor', timestamp: 0, stopReason: 'stop', usage: emptyUsage() };
   const cut = Buffer.from(summary).subarray(0, NODE).toString('utf8').replace(/\uFFFD$/, '');
-  const correction: AgentMessage = { role: 'user', content: tooLong(bytes(summary), cut), timestamp: 0 };
+  const correction: AgentMessage = { role: 'user', content: tooLong(bytes(summary), cut, NODE, bytes(source)), timestamp: 0 };
   const firstTokens = estimatedContextTokens(initial), correctionTokens = estimatedContextTokens([...initial, reply, correction]);
   assert.ok(correctionTokens > firstTokens);
   const maxTokens = 512, window = contextWindow(maxTokens, [firstTokens], correctionTokens);
@@ -165,8 +184,42 @@ test('a line over the limit is sent back with the recipe\'s "Too long" cut, and 
   assert.deepEqual(await attempts(700, { source }), { calls: 2, bytes: 400 });
   assert.ok(sentStep.startsWith('\n\nCompaction:'), 'the task starts its own paragraph: OpenAI joins text blocks with nothing between them');
   assert.ok(sentStep.endsWith(`<input>\n${source}\n</input>`));
-  assert.equal(sentRetry, `Too long: your line is 700 bytes, over the 512-byte limit. Write\nthe whole line again for the same <input>, cutting just enough of the\nleast valuable items to fit before this cut:\n${'x'.repeat(NODE)}| ← LIMIT`);
+  assert.equal(sentRetry, tooLong(700, 'x'.repeat(NODE), NODE, bytes(source)));
   assert.deepEqual(await attempts(1, { first: '12+4|user: kept' }), { calls: 1, bytes: 'user: kept'.length });
+});
+
+
+test('near misses retain the shortest complete shrinking summary after five tries, without changing the cached prefix', async () => {
+  const stats = { calls: 0, prefixes: [] as string[] };
+  assert.deepEqual(await attempts(0, { source: 's'.repeat(893), replies: [781, 739, 605, 546, 516].map(n => 'x'.repeat(n)), stats }),
+    { calls: 5, bytes: 516 });
+  assert.equal(new Set(stats.prefixes).size, 1, 'corrections append after the identical system/tools/view/task prefix');
+  assert.deepEqual(await attempts(0, { replies: [520, 540, 530, 540, 540].map(n => 'x'.repeat(n)) }), { calls: 5, bytes: 520 });
+});
+
+test('near-miss fallback is bounded and must still shrink the source', async () => {
+  assert.deepEqual(await attempts(544, { retryText: 'x'.repeat(544) }), { calls: 5, bytes: 544 });
+  await assert.rejects(attempts(545, { retryText: 'x'.repeat(545) }), /no acceptable summary/);
+  await assert.rejects(attempts(520, { source: 's'.repeat(520), retryText: 'x'.repeat(520) }), /no acceptable summary/);
+  await assert.rejects(attempts(520, { firstEnd: 'length', ends: 5, retryText: 'x'.repeat(520) }), /no whole line/);
+  await assert.rejects(attempts(520, { firstEnd: 'toolUse', ends: 5, retryText: 'x'.repeat(520) }), /no whole line/);
+  assert.deepEqual(await attempts(0, { replies: ['é'.repeat(260), 'é'.repeat(263), 'é'.repeat(264), 'é'.repeat(265), 'é'.repeat(266)] }),
+    { calls: 5, bytes: 520 }, 'measure UTF-8 bytes, not characters');
+});
+
+test('corrections state the real source-bound limit and a safety margin in UTF-8 bytes', async () => {
+  await attempts(590, { source: 's'.repeat(561), accepted: 640, retryText: 'x'.repeat(400) });
+  assert.match(sentRetry, /560-byte limit/);
+  assert.match(sentRetry, /source is 561 bytes/);
+  assert.match(sentRetry, /Aim for at most 490 UTF-8 bytes/);
+  assert.match(sentStep, /Aim for at most 448 UTF-8 bytes/);
+});
+
+
+test('a near miss is durably saved once, budgets actual bytes and preserves original zoom and view after restart', async () => {
+  const line = 'user: ' + 'x'.repeat(510);
+  assert.deepEqual(await attempts(0, { source: 'user: ' + 's'.repeat(887), replies: Array(5).fill(line), persist: true }),
+    { calls: 5, bytes: 516 });
 });
 
 test('handoffs clamp the compactor\'s thinking level too', async () => {
