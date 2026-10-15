@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { FileStore, storeFor, type Saved, type Store } from './store.ts';
+import { FileStore, storeFor, type Saved, type Store, type TerminalRecord } from './store.ts';
 
 export const NODE = 512;
 export const VIEW = 128_000;
@@ -17,6 +17,7 @@ export interface Summary extends Part { text: string; size: number }
 export interface Compression { context: string; source: string; part: Part; historical?: boolean; result?: string; call?: { i: number; text: string } }
 export type Compressor = (input: Compression, signal: AbortSignal) => Promise<string>;
 const key = ({ l, i }: Part) => l * 2 ** 40 + i;
+const POLICY_REFUSAL = 'OPTCHAT_POLICY_REFUSAL' as const;
 const UNBUILT = '(not summarized yet: zoom it)';
 export const start = ({ l, i }: Part) => i * 2 ** l;
 export const end = (part: Part) => start(part) + 2 ** part.l;
@@ -35,6 +36,7 @@ export const flat = (s: string) => s.replace(/[\r\n]+/g, ' ');
 const lineBytes = (s: string) => bytes(flat(s));
 const notice = (omitted: number) => `\n[${omitted} characters omitted; head and tail retained. Zoom can recover the full output only when the original is durable.]\n`;
 const VIEW_OPEN = '<chat>\n';
+const VIEW_FRAME_BYTES = bytes(`${VIEW_OPEN}</chat>`);
 export const isView = (text: string) => text.startsWith(VIEW_OPEN);
 export function cap(text: string, limit = CAP) {
   if (text.length <= limit) return text;
@@ -61,10 +63,10 @@ export function mostDue(view: readonly Part[], total: number, built: (part: Part
 class Sawtooth {
   readonly parts: Part[] = [];
   private measured = 0;
-  private merging = false;
+  merging = false;
   constructor(private readonly high: number, private readonly low: number, private readonly node: (part: Part) => Summary | undefined) {}
-  private lineSize(part: Part) { return this.node(part)?.size ?? UNBUILT_BYTES; }
-  get size() { return this.measured; }
+  private lineSize(part: Part) { return bytes(`${start(part)}+${2 ** part.l}|\n`) + (this.node(part)?.size ?? UNBUILT_BYTES); }
+  get size() { return VIEW_FRAME_BYTES + this.measured + (this.parts.length ? 0 : 1); } // render() keeps a blank line in an empty view.
   push(part: Part) { this.parts.push(part); this.measured += this.lineSize(part); }
   /** The line covering message `at`. The lines tile the log in order, so a binary search finds it. */
   covering(at: number): Part | undefined {
@@ -76,17 +78,17 @@ class Sawtooth {
     }
   }
   /** A message got its node. Its line is usually still shown, but after a damaged tree file a saved parent can already hide it. */
-  built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.lineSize({ l: 0, i }) - UNBUILT_BYTES; }
+  built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - UNBUILT_BYTES; }
   /** Returns whether any lines merged. */
   fit(total: number, force = false) {
     const lines = this.parts.length;
-    if (force || this.measured > this.high) this.merging = true;
-    for (let best: number; this.merging && this.measured > this.low && (best = mostDue(this.parts, total, part => !!this.node(part))) >= 0;) {
+    if (force || this.size > this.high) this.merging = true;
+    for (let best: number; this.merging && this.size > this.low && (best = mostDue(this.parts, total, part => !!this.node(part))) >= 0;) {
       const a = this.parts[best], b = this.parts[best + 1], parent = { l: a.l + 1, i: a.i / 2 };
       this.measured += this.lineSize(parent) - this.lineSize(a) - this.lineSize(b);
       this.parts.splice(best, 2, parent);
     }
-    if (this.measured <= this.low) this.merging = false;
+    if (this.size <= this.low) this.merging = false;
     return this.parts.length < lines;
   }
 }
@@ -102,6 +104,13 @@ function isSummary(value: unknown): value is Summary {
   return object(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
     && typeof value.text === 'string';
 }
+function isTerminalRecord(value: unknown): value is TerminalRecord {
+  return object(value) && !('text' in value) && (value.type === 'terminal' || value.type === 'retry')
+    && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i) && value.code === POLICY_REFUSAL;
+}
+function isPolicyRefusal(error: unknown) {
+  return object(error) && error.code === POLICY_REFUSAL;
+}
 
 /** The log is authoritative. The tree and the view follow the recipe: the view grows a line per message and, once it passes
  * `budget`, merges its most due pairs in one batch down to half of it, so between batches it only grows at its end.
@@ -114,6 +123,7 @@ export class Memory {
   private readonly controller = new AbortController();
   private readonly busy = new Map<number, Promise<void>>();
   private readonly retryAt = new Map<number, number>();
+  private readonly terminal = new Map<number, typeof POLICY_REFUSAL>();
   private readonly reported = new Set<number>();
   /** Messages without their node, and merges whose halves are built, oldest first, so the scheduler never scans the tree for work (recipe §4). */
   private readonly unbuilt = new Set<number>();
@@ -157,11 +167,7 @@ export class Memory {
     const entries = log.every(isEntry) ? log.sort((a, b) => a.i - b.i) : undefined;
     if (!entries || entries.some((entry, i) => entry.i !== i)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.');
     for (const value of entries) this.root.push({ ...value, size: bytes(`${value.kind}: ${value.text}`) });
-    for (const value of saved.tree) {
-      if (!isSummary(value) || value.l < 0 || value.i < 0 || end(value) > this.root.length)
-        throw new Error('Invalid OptChat summary record.');
-      this.tree.set(key(value), { ...value, size: lineBytes(value.text) });
-    }
+    this.loadTree(saved.tree);
     for (const node of this.tree.values()) this.queueParent(node);
     for (let i = 0; i < this.root.length; i++) if (!this.node({ l: 0, i })) this.unbuilt.add(i);
     // Refolding the log gives a different view than the live one, and every cache entry would miss, so the view is saved.
@@ -171,12 +177,41 @@ export class Memory {
     for (let i = loaded; i < this.root.length; i++) { this.push(i); this.fit(i + 1); }
     this.fit(); this.save(); this.schedule();
   }
+  private loadTree(records: unknown[]) {
+    for (const value of records) if (!isSummary(value) && !isTerminalRecord(value)) this.warn('Skipped an invalid OptChat summary record.');
+    this.loadSummaries(records.filter(isSummary).sort((a, b) => a.l - b.l || a.i - b.i));
+    this.loadTerminalRecords(records.filter(isTerminalRecord));
+  }
+  private loadSummaries(summaries: Summary[]) {
+    for (const value of summaries) {
+      const children = value.l === 0 || (this.tree.has(key({ l: value.l - 1, i: 2 * value.i })) && this.tree.has(key({ l: value.l - 1, i: 2 * value.i + 1 })));
+      if (value.l < 0 || value.i < 0 || !value.text.trim() || end(value) > this.root.length || !children || this.tree.has(key(value))) {
+        this.warn('Skipped an incomplete or invalid OptChat summary record.');
+        continue;
+      }
+      this.tree.set(key(value), { ...value, size: lineBytes(value.text) });
+    }
+  }
+  private loadTerminalRecords(records: TerminalRecord[]) {
+    for (const value of records) {
+      const part = { l: value.l, i: value.i };
+      const children = part.l === 0 || (this.node({ l: part.l - 1, i: 2 * part.i }) && this.node({ l: part.l - 1, i: 2 * part.i + 1 }));
+      if (part.l < 0 || part.i < 0 || end(part) > this.root.length || !children) {
+        this.warn('Skipped an invalid OptChat terminal record.');
+        continue;
+      }
+      if (value.type === 'terminal') this.terminal.set(key(part), value.code);
+      else this.terminal.delete(key(part));
+    }
+    for (const id of this.terminal.keys()) if (this.tree.has(id)) this.terminal.delete(id);
+    if (this.terminal.size) this.lastError = 'Summary blocked by policy refusal; explicit retry required.';
+  }
   append(kind: Kind, text: string, date = new Date().toISOString(), receipt?: string, origin?: Origin) {
     if (this.stopped) throw new Error('Memory is closed.');
     if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
     const entry: Entry = { i: this.root.length, kind, text, date, size: bytes(`${kind}: ${text}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
     this.clearSearchCache();
-    // A failed call is tried again at the next message (recipe §4). Only an import, which has no next message, also retries on a timer.
+    // New messages retry ordinary failures, but policy refusals stay blocked until an explicit retry action.
     this.retryAt.clear();
     void this.enqueue(() => this.store.append(entry), error => {
       this.failed ??= error instanceof Error ? error.message : String(error);
@@ -186,6 +221,20 @@ export class Memory {
     return entry;
   }
   node(part: Part) { return this.tree.get(key(part)); }
+  /** Explicitly reset a policy-refused node; normal appends never clear this terminal block. */
+  async retryRefused(part: Part) {
+    if (this.stopped) throw new Error('Memory is closed.');
+    if (!Number.isSafeInteger(part.l) || !Number.isSafeInteger(part.i) || part.l < 0 || part.i < 0 || end(part) > this.root.length) return false;
+    const id = key(part);
+    if (!this.terminal.has(id)) return false;
+    if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
+    await this.writeTerminal(part, 'retry');
+    if (this.failed) return false;
+    this.terminal.delete(id); this.reported.delete(id);
+    if (!this.terminal.size && !this.retryAt.size) this.lastError = undefined;
+    this.schedule(); this.events.emit('change');
+    return true;
+  }
   private text(part: Part) { return this.node(part)?.text ?? UNBUILT; }
   /** Runs a store write at once when none is running, so a store that finishes its writes as it returns (FileStore) throws here
    * as before; otherwise after the running ones, so writes land in the order Memory makes them. Returns the queued write, settled
@@ -199,12 +248,26 @@ export class Memory {
     this.writing = tail;
     return settled;
   }
+  private async writeTerminal(part: Part, type: TerminalRecord['type']) {
+    if (!this.store.appendTerminal) {
+      this.warn('This store cannot persist policy-refusal state; the node may be retried after reopening.');
+      return;
+    }
+    const record: TerminalRecord = { type, ...part, code: POLICY_REFUSAL };
+    const written = this.enqueue(() => this.store.appendTerminal!(record), () => {
+      this.failed ??= 'Could not persist policy-refusal state.';
+      this.warn('Could not persist policy-refusal state; automatic retries remain disabled only in this session.');
+    });
+    if (written) await written;
+  }
   /** Takes the saved view if it still tiles the log from the start, and returns how many messages it covers. */
   private load(view: string | undefined) {
     if (view === undefined) return 0;
     const rebuild = () => { this.warn('Rebuilt the memory view: the saved one does not match the log.'); return 0; };
     let saved: unknown;
     try { saved = JSON.parse(view); } catch { return rebuild(); }
+    const merging = object(saved) && saved.merging === true;
+    if (object(saved) && typeof saved.merging === 'boolean') saved = saved.parts;
     if (!Array.isArray(saved)) return rebuild();
     const parts: Part[] = [];
     let covered = 0;
@@ -216,13 +279,14 @@ export class Memory {
       parts.push(part); covered = end(part);
     }
     for (const part of parts) this.chat.push(part);
+    this.chat.merging = merging;
     return covered;
   }
-  /** Saved when it merges: a view that only grew is the saved one plus a line per later message, as `load` replays it.
+  /** Saved when it merges or changes batch state: a view that only grew is the saved one plus later messages, as `load` replays it.
    * The log stays authoritative, so a failed save only warns. */
   private save() {
     const failed = (error: unknown) => { this.warn(`Could not save the memory view: ${error instanceof Error ? error.message : String(error)}`); };
-    try { void this.enqueue(() => this.store.saveView(JSON.stringify(this.view.map(p => [p.l, p.i]))), failed); }
+    try { void this.enqueue(() => this.store.saveView(JSON.stringify({ parts: this.view.map(p => [p.l, p.i]), merging: this.chat.merging })), failed); }
     catch (error) { failed(error); }
   }
   private push(i: number) {
@@ -245,14 +309,15 @@ export class Memory {
   onChange(listener: () => void) { this.events.on('change', listener); return () => { this.events.off('change', listener); }; }
   /** The view line covering message `at`. */
   covering(at: number) { return this.chat.covering(at); }
-  /** Returns whether the chat's view merged. */
+  /** Returns whether the chat's view or batch state changed. */
   private fit(total = this.root.length) {
+    const merging = this.chat.merging;
     const merged = this.chat.fit(total);
     this.compaction.fit(total, merged);
     const owed = this.owed();
     this.peak = owed > 0 ? Math.max(this.peak, owed) : 0;
     this.events.emit('change');
-    return merged;
+    return merged || merging !== this.chat.merging;
   }
   private schedule() {
     if (this.scheduled || this.stopped) return;
@@ -265,15 +330,10 @@ export class Memory {
     const now = Date.now();
     const run = (part: Part) => {
       const id = key(part);
-      if (this.busy.has(id) || (this.retryAt.get(id) ?? 0) > now) return;
-      const promise = this.build(part).catch(error => {
-        if (this.stopped) return;
-        this.lastError = error instanceof Error ? error.message : String(error);
-        if (!this.reported.has(id)) { this.reported.add(id); this.warn(`Compactor ${start(part)}+${2 ** part.l}: ${this.lastError}`); }
-        this.retryAt.set(id, this.retryMs ? Date.now() + this.retryMs : Infinity);
-        if (this.retryMs && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, this.retryMs);
+      if (this.busy.has(id) || this.terminal.has(id) || (this.retryAt.get(id) ?? 0) > now) return;
       // Schedule before telling waiters, so a turn never mistakes the gap before the next pump for a stall.
-      }).finally(() => { this.busy.delete(id); this.schedule(); this.events.emit('change'); });
+      const promise = this.build(part).catch(error => this.handleFailure(part, error))
+        .finally(() => { this.busy.delete(id); this.schedule(); this.events.emit('change'); });
       this.busy.set(id, promise);
     };
     // A message's node starts once fewer than `jobs` lines before it are unbuilt; a merge, once both halves are built.
@@ -293,8 +353,22 @@ export class Memory {
     if (deadlines.length && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, Math.max(1, Math.min(...deadlines) - now));
     if (this.stalled) this.events.emit('change');
   }
-  /** Nothing is being built, nothing more can start, and something failed: only a retry can make progress. */
-  private get stalled() { return this.busy.size === 0 && !this.scheduled && this.retryAt.size > 0; }
+  private async handleFailure(part: Part, error: unknown) {
+    if (this.stopped) return;
+    const id = key(part), refused = isPolicyRefusal(error);
+    this.lastError = refused ? 'Summary blocked by policy refusal; explicit retry required.'
+      : error instanceof Error ? error.message : String(error);
+    if (!this.reported.has(id)) { this.reported.add(id); this.warn(`Compactor ${start(part)}+${2 ** part.l}: ${this.lastError}`); }
+    if (refused) {
+      this.terminal.set(id, POLICY_REFUSAL); this.retryAt.delete(id);
+      await this.writeTerminal(part, 'terminal');
+    } else {
+      this.retryAt.set(id, this.retryMs ? Date.now() + this.retryMs : Infinity);
+      if (this.retryMs && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, this.retryMs);
+    }
+  }
+  /** Nothing is being built, nothing more can start, and a failed or explicitly blocked node prevents progress. */
+  private get stalled() { return this.busy.size === 0 && !this.scheduled && (this.retryAt.size > 0 || this.terminal.size > 0); }
   /** The results logged for a run of parallel calls follow it in call order: tool A, tool B, echo A, echo B. */
   private resultOf(i: number) {
     let first = i, last = i;
@@ -330,7 +404,7 @@ export class Memory {
     if (written) await written;
     this.tree.set(key(part), node); this.retryAt.delete(key(part)); this.merges.delete(key(part)); this.queueParent(part);
     if (!part.l) { this.unbuilt.delete(part.i); this.chat.built(part.i); this.compaction.built(part.i); }
-    if (!this.retryAt.size) this.lastError = undefined;
+    if (!this.retryAt.size && !this.terminal.size) this.lastError = undefined;
     if (this.fit()) this.save();
   }
   /** The tool call a result answers: a run of calls is followed by their results in the same order. A result that doesn't
@@ -355,22 +429,33 @@ export class Memory {
     if (!this.node(parent) && this.node({ l, i: i % 2 ? i - 1 : i + 1 })) this.merges.set(key(parent), parent);
   }
   /** A 'turn' waits until every part of the view is built, or until everything pending has failed: it then goes on with placeholders
-   * for the missing lines, `lastError` says why, and the failed nodes are still retried in the background. 'tree' waits for every
-   * node, through failures. As in the recipe, the view may run over budget until pending merges land.
-   * 'ahead' (imports) waits until a new message's node would start at once. Due merges count too: messages go first, so a steady
-   * stream of them would otherwise take every worker and the views could never merge. */
+   * for the missing lines, `lastError` says why, and failed nodes stay available for retry. 'tree' waits through retryable failures,
+   * but rejects if a policy refusal makes the complete tree impossible. As in the recipe, the view may run over budget until pending
+   * merges land. 'ahead' (imports) waits until a new message's node would start at once. Due merges count too: messages go first, so
+   * a steady stream of them would otherwise take every worker and the views could never merge; it rejects if a policy refusal leaves
+   * no work that can make the threshold. */
+  private isWaitBlocked(until: 'turn' | 'tree' | 'ahead') {
+    return this.terminal.size > 0 && (until === 'tree'
+      || until === 'ahead' && this.busy.size === 0 && !this.scheduled && !this.retryTimer);
+  }
   async settle(signal?: AbortSignal, until: 'turn' | 'tree' | 'ahead' = 'turn'): Promise<void> {
     const done = () => until === 'tree' ? this.ready && this.busy.size === 0 && this.tree.size === this.expectedNodes()
       : until === 'ahead' ? this.unbuilt.size + this.merges.size < this.jobs
       : this.ready || this.stalled;
+    const blockedError = () => new Error('Memory wait blocked by policy refusal; explicit retry required.');
     if (done()) return;
     if (this.stopped || signal?.aborted) throw new Error('Memory wait cancelled.');
+    if (this.isWaitBlocked(until)) throw blockedError();
     const flush = until !== 'ahead';
     if (flush) { this.flushing++; this.schedule(); }
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => { if (flush) this.flushing--; this.events.off('change', check); signal?.removeEventListener('abort', abort); };
       const abort = () => { cleanup(); reject(new Error('Memory wait cancelled.')); };
-      const check = () => { if (this.stopped) abort(); else if (done()) { cleanup(); resolve(); } };
+      const check = () => {
+        if (this.stopped) abort();
+        else if (done()) { cleanup(); resolve(); }
+        else if (this.isWaitBlocked(until)) { cleanup(); reject(blockedError()); }
+      };
       this.events.on('change', check); signal?.addEventListener('abort', abort, { once: true }); check();
     });
   }

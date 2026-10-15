@@ -21,6 +21,14 @@ export const short = (n: number) => {
 const dollars = (n: number) => n > 0 && n < 0.0001 ? '<$0.0001' : `$${n.toFixed(n > 0 && n < 0.01 ? 4 : 2)}`;
 const cached = (u: Usage) => { const input = u.input + u.cacheRead + u.cacheWrite; return `${input ? Math.round(100 * u.cacheRead / input) : 0}%`; };
 const roleNames: Record<UsageRole, string> = { main: 'main', subagent: 'subagents', compactor: 'compactor', import: 'import' };
+function usageRows(groups: ReturnType<typeof summarizeUsage>['groups'], total: Usage) {
+  const order = ['main', 'subagent', 'compactor', 'import'] as const;
+  return groups.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role) || b.usage.cost.total - a.usage.cost.total).map((group, index) => [
+    index && groups[index - 1].role === group.role ? '' : roleNames[group.role],
+    oneLine(`${group.provider ?? 'unknown'}/${group.model}${group.failures ? ` · ${group.failures} failed` : ''}`), dollars(group.usage.cost.total),
+    `${total.cost.total ? Math.round(100 * group.usage.cost.total / total.cost.total) : 0}%`, short(group.usage.output), cached(group.usage),
+  ]);
+}
 export const elapsed = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms / 1000) % 60}s`;
 /** Shortens plain text with an ellipsis, preferring a word boundary. */
 export function fit(text: string, width: number) {
@@ -196,17 +204,14 @@ export class Inspector implements Component, Focusable {
   private usageLines(width: number) {
     const { usage, session, context, color } = this.options;
     const entries = usage.select(this.range, session);
-    const { total, groups } = summarizeUsage(entries);
+    const { total, failures, groups } = summarizeUsage(entries);
     // No-break spaces keep a label like "Last 7 days" on one line when the tabs wrap.
     const tabs = ranges.map(r => r.replaceAll(' ', '\u00a0')).map((r, i) => ranges[i] === this.range ? color('accent', `[${r}]`) : color('dim', r)).join('  ');
     const lines = [...wrapTextWithAnsi(tabs, width), ''];
     if (!entries.length) lines.push(color('muted', 'No usage in this period.'));
     else {
-      lines.push(`${color('accent', dollars(total.cost.total))} estimated API cost · ${short(total.totalTokens)} tokens · ${cached(total)} cached`, '');
-      const order = ['main', 'subagent', 'compactor', 'import'] as const;
-      const sorted = groups.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role) || b.usage.cost.total - a.usage.cost.total);
-      const rows = sorted.map((g, i) => [i && sorted[i - 1].role === g.role ? '' : roleNames[g.role], oneLine(`${g.provider ?? 'unknown'}/${g.model}`), dollars(g.usage.cost.total),
-        `${total.cost.total ? Math.round(100 * g.usage.cost.total / total.cost.total) : 0}%`, short(g.usage.output), cached(g.usage)]);
+      lines.push(`${color('accent', dollars(total.cost.total))} estimated API cost · ${short(total.totalTokens)} tokens · ${cached(total)} cached${failures ? ` · ${failures} failed` : ''}`, '');
+      const rows = usageRows(groups, total);
       const header = ['', 'model', 'cost', 'share', 'out', 'cached'];
       const widths = header.map((h, c) => Math.max(h.length, ...rows.map(r => r[c].length)));
       // The model column goes first when the screen is too narrow for every column.
@@ -218,7 +223,7 @@ export class Inspector implements Component, Focusable {
     }
     const current = context();
     if (current != null) lines.push('', `${color('muted', 'Context now')} ${short(current)} tokens`);
-    lines.push('', color('dim', 'API-rate estimate, not a provider bill; $0.00 may mean unknown or zero model pricing.'), ...usage.warnings.map(w => color('warning', w)));
+    lines.push('', color('dim', 'API-rate estimate, not a provider bill; $0.00 may mean unknown or zero model pricing. No provider quota inference.'), ...usage.warnings.map(w => color('warning', w)));
     return lines.flatMap(l => l ? wrapTextWithAnsi(l, width) : ['']);
   }
   /** Memory as a gauge: how full the view is, whether summaries are catching up, and how many agents run (their list is one Tab away). */

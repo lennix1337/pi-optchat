@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { clampThinkingLevel, type Api, type AssistantMessage, type Message, type Model, type Tool } from '@earendil-works/pi-ai';
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { accountGroup } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
@@ -8,7 +8,9 @@ import { IMPORT_GUIDANCE, compaction, tooLong } from './prompts.ts';
 import { bytes, NODE, start, type Compressor, type Compression, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
-import { CompactorTrace, errorCategory, type CompactorDiagnostic } from './compactor-diagnostics.ts';
+import { CompactorTrace, createCompactorIncidentId, errorCategory, type CompactorDiagnostic } from './compactor-diagnostics.ts';
+import type { UsageAttribution } from './usage.ts';
+import { assertContextFits } from './run-context.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
 /** The chosen model, with the base provider as the fallback: a numbered account that does not publish the model still runs it on the family's base account. */
@@ -72,6 +74,7 @@ function primeFirst() {
 }
 /** What a compaction shares with the turns: the same system prompt and tools (never called) once available. */
 export interface Shared { systemPrompt: string; tools?: Tool[] }
+type IncidentContext = { sessionId?: string; recoveryIncidentId?: string };
 function compactorError(error: unknown, detail: string) {
   if (errorCategory(error) !== 'stream_interrupted') return error;
   return new Error(`Compactor stream interrupted before a usable summary (${detail}); original messages are retained and the node will retry in the background.`, { cause: error });
@@ -85,8 +88,31 @@ function summaryText(reply: AssistantMessage, detail: string) {
   if (!line) throw new Error(`Compactor returned no text (${detail}; blocks=${reply.content.map(block => block.type).join(',') || 'none'}). See compactor-diagnostics.jsonl.`);
   return line;
 }
+function usageOutcome(outcome: string | undefined): UsageAttribution['outcome'] {
+  switch (outcome) {
+    case 'stop': case 'toolUse': case 'length': case 'error': case 'aborted':
+    case 'text': case 'tool_call': case 'empty': case 'exception': return outcome;
+    default: return undefined;
+  }
+}
+const policyRefusalPattern = /\b(?:content|safety|usage)\s+policy\b|\bpolicy\s+(?:violation|refusal|rejection)\b|\b(?:blocked|rejected|refused)\s+by\s+(?:the\s+)?(?:provider\s+)?(?:content\s+|safety\s+|usage\s+)?policy\b|\bcontent[- ]filter\b/i;
+function isPolicyRefusal(error: unknown) {
+  const messages: string[] = [];
+  for (let depth = 0; depth < 5 && typeof error === 'object' && error !== null; depth++) {
+    if (error instanceof Error) { messages.push(error.message); error = error.cause; }
+    else if ('errorMessage' in error && typeof error.errorMessage === 'string') { messages.push(error.errorMessage); break; }
+    else break;
+  }
+  if (typeof error === 'string') messages.push(error);
+  return policyRefusalPattern.test(messages.join('\n'));
+}
+const policyRefusalError = () => Object.assign(new Error('Compactor request rejected by provider policy.'), { code: 'OPTCHAT_POLICY_REFUSAL' as const });
+function markPolicyRefusal(trace: CompactorTrace, error: unknown) {
+  if (isPolicyRefusal(error)) trace.diagnostic.errorCategory = 'policy_refusal';
+}
 function retryable(error: unknown, trace: CompactorTrace, failures: number, retries: readonly number[], signal: AbortSignal) {
   const message = typeof error === 'object' && error !== null && 'errorMessage' in error && typeof error.errorMessage === 'string' ? error.errorMessage : undefined;
+  if (isPolicyRefusal(error)) return false;
   const assistantReply = message !== undefined && typeof error === 'object' && error !== null && 'role' in error;
   const category = errorCategory(message ?? error);
   const interruptedBeforeResponse = category === 'stream_interrupted' && assistantReply
@@ -96,13 +122,16 @@ function retryable(error: unknown, trace: CompactorTrace, failures: number, retr
 }
 /** The model is asked for 512-byte lines; shared keeps turn prompts/tools aligned and each attempt records metadata only. */
 export function createCompressor(registry: ModelRegistry, choice: () => ModelChoice,
-  onUsage: (message: AssistantMessage) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes,
+  onUsage: (message: AssistantMessage, attribution: UsageAttribution) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes,
   sharedOrRetries: (() => Shared | undefined) | readonly number[] = () => undefined,
-  diagnose: (diagnostic: CompactorDiagnostic) => void = () => {}, retryDelays: readonly number[] = [1000, 2000]): Compressor {
+  diagnose: (diagnostic: CompactorDiagnostic) => void = () => {}, retryDelays: readonly number[] = [1000, 2000],
+  incidentContext: () => IncidentContext = () => ({})): Compressor {
   const gate = primeFirst();
   const shared = typeof sharedOrRetries === 'function' ? sharedOrRetries : () => undefined;
   const retries = typeof sharedOrRetries === 'function' ? retryDelays : sharedOrRetries;
   return async (input, signal) => {
+    const incidentId = createCompactorIncidentId();
+    const { sessionId, recoveryIncidentId } = incidentContext();
     const selected = choice(), resolved = resolveModel(registry, selected);
     if (!resolved) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
     const model = resolved.model, thinking = reasoningFor(model, selected.thinking);
@@ -116,8 +145,11 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const ask = async (): Promise<AssistantMessage> => {
       for (;;) {
         signal.throwIfAborted();
+        const context: AgentMessage[] = [{ role: 'system', content: base.systemPrompt, toolsAdded: base.tools, timestamp: 0 }, ...messages];
+        assertContextFits(context, model.contextWindow, model.maxTokens);
         const warmed = prefix ? await gate(prefix, signal) : () => {};
-        const trace = new CompactorTrace(input, model, selected.thinking, thinking, ++request, base.tools?.length ?? 0);
+        const trace = new CompactorTrace(input, model, selected.thinking, thinking, ++request, base.tools?.length ?? 0, incidentId);
+        Object.assign(trace.diagnostic, { sessionId, recoveryIncidentId });
         let reply: AssistantMessage | undefined, failure: unknown;
         let responded = false;
         try {
@@ -136,16 +168,22 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
           }
           reply = await stream.result();
           trace.result(reply);
-          onUsage(reply);
+          if (reply.stopReason === 'error') markPolicyRefusal(trace, reply);
+          const diagnostic = trace.diagnostic;
+          onUsage(reply, { incidentId: diagnostic.incidentId, attempt: diagnostic.attempt, outcome: usageOutcome(diagnostic.outcome),
+            failed: diagnostic.failed, errorCategory: diagnostic.errorCategory,
+            recoveryIncidentId: diagnostic.recoveryIncidentId });
         } catch (error) {
           failure = error;
           trace.failure(error);
+          markPolicyRefusal(trace, error);
         } finally {
           if (!responded) warmed(false);
           diagnose(trace.finish(signal));
         }
         const retryError = failure ?? (reply?.stopReason === 'error' ? reply : undefined);
         if (retryError !== undefined) {
+          if (isPolicyRefusal(retryError)) throw policyRefusalError();
           signal.throwIfAborted();
           if (retryable(retryError, trace, failures, retries, signal)) {
             await sleep(retries[failures++], undefined, { signal });

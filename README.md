@@ -53,6 +53,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/optchat agents` | Live agent tree and saved run history. |
 | `/optchat agents model` | Subagent model and effort for this profile, picked the same way. |
 | `/optchat usage` | Token usage and cost estimates. |
+| `/optchat retry-summary <start>+<size>` | Explicitly retry one policy-blocked summary with the current compactor; never retries the main request or changes providers. |
 | `/optchat activity` | Memory gauge: view size, summaries catching up, running agents. |
 | `/optchat instructions` | Edit this profile's `AGENTS.md`. |
 | `/optchat browse` | Open a readable snapshot of memory: the shape of what the model sees, summaries you can open down to the original messages, and search that shows where each message is folded. Run again to refresh. |
@@ -114,7 +115,7 @@ A long execution refreshes its context from the **same memory tree**, between co
 
 Pi's automatic or manual compaction stores a snapshot of that existing view, with Pi's safe transcript boundary; it does not call a second summarizer or normally cancel compaction. Unbound Pi sessions retain Pi's own policy. A refresh refuses to drop unsummarized results if the compactor is failing. An input or retained exchange that cannot fit requires a smaller input or larger-context model, rather than silently losing data. Token checks use provider usage when available and Pi's size estimate otherwise, not an exact tokenizer.
 
-Compactors keep the turns' system prompt and tool schemas for caching, but request `toolChoice: none`. Empty replies, tool calls and truncated responses are rejected, not saved as summaries. Before any HTTP 200, connection failures (refused, DNS, upstream connect errors), 502–504/529 or overload, and timeouts retry the same request up to two more times, after about 1 s and 2 s of abortable backoff. Originals are kept, no partial output enters the retry, and nothing retries after a response starts, on quota or authentication errors, or on cancellation. Failed nodes then retry on the next message, as in the recipe; no model/effort switch is added.
+Compactors keep the turns' system prompt and tool schemas for caching, but request `toolChoice: none`. Empty replies, tool calls and truncated responses are rejected, not saved as summaries. Before any HTTP 200, connection failures (refused, DNS, upstream connect errors), 502–504/529 or overload, and timeouts retry the same request up to two more times, after about 1 s and 2 s of abortable backoff. Originals are kept, no partial output enters the retry, and nothing retries after a response starts, on quota or authentication errors, or on cancellation. Ordinary failed nodes retry on the next message, as in the recipe; no model/effort switch is added. Typed provider policy refusals instead freeze that node, including across restart with the file store. Originals remain available. `/optchat retry-summary <start>+<size>` is an explicit user action for a named blocked node, not an automatic retry or provider-switch strategy.
 
 Each attempt writes safe metadata to `<profile>/compactor-diagnostics.jsonl`: node, provider/model/API, requested/effective effort, duration, request sizes, event counts, HTTP status/request ID when available, native response status/ID, incomplete/error code, native content types/text byte counts, normalized stop reason, response block types/lengths and token usage. Native text bytes versus parsed text bytes help distinguish empty provider output from dropped SDK text. Transport failures record only an allowlisted code (for example `ECONNRESET` or `UND_ERR_HEADERS_TIMEOUT`), whether the request was aborted, and the elapsed time of the last stream event. Exceptions are otherwise categorized, not copied into this log. No prompts, message/summary text, reasoning text, tool arguments, authorization headers or tokens are recorded. Two rotating files are bounded to approximately 1 MB each and excluded from memory Git checkpoints.
 
@@ -162,6 +163,14 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
 - **Max active agents** (8 by default) caps how many agents can be active per profile, including parents waiting on descendants. Going over a limit returns an error; there is no queue.
 - Stopping an agent stops its whole subtree. A failed parent stops its descendants.
 - Agents run inside the Pi process. Closing Pi stops them; there is no detached mode.
+
+## Recovery safety and operational state
+
+`operational_state` records explicit objectives, decisions, constraints, authorization statements, changes, and checks outside the narrative summary tree. Each record cites an original memory message; authorization and constraint records must exactly quote the entire direct, non-imported user source, never a paraphrase or partial permission. Records do not grant permission, and an implemented change is not a verified check. Updates explicitly supersede earlier entries; evidence references and self-reported assertions remain distinguishable. State is bounded and included in the main request budget rather than silently added after fitting.
+
+Before an effectful tool runs, OptChat durably records an intent in `operations.json`. Main and child sessions share this journal. An interrupted call with no recorded response, or an error response that cannot rule out partial effects, blocks further effectful calls until reconciliation. Built-in exact-name read tools, trusted installed tools annotated `readOnlyHint: true`, and `operation_state` remain available. Inspect the external state independently, then resolve the operation with an observation evidence reference; never repeat a mutation merely to find out whether it happened. A successful tool response is still **not** proof of an externally verified outcome.
+
+This is conservative recovery, not distributed exactly-once execution or a sandbox: unknown tools (including shell and Code Mode wrappers) are treated as effectful; read-only tool names and author-provided annotations rely on trusted installed definitions, not verified sandbox guarantees. User terminal commands bypass extension hooks. Remote APIs still need their own idempotency keys. Recovery evidence is an explicit agent/operator assertion, not automatically verified by the journal. Raw tool arguments/results are not copied into the operation journal; originals remain in their transcripts.
 
 ## Context fidelity and request budgets
 
@@ -271,6 +280,9 @@ Profile data lives in `~/.optchat/profiles/<name>/` (override the root with `OPT
 | `pending-inputs.json`, `pending-reports.json` | Recovery journals |
 | `runs/` | Subagent sessions and run metadata |
 | `usage.jsonl` | Usage ledger |
+| `operational-state.json` | Bounded structured facts, evidence references and supersession history |
+| `operations.json` | Tool intents, observed responses and recovery reconciliation (not proof of external success) |
+| `recovery-diagnostics.jsonl` | Rotating metadata-only recovery incidents, excluded from memory Git checkpoints |
 | `memory.html` | Snapshot from `/optchat browse` |
 
 Each profile folder is a local Git repository, committed after each turn and on clean shutdown (memory and config; not runs, HTML, or usage). It has no remote, so it is not a backup. To back up, copy the folder while Pi is closed.

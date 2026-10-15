@@ -1,9 +1,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type Api, type Model, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionFactory, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, lastProfile, loadConfig, lockProfile, profilePath, rememberProfile, saveConfig } from '../src/profiles.ts';
@@ -26,8 +26,22 @@ for (const name of ['work', 'personal']) {
 }
 rememberProfile('personal');
 
+function fixtureStream(model: Model<Api>, text: string, refused = false, hold: Promise<void> = Promise.resolve()) {
+  const message: AssistantMessage = { role: 'assistant', content: refused ? [] : [{ type: 'text', text }],
+    api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: refused ? 'error' : 'stop', usage: emptyUsage(),
+    ...(refused ? { errorMessage: 'Request blocked by provider usage policy' } : {}) };
+  const stream = createAssistantMessageEventStream();
+  void hold.then(() => {
+    stream.push({ type: 'start', partial: message });
+    if (refused) stream.push({ type: 'error', reason: 'error', error: message });
+    else stream.push({ type: 'done', reason: 'stop', message });
+    stream.end();
+  });
+  return stream;
+}
+
 /** A headless Pi (print or RPC) with short synthetic compaction summaries and recorded model-turn requests. */
-async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory } = {}) {
+async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory; refuseSummaries?: () => boolean } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], turns: string[] = [], errors: string[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -42,11 +56,8 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string;
       const compacting = prompt.includes('\n\nCompaction:');
       if (!compacting) turns.push(request);
       const text = compacting ? 'talk: OK' : `OK to: ${prompt}`;
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text }],
-        api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
-      const stream = createAssistantMessageEventStream();
-      void ((prompt.includes('slow') ? options.hold : undefined) ?? Promise.resolve()).then(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
-      return stream;
+      const refused = compacting && options.refuseSummaries?.();
+      return fixtureStream(model, text, refused, prompt.includes('slow') ? options.hold : undefined);
     },
   });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
@@ -223,4 +234,36 @@ test('--optchat-agent refuses headless mode without opening a profile or answeri
       assert.equal(process.exitCode, 1);
     } finally { await pi.close(); process.exitCode = undefined; }
   }
+});
+
+test('the real retry-summary command retries a frozen node without resending the main request or changing models', async () => {
+  const name = 'retry-command';
+  createProfile(name);
+  const dir = profilePath(name), choice = { provider: 'fixture', model: 'fixture', thinking: 'off' as const };
+  saveConfig(dir, { ...loadConfig(dir), compactor: choice, subagent: choice });
+  let refuse = true;
+  const pi = await headless('print', { flag: name, refuseSummaries: () => refuse });
+  const records = () => readdirSync(join(dir, 'tree')).flatMap(file => readFileSync(join(dir, 'tree', file), 'utf8').trim().split('\n'))
+    .filter(Boolean).map(line => JSON.parse(line) as { type?: string; l: number; i: number; text?: string });
+  const waitFor = async (predicate: () => boolean) => {
+    const deadline = AbortSignal.timeout(5000);
+    while (!predicate()) {
+      deadline.throwIfAborted();
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+  try {
+    await pi.ask('Original request '.repeat(100));
+    await waitFor(() => records().some(record => record.type === 'terminal' && record.l === 0));
+    const target = records().find(record => record.type === 'terminal' && record.l === 0)!;
+    const turnsBefore = pi.turns.length;
+    refuse = false;
+    await pi.ask(`/optchat retry-summary ${target.i}+1`);
+    await waitFor(() => records().some(record => record.l === 0 && record.i === target.i && !!record.text));
+    assert.equal(pi.turns.length, turnsBefore, 'the command did not resend the main request');
+    assert.ok(pi.notes.some(note => note.includes('Summary retry requested with the current configured compactor')));
+    assert.ok(records().some(record => record.type === 'retry' && record.i === target.i));
+    assert.deepEqual(loadConfig(dir).compactor, choice, 'no provider/model/effort switch was introduced');
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
 });

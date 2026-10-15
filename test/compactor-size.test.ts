@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type AssistantMessage, type Tool } from '@earendil-works/pi-ai';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { createCompressor, task } from '../src/compactor.ts';
-import { compaction } from '../src/prompts.ts';
+import { createCompressor, task, type Shared } from '../src/compactor.ts';
+import { compaction, tooLong } from '../src/prompts.ts';
 import { createHandoffSummarizer } from '../src/handoff.ts';
 import type { RunInfo } from '../src/runs.ts';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { bytes, NODE } from '../src/memory.ts';
+import { estimatedContextTokens, inputTokenBudget } from '../src/run-context.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
@@ -17,20 +19,23 @@ let sentReasoning: string | undefined;
 let sentStep = '';
 let sentRetry = '';
 /** A fake model with a configurable first response and a fitting retry by default. */
-async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', retryText = 'x'.repeat(400), firstEnd, ends = 1 }:
-  { source?: string; merge?: boolean; accepted?: number; first?: string; retryText?: string; firstEnd?: 'length' | 'toolUse'; ends?: number } = {}) {
+async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', retryText = 'x'.repeat(400), firstEnd, ends = 1,
+  contextWindow = 100000, maxTokens = 1000, shared, stats }:
+  { source?: string; merge?: boolean; accepted?: number; first?: string; retryText?: string; firstEnd?: 'length' | 'toolUse'; ends?: number;
+    contextWindow?: number; maxTokens?: number; shared?: Shared; stats?: { calls: number } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-size-'));
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   let calls = 0;
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
     // Like Sonnet 5.5: thinking can't be turned off.
-    models: [{ id: 'compactor', name: 'Synthetic compactor', reasoning: true, thinkingLevelMap: { off: null, minimal: null }, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+    models: [{ id: 'compactor', name: 'Synthetic compactor', reasoning: true, thinkingLevelMap: { off: null, minimal: null }, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens }],
     streamSimple(model, context, options) {
       sentReasoning = options?.reasoning;
       const request = context.messages.find(m => m.role === 'user')?.content;
       sentStep = Array.isArray(request) ? request.map(c => c.type === 'text' ? c.text : '').at(-1) ?? '' : request ?? '';
       const last = context.messages.at(-1);
+      if (stats) stats.calls = calls + 1;
       sentRetry = context.messages.length > 1 && last?.role === 'user' && typeof last.content === 'string' ? last.content : '';
       const stream = createAssistantMessageEventStream();
       const end = calls < ends ? firstEnd ?? 'stop' : 'stop';
@@ -43,11 +48,66 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
   });
   try {
     const compress = createCompressor(new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'compactor', thinking: 'off' }), undefined,
-      accepted === undefined ? undefined : () => accepted);
+      accepted === undefined ? undefined : () => accepted, shared === undefined ? undefined : () => shared);
     const line = await compress({ context: '<chat>\n</chat>', source, part: merge ? { l: 1, i: 0 } : { l: 0, i: 0 } }, new AbortController().signal);
     return { calls, bytes: line.length };
   } finally { removeDir(dir); }
 }
+
+function compactorMessages(source: string, shared: Shared): AgentMessage[] {
+  const context = '<chat>\n</chat>', part = { l: 0, i: 0 };
+  return [
+    { role: 'system', content: shared.systemPrompt, toolsAdded: shared.tools, timestamp: 0 },
+    { role: 'user', content: [{ type: 'text', text: context }, { type: 'text', text: `\n\n${task({ source, part })}` }], timestamp: 0 },
+  ];
+}
+function contextWindow(maxTokens: number, fitting: number[], overflowing: number) {
+  for (let window = maxTokens + 1; window < 100_000; window++) {
+    const budget = inputTokenBudget(window, maxTokens);
+    if (fitting.every(tokens => tokens <= budget) && overflowing > budget) return window;
+  }
+  throw new Error('Could not find a context window separating fitting and overflowing compactor requests.');
+}
+
+test('the compactor rejects combined shared prompt and tool-schema overflow before calling the provider', async () => {
+  const shared: Shared = {
+    systemPrompt: `System guidance: ${'preserve source details. '.repeat(120)}`,
+    tools: [{ name: 'lookup', description: `Tool schema guidance: ${'query the indexed records carefully. '.repeat(120)}`,
+      parameters: { type: 'object', properties: { query: { type: 'string' } } } } as Tool],
+  };
+  const source = 'user: ' + 'a long message '.repeat(70), request = compactorMessages(source, shared);
+  const withoutTools = estimatedContextTokens(request.map(message => message.role === 'system' ? { ...message, toolsAdded: undefined } : message));
+  const withoutPrompt = estimatedContextTokens(request.map(message => message.role === 'system' ? { ...message, content: '' } : message));
+  const fullRequest = estimatedContextTokens(request), maxTokens = 128;
+  const window = contextWindow(maxTokens, [withoutTools, withoutPrompt], fullRequest);
+  const budget = inputTokenBudget(window, maxTokens);
+  assert.ok(withoutTools <= budget && withoutPrompt <= budget, 'either shared component alone would fit');
+  assert.ok(fullRequest > budget, 'the complete prompt, active tools, and user message exceed the input budget');
+
+  const stats = { calls: 0 };
+  await assert.rejects(attempts(1, { source, contextWindow: window, maxTokens, shared, stats }), /context is too large/);
+  assert.equal(stats.calls, 0, 'an oversized request is rejected before streamSimple');
+});
+
+test('the compactor checks correction retries after prior summaries accumulate', async () => {
+  const shared: Shared = { systemPrompt: 'Summarize the source precisely.', tools: [] };
+  const source = 'user: ' + 'source detail '.repeat(150);
+  const initial = compactorMessages(source, shared);
+  const summary = 'user: ' + 'summary detail '.repeat(50);
+  const reply: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: summary }], api: 'openai-completions',
+    provider: 'optchat-test', model: 'compactor', timestamp: 0, stopReason: 'stop', usage: emptyUsage() };
+  const cut = Buffer.from(summary).subarray(0, NODE).toString('utf8').replace(/\uFFFD$/, '');
+  const correction: AgentMessage = { role: 'user', content: tooLong(bytes(summary), cut), timestamp: 0 };
+  const firstTokens = estimatedContextTokens(initial), correctionTokens = estimatedContextTokens([...initial, reply, correction]);
+  assert.ok(correctionTokens > firstTokens);
+  const maxTokens = 512, window = contextWindow(maxTokens, [firstTokens], correctionTokens);
+  assert.ok(inputTokenBudget(window, maxTokens) >= firstTokens, 'the initial request fits with the model output reserve');
+  assert.ok(inputTokenBudget(window, maxTokens) < correctionTokens, 'the accumulated correction request exceeds that same budget');
+
+  const stats = { calls: 0 };
+  await assert.rejects(attempts(1, { source, first: summary, contextWindow: window, maxTokens, shared, stats }), /context is too large/);
+  assert.equal(stats.calls, 1, 'only the fitting initial request reaches streamSimple');
+});
 
 test('by default a line over 512 bytes is retried, as in the recipe; a raised tolerance keeps one up to it', async () => {
   assert.deepEqual(await attempts(512), { calls: 1, bytes: 512 });

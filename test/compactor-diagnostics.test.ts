@@ -7,7 +7,7 @@ import { createAssistantMessageEventStream, type Api, type AssistantMessage, typ
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { createCompressor } from '../src/compactor.ts';
-import { CompactorTrace, writeCompactorDiagnostic, type CompactorDiagnostic } from '../src/compactor-diagnostics.ts';
+import { CompactorTrace, sanitizeRecoveryDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, type CompactorDiagnostic } from '../src/compactor-diagnostics.ts';
 import { emptyUsage } from '../src/usage.ts';
 
 async function run(content: AssistantMessage['content'], stopReason: Exclude<AssistantMessage['stopReason'], 'pending'> = 'stop', failure?: { message: string; thrown?: boolean; cause?: unknown; abort?: boolean }) {
@@ -110,6 +110,13 @@ test('rate limits and cancellation are not mislabeled as interrupted streams', a
   }
 });
 
+test('policy refusals retain their category even when their text contains auth or transient cues', async () => {
+  const result = await run([], 'error', { message: 'OPTCHAT_POLICY_REFUSAL: authentication 401; timeout' });
+  assert.equal(result.diagnostics[0].errorCategory, 'policy_refusal');
+  assert.equal(result.diagnostics[0].failed, true);
+  assert.doesNotMatch(JSON.stringify(result.diagnostics), /authentication 401|timeout/);
+});
+
 test('transport diagnostics allowlist observable nested codes and record abort state and last-event timing', async () => {
   const model = { provider: 'fixture', id: 'fixture', api: 'openai-codex-responses' } as Model<Api>;
   const trace = new CompactorTrace({ context: '', source: '', part: { l: 1, i: 57 } }, model, 'high', 'high', 0, 0);
@@ -144,6 +151,63 @@ test('transport diagnostics allowlist observable nested codes and record abort s
   assert.equal(timeout.diagnostic.transportCode, 'UND_ERR_HEADERS_TIMEOUT');
   assert.equal(timeout.diagnostic.errorCategory, 'timeout');
   assert.doesNotMatch(JSON.stringify(timeout.diagnostic), /SECRET/);
+});
+
+test('compaction attempts share a local incident id and persisted zero-output failures contain metadata only', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oc-diag-incident-'));
+  const model = { provider: 'sk-ant-api03-SECRET', id: 'gpt-6-luna', api: 'https://SECRET-PROMPT.invalid' } as Model<Api>;
+  const reportedUsage = { ...emptyUsage(), input: 15, totalTokens: 15, rawPrompt: 'SECRET PROMPT' } as AssistantMessage['usage'];
+  try {
+    const traces = [1, 2].map(attempt => {
+      const trace = new CompactorTrace({ context: 'SECRET CONTEXT', source: 'SECRET SOURCE', part: { l: 1, i: 57 } }, model, 'high', 'high', attempt, 0, 'incident-42');
+      Object.assign(trace.diagnostic, { sessionId: 'session-9', recoveryIncidentId: 'recovery-77' });
+      trace.response({ status: 200, headers: { 'x-request-id': 'sk-ant-api03-SECRET', authorization: 'SECRET AUTH' } });
+      trace.result({ role: 'assistant', content: [], api: 'openai-codex-responses', provider: 'fixture', model: 'fixture', stopReason: 'error',
+        errorMessage: 'SECRET API KEY', rawStopReason: 'sk-ant-api03-SECRET', timestamp: Date.now(), usage: reportedUsage });
+      return trace.finish(new AbortController().signal);
+    });
+    assert.deepEqual(traces.map(trace => [trace.incidentId, trace.recoveryIncidentId, trace.sessionId, trace.attempt, trace.outcome, trace.failed]), [
+      ['incident-42', 'recovery-77', 'session-9', 1, 'error', true], ['incident-42', 'recovery-77', 'session-9', 2, 'error', true],
+    ]);
+    assert.equal(traces[0].usage?.input, 15);
+    assert.equal(traces[0].usage?.output, 0);
+    assert.equal(traces[0].requestId, undefined);
+    assert.equal(traces[0].provider, 'unknown');
+    assert.equal(traces[0].api, 'unknown');
+    const corrupted = { ...traces[0], model: 'SECRET PROMPT', injectedPrompt: 'SECRET SOURCE', requestId: 'sk-ant-api03-SECRET' } as CompactorDiagnostic;
+    for (const diagnostic of [traces[0], traces[1], corrupted]) writeCompactorDiagnostic(dir, diagnostic);
+    const records = readFileSync(join(dir, 'compactor-diagnostics.jsonl'), 'utf8');
+    const parsed = records.trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(parsed.length, 3);
+    assert.deepEqual(parsed.slice(0, 2).map(({ incidentId, recoveryIncidentId, sessionId, attempt, failed }: CompactorDiagnostic) => [incidentId, recoveryIncidentId, sessionId, attempt, failed]), [
+      ['incident-42', 'recovery-77', 'session-9', 1, true], ['incident-42', 'recovery-77', 'session-9', 2, true],
+    ]);
+    assert.equal(parsed[2].model, 'unknown');
+    assert.equal('injectedPrompt' in parsed[2], false);
+    assert.doesNotMatch(records, /SECRET|authorization|rawPrompt|injectedPrompt/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('recovery incidents persist allowlisted metadata and correlate by incident and session id', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oc-recovery-diag-'));
+  const event = { incidentId: 'recovery-77', phase: 'recovering', category: 'policy_refusal', provider: 'anthropic', model: 'claude-haiku-5-5', sessionId: 'session-9',
+    error: 'SECRET ERROR', prompt: 'SECRET PROMPT', account: 'sk-ant-api03-SECRET' } as const;
+  try {
+    assert.deepEqual(sanitizeRecoveryDiagnostic(event, '2026-01-02T03:04:05.000Z'), {
+      date: '2026-01-02T03:04:05.000Z', kind: 'recovery', incidentId: 'recovery-77', phase: 'recovering', category: 'policy_refusal',
+      provider: 'anthropic', model: 'claude-haiku-5-5', sessionId: 'session-9',
+    });
+    writeRecoveryDiagnostic(dir, event);
+    const records = readFileSync(join(dir, 'recovery-diagnostics.jsonl'), 'utf8');
+    const persisted = JSON.parse(records);
+    assert.equal(persisted.incidentId, 'recovery-77');
+    assert.equal(persisted.sessionId, 'session-9');
+    assert.equal(persisted.kind, 'recovery');
+    assert.doesNotMatch(records, /SECRET|error|prompt|account/);
+    assert.equal(sanitizeRecoveryDiagnostic({ ...event, incidentId: 'sk-ant-api03-SECRET' }), undefined);
+    assert.equal(sanitizeRecoveryDiagnostic({ ...event, category: 'PatientName' }), undefined);
+    assert.equal(sanitizeRecoveryDiagnostic({ ...event, phase: 'retry' }), undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('diagnostic files rotate instead of growing without bound', async () => {

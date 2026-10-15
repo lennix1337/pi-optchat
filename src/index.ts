@@ -9,7 +9,7 @@ import { Type } from 'typebox';
 import { Memory } from './memory.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
-import { writeCompactorDiagnostic } from './compactor-diagnostics.ts';
+import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
 import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
@@ -23,6 +23,10 @@ import { Children, CWD_DOC, loadedBuiltins } from './agents.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
+import { OperationJournal, registerOperationSafety } from './operations.ts';
+import { readOperationalState, renderOperationalContext } from './operational-state.ts';
+import { operationalStateTool } from './operational-tool.ts';
+import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
 import { chooseImport, showProgress } from './import/ui.ts';
@@ -52,7 +56,7 @@ const toggle = (prompt: string, line: string, on: boolean, after: string) => on 
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, PROMPT), SEARCH_DOC, memorySearch, previousExchange ? PROMPT + CONTINUITY : PROMPT), memorySearch);
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; unlock: () => Promise<void> }
+interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; unlock: () => Promise<void> }
 
 /** OptChat's own version, read from the package.json beside src/ (in the checkout and the npm package alike); none if unreadable. */
 export const version = ((): string | undefined => {
@@ -67,6 +71,19 @@ export default function optchat(pi: ExtensionAPI) {
   const shells = new ShellJobs();
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); });
   let active: Active | undefined;
+  const recoveryIncidents = new Map<string, string>();
+  const recoveryEvent = (event: unknown) => {
+    const diagnostic = sanitizeRecoveryDiagnostic(event);
+    if (!active || !diagnostic) return;
+    const sessionId = diagnostic.sessionId ?? active.sessionId;
+    if (!/^[a-f0-9-]{36}$/i.test(diagnostic.incidentId)) return;
+    if (diagnostic.phase === 'started' || diagnostic.phase === 'recovering') recoveryIncidents.set(sessionId, diagnostic.incidentId);
+    else if (recoveryIncidents.get(sessionId) === diagnostic.incidentId) recoveryIncidents.delete(sessionId);
+    try { writeRecoveryDiagnostic(active.dir, { ...diagnostic, sessionId }); }
+    catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
+  };
+  const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
+  registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
@@ -215,24 +232,25 @@ export default function optchat(pi: ExtensionAPI) {
       main = ctx.model && { provider: ctx.model.provider, model: ctx.model.id };
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
+      const operations = new OperationJournal(dir);
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
       let diagnosticsFailed = false;
-      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => {
-        usage.compression(message, 'compactor', sessionId);
+      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
+        usage.compression(message, 'compactor', sessionId, attribution);
         status(ctx);
       }, () => config.summaryAcceptBytes, shared, diagnostic => {
         try { writeCompactorDiagnostic(dir, diagnostic); }
         catch (error) { if (!diagnosticsFailed) { diagnosticsFailed = true; ctx.ui.notify(`Could not save compactor diagnostics: ${errorText(error)}`, 'warning'); } }
-      }), warning => ctx.ui.notify(warning, 'error'));
+      }, undefined, () => ({ sessionId, recoveryIncidentId: recoveryIncidents.get(sessionId) })), warning => ctx.ui.notify(warning, 'error'));
       openingMemory = memory;
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, shells, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
+      const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
+        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
@@ -240,7 +258,7 @@ export default function optchat(pi: ExtensionAPI) {
         .filter(r => !loggedReports.has(reportReceipt(r.text)));
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
-      active = { name, dir, config, memory, inbox, children, usage, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, unlock }; fault = undefined; idle = () => ctx.isIdle();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
@@ -342,7 +360,10 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
-  pi.on('session_shutdown', stop);
+  pi.on('session_shutdown', async () => {
+    try { await stop(); }
+    finally { unsubscribeRecovery(); recoveryIncidents.clear(); }
+  });
   // Pi shows nothing when a switch is cancelled, so say why and what lets it through.
   const blockSwitch = (command: string, ctx: ExtensionContext) => {
     const children = active?.children, runs = children?.active ? children.ids.flatMap(id => children.live(id)?.info ?? []) : [];
@@ -479,6 +500,8 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(PROMPT.slice(0, 40))) prompt = current;
       const system = stateless(promptFor(prompt, a.config));
+      const operational = readOperationalState(join(a.dir, 'operational-state.json'));
+      system.state = [system.state, a.operations.context(), operational.entries.length ? renderOperationalContext(operational) : ''].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
       const statusLine = atWork(a.children.working);
@@ -548,6 +571,7 @@ export default function optchat(pi: ExtensionAPI) {
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id));
   pi.registerTool(zoom); pi.registerTool(date);
+  pi.registerTool(operationalStateTool(required, flush));
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
   // The tool and its prompt line change together, once per toggle, so the cached prefix is otherwise stable.
   // Synced on save too: a report turn started while idle reuses the tool set without before_agent_start.
@@ -612,6 +636,9 @@ export default function optchat(pi: ExtensionAPI) {
       action = await showMenu(ctx, brand, a && { profile: a.name, messages: a.memory.root.length, pending: a.memory.pending,
         compactor: a.config.compactor, agents: a.config.subagent, error: a.memory.lastError,
         compactorLabel: roleModel(a.config, 'compactor', main), agentsLabel: roleModel(a.config, 'subagent', main) }) ?? '';
+    }
+    if (action === 'retry-summary' || action.startsWith('retry-summary ')) {
+      await retrySummary(required().memory, action.slice('retry-summary'.length), ctx); return;
     }
     if (action === 'import') {
       const a = required();
@@ -704,7 +731,7 @@ export default function optchat(pi: ExtensionAPI) {
     try { await remote.tell(args); } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
   } });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
-    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'shells', 'instructions', 'browse', 'import'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
+    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'shells', 'instructions', 'browse', 'import', 'retry-summary'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
   });
 }

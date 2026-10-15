@@ -10,6 +10,8 @@ const MIMES = new Map<string, Mime>((Object.keys(EXTENSIONS) as Mime[]).map(mime
 
 /** What a store gives back when a memory opens. Memory validates every record itself; `view` is the JSON `saveView` was last given. */
 export interface Saved { entries: unknown[]; tree: unknown[]; view?: string }
+/** A safe, append-only scheduler state: only the refusal code and summary coordinates are persisted, never error text. */
+export interface TerminalRecord { type: 'terminal' | 'retry'; l: number; i: number; code: 'OPTCHAT_POLICY_REFUSAL' }
 /** A write is done when it returns: a store that writes behind returns a promise instead, which Memory awaits in order. */
 type Write = Promise<void> | undefined;
 type Maybe<T> = T | Promise<T>;
@@ -36,6 +38,8 @@ export interface Store {
   append(entry: Entry): Write;
   /** Appends a summary node. */
   appendNode(node: Summary): Write;
+  /** Persists a policy-refusal block or explicit retry when supported by the store. */
+  appendTerminal?(record: TerminalRecord): Write;
   /** Replaces the saved view. */
   saveView(view: string): Write;
   putImage(name: string, mimeType: Mime, data: Uint8Array): Write;
@@ -63,15 +67,34 @@ export function atomicWrite(file: string, text: string | Uint8Array) {
 const otherWriter = (file: string) => new Error(`Another process wrote ${file}. Close every other Pi on this profile and restart Pi; nothing was written.`);
 /** With `size`, refuses to append unless the file still has that size. A last line left without its newline is ended first. A write
  * cut short is truncated away before the error is thrown. Returns the new size. */
+function completeLength(fd: number, length: number) {
+  const block = Buffer.alloc(4096);
+  for (let end = length; end > 0;) {
+    const start = Math.max(0, end - block.length), count = readSync(fd, block, 0, end - start, start);
+    const newline = block.lastIndexOf(0x0a, count - 1);
+    if (newline >= 0) return start + newline + 1;
+    end = start;
+  }
+  return 0;
+}
+/** Appends one newline-committed JSON record. An unterminated tail is an interrupted write, not a record; discard it before
+ * another append so a parseable payload without its commit delimiter cannot become visible after restart. */
 export function appendJson(file: string, value: unknown, size?: number) {
   const fd = openSync(file, 'a+', 0o600);
   try {
-    const length = fstatSync(fd).size, last = Buffer.alloc(1);
+    let length = fstatSync(fd).size;
     if (size !== undefined && length !== size) throw otherWriter(file);
-    const torn = length > 0 && readSync(fd, last, 0, 1, length - 1) === 1 && last[0] !== 0x0a;
-    const data = Buffer.from((torn ? '\n' : '') + JSON.stringify(value) + '\n');
-    // A cut-short write is undone, so the file keeps the size the caller checks against. Windows refuses to truncate through an
-    // append handle, so this goes by path; if the undo fails too, the write's own error is still the one thrown.
+    if (length > 0) {
+      const last = Buffer.alloc(1);
+      if (readSync(fd, last, 0, 1, length - 1) === 1 && last[0] !== 0x0a) {
+        length = completeLength(fd, length);
+        // Windows refuses to truncate through an append handle, so truncate by path.
+        truncateSync(file, length);
+      }
+    }
+    const data = Buffer.from(JSON.stringify(value) + '\n');
+    // A cut-short write is undone, so the file keeps the size the caller checks against. If the undo fails too, the write's own
+    // error is still the one thrown.
     try { if (writeSync(fd, data) !== data.length) throw new Error(`Incomplete write: ${file}`); }
     catch (error) { try { truncateSync(file, length); } catch {} throw error; }
     fsyncSync(fd);
@@ -82,12 +105,15 @@ function records(dir: string, warn: (s: string) => void): unknown[] {
   if (!existsSync(dir)) return [];
   const result: unknown[] = [];
   for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort()) {
-    const file = join(dir, name);
-    for (const [index, line] of readFileSync(file, 'utf8').split('\n').entries()) {
+    const file = join(dir, name), text = readFileSync(file, 'utf8'), lines = text.split('\n');
+    // Newline is the append commit marker. Even a parseable unterminated tail may be a write interrupted before commit.
+    for (let index = 0; index < lines.length - 1; index++) {
+      const line = lines[index];
       if (!line.trim()) continue;
       try { result.push(JSON.parse(line)); }
       catch { warn(`Skipped damaged JSON at ${file}:${index + 1}`); }
     }
+    if (lines.at(-1)?.trim()) warn(`Skipped damaged JSON at ${file}:${lines.length}`);
   }
   return result;
 }
@@ -117,7 +143,10 @@ export class FileStore implements Store {
     const main = dirname(next), names = readdirSync(main).filter(n => n.endsWith('.jsonl'));
     if (names.length !== this.lastSeenBytes.size || names.some(n => statSync(join(main, n)).size !== this.lastSeenBytes.get(join(main, n)))) throw otherWriter(next);
   }
-  appendNode(node: Summary): undefined { appendJson(join(this.directory, 'tree', `${localDay()}.jsonl`), node); }
+  appendNode(node: Summary | TerminalRecord): undefined {
+    appendJson(join(this.directory, 'tree', `${localDay()}.jsonl`), node);
+  }
+  appendTerminal(record: TerminalRecord): undefined { this.appendNode(record); }
   saveView(view: string): undefined { atomicWrite(join(this.directory, 'view.json'), view); }
   putImage(name: string, mimeType: Mime, data: Uint8Array): undefined { atomicWrite(join(this.directory, 'images', `${name}.${EXTENSIONS[mimeType]}`), data); }
   image(name: string) {

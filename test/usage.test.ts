@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
@@ -56,6 +56,71 @@ test('aggregation keeps provider identity and still reads legacy records without
     assert.equal(summary.total.cost.total, 0.003);
     assert.equal(summary.total.totalTokens, 30);
     assert.deepEqual(ledger.warnings, []);
+  } finally { removeDir(dir); }
+});
+
+test('new usage records correlate failed zero-output attempts without persisting arbitrary metadata', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-incident-usage-'));
+  const date = new Date().toISOString(), source = emptyUsage();
+  const reported = { ...source, input: 12, totalTokens: 12, cost: { ...source.cost, input: 0.02, total: 0.02 }, rawPrompt: 'SECRET PROMPT' } as typeof source;
+  try {
+    writeFileSync(join(dir, 'usage.jsonl'), JSON.stringify({ date, role: 'main', model: 'legacy-model', usage: source }) + '\n');
+    const ledger = new UsageLedger(dir);
+    const common = { date, role: 'compactor' as const, provider: 'anthropic', model: 'claude-haiku-5-5', session: 'session-1',
+      incidentId: 'incident-42', recoveryIncidentId: 'recovery-77', kind: 'compaction' as const, outcome: 'error' as const, failed: true, errorCategory: 'other' as const, usage: reported };
+    ledger.add({ ...common, id: 'attempt-1', attempt: 1 });
+    ledger.add({ ...common, id: 'attempt-2', attempt: 2 });
+    const summary = summarizeUsage(ledger.entries);
+    const compactor = summary.groups.find(group => group.role === 'compactor');
+    assert.equal(compactor?.failures, 2);
+    assert.equal(summary.failures, 2);
+    assert.equal(compactor?.usage.output, 0, 'failed calls can report input/cost while producing no output');
+    assert.equal(compactor?.usage.input, 24);
+    assert.equal(summary.total.totalTokens, 24 + source.totalTokens);
+    assert.equal(ledger.entries[1].incidentId, ledger.entries[2].incidentId);
+    assert.equal(ledger.entries[1].recoveryIncidentId, ledger.entries[2].recoveryIncidentId);
+    assert.equal(ledger.entries[1].recoveryIncidentId, 'recovery-77');
+    assert.equal(ledger.entries[1].attempt, 1);
+    assert.equal(ledger.entries[2].attempt, 2);
+    const persisted = readFileSync(join(dir, 'usage.jsonl'), 'utf8');
+    assert.doesNotMatch(persisted, /SECRET PROMPT|rawPrompt/);
+    assert.equal(new UsageLedger(dir).entries.length, 3, 'legacy records remain readable beside attributed records');
+  } finally { removeDir(dir); }
+});
+
+test('compaction usage callback keeps local attempt and root recovery IDs separate', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-root-'));
+  const ledger = new UsageLedger(dir), usage = emptyUsage();
+  const message: AssistantMessage = { role: 'assistant', content: [], api: 'anthropic-messages', provider: 'anthropic', model: 'claude-haiku-5-5',
+    stopReason: 'error', timestamp: Date.now(), usage };
+  try {
+    ledger.compression(message, 'compactor', 'session-9', { incidentId: 'compaction-7', recoveryIncidentId: 'recovery-77',
+      attempt: 2, outcome: 'error', failed: true, errorCategory: 'policy_refusal' });
+    const [entry] = new UsageLedger(dir).entries;
+    assert.equal(entry.incidentId, 'compaction-7');
+    assert.equal(entry.recoveryIncidentId, 'recovery-77');
+    assert.equal(entry.attempt, 2);
+    assert.equal(entry.errorCategory, 'policy_refusal');
+    assert.equal(entry.failed, true);
+  } finally { removeDir(dir); }
+});
+
+test('conversation backfill distinguishes subagent role and explicit zero-output failures', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-failed-turn-'));
+  try {
+    const usage = { ...emptyUsage(), input: 5, totalTokens: 5 };
+    const main = SessionManager.inMemory();
+    main.appendMessage({ role: 'assistant', content: [], api: 'anthropic-messages', provider: 'anthropic', model: 'model-a', stopReason: 'error', errorMessage: 'SECRET FAILURE', timestamp: Date.now(), usage });
+    const child = SessionManager.inMemory();
+    child.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'ok' }], api: 'anthropic-messages', provider: 'anthropic', model: 'model-a', stopReason: 'stop', timestamp: Date.now(), usage });
+    const ledger = new UsageLedger(dir);
+    ledger.backfill(main.getEntries(), main.getSessionId());
+    ledger.backfill(child.getEntries(), child.getSessionId(), 'subagent', 'child-1');
+    assert.deepEqual(ledger.entries.map(entry => [entry.role, entry.kind, entry.failed]), [
+      ['main', 'conversation', true], ['subagent', 'subagent', undefined],
+    ]);
+    assert.doesNotMatch(readFileSync(join(dir, 'usage.jsonl'), 'utf8'), /SECRET FAILURE/);
+    assert.equal(summarizeUsage(ledger.entries).failures, 1);
   } finally { removeDir(dir); }
 });
 

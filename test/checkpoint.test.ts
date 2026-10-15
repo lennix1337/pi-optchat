@@ -21,9 +21,11 @@ test('a checkpoint writes the ignore file whenever it is missing, and never repl
     writeFileSync(join(dir, '.gitignore'), '/mine/\n');
     writeFileSync(join(dir, 'compactor-diagnostics.jsonl'), '{}\n');
     writeFileSync(join(dir, 'compactor-diagnostics.jsonl.1'), '{}\n');
+    writeFileSync(join(dir, 'recovery-diagnostics.jsonl'), '{}\n');
+    writeFileSync(join(dir, 'recovery-diagnostics.jsonl.1'), '{}\n');
     await checkpoint(dir);
     assert.equal(readFileSync(join(dir, '.gitignore'), 'utf8'), '/mine/\n');
-    assert.ok(!tracked(dir).some(file => file.startsWith('compactor-diagnostics')), 'diagnostics stay untracked even with an older/custom ignore file');
+    assert.ok(!tracked(dir).some(file => /^(compactor|recovery)-diagnostics/.test(file)), 'diagnostics stay untracked even with an older/custom ignore file');
   } finally { removeDir(dir); }
 });
 

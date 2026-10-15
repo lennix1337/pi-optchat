@@ -20,6 +20,7 @@ import type { HandoffEvidence } from './handoff.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { inputTokenBudget } from './run-context.ts';
 import type { ShellJobs } from './shells.ts';
+import { registerOperationSafety, type OperationJournal } from './operations.ts';
 
 export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
@@ -48,7 +49,8 @@ export interface AgentTiming {
   phase: 'settle' | 'view' | 'open' | 'prompt' | 'first_activity' | 'tool' | 'finished' | 'delivered';
   atMs: number; runId?: string; durationMs?: number; promptChars?: number;
 }
-interface Options { parentSession?: string; usage?: UsageLedger; createSession?: typeof createAgentSession; shells?: ShellJobs;
+interface Options { parentSession?: string; usage?: UsageLedger; operations?: OperationJournal;
+  recoveryEvent?: (event: unknown) => void; recoveryIncident?: (sessionId: string) => string | undefined; createSession?: typeof createAgentSession; shells?: ShellJobs;
   /** Opt-in monotonic timings; contains no task, prompt, tool arguments or output. */
   onTiming?: (event: AgentTiming) => void;
   /** Names of the built-in extensions the main session loaded (see `loadedBuiltins`). */
@@ -138,7 +140,13 @@ export class Children {
   /** A run's messages for zoom, live or finished; undefined for no such run. A subagent `reader` sees only its own descendants, as with tell. */
   transcript(id: string, reader?: string) {
     const known = reader ? this.history.descendants(reader).some(run => run.id === id) : this.running.has(id) || this.history.records.has(id);
-    return known ? this.messages(id) : undefined;
+    if (!known) return undefined;
+    const live = this.running.get(id);
+    if (!live) return this.messages(id);
+    const retained = live.session.sessionManager.getEntries().flatMap(e => e.type === 'message' ? [e.message] : []);
+    // Pi puts the finalized message in session.messages before message_end listeners run, then persists that same object.
+    const tail = live.streaming ?? live.session.messages.at(-1);
+    return tail && !retained.includes(tail) ? [...retained, tail] : retained;
   }
   /** Runs at work now: running, waiting for children, or stopping; not paused. */
   get working() { return [...this.running.values()].filter(live => isRunning(live.info)).map(live => live.info); }
@@ -286,6 +294,11 @@ export class Children {
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),
       extensionFactories: [...builtinExtensions(this.options.builtins?.() ?? []), pi => {
+        if (this.options.operations) registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
+        if (this.options.recoveryEvent) {
+          const unsubscribe = pi.events.on('optchat:recovery', this.options.recoveryEvent);
+          pi.on('session_shutdown', () => unsubscribe());
+        }
         const provider = this.registry.getRegisteredProviderConfig(o.provider);
         if (provider) pi.registerProvider(o.provider, provider);
         // Same prompt as the main agent (AGENTS.md files, skills, cwd); only the OptChat preamble differs.

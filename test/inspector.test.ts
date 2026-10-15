@@ -53,8 +53,8 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     assert.equal(table[0].indexOf('$20.50') + 6, table[1].indexOf('$60.00') + 6);
     assert.match(usagePage.render(100).join('\n'), /estimated API cost/);
     assert.match(usagePage.render(100).join('\n'), /not a provider bill/);
-    // A model name read from disk can't break the table or send terminal codes.
-    assert.ok(usagePage.render(100).some(l => /unknown\/evil \[2Jmodel +\$0\.00/.test(l)));
+    // Untrusted model metadata is omitted rather than stored/rendered into the table.
+    assert.ok(usagePage.render(100).some(l => /unknown\/unknown/.test(l)));
     assert.ok(usagePage.render(100).every(l => !l.includes('\x1b')));
     assert.doesNotMatch(usagePage.render(40).join('\n'), /claude-/);
     usagePage.handleInput('\x1b[C');
@@ -113,6 +113,7 @@ test('Usage keeps sub-cent API estimates visible and labels zero or unknown mode
   const add = (model: string, provider: string, cost: number) => usage.add({ date: now, role: 'main', model, provider, session: 'parent',
     usage: { ...emptyUsage(), output: 1, totalTokens: 1, cost: { ...emptyUsage().cost, output: cost, total: cost } } });
   add('small', 'provider-a', 0.0042); add('tiny', 'provider-b', 0.00003); add('unpriced', 'provider-c', 0);
+  usage.add({ date: now, role: 'main', model: 'unpriced', provider: 'provider-c', session: 'parent', kind: 'conversation', outcome: 'error', failed: true, usage: emptyUsage() });
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
   const page = new Inspector({ profile: 'personal', session: 'parent', children, usage, memory, page: 'usage', rows: () => 40, redraw: () => {}, done: () => {},
@@ -122,7 +123,8 @@ test('Usage keeps sub-cent API estimates visible and labels zero or unknown mode
     assert.ok(lines.some(line => line.includes('$0.0042 estimated API cost')));
     assert.ok(lines.some(line => /provider-a\/small\s+\$0\.0042/.test(line)));
     assert.ok(lines.some(line => /provider-b\/tiny\s+<\$0\.0001/.test(line)));
-    assert.ok(lines.some(line => /provider-c\/unpriced\s+\$0\.00/.test(line)));
+    assert.ok(lines.some(line => /provider-c\/unpriced · 1 failed\s+\$0\.00/.test(line)));
+    assert.ok(lines.some(line => /1 failed/.test(line)));
     assert.ok(lines.some(line => line.includes('$0.00 may mean unknown or zero model pricing')));
   } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });

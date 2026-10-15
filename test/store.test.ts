@@ -1,6 +1,7 @@
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Memory, type Entry, type Summary } from '../src/memory.ts';
@@ -64,6 +65,33 @@ test('FileStore: a line torn by a crash is skipped with a warning, and the next 
     assert.match(warnings.join('\n'), /Skipped damaged JSON at .*:2/);
     reopened.append(entry(1, 'after the crash'));
     assert.deepEqual(new FileStore(dir, () => {}).load().entries, [entry(0, 'kept'), entry(1, 'after the crash')]);
+  } finally { removeDir(dir); }
+});
+
+test('a process interrupted before the JSONL commit newline cannot activate or later promote a summary', () => {
+  const dir = temp(), originals = [entry(0, 'first original'), entry(1, 'second original')];
+  const leaves = [node(0, 'first summary'), { ...node(1, 'second summary'), i: 1 }];
+  const parent = { l: 1, i: 0, text: 'parent summary', size: 0 };
+  try {
+    const store = new FileStore(dir, () => {}); store.load();
+    for (const original of originals) store.append(original);
+    for (const leaf of leaves) store.appendNode(leaf);
+    const file = join(dir, 'tree', `${localDay()}.jsonl`);
+    const interrupted = spawnSync(process.execPath, ['-e',
+      "const {openSync,writeSync}=require('node:fs'); const fd=openSync(process.argv[1],'a'); writeSync(fd,process.argv[2]); process.exit(73);",
+      file, JSON.stringify(parent)], { encoding: 'utf8' });
+    assert.equal(interrupted.status, 73, interrupted.stderr);
+
+    const warnings: string[] = [], resumed = new FileStore(dir, text => warnings.push(text));
+    const recovered = resumed.load();
+    assert.deepEqual(recovered.entries, originals, 'the append-only original log is unchanged');
+    assert.deepEqual(recovered.tree, leaves, 'an unterminated summary is not committed');
+    assert.match(warnings.join('\n'), /Skipped damaged JSON at .*tree.*:3/);
+
+    resumed.appendNode(parent);
+    const reopened = new FileStore(dir, () => {}).load();
+    assert.deepEqual(reopened.entries, originals);
+    assert.deepEqual(reopened.tree, [...leaves, parent], 'the next append discards, rather than promotes, the interrupted tail');
   } finally { removeDir(dir); }
 });
 

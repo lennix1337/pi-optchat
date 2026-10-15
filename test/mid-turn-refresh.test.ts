@@ -51,6 +51,41 @@ test('request budgeting coarsens a captured view only through an existing built 
   assert.ok(!JSON.stringify(fitted.messages).includes('a'.repeat(100)), 'raw content is not silently cut or copied into the request');
 });
 
+test('whole-request budgeting includes prompt, active schemas, memory, prior history, current input, state and status before output reserve', () => {
+  const prompt = 'Current system prompt guidance. '.repeat(80);
+  const tools = [{ name: 'zoom', description: 'Fetch a page of remembered context. '.repeat(12), parameters: { type: 'object', properties: { id: { type: 'string' } } } }];
+  const canonical: AgentMessage[] = [{ role: 'system', content: '', toolsAdded: tools, timestamp: 0 } as AgentMessage];
+  const previous: AgentMessage[] = [{ role: 'user', content: 'Prior conversation details stay available.', timestamp: 1 }];
+  const run: AgentMessage[] = [{ role: 'user', content: 'Current user task stays verbatim.', timestamp: 2 }];
+  const view = '<chat>\n0+1|Remembered memory details.\n</chat>';
+  const state = 'Working directory: /workspace/project';
+  const status = 'One background agent is still running.';
+  const memory = { node: () => undefined } as unknown as Memory;
+  const request = buildContext(canonical, run, view, prompt, previous, state, status);
+  const tokens = estimatedContextTokens(request);
+  const withoutText = (text: string) => estimatedContextTokens(request.map(message => message.role === 'user' && typeof message.content === 'string'
+    ? { ...message, content: message.content.replace(text, '') } : message.role === 'user' && Array.isArray(message.content)
+      ? { ...message, content: message.content.filter(block => block.type !== 'text' || !block.text.includes(text)) } : message));
+  const system = request[0];
+  assert.ok(system?.role === 'system');
+  assert.ok(tokens > estimatedContextTokens(request.slice(1)), 'the current system prompt is budgeted');
+  assert.ok(tokens > estimatedContextTokens(request.map(message => message.role === 'system' ? { ...message, content: '' } : message)), 'the prompt body contributes');
+  assert.ok(tokens > estimatedContextTokens(request.map(message => message.role === 'system' ? { ...message, toolsAdded: undefined } : message)), 'active tool schemas contribute');
+  for (const text of [view, state, 'Prior conversation details', 'Current user task', status]) {
+    assert.ok(tokens > withoutText(text), `${text} contributes to the request estimate`);
+  }
+
+  const window = tokens + 500, outputReserve = 501;
+  assert.ok(inputTokenBudget(window, 0) >= tokens, 'this request would fit if no output were reserved');
+  const inputBudget = inputTokenBudget(window, outputReserve);
+  assert.ok(inputBudget < tokens, 'reserving the model output makes the complete request too large');
+  const budgeted = budgetContext(memory, canonical, run, view, prompt, inputBudget, previous, state, status);
+  assert.equal(budgeted.fits, false, 'one unsummarized memory tile cannot be shortened to hide overflow');
+  assert.equal(budgeted.tokens, tokens);
+  assert.ok(JSON.stringify(budgeted.messages).includes('Prior conversation details'));
+  assert.ok(JSON.stringify(budgeted.messages).includes('Current user task stays verbatim.'));
+});
+
 test('repeated refreshes preserve exact visible steering and hidden custom context, including image-bearing tasks', () => {
   const task = { role: 'user' as const, content: [{ type: 'text' as const, text: 'Complete this task.' }, { type: 'image' as const, data: '', mimeType: 'image/png' }], timestamp: 1 };
   const steering: AgentMessage = { role: 'user', content: 'Correction: do not publish anything.', timestamp: 4 };
