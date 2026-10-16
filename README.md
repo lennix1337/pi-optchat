@@ -2,7 +2,9 @@
 
 # pi-optchat
 
-A Pi extension that implements [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449): one endless chat per profile, remembered through a summary tree instead of compaction.
+**Persistent memory, supervised agents, and safer long-running work inside Pi.**
+
+This is [lennix1337's fork](https://github.com/lennix1337/pi-optchat) of [jonaslsaa/pi-optchat](https://github.com/jonaslsaa/pi-optchat), built on [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449). One endless chat per profile, remembered through a summary tree rather than repeatedly replacing the conversation with a single summary. Originals stay available through `zoom`.
 
 - **Memory**: every message is logged and summarized into a binary tree. Each turn starts from a fresh context holding a bounded memory view; the agent uses `zoom` and `date` to read originals.
 - **Profiles**: separate memories and instructions, such as `work` and `personal`.
@@ -10,24 +12,40 @@ A Pi extension that implements [Victor Taelin's OptChat recipe](https://gist.git
 - **Import**: bring in history from Claude Code (conversations and memories), Codex, Pi and [OMP](https://github.com/can1357/oh-my-pi), or ChatGPT.
 - **Connected windows**: a second Pi window on the same profile becomes a subagent you talk to directly.
 
-It runs inside ordinary Pi, with no fork or separate launcher.
+It runs inside ordinary Pi, without a Pi runtime fork or separate launcher.
+
+## What this fork adds
+
+| Area | Current capabilities |
+| --- | --- |
+| **Long-running context** | Budgeted turn refresh preserves live instructions and the last complete tool exchange. System prompt, tool schemas and output allowance count toward the request budget; oversized retained input fails explicitly instead of silently losing instructions. [Details](#context-fidelity-and-request-budgets) |
+| **Recovery safety** | A durable tool-operation journal blocks blind replay after uncertain effects. Structured objectives, decisions, constraints, authorizations and checks retain their source and evidence separately from narrative summaries. [Details](#recovery-safety-and-operational-state) |
+| **Agents and shells** | Live agent trees, guidance, paged transcripts, usage/activity views, and a Shells panel with bounded output. Explicitly requested background jobs can be inspected and stopped. [Details](#agents-usage-and-activity-inspector) |
+| **Account-aware models** | Compactor and subagent models follow the active main-model account, with per-provider fallbacks, including numbered multi-account providers. [Details](#models) |
+| **Compactor reliability** | Metadata-only diagnostics, bounded pre-response retries, interrupted-stream classification, persisted policy-refusal stops, and measured summary-size correction. Originals are retained when summarization fails. [Details](#long-runs-and-compactor-diagnostics) |
+| **Memory beyond Pi** | Optional atomic `~/.optchat/status.md` snapshots and summary-block sync to the [Rust OptMem binary](https://github.com/lennix1337/OptMem), without extra model calls for syncing. Both are off by default. [Settings](#settings) |
+| **Native Windows** | Named-pipe profile locks and connected windows, Windows-safe storage, and Pi 1.2 runtime compatibility tests alongside the offline suite. No WSL required. |
+
+This remains a **TypeScript Pi extension**; OptMem is the separate Rust companion. Provider requests consume your existing credentials and quota. Recovery is conservative, not exactly-once execution, a sandbox, or a guarantee against process crashes.
 
 ## Install
 
+Install **this fork** from GitHub:
+
 ```sh
-pi install npm:pi-optchat
+pi install git:github.com/lennix1337/pi-optchat
 pi install npm:pi-web-access   # optional, for web search and page fetching
 ```
 
-Or from GitHub: `pi install git:github.com/jonaslsaa/pi-optchat`.
+`npm:pi-optchat` and `git:github.com/jonaslsaa/pi-optchat` install upstream, not this fork. If switching, remove the existing OptChat package first so Pi does not load two copies. Profile data is kept when removing a package; back it up with Pi closed before switching implementations.
 
-Requirements: Pi 1.1.0 or compatible, Node.js 22.19+, and Git. Tested on macOS; the offline tests also run on Linux and Windows.
+Requirements: Pi 1.2.0 (the development/test target), Node.js 22.19+, and Git. CI runs the offline suite on Linux and Windows; not every interactive or live-provider flow is covered by those tests.
 
-Windows is supported natively, without WSL: install and start Pi as usual. There the profile lock and the connected-window channel are named pipes instead of socket files in the profile folder. Live use on Windows has so far covered headless memory (`pi -p --optchat-profile`); the interactive screens, connected windows and imports are covered by the offline tests only.
+Windows is supported natively, without WSL: install and start Pi as usual. Profile locks and connected-window channels use named pipes instead of Unix sockets. Offline and runtime compatibility checks do not establish that every interactive screen, import source or provider combination works end to end.
 
 Web access is not bundled. Subagents load the Pi extensions you have installed (except pi-optchat itself), so installing `pi-web-access` gives web tools to the main agent and every subagent.
 
-To uninstall, run `pi remove git:github.com/jonaslsaa/pi-optchat`. Profile data is kept.
+To uninstall this fork, run `pi remove git:github.com/lennix1337/pi-optchat`. Profile data is kept.
 
 ## Quick start
 
@@ -51,6 +69,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/optchat model` | Compactor model and effort for this profile. Type to filter the models you are logged in to; the current one is marked. |
 | `/optchat fallback` | Per-provider models for the compactor: what it runs while the main model is on another provider. `/optchat agents fallback` does the same for subagents. |
 | `/optchat agents` | Live agent tree and saved run history. |
+| `/optchat shells` | Inspect shell calls, managed background jobs and bounded output. |
 | `/optchat agents model` | Subagent model and effort for this profile, picked the same way. |
 | `/optchat usage` | Token usage and cost estimates. |
 | `/optchat retry-summary <start>+<size>` | Explicitly retry one policy-blocked summary with the current compactor; never retries the main request or changes providers. |
@@ -333,7 +352,7 @@ See `docs/victor-recipe.md` for the mapping to the source files.
 ## Development
 
 ```sh
-git clone https://github.com/jonaslsaa/pi-optchat.git
+git clone https://github.com/lennix1337/pi-optchat.git
 cd pi-optchat
 npm ci --ignore-scripts
 pi install .
@@ -344,6 +363,7 @@ Restart Pi after source changes. Use `OPTCHAT_HOME` to test against a throwaway 
 ```sh
 npm run check      # type check
 npm test           # offline tests, no paid model calls
+npm run test:pi-compat # real Pi runtime compatibility checks, no paid model calls
 npm run test:live  # paid Anthropic calls on synthetic data in a disposable profile
 ```
 
@@ -371,7 +391,9 @@ Compare repeated samples and quality before drawing conclusions; a single pair, 
 startup, and provider caching can be misleading. The seeded coding workload is still synthetic,
 not evidence of production coding throughput. Delete benchmark results when no longer needed.
 
-### Publishing to npm
+### Upstream npm publishing
+
+The retained workflow below describes upstream's npm release setup. This fork is installed from GitHub; its commits are not automatically published as `npm:pi-optchat`. Do not assume upstream's npm trusted-publishing authorization applies to this repository.
 
 Pi's [package directory](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) lists npm packages with the `pi-package` keyword, which the manifest already has. GitHub alone is not enough.
 
@@ -383,6 +405,8 @@ Publishing a GitHub release publishes to npm. The [Publish workflow](.github/wor
 The workflow checks that the tag matches `package.json`, runs the type check and tests, and publishes with provenance. It skips versions already on npm. To retry a tag, run it by hand: `gh workflow run publish.yml -f tag=vX.Y.Z`.
 
 ## Credits and license
+
+Forked from [jonaslsaa/pi-optchat](https://github.com/jonaslsaa/pi-optchat), with additional development by [lennix1337](https://github.com/lennix1337).
 
 Based on [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449) and [OptMem](https://github.com/VictorTaelin/OptMem). His revised gist (2026-10-08) calls his own version UniiChat. This is an independent Pi implementation, not Victor's official OptChat.
 
