@@ -10,7 +10,7 @@ import { Memory } from './memory.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
 import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
-import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
+import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
@@ -41,6 +41,7 @@ import { createHandoffSummarizer } from './handoff.ts';
 import { mainTitle, TabTitle } from './title.ts';
 import { showFallbacks, showModelPicker, showSettings } from './settings-page.ts';
 import { showMenu } from './menu.ts';
+import { Sync } from './sync.ts';
 
 const binding = 'optchat.profile';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
@@ -56,7 +57,7 @@ const toggle = (prompt: string, line: string, on: boolean, after: string) => on 
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, PROMPT), SEARCH_DOC, memorySearch, previousExchange ? PROMPT + CONTINUITY : PROMPT), memorySearch);
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; unlock: () => Promise<void> }
+interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; unlock: () => Promise<void> }
 
 /** OptChat's own version, read from the package.json beside src/ (in the checkout and the npm package alike); none if unreadable. */
 export const version = ((): string | undefined => {
@@ -202,7 +203,7 @@ export default function optchat(pi: ExtensionAPI) {
       await closeWindows?.(); closeWindows = undefined;
       await recovery;
       await old.children.close(); shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
-      await old.memory.close(); await checkpoints;
+      await old.sync.close(); await old.memory.close(); await checkpoints;
       await checkpoint(old.dir);
     } finally {
       await old.memory.close(); await old.unlock(); active = undefined;
@@ -258,7 +259,10 @@ export default function optchat(pi: ExtensionAPI) {
         .filter(r => !loggedReports.has(reportReceipt(r.text)));
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
-      active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
+        status: () => config.syncStatus, optmem: () => config.syncOptMem, warn: text => ctx.ui.notify(text, 'warning') });
+      active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, sync, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
@@ -277,7 +281,7 @@ export default function optchat(pi: ExtensionAPI) {
       untitle?.(); untitle = undefined; title.clear();
       if (active && active.memory === openingMemory) {
         unmountNavigation?.(); unmountNavigation = undefined;
-        await active.children.close(); active = undefined;
+        await active.sync.close(); await active.children.close(); active = undefined;
       }
       await openingMemory?.close();
       await unlock(); throw error;
@@ -358,7 +362,7 @@ export default function optchat(pi: ExtensionAPI) {
     // Pi sets its own title once every session_start handler has finished, so put ours back afterwards.
     for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
   });
-  pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; });
+  pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; active?.sync.schedule(); });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
   pi.on('session_shutdown', async () => {
     try { await stop(); }
@@ -563,6 +567,7 @@ export default function optchat(pi: ExtensionAPI) {
     working = false; showTitle(ctx);
     if (active) {
       const dir = active.dir;
+      void active.sync.now();
       checkpoints = checkpoints.then(() => checkpoint(dir)).catch(error => ctx.ui.notify(`Local checkpoint failed: ${errorText(error)}`, 'error'));
       await checkpoints;
     }
@@ -595,7 +600,7 @@ export default function optchat(pi: ExtensionAPI) {
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */
   const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config, main,
     models: ctx.modelRegistry.getAvailable().map(m => ({ name: `${m.provider}/${m.id}`, thinking: getSupportedThinkingLevels(m) })).sort((x, y) => x.name.localeCompare(y.name)),
-    save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); } });
+    save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); setImmediate(() => a.sync.schedule()); } });
   const pickModel = async (ctx: ExtensionContext, role: 'compactor' | 'subagent') => {
     const a = required();
     if (ctx.mode !== 'tui') throw new Error('Choosing a model requires interactive Pi. Edit config.json in the profile directory instead.');
