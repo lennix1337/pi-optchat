@@ -213,9 +213,9 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       const cut = Buffer.from(line).subarray(0, limit).toString('utf8').replace(/\uFFFD$/, '');
       messages.push({ role: 'user', content: tooLong(size, cut, limit, sourceBytes), timestamp: Date.now() });
     }
-    // Victor's recipe keeps the shortest near miss. Bound slack to 32 bytes, never
-    // accept a non-shrinking or partial result; the view accounts for actual bytes.
-    if (shortest !== undefined && bytes(shortest) <= limit + 32) return shortest;
+    // The byte target guides retries, not a second failure cliff. Keep the shortest
+    // complete shrinking reply; persisted nodes and views account for actual bytes.
+    if (shortest !== undefined) return shortest;
     if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
     throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; source ${sourceBytes} bytes; shortest ${shortest === undefined ? 'none' : bytes(shortest)}; it must be smaller than the source).`);
   };

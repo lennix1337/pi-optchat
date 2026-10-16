@@ -21,7 +21,7 @@ export const SETTINGS = {
     description: 'Give agents a search tool that finds original messages by plain text, newest first, for exact names, numbers, paths or errors the view doesn\'t show. Off: zoom and date only, as in Victor\'s recipe. Turning it on or off makes the next turn re-cache its prompt once.',
     applies: 'Applies from the next turn, and to subagents started or resumed after this.' },
   summaryAcceptBytes: { kind: 'number', label: 'Summary size tolerance', default: NODE, min: NODE, unit: 'bytes',
-    description: `The compactor is always asked for ${NODE}-byte lines; a longer line up to this size is kept instead of retried. After five tries, a complete shrinking line at most 32 bytes above this size can be kept, following Victor's shortest-line fallback. A higher value accepts longer lines immediately.`,
+    description: `The compactor is always asked for ${NODE}-byte lines; a longer line up to this size is kept instead of retried. After five tries, the shortest complete line is kept if it is smaller than its source, even above this size; the view budgets its actual bytes. A higher value accepts longer lines immediately.`,
     applies: 'Applies to the next summary.' },
   syncStatus: { kind: 'toggle', label: 'Sync: status file', default: false,
     description: 'Keep ~/.optchat/status.md current with this chat: its oldest and newest memory lines and its operational state, so agents outside OptChat (Codex, Claude Code) can read what is going on. Written by code from memory, without a model, as the chat changes.',

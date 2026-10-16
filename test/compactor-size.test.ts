@@ -197,14 +197,23 @@ test('near misses retain the shortest complete shrinking summary after five trie
   assert.deepEqual(await attempts(0, { replies: [520, 540, 530, 540, 540].map(n => 'x'.repeat(n)) }), { calls: 5, bytes: 520 });
 });
 
-test('near-miss fallback is bounded and must still shrink the source', async () => {
+test('fallback keeps the shortest whole shrinking summary, without an arbitrary overflow cliff', async () => {
   assert.deepEqual(await attempts(544, { retryText: 'x'.repeat(544) }), { calls: 5, bytes: 544 });
-  await assert.rejects(attempts(545, { retryText: 'x'.repeat(545) }), /no acceptable summary/);
+  assert.deepEqual(await attempts(545, { retryText: 'x'.repeat(545) }), { calls: 5, bytes: 545 });
   await assert.rejects(attempts(520, { source: 's'.repeat(520), retryText: 'x'.repeat(520) }), /no acceptable summary/);
   await assert.rejects(attempts(520, { firstEnd: 'length', ends: 5, retryText: 'x'.repeat(520) }), /no whole line/);
   await assert.rejects(attempts(520, { firstEnd: 'toolUse', ends: 5, retryText: 'x'.repeat(520) }), /no whole line/);
   assert.deepEqual(await attempts(0, { replies: ['é'.repeat(260), 'é'.repeat(263), 'é'.repeat(264), 'é'.repeat(265), 'é'.repeat(266)] }),
     { calls: 5, bytes: 520 }, 'measure UTF-8 bytes, not characters');
+});
+
+test('903-byte incident retains the complete 560-byte summary and survives restart', async () => {
+  const source = 'user: ' + 's'.repeat(897);
+  const replies = [720, 640, 560, 600, 580].map(n => 'user: ' + 'x'.repeat(n - 6));
+  assert.deepEqual(await attempts(0, { source, replies, persist: true }), { calls: 5, bytes: 560 });
+  assert.deepEqual(await attempts(0, { source, replies, merge: true }), { calls: 5, bytes: 560 });
+  assert.deepEqual(await attempts(0, { source, replies: Array(5).fill('x'.repeat(902)) }), { calls: 5, bytes: 902 });
+  await assert.rejects(attempts(0, { source, replies: Array(5).fill('x'.repeat(903)) }), /no acceptable summary/);
 });
 
 test('corrections state the real source-bound limit and a safety margin in UTF-8 bytes', async () => {
