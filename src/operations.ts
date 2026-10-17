@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWrite } from './store.ts';
+import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 
@@ -14,6 +15,10 @@ interface Operation {
   error?: boolean;
   evidence?: string;
   recoveryIncidentId?: string;
+  startedAt?: number;
+  responseAt?: number;
+  /** Pi dispatch event precedes validation/tool_call; it does not prove the tool body ran. */
+  dispatchObserved?: boolean;
 }
 const READ_ONLY = new Set(['read', 'grep', 'find', 'ls', 'zoom', 'date', 'search', 'operation_state', 'operational_state']);
 const LIMIT = 1000;
@@ -21,10 +26,13 @@ const bounded = (v: unknown, max: number): v is string => typeof v === 'string' 
 function valid(value: unknown): value is Operation {
   if (!value || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
-  return Object.keys(o).every(k => ['id', 'tool', 'fingerprint', 'status', 'outcome', 'error', 'evidence', 'recoveryIncidentId'].includes(k))
+  return Object.keys(o).every(k => ['id', 'tool', 'fingerprint', 'status', 'outcome', 'error', 'evidence', 'recoveryIncidentId', 'startedAt', 'responseAt', 'dispatchObserved'].includes(k))
     && bounded(o.id, 1024) && bounded(o.tool, 256) && typeof o.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(o.fingerprint)
     && ['started', 'response_recorded', 'reconciled'].includes(String(o.status)) && o.outcome === 'not_verified'
     && (o.recoveryIncidentId === undefined || typeof o.recoveryIncidentId === 'string' && /^[a-f0-9-]{36}$/i.test(o.recoveryIncidentId))
+    && (o.startedAt === undefined || typeof o.startedAt === 'number' && Number.isFinite(o.startedAt) && o.startedAt >= 0)
+    && (o.responseAt === undefined || typeof o.responseAt === 'number' && Number.isFinite(o.responseAt) && o.responseAt >= 0)
+    && (o.dispatchObserved === undefined || typeof o.dispatchObserved === 'boolean')
     && (o.error === undefined || typeof o.error === 'boolean')
     && (o.evidence === undefined || bounded(o.evidence, 1000)) && (o.status !== 'reconciled' || bounded(o.evidence, 1000));
 }
@@ -56,8 +64,8 @@ export class OperationJournal {
     const uncertain = this.pending().filter(o => !this.inFlight.has(o.id));
     if (uncertain.length) return `External outcome uncertain for ${uncertain.map(o => o.id).join(', ')}. Do not repeat effects. Use read-only observation, then operation_state with an evidence reference to reconcile.`;
   }
-  start(session: string, call: string, tool: string, args: unknown, trustedReadOnly = false, recoveryIncidentId?: string) {
-    if (trustedReadOnly || READ_ONLY.has(tool)) return;
+  start(session: string, call: string, tool: string, args: unknown, trustedReadOnly = false, recoveryIncidentId?: string, dispatchObserved = false) {
+    if (trustedReadOnly || READ_ONLY.has(tool) || isReadOnlyDiagnostic(tool, args)) return;
     const blocked = this.blockReason(tool);
     if (blocked) throw new Error(blocked);
     const id = `${session}:${call}`;
@@ -68,14 +76,14 @@ export class OperationJournal {
     if (next.length >= LIMIT) throw new Error('Operation journal full of uncertain outcomes; reconcile before continuing');
     const fingerprint = createHash('sha256').update(JSON.stringify(args) ?? 'null').digest('hex');
     if (recoveryIncidentId !== undefined && !/^[a-f0-9-]{36}$/i.test(recoveryIncidentId)) throw new Error('Invalid recovery incident ID');
-    next.push({ id, tool, fingerprint, status: 'started', outcome: 'not_verified', ...(recoveryIncidentId ? { recoveryIncidentId } : {}) });
+    next.push({ id, tool, fingerprint, status: 'started', outcome: 'not_verified', startedAt: Date.now(), dispatchObserved, ...(recoveryIncidentId ? { recoveryIncidentId } : {}) });
     this.save(next);
     this.inFlight.add(id);
   }
-  finish(session: string, call: string, error: boolean) {
+  finish(session: string, call: string, error: boolean, dispatchObserved = false) {
     const id = `${session}:${call}`;
     if (!this.operations.some(o => o.id === id && o.status === 'started')) return;
-    try { this.save(this.operations.map(o => o.id === id ? { ...o, status: 'response_recorded', error } : o)); }
+    try { this.save(this.operations.map(o => o.id === id ? { ...o, status: 'response_recorded', error, responseAt: Date.now(), dispatchObserved: o.dispatchObserved || dispatchObserved } : o)); }
     finally { this.inFlight.delete(id); }
   }
   resolve(id: string, evidence: string) {
@@ -97,17 +105,20 @@ export class OperationJournal {
 export function registerOperationSafety(pi: ExtensionAPI, journal: () => OperationJournal | undefined, incident: (sessionId: string) => string | undefined = () => undefined) {
   // Providers may reuse call IDs in later turns. Session entry IDs distinguish fresh calls; the map survives intervening tool-result entries.
   const executions = new Map<string, string>();
+  const observed = new Set<string>();
   pi.on('tool_call', (event, ctx) => {
     const current = journal();
     if (!current) return;
     try {
-      // Only installed definitions, never model-supplied arguments, can declare a read-only verification tool.
-      const readOnly = pi.getAllTools().find(tool => tool.name === event.toolName)?.annotations?.readOnlyHint === true;
+      // Trust installed read-only metadata or a fully recognized diagnostic command,
+      // never a model-supplied flag claiming that an arbitrary command is safe.
+      const readOnly = pi.getAllTools().find(tool => tool.name === event.toolName)?.annotations?.readOnlyHint === true
+        || isReadOnlyDiagnostic(event.toolName, event.input);
       const reason = current.blockReason(event.toolName, readOnly);
       if (reason) return { block: true, reason };
       const session = ctx.sessionManager.getSessionId();
       const call = `${ctx.sessionManager.getLeafId() ?? 'unbound'}:${event.toolCallId}`;
-      current.start(session, call, event.toolName, event.input, readOnly, incident(session));
+      current.start(session, call, event.toolName, event.input, readOnly, incident(session), observed.has(`${session}:${event.toolCallId}`));
       executions.set(`${session}:${event.toolCallId}`, call);
     } catch {
       // A rejected duplicate ID must not let its synthetic error result acknowledge an earlier running call.
@@ -115,16 +126,21 @@ export function registerOperationSafety(pi: ExtensionAPI, journal: () => Operati
       return { block: true, reason: 'Could not persist tool intent. Execution blocked; inspect the operation journal before retrying.' };
     }
   });
+  pi.on('tool_execution_start', (event, ctx) => {
+    const key = `${ctx.sessionManager.getSessionId()}:${event.toolCallId}`;
+    observed.add(key);
+  });
   pi.on('tool_result', (event, ctx) => {
     const session = ctx.sessionManager.getSessionId(), key = `${session}:${event.toolCallId}`, call = executions.get(key);
-    if (!call) return;
-    try { journal()?.finish(session, call, event.isError); executions.delete(key); }
+    if (!call) { observed.delete(key); return; }
+    try { journal()?.finish(session, call, event.isError, observed.has(key)); executions.delete(key); observed.delete(key); }
     catch { ctx.abort(); ctx.ui.notify('Could not persist tool response. Outcome remains uncertain; reconcile before repeating effects.', 'error'); }
   });
   pi.on('agent_settled', (_event, ctx) => {
     const session = ctx.sessionManager.getSessionId();
     journal()?.settled(session);
     for (const key of executions.keys()) if (key.startsWith(`${session}:`)) executions.delete(key);
+    for (const key of observed) if (key.startsWith(`${session}:`)) observed.delete(key);
   });
   pi.registerTool({ name: 'operation_state', label: 'Operation recovery',
     description: 'Inspect uncertain tool outcomes after interruption. Resolve only after independent read-only observation; supply an evidence reference, never assume success or repeat the operation to check. This records an observation, not authorization or verified success.',

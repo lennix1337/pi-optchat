@@ -4,6 +4,7 @@ import type { Children } from './agents.ts';
 import type { ShellJobs } from './shells.ts';
 import type { Memory } from './memory.ts';
 import { isActiveRun, isRunning } from './runs.ts';
+import { agentModel } from './agent-model.ts';
 import type { Usage } from '@earendil-works/pi-ai';
 import { ranges, summarizeUsage, type UsageLedger, type UsageRange, type UsageRole } from './usage.ts';
 
@@ -265,17 +266,18 @@ export class Inspector implements Component, Focusable {
         const guidance = [queued && `${queued} message${queued === 1 ? '' : 's'} queued`, undelivered && `${undelivered} message${undelivered === 1 ? '' : 's'} not delivered`].filter(Boolean).join(' · ');
         const activity = run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live?.streaming ? 'responding' : 'working');
         const status = live ? `${guidance ? `${guidance} · ` : ''}${activity} · updated ${elapsed(Date.now() - live.updated)} ago` : `${run.state}${guidance ? ` · ${guidance}` : ''}`;
-        return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${oneLine(run.task)}`, status, time: elapsed((run.ended ?? Date.now()) - run.started) };
+        return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${oneLine(run.task)}`, status, model: agentModel(run), time: elapsed((run.ended ?? Date.now()) - run.started) };
       });
-      // Columns: task (flexible) · status · duration (right-aligned); status yields first on narrow screens.
+      // Task · actual model(thinking) · status · duration. Hide metadata before losing the task on narrow screens.
       const timeWidth = Math.max(0, ...rows.map(r => r.time.length));
+      const modelWidth = inner >= 64 ? Math.min(36, Math.floor(inner * 0.3), Math.max(0, ...rows.map(r => visibleWidth(r.model)))) : 0;
       let statusWidth = Math.min(Math.max(0, ...rows.map(r => visibleWidth(r.status))), Math.floor(inner * 0.4));
-      if (inner - 2 - statusWidth - timeWidth - 4 < 12) statusWidth = 0;
-      const taskWidth = Math.max(1, inner - 2 - timeWidth - 2 - (statusWidth ? statusWidth + 2 : 0));
-      body = rows.map(({ run, task, status, time }) => {
+      if (inner - 2 - statusWidth - modelWidth - timeWidth - 6 < 12) statusWidth = 0;
+      const taskWidth = Math.max(1, inner - 2 - timeWidth - 2 - (statusWidth ? statusWidth + 2 : 0) - (modelWidth ? modelWidth + 2 : 0));
+      body = rows.map(({ run, task, model, status, time }) => {
         const selected = run.id === this.selected;
         const name = truncateToWidth(fit(task, taskWidth), taskWidth, '', true);
-        const meta = `${statusWidth ? `${truncateToWidth(fit(status, statusWidth), statusWidth, '', true)}  ` : ''}${time.padStart(timeWidth)}`;
+        const meta = `${modelWidth ? `${truncateToWidth(fit(model, modelWidth), modelWidth, '', true)}  ` : ''}${statusWidth ? `${truncateToWidth(fit(status, statusWidth), statusWidth, '', true)}  ` : ''}${time.padStart(timeWidth)}`;
         return selected ? color('accent', `→ ${name}  ${meta}`) : `  ${name}  ${color('muted', meta)}`;
       });
       if (!body.length) body.push(color('muted', 'No agents yet. Ask the main agent to delegate a task.'));

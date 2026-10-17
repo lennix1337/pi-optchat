@@ -42,6 +42,9 @@ import { mainTitle, TabTitle } from './title.ts';
 import { showFallbacks, showModelPicker, showSettings } from './settings-page.ts';
 import { showMenu } from './menu.ts';
 import { Sync } from './sync.ts';
+import { OutputStore } from './output-store.ts';
+import { OutputContext, outputReadTool } from './output-context.ts';
+import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
 
 const binding = 'optchat.profile';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
@@ -57,7 +60,7 @@ const toggle = (prompt: string, line: string, on: boolean, after: string) => on 
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, PROMPT), SEARCH_DOC, memorySearch, previousExchange ? PROMPT + CONTINUITY : PROMPT), memorySearch);
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; unlock: () => Promise<void> }
+interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; outputs: OutputContext; metrics: PerformanceMetrics; unlock: () => Promise<void> }
 
 /** OptChat's own version, read from the package.json beside src/ (in the checkout and the npm package alike); none if unreadable. */
 export const version = ((): string | undefined => {
@@ -72,6 +75,7 @@ export default function optchat(pi: ExtensionAPI) {
   const shells = new ShellJobs();
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); });
   let active: Active | undefined;
+  registerPerformance(pi, () => active?.metrics);
   const recoveryIncidents = new Map<string, string>();
   const recoveryEvent = (event: unknown) => {
     const diagnostic = sanitizeRecoveryDiagnostic(event);
@@ -234,24 +238,32 @@ export default function optchat(pi: ExtensionAPI) {
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
       const operations = new OperationJournal(dir);
+      const metrics = new PerformanceMetrics();
+      const outputs = new OutputContext(new OutputStore(dir, sessionId));
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
       let diagnosticsFailed = false;
-      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
+      const compress = createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
         usage.compression(message, 'compactor', sessionId, attribution);
         status(ctx);
       }, () => config.summaryAcceptBytes, shared, diagnostic => {
         try { writeCompactorDiagnostic(dir, diagnostic); }
         catch (error) { if (!diagnosticsFailed) { diagnosticsFailed = true; ctx.ui.notify(`Could not save compactor diagnostics: ${errorText(error)}`, 'warning'); } }
-      }, undefined, () => ({ sessionId, recoveryIncidentId: recoveryIncidents.get(sessionId) })), warning => ctx.ui.notify(warning, 'error'));
+      }, undefined, () => ({ sessionId, recoveryIncidentId: recoveryIncidents.get(sessionId) }));
+      const memory = await Memory.open(memoryDirectory(dir), async (input, signal) => {
+        const started = performance.now();
+        try { return await compress(input, signal); }
+        finally { metrics.record('compaction', performance.now() - started); }
+      }, warning => ctx.ui.notify(warning, 'error'));
       openingMemory = memory;
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
+        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells,
+          onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
@@ -261,7 +273,7 @@ export default function optchat(pi: ExtensionAPI) {
       rememberProfile(name);
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
         status: () => config.syncStatus, optmem: () => config.syncOptMem, warn: text => ctx.ui.notify(text, 'warning') });
-      active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, sync, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
@@ -441,7 +453,9 @@ export default function optchat(pi: ExtensionAPI) {
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
     if (!active || !runStarted) return;
-    const bounded = boundedMessage(event.message);
+    // Shell evidence stays exact in the session; only the provider projection is reduced.
+    const shell = event.message.role === 'toolResult' && ['bash', 'powershell'].includes(event.message.toolName);
+    const bounded = shell && active.config.recoverableOutput ? event.message : boundedMessage(event.message);
     const message = asUser(bounded);
     if (event.message.role === 'toolResult') fullToolResults.set(message, event.message);
     // Before the message is logged, so the image its text names is already there for zoom; zoom's own images are kept already.
@@ -487,10 +501,12 @@ export default function optchat(pi: ExtensionAPI) {
     };
     show();
     const unsubscribe = a.memory.onChange(show);
-    try { await a.memory.settle(signal); } finally { unsubscribe(); ctx.ui.setWorkingMessage(); }
+    const started = performance.now();
+    try { await a.memory.settle(signal); } finally { a.metrics.record('settle', performance.now() - started); unsubscribe(); ctx.ui.setWorkingMessage(); }
     return a.memory.render();
   };
   pi.on('context_with_system', async (event, ctx) => {
+    const contextStarted = performance.now();
     try {
       if (!active) return; // Plain Pi run: pass context through unmodified.
       const a = required();
@@ -509,9 +525,12 @@ export default function optchat(pi: ExtensionAPI) {
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
       const statusLine = atWork(a.children.working);
-      const refresh = refreshPoint(run, keep, refreshBudget(window, refreshFraction(a.config.refreshAt)));
+      const projectionStarted = performance.now();
+      const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
+      a.metrics.record('projection', performance.now() - projectionStarted);
+      const refresh = refreshPoint(projectedRun, keep, refreshBudget(window, refreshFraction(a.config.refreshAt)));
       let budgeted = inputBudget === undefined ? undefined
-        : budgetContext(a.memory, event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
+        : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
       if (refresh || budgeted && !budgeted.fits) {
         const cut = refresh?.cut ?? lastStep(run);
         if (cut > keep) {
@@ -522,11 +541,12 @@ export default function optchat(pi: ExtensionAPI) {
           view = a.memory.render(); keep = cut;
           ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
           budgeted = inputBudget === undefined ? undefined
-            : budgetContext(a.memory, event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
+            : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
         }
       }
-      const messages = budgeted?.messages ?? buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine);
+      const messages = budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine);
       if (window) assertContextFits(messages, window, ctx.model?.maxTokens);
+      a.metrics.context(messages);
       return { messages };
     } catch (error) {
       // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
@@ -534,7 +554,7 @@ export default function optchat(pi: ExtensionAPI) {
       try { flush(); } catch (persistenceError) { fault = errorText(persistenceError); }
       ctx.ui.notify(errorText(error), 'error');
       return { messages: [{ role: 'system', content: 'OptChat context unavailable. Stop.', timestamp: 0 }] };
-    }
+    } finally { active?.metrics.record('context', performance.now() - contextStarted); }
   });
   pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload) : event.payload);
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
@@ -559,7 +579,9 @@ export default function optchat(pi: ExtensionAPI) {
   pi.on('turn_end', (_event, ctx) => collectUsage(ctx));
   pi.on('agent_settled', async (_event, ctx) => {
     collectUsage(ctx);
+    const persistenceStarted = performance.now();
     try { flush(); active?.inbox.dropReturned(); } catch (error) { fault = errorText(error); ctx.ui.notify(fault, 'error'); }
+    finally { active?.metrics.record('persistence', performance.now() - persistenceStarted); }
     // A report steered into this run that never reached it (Esc or a dequeue cleared Pi's queue) is sent again, now as its own turn.
     if (active && !fault && !stopping) for (const r of reports) if (r.steered && !r.batch) sendReport(r);
     if (runStarted) pi.appendEntry(RUN_BOUNDARY, { state: 'end' });
@@ -576,6 +598,15 @@ export default function optchat(pi: ExtensionAPI) {
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id));
   pi.registerTool(zoom); pi.registerTool(date);
+  pi.registerTool(outputReadTool(() => required().outputs));
+  pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
+  pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
+    handler: async (args, ctx) => {
+      const a = required(), option = args.trim();
+      if (option === 'payload on' || option === 'payload off') a.metrics.measurePayload(option === 'payload on');
+      else if (option) throw new Error('Usage: /optchat-perf [payload on|payload off]');
+      ctx.ui.notify(JSON.stringify({ ...a.metrics.snapshot(), output: a.outputs.stats() }, null, 2), 'info');
+    } });
   pi.registerTool(operationalStateTool(required, flush));
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
   // The tool and its prompt line change together, once per toggle, so the cached prefix is otherwise stable.

@@ -14,13 +14,18 @@ import { cachePayload } from './cache.ts';
 import { CUT_OFF, RunHistory, isRunning, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
 import { UsageLedger } from './usage.ts';
 import { fullChat, refreshFraction, textContent } from './transcript.ts';
-import { Type } from 'typebox';
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { inputTokenBudget } from './run-context.ts';
 import type { ShellJobs } from './shells.ts';
 import { registerOperationSafety, type OperationJournal } from './operations.ts';
+import { OutputStore } from './output-store.ts';
+import { OutputContext, outputReadTool } from './output-context.ts';
+import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
+import { focusedChildView } from './child-context.ts';
+import { childToolSchemas } from './child-resources.ts';
+export { CWD_DOC } from './child-resources.ts';
 
 export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
@@ -75,7 +80,6 @@ const packageName = (path: string): string | undefined => {
 /** A task's cwd may start with `~` and may be relative to the spawning agent's directory. */
 export const taskDirectory = (cwd: string, path = '.', windows = process.platform === 'win32') =>
   resolve(cwd, path.replace(windows ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/, homedir()));
-export const CWD_DOC = 'Project directory the subagent works in (~ allowed); its AGENTS.md files load from there. Defaults to your current directory.';
 const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
 
 // Pi's CLI adds its built-in extensions (MCP, codemode, tool search) to its own session; SDK sessions such as
@@ -189,7 +193,15 @@ export class Children {
   }
   /** Keep streaming state and first-response timing together, independent of tool and guidance tracking. */
   private observeMessage(live: LiveRun, event: AgentSessionEvent) {
-    if (event.type === 'message_end') live.streaming = undefined;
+    if (event.type === 'message_end') {
+      live.streaming = undefined;
+      if (event.message.role === 'assistant') {
+        const model = `${event.message.provider}/${event.message.model}`;
+        if (model !== live.info.model || live.info.thinking !== live.session.thinkingLevel) {
+          live.info.model = model; live.info.thinking = live.session.thinkingLevel; this.save(live.info);
+        }
+      }
+    }
     if (event.type !== 'message_update') return;
     live.streaming = event.message;
     if (live.firstActivity || event.message.role !== 'assistant') return;
@@ -219,7 +231,8 @@ export class Children {
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
     const renderingAt = performance.now();
-    const view = this.memory.render();
+    const fullView = this.memory.render();
+    const view = this.settings.focusedSubagents && !connected ? focusedChildView(fullView) : fullView;
     this.timed('view', undefined, renderingAt, view.length);
     const chosen = this.choice();
     const resolved = resolveModel(this.registry, chosen);
@@ -285,6 +298,8 @@ export class Children {
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; connected: boolean; provider: string; model: Model<Api>;
     thinking?: ModelChoice['thinking']; sessionManager: SessionManager }) {
     const { id, directory, depth, parentId, connected } = o;
+    const outputs = new OutputContext(new OutputStore(this.profileDirectory, o.sessionManager.getSessionId()));
+    const metrics = new PerformanceMetrics();
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
     const instructions = [this.instructions(), delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
@@ -294,6 +309,21 @@ export class Children {
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),
       extensionFactories: [...builtinExtensions(this.options.builtins?.() ?? []), pi => {
+        registerPerformance(pi, () => metrics);
+        pi.on('model_select', event => {
+          const live = this.running.get(id);
+          if (live) { live.info.model = `${event.model.provider}/${event.model.id}`; live.info.thinking = pi.getThinkingLevel(); this.save(live.info); }
+        });
+        pi.on('thinking_level_select', event => {
+          const live = this.running.get(id);
+          if (live) { live.info.thinking = event.level; this.save(live.info); }
+        });
+        pi.on('context_with_system', event => {
+          const started = performance.now();
+          const messages = this.settings.recoverableOutput ? outputs.project(event.messages) : event.messages;
+          metrics.record('projection', performance.now() - started); metrics.context(messages);
+          return { messages };
+        });
         if (this.options.operations) registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
         if (this.options.recoveryEvent) {
           const unsubscribe = pi.events.on('optchat:recovery', this.options.recoveryEvent);
@@ -312,7 +342,7 @@ export class Children {
     await loader.reload();
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
-      customTools: [...memoryTools(() => this.memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected)],
+      customTools: [outputReadTool(() => outputs), performanceTool(() => metrics, () => outputs.stats()), ...memoryTools(() => this.memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected)],
       excludeTools: delegates ? [] : ['spawn', 'tell'],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.
@@ -322,10 +352,10 @@ export class Children {
   }
   private delegationTools(parentId: string, cwd: string, levels: number, maxAgents: number) {
     return [{ name: 'spawn', label: 'Delegate task', description: `Delegate parts of your task. Results arrive automatically after this run; never poll or sleep waiting. Maximum depth ${levels} and ${maxAgents} active agents per profile.`,
-      parameters: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })) }), { minItems: 1 }) }),
+      parameters: childToolSchemas.spawn,
       execute: async (_id: string, args: { tasks: { task: string; cwd?: string }[] }, signal?: AbortSignal) => result(await this.start(args.tasks, cwd, signal, parentId)),
     }, { name: 'tell', label: 'Guide child', description: 'Send guidance to one of your direct children. A finished child is resumed with its earlier conversation, and its new report arrives automatically.',
-      parameters: Type.Object({ id: Type.String(), message: Type.String() }),
+      parameters: childToolSchemas.tell,
       execute: async (_id: string, args: { id: string; message: string }) => {
         if (this.history.records.get(args.id)?.parentId !== parentId) throw new Error('You can only guide your own children.');
         return result(await this.tell(args.id, args.message, 'manager', parentId));
@@ -336,7 +366,7 @@ export class Children {
   private parentTool(id: string, parentId: string | undefined, connected: boolean) {
     return { name: 'tell_parent', label: parentId ? 'Message parent agent' : 'Message main agent',
       description: `Send ${parentId ? 'your parent agent' : 'the main agent'} a question or important finding while you keep working. Its reply can arrive as guidance; continue useful work instead of polling. Your final answer is delivered automatically.`,
-      parameters: Type.Object({ message: Type.String() }), execute: async (_id: string, args: { message: string }) => {
+      parameters: childToolSchemas.parent, execute: async (_id: string, args: { message: string }) => {
         const message = args.message.trim();
         if (!message) throw new Error('Message is empty.');
         const text = `[${id}] ${connected ? 'Connected agent message' : 'Message from subagent (still running)'}: ${message}`;

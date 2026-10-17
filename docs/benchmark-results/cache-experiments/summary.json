@@ -1,0 +1,26 @@
+[
+  {
+    "experiment": "instrumented-baseline",
+    "state": "completed",
+    "elapsedMs": 28093,
+    "calls": 6,
+    "input": 6654,
+    "cacheRead": 14848,
+    "cacheHitPercent": 69.05404148451306,
+    "output": 668,
+    "sha256": "6a375005c49bedf82ae875067f1d1dbc84f3e344c182cca2cc24ee7ea1ec58c7",
+    "patchGraded": false
+  },
+  {
+    "experiment": "container-v1-rejected",
+    "state": "timed_out",
+    "elapsedMs": 1211748,
+    "calls": 8,
+    "input": 16730,
+    "cacheRead": 6528,
+    "cacheHitPercent": 28.067761630406743,
+    "output": 128716,
+    "sha256": "2aa0d5e316eebe2fc7d824ca6f9c86f8bc2b6b68d30e39ac13ed88b481b5a113",
+    "patchGraded": false
+  }
+]

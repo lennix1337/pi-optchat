@@ -191,13 +191,19 @@ Ask in plain words, for example: "Spawn an agent to investigate this repository 
 
 Before an effectful tool runs, OptChat durably records an intent in `operations.json`. Main and child sessions share this journal. An interrupted call with no recorded response, or an error response that cannot rule out partial effects, blocks further effectful calls until reconciliation. Built-in exact-name read tools, trusted installed tools annotated `readOnlyHint: true`, and `operation_state` remain available. Inspect the external state independently, then resolve the operation with an observation evidence reference; never repeat a mutation merely to find out whether it happened. A successful tool response is still **not** proof of an externally verified outcome.
 
-This is conservative recovery, not distributed exactly-once execution or a sandbox: unknown tools (including shell and Code Mode wrappers) are treated as effectful; read-only tool names and author-provided annotations rely on trusted installed definitions, not verified sandbox guarantees. User terminal commands bypass extension hooks. Remote APIs still need their own idempotency keys. Recovery evidence is an explicit agent/operator assertion, not automatically verified by the journal. Raw tool arguments/results are not copied into the operation journal; originals remain in their transcripts.
+This is conservative recovery, not distributed exactly-once execution or a sandbox: unknown tools (including Code Mode wrappers and most shell commands) are treated as effectful. A small Bash diagnostic grammar recognizes only `pwd`, `ls`, `cat`, `head`, `tail`, `wc`, and `grep`, optionally joined by pipes, `&&`, `||`, or `;`. These read-only calls remain available behind a recovery barrier and do not create uncertain effects on a nonzero exit. Expansions, redirections, escapes, multiline scripts, Git helpers and unrecognized commands remain conservative; a nonzero exit alone never makes a mutation safe. Read-only tool names, shell utilities and author-provided annotations rely on trusted installed definitions, not verified sandbox guarantees. User terminal commands bypass extension hooks. Remote APIs still need their own idempotency keys. Recovery evidence is an explicit agent/operator assertion, not automatically verified by the journal. Raw tool arguments/results are not copied into the operation journal; originals remain in their transcripts.
 
 ## Context fidelity and request budgets
 
 Turn refresh keeps live user instructions and custom messages verbatim, including image-bearing tasks, while older executed exchanges move into memory. Tool-result previews stay bounded, but their complete text is persisted and recoverable with paged `zoom`; `zoom(agent)` likewise pages complete child-result text. Child transcripts remain text-only and do not recover image attachments.
 
 Request budgeting uses Pi's estimate of the assembled prompt, active tool schemas, memory and live messages, with the model's output allowance and an additional 5% margin reserved. Existing summary nodes can coarsen the view without deleting originals. If retained instructions still cannot fit, OptChat aborts explicitly rather than silently dropping them. These are conservative estimates, not exact provider tokenizer counts.
+
+### Context performance
+
+Large shell results can reach the model as a deterministic preview with a session-scoped, searchable original (`output_read`); canonical shell evidence and the operation journal stay intact. Storage failure falls back to the original. `/optchat-perf` shows numeric request-size and stage-latency diagnostics without an LLM call. Focused child history is an opt-in setting, not enabled automatically.
+
+The Agents panel includes an actual `model(thinking)` column (for example `gpt-6-luna(xhigh)`), using effective SDK reasoning levels rather than current profile defaults. [Retention, privacy, offline benchmarks and limitations](docs/context-performance.md).
 
 ## Agents, usage and activity inspector
 
@@ -366,6 +372,10 @@ npm test           # offline tests, no paid model calls
 npm run test:pi-compat # real Pi runtime compatibility checks, no paid model calls
 npm run test:live  # paid Anthropic calls on synthetic data in a disposable profile
 ```
+
+### Offline reliability and overhead
+
+`npm run test:reliability` checks replay barriers, receipt metadata, output preservation and diagnostic exposure. `npm run benchmark:reliability -- <preserved-baseline-root>` compares repeated-output projection and fresh-process imports without providers or credentials. Without a baseline it is only a current/current smoke. Keep reports/baselines outside Git. `/optchat-perf payload on` enables numeric-only pre-provider payload byte measurements for this session; `payload off` disables their serialization overhead (default off). No instructions/history are deduplicated or removed. [Results and limits](docs/reliability-performance.md).
 
 ### Agent latency benchmark
 

@@ -35,6 +35,12 @@ export const SETTINGS = {
   refreshAt: { kind: 'percent', label: 'Turn refresh threshold', default: 0.3, min: 0, max: 0.9,
     description: 'Once the current turn\'s messages pass this share of the model\'s context window, they move into memory and the turn goes on with a fresh window: the rebuilt view, the task word for word, and its last tool call and result. 0%: off, as in Victor\'s recipe, and a long turn can run out of window. OPTCHAT_REFRESH_AT (a fraction, e.g. 0.3; 0 is off) overrides it. Subagents use Pi\'s own compaction at about the same point.',
     applies: 'Applies from the next call, and to subagents started or resumed after this.' },
+  recoverableOutput: { kind: 'toggle', label: 'Recoverable shell output', default: true,
+    description: 'Project large text-only shell results into a bounded preview for the model, with session-scoped originals and literal search. Original transcripts and operation evidence stay unchanged. Storage failures pass through the full result.',
+    applies: 'Applies to the next request.' },
+  focusedSubagents: { kind: 'toggle', label: 'Focused child history', default: false,
+    description: 'Opt-in: new task agents receive at most 16 KiB of whole history lines, with older history available through zoom. Task, installed instructions and operational state remain exact; pass task-specific constraints explicitly. Connected conversations retain the full view.',
+    applies: 'Applies to the next spawn.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

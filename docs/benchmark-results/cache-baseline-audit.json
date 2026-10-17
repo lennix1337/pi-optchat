@@ -1,0 +1,87 @@
+{
+  "source": "C:\\projetos\\pi-optchat\\scratchpad\\openhuman-fixtures\\results\\account2-luna-high-sequential-4gib\\receipts",
+  "tasks": 10,
+  "calls": 82,
+  "input": 127788,
+  "cached": 162176,
+  "cacheHitPercent": 55.92970161813191,
+  "firstInput": 10839,
+  "zeroCacheAfterFirst": 27,
+  "perTask": [
+    {
+      "taskId": "django__django-13569",
+      "calls": 11,
+      "input": 9450,
+      "cached": 41472,
+      "cacheHitPercent": 81.44220572640509
+    },
+    {
+      "taskId": "django__django-14672",
+      "calls": 5,
+      "input": 11563,
+      "cached": 3072,
+      "cacheHitPercent": 20.99077553809361
+    },
+    {
+      "taskId": "django__django-15277",
+      "calls": 4,
+      "input": 3565,
+      "cached": 5504,
+      "cacheHitPercent": 60.69026353511964
+    },
+    {
+      "taskId": "django__django-15572",
+      "calls": 10,
+      "input": 15949,
+      "cached": 13312,
+      "cacheHitPercent": 45.49400225556201
+    },
+    {
+      "taskId": "matplotlib__matplotlib-24570",
+      "calls": 7,
+      "input": 7510,
+      "cached": 20992,
+      "cacheHitPercent": 73.65097186162374
+    },
+    {
+      "taskId": "psf__requests-5414",
+      "calls": 10,
+      "input": 23443,
+      "cached": 15872,
+      "cacheHitPercent": 40.37135953198525
+    },
+    {
+      "taskId": "pylint-dev__pylint-4970",
+      "calls": 9,
+      "input": 17413,
+      "cached": 20352,
+      "cacheHitPercent": 53.891169071891966
+    },
+    {
+      "taskId": "scikit-learn__scikit-learn-14141",
+      "calls": 5,
+      "input": 6174,
+      "cached": 9600,
+      "cacheHitPercent": 60.85964244960061
+    },
+    {
+      "taskId": "sympy__sympy-13031",
+      "calls": 13,
+      "input": 21305,
+      "cached": 24064,
+      "cacheHitPercent": 53.040622451453636
+    },
+    {
+      "taskId": "sympy__sympy-16766",
+      "calls": 8,
+      "input": 11416,
+      "cached": 7936,
+      "cacheHitPercent": 41.00868127325341
+    }
+  ],
+  "limitations": [
+    "Provider-reported tokens; not a measurement of latency or correctness.",
+    "Old receipts cannot distinguish prefix mutation from provider routing/availability.",
+    "Per-task cold starts and cumulative long-chat footer ratios are different workloads."
+  ]
+}

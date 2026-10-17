@@ -1,0 +1,802 @@
+{
+  "scope": "Real OptChat baseline versus single-selection preview optimization; official grading pending; not bare Pi or OpenHuman ranking",
+  "snapshots": {
+    "baseline": {
+      "path": "scratchpad/optchat-final-baseline-tmauLF",
+      "hash": "ae907a95a43035e4862318bef4bf120553cba57c16b911c6d031867de637b7c6"
+    },
+    "current": {
+      "path": "scratchpad/optchat-final-current-gYrTPK",
+      "hash": "d630ead0226fa84b92a8ebf9f809d534f3f1c9d7d3dbfeee5dde435cfe21be97"
+    },
+    "scope": "Real OptChat; only src/output-preview.ts differs between these frozen runtime trees; no inference"
+  },
+  "variants": {
+    "baseline": {
+      "stats": {
+        "tasks": 10,
+        "completedRuns": 8,
+        "capturedMainResults": 9,
+        "failedRuns": 2,
+        "actualModelRequests": 380,
+        "completedResponses": 359,
+        "totalUsage": {
+          "input": 582935,
+          "cacheRead": 1397888,
+          "output": 47039,
+          "totalTokens": 2027862,
+          "cacheReadPercent": 70.57107071151738
+        },
+        "mainUsage": {
+          "input": 197348,
+          "cacheRead": 698368,
+          "output": 14747,
+          "totalTokens": 910463,
+          "cacheReadPercent": 77.9675700780158
+        },
+        "mainResponseCount": 130,
+        "measuredElapsedMs": 885361,
+        "grading": "not run: 12-GiB host-free-RAM prerequisite pending"
+      },
+      "tasks": [
+        {
+          "taskId": "django__django-13569",
+          "receipt": "scratchpad\\real-optchat-pilot-ykZCIN\\receipt.json",
+          "receiptHash": "b5b9fa6d68d97369185072d8f521ce12d9427d4f2cad4425f40a7349ca877cd2",
+          "state": "failed-no-retry",
+          "mainResultCaptured": false,
+          "mainFinalStop": null,
+          "responseBudgetFailures": 1,
+          "actualModelRequests": 52,
+          "completedResponses": 46,
+          "canceledRequests": 0,
+          "mainResponses": 0,
+          "allUsage": {
+            "input": 91047,
+            "cacheRead": 238976,
+            "output": 6363,
+            "totalTokens": 336386,
+            "cacheReadPercent": 72.41192280538023
+          },
+          "mainUsage": {
+            "input": 0,
+            "cacheRead": 0,
+            "output": 0,
+            "totalTokens": 0,
+            "cacheReadPercent": 0
+          },
+          "elapsedMs": 96367,
+          "patchBytes": null,
+          "patchHash": null,
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": true
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "django__django-14672",
+          "receipt": "scratchpad\\real-optchat-pilot-mSIiGS\\receipt.json",
+          "receiptHash": "1a4794ea307d44738eec60621a6266f88cd99b5f0995ac2aefa1c550253d1196",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 20,
+          "completedResponses": 19,
+          "canceledRequests": 1,
+          "mainResponses": 8,
+          "allUsage": {
+            "input": 31590,
+            "cacheRead": 66176,
+            "output": 2208,
+            "totalTokens": 99974,
+            "cacheReadPercent": 67.68815334574391
+          },
+          "mainUsage": {
+            "input": 13671,
+            "cacheRead": 41984,
+            "output": 667,
+            "totalTokens": 56322,
+            "cacheReadPercent": 75.43616925702992
+          },
+          "elapsedMs": 60018,
+          "patchBytes": 512,
+          "patchHash": "aad0cec9c1f4922a85269393ffbbde81c84a4abfba5c6da5a57c305998704980",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "django__django-15277",
+          "receipt": "scratchpad\\real-optchat-pilot-qI7art\\receipt.json",
+          "receiptHash": "bec910c466f616434dcce73a5347c8d48dbaf5166a69e9a3f399fee32919bb16",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 64,
+          "completedResponses": 62,
+          "canceledRequests": 2,
+          "mainResponses": 22,
+          "allUsage": {
+            "input": 114944,
+            "cacheRead": 273152,
+            "output": 8161,
+            "totalTokens": 396257,
+            "cacheReadPercent": 70.3825857519789
+          },
+          "mainUsage": {
+            "input": 32304,
+            "cacheRead": 178560,
+            "output": 2542,
+            "totalTokens": 213406,
+            "cacheReadPercent": 84.68017300250398
+          },
+          "elapsedMs": 96246,
+          "patchBytes": 0,
+          "patchHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "django__django-15572",
+          "receipt": "scratchpad\\real-optchat-pilot-nRJ0F7\\receipt.json",
+          "receiptHash": "73c4ff10a4ef4b512ca55bdba3813b674464f689e43283549c3659f3aee49c06",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 33,
+          "completedResponses": 31,
+          "canceledRequests": 2,
+          "mainResponses": 13,
+          "allUsage": {
+            "input": 46744,
+            "cacheRead": 103168,
+            "output": 3993,
+            "totalTokens": 153905,
+            "cacheReadPercent": 68.81904050376221
+          },
+          "mainUsage": {
+            "input": 25074,
+            "cacheRead": 55936,
+            "output": 1313,
+            "totalTokens": 82323,
+            "cacheReadPercent": 69.04826564621652
+          },
+          "elapsedMs": 74189,
+          "patchBytes": 891,
+          "patchHash": "c9a99bc0917e6cc40c01bdf932518279b8ac23942a0c5695587f00b8f4ae0aca",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "matplotlib__matplotlib-24570",
+          "receipt": "scratchpad\\real-optchat-pilot-jH9iYT\\receipt.json",
+          "receiptHash": "40f8639b096c0b65e80f81d146e8b309afa0b7ff7ed49a561dc3bb336f8ce463",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 32,
+          "completedResponses": 31,
+          "canceledRequests": 1,
+          "mainResponses": 12,
+          "allUsage": {
+            "input": 45339,
+            "cacheRead": 110080,
+            "output": 4406,
+            "totalTokens": 159825,
+            "cacheReadPercent": 70.82789105579111
+          },
+          "mainUsage": {
+            "input": 16489,
+            "cacheRead": 64384,
+            "output": 1692,
+            "totalTokens": 82565,
+            "cacheReadPercent": 79.61124231820261
+          },
+          "elapsedMs": 82480,
+          "patchBytes": 715,
+          "patchHash": "9cde245614794105172577b3fd0413d4feda339f30d37a4522682fba438d982a",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "psf__requests-5414",
+          "receipt": "scratchpad\\real-optchat-pilot-aRAqdG\\receipt.json",
+          "receiptHash": "f631df8159ac04f4759a06f71ba65661655f796166e3917b6bfbeadb48800443",
+          "state": "failed-no-retry",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 42,
+          "completedResponses": 41,
+          "canceledRequests": 0,
+          "mainResponses": 17,
+          "allUsage": {
+            "input": 67664,
+            "cacheRead": 129664,
+            "output": 5465,
+            "totalTokens": 202793,
+            "cacheReadPercent": 65.7098840509203
+          },
+          "mainUsage": {
+            "input": 31659,
+            "cacheRead": 69376,
+            "output": 2040,
+            "totalTokens": 103075,
+            "cacheReadPercent": 68.66531400009897
+          },
+          "elapsedMs": 157319,
+          "patchBytes": 588,
+          "patchHash": "ddee94865322b336611148b6062f253d5bf4bd5fac84c9f209041f2934b4cf26",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "pylint-dev__pylint-4970",
+          "receipt": "scratchpad\\real-optchat-pilot-on2Pzx\\receipt.json",
+          "receiptHash": "37950a1011e80b2fd08121fc057c53b72a631fc90699f8e4ddf7c512e65e1877",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 47,
+          "completedResponses": 45,
+          "canceledRequests": 2,
+          "mainResponses": 19,
+          "allUsage": {
+            "input": 76142,
+            "cacheRead": 187776,
+            "output": 5652,
+            "totalTokens": 269570,
+            "cacheReadPercent": 71.14937215347192
+          },
+          "mainUsage": {
+            "input": 29632,
+            "cacheRead": 120192,
+            "output": 2029,
+            "totalTokens": 151853,
+            "cacheReadPercent": 80.22212729602734
+          },
+          "elapsedMs": 120712,
+          "patchBytes": 542,
+          "patchHash": "ef795b769ba5ba150a0bb4b0966c3a73403b53157d4fdcd8f9367a8be1a1d919",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "scikit-learn__scikit-learn-14141",
+          "receipt": "scratchpad\\real-optchat-pilot-KYmsTw\\receipt.json",
+          "receiptHash": "020588220081118ea0c34daaddc83ac961a75360791f579388ae0da235e60b9e",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 33,
+          "completedResponses": 31,
+          "canceledRequests": 2,
+          "mainResponses": 15,
+          "allUsage": {
+            "input": 37383,
+            "cacheRead": 107520,
+            "output": 3461,
+            "totalTokens": 148364,
+            "cacheReadPercent": 74.2013622906358
+          },
+          "mainUsage": {
+            "input": 17101,
+            "cacheRead": 64512,
+            "output": 1393,
+            "totalTokens": 83006,
+            "cacheReadPercent": 79.04623037996397
+          },
+          "elapsedMs": 92821,
+          "patchBytes": 0,
+          "patchHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "sympy__sympy-13031",
+          "receipt": "scratchpad\\real-optchat-pilot-OPKzJq\\receipt.json",
+          "receiptHash": "dae5c02b144f9a8e8b2cd03606d486dceb8d6657a8213ba5446666412bc8d0e5",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 44,
+          "completedResponses": 42,
+          "canceledRequests": 2,
+          "mainResponses": 19,
+          "allUsage": {
+            "input": 56434,
+            "cacheRead": 155136,
+            "output": 5963,
+            "totalTokens": 217533,
+            "cacheReadPercent": 73.32608592900695
+          },
+          "mainUsage": {
+            "input": 20964,
+            "cacheRead": 93312,
+            "output": 2683,
+            "totalTokens": 116959,
+            "cacheReadPercent": 81.65494066995694
+          },
+          "elapsedMs": 69736,
+          "patchBytes": 731,
+          "patchHash": "152706d2d99040110af1c4784a93e5a41b4872fca8c94d1c717e272dffe9e64b",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "sympy__sympy-16766",
+          "receipt": "scratchpad\\real-optchat-pilot-AxWaOb\\receipt.json",
+          "receiptHash": "83948cfa193a94ea8c02bfc8422de3ec951e134c0697cb57b3d31f13c5f28605",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 13,
+          "completedResponses": 11,
+          "canceledRequests": 2,
+          "mainResponses": 5,
+          "allUsage": {
+            "input": 15648,
+            "cacheRead": 26240,
+            "output": 1367,
+            "totalTokens": 43255,
+            "cacheReadPercent": 62.64323911382735
+          },
+          "mainUsage": {
+            "input": 10454,
+            "cacheRead": 10112,
+            "output": 388,
+            "totalTokens": 20954,
+            "cacheReadPercent": 49.16853058445979
+          },
+          "elapsedMs": 35473,
+          "patchBytes": 607,
+          "patchHash": "09523913877e1c6cbfbf2d51fb4fe6febf21ef1d36d091d01d6b8906efb1ed4d",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        }
+      ],
+      "predictionsHash": "bf501b4884cfd875cba1916aa0113df803b87baa3a22af22db86f489871777ff"
+    },
+    "current": {
+      "stats": {
+        "tasks": 10,
+        "completedRuns": 10,
+        "capturedMainResults": 10,
+        "failedRuns": 0,
+        "actualModelRequests": 324,
+        "completedResponses": 305,
+        "totalUsage": {
+          "input": 560473,
+          "cacheRead": 1025152,
+          "output": 40471,
+          "totalTokens": 1626096,
+          "cacheReadPercent": 64.65286558927868
+        },
+        "mainUsage": {
+          "input": 258148,
+          "cacheRead": 612096,
+          "output": 14834,
+          "totalTokens": 885078,
+          "cacheReadPercent": 70.33613561254086
+        },
+        "mainResponseCount": 132,
+        "measuredElapsedMs": 744943,
+        "grading": "not run: 12-GiB host-free-RAM prerequisite pending"
+      },
+      "tasks": [
+        {
+          "taskId": "django__django-13569",
+          "receipt": "scratchpad\\real-optchat-pilot-GvDdUJ\\receipt.json",
+          "receiptHash": "e54e6850a1ac696600d49a134e48aa5077fb46848c7fc5d07a59be204fabc18e",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 41,
+          "completedResponses": 39,
+          "canceledRequests": 2,
+          "mainResponses": 18,
+          "allUsage": {
+            "input": 79246,
+            "cacheRead": 193792,
+            "output": 5061,
+            "totalTokens": 278099,
+            "cacheReadPercent": 70.97620111486313
+          },
+          "mainUsage": {
+            "input": 45964,
+            "cacheRead": 135552,
+            "output": 2362,
+            "totalTokens": 183878,
+            "cacheReadPercent": 74.67771436126843
+          },
+          "elapsedMs": 87623,
+          "patchBytes": 696,
+          "patchHash": "b096d711287a9421605c5f912b5806fd08c3fe3bd346a723e9e4f5bd49d6a127",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "django__django-14672",
+          "receipt": "scratchpad\\real-optchat-pilot-qsM1yN\\receipt.json",
+          "receiptHash": "d31ab6646ba45b3a0c22c03bad96d57b4fe58ef58ff6c71869a761b60ba7aec0",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 12,
+          "completedResponses": 9,
+          "canceledRequests": 3,
+          "mainResponses": 5,
+          "allUsage": {
+            "input": 21382,
+            "cacheRead": 24704,
+            "output": 816,
+            "totalTokens": 46902,
+            "cacheReadPercent": 53.60413140650089
+          },
+          "mainUsage": {
+            "input": 16261,
+            "cacheRead": 13952,
+            "output": 389,
+            "totalTokens": 30602,
+            "cacheReadPercent": 46.17879720650051
+          },
+          "elapsedMs": 38749,
+          "patchBytes": 512,
+          "patchHash": "aad0cec9c1f4922a85269393ffbbde81c84a4abfba5c6da5a57c305998704980",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "django__django-15277",
+          "receipt": "scratchpad\\real-optchat-pilot-ECwmUW\\receipt.json",
+          "receiptHash": "54869ad97a308fad07a67cfc5febfc1ffb270f850e49d009ff205e154f027cf0",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 33,
+          "completedResponses": 30,
+          "canceledRequests": 3,
+          "mainResponses": 14,
+          "allUsage": {
+            "input": 45132,
+            "cacheRead": 86528,
+            "output": 4038,
+            "totalTokens": 135698,
+            "cacheReadPercent": 65.72079598967036
+          },
+          "mainUsage": {
+            "input": 15193,
+            "cacheRead": 54272,
+            "output": 1677,
+            "totalTokens": 71142,
+            "cacheReadPercent": 78.12855394803138
+          },
+          "elapsedMs": 64926,
+          "patchBytes": 0,
+          "patchHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "django__django-15572",
+          "receipt": "scratchpad\\real-optchat-pilot-oH7Rfa\\receipt.json",
+          "receiptHash": "bc9c73bcd812a6a16821734ef0acc1bb54b20468ecc02305cfd213912198c35b",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 33,
+          "completedResponses": 31,
+          "canceledRequests": 2,
+          "mainResponses": 14,
+          "allUsage": {
+            "input": 47072,
+            "cacheRead": 87168,
+            "output": 4199,
+            "totalTokens": 138439,
+            "cacheReadPercent": 64.93444576877235
+          },
+          "mainUsage": {
+            "input": 19201,
+            "cacheRead": 46848,
+            "output": 1532,
+            "totalTokens": 67581,
+            "cacheReadPercent": 70.929158654938
+          },
+          "elapsedMs": 91475,
+          "patchBytes": 0,
+          "patchHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "matplotlib__matplotlib-24570",
+          "receipt": "scratchpad\\real-optchat-pilot-excKFZ\\receipt.json",
+          "receiptHash": "f805ebe2f99eea15e160796d6aa7861129a78663a798c92287be2d551655aa98",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 34,
+          "completedResponses": 33,
+          "canceledRequests": 1,
+          "mainResponses": 12,
+          "allUsage": {
+            "input": 80109,
+            "cacheRead": 94208,
+            "output": 4418,
+            "totalTokens": 178735,
+            "cacheReadPercent": 54.04406913840876
+          },
+          "mainUsage": {
+            "input": 40013,
+            "cacheRead": 48512,
+            "output": 1414,
+            "totalTokens": 89939,
+            "cacheReadPercent": 54.80033888731997
+          },
+          "elapsedMs": 58812,
+          "patchBytes": 715,
+          "patchHash": "9cde245614794105172577b3fd0413d4feda339f30d37a4522682fba438d982a",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "psf__requests-5414",
+          "receipt": "scratchpad\\real-optchat-pilot-dswSQ7\\receipt.json",
+          "receiptHash": "d1b1364a62e015be78745f2389970757912cfda6abf9ecb83e70725ded962899",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 37,
+          "completedResponses": 35,
+          "canceledRequests": 2,
+          "mainResponses": 14,
+          "allUsage": {
+            "input": 66720,
+            "cacheRead": 96896,
+            "output": 5241,
+            "totalTokens": 168857,
+            "cacheReadPercent": 59.22159202034031
+          },
+          "mainUsage": {
+            "input": 29489,
+            "cacheRead": 51200,
+            "output": 1766,
+            "totalTokens": 82455,
+            "cacheReadPercent": 63.45350667377214
+          },
+          "elapsedMs": 82790,
+          "patchBytes": 588,
+          "patchHash": "ddee94865322b336611148b6062f253d5bf4bd5fac84c9f209041f2934b4cf26",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "pylint-dev__pylint-4970",
+          "receipt": "scratchpad\\real-optchat-pilot-FQUUZr\\receipt.json",
+          "receiptHash": "7ec5c0680dfa52a6d57b78dc6c7c8f25d251868e1ce332b005309422e48f7368",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 48,
+          "completedResponses": 48,
+          "canceledRequests": 0,
+          "mainResponses": 19,
+          "allUsage": {
+            "input": 105290,
+            "cacheRead": 180864,
+            "output": 6011,
+            "totalTokens": 292165,
+            "cacheReadPercent": 63.20512730907134
+          },
+          "mainUsage": {
+            "input": 46074,
+            "cacheRead": 108288,
+            "output": 1758,
+            "totalTokens": 156120,
+            "cacheReadPercent": 70.15198040968632
+          },
+          "elapsedMs": 103459,
+          "patchBytes": 525,
+          "patchHash": "93ff07818abf153de959d6949fe41604e5468454574b7a8a3b27b48f1e86180f",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "scikit-learn__scikit-learn-14141",
+          "receipt": "scratchpad\\real-optchat-pilot-3gx4Uq\\receipt.json",
+          "receiptHash": "a7872f692bdabc77e815f1498201813418c10522e3548da35182a6dc7d9bae63",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 27,
+          "completedResponses": 26,
+          "canceledRequests": 2,
+          "mainResponses": 10,
+          "allUsage": {
+            "input": 35987,
+            "cacheRead": 71808,
+            "output": 3965,
+            "totalTokens": 111760,
+            "cacheReadPercent": 66.61533466301776
+          },
+          "mainUsage": {
+            "input": 10004,
+            "cacheRead": 36864,
+            "output": 955,
+            "totalTokens": 47823,
+            "cacheReadPercent": 78.65494580524025
+          },
+          "elapsedMs": 60355,
+          "patchBytes": 365,
+          "patchHash": "c8e5d23fa74e9c51166898ccadad0fb3550252a530cbb9cb1afd74da1ad160d8",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "sympy__sympy-13031",
+          "receipt": "scratchpad\\real-optchat-pilot-z39prJ\\receipt.json",
+          "receiptHash": "c80eced1f77280cebf679d496870b2807600507ec6c095059cc7607eae337244",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 48,
+          "completedResponses": 45,
+          "canceledRequests": 3,
+          "mainResponses": 21,
+          "allUsage": {
+            "input": 64858,
+            "cacheRead": 168192,
+            "output": 5847,
+            "totalTokens": 238897,
+            "cacheReadPercent": 72.16992061789315
+          },
+          "mainUsage": {
+            "input": 25005,
+            "cacheRead": 106368,
+            "output": 2575,
+            "totalTokens": 133948,
+            "cacheReadPercent": 80.96640862277637
+          },
+          "elapsedMs": 131148,
+          "patchBytes": 0,
+          "patchHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        },
+        {
+          "taskId": "sympy__sympy-16766",
+          "receipt": "scratchpad\\real-optchat-pilot-WtHjaP\\receipt.json",
+          "receiptHash": "0cee6de4c78b25d9849c0855802c17ce3a7edca2b601de99e77a9414f8c566cf",
+          "state": "completed-ungraded",
+          "mainResultCaptured": true,
+          "mainFinalStop": "stop",
+          "responseBudgetFailures": 0,
+          "actualModelRequests": 11,
+          "completedResponses": 9,
+          "canceledRequests": 2,
+          "mainResponses": 5,
+          "allUsage": {
+            "input": 14677,
+            "cacheRead": 20992,
+            "output": 875,
+            "totalTokens": 36544,
+            "cacheReadPercent": 58.8522246208192
+          },
+          "mainUsage": {
+            "input": 10944,
+            "cacheRead": 10240,
+            "output": 406,
+            "totalTokens": 21590,
+            "cacheReadPercent": 48.338368580060425
+          },
+          "elapsedMs": 25606,
+          "patchBytes": 605,
+          "patchHash": "a874afbc4724c18e2db4a3e93779f9466f35e49d6b4865384f5851f00276161f",
+          "containerState": {
+            "oomKilled": false,
+            "exitCode": 0,
+            "running": false
+          },
+          "cleanupVerified": true
+        }
+      ],
+      "predictionsHash": "f611bce65f253185609ce2b993518d34fab4ef15871e44ed7b82f10525be20b3"
+    }
+  },
+  "byteIdenticalPatchTasks": [
+    "django__django-14672",
+    "django__django-15277",
+    "matplotlib__matplotlib-24570",
+    "psf__requests-5414"
+  ]
+}

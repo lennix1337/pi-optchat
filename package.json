@@ -13,7 +13,11 @@
     "test": "tsx --import ./test/support.ts --test test/*.test.ts",
     "test:pi-compat": "node --import tsx --test test/pi-runtime-compat.test.mjs",
     "test:live": "tsx test/live.ts",
-    "benchmark:agents": "tsx test/agent-benchmark.ts"
+    "benchmark:agents": "tsx test/agent-benchmark.ts",
+    "benchmark:context": "tsx --import ./test/support.ts test/context-benchmark.ts",
+    "benchmark:performance": "tsx test/performance-benchmark.ts",
+    "test:reliability": "tsx --import ./test/support.ts --test test/reliability-performance.test.ts test/operations.test.ts test/operation-diagnostics.test.ts test/output-context.test.ts test/performance-lazy.test.ts",
+    "benchmark:reliability": "tsx test/reliability-benchmark.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.2.0",

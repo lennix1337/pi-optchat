@@ -10,6 +10,7 @@ import type { RunInfo } from './runs.ts';
 import { textContent } from './transcript.ts';
 import { record } from './cache.ts';
 import { elapsed, fit, oneLine } from './inspector.ts';
+import { agentModel } from './agent-model.ts';
 
 export type ViewTone = 'accent' | 'muted' | 'dim' | 'error' | 'warning' | 'success' | 'borderMuted';
 type ToolResult = Parameters<ToolExecutionComponent['updateResult']>[0];
@@ -266,7 +267,7 @@ export class AgentView implements Component, Focusable {
     if (!run) return color('error', ` ${id} · run not found`);
     const live = children.live(run.id);
     const dot = live ? color('accent', '●') : run.state === 'completed' ? color('success', '✓') : run.state === 'failed' ? color('error', '✗') : color('muted', '■');
-    const right = `${statusOf(run, children)} · ${elapsed((run.ended ?? Date.now()) - run.started)} · ${run.model.slice(run.model.indexOf('/') + 1)}`;
+    const right = `${statusOf(run, children)} · ${elapsed((run.ended ?? Date.now()) - run.started)} · ${agentModel(run)}`;
     const left = ` ${dot} ${color('accent', run.id)}  `;
     const room = width - visibleWidth(left) - visibleWidth(right) - 3;
     if (room < 8) return truncateToWidth(`${left}${color('dim', right)}`, width);

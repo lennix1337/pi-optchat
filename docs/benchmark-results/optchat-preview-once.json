@@ -1,0 +1,52 @@
+{
+  "scope": "production previewOutput component only; no model or end-to-end latency measurement",
+  "baselineHash": "5e9a037d582a1ddbc8b6a47ef133c42dbedbc554800c73351e6b2b5e7caeb2ea",
+  "sourceHash": "7d33b2055bbb7974263f7108ece21efa7c0ee73c23b5115354e87df35150b744",
+  "results": [
+    {
+      "name": "log",
+      "inputBytes": 889096,
+      "previewBytes": 2354,
+      "digest": "1dc58661fc8fc218e45fcd59a537045eba70e64fb50fe20811923abe92a35598",
+      "baseline": {
+        "medianMs": 4.896466666666659,
+        "p90Ms": 5.161666666666709
+      },
+      "optimized": {
+        "medianMs": 4.2379666666666935,
+        "p90Ms": 4.502933333333336
+      },
+      "medianReductionPercent": 13.44847304859218
+    },
+    {
+      "name": "diff",
+      "inputBytes": 415622,
+      "previewBytes": 915,
+      "digest": "8ad8aa3ce05c67f085b71792e2bfe3788c9220aa964b49730e81f93de939b590",
+      "baseline": {
+        "medianMs": 5.26243333333332,
+        "p90Ms": 5.581566666666731
+      },
+      "optimized": {
+        "medianMs": 3.069666666666611,
+        "p90Ms": 3.380633333333359
+      },
+      "medianReductionPercent": 41.668303003047654
+    },
+    {
+      "name": "search",
+      "inputBytes": 517783,
+      "previewBytes": 1247,
+      "digest": "8ee164c18d56449d71cc11aabd6b1fa8e53785c19d41402818bb6ea4b7050312",
+      "baseline": {
+        "medianMs": 5.472333333333306,
+        "p90Ms": 5.914700000000114
+      },
+      "optimized": {
+        "medianMs": 3.8847666666665646,
+        "p90Ms": 4.156366666666751
+      },
+      "medianReductionPercent": 29.01078150697598
+    }
+  ]
+}

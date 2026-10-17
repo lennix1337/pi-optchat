@@ -28,7 +28,7 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
   const usage = new UsageLedger(dir), controller = new AbortController();
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
-  for (let i = 0; i < 100; i++) children.history.records.set(`run-${i}`, { id: `run-${i}`, task: `Task ${i} ${'long title '.repeat(20)}`, cwd: dir, model: 'test', thinking: 'high',
+  for (let i = 0; i < 100; i++) children.history.records.set(`run-${i}`, { id: `run-${i}`, task: `Task ${i} ${'long title '.repeat(20)}`, cwd: dir, model: 'openai-codex/gpt-6-luna', thinking: 'xhigh',
     parentSession: 'parent', depth: 1, started: 1000 - i, ended: 2000, state: 'completed', guidance: [] });
   const spend = (role: 'main' | 'compactor', model: string, cost: number, provider?: string) => usage.add({ date: new Date().toISOString(), role, model, provider, session: 'parent',
     usage: { input: 0, output: 164_000, cacheRead: 900, cacheWrite: 100, totalTokens: 165_000, cost: { input: 0, output: cost, cacheRead: 0, cacheWrite: 0, total: cost } } });
@@ -41,6 +41,8 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     inspector.handleInput('\x1b[F');
     assert.match(inspector.render(100).find(l => l.startsWith(' →')) ?? '', /Task 99/);
     assert.match(inspector.render(100).join('\n'), /Enter open/);
+    assert.match(inspector.render(100).join('\n'), /gpt-6-luna\(xhigh\)/);
+    for (const width of [18, 40, 64, 100, 160]) assert.ok(inspector.render(width).every(line => visibleWidth(line) <= width));
     inspector.handleInput('\r');
     assert.deepEqual(actions, [{ open: 'run-99' }]);
     const table = usagePage.render(100).filter(l => /claude-opus|claude-sonnet/.test(l));

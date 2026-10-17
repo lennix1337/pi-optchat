@@ -1,0 +1,72 @@
+{
+    "total_instances": 10,
+    "submitted_instances": 10,
+    "completed_instances": 6,
+    "resolved_instances": 5,
+    "unresolved_instances": 1,
+    "infra_failure_instances": 0,
+    "ambiguous_failure_instances": 1,
+    "empty_patch_instances": 3,
+    "error_instances": 1,
+    "completed_ids": [
+        "django__django-13569",
+        "django__django-14672",
+        "matplotlib__matplotlib-24570",
+        "pylint-dev__pylint-4970",
+        "scikit-learn__scikit-learn-14141",
+        "sympy__sympy-16766"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [
+        "django__django-15277",
+        "django__django-15572",
+        "sympy__sympy-13031"
+    ],
+    "submitted_ids": [
+        "django__django-13569",
+        "django__django-14672",
+        "django__django-15277",
+        "django__django-15572",
+        "matplotlib__matplotlib-24570",
+        "psf__requests-5414",
+        "pylint-dev__pylint-4970",
+        "scikit-learn__scikit-learn-14141",
+        "sympy__sympy-13031",
+        "sympy__sympy-16766"
+    ],
+    "resolved_ids": [
+        "django__django-13569",
+        "django__django-14672",
+        "matplotlib__matplotlib-24570",
+        "scikit-learn__scikit-learn-14141",
+        "sympy__sympy-16766"
+    ],
+    "unresolved_ids": [
+        "pylint-dev__pylint-4970"
+    ],
+    "infra_failure_ids": [],
+    "ambiguous_failure_ids": [
+        "psf__requests-5414"
+    ],
+    "failure_reasons": {
+        "psf__requests-5414": "missing_module"
+    },
+    "error_ids": [
+        "psf__requests-5414"
+    ],
+    "schema_version": 2,
+    "unstopped_instances": 0,
+    "unstopped_containers": [],
+    "unremoved_images": [
+        "swebench/sweb.eval.x86_64.django_1776_django-13569:latest",
+        "swebench/sweb.eval.x86_64.django_1776_django-14672:latest",
+        "swebench/sweb.eval.x86_64.django_1776_django-15277:latest",
+        "swebench/sweb.eval.x86_64.django_1776_django-15572:latest",
+        "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-24570:latest",
+        "swebench/sweb.eval.x86_64.psf_1776_requests-5414:latest",
+        "swebench/sweb.eval.x86_64.pylint-dev_1776_pylint-4970:latest",
+        "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-14141:latest",
+        "swebench/sweb.eval.x86_64.sympy_1776_sympy-13031:latest",
+        "swebench/sweb.eval.x86_64.sympy_1776_sympy-16766:latest"
+    ]
+}

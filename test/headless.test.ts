@@ -26,25 +26,26 @@ for (const name of ['work', 'personal']) {
 }
 rememberProfile('personal');
 
-function fixtureStream(model: Model<Api>, text: string, refused = false, hold: Promise<void> = Promise.resolve()) {
-  const message: AssistantMessage = { role: 'assistant', content: refused ? [] : [{ type: 'text', text }],
-    api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: refused ? 'error' : 'stop', usage: emptyUsage(),
+function fixtureStream(model: Model<Api>, text: string, refused = false, hold: Promise<void> = Promise.resolve(), writeProbe = false) {
+  const message: AssistantMessage = { role: 'assistant', content: refused ? [] : writeProbe ? [{ type: 'toolCall', id: 'isolated-write-probe', name: 'write', arguments: { path: 'benchmark-probe.txt', content: 'real OptChat tool execution' } }] : [{ type: 'text', text }],
+    api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: refused ? 'error' : writeProbe ? 'toolUse' : 'stop', usage: emptyUsage(),
     ...(refused ? { errorMessage: 'Request blocked by provider usage policy' } : {}) };
   const stream = createAssistantMessageEventStream();
   void hold.then(() => {
     stream.push({ type: 'start', partial: message });
     if (refused) stream.push({ type: 'error', reason: 'error', error: message });
-    else stream.push({ type: 'done', reason: 'stop', message });
+    else stream.push({ type: 'done', reason: writeProbe ? 'toolUse' : 'stop', message });
     stream.end();
   });
   return stream;
 }
 
 /** A headless Pi (print or RPC) with short synthetic compaction summaries and recorded model-turn requests. */
-async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory; refuseSummaries?: () => boolean } = {}) {
+async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: boolean; realTools?: boolean; flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory; refuseSummaries?: () => boolean } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], turns: string[] = [], errors: string[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
+  let probePending = options.writeProbe;
   runtime.registerProvider('fixture', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
     models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
@@ -57,7 +58,9 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string;
       if (!compacting) turns.push(request);
       const text = compacting ? 'talk: OK' : `OK to: ${prompt}`;
       const refused = compacting && options.refuseSummaries?.();
-      return fixtureStream(model, text, refused, prompt.includes('slow') ? options.hold : undefined);
+      const writeProbe = probePending;
+      probePending = false;
+      return fixtureStream(model, text, refused, prompt.includes('slow') ? options.hold : undefined, writeProbe);
     },
   });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
@@ -66,7 +69,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string;
   await loader.reload();
   const manager = SessionManager.create(dir, join(dir, 'sessions'));
   if (options.bound) manager.appendCustomEntry('optchat.profile', { name: options.bound });
-  const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager, sessionManager: manager, tools: [] });
+  const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager, sessionManager: manager, tools: options.realTools ? undefined : [] });
   if (options.flag) session.extensionRunner.setFlagValue('optchat-profile', options.flag);
   if (options.agent !== undefined) session.extensionRunner.setFlagValue('optchat-agent', options.agent);
   if (options.connect) session.extensionRunner.setFlagValue('optchat-connect', options.connect);
@@ -82,7 +85,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { flag?: string;
   };
   const bindings = () => manager.getEntries().flatMap(e => e.type === 'custom' && e.customType === 'optchat.profile' ? [e.data] : []);
   const close = async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); };
-  return { ask, bindings, close, errors, notes, sent, turns, compact: () => session.compact() };
+  return { ask, bindings, close, errors, notes, sent, turns, dir, activeTools: () => session.getActiveToolNames(), compact: () => session.compact() };
 }
 
 test('a headless run without a binding or --optchat-profile is plain Pi: it answers, and no profile is picked or created', async () => {
@@ -106,6 +109,41 @@ test('--optchat-profile still opens that profile headlessly', async () => {
     assert.deepEqual(pi.errors, []);
     assert.deepEqual(pi.bindings(), [{ name: 'work' }]);
     assert.match(pi.sent[0], /You are OptChat/);
+  } finally { await pi.close(); }
+});
+
+test('benchmark acceptance: real OptChat profile projects persisted history and exposes its actual tools', async () => {
+  const pi = await headless('rpc', { flag: 'work', connect: 'off', realTools: true });
+  try {
+    assert.deepEqual(pi.bindings(), [{ name: 'work' }], 'the benchmark must not silently run bare Pi');
+    for (const name of ['zoom', 'shell_start', 'shell_status', 'shell_stop']) {
+      assert.ok(pi.activeTools().includes(name), `real OptChat tool missing: ${name}`);
+    }
+    await pi.ask('Benchmark continuity sentinel 4f82');
+    await pi.ask('Recall the previous benchmark sentinel');
+    assert.equal(pi.turns.length, 2);
+    assert.match(pi.turns[1], /You are OptChat/);
+    assert.match(pi.turns[1], /<chat>/);
+    assert.match(pi.turns[1], /Benchmark continuity sentinel 4f82/);
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
+});
+
+test('benchmark acceptance: real OptChat executes its write tool and returns the result to the model', async () => {
+  const pi = await headless('rpc', { flag: 'work', connect: 'off', realTools: true, writeProbe: true });
+  try {
+    await pi.ask('Execute the isolated benchmark write probe');
+    assert.equal(readFileSync(join(pi.dir, 'benchmark-probe.txt'), 'utf8'), 'real OptChat tool execution');
+    const journal = JSON.parse(readFileSync(join(profilePath('work'), 'operations.json'), 'utf8'));
+    const receipt = journal.operations.find((entry: { id: string }) => entry.id.includes('isolated-write-probe'));
+    assert.equal(receipt?.dispatchObserved, true, 'actual Pi dispatch precedes intent and is correlated to the response');
+    assert.equal(receipt.status, 'response_recorded');
+    assert.equal(receipt.outcome, 'not_verified', 'a response alone is not independent verification');
+    assert.ok(receipt.responseAt >= receipt.startedAt);
+    assert.equal(pi.turns.length, 2, 'the model receives a second turn after actual tool execution');
+    assert.match(pi.turns[1], /toolResult/);
+    assert.deepEqual(pi.bindings(), [{ name: 'work' }]);
+    assert.deepEqual(pi.errors, []);
   } finally { await pi.close(); }
 });
 
