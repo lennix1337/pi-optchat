@@ -62,7 +62,7 @@ export class OperationJournal {
   blockReason(tool: string, trustedReadOnly = false) {
     if (trustedReadOnly || READ_ONLY.has(tool)) return;
     const uncertain = this.pending().filter(o => !this.inFlight.has(o.id));
-    if (uncertain.length) return `External outcome uncertain for ${uncertain.map(o => o.id).join(', ')}. Do not repeat effects. Use read-only observation, then operation_state with an evidence reference to reconcile.`;
+    if (uncertain.length) return `Not executed: external outcome uncertain for ${uncertain.map(o => o.id).join(', ')} (an earlier call was interrupted or timed out). Do not repeat effects. Use read-only observation, then operation_state with an evidence reference to reconcile.`;
   }
   start(session: string, call: string, tool: string, args: unknown, trustedReadOnly = false, recoveryIncidentId?: string, dispatchObserved = false) {
     if (trustedReadOnly || READ_ONLY.has(tool) || isReadOnlyDiagnostic(tool, args)) return;
@@ -80,6 +80,7 @@ export class OperationJournal {
     this.save(next);
     this.inFlight.add(id);
   }
+  /** `error` marks a response that did not establish the outcome; such operations stay pending. */
   finish(session: string, call: string, error: boolean, dispatchObserved = false) {
     const id = `${session}:${call}`;
     if (!this.operations.some(o => o.id === id && o.status === 'started')) return;
@@ -100,6 +101,18 @@ export class OperationJournal {
     return pending.length ? `\nOperational recovery (not an authorization): ${pending.length} tool outcomes uncertain. Do not repeat effects. Inspect operation_state; verify actual external state using read-only observations and record evidence before proceeding.\n` : '';
   }
 }
+
+const INTERRUPTED = /timed? ?out|timeout|abort|interrupt|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|connection (?:reset|closed)|\b50[234]\b|SIG(?:KILL|TERM|INT|HUP)|terminated|outcome uncertain/i;
+
+/** An ordinary failure (non-zero exit, validation error, HTTP 4xx) is an observed outcome the model can read.
+ * Only an empty, interrupted, timed-out or gateway-failed response leaves external state unknown. */
+export function outcomeUnknown(content: readonly unknown[] | undefined): boolean {
+  const text = (content ?? []).map(part => (part as { type?: string; text?: string }).type === 'text' ? (part as { text: string }).text : '').join('\n');
+  // Shells append their timeout/abort status last; scanning only the tail keeps test names like
+  // "handles timeout" inside an ordinary failing log from reopening the barrier.
+  return !text.trim() || INTERRUPTED.test(text.slice(-400));
+}
+const failedUnobserved = (event: { isError: boolean; content?: readonly unknown[] }) => event.isError && outcomeUnknown(event.content);
 
 /** Installed on each session, including child sessions; intent persistence failure blocks execution. */
 export function registerOperationSafety(pi: ExtensionAPI, journal: () => OperationJournal | undefined, incident: (sessionId: string) => string | undefined = () => undefined) {
@@ -133,7 +146,7 @@ export function registerOperationSafety(pi: ExtensionAPI, journal: () => Operati
   pi.on('tool_result', (event, ctx) => {
     const session = ctx.sessionManager.getSessionId(), key = `${session}:${event.toolCallId}`, call = executions.get(key);
     if (!call) { observed.delete(key); return; }
-    try { journal()?.finish(session, call, event.isError, observed.has(key)); executions.delete(key); observed.delete(key); }
+    try { journal()?.finish(session, call, failedUnobserved(event), observed.has(key)); executions.delete(key); observed.delete(key); }
     catch { ctx.abort(); ctx.ui.notify('Could not persist tool response. Outcome remains uncertain; reconcile before repeating effects.', 'error'); }
   });
   pi.on('agent_settled', (_event, ctx) => {

@@ -43,11 +43,26 @@ function readOnlyRipgrep(words: Word[]): boolean {
   return noConfig || !process.env.RIPGREP_CONFIG_PATH;
 }
 
+// Only `sed -n <line>[,<line>]p <files>`: other scripts may write (`w`) or execute (`e`), and an
+// unquoted glob could expand to a file named `-i`, which GNU sed would accept as in-place editing.
+function readOnlySed(words: Word[]): boolean {
+  return words.length >= 3 && words[1].value === '-n' && /^\d+(?:,\d+)?p$/.test(words[2].value)
+    && words.slice(3).every(word => !word.value.startsWith('-') && (word.quoted || !/[*?\[\]]/.test(word.value)));
+}
+
+function readOnlyWords(words: Word[]): boolean {
+  switch (words[0].value) {
+    case 'rg': return readOnlyRipgrep(words);
+    case 'sed': return readOnlySed(words);
+    // `cd` only changes this shell's working directory; it is how most inspections start.
+    case 'cd': return words.length === 2;
+    default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo'].includes(words[0].value);
+  }
+}
+
 export function isReadOnlyDiagnostic(tool: string, input: unknown): boolean {
   if (tool !== 'bash' || !input || typeof input !== 'object') return false;
   const command = (input as { command?: unknown }).command;
   if (typeof command !== 'string' || !command.trim() || command.length > 8192) return false;
-  return diagnosticCommands(command)?.every(words => words[0].value === 'rg'
-    ? readOnlyRipgrep(words)
-    : ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep'].includes(words[0].value)) ?? false;
+  return diagnosticCommands(command)?.every(readOnlyWords) ?? false;
 }

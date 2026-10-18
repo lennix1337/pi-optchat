@@ -74,3 +74,15 @@ test('invalid journal fails closed and read tools do not create effect intents',
   writeFileSync(join(dir, 'operations.json'), '{"version":1,"operations":[{"id":"bad"}]}');
   assert.throws(() => new OperationJournal(dir), /Invalid operation journal/);
 });
+
+test('only empty, interrupted or timed-out error responses leave the outcome unknown', async () => {
+  const { outcomeUnknown } = await import('../src/operations.ts');
+  const text = (value: string) => [{ type: 'text', text: value }];
+  for (const value of ['', 'partial\nCommand timed out after 30 seconds', 'Command aborted', 'Error: socket hang up', 'HTTP 502 Bad Gateway', 'ETIMEDOUT']) {
+    assert.equal(outcomeUnknown(text(value)), true, value);
+  }
+  for (const value of ['Command exited with code 1', 'Error: Not found (404)', 'AssertionError at line 122', `${'it handles timeout\n'.repeat(50)}${'x'.repeat(500)}\nTests 3 failed`]) {
+    assert.equal(outcomeUnknown(text(value)), false, value);
+  }
+  assert.equal(outcomeUnknown(undefined), true);
+});

@@ -93,3 +93,29 @@ test('registered tool hooks allow diagnostics behind a barrier but still block a
   });
   assert.equal(j.pending().length, 1);
 });
+
+test('cd-prefixed inspections and line-range sed are read-only; other sed scripts and globs are not', () => {
+  for (const command of ['cd C:/projetos/app && sed -n 40,140p src/a.ts', 'cd repo && grep -n x src/a.ts; echo ---; sed -n 5p "file *"']) {
+    assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
+  }
+  for (const command of ['sed -i 1d file', 'sed -n 1w out file', "sed -n '1e touch x' file", 'sed -n 1p *', 'sed -n 1p -i file', 'sed 1p file', 'cd a b', 'cd repo && git push', 'echo x > file']) {
+    assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
+  }
+});
+
+test('an ordinary failing mutation is observed, a timed-out one opens the barrier', async () => {
+  const j = journal();
+  const hooks = new Map<string, (...args: unknown[]) => unknown>();
+  const pi = { on(name: string, handler: (...args: unknown[]) => unknown) { hooks.set(name, handler); }, getAllTools() { return []; }, registerTool() {} } as unknown as ExtensionAPI;
+  const ctx = { sessionManager: { getSessionId: () => 'session', getLeafId: () => 'entry' } };
+  registerOperationSafety(pi, () => j);
+  const run = async (id: string, text: string) => {
+    await hooks.get('tool_call')!({ toolName: 'bash', toolCallId: id, input: { command: 'git push' } }, ctx);
+    await hooks.get('tool_result')!({ toolName: 'bash', toolCallId: id, isError: true, content: [{ type: 'text', text }] }, ctx);
+  };
+  await run('rejected', 'error: failed to push some refs\nCommand exited with code 1');
+  assert.deepEqual(j.pending(), []);
+  await run('slow', 'Command timed out after 120 seconds');
+  assert.equal(j.pending().length, 1);
+  assert.match(j.blockReason('bash') ?? '', /^Not executed: .*uncertain/);
+});
