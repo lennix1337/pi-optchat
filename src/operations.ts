@@ -108,6 +108,11 @@ const INTERRUPTED = /timed? ?out|timeout|abort|interrupt|ECONNRESET|ETIMEDOUT|EP
  * Only an empty, interrupted, timed-out or gateway-failed response leaves external state unknown. */
 export function outcomeUnknown(content: readonly unknown[] | undefined): boolean {
   const text = (content ?? []).map(part => (part as { type?: string; text?: string }).type === 'text' ? (part as { text: string }).text : '').join('\n');
+  // Pi's bash tool ends a completed command with its exit code: the process ran to the end, so a word
+  // like "timeout" in its output (a grep hit, a config key) says nothing about this call. Codes 124,
+  // 137 and 143 are `timeout`/SIGKILL/SIGTERM inside the command, which can still cut an effect short.
+  const exit = /Command exited with code (\d+)\s*$/.exec(text);
+  if (exit) return ['124', '137', '143'].includes(exit[1]);
   // Shells append their timeout/abort status last; scanning only the tail keeps test names like
   // "handles timeout" inside an ordinary failing log from reopening the barrier.
   return !text.trim() || INTERRUPTED.test(text.slice(-400));

@@ -81,7 +81,12 @@ test('only empty, interrupted or timed-out error responses leave the outcome unk
   for (const value of ['', 'partial\nCommand timed out after 30 seconds', 'Command aborted', 'Error: socket hang up', 'HTTP 502 Bad Gateway', 'ETIMEDOUT']) {
     assert.equal(outcomeUnknown(text(value)), true, value);
   }
-  for (const value of ['Command exited with code 1', 'Error: Not found (404)', 'AssertionError at line 122', `${'it handles timeout\n'.repeat(50)}${'x'.repeat(500)}\nTests 3 failed`]) {
+  for (const value of ['partial\nCommand exited with code 124', 'Command exited with code 137']) {
+    assert.equal(outcomeUnknown(text(value)), true, value);
+  }
+  // A completed command whose own output mentions timeouts or uncertainty (grep hits, config keys).
+  const completed = ['startup_timeout_sec = 120\n"timeout": 10\n\nCommand exited with code 1', 'src/operations.ts:65: external outcome uncertain\nCommand exited with code 1'];
+  for (const value of ['Command exited with code 1', 'Error: Not found (404)', 'AssertionError at line 122', `${'it handles timeout\n'.repeat(50)}${'x'.repeat(500)}\nTests 3 failed`, ...completed]) {
     assert.equal(outcomeUnknown(text(value)), false, value);
   }
   assert.equal(outcomeUnknown(undefined), true);
