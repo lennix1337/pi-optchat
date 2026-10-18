@@ -7,6 +7,9 @@ import { Memory, bytes } from '../src/memory.ts';
 import { updateOperationalState } from '../src/operational-state.ts';
 import { BLOCK_LEVEL, NOTE_BYTES, STATUS_BYTES, Sync, inOptMemLog, noteParts, renderStatus } from '../src/sync.ts';
 import { removeDir } from './support.ts';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { aiMemoryWriter, type Page } from '../src/ai-memory.ts';
 
 const BLOCK = 2 ** BLOCK_LEVEL;
 async function memoryWith(dir: string, messages: number, text = (i: number) => `message ${i}`) {
@@ -175,3 +178,66 @@ test('inOptMemLog reads only the log tail', withDir(async dir => {
   assert.equal(inOptMemLog('[optchat 64-127 1/2]', log), true);
   assert.equal(inOptMemLog('[optchat 0-63 1/1]', log), false);
 }));
+
+test('ai-memory sync imports every finished block from block 0 in order, then a status page, and resumes from its cursor', withDir(async dir => {
+  const memory = await memoryWith(dir, BLOCK * 3 + 5);
+  try {
+    const pages: Page[] = [];
+    const { s, warnings } = sync(dir, memory, { status: () => false, optmem: () => false, aimemory: () => true, writePage: async page => { pages.push(page); } });
+    await s.now(); await s.close();
+    assert.deepEqual(pages.map(page => page.path), ['p/blocks/000000-000063.md', 'p/blocks/000064-000127.md', 'p/blocks/000128-000191.md', 'p/status.md']);
+    assert.deepEqual(warnings, []);
+    const block = pages[1].body;
+    assert.match(block, /^# OptChat p: messages 64-127\n/);
+    assert.ok(block.includes(`## Summary\n\n${memory.node({ l: BLOCK_LEVEL, i: 1 })!.text}`));
+    for (let i = 64; i < 128; i++) assert.ok(block.includes(`\n- ${i} (`), `message ${i}`);
+    assert.equal(pages[1].abstract, memory.node({ l: BLOCK_LEVEL, i: 1 })!.text.slice(0, 1000));
+    assert.match(pages[3].body, /^# OptChat status: profile p/);
+
+    // A new sync on the same profile writes nothing until another block finishes.
+    for (let i = 0; i < BLOCK; i++) memory.append('user', `later ${i}`);
+    await memory.settle(undefined, 'tree');
+    const again: string[] = [];
+    const next = sync(dir, memory, { status: () => false, optmem: () => false, aimemory: () => true, writePage: async page => { again.push(page.path); } });
+    await next.s.now(); await next.s.close();
+    assert.deepEqual(again, ['p/blocks/000192-000255.md', 'p/status.md']);
+  } finally { await memory.close(); }
+}));
+
+test('a failed ai-memory write warns once, keeps its place and is retried', withDir(async dir => {
+  const memory = await memoryWith(dir, BLOCK * 2);
+  try {
+    let fail = true; const pages: string[] = [];
+    const { s, warnings } = sync(dir, memory, { status: () => false, optmem: () => false, aimemory: () => true,
+      writePage: async page => { if (fail && page.path.includes('000064')) throw new Error('server down'); pages.push(page.path); } });
+    await s.now(); await s.now();
+    assert.deepEqual(pages, ['p/blocks/000000-000063.md']);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /ai-memory.*server down/);
+    fail = false;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await s.now(); await s.close();
+    assert.deepEqual(pages, ['p/blocks/000000-000063.md', 'p/blocks/000064-000127.md', 'p/status.md']);
+  } finally { await memory.close(); }
+}));
+
+test('the ai-memory writer sends an authenticated memory_write_page call and surfaces refusals', async () => {
+  const requests: { auth?: string; body: { params: { name: string; arguments: Record<string, unknown> } } }[] = [];
+  let reply = 'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}\n\n';
+  const server = createServer((request, response) => {
+    let data = '';
+    request.on('data', chunk => { data += chunk; });
+    request.on('end', () => { requests.push({ auth: request.headers.authorization, body: JSON.parse(data) }); response.writeHead(200, { 'Content-Type': 'text/event-stream' }); response.end(reply); });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const write = aiMemoryWriter(url, 'secret');
+    await write({ path: 'p/status.md', body: '# x', tags: ['optchat'] });
+    assert.equal(requests[0].auth, 'Bearer secret');
+    assert.equal(requests[0].body.params.name, 'memory_write_page');
+    assert.deepEqual(requests[0].body.params.arguments, { workspace: 'default', project: 'optchat', path: 'p/status.md', body: '# x', tier: 'semantic', tags: ['optchat'] });
+    reply = '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"path escapes the wiki"}],"isError":true}}';
+    await assert.rejects(write({ path: '../x.md', body: '# x', tags: [] }), /refused \.\.\/x\.md: "path escapes the wiki"/);
+  } finally { server.close(); }
+});

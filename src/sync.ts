@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { bytes, end, flat, start, type Memory, type Part } from './memory.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { atomicWrite } from './store.ts';
+import { aiMemoryWriter, writeFinishedBlocks, type PageWriter } from './ai-memory.ts';
 
 /** Sync lets agents outside OptChat see this chat. It runs as code from memory the chat already has, and calls no model:
  * a status file rewritten as the chat changes, and one OptMem note per finished block of messages. A quota cutoff, a provider
@@ -123,33 +124,48 @@ export interface SyncOptions {
   model: () => string | undefined;
   status: () => boolean;
   optmem: () => boolean;
+  aimemory?: () => boolean;
   send?: NoteSender;
+  writePage?: PageWriter;
   hasNote?: (marker: string) => boolean;
   warn: (text: string) => void;
   debounceMs?: number;
   retryMs?: number;
 }
 
+/** One drain at a time per destination, which picks up blocks finished meanwhile; after a failure, none until its retry time. */
+class Lane {
+  running?: Promise<void>;
+  retryAfter = 0;
+  run(drain: () => Promise<void>) {
+    if (this.running || Date.now() < this.retryAfter) return this.running ?? Promise.resolve();
+    this.running = drain().finally(() => { this.running = undefined; });
+    return this.running;
+  }
+}
+
 /** Keeps the status file and OptMem in step with one profile's memory. Every failure warns once and is retried later: sync must
  * never stop a turn. */
 export class Sync {
   private timer?: ReturnType<typeof setTimeout>;
-  private sending?: Promise<void>;
-  private retryAfter = 0;
+  private readonly notes = new Lane();
+  private readonly pages = new Lane();
   private lastBody?: string;
   private readonly warned = new Set<string>();
   private readonly unsubscribe: () => void;
   private closed = false;
   readonly statusFile: string;
   readonly cursorFile: string;
+  readonly pagesCursorFile: string;
   constructor(private readonly options: SyncOptions) {
     this.statusFile = options.statusFile ?? join(options.dir, '..', '..', 'status.md');
     this.cursorFile = join(options.dir, 'optmem-sync.json');
+    this.pagesCursorFile = join(options.dir, 'ai-memory-sync.json');
     this.unsubscribe = options.memory.onChange(() => this.schedule());
   }
   /** Coalesces bursts of memory changes: a merge batch fires many. */
   schedule() {
-    if (this.closed || this.timer || !(this.options.status() || this.options.optmem())) return;
+    if (this.closed || this.timer || !(this.options.status() || this.options.optmem() || this.options.aimemory?.())) return;
     this.timer = setTimeout(() => { this.timer = undefined; void this.now(); }, this.options.debounceMs ?? DEBOUNCE_MS);
     this.timer.unref?.();
   }
@@ -158,13 +174,27 @@ export class Sync {
     if (this.closed) return;
     clearTimeout(this.timer); this.timer = undefined;
     if (this.options.status()) this.writeStatus();
-    if (this.options.optmem()) await this.sendBlocks();
+    await Promise.all([this.options.optmem() && this.sendBlocks(), this.options.aimemory?.() && this.writePages()]);
+  }
+  /** One at a time, in order, like OptMem notes; but a new sync starts at block 0, so enabling it imports the whole history. */
+  writePages(): Promise<void> { return this.pages.run(() => this.drainPages()); }
+  private async drainPages() {
+    const { memory, profile, writePage = aiMemoryWriter() } = this.options;
+    try {
+      await writeFinishedBlocks({ profile, memory, cursorFile: this.pagesCursorFile, writePage, stopped: () => this.closed, status: () => this.renderStatus() });
+      this.warned.delete('ai-memory');
+    } catch (error) {
+      this.retryLater(this.pages, 'ai-memory', error);
+    }
+  }
+  private renderStatus(now = new Date()) {
+    const { profile, memory, dir } = this.options;
+    return renderStatus({ profile, memory, model: this.options.model(), operationalFile: join(dir, 'operational-state.json'), now });
   }
   private warnOnce(key: string, text: string) { if (!this.warned.has(key)) { this.warned.add(key); this.options.warn(text); } }
   writeStatus() {
-    const { profile, memory, dir } = this.options, now = new Date();
     try {
-      const text = renderStatus({ profile, memory, model: this.options.model(), operationalFile: join(dir, 'operational-state.json'), now });
+      const text = this.renderStatus();
       // The timestamp alone changing is no news: skip the write, so idle changes cost no disk.
       const body = text.replace(/^Updated \S+/m, '');
       if (body === this.lastBody) return;
@@ -177,10 +207,12 @@ export class Sync {
     }
   }
   /** One at a time, in order; a running send picks up blocks finished meanwhile. */
-  sendBlocks(): Promise<void> {
-    if (this.sending || Date.now() < this.retryAfter) return this.sending ?? Promise.resolve();
-    this.sending = this.drain().finally(() => { this.sending = undefined; });
-    return this.sending;
+  sendBlocks(): Promise<void> { return this.notes.run(() => this.drain()); }
+  private retryLater(lane: Lane, name: 'OptMem' | 'ai-memory', error: unknown) {
+    const delay = this.options.retryMs ?? RETRY_MS;
+    lane.retryAfter = Date.now() + delay;
+    const timer = setTimeout(() => this.schedule(), delay); timer.unref?.();
+    this.warnOnce(name, `OptChat could not sync to ${name}; it retries later: ${error instanceof Error ? error.message : String(error)}`);
   }
   private async drain() {
     const { memory, send = memoNote, hasNote = inOptMemLog } = this.options, size = 2 ** BLOCK_LEVEL;
@@ -202,11 +234,9 @@ export class Sync {
         cursor = { block: cursor.block + 1, part: 0 };
         atomicWrite(this.cursorFile, JSON.stringify(cursor));
       }
-      this.warned.delete('optmem');
+      this.warned.delete('OptMem');
     } catch (error) {
-      this.retryAfter = Date.now() + (this.options.retryMs ?? RETRY_MS);
-      const timer = setTimeout(() => this.schedule(), this.options.retryMs ?? RETRY_MS); timer.unref?.();
-      this.warnOnce('optmem', `OptChat could not sync to OptMem; it retries later: ${error instanceof Error ? error.message : String(error)}`);
+      this.retryLater(this.notes, 'OptMem', error);
     }
   }
   /** Writes the latest status and gives a note being sent a moment to finish; one cut off is found in OptMem's log next time. */
@@ -216,7 +246,7 @@ export class Sync {
     if (this.options.status()) this.writeStatus();
     this.closed = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([this.sending, new Promise<void>(resolve => { timer = setTimeout(resolve, CLOSE_WAIT_MS); })]);
+    await Promise.race([Promise.all([this.notes.running, this.pages.running]), new Promise<void>(resolve => { timer = setTimeout(resolve, CLOSE_WAIT_MS); })]);
     clearTimeout(timer);
   }
 }

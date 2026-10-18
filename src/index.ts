@@ -272,7 +272,7 @@ export default function optchat(pi: ExtensionAPI) {
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
-        status: () => config.syncStatus, optmem: () => config.syncOptMem, warn: text => ctx.ui.notify(text, 'warning') });
+        status: () => config.syncStatus, optmem: () => config.syncOptMem, aimemory: () => config.syncAiMemory, warn: text => ctx.ui.notify(text, 'warning') });
       active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
