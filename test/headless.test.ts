@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAssistantMessageEventStream, type Api, type Model, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type Api, type Context, type Model, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionFactory, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, lastProfile, loadConfig, lockProfile, profilePath, rememberProfile, saveConfig } from '../src/profiles.ts';
@@ -25,23 +25,38 @@ for (const name of ['work', 'personal']) {
   saveConfig(profilePath(name), { ...loadConfig(profilePath(name)), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
 }
 rememberProfile('personal');
+// A profile whose shells report only failures: the default for a shell_start without notify.
+createProfile('failures');
+saveConfig(profilePath('failures'), { ...loadConfig(profilePath('failures')), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' }, shellNotify: 'failure' });
 
-function fixtureStream(model: Model<Api>, text: string, refused = false, hold: Promise<void> = Promise.resolve(), writeProbe = false) {
-  const message: AssistantMessage = { role: 'assistant', content: refused ? [] : writeProbe ? [{ type: 'toolCall', id: 'isolated-write-probe', name: 'write', arguments: { path: 'benchmark-probe.txt', content: 'real OptChat tool execution' } }] : [{ type: 'text', text }],
-    api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: refused ? 'error' : writeProbe ? 'toolUse' : 'stop', usage: emptyUsage(),
+/** A scripted tool call the fixture model makes instead of answering (see `script`). */
+type ScriptedCall = { name: string; arguments: Record<string, string | number | boolean> };
+let scriptedCalls = 0;
+function fixtureContent(text: string, refused: boolean, writeProbe: boolean, call?: ScriptedCall): AssistantMessage['content'] {
+  if (refused) return [];
+  if (call) return [{ type: 'toolCall', id: `scripted-${++scriptedCalls}`, name: call.name, arguments: call.arguments }];
+  if (writeProbe) return [{ type: 'toolCall', id: 'isolated-write-probe', name: 'write', arguments: { path: 'benchmark-probe.txt', content: 'real OptChat tool execution' } }];
+  return [{ type: 'text', text }];
+}
+function fixtureStream(model: Model<Api>, text: string, refused = false, hold: Promise<void> = Promise.resolve(), writeProbe = false, call?: ScriptedCall) {
+  const toolUse = Boolean(call || writeProbe);
+  const message: AssistantMessage = { role: 'assistant', content: fixtureContent(text, refused, writeProbe, call),
+    api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: refused ? 'error' : toolUse ? 'toolUse' : 'stop', usage: emptyUsage(),
     ...(refused ? { errorMessage: 'Request blocked by provider usage policy' } : {}) };
   const stream = createAssistantMessageEventStream();
   void hold.then(() => {
     stream.push({ type: 'start', partial: message });
     if (refused) stream.push({ type: 'error', reason: 'error', error: message });
-    else stream.push({ type: 'done', reason: writeProbe ? 'toolUse' : 'stop', message });
+    else stream.push({ type: 'done', reason: toolUse ? 'toolUse' : 'stop', message });
     stream.end();
   });
   return stream;
 }
 
 /** A headless Pi (print or RPC) with short synthetic compaction summaries and recorded model-turn requests. */
-async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: boolean; realTools?: boolean; flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory; refuseSummaries?: () => boolean } = {}) {
+async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: boolean; realTools?: boolean; flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory; refuseSummaries?: () => boolean;
+  /** Makes the fixture call a tool instead of answering, from the context it is given; undefined answers with text. */
+  script?: (messages: Context['messages']) => ScriptedCall | undefined } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], turns: string[] = [], errors: string[] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -60,7 +75,9 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
       const refused = compacting && options.refuseSummaries?.();
       const writeProbe = probePending;
       probePending = false;
-      return fixtureStream(model, text, refused, prompt.includes('slow') ? options.hold : undefined, writeProbe);
+      // Scripts only match the probe prompts and their own results, so compaction requests pass through as text.
+      const call = options.script?.(context.messages);
+      return fixtureStream(model, text, refused, prompt.includes('slow') ? options.hold : undefined, writeProbe, call);
     },
   });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
@@ -302,6 +319,138 @@ test('the real retry-summary command retries a frozen node without resending the
     assert.ok(pi.notes.some(note => note.includes('Summary retry requested with the current configured compactor')));
     assert.ok(records().some(record => record.type === 'retry' && record.i === target.i));
     assert.deepEqual(loadConfig(dir).compactor, choice, 'no provider/model/effort switch was introduced');
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
+});
+
+/** Drives one background shell through the real shell_start/shell_stop/bash tools; `ids` collects the shell IDs the tools return. */
+function shellScript(kind: 'idle' | 'mid' | 'stop', ids: string[]) {
+  const quick = `node -e "setTimeout(() => console.log('${kind}-done'), 500)"`;
+  return (messages: Context['messages']): ScriptedCall | undefined => {
+    const last = messages.at(-1), text = last ? textContent(last.content) : '';
+    if (last?.role === 'user' && text.endsWith(`shell probe ${kind}`))
+      return { name: 'shell_start', arguments: { command: kind === 'stop' ? `node -e "setInterval(() => {}, 1000)"` : quick } };
+    if (last?.role === 'toolResult' && last.toolName === 'shell_start') {
+      ids.push(text.match(/Background shell (\S+) started/)?.[1] ?? '');
+      if (kind === 'mid') return { name: 'bash', arguments: { command: `node -e "setTimeout(() => {}, 2500)"` } };
+      if (kind === 'stop') return { name: 'shell_stop', arguments: { id: ids.at(-1) ?? '' } };
+    }
+    return undefined;
+  };
+}
+async function until(done: () => boolean, ms = 15_000) {
+  for (const deadline = Date.now() + ms; !done() && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
+}
+
+test('an ended background shell reaches the model once as its own message: between tool calls mid-turn, or as a new turn when idle', { timeout: 60_000 }, async () => {
+  const idleIds: string[] = [], idle = await headless('rpc', { flag: 'work', connect: 'off', realTools: true, script: shellScript('idle', idleIds) });
+  try {
+    await idle.ask('shell probe idle');
+    const marker = `[shell ${idleIds[0]}] `;
+    await until(() => idle.turns.some(turn => turn.includes(marker)));
+    const reported = idle.turns.filter(turn => turn.includes(marker));
+    assert.equal(reported.length, 1, 'the report starts one model turn');
+    assert.equal(reported[0].split(marker).length - 1, 1, 'and appears once in it');
+    assert.match(reported[0], /\[shell [^\]]+\] completed · exit 0 · ran /);
+    assert.match(reported[0], /idle-done/, 'with the last output of the shell');
+    assert.deepEqual(idle.errors, []);
+  } finally { await idle.close(); }
+
+  const midIds: string[] = [], mid = await headless('rpc', { flag: 'work', connect: 'off', realTools: true, script: shellScript('mid', midIds) });
+  try {
+    await mid.ask('shell probe mid');
+    const marker = `[shell ${midIds[0]}] `;
+    // shell_start, then a foreground bash call that outlasts the shell: the report must join the same turn, before the reply.
+    assert.equal(mid.turns.length, 3, 'no extra model turn: the report was steered between the tool calls');
+    assert.equal(mid.turns[2].split(marker).length - 1, 1, 'once, in the request after the bash result');
+    assert.match(mid.turns[2], /mid-done/);
+    assert.deepEqual(mid.errors, []);
+  } finally { await mid.close(); }
+});
+
+test('a shell stopped with shell_stop reports the stop once, not as a failure', { timeout: 60_000 }, async () => {
+  const ids: string[] = [], pi = await headless('rpc', { flag: 'work', connect: 'off', realTools: true, script: shellScript('stop', ids) });
+  try {
+    await pi.ask('shell probe stop');
+    const marker = `[shell ${ids[0]}] `;
+    await until(() => pi.turns.some(turn => turn.includes(marker)));
+    const reported = pi.turns.filter(turn => turn.includes(marker));
+    assert.equal(reported.length, 1, 'the stop is reported in one model request');
+    assert.equal(reported[0].split(marker).length - 1, 1, 'once');
+    assert.match(reported[0], /\[shell [^\]]+\] stopped · ran /);
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); }
+});
+
+/** Runs a probe prompt's scripted calls: the first starts a shell, each later one is made once the previous result is back, with the shell's ID. */
+function probeSteps(probe: string, start: ScriptedCall, steps: ((id: string) => ScriptedCall)[], ids: string[]) {
+  let results = 0;
+  return (messages: Context['messages']): ScriptedCall | undefined => {
+    const last = messages.at(-1), text = last ? textContent(last.content) : '';
+    if (last?.role === 'user' && text.endsWith(`shell probe ${probe}`)) { results = 0; return start; }
+    if (last?.role !== 'toolResult') return undefined;
+    if (results++ === 0) ids.push(text.match(/Background shell (\S+) started/)?.[1] ?? '');
+    return steps[results - 1]?.(ids[0]);
+  };
+}
+const quick = `node -e "setTimeout(() => console.log('quiet-done'), 500)"`;
+const sleep = `node -e "setTimeout(() => {}, 2500)"`;
+const bash = (command: string): ScriptedCall => ({ name: 'bash', arguments: { command } });
+const stop = (id: string): ScriptedCall => ({ name: 'shell_stop', arguments: { id } });
+
+test('notify failure: a shell that fails is reported once; one that completes or is stopped is not', { timeout: 90_000 }, async () => {
+  const failIds: string[] = [], failing = await headless('rpc', { flag: 'work', connect: 'off', realTools: true,
+    script: probeSteps('failure', { name: 'shell_start', arguments: { command: `node -e "console.log('fail-out'); process.exit(3)"`, notify: 'failure' } }, [], failIds) });
+  try {
+    await failing.ask('shell probe failure');
+    const marker = `[shell ${failIds[0]}] `;
+    await until(() => failing.turns.some(turn => turn.includes(marker)));
+    const reported = failing.turns.filter(turn => turn.includes(marker));
+    assert.equal(reported.length, 1, 'the failure is reported in one model request');
+    assert.match(reported[0], /\[shell [^\]]+\] failed · exit 3 · ran /);
+    assert.match(reported[0], /fail-out/);
+    assert.deepEqual(failing.errors, []);
+  } finally { await failing.close(); }
+
+  const doneIds: string[] = [], completed = await headless('rpc', { flag: 'work', connect: 'off', realTools: true,
+    script: probeSteps('quiet', { name: 'shell_start', arguments: { command: quick, notify: 'failure' } }, [() => bash(sleep)], doneIds) });
+  try {
+    await completed.ask('shell probe quiet');
+    assert.equal(completed.turns.length, 3, 'shell_start, then the bash call that outlasts the shell: no report request');
+    assert.ok(!completed.turns.some(turn => turn.includes(`[shell ${doneIds[0]}] `)));
+  } finally { await completed.close(); }
+
+  const stopIds: string[] = [], stopped = await headless('rpc', { flag: 'work', connect: 'off', realTools: true,
+    script: probeSteps('stopped', { name: 'shell_start', arguments: { command: `node -e "setInterval(() => {}, 1000)"`, notify: 'failure' } }, [stop, () => bash(sleep)], stopIds) });
+  try {
+    await stopped.ask('shell probe stopped');
+    assert.equal(stopped.turns.length, 4, 'shell_start, shell_stop, then the bash call: no report request');
+    assert.ok(!stopped.turns.some(turn => turn.includes(`[shell ${stopIds[0]}] `)));
+  } finally { await stopped.close(); }
+});
+
+test("the profile's shell notice default applies to a shell_start that sets no notify", { timeout: 90_000 }, async () => {
+  const ids: string[] = [], pi = await headless('rpc', { flag: 'failures', connect: 'off', realTools: true,
+    script: probeSteps('default', { name: 'shell_start', arguments: { command: quick } }, [() => bash(sleep)], ids) });
+  try {
+    await pi.ask('shell probe default');
+    assert.equal(pi.turns.length, 3, 'a completed shell is silent under the failures default');
+    assert.ok(!pi.turns.some(turn => turn.includes(`[shell ${ids[0]}] `)));
+  } finally { await pi.close(); }
+});
+
+test('an alert sends the matching line with the line before it, once; notify none keeps the end silent', { timeout: 60_000 }, async () => {
+  const ids: string[] = [], pi = await headless('rpc', { flag: 'work', connect: 'off', realTools: true,
+    script: probeSteps('alert', { name: 'shell_start', arguments: { command: `node -e "console.log('row 1'); console.log('row 2 MATCH'); console.log('row 3')"`, alert: 'MATCH', notify: 'none' } }, [], ids) });
+  try {
+    await pi.ask('shell probe alert');
+    const marker = `[shell ${ids[0]}] alert: `;
+    await until(() => pi.turns.some(turn => turn.includes(marker)));
+    const alerted = pi.turns.filter(turn => turn.includes(marker));
+    assert.equal(alerted.length, 1, 'one alert, in one model request');
+    assert.match(alerted[0], /alert: \/MATCH\/ · 1 new match on line 2 · 1 so far/);
+    assert.match(alerted[0], /  1 \| row 1/, 'with the line before the match');
+    assert.match(alerted[0], /> 2 \| row 2 MATCH/);
     assert.deepEqual(pi.errors, []);
   } finally { await pi.close(); }
 });

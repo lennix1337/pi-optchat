@@ -11,7 +11,9 @@ import { memoryTools, searchTool } from './tools.ts';
 import { VIEW, type Memory } from './memory.ts';
 import { resolveModel, type ModelChoice } from './compactor.ts';
 import { cachePayload } from './cache.ts';
-import { CUT_OFF, RunHistory, isRunning, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
+import { CUT_OFF, RunHistory, isRunning, orderRuns, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
+import { ExternalRuns, SubagentRpc, type SubagentEvents } from './external-runs.ts';
+import { requestInterrupt, requestSteer, requestStop } from './external-control.ts';
 import { UsageLedger } from './usage.ts';
 import { fullChat, refreshFraction, textContent } from './transcript.ts';
 import { result } from './tools.ts';
@@ -64,6 +66,8 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   hold?: (batch: string, texts: string[]) => void;
   /** Read on every spawn, so a changed profile setting applies to the next one. Missing settings take their defaults. */
   settings?: () => Partial<Settings>;
+  /** Pi's extension event bus, used for the documented pi-subagents control RPC. */
+  events?: SubagentEvents;
   summarizeHandoff?: (run: RunInfo, messages: AgentMessage[], descendants?: HandoffEvidence[]) => Promise<string> }
 
 // Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
@@ -105,6 +109,9 @@ export function subagentCompaction(contextWindow: number, fraction: number, maxO
 export class Children {
   private readonly running = new Map<string, LiveRun>();
   readonly history: RunHistory;
+  /** Read-only pi-subagents rows for the agents panel; never mixed into native run control. */
+  readonly external: ExternalRuns;
+  private readonly rpc: SubagentRpc;
   private readonly listeners = new Set<() => void>();
   private closing = false;
   private launching = 0;
@@ -118,6 +125,8 @@ export class Children {
     private readonly report: (text: string, options?: { once?: boolean; count?: number }) => Promise<void>, private readonly warn: (text: string) => void,
     private readonly profileDirectory = memory.directory, private readonly options: Options = {}) {
     this.history = new RunHistory(profileDirectory);
+    this.external = new ExternalRuns(profileDirectory);
+    this.rpc = new SubagentRpc(options.events);
     for (const warning of this.history.warnings) warn(warning);
     for (const run of this.history.records.values()) {
       if (!run.sessionFile || !options.usage) continue;
@@ -132,18 +141,100 @@ export class Children {
   get ids() { return [...this.running.keys()]; }
   get active() { return this.completions.size > 0 || this.launching > 0 || this.settling > 0; }
   live(id: string) { return this.running.get(id); }
+  /** Native and pi-subagents rows in one tree order, for the inspector and navigation. */
+  runs() { this.external.refresh(); return orderRuns([...this.history.list(), ...this.external.snapshot()]); }
+  /** Native first, so every control path that only knows native runs keeps working unchanged. */
+  info(id: string) { return this.history.records.get(id) ?? this.external.get(id); }
+  /** Native and external descendants, for generic inspector actions. */
+  descendants(id: string) {
+    const all = this.runs(), result: RunInfo[] = [], visited = new Set([id]);
+    const visit = (parent: string) => {
+      for (const run of all) {
+        if (run.parentId !== parent || visited.has(run.id)) continue;
+        visited.add(run.id); result.push(run); visit(run.id);
+      }
+    };
+    visit(id);
+    return result;
+  }
   collectUsage() {
     for (const live of this.running.values()) this.options.usage?.backfill(live.session.sessionManager.getEntries(), live.info.parentSession, 'subagent', live.info.id);
   }
   messages(id: string): AgentMessage[] {
     const live = this.running.get(id);
     if (live) return [...live.session.messages, ...(live.streaming ? [live.streaming] : [])];
-    const file = this.history.records.get(id)?.sessionFile;
+    const file = this.info(id)?.sessionFile;
     return file ? sessionMessages(file) : [];
+  }
+  /** Opens a finished or external run's transcript; external runs are visible only to the main agent. */
+  private externalRun(id: string) { return this.history.records.has(id) ? undefined : this.external.get(id); }
+  /** True when a run belongs to the Pi session this profile is in. */
+  ownsRun(run: RunInfo | undefined) {
+    if (!run?.parentSession || !this.options.parentSession) return true;
+    return run.parentSession === this.options.parentSession;
+  }
+  /** Hides a pi-subagents row from this profile's panel without touching pi-subagents' artifacts. */
+  hideExternal(id: string) {
+    const run = this.externalRun(id);
+    if (!run) throw new Error(`No pi-subagents run ${id}.`);
+    if (!this.external.hide(id)) throw new Error(`No pi-subagents run ${id}.`);
+    this.changed();
+  }
+  /**
+   * Stops an async run through the runner's own control inbox, which works from
+   * any session: the request is a file the runner watches, not a call into the
+   * session that started it.
+   */
+  async stopExternal(id: string) {
+    const run = this.externalRun(id);
+    if (!run) throw new Error(`No pi-subagents run ${id}.`);
+    if (run.externalKind === 'live-foreground') throw new Error(`${id} is a foreground run: only the Pi session running it can pause it.`);
+    const target = this.external.controlTarget(id);
+    if (!target?.dir) throw new Error(`${id} has no pi-subagents control inbox.`);
+    if (!['running', 'waiting', 'stopping', 'paused'].includes(run.state)) throw new Error(`${id} is ${run.state}; only a live pi-subagents run can be stopped.`);
+    const file = requestStop(target.dir, { source: 'pi-optchat', reason: 'Stopped from OptChat', ...(target.stepIndex !== undefined ? { stepIndex: target.stepIndex } : {}) });
+    this.external.refresh(true); this.changed();
+    return file;
+  }
+  /** Steers a live run: async runs through their control inbox, foreground runs through pi-subagents' rpc. */
+  async steerExternal(id: string, message: string) {
+    const run = this.externalRun(id), text = message.trim();
+    if (!run) throw new Error(`No pi-subagents run ${id}.`);
+    if (!text) throw new Error('Message is empty.');
+    if (run.state !== 'running') throw new Error(`${id} is ${run.state}; only a running pi-subagents run can be steered.`);
+    const target = this.external.controlTarget(id);
+    if (!target) throw new Error(`${id} has no pi-subagents control channel.`);
+    if (run.externalKind === 'live-foreground') {
+      const reply = await this.rpc.call('steer', { id: target.runId, message: text, mode: 'steer' });
+      this.external.refresh(true); this.changed();
+      return reply;
+    }
+    if (!target.dir) throw new Error(`${id} has no pi-subagents control inbox.`);
+    const file = requestSteer(target.dir, text, { source: 'pi-optchat', mode: 'steer', ...(target.stepIndex !== undefined ? { stepIndex: target.stepIndex } : {}) });
+    this.external.refresh(true); this.changed();
+    return file;
+  }
+  /** Interrupts (pauses) a live run without ending it. */
+  async interruptExternal(id: string) {
+    const run = this.externalRun(id);
+    if (!run) throw new Error(`No pi-subagents run ${id}.`);
+    const target = this.external.controlTarget(id);
+    if (!target) throw new Error(`${id} has no pi-subagents control channel.`);
+    if (run.state !== 'running' && run.state !== 'waiting') throw new Error(`${id} is not running.`);
+    if (run.externalKind === 'live-foreground') {
+      const reply = await this.rpc.call('interrupt', { id: target.runId });
+      this.external.refresh(true); this.changed();
+      return reply;
+    }
+    if (!target.dir) throw new Error(`${id} has no pi-subagents control inbox.`);
+    const file = requestInterrupt(target.dir, { source: 'pi-optchat', reason: 'Interrupted from OptChat' });
+    this.external.refresh(true); this.changed();
+    return file;
   }
   /** A run's messages for zoom, live or finished; undefined for no such run. A subagent `reader` sees only its own descendants, as with tell. */
   transcript(id: string, reader?: string) {
-    const known = reader ? this.history.descendants(reader).some(run => run.id === id) : this.running.has(id) || this.history.records.has(id);
+    const known = reader ? this.history.descendants(reader).some(run => run.id === id)
+      : this.running.has(id) || this.history.records.has(id) || this.external.get(id) !== undefined;
     if (!known) return undefined;
     const live = this.running.get(id);
     if (!live) return this.messages(id);
@@ -520,6 +611,11 @@ export class Children {
   /** `caller` is the agent sending a manager message: undefined for the main agent, else the parent subagent's ID. */
   async tell(id: string, message: string, source: 'manager' | 'user' = 'manager', caller?: string) {
     if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
+    if (this.externalRun(id)) {
+      if (source !== 'user') throw new Error(`${id} belongs to pi-subagents; only the user can steer it from this panel.`);
+      await this.steerExternal(id, message);
+      return 'Message sent to pi-subagents.';
+    }
     const live = this.running.get(id);
     if (!live && source === 'manager' && this.history.records.has(id)) return this.track(this.resume(id, message, caller));
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) throw new Error(`${id} is finishing. Its report will arrive on its own${live.info.connected || source === 'user' ? '' : '; tell it again after that to resume it'}.`);
@@ -542,6 +638,7 @@ export class Children {
    * with none, it pauses until the next message (from the user or a tell). Only stop() ends a run.
    */
   async interrupt(id: string): Promise<'continued' | 'paused'> {
+    if (this.externalRun(id)) { await this.interruptExternal(id); return 'paused'; }
     const live = this.running.get(id);
     if (live?.info.state === 'paused') return 'paused';
     if (!live || !['running', 'waiting'].includes(live.info.state)) throw new Error(`No running subagent ${id}.`);
@@ -584,7 +681,9 @@ export class Children {
   }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
   private async resume(id: string, message: string, caller: string | undefined) {
-    const run = this.history.records.get(id)!, text = message.trim();
+    const run = this.history.records.get(id);
+    if (!run) throw new Error(`${id} belongs to pi-subagents and cannot be resumed by OptChat's runtime. Resume it with the subagent tool.`);
+    const text = message.trim();
     if (!text) throw new Error('Message is empty.');
     if (run.connected) throw new Error(`${id} was a connected conversation with the user. It has ended and its handoff was delivered, so it cannot be resumed. Spawn a new subagent instead.`);
     if (!['completed', 'failed', 'stopped', 'interrupted'].includes(run.state) || this.resuming.has(id)) throw new Error(`${id} is still finishing. Its report will arrive on its own.`);
@@ -713,6 +812,7 @@ export class Children {
   }
   /** Ends a run and its descendants; `cause` is said in its report (the user's Ctrl+X by default). */
   async stop(id: string, cause: StopCause = 'user') {
+    if (this.externalRun(id)) { await this.stopExternal(id); return; }
     const live = this.running.get(id);
     if (!live) throw new Error(`No running subagent ${id}.`);
     const descendants: LiveRun[] = [];
@@ -727,8 +827,13 @@ export class Children {
     }
     await Promise.allSettled(stopping.map(run => run.session.abort()));
   }
+  /** Only native runs are deleted here; a pi-subagents run is hidden from the panel instead. */
+  private assertNative(id: string) {
+    if (this.externalRun(id)) throw new Error(`${id} belongs to pi-subagents; hide it from the panel instead of deleting its artifacts.`);
+  }
   /** The user's delete: stops the run and its descendants if they still work, lets their reports reach their parents, then deletes their files. */
   async remove(id: string) {
+    this.assertNative(id);
     if (!this.history.records.has(id)) throw new Error(`No subagent ${id}.`);
     if (this.deleting.has(id)) throw new Error(`${id} is already being deleted.`);
     // A run that is live while being deleted reports its own deletion, even one a tell was resuming; a finished one has nothing left to say, so memory is told here.

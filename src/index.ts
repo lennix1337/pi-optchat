@@ -33,7 +33,7 @@ import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
-import { ShellJobs, registerShells } from './shells.ts';
+import { ShellJobs, registerShells, runningShells, shellReport } from './shells.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -73,7 +73,7 @@ const brand = version ? `OptChat v${version}` : 'OptChat';
 
 export default function optchat(pi: ExtensionAPI) {
   const shells = new ShellJobs();
-  registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); });
+  registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
   let active: Active | undefined;
   registerPerformance(pi, () => active?.metrics);
   const recoveryIncidents = new Map<string, string>();
@@ -201,6 +201,7 @@ export default function optchat(pi: ExtensionAPI) {
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
     await shells.close();
+    shells.setReporter(undefined);
     if (!active) return;
     const old = active;
     try {
@@ -262,7 +263,7 @@ export default function optchat(pi: ExtensionAPI) {
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
-        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells,
+        deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
@@ -281,6 +282,17 @@ export default function optchat(pi: ExtensionAPI) {
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
+      // A background shell's end (shellReport) and its pattern alerts (alertReport) reach the main agent as messages. Closing the profile stops shells silently.
+      shells.setReporter({
+        finished: job => {
+          if (stopping || active?.memory !== memory) return;
+          deliverReport(shellReport(job), { once: true }).catch(error => ctx.ui.notify(`Could not report shell ${job.id}: ${errorText(error)}`, 'error'));
+        },
+        alerted: (job, text) => {
+          if (stopping || active?.memory !== memory) return;
+          deliverReport(text).catch(error => ctx.ui.notify(`Could not report an alert from shell ${job.id}: ${errorText(error)}`, 'error'));
+        },
+      });
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
@@ -524,7 +536,7 @@ export default function optchat(pi: ExtensionAPI) {
       system.state = [system.state, a.operations.context(), operational.entries.length ? renderOperationalContext(operational) : ''].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
-      const statusLine = atWork(a.children.working);
+      const statusLine = atWork(a.children.working, runningShells(shells));
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);

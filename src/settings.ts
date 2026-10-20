@@ -44,27 +44,41 @@ export const SETTINGS = {
   focusedSubagents: { kind: 'toggle', label: 'Focused child history', default: false,
     description: 'Opt-in: new task agents receive at most 16 KiB of whole history lines, with older history available through zoom. Task, installed instructions and operational state remain exact; pass task-specific constraints explicitly. Connected conversations retain the full view.',
     applies: 'Applies to the next spawn.' },
+  shellNotify: { kind: 'choice', label: 'Shell notices', default: 'end', options: { end: 'every end', failure: 'failures only', none: 'never' },
+    description: 'What the main agent hears when a managed background shell ends: every end, only a failure (exit code or error), or never. A shell_start call can set its own notify. Alerts on a pattern (shell_start alert) are separate.',
+    applies: 'Applies to shells started after this.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
-export type Settings = { -readonly [K in SettingKey]: (typeof SETTINGS)[K]['default'] extends boolean ? boolean : number };
+export type ShellNotify = keyof (typeof SETTINGS)['shellNotify']['options'];
+export type Settings = { -readonly [K in SettingKey]: (typeof SETTINGS)[K] extends { kind: 'choice'; options: infer O } ? keyof O
+  : (typeof SETTINGS)[K]['default'] extends boolean ? boolean : number };
 export type NumberKey = { [K in SettingKey]: Settings[K] extends number ? K : never }[SettingKey];
 export const SETTING_KEYS = Object.keys(SETTINGS) as SettingKey[];
-export const isNumberKey = (key: SettingKey): key is NumberKey => SETTINGS[key].kind !== 'toggle';
+export const isNumberKey = (key: SettingKey): key is NumberKey => SETTINGS[key].kind === 'number' || SETTINGS[key].kind === 'percent';
 /** A percent setting is saved as a fraction of 1 and shown as a percentage. */
 export const percent = (fraction: number) => `${Math.round(fraction * 1000) / 10}%`;
 
+type Spec = (typeof SETTINGS)[SettingKey];
+const choiceProblem = (spec: Extract<Spec, { kind: 'choice' }>, value: unknown) => typeof value === 'string' && Object.hasOwn(spec.options, value) ? undefined
+  : `${spec.label} must be ${Object.keys(spec.options).join(', ')}.`;
+const toggleProblem = (spec: Extract<Spec, { kind: 'toggle' }>, value: unknown) => typeof value === 'boolean' ? undefined : `${spec.label} must be true or false.`;
+const percentProblem = (spec: Extract<Spec, { kind: 'percent' }>, value: unknown) => typeof value === 'number' && value >= spec.min && value <= spec.max ? undefined
+  : `${spec.label} must be from ${percent(spec.min)} to ${percent(spec.max)}.`;
+const numberProblem = (spec: Extract<Spec, { kind: 'number' }>, value: unknown) => {
+  const { label, min, max = Infinity }: { label: string; min: number; max?: number } = spec;
+  return Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max ? undefined
+    : `${label} must be a whole number ${max === Infinity ? `of ${min} or more` : `from ${min} to ${max}`}.`;
+};
 /** Why a value can't be used, or undefined if it can. Numbers are whole and within their range. */
 export function invalid(key: SettingKey, value: unknown) {
-  if (isNumberKey(key)) {
-    const spec = SETTINGS[key];
-    if (spec.kind === 'percent') return typeof value === 'number' && value >= spec.min && value <= spec.max ? undefined
-      : `${spec.label} must be from ${percent(spec.min)} to ${percent(spec.max)}.`;
-    const { label, min, max = Infinity }: { label: string; min: number; max?: number } = spec;
-    return Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max ? undefined
-      : `${label} must be a whole number ${max === Infinity ? `of ${min} or more` : `from ${min} to ${max}`}.`;
+  const spec = SETTINGS[key];
+  switch (spec.kind) {
+    case 'choice': return choiceProblem(spec, value);
+    case 'toggle': return toggleProblem(spec, value);
+    case 'percent': return percentProblem(spec, value);
+    case 'number': return numberProblem(spec, value);
   }
-  return typeof value === 'boolean' ? undefined : `${SETTINGS[key].label} must be true or false.`;
 }
 
 /** Missing keys take their defaults, so config files written before a setting existed keep working. */

@@ -262,7 +262,7 @@ test('Shells panel shows output safely, stays within narrow terminals and confir
 
 test('shell count remains visible on narrow footers and updates immediately', () => {
   const shells = new ShellJobs(); let widget: Component | undefined, redraws = 0;
-  const children = { history: { list: () => [] }, subscribe: () => () => {} } as unknown as Children;
+  const children = { history: { list: () => [] }, runs: () => [], subscribe: () => () => {} } as unknown as Children;
   const memory = { progress: () => ({ done: 0, total: 0, retryIn: undefined }), onChange: () => () => {} };
   const ctx = { ui: { getEditorComponent: () => () => undefined, setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => Component) => {
     widget = factory?.({ requestRender() { redraws++; } }, { fg: (_tone: string, text: string) => text });

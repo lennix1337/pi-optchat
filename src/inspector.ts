@@ -3,7 +3,8 @@ import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Children } from './agents.ts';
 import type { ShellJobs } from './shells.ts';
 import type { Memory } from './memory.ts';
-import { isActiveRun, isRunning } from './runs.ts';
+import { isActiveRun, isRunning, type RunInfo } from './runs.ts';
+import { externalAction } from './external-runs.ts';
 import { agentModel } from './agent-model.ts';
 import type { Usage } from '@earendil-works/pi-ai';
 import { ranges, summarizeUsage, type UsageLedger, type UsageRange, type UsageRole } from './usage.ts';
@@ -62,6 +63,25 @@ interface Options {
 }
 
 /** UI projection only: inspecting never injects child transcripts into parent memory. */
+/** One panel row: the task, the status, the model and the duration of a run. */
+function panelRow(run: RunInfo, children: Children) {
+  const external = run.source === 'pi-subagents';
+  const live = children.live(run.id), tools = live ? [...live.tools.values()].map(t => t.name).join(', ') : '';
+  const queued = run.guidance.filter(g => g.state === 'queued').length, undelivered = run.guidance.filter(g => g.state === 'undelivered').length;
+  const guidance = [queued && `${queued} message${queued === 1 ? '' : 's'} queued`, undelivered && `${undelivered} message${undelivered === 1 ? '' : 's'} not delivered`].filter(Boolean).join(' · ');
+  const activity = external ? (run.state === 'running' ? 'running via pi-subagents' : run.state)
+    : run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live?.streaming ? 'responding' : 'working');
+  const status = live ? `${guidance ? `${guidance} · ` : ''}${activity} · updated ${elapsed(Date.now() - live.updated)} ago`
+    : external ? `π ${activity}${guidance ? ` · ${guidance}` : ''}` : `${run.state}${guidance ? ` · ${guidance}` : ''}`;
+  return {
+    run,
+    task: `${'  '.repeat(run.depth - 1)}${external ? 'π ' : run.parentId ? '↳ ' : ''}${oneLine(run.task)}`,
+    status,
+    model: agentModel(run),
+    time: run.durationUnknown ? '—' : elapsed((run.ended ?? Date.now()) - run.started),
+  };
+}
+
 export class Inspector implements Component, Focusable {
   focused = true;
   private page: InspectorPage;
@@ -81,7 +101,7 @@ export class Inspector implements Component, Focusable {
   private readonly timer: ReturnType<typeof setInterval>;
   constructor(private readonly options: Options) {
     this.page = options.page;
-    this.selected = options.children.history.list()[0]?.id;
+    this.selected = options.children.runs()[0]?.id;
     this.unsubscribe = [options.children.subscribe(() => options.redraw()), options.memory.onChange(() => options.redraw()), ...(options.shells ? [options.shells.subscribe(() => options.redraw())] : [])];
     this.timer = setInterval(() => { options.refreshUsage?.(); options.redraw(); }, 1000); this.timer.unref();
     options.signal?.addEventListener('abort', this.abort, { once: true });
@@ -96,7 +116,7 @@ export class Inspector implements Component, Focusable {
   /** Body rows left after the rules, title, hint and spacing; the rest of the screen keeps the footer visible. */
   private get height() { return Math.max(1, Math.floor(this.options.rows() * 0.8) - 6 - (this.hintLines - 1)); }
   private select(delta: number) {
-    const list = this.options.children.history.list();
+    const list = this.options.children.runs();
     const index = Math.max(0, list.findIndex(r => r.id === this.selected));
     this.selected = list[Math.max(0, Math.min(list.length - 1, index + delta))]?.id;
   }
@@ -134,13 +154,46 @@ export class Inspector implements Component, Focusable {
     }
     this.options.redraw();
   }
+  /** What the panel's destructive key does to a pi-subagents row. */
+  private externalAction(run: RunInfo) {
+    return externalAction(run, this.options.children.ownsRun(run));
+  }
   /** Once the run is gone, the cursor moves to the next row that is not, else the one above. */
   private remove(id: string) {
-    const { children } = this.options, list = children.history.list(), doomed = new Set([id, ...children.history.descendants(id).map(r => r.id)]);
+    const { children } = this.options, list = children.runs(), run = children.info(id);
+    const doomed = new Set([id, ...(run?.source === 'pi-subagents' ? [] : children.descendants(id).map(r => r.id))]);
     const index = list.findIndex(r => r.id === id), next = list.slice(index).find(r => !doomed.has(r.id)) ?? list.slice(0, index).findLast(r => !doomed.has(r.id));
-    children.remove(id).then(() => { if (!children.history.records.has(this.selected ?? '')) this.selected = next?.id; },
+    if (run?.source === 'pi-subagents') { this.removeExternal(id, run, next); return; }
+    children.remove(id).then(() => { if (!children.info(this.selected ?? '')) this.selected = next?.id; },
       (error: unknown) => { this.notice = `Not deleted: ${error instanceof Error ? error.message : String(error)}`; })
       .finally(() => { if (!this.ended) this.options.redraw(); });
+  }
+  /** A pi-subagents row: stop it, pause it, or hide it, never delete what pi-subagents owns. */
+  private removeExternal(id: string, run: RunInfo, next?: RunInfo) {
+    const { children } = this.options, action = this.externalAction(run);
+    if (action === 'stop') {
+      children.stopExternal(id).then(() => { this.notice = 'Stop requested for this pi-subagents run; it stays visible until pi-subagents reports the outcome.'; },
+        (error: unknown) => { this.notice = `Not stopped: ${error instanceof Error ? error.message : String(error)}`; })
+        .finally(() => { if (!this.ended) this.options.redraw(); });
+      return;
+    }
+    try {
+      if (action === 'pause') {
+        children.interruptExternal(id).then(() => {
+          this.notice = 'Paused and hidden; the run waits for a message in the Pi session that started it.';
+          children.hideExternal(id);
+          if (!children.info(this.selected ?? '')) this.selected = next?.id;
+        }, (error: unknown) => { this.notice = `Not paused: ${error instanceof Error ? error.message : String(error)}`; })
+          .finally(() => { if (!this.ended) this.options.redraw(); });
+        return;
+      }
+      children.hideExternal(id);
+      this.notice = run.externalKind === 'live-foreground'
+        ? 'Hidden; this run keeps working in the Pi session that started it.'
+        : 'Hidden from this panel; pi-subagents keeps the run and its artifacts.';
+      if (!children.info(this.selected ?? '')) this.selected = next?.id;
+    } catch (error) { this.notice = `Not hidden: ${error instanceof Error ? error.message : String(error)}`; }
+    this.options.redraw();
   }
   private scrollInput(data: string) {
     const delta = matchesKey(data, 'up') ? -1 : matchesKey(data, 'down') ? 1 : matchesKey(data, 'pageUp') ? -this.height : matchesKey(data, 'pageDown') ? this.height : 0;
@@ -231,7 +284,7 @@ export class Inspector implements Component, Focusable {
   private activityLines(width: number) {
     const { memory, children, color } = this.options;
     const { done, total, retryIn } = memory.progress();
-    const list = children.history.list(), agents = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
+    const list = children.runs(), agents = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
     const filled = total ? Math.floor(10 * done / total) : 0;
     const lines = [`${color('muted', 'Memory')} · ${count(memory.root.length)} messages · view ${Math.round(memory.size / 1000)} KB / ${Math.round(memory.budget / 1000)} KB`,
       total ? `Catching up · ${count(done)} of ${count(total)} summaries  ${color('accent', '█'.repeat(filled))}${color('dim', '░'.repeat(10 - filled))}` : color('dim', 'Settled')];
@@ -254,20 +307,13 @@ export class Inspector implements Component, Focusable {
       info = this.page === 'usage' || lines.length > this.height ? `${this.scroll + 1}–${Math.min(this.scroll + this.height, lines.length)} / ${lines.length}` : '';
       hint = this.page === 'usage' ? '←→ period · ↑↓ scroll · Tab activity · Esc close' : '↑↓ scroll · Tab shells · Esc close';
     } else {
-      const list = children.history.list();
+      const list = children.runs();
       if (!this.selected) this.selected = list[0]?.id;
       const cursor = Math.max(0, list.findIndex(r => r.id === this.selected));
       this.top = Math.max(0, Math.min(this.top, list.length - this.height));
       if (cursor < this.top) this.top = cursor;
       if (cursor >= this.top + this.height) this.top = cursor - this.height + 1;
-      const rows = list.slice(this.top, this.top + this.height).map(run => {
-        const live = children.live(run.id), tools = live ? [...live.tools.values()].map(t => t.name).join(', ') : '';
-        const queued = run.guidance.filter(g => g.state === 'queued').length, undelivered = run.guidance.filter(g => g.state === 'undelivered').length;
-        const guidance = [queued && `${queued} message${queued === 1 ? '' : 's'} queued`, undelivered && `${undelivered} message${undelivered === 1 ? '' : 's'} not delivered`].filter(Boolean).join(' · ');
-        const activity = run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live?.streaming ? 'responding' : 'working');
-        const status = live ? `${guidance ? `${guidance} · ` : ''}${activity} · updated ${elapsed(Date.now() - live.updated)} ago` : `${run.state}${guidance ? ` · ${guidance}` : ''}`;
-        return { run, task: `${'  '.repeat(run.depth - 1)}${run.parentId ? '↳ ' : ''}${oneLine(run.task)}`, status, model: agentModel(run), time: elapsed((run.ended ?? Date.now()) - run.started) };
-      });
+      const rows = list.slice(this.top, this.top + this.height).map(run => panelRow(run, children));
       // Task · actual model(thinking) · status · duration. Hide metadata before losing the task on narrow screens.
       const timeWidth = Math.max(0, ...rows.map(r => r.time.length));
       const modelWidth = inner >= 64 ? Math.min(36, Math.floor(inner * 0.3), Math.max(0, ...rows.map(r => visibleWidth(r.model)))) : 0;
@@ -281,9 +327,21 @@ export class Inspector implements Component, Focusable {
         return selected ? color('accent', `→ ${name}  ${meta}`) : `  ${name}  ${color('muted', meta)}`;
       });
       if (!body.length) body.push(color('muted', 'No agents yet. Ask the main agent to delegate a task.'));
-      info = `${list.filter(isActiveRun).length} active · ${list.length} saved${list.length ? ` · ${cursor + 1}/${list.length}` : ''}`;
-      hint = this.confirmDelete ? `Press d again to ${children.live(this.confirmDelete) ? 'stop and delete' : 'delete'} this agent and the agents it started`
-        : this.notice || '↑↓ select · Enter open · m model · d delete · Tab usage · Esc close';
+      const selectedRun = list.find(r => r.id === this.selected), piRuns = list.filter(r => r.source === 'pi-subagents').length;
+      info = `${list.filter(isActiveRun).length} active · ${list.length} saved${piRuns ? ` · ${piRuns} π` : ''}${list.length ? ` · ${cursor + 1}/${list.length}` : ''}`;
+      hint = this.confirmDelete ? (() => {
+        const target = list.find(r => r.id === this.confirmDelete);
+        if (target?.source !== 'pi-subagents') {
+          return `Press d again to ${children.live(this.confirmDelete) ? 'stop and delete' : 'delete'} this agent and the agents it started`;
+        }
+        const action = this.externalAction(target);
+        return action === 'stop' ? 'Press d again to stop this pi-subagents run'
+          : action === 'pause' ? 'Press d again to pause and hide this pi-subagents foreground run'
+          : 'Press d again to hide this π run from the panel; its artifacts stay';
+      })()
+        : this.notice || (selectedRun?.source === 'pi-subagents'
+          ? '↑↓ select · Enter open · m model · d stop/hide · π = pi-subagents · Tab usage · Esc close'
+          : '↑↓ select · Enter open · m model · d delete · Tab usage · Esc close');
     }
     title = fit(title, Math.max(1, inner - visibleWidth(info) - 2));
     const tone = this.page !== 'agents' ? 'dim' : this.confirmDelete ? 'warning' : this.notice ? 'error' : 'dim';

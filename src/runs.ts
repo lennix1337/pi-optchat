@@ -21,6 +21,17 @@ export interface RunInfo {
   cutOff?: boolean;
   /** `from` is missing on runs saved before senders were recorded. */
   guidance: { text: string; date: number; state: 'queued' | 'delivered' | 'undelivered'; from?: 'user' | 'manager' }[];
+  /** Set on rows projected from another runtime (currently pi-subagents); never persisted by RunHistory. */
+  source?: 'pi-subagents';
+  agent?: string;
+  externalKind?: 'async' | 'foreground' | 'live-foreground';
+  externalRunId?: string;
+  /** The step of a multi-step run this row shows, counted by position like the runner counts them. */
+  externalStepIndex?: number;
+  /** The run directory of an async run, where its control inbox lives. */
+  externalDir?: string;
+  /** Foreground pi-subagents history has no start time; show a dash rather than a fabricated duration. */
+  durationUnknown?: boolean;
 }
 const moves: Record<RunState, readonly RunState[]> = {
   running: ['waiting', 'paused', 'stopping', 'completed', 'failed', 'stopped', 'interrupted'],
@@ -35,9 +46,12 @@ export function transition(run: RunInfo, to: RunState) {
   if (run.state !== to && !moves[run.state].includes(to)) return false;
   run.state = to; return true;
 }
-export const isActiveRun = (run: RunInfo) => run.state === 'running' || run.state === 'waiting' || run.state === 'stopping' || run.state === 'paused';
+const activeStates: readonly RunState[] = ['running', 'waiting', 'stopping', 'paused'];
+export const isActiveRun = (run: RunInfo) => activeStates.includes(run.state);
 /** Live and working: a paused run is neither running nor finished. */
 export const isRunning = (run: RunInfo) => isActiveRun(run) && run.state !== 'paused';
+/** A run that has ended: not live, not waiting for the user. */
+export const isTerminalState = (state: RunState) => !activeStates.includes(state) && state !== 'paused';
 function isRun(value: unknown): value is RunInfo {
   return record(value) && ['id', 'task', 'cwd', 'model', 'thinking', 'parentSession'].every(k => typeof value[k] === 'string')
     && typeof value.id === 'string' && /^[a-zA-Z0-9-]+$/.test(value.id)
@@ -103,11 +117,13 @@ export class RunHistory {
     }
   }
   save(run: RunInfo) {
+    if (run.source) throw new Error(`${run.id} belongs to ${run.source}, not this profile; OptChat never writes its metadata.`);
     atomicWrite(join(this.directory, `${run.id}.optchat.json`), JSON.stringify(run));
     this.records.set(run.id, run);
   }
   /** The transcript goes first: left behind, it would come back at the next start as a historical child. */
   remove(id: string) {
+    if (this.records.get(id)?.source) throw new Error(`${id} belongs to another runtime and cannot be deleted here.`);
     const file = this.records.get(id)?.sessionFile;
     if (file) rmSync(file, { force: true });
     rmSync(join(this.directory, `${id}.optchat.json`), { force: true });
@@ -125,19 +141,30 @@ export class RunHistory {
     return result;
   }
   list() {
-    const sorted = [...this.records.values()].sort((a, b) => Number(isActiveRun(b)) - Number(isActiveRun(a)) || b.started - a.started || a.id.localeCompare(b.id));
-    const descendants = new Map<string, RunInfo[]>();
-    for (const run of sorted) if (run.parentId) {
-      const siblings = descendants.get(run.parentId) ?? []; siblings.push(run); descendants.set(run.parentId, siblings);
-    }
-    const result: RunInfo[] = [], visited = new Set<string>();
-    const visit = (run: RunInfo) => {
-      if (visited.has(run.id)) return;
-      visited.add(run.id); result.push(run);
-      for (const child of descendants.get(run.id) ?? []) visit(child);
-    };
-    for (const run of sorted) if (!run.parentId || !this.records.has(run.parentId)) visit(run);
-    for (const run of sorted) visit(run); // Keep even malformed/orphaned old trees visible.
-    return result;
+    return orderRuns(this.records.values());
   }
+}
+
+/**
+ * The order the panel shows runs in: live first, newest first, and every parent
+ * right before its children. The first record of an id wins, so a native run is
+ * never replaced by a row projected from another runtime.
+ */
+export function orderRuns(records: Iterable<RunInfo>): RunInfo[] {
+  const unique = new Map<string, RunInfo>();
+  for (const run of records) if (!unique.has(run.id)) unique.set(run.id, run);
+  const sorted = [...unique.values()].sort((a, b) => Number(isActiveRun(b)) - Number(isActiveRun(a)) || b.started - a.started || a.id.localeCompare(b.id));
+  const descendants = new Map<string, RunInfo[]>();
+  for (const run of sorted) if (run.parentId) {
+    const siblings = descendants.get(run.parentId) ?? []; siblings.push(run); descendants.set(run.parentId, siblings);
+  }
+  const result: RunInfo[] = [], visited = new Set<string>();
+  const visit = (run: RunInfo) => {
+    if (visited.has(run.id)) return;
+    visited.add(run.id); result.push(run);
+    for (const child of descendants.get(run.id) ?? []) visit(child);
+  };
+  for (const run of sorted) if (!run.parentId || !unique.has(run.parentId)) visit(run);
+  for (const run of sorted) visit(run); // Keep even malformed/orphaned old trees visible.
+  return result;
 }

@@ -70,8 +70,9 @@ further along than it was, and never narrate the process of summarizing
 ("output unseen", "read-only", "unconfirmed") unless that uncertainty is itself
 a fact OptChat must know. If told the line is too long, shorten it. Non-ASCII
 characters cost 2-4 bytes.`;
-/** Labels the line naming running agents, last in every main-agent request while any run (src/transcript.ts); never stored. */
-export const AT_WORK = '[OptChat status] Agents at work now: ';
+/** Labels OptChat's status line, last in every main-agent request while agents or background shells run (src/transcript.ts); never stored. */
+export const STATUS_NOTE = '[OptChat status] ';
+export const AT_WORK = `${STATUS_NOTE}Agents at work now: `;
 export const MASTER = `You are OptChat, an AI agent that works for one user in a single chat that
 never ends. Each turn starts with the view below, followed by the user's new
 message.

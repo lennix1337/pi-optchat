@@ -4,7 +4,7 @@ import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { getCurrentSystemMessage, type SystemMessage, type UserMessage } from '@earendil-works/pi-ai';
 import { CAP, PAGE, cap, end, flat, isView, mostDue, start, type Memory, type Part } from './memory.ts';
 import { estimatedContextTokens } from './run-context.ts';
-import { AT_WORK } from './prompts.ts';
+import { STATUS_NOTE } from './prompts.ts';
 import { record } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
 import { imageRef, isImage } from './images.ts';
@@ -166,15 +166,20 @@ export function runTranscript(messages: readonly AgentMessage[]) {
   }).join('\n');
 }
 
-/** The status line naming running agents by id and the first words of their task; none while nothing runs. */
-export function atWork(runs: readonly { id: string; task: string }[]) {
-  if (!runs.length) return undefined;
-  return AT_WORK + runs.map(({ id, task }) => {
-    const words = flat(task).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
+/** The status line naming running agents by id and the first words of their task, and running background shells by id and command; none while nothing runs. */
+export function atWork(runs: readonly { id: string; task: string }[], shells: readonly { id: string; command: string }[] = []) {
+  if (!runs.length && !shells.length) return undefined;
+  const brief = (text: string) => {
+    const words = flat(text).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
     // Six words, but never more than 60 characters: a task can be one long word.
     const preview = [...start].slice(0, 60).join('');
-    return `${id} "${preview}${words.length > 6 || preview.length < start.length ? '…' : ''}"`;
-  }).join(', ') + '.';
+    return `"${preview}${words.length > 6 || preview.length < start.length ? '…' : ''}"`;
+  };
+  const parts = [
+    ...runs.length ? [`Agents at work now: ${runs.map(({ id, task }) => `${id} ${brief(task)}`).join(', ')}.`] : [],
+    ...shells.length ? [`Shells running now: ${shells.map(({ id, command }) => `${id} ${brief(command)}`).join(', ')}.`] : [],
+  ];
+  return STATUS_NOTE + parts.join(' ');
 }
 
 /** Keep one completed exchange plus the current run; all other history comes from the view.

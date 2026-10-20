@@ -53,7 +53,7 @@ export function mountNavigation(ctx: ExtensionContext, children: Children, memor
       invalidate() {},
       render(width: number) {
         if (inspectorShowing()) return []; // The open panel replaces the editor and this bar.
-        const list = children.history.list(), running = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
+        const list = children.runs(), running = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
         const label = (page: InspectorPage, text: string) => navigation.selected === page ? theme.fg('accent', `› ${text}`) : theme.fg('muted', text);
         const shellCount = shells?.list().filter(j => j.state === 'running' || j.state === 'stopping').length ?? 0;
         const shellLabel = shells ? `   ${shellCount ? theme.fg('accent', '● ') : ''}${label('shells', `Shells: ${shellCount} running`)}` : '';
@@ -70,7 +70,10 @@ export function mountNavigation(ctx: ExtensionContext, children: Children, memor
     };
   }, { placement: 'belowEditor' });
   const unsubscribe = [children.subscribe(() => redraw()), memory.onChange(() => redraw()), ...(shells ? [shells.subscribe(() => redraw())] : [])];
+  // pi-subagents rows live in files, not in this session: a slow tick keeps their counts and states current.
+  const timer = setInterval(() => redraw(), 2000); timer.unref();
   return () => {
+    clearInterval(timer);
     unsubscribe.forEach(stop => stop()); ctx.ui.setWidget('optchat-agents', undefined);
     if (!previous && ctx.ui.getEditorComponent() === factory) ctx.ui.setEditorComponent(undefined);
   };

@@ -6,8 +6,9 @@ import {
 import { Editor, Spacer, compositeTuiLine, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Children } from './agents.ts';
-import type { RunInfo } from './runs.ts';
+import { isActiveRun, type RunInfo } from './runs.ts';
 import { textContent } from './transcript.ts';
+import { externalAction, externalStateLine } from './external-runs.ts';
 import { record } from './cache.ts';
 import { elapsed, fit, oneLine } from './inspector.ts';
 import { agentModel } from './agent-model.ts';
@@ -177,6 +178,17 @@ const statusOf = (run: RunInfo, children: Children) => {
  * The subagent's conversation in place of the main one: same message components, one header line,
  * an input that guides the agent, and Esc back to the main chat. A UI projection only.
  */
+/** The input area: the editor for a live run, a read-only line for a finished one. */
+function inputLines(run: RunInfo | undefined, live: boolean, width: number, color: (tone: ViewTone, text: string) => string, editor: Editor, canMessage: boolean): string[] {
+  if (canMessage) return editor.render(width);
+  if (live) return [color('dim', ' Stopping…')];
+  if (!run) return [];
+  const rule = color('borderMuted', '─'.repeat(width));
+  if (run.source === 'pi-subagents') return [rule, color('dim', ` ${externalStateLine(run)}`)];
+  const state = run.state === 'completed' ? 'Finished' : `Ended (${run.state})`;
+  return [rule, color('dim', ` ${state}. ${run.parentId ? 'Its report went to the agent that started it.' : 'Its report went to the main agent.'}`)];
+}
+
 export class AgentView implements Component, Focusable {
   private readonly editor: Editor;
   private readonly transcript: TranscriptView;
@@ -185,6 +197,7 @@ export class AgentView implements Component, Focusable {
   private overflow = 0;
   private drawn = { lines: 0, width: 0 }; // Last frame, so new output doesn't move what you're reading while scrolled up.
   private saved?: AgentMessage[];
+  private savedAt = 0;
   private wasLive = false;
   private confirmStop = false;
   private notice = '';
@@ -194,7 +207,7 @@ export class AgentView implements Component, Focusable {
   private readonly timer: ReturnType<typeof setInterval>;
   constructor(private readonly options: AgentViewOptions) {
     const { children, id, tui, color } = options;
-    const run = children.history.records.get(id);
+    const run = children.info(id);
     this.transcript = new TranscriptView(tui, run?.cwd ?? process.cwd(), name => children.live(id)?.session.getToolDefinition(name));
     this.editor = new Editor(tui, { borderColor: text => color('borderMuted', text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => this.send(text);
@@ -209,9 +222,17 @@ export class AgentView implements Component, Focusable {
   private readonly close = () => { if (!this.ended) { this.dispose(); this.options.done(); } };
   dispose() { this.ended = true; clearInterval(this.timer); this.unsubscribe(); this.options.signal?.removeEventListener('abort', this.close); }
   invalidate() { this.editor.invalidate(); }
-  private get state() { return this.options.children.live(this.options.id)?.info.state ?? ''; }
-  private get canMessage() { return ['running', 'waiting', 'paused'].includes(this.state); }
+  private get run() { return this.options.children.info(this.options.id); }
+  private get external() { return this.run?.source === 'pi-subagents'; }
+  private get state() { return this.options.children.live(this.options.id)?.info.state ?? this.run?.state ?? ''; }
+  private get canMessage() { return this.external ? this.state === 'running' : ['running', 'waiting', 'paused'].includes(this.state); }
   private get canInterrupt() { return ['running', 'waiting'].includes(this.state); }
+  /** The control a pi-subagents row accepts here: stop an async run, pause a foreground child. */
+  private get externalControl(): 'stop' | 'pause' | undefined {
+    const run = this.run;
+    if (run?.source !== 'pi-subagents' || !isActiveRun(run)) return undefined;
+    return externalAction(run, true) === 'pause' ? 'pause' : 'stop';
+  }
   private scroll(lines: number) { this.back = Math.max(0, Math.min(this.overflow, this.back + lines)); }
   /** Wheel scrolling, in Pi's default fullscreen mode; in "regular" mode the terminal keeps the wheel. */
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -222,7 +243,8 @@ export class AgentView implements Component, Focusable {
   private send(text: string) {
     const message = text.trim(), { children, id } = this.options;
     if (!message) return;
-    children.tell(id, message, 'user').then(() => { this.notice = ''; }, (error: unknown) => {
+    const work = this.external ? children.steerExternal(id, message) : children.tell(id, message, 'user');
+    work.then(() => { this.notice = this.external ? 'Message sent to pi-subagents.' : ''; }, (error: unknown) => {
       this.editor.setText(text); this.notice = `Not sent: ${error instanceof Error ? error.message : String(error)}`;
     }).finally(() => { if (!this.ended) this.options.redraw(); });
   }
@@ -243,7 +265,9 @@ export class AgentView implements Component, Focusable {
       children.interrupt(id).catch((error: unknown) => { this.notice = `Could not interrupt: ${error instanceof Error ? error.message : String(error)}`; })
         .finally(() => { if (!this.ended) this.options.redraw(); });
     } else if (matchesKey(data, 'ctrl+x')) {
-      if (!children.live(id)) this.notice = 'This agent has already finished.';
+      const control = this.externalControl;
+      if (control) { if (stopping) this.control(control); else this.confirmStop = true; }
+      else if (!children.live(id)) this.notice = 'This agent has already finished.';
       else if (stopping) children.stop(id).catch((error: unknown) => { this.notice = `Could not stop: ${String(error)}`; this.options.redraw(); });
       else this.confirmStop = true;
     } else if (matchesKey(data, 'pageUp')) this.scroll(Math.max(1, this.bodyHeight - 2));
@@ -255,8 +279,10 @@ export class AgentView implements Component, Focusable {
   private messages(run: RunInfo) {
     const { children } = this.options, live = children.live(run.id);
     // Saved transcripts are read once; live ones come from memory each frame, plus one final read when the run ends.
-    if (live || this.wasLive || !this.saved) {
-      try { this.saved = children.messages(run.id); }
+    // A running pi-subagents run has no in-memory session here, so re-read its JSONL at most once a second while it grows.
+    const growing = run.source === 'pi-subagents' && isActiveRun(run) && Date.now() - this.savedAt >= 1000;
+    if (live || this.wasLive || !this.saved || growing) {
+      try { this.saved = children.messages(run.id); this.savedAt = Date.now(); }
       catch (error) { this.notice = `Transcript unavailable: ${String(error)}`; this.saved = []; }
     }
     this.wasLive = !!live;
@@ -265,24 +291,33 @@ export class AgentView implements Component, Focusable {
   private header(run: RunInfo | undefined, width: number) {
     const { color, children, id } = this.options;
     if (!run) return color('error', ` ${id} · run not found`);
-    const live = children.live(run.id);
-    const dot = live ? color('accent', '●') : run.state === 'completed' ? color('success', '✓') : run.state === 'failed' ? color('error', '✗') : color('muted', '■');
-    const right = `${statusOf(run, children)} · ${elapsed((run.ended ?? Date.now()) - run.started)} · ${agentModel(run)}`;
+    const live = children.live(run.id), external = run.source === 'pi-subagents';
+    const active = live || external && isActiveRun(run);
+    const dot = active ? color('accent', '●') : run.state === 'completed' ? color('success', '✓') : run.state === 'failed' ? color('error', '✗') : color('muted', '■');
+    const duration = run.durationUnknown ? '—' : elapsed((run.ended ?? Date.now()) - run.started);
+    const right = `${statusOf(run, children)} · ${duration} · ${agentModel(run)}${external ? ' · π' : ''}`;
     const left = ` ${dot} ${color('accent', run.id)}  `;
     const room = width - visibleWidth(left) - visibleWidth(right) - 3;
     if (room < 8) return truncateToWidth(`${left}${color('dim', right)}`, width);
     const task = fit(oneLine(run.task), room);
     return `${left}${task}${' '.repeat(Math.max(2, width - visibleWidth(left) - visibleWidth(task) - visibleWidth(right) - 1))}${color('dim', right)} `;
   }
+  /** Stops or pauses a pi-subagents run through the control path it owns. */
+  private control(control: 'stop' | 'pause') {
+    const { children, id } = this.options;
+    const action = control === 'pause' ? children.interruptExternal(id) : children.stopExternal(id);
+    action.catch((error: unknown) => { this.notice = `Could not ${control}: ${String(error)}`; this.options.redraw(); });
+  }
+  /** The input area: the editor for a live run, a read-only line for a finished one. */
+  private inputLines(run: RunInfo | undefined, live: boolean, width: number): string[] {
+    return inputLines(run, live, width, this.options.color, this.editor, this.canMessage);
+  }
   render(width: number): string[] {
     const { color, children, id, rows } = this.options;
-    const run = children.history.records.get(id), live = children.live(id);
+    const run = children.info(id), live = children.live(id);
     const height = Math.max(1, rows());
     const top = [this.header(run, width), color('borderMuted', '─'.repeat(width))];
-    let input: string[];
-    if (this.canMessage) input = this.editor.render(width);
-    else if (live) input = [color('dim', ' Stopping…')];
-    else input = run ? [color('borderMuted', '─'.repeat(width)), color('dim', ` ${run.state === 'completed' ? 'Finished' : `Ended (${run.state})`}. ${run.parentId ? 'Its report went to the agent that started it.' : 'Its report went to the main agent.'}`)] : [];
+    const input = this.inputLines(run, !!live, width);
     const pending = (run?.guidance ?? []).filter(g => g.state !== 'delivered');
     // Only the conversation gives way to the controls: at most three pending lines, then a count.
     const queued = pending.slice(-3).map(g => color(g.state === 'queued' ? 'muted' : 'warning',
@@ -299,9 +334,15 @@ export class AgentView implements Component, Focusable {
     const body = lines.slice(Math.max(0, end - this.bodyHeight), end);
     while (body.length < this.bodyHeight) body.push('');
     const editable = this.canMessage && run?.guidance.some(g => g.state === 'queued' && g.from === 'user');
+    const control = this.externalControl;
     const keys = [...this.editor.getText() ? ['Esc clear'] : ['Esc back to main', ...this.canInterrupt ? ['Ctrl+C interrupt'] : [], ...editable ? ['↑ edit queued'] : []],
-      ...live ? ['Ctrl+X stop'] : [], ...this.overflow ? [this.back ? 'PgDn newer' : 'PgUp older'] : []];
-    const hint = this.confirmStop ? color('warning', ' Press Ctrl+X again to stop this agent and the agents it started')
+      ...live || control ? [control === 'pause' ? 'Ctrl+X pause' : 'Ctrl+X stop'] : [],
+      ...run?.source === 'pi-subagents' ? ['π pi-subagents'] : [],
+      ...this.overflow ? [this.back ? 'PgDn newer' : 'PgUp older'] : []];
+    const hint = this.confirmStop ? color('warning', control === 'pause'
+      ? ' Press Ctrl+X again to pause this pi-subagents foreground run'
+      : control === 'stop' ? ' Press Ctrl+X again to stop this pi-subagents run'
+      : ' Press Ctrl+X again to stop this agent and the agents it started')
       : this.notice ? color('error', ` ${this.notice}`)
       : color('dim', ` ${keys.join(' · ')}`);
     const scrolled = this.back ? color('warning', `↑ ${this.back} lines up `) : '';

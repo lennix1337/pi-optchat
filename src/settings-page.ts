@@ -18,9 +18,12 @@ const modelValue = (theme: Theme, role: Role, choice: ModelChoice, effective = c
   return `${active}${theme.fg('dim', showModel(choice) === showModel(defaults[role])
     ? '  default' : `  default ${defaults[role].model} · ${defaults[role].thinking}`)}`;
 };
-const show = (key: SettingKey, value: number | boolean) => {
+const show = (key: SettingKey, value: number | boolean | string): string => {
   const spec = SETTINGS[key];
-  return typeof value === 'boolean' ? value ? 'on' : 'off' : spec.kind === 'percent' ? percent(value) : spec.kind === 'number' && spec.unit ? `${value} ${spec.unit}` : String(value);
+  if (spec.kind === 'choice') return spec.options[value as keyof typeof spec.options];
+  if (typeof value === 'boolean') return value ? 'on' : 'off';
+  if (typeof value === 'string') return value;
+  return spec.kind === 'percent' ? percent(value) : spec.kind === 'number' && spec.unit ? `${value} ${spec.unit}` : String(value);
 };
 
 interface Options {
@@ -183,12 +186,18 @@ export function frame(theme: Theme, title: string, profile: string | undefined, 
   return page;
 }
 
+/** What a switch or choice row cycles through: its option keys, or on and off. */
+const choices = (key: SettingKey): (boolean | string)[] => {
+  const spec = SETTINGS[key];
+  return spec.kind === 'choice' ? Object.keys(spec.options) : [true, false];
+};
 /** The page itself: Pi's settings list over this profile's config, one row per setting, saved on change. */
 export function settingsPage(theme: Theme, o: Options, close: () => void, redraw = () => {}) {
   const { config } = o;
   const notice = new Text('', 2, 0);
   const marker = (same: boolean, fallback: string) => theme.fg('dim', same ? '  default' : `  default ${fallback}`);
-  const value = (key: SettingKey, current: number | boolean) => `${show(key, current)}${marker(current === SETTINGS[key].default, show(key, SETTINGS[key].default))}`;
+  const value = (key: SettingKey, current: number | boolean | string) => `${show(key, current)}${marker(current === SETTINGS[key].default, show(key, SETTINGS[key].default))}`;
+
   const apply = (patch: Partial<ProfileConfig>, what: string, applies: string) => {
     const problem = update(o, patch);
     if (!problem) notice.setText(theme.fg('success', `Saved ${what}. `) + theme.fg('muted', applies));
@@ -222,18 +231,19 @@ export function settingsPage(theme: Theme, o: Options, close: () => void, redraw
         if (!problem) done(value(key, next));
         return problem;
       }, () => done()) };
-    return { ...base, currentValue: value(key, config[key]), values: [value(key, true), value(key, false)] };
+    return { ...base, currentValue: value(key, config[key]), values: choices(key).map(option => value(key, option)) };
   });
   const list = new SettingsList([...models, ...settings], models.length + settings.length, {
     label: (text, selected) => selected ? theme.fg('accent', text) : text,
     value: (text, selected) => selected ? theme.fg('accent', text) : theme.fg('muted', text),
     description: text => theme.fg('dim', text), cursor: theme.fg('accent', '→ '), hint: text => theme.fg('dim', text),
   }, (id, next) => {
-    // Only the on/off rows change here; the others save from their own step.
+    // Only the on/off and choice rows change here; the others save from their own step.
     const key = SETTING_KEYS.find(k => k === id);
     if (!key || isNumberKey(key)) return;
-    const on = next === value(key, true);
-    const problem = apply({ [key]: on }, `${SETTINGS[key].label.toLowerCase()} ${on ? 'on' : 'off'}`, SETTINGS[key].applies);
+    const picked = choices(key).find(option => value(key, option) === next);
+    if (picked === undefined) return;
+    const problem = apply({ [key]: picked }, `${SETTINGS[key].label.toLowerCase()} ${show(key, picked)}`, SETTINGS[key].applies);
     if (problem) { list.updateValue(key, value(key, config[key])); notice.setText(theme.fg('error', problem)); }
   }, close);
   const page = frame(theme, 'OptChat settings', o.profile, [
