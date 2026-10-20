@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createBashTool, createLocalBashOperations, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
-import { OutputAlerts, type ShellAlert } from './shell-alerts.ts';
+import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
 import { textContent } from './transcript.ts';
 
 export interface ShellJob {
@@ -80,16 +80,13 @@ export class ShellJobs {
     const job = this.jobs.get(id);
     if (!job?.alert || job.ended !== undefined) return;
     job.matches = alert.total;
-    this.reporter?.alerted(job, alertReport(id, job.alert, alert), alert);
+    this.reporter?.alerted(job, alertReport(id, job.alert ?? '', alert), alert);
   }
   clear() { if (this.tasks.size) throw new Error('Stop managed shells before clearing their history'); this.jobs.clear(); this.changed(); }
   async close() { for (const id of this.controllers.keys()) this.stop(id); await Promise.all(this.tasks); }
 }
 
 const ALERT_INTERVAL_MS = 10_000;
-const compilePattern = (alert: string) => {
-  try { return new RegExp(alert); } catch (error) { throw new Error(`alert is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`); }
-};
 /** The local shell, with each raw output chunk also given to the alerts. The bash tool's own updates are only snapshots of its tail. */
 function tapped(watch: OutputAlerts): BashOperations {
   const local = createLocalBashOperations();
@@ -112,18 +109,18 @@ export function shellReport(job: ShellJob): string {
   const omitted = lines.length - kept.length;
   const output = tail.trim() ? `Last output${omitted > 0 ? ` (${omitted} earlier lines not shown)` : ''}:\n${tail}` : 'Output: (no output)';
   const closing = job.state === 'stopped' ? 'It was stopped and will not run again.' : 'It has finished.';
-  const alertLine = job.alert === undefined ? [] : [`Alert /${job.alert}/: ${job.matches ?? 0} ${job.matches === 1 ? 'match' : 'matches'} in total.`];
+  const alertLine = job.alert === undefined ? [] : [`Alert ${alertLabel(job.alert)}: ${job.matches ?? 0} ${job.matches === 1 ? 'match' : 'matches'} in total.`];
   return [`[shell ${job.id}] ${outcome}`, `Command: ${shortCommand}`, ...alertLine, output,
     `Full output: ${job.log ?? `not kept; shell_status shows the last ${outputLimit / 1000} KB`}`,
     `${closing} Do not poll it; use shell_status only to read more of its output.`].join('\n');
 }
 
-/** One alert: the pattern, how many new matches and where they are, then the latest ones with the two lines before each. */
+/** One alert: the pattern as typed (named by alertLabel), how many new matches and where they are, then the latest ones with the two lines before each. */
 export function alertReport(id: string, pattern: string, alert: ShellAlert): string {
   const span = alert.firstLine === alert.lastLine ? `on line ${alert.firstLine}` : `on lines ${alert.firstLine}–${alert.lastLine}`;
   const hidden = alert.hidden > 0 ? ` (${alert.hidden} not shown)` : '';
   const clean = (text: string) => text.replace(/\r/g, '');
-  const head = `[shell ${id}] alert: /${pattern}/ · ${alert.matches} new ${alert.matches === 1 ? 'match' : 'matches'} ${span}${hidden} · ${alert.total} so far`;
+  const head = `[shell ${id}] alert: ${alertLabel(pattern)} · ${alert.matches} new ${alert.matches === 1 ? 'match' : 'matches'} ${span}${hidden} · ${alert.total} so far`;
   const blocks = alert.shown.map(match => [...match.before.map(line => `  ${line.line} | ${clean(line.text)}`), `> ${match.line} | ${clean(match.text)}`].join('\n'));
   return [head, ...blocks].join('\n');
 }
@@ -149,7 +146,7 @@ async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSi
 }
 /** Starts a managed background shell for shell_start. A bad alert pattern is refused before anything starts. */
 function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, cwd: string): string {
-  const pattern = args.alert === undefined ? undefined : compilePattern(args.alert);
+  const pattern = args.alert === undefined ? undefined : alertPattern(args.alert);
   const notify = args.notify ?? settings.notifyDefault?.() ?? 'end';
   const id: string = jobs.start(args.command, cwd, (abort, update) => {
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(id, alert) });
@@ -166,7 +163,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
   pi.on('tool_execution_update', event => { if (shell(event.toolName)) jobs.update(event.toolCallId, textContent(event.partialResult?.content, false)); });
   pi.on('tool_execution_end', event => { if (shell(event.toolName)) jobs.end(event.toolCallId, textContent(event.result?.content, false), event.isError); });
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
-    description: 'Start an explicitly requested background shell (for example a local server or a long build), returning its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a message starting "[shell ID]" with its outcome, exit code and the end of its output, between your tool calls or as a new turn. Do not poll or sleep for it: go on with other work, or end your turn and say what is running. Use shell_status only to read more output while it runs. Jobs are session-local and stopped when the profile closes. Detached child processes are not managed. Do not put secrets in commands. notify sets which ends reach you: "end" (the default: every end), "failure" (only a failed or timed-out shell) or "none". alert is a case-sensitive JavaScript regular expression: when a new output line matches it, you get that line with the two before it, rate-limited (at most one alert every 10 seconds; matches in between are counted).',
+    description: 'Start an explicitly requested background shell (for example a local server or a long build), returning its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a message starting "[shell ID]" with its outcome, exit code and the end of its output, between your tool calls or as a new turn. Do not poll or sleep for it: go on with other work, or end your turn and say what is running. Use shell_status only to read more output while it runs. Jobs are session-local and stopped when the profile closes. Detached child processes are not managed. Do not put secrets in commands. notify sets which ends reach you: "end" (the default: every end), "failure" (only a failed or timed-out shell) or "none". alert is a JavaScript regular expression: plain text is matched case-sensitively, and /pattern/flags takes the flags i, m, s or u (for example /merged|fail/i). When a new output line matches, you get that line with the two before it, rate-limited (at most one alert every 10 seconds; matches in between are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
       notify: Type.Optional(Type.Union(['end', 'failure', 'none'].map(value => Type.Literal(value)))), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }),
     async execute(_id, args, signal, _update, ctx) {

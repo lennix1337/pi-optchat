@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ShellJobs, alertReport, endNoticeWanted, registerShells, runningShells, shellReport, type ShellJob } from '../src/shells.ts';
-import { OutputAlerts, type ShellAlert } from '../src/shell-alerts.ts';
+import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from '../src/shell-alerts.ts';
 import { Check } from 'typebox/value';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
@@ -355,4 +355,69 @@ test('through the real bash tool, a 60-second window sends the first match at on
   assert.ok(alerts.length <= 2, 'one alert at once, and at most one for the rest when the shell ends');
   assert.equal(alerts.reduce((sum, alert) => sum + alert.matches, 0), 10);
   assert.equal(alerts[0].firstLine, 3, 'the first match goes out at once');
+});
+
+test('a match that straddles the 64 KiB piece boundary of a long line is found, and its line is counted once', () => {
+  const alerts: ShellAlert[] = [];
+  const watch = new OutputAlerts({ pattern: /MERGED/, intervalMs: 0, onAlert: alert => alerts.push(alert) });
+  // MERGED spans bytes 65532 to 65537, so the first piece ends after MERG.
+  watch.feed(Buffer.from('x'.repeat(65_532) + 'MERGED\n'));
+  watch.end();
+  assert.deepEqual(shownLines(alerts), [1], 'found across the boundary');
+  assert.equal(alerts.reduce((sum, alert) => sum + alert.matches, 0), 1);
+});
+
+test('a match that two overlapping pieces both scan is counted once', () => {
+  const alerts: ShellAlert[] = [];
+  const watch = new OutputAlerts({ pattern: /MERGED/, intervalMs: 0, onAlert: alert => alerts.push(alert) });
+  // MERGED lies in the overlap that the second piece scans again.
+  watch.feed(Buffer.from('x'.repeat(62_000) + 'MERGED' + 'x'.repeat(5_600) + '\n'));
+  watch.end();
+  assert.deepEqual(shownLines(alerts), [1]);
+  assert.equal(alerts.reduce((sum, alert) => sum + alert.matches, 0), 1);
+});
+
+test('a ^ or $ pattern does not match at a piece boundary of a long line that does not match there', () => {
+  const matches = (pattern: RegExp, line: string) => {
+    const alerts: ShellAlert[] = [];
+    const watch = new OutputAlerts({ pattern, intervalMs: 0, onAlert: alert => alerts.push(alert) });
+    watch.feed(Buffer.from(line + '\n'));
+    watch.end();
+    return alerts.reduce((sum, alert) => sum + alert.matches, 0);
+  };
+  assert.equal(matches(/x$/, 'x'.repeat(150_000) + 'y'), 0, 'the line ends in y, so x$ does not match');
+  assert.equal(matches(/^y/, 'x'.repeat(65_536) + 'y' + 'x'.repeat(100)), 0, 'y starts a piece, not the line');
+  assert.equal(matches(/^x/, 'x'.repeat(150_000)), 1, 'the line starts with x');
+});
+test('an alert takes a plain case-sensitive pattern, or /pattern/flags with the flags i, m, s or u, and refuses other flags or a bad pattern', () => {
+  assert.equal(alertPattern('MERGED').test('merged'), false, 'plain is case-sensitive');
+  assert.equal(alertPattern('MERGED').test('MERGED'), true);
+  assert.equal(alertPattern('/merged|fail/i').test('Failed build'), true, 'the literal form takes flags');
+  assert.equal(alertPattern('/a.b/s').test('a\nb'), true, 's makes . match a newline');
+  assert.equal(alertPattern('/^x$/m').test('y\nx'), true, 'm makes ^ and $ match per line');
+  assert.equal(alertPattern('/a/').flags, '', 'no flags given, none taken');
+  assert.equal(alertPattern('/abc').test('/abc'), true, 'a leading slash with no closing one is plain text');
+  for (const bad of ['/a/q', '/a/g', '/a/y', '/a/ii', '/a/d', '(', '/(/i']) assert.throws(() => alertPattern(bad), /alert/, bad);
+  assert.equal(alertLabel('MERGED'), '/MERGED/', 'a plain pattern is shown in slashes');
+  assert.equal(alertLabel('/merged|fail/i'), '/merged|fail/i', 'a literal is shown as written');
+});
+
+test('shell_start accepts a /pattern/flags alert and refuses bad flags before starting anything', async () => {
+  const jobs = new ShellJobs(), tools = new Map<string, any>();
+  registerShells(fakePi(tools), jobs, () => {}, {});
+  const start = tools.get('shell_start');
+  assert.equal(Check(start.parameters, { command: 'x', alert: '/merged|fail/i' }), true);
+  await assert.rejects(start.execute('flags', { command: 'node -e 0', alert: '/merged/q' }, undefined, undefined, { cwd: '.' }), /flags/);
+  assert.equal(jobs.list().length, 0, 'nothing started for bad flags');
+  await start.execute('literal', { command: 'node -e 0', alert: '/merged|fail/i' }, undefined, undefined, { cwd: '.' });
+  assert.equal(jobs.list()[0].alert, '/merged|fail/i');
+  await jobs.close();
+});
+
+test('a literal alert is named as written in its messages, and a plain one in slashes', () => {
+  const alert: ShellAlert = { matches: 1, firstLine: 2, lastLine: 2, total: 1, hidden: 0, shown: [{ line: 2, text: 'Failed build', before: [] }] };
+  assert.match(alertReport('sh-3', '/merged|fail/i', alert), /^\[shell sh-3\] alert: \/merged\|fail\/i · 1 new match on line 2 · 1 so far$/m);
+  const job: ShellJob = { id: 'sh-4', command: 'make', cwd: '.', mode: 'background', state: 'completed', started: Date.now() - 1_000, ended: Date.now(), output: 'done',
+    exitCode: 0, notify: 'end', alert: '/merged|fail/i', matches: 1 };
+  assert.match(shellReport(job), /^Alert \/merged\|fail\/i: 1 match in total\.$/m);
 });

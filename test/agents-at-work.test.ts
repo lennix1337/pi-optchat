@@ -4,6 +4,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { atWork, buildContext } from '../src/transcript.ts';
 import { cachePayload, isAtWork } from '../src/cache.ts';
 import { PROMPT } from '../src/recipe-prompt.ts';
+import { MASTER } from '../src/prompts.ts';
 
 const user: AgentMessage = { role: 'user', content: 'question', timestamp: 0 };
 const view = '<chat>\n' + '0+1|line\n'.repeat(400) + '</chat>';
@@ -14,6 +15,7 @@ test('the status line names running agents by id and first task words, under a l
   assert.equal(atWork([{ id: 'c3', task: 'x'.repeat(5_000) }]), `[OptChat status] Agents at work now: c3 "${'x'.repeat(60)}…".`, 'a long word is cut too');
   assert.match(PROMPT, /"\[OptChat status\]" is OptChat's own note/);
   assert.match(PROMPT, /agents and shells are running, not the user/, 'the prompt names shells in the status note');
+  assert.match(MASTER, /agents and shells are running, not the user/, 'the master prompt names shells too');
 });
 
 test('with no agents running there is no status line at all', () => {

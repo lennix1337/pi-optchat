@@ -88,7 +88,7 @@ for one (no sleep, no polling): go on, or end your turn and tell the user what
 is running. The same goes for anything slow, such as CI or a deploy: don't sit
 polling it yourself at the end of a task, start a subagent to watch it, and
 move on. A message starting "[OptChat status]" is OptChat's own note on which
-subagents are running, not the user.`;
+agents and shells are running, not the user.`;
 export const VIEW_DOC = `The view: the whole chat between OptChat and the user, oldest first, inside
 <chat> tags, as one-line summaries. Each line is
 

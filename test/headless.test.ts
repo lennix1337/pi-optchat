@@ -421,10 +421,10 @@ test('notify failure: a shell that fails is reported once; one that completes or
   } finally { await completed.close(); }
 
   const stopIds: string[] = [], stopped = await headless('rpc', { flag: 'work', connect: 'off', realTools: true,
-    script: probeSteps('stopped', { name: 'shell_start', arguments: { command: `node -e "setInterval(() => {}, 1000)"`, notify: 'failure' } }, [stop, () => bash(sleep)], stopIds) });
+    script: probeSteps('stopped', { name: 'shell_start', arguments: { command: `node -e "setInterval(() => {}, 1000)"`, notify: 'failure' } }, [() => bash(sleep), stop], stopIds) });
   try {
     await stopped.ask('shell probe stopped');
-    assert.equal(stopped.turns.length, 4, 'shell_start, shell_stop, then the bash call: no report request');
+    assert.equal(stopped.turns.length, 4, 'shell_start, a bash call while the shell runs, shell_stop: no report request');
     assert.ok(!stopped.turns.some(turn => turn.includes(`[shell ${stopIds[0]}] `)));
   } finally { await stopped.close(); }
 });
