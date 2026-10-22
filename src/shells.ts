@@ -165,7 +165,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
     description: 'Start an explicitly requested background shell (for example a local server or a long build), returning its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a message starting "[shell ID]" with its outcome, exit code and the end of its output, between your tool calls or as a new turn. Do not poll or sleep for it: go on with other work, or end your turn and say what is running. Use shell_status only to read more output while it runs. Jobs are session-local and stopped when the profile closes. Detached child processes are not managed. Do not put secrets in commands. notify sets which ends reach you: "end" (the default: every end), "failure" (only a failed or timed-out shell) or "none". alert is a JavaScript regular expression: plain text is matched case-sensitively, and /pattern/flags takes the flags i, m, s or u (for example /merged|fail/i). When a new output line matches, you get that line with the two before it, rate-limited (at most one alert every 10 seconds; matches in between are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
-      notify: Type.Optional(Type.Union(['end', 'failure', 'none'].map(value => Type.Literal(value)))), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }),
+      notify: Type.Optional(Type.Union(['end', 'failure', 'none'].map(value => Type.Literal(value)))), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }, { additionalProperties: false }),
     async execute(_id, args, signal, _update, ctx) {
       canStart();
       if (signal?.aborted) throw new Error('Shell start cancelled');
@@ -174,7 +174,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
     },
   });
   pi.registerTool({ name: 'shell_status', label: 'Inspect background shell', description: 'Read a managed background shell state and bounded output, or list current session shells. Reading never waits for completion. A shell that ends is reported to you automatically, so read it only when you need more of its output.',
-    parameters: Type.Object({ id: Type.Optional(Type.String()) }),
+    parameters: Type.Object({ id: Type.Optional(Type.String()) }, { additionalProperties: false }),
     async execute(_id, args) {
       const list = jobs.list(), job = args.id ? list.find(j => j.id === args.id) : undefined;
       if (args.id && !job) throw new Error('Unknown shell ID');
@@ -182,7 +182,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
     },
   });
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',
-    parameters: Type.Object({ id: Type.String() }),
+    parameters: Type.Object({ id: Type.String() }, { additionalProperties: false }),
     async execute(_id, args) {
       if (!jobs.stop(args.id)) throw new Error('Shell is not a running managed background job');
       return { content: [{ type: 'text', text: 'Stop requested; check shell_status for completion.' }], details: {} };

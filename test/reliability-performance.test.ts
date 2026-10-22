@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { OperationJournal, registerOperationSafety } from '../src/operations.ts';
@@ -9,10 +8,11 @@ import { OutputContext } from '../src/output-context.ts';
 import { OutputStore } from '../src/output-store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { PerformanceMetrics, registerPerformance } from '../src/performance.ts';
+import { tempDir } from './support.ts';
 
 function temporary(t: { after(fn: () => void): void }) {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-regression-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }));
+  const { dir, close } = tempDir('optchat-regression-');
+  t.after(close);
   return dir;
 }
 

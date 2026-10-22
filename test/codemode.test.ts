@@ -5,10 +5,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
+import { runToolCall, type AgentTool } from '@earendil-works/pi-agent-core';
 import type { ExtensionToolContext, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { executeCodemode as ExecuteCodemode } from '../node_modules/@earendil-works/pi-coding-agent/dist/extensions/codemode/execute.js';
 import { Memory } from '../src/memory.ts';
-import { memoryTools } from '../src/tools.ts';
+import { memoryTools, searchTool } from '../src/tools.ts';
+import { OutputContext, outputReadTool } from '../src/output-context.ts';
+import { OutputStore } from '../src/output-store.ts';
+import { emptyUsage } from '../src/usage.ts';
 import { saveImages } from '../src/images.ts';
 import { textContent } from '../src/transcript.ts';
 
@@ -120,4 +124,34 @@ test('real Code Mode: truncation discloses a recoverable file containing every r
     assert.deepEqual(saved, [0, 1, 2, 3].map(id => memory.zoom(id, 1)));
     assert.equal(h.count, 4);
   } finally { rmSync(file, { force: true }); }
+}));
+
+// Nested calls run through Pi's own validated tool pipeline (agent-core runToolCall), as AgentSession does for ctx.executeTool.
+test('real Code Mode: nested retrieval calls reject unknown keys and keep valid partial successes', () => withHost(async (_h, memory, dir) => {
+  for (const text of ['alpha first', 'beta second']) memory.append('user', text);
+  const outputs = new OutputStore(dir, 'session');
+  const ref = outputs.put('{"items":[1,2]}');
+  const tools = [...memoryTools(() => memory), searchTool(() => memory), outputReadTool(() => new OutputContext(outputs))] as unknown as AgentTool<any>[];
+  const assistantMessage = { role: 'assistant' as const, content: [], api: 'openai-completions', provider: 'fixture', model: 'fixture', usage: emptyUsage(), stopReason: 'stop' as const, timestamp: 1 };
+  let count = 0;
+  const ctx = {
+    cwd: dir, tools, sessionManager: { getBranch: () => [] },
+    executeTool: (name: string, args: unknown) => runToolCall({ type: 'toolCall', id: `nested-${++count}`, name, arguments: args as never },
+      { tools, assistantMessage, context: { messages: [], tools } }),
+  } as unknown as ExtensionToolContext;
+  const reply = await executeCodemode('fixture', { code: `const calls=[
+ ['zoom',{id:0,n:1,findTxt:'alpha'}], ['zoom',{id:0,n:1,findText:'alpha'}],
+ ['date',{id:0,text:'x'}], ['date',{id:1}],
+ ['search',{text:'beta',limit:5}], ['search',{text:'beta'}],
+ ['output_read',{ref:'${ref}',query:{kind:'json',field:['items']}}], ['output_read',{ref:'${ref}',query:{kind:'json',path:'$.items[1]'}}]];
+const results=await Promise.allSettled(calls.map(([name,args])=>tools[name](args)));
+text(results.map((r,i)=>({name:calls[i][0],status:r.status,...(r.status==='fulfilled'?{text:r.value}:{error:String(r.reason)})})));` }, undefined, undefined, ctx);
+  const records = JSON.parse(output(reply)) as { name: string; status: string; text?: string; error?: string }[];
+  assert.deepEqual(records.map(r => r.status), ['rejected', 'fulfilled', 'rejected', 'fulfilled', 'rejected', 'fulfilled', 'rejected', 'fulfilled']);
+  for (const [i, key] of [[0, 'findTxt'], [2, 'text'], [4, 'limit'], [6, 'field']] as const) assert.match(records[i].error!, new RegExp(key), records[i].name);
+  assert.match(records[1].text!, /1 match of "alpha" in message 0/);
+  assert.match(records[3].text!, /\d{4}/);
+  assert.match(records[5].text!, /1 message contains "beta"/);
+  assert.match(records[7].text!, /\n2$/);
+  assert.equal(count, 8);
 }));

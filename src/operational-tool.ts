@@ -9,7 +9,7 @@ export function operationalStateTool(current: () => { dir: string; memory: Memor
   return {
     name: 'operational_state', label: 'Operational state',
     description: 'Inspect or explicitly record objective, decisions, constraints, authorizations, changes and checks separately from narrative summaries. Use an exact original memory message ID as sourceMessageId. Authorizations/constraints must quote the entire non-imported user source exactly; this tool never grants permission. A change is not a verified check. Evidence references must describe actual observations; label assertions self-reported. Supersede outdated entries explicitly.',
-    parameters: Type.Object({ update: Type.Optional(OperationalUpdateSchema) }),
+    parameters: Type.Object({ update: Type.Optional(OperationalUpdateSchema) }, { additionalProperties: false }),
     async execute(_id: string, args: { update?: import('./operational-state.ts').OperationalUpdate }) {
       const { dir, memory } = current(), file = join(dir, 'operational-state.json');
       if (args.update) {

@@ -7,19 +7,21 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Memory } from './memory.ts';
+import { Focus } from './focus.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
 import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
-import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
+import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
-import { Children, CWD_DOC, loadedBuiltins } from './agents.ts';
+import { Children, loadedBuiltins } from './agents.ts';
+import { childToolSchemas } from './child-resources.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
@@ -60,7 +62,7 @@ const toggle = (prompt: string, line: string, on: boolean, after: string) => on 
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, PROMPT), SEARCH_DOC, memorySearch, previousExchange ? PROMPT + CONTINUITY : PROMPT), memorySearch);
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; outputs: OutputContext; metrics: PerformanceMetrics; unlock: () => Promise<void> }
+interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; focus: Focus; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; outputs: OutputContext; metrics: PerformanceMetrics; unlock: () => Promise<void> }
 
 /** OptChat's own version, read from the package.json beside src/ (in the checkout and the npm package alike); none if unreadable. */
 export const version = ((): string | undefined => {
@@ -101,6 +103,8 @@ export default function optchat(pi: ExtensionAPI) {
   /** After a mid-turn refresh (#146), the run is sent from here on, after its task; 0 sends it whole. */
   let keep = 0;
   let view: string | undefined;
+  // Like the chronological view, focus is frozen between turn/refresh boundaries for cache stability.
+  let focusView: string | undefined;
   let prompt = '';
   /** A compaction is a call like a turn (recipe §4): once a turn has built them, it gets the turns' system prompt and tools. */
   const shared = () => {
@@ -212,7 +216,7 @@ export default function optchat(pi: ExtensionAPI) {
       await checkpoint(old.dir);
     } finally {
       await old.memory.close(); await old.unlock(); active = undefined;
-      run = []; previous = []; logged = 0; keep = 0; view = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
+      run = []; previous = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
       untitle?.(); untitle = undefined; title.clear(); working = false;
     }
   };
@@ -274,7 +278,7 @@ export default function optchat(pi: ExtensionAPI) {
       rememberProfile(name);
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
         status: () => config.syncStatus, optmem: () => config.syncOptMem, aimemory: () => config.syncAiMemory, warn: text => ctx.ui.notify(text, 'warning') });
-      active = { name, dir, config, memory, inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      active = { name, dir, config, memory, focus: new Focus(), inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
@@ -442,7 +446,7 @@ export default function optchat(pi: ExtensionAPI) {
     return { action: 'continue' };
   });
   const startRun = (ctx: ExtensionContext) => {
-    flush(); run = []; logged = 0; keep = 0; view = undefined; runStarted = true;
+    flush(); run = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = true;
     const config = active?.config;
     previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
@@ -456,9 +460,10 @@ export default function optchat(pi: ExtensionAPI) {
     if (!active) return; // Plain Pi run: leave Pi's own prompt untouched.
     startRun(ctx);
     const a = required();
+    a.focus.advance();
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${PROMPT}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
+    event.systemPromptOptions.customPrompt = allowSearch(`${PROMPT}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}${NAVIGATION_DOC}`, a.config.memorySearch);
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     prompt = event.systemPrompt;
   });
@@ -526,6 +531,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (fault) throw new Error(fault);
       if (view === undefined) {
         view = await memoryView(ctx); // Capture old history before logging the new input.
+        focusView = a.focus.render(a.memory);
         flush();
       }
       // Later extensions (including MCP) may add system-prompt sections; keep Pi's current prompt when our preamble is present.
@@ -542,7 +548,7 @@ export default function optchat(pi: ExtensionAPI) {
       a.metrics.record('projection', performance.now() - projectionStarted);
       const refresh = refreshPoint(projectedRun, keep, refreshBudget(window, refreshFraction(a.config.refreshAt)));
       let budgeted = inputBudget === undefined ? undefined
-        : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
+        : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine, focusView);
       if (refresh || budgeted && !budgeted.fits) {
         const cut = refresh?.cut ?? lastStep(run);
         if (cut > keep) {
@@ -550,13 +556,13 @@ export default function optchat(pi: ExtensionAPI) {
           ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
           try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
           if (!a.memory.ready) throw new Error('OptChat cannot refresh this run while summaries are missing. Originals are preserved; fix the compactor and continue in a new turn.');
-          view = a.memory.render(); keep = cut;
+          view = a.memory.render(); focusView = a.focus.render(a.memory); keep = cut;
           ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
           budgeted = inputBudget === undefined ? undefined
-            : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine);
+            : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine, focusView);
         }
       }
-      const messages = budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine);
+      const messages = budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine, focusView);
       if (window) assertContextFits(messages, window, ctx.model?.maxTokens);
       a.metrics.context(messages);
       return { messages };
@@ -608,7 +614,7 @@ export default function optchat(pi: ExtensionAPI) {
   });
   registerConnectedRenderer(pi);
   registerReportRenderer(pi);
-  const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id));
+  const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id), ref => required().focus.observe(ref));
   pi.registerTool(zoom); pi.registerTool(date);
   pi.registerTool(outputReadTool(() => required().outputs));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
@@ -629,14 +635,14 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.registerTool({ name: 'spawn', label: 'Spawn background agents',
     description: 'Start background subagents, returning IDs immediately. Use only when the user asks. Give each task the cwd of the project it works on, so the subagent starts there with that project\'s AGENTS.md. Each receives the current memory view and read-only zoom/date. Whether children may delegate further, and how many agents may run at once, is set per profile. Completion reports arrive automatically; never poll or sleep waiting for them.',
-    parameters: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })) }), { minItems: 1 }) }),
+    parameters: childToolSchemas.spawn,
     async execute(_id, args, signal, _update, ctx) {
       const text = await required().children.start(args.tasks, ctx.cwd, signal); status(ctx);
       return result(text);
     },
   });
   pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Send a message to a subagent. A running one gets it at its next tool boundary. A finished one you started is resumed with its earlier conversation, and its new report arrives automatically.',
-    parameters: Type.Object({ id: Type.String(), message: Type.String() }),
+    parameters: childToolSchemas.tell,
     async execute(_id, args) { return result(await required().children.tell(args.id, args.message)); },
   });
 

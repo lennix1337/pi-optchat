@@ -22,6 +22,21 @@ export function removeDir(path: string) {
   }
 }
 
+/** A fresh temp dir under the sandboxed root for one test; `close` removes it, and a test that fails before closing is still swept at exit. */
+export function tempDir(prefix: string) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  return { dir, close: () => removeDir(dir) };
+}
+
+/** Runs `run` with a fresh temp dir and removes it afterwards, whether `run` is synchronous or returns a promise, and whether it throws or rejects. */
+export function withTempDir<T>(prefix: string, run: (dir: string) => T): T {
+  const { dir, close } = tempDir(prefix);
+  let result: T;
+  try { result = run(dir); } catch (error) { close(); throw error; }
+  if (!(result instanceof Promise)) { close(); return result; }
+  return result.finally(close) as T;
+}
+
 /** Whether a fixture model's call is a compaction: it has the same system prompt as a turn, so only its task marks it. */
 export const isCompaction = (context: { messages: readonly { role: string; content?: unknown }[] }) =>
   context.messages.some(message => message.role === 'user' && /Compaction: (?:compress message|merge lines)/.test(JSON.stringify(message.content)));

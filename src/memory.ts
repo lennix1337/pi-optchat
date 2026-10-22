@@ -33,6 +33,10 @@ const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
 /** A cheap model can head a summary with the kind of a <chat> line it copied, so the code sets the message's own. */
 export const labeled = (kind: Kind, text: string) => `${kind}: ${text.replace(KIND_HEAD, '')}`;
 export const flat = (s: string) => s.replace(/[\r\n]+/g, ' ');
+const messageScope = (count: number) => count === 0 ? 'Memory has no messages yet.' : `Messages run 0-${count - 1}`;
+/** The error for a zoom range that does not exist, naming the ranges that do. */
+export const noLine = (id: number, n: number, count: number) => new Error(`No line ${id}+${n}. ${count === 0 ? messageScope(count)
+  : `${messageScope(count)}; n is a power of two, id a multiple of n, id+n at most ${count}.`}`);
 const lineBytes = (s: string) => bytes(flat(s));
 const notice = (omitted: number) => `\n[${omitted} characters omitted; head and tail retained. Zoom can recover the full output only when the original is durable.]\n`;
 const VIEW_OPEN = '<chat>\n';
@@ -467,7 +471,7 @@ export class Memory {
   /** n = 1 gives the message whole, or, when it is longer than `limit` or `offset` is given, the page of up to `limit` characters from `offset`. */
   zoom(id: number, n: number, offset?: number, limit?: number) {
     if (!Number.isSafeInteger(id) || id < 0 || !Number.isSafeInteger(n) || n < 1 || !Number.isInteger(Math.log2(n)) || id % n || id + n > this.root.length)
-      throw new Error(`No line ${id}+${n}.`);
+      throw noLine(id, n, this.root.length);
     if (n === 1) {
       const { kind, text } = this.root[id], page = Math.min(limit ?? PAGE, PAGE);
       if (!Number.isSafeInteger(page) || page < 1) throw new Error('limit must be a positive integer.');
@@ -523,7 +527,7 @@ export class Memory {
     return hits;
   }
   date(id: number) {
-    if (!Number.isSafeInteger(id) || !this.root[id]) throw new Error(`No message ${id}.`);
+    if (!Number.isSafeInteger(id) || !this.root[id]) throw new Error(`No message ${id}. ${messageScope(this.root.length)}${this.root.length ? '.' : ''}`);
     return new Date(this.root[id].date).toString();
   }
   async close() {

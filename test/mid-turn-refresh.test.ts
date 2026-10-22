@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { createAssistantMessageEventStream, getCurrentSystemMessage, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, getCurrentSystemMessage, getCurrentSystemPrompt, getCurrentTools, type Context } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { Children } from '../src/agents.ts';
@@ -16,19 +16,15 @@ import { invalid } from '../src/settings.ts';
 import { subagentCompaction } from '../src/agents.ts';
 import { TURN_REFRESHED } from '../src/prompts.ts';
 import { isCompaction } from './support.ts';
-import { emptyUsage } from '../src/usage.ts';
+import { assistantMessage } from './messages.ts';
 import { estimatedContextTokens, inputTokenBudget } from '../src/run-context.ts';
 import { removeDir } from './support.ts';
-
-const reply = (content: AssistantMessage['content'], stopReason: AssistantMessage['stopReason']): AssistantMessage => ({
-  role: 'assistant', content, timestamp: 2, stopReason, api: 'openai-completions', provider: 'fixture', model: 'fixture', usage: emptyUsage(),
-});
 
 test('with the refresh off the request is the one sent before mid-turn refresh existed', () => {
   assert.equal(refreshBudget(200_000, Number(undefined)), undefined);
   assert.equal(refreshBudget(200_000, 0), undefined);
   assert.equal(refreshBudget(200_000, 0.25), 200_000);
-  const run: AgentMessage[] = [{ role: 'user', content: 'task', timestamp: 1 }, reply([{ type: 'toolCall', id: 't', name: 'date', arguments: { id: 0 } }], 'toolUse'),
+  const run: AgentMessage[] = [{ role: 'user', content: 'task', timestamp: 1 }, assistantMessage([{ type: 'toolCall', id: 't', name: 'date', arguments: { id: 0 } }], 'toolUse'),
     { role: 'toolResult', toolCallId: 't', toolName: 'date', content: [{ type: 'text', text: 'Fri' }], isError: false, timestamp: 3 }];
   assert.deepEqual(buildContext([], refreshedRun(run, 0, TURN_REFRESHED), '<chat>\n</chat>', 'p'), buildContext([], run, '<chat>\n</chat>', 'p'));
 });
@@ -90,11 +86,11 @@ test('repeated refreshes preserve exact visible steering and hidden custom conte
   const task = { role: 'user' as const, content: [{ type: 'text' as const, text: 'Complete this task.' }, { type: 'image' as const, data: '', mimeType: 'image/png' }], timestamp: 1 };
   const steering: AgentMessage = { role: 'user', content: 'Correction: do not publish anything.', timestamp: 4 };
   const hidden: AgentMessage = { role: 'custom', customType: 'policy', content: 'Keep the result private.', display: false, timestamp: 5 };
-  const run: AgentMessage[] = [task, reply([{ type: 'toolCall', id: 'a', name: 'read', arguments: {} }], 'toolUse'),
+  const run: AgentMessage[] = [task, assistantMessage([{ type: 'toolCall', id: 'a', name: 'read', arguments: {} }], 'toolUse'),
     { role: 'toolResult', toolCallId: 'a', toolName: 'read', content: [{ type: 'text', text: 'first' }], isError: false, timestamp: 3 },
-    steering, hidden, reply([{ type: 'toolCall', id: 'b', name: 'read', arguments: {} }], 'toolUse'),
+    steering, hidden, assistantMessage([{ type: 'toolCall', id: 'b', name: 'read', arguments: {} }], 'toolUse'),
     { role: 'toolResult', toolCallId: 'b', toolName: 'read', content: [{ type: 'text', text: 'second' }], isError: false, timestamp: 6 },
-    reply([{ type: 'toolCall', id: 'c', name: 'read', arguments: {} }], 'toolUse'),
+    assistantMessage([{ type: 'toolCall', id: 'c', name: 'read', arguments: {} }], 'toolUse'),
     { role: 'toolResult', toolCallId: 'c', toolName: 'read', content: [{ type: 'text', text: 'third' }], isError: false, timestamp: 8 }];
   const first = refreshedRun(run, 5, TURN_REFRESHED);
   assert.ok(first[0]?.role === 'user');
@@ -116,7 +112,7 @@ test('the threshold is typed as 30, 30% or 0.3, OPTCHAT_REFRESH_AT overrides it,
 });
 
 test('a last step too big to keep under half the budget waits for a smaller one instead of refreshing every call', () => {
-  const step = (id: string, text: string): AgentMessage[] => [reply([{ type: 'toolCall', id, name: 'read', arguments: {} }], 'toolUse'),
+  const step = (id: string, text: string): AgentMessage[] => [assistantMessage([{ type: 'toolCall', id, name: 'read', arguments: {} }], 'toolUse'),
     { role: 'toolResult', toolCallId: id, toolName: 'read', content: [{ type: 'text', text }], isError: false, timestamp: 3 }];
   const run: AgentMessage[] = [{ role: 'user', content: 'task', timestamp: 1 }, ...step('a', 'x'.repeat(600)), ...step('b', 'x'.repeat(600))];
   assert.equal(refreshPoint(run, 0, 1000), undefined);
@@ -143,7 +139,7 @@ test('a real child provider request budgets its current prompt, active tool sche
     models: [{ id: 'child', name: 'Budget fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000, maxTokens: 1_000 }],
     streamSimple(model, context, options) {
       requests.push({ context: structuredClone(context), maxOutputTokens: options?.maxTokens ?? model.maxTokens });
-      const message = reply([{ type: 'text', text: 'Child complete.' }], 'stop');
+      const message = assistantMessage([{ type: 'text', text: 'Child complete.' }], 'stop');
       message.provider = model.provider; message.model = model.id;
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
@@ -207,9 +203,9 @@ test('a turn past its threshold is sent as the refreshed view, its task verbatim
           captured.push(structuredClone({ ...context, messages: context.messages.filter(m => m.role !== 'system') }));
         }
         const step = compression ? 0 : ++calls;
-        const message = compression ? reply([{ type: 'text', text: 'Summary.' }], 'stop')
-          : step <= 8 ? reply([{ type: 'toolCall', id: `zoom-${step}`, name: 'zoom', arguments: { id: 0, n: 1 } }], 'toolUse')
-          : reply([{ type: 'text', text: 'Done.' }], 'stop');
+        const message = compression ? assistantMessage([{ type: 'text', text: 'Summary.' }], 'stop')
+          : step <= 8 ? assistantMessage([{ type: 'toolCall', id: `zoom-${step}`, name: 'zoom', arguments: { id: 0, n: 1 } }], 'toolUse')
+          : assistantMessage([{ type: 'text', text: 'Done.' }], 'stop');
         message.provider = model.provider; message.model = model.id;
         const stream = createAssistantMessageEventStream();
         queueMicrotask(() => { stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message }); stream.end(); });

@@ -1,15 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OutputStore } from '../src/output-store.ts';
+import { tempDir } from './support.ts';
 import { OUTPUT_QUERY_MAX_BYTES, OUTPUT_QUERY_MAX_FIELDS, OUTPUT_QUERY_MAX_LINES } from '../src/output-query.ts';
 
-function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-output-query-'));
-  return { dir, close: () => rmSync(dir, { recursive: true, force: true }) };
-}
+const fixture = () => tempDir('optchat-output-query-');
 
 test('retrieves bounded inclusive line ranges with stable 1-based labels and Unicode intact', () => {
   const f = fixture();

@@ -4,20 +4,16 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type TextContent, type UserMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type TextContent } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { asUser, buildContext, PREVIOUS_EXCHANGE, previousExchange, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from '../src/transcript.ts';
 import { isCompaction } from './support.ts';
-import { emptyUsage } from '../src/usage.ts';
+import { assistantMessage, customMessage, userMessage } from './messages.ts';
 import { removeDir } from './support.ts';
 
-const user = (content: UserMessage['content']): UserMessage => ({ role: 'user', content, timestamp: 1 });
-const answer = (text: string, stopReason: AssistantMessage['stopReason'] = 'stop'): AssistantMessage => ({
-  role: 'assistant', content: [{ type: 'text', text }], timestamp: 2, stopReason,
-  api: 'openai-completions', provider: 'fixture', model: 'fixture', usage: emptyUsage(),
-});
+const answer = (text: string, stopReason?: AssistantMessage['stopReason']) => assistantMessage([{ type: 'text', text }], stopReason);
 function appendRun(manager: SessionManager, messages: Parameters<SessionManager['appendMessage']>[0][], settled = true) {
   manager.appendCustomEntry(RUN_BOUNDARY, { state: 'start' });
   for (const message of messages) manager.appendMessage(message);
@@ -25,14 +21,14 @@ function appendRun(manager: SessionManager, messages: Parameters<SessionManager[
 }
 
 test('retain the exact last answer and its requests, excluding prior working context', () => {
-  const first = user('Compare the options.');
-  const steering = user([{ type: 'text', text: 'Focus on option two.' }, { type: 'image', data: 'image-bytes', mimeType: 'image/png' }]);
+  const first = userMessage('Compare the options.');
+  const steering = userMessage([{ type: 'text', text: 'Focus on option two.' }, { type: 'image', data: 'image-bytes', mimeType: 'image/png' }]);
   const finalText = 'Second option: preserve original wording.\n' + 'Detailed explanation. '.repeat(70);
   const final = answer(finalText);
   final.content.unshift({ type: 'thinking', thinking: 'OLD PRIVATE REASONING' });
   const toolResult: AgentMessage = { role: 'toolResult', toolCallId: 'read', toolName: 'read',
     content: [{ type: 'text', text: 'OLD TOOL OUTPUT' }], isError: false, timestamp: 1 };
-  const history = [user('Older question'), answer('Older answer'), first, answer('Checking.', 'toolUse'), toolResult, steering, final];
+  const history = [userMessage('Older question'), answer('Older answer'), first, answer('Checking.', 'toolUse'), toolResult, steering, final];
   const manager = SessionManager.inMemory();
   appendRun(manager, history.slice(0, 2));
   appendRun(manager, history.slice(2));
@@ -40,7 +36,7 @@ test('retain the exact last answer and its requests, excluding prior working con
   const [request, steered, reply] = previous.map(m => textContent(m.content));
   assert.deepEqual([request, reply], [first.content, finalText]);
   assert.match(steered, /^Focus on option two\.\n\[image [0-9a-f]{16}\]$/);
-  const current = user('Why is that?');
+  const current = userMessage('Why is that?');
   const thinking = answer('Working on the follow-up.');
   thinking.content.unshift({ type: 'thinking', thinking: 'CURRENT REASONING' });
   const context = buildContext([...history, current, thinking], [current, thinking], '<chat>\nsummary\n</chat>', 'instructions', previous);
@@ -51,21 +47,21 @@ test('retain the exact last answer and its requests, excluding prior working con
   assert.ok(context[1].role === 'user');
   assert.match(textContent(context[1].content), /^<chat>\nsummary\n<\/chat>/);
   assert.doesNotMatch(JSON.stringify(context), /OLD PRIVATE REASONING|OLD TOOL OUTPUT|Older question|Older answer|image-bytes/);
-  assert.throws(() => buildContext(history, [], 'view', 'prompt', previous), /no current user message/);
+  assert.throws(() => buildContext(history, [], 'view', 'prompt', previous), /no current input message/);
   assert.equal(final.content[0].type, 'thinking', 'the saved transcript must not be mutated');
 });
 
 test('unsuccessful or unsettled runs preserve the earlier completed exchange', () => {
-  const completed = [user('Earlier'), answer('Earlier answer')];
+  const completed = [userMessage('Earlier'), answer('Earlier answer')];
   for (const reason of ['error', 'aborted', 'length', 'toolUse'] as const) {
     const manager = SessionManager.inMemory();
     appendRun(manager, completed);
-    appendRun(manager, [user('New task'), answer('Partial', reason)]);
+    appendRun(manager, [userMessage('New task'), answer('Partial', reason)]);
     assert.deepEqual(previousExchange(manager.getBranch()), completed);
   }
   const manager = SessionManager.inMemory();
   appendRun(manager, completed);
-  appendRun(manager, [user('Unanswered')], false);
+  appendRun(manager, [userMessage('Unanswered')], false);
   assert.deepEqual(previousExchange(manager.getBranch()), completed);
   manager.appendMessage(answer('Text-only response before a crash or pending steering'));
   assert.deepEqual(previousExchange(manager.getBranch()), completed);
@@ -78,23 +74,23 @@ test('unsuccessful or unsettled runs preserve the earlier completed exchange', (
 test('a previous exchange up to the size limit is replayed in full', () => {
   const manager = SessionManager.inMemory();
   const request = 'x'.repeat(PREVIOUS_EXCHANGE / 2), reply = 'y'.repeat(PREVIOUS_EXCHANGE / 2);
-  appendRun(manager, [user(request), answer(reply)]);
+  appendRun(manager, [userMessage(request), answer(reply)]);
   assert.deepEqual(previousExchange(manager.getBranch()).map(m => textContent(m.content)), [request, reply]);
 });
 
 test('an oversized previous exchange is left out entirely, not swapped for an older one', () => {
   const manager = SessionManager.inMemory();
-  appendRun(manager, [user('Earlier'), answer('Earlier answer')]);
-  appendRun(manager, [user('Paste: ' + 'x'.repeat(PREVIOUS_EXCHANGE)), answer('Done.')]);
+  appendRun(manager, [userMessage('Earlier'), answer('Earlier answer')]);
+  appendRun(manager, [userMessage('Paste: ' + 'x'.repeat(PREVIOUS_EXCHANGE)), answer('Done.')]);
   assert.deepEqual(previousExchange(manager.getBranch()), []);
 });
 
 test('legacy sessions recover the last successful exchange before run markers were available', () => {
   const manager = SessionManager.inMemory();
-  const completed = [user('Earlier'), answer('Earlier answer')];
-  for (const message of [...completed, user('Failed task'), answer('Partial', 'error')]) manager.appendMessage(message);
+  const completed = [userMessage('Earlier'), answer('Earlier answer')];
+  for (const message of [...completed, userMessage('Failed task'), answer('Partial', 'error')]) manager.appendMessage(message);
   assert.deepEqual(previousExchange(manager.getBranch()), completed);
-  appendRun(manager, [user('Unanswered')], false);
+  appendRun(manager, [userMessage('Unanswered')], false);
   assert.deepEqual(previousExchange(manager.getBranch()), completed);
 });
 
@@ -225,7 +221,7 @@ test('real Pi lifecycle retains one exchange across tool calls and resume, witho
 });
 
 test('another extension\'s shown custom message becomes a user message tagged with its type, images kept; reports and hidden messages stay as they are', () => {
-  const custom = (customType: string, content: string | (TextContent | ImageContent)[], display = true) => asUser({ role: 'custom', customType, content, display, timestamp: 1 });
+  const custom = (customType: string, content: string | (TextContent | ImageContent)[], display = true) => asUser(customMessage(customType, content, display));
   const image = { type: 'image' as const, data: 'image-bytes', mimeType: 'image/png' };
   assert.deepEqual(custom('subagent_status', 'Subagent status: Scout stalled.'), { role: 'user', content: '[subagent_status] Subagent status: Scout stalled.', timestamp: 1 });
   assert.deepEqual(custom('screenshot', [{ type: 'text', text: 'Screenshot attached.' }, image]), { role: 'user', content: [{ type: 'text', text: '[screenshot] Screenshot attached.' }, image], timestamp: 1 });

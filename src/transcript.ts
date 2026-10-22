@@ -182,23 +182,39 @@ export function atWork(runs: readonly { id: string; task: string }[], shells: re
   return STATUS_NOTE + parts.join(' ');
 }
 
+/** Label wake-only inputs independently of the message that carries the historical view. */
+function labelWakeEvents(run: AgentMessage[]): AgentMessage[] {
+  if (run.some(message => message.role === 'user')) return run;
+  return run.map(message => {
+    if (message.role !== 'custom') return message;
+    const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
+    return { ...message, content: [{ type: 'text' as const,
+      text: `Extension event (${message.customType}), not a new user instruction or authorization:\n\n` }, ...content] };
+  });
+}
+
 /** Keep one completed exchange plus the current run; all other history comes from the view.
  * `state` follows the view; `status` goes last after cached content and only with new input. */
 export function buildContext(canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string,
-  previous: readonly AgentMessage[] = [], state?: string, status?: string): AgentMessage[] {
+  previous: readonly AgentMessage[] = [], state?: string, status?: string, focus?: string): AgentMessage[] {
   // `context_with_system` supplies the live system/tool deltas; replay them so Pi and our estimator receive the same active schemas.
   const system = getCurrentSystemMessage(canonical);
   const head: SystemMessage = { role: 'system', content: prompt, toolsAdded: system?.toolsAdded, timestamp: 0 };
-  if (!run.some(m => m.role === 'user')) throw new Error('OptChat has no current user message; refusing to send historical context.');
-  let injected = false;
-  const messages = [...previous, ...run].filter(m => m.role !== 'system').map(message => {
-    if (message.role !== 'user' || injected) return message;
-    injected = true;
+  // Hidden extension messages can start native background-completion runs too. Keep them custom:
+  // display is a UI choice, not an indication that Pi has no current input.
+  if (!run.some(m => m.role === 'user' || m.role === 'custom'))
+    throw new Error('OptChat has no current input message; refusing to send historical context.');
+  const inputs = labelWakeEvents(run);
+  const history = [...previous, ...inputs].filter(m => m.role !== 'system');
+  const anchor = history.find(m => m.role === 'user') ?? inputs.find(m => m.role === 'custom');
+  const messages = history.map(message => {
+    if (message !== anchor || message.role !== 'user' && message.role !== 'custom') return message;
     // OpenAI joins text blocks with nothing between them, so the user's words start their own paragraph after the view.
     const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
     const paragraph = <T extends (typeof content)[number]>(block: T): T => block.type === 'text' ? { ...block, text: `\n\n${block.text}` } : block;
     const [first, ...rest] = content;
-    return { ...message, content: [{ type: 'text' as const, text: view }, ...(state ? [{ type: 'text' as const, text: `\n\n${state}` }] : []),
+    return { ...message, content: [{ type: 'text' as const, text: view }, ...(focus ? [{ type: 'text' as const, text: `\n\n${focus}` }] : []),
+      ...(state ? [{ type: 'text' as const, text: `\n\n${state}` }] : []),
       ...(first ? [paragraph(first)] : []), ...rest] };
   });
   return [head, ...messages, ...status && messages.at(-1)?.role !== 'toolResult' ? [{ role: 'user' as const, content: [{ type: 'text' as const, text: status }], timestamp: 0 }] : []];
@@ -226,7 +242,13 @@ function viewParts(view: string) {
 }
 /** Estimates the complete assembled request and coarsens only through already-built summary nodes. */
 export function budgetContext(memory: Memory, canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string, inputBudget: number,
-  previous: readonly AgentMessage[] = [], state?: string, status?: string): { messages: AgentMessage[]; tokens: number; fits: boolean } {
+  previous: readonly AgentMessage[] = [], state?: string, status?: string, focus?: string): { messages: AgentMessage[]; tokens: number; fits: boolean } {
+  // Focus is expendable retrieval detail: omit it before coarsening any chronological history.
+  if (focus) {
+    const messages = buildContext(canonical, run, view, prompt, previous, state, status, focus);
+    const tokens = estimatedContextTokens(messages);
+    if (tokens <= inputBudget) return { messages, tokens, fits: true };
+  }
   const build = (text: string) => buildContext(canonical, run, text, prompt, previous, state, status);
   let messages = build(view), tokens = estimatedContextTokens(messages), best = { messages, tokens, fits: tokens <= inputBudget };
   if (best.fits) return best;
@@ -270,16 +292,18 @@ export function refreshBudget(contextWindow: number | undefined, fraction: numbe
   return contextWindow && fraction > 0 ? Math.floor(contextWindow * fraction * 4) : undefined;
 }
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
+/** The run's current input: its first user message, or when a hidden extension message (a background wake) started it, its first custom one. */
+const currentTask = (run: readonly AgentMessage[]) => run.find(m => m.role === 'user') ?? run.find(m => m.role === 'custom');
 /** Where a refresh would cut the run: the last model reply, so its tool calls and their results stay whole. 0 when there is none after the task. */
 export function lastStep(run: readonly AgentMessage[]) {
-  const task = run.findIndex(m => m.role === 'user'), step = run.findLastIndex(m => m.role === 'assistant');
+  const current = currentTask(run), task = current ? run.indexOf(current) : -1, step = run.findLastIndex(m => m.role === 'assistant');
   return step > task && task >= 0 ? step : 0;
 }
 /** The run's new `keep` and the size it moves into the view, when what is sent since the last refresh passes the budget.
  * What stays verbatim (the task and the last step) must fit in half the budget: a bigger last step, such as many parallel
  * reads, would otherwise pass the budget again on the next call and refresh every call. It waits for a smaller step instead. */
 export function refreshPoint(run: readonly AgentMessage[], keep: number, budget: number | undefined) {
-  const cut = lastStep(run), task = run.find(m => m.role === 'user');
+  const cut = lastStep(run), task = currentTask(run);
   if (!budget || cut <= keep) return undefined;
   const size = chars(run.slice(keep));
   if (size <= budget || (task ? messageChars(task) : 0) + chars(run.slice(cut)) > budget / 2) return undefined;
@@ -287,7 +311,7 @@ export function refreshPoint(run: readonly AgentMessage[], keep: number, budget:
 }
 /** The task, all live user/custom instructions, and the newest whole exchange stay exact across refresh. */
 export function refreshedRun(run: readonly AgentMessage[], keep: number, note: string): AgentMessage[] {
-  const task = run.find(message => message.role === 'user');
+  const task = currentTask(run);
   if (!keep || !task) return [...run];
   const retained = [...run.slice(0, keep).filter(message => message === task || message.role === 'user' || message.role === 'custom'),
     ...run.slice(keep).filter(message => message !== task)];

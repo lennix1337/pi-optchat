@@ -12,7 +12,7 @@ const freezeTree = <T>(value: T): T => {
 
 /** Static tool schemas are shared; each child still gets fresh tools and session-bound closures. */
 export const childToolSchemas = freezeTree({
-  spawn: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })) }), { minItems: 1 }) }),
-  tell: Type.Object({ id: Type.String(), message: Type.String() }),
-  parent: Type.Object({ message: Type.String() }),
+  spawn: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })) }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
+  tell: Type.Object({ id: Type.String(), message: Type.String() }, { additionalProperties: false }),
+  parent: Type.Object({ message: Type.String() }, { additionalProperties: false }),
 });

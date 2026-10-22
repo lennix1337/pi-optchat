@@ -12,19 +12,20 @@ const forbiddenKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-function boundedResult(text: string) {
+function boundedResult(text: string, request: string) {
   if (Buffer.byteLength(text) > OUTPUT_QUERY_MAX_BYTES)
-    throw new Error(`Output query exceeds ${OUTPUT_QUERY_MAX_BYTES}-byte limit; request a smaller range or fewer fields`);
+    throw new Error(`Output query exceeds ${OUTPUT_QUERY_MAX_BYTES}-byte limit; request ${request}, or page the original with output_read offset/limit without a query`);
   return text;
 }
 
 function lineRange(text: string, startLine: number, endLine: number) {
   if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine
-    || endLine - startLine + 1 > OUTPUT_QUERY_MAX_LINES) throw new Error('Invalid line range');
+    || endLine - startLine + 1 > OUTPUT_QUERY_MAX_LINES)
+    throw new Error(`Invalid line range: use 1-based startLine <= endLine, at most ${OUTPUT_QUERY_MAX_LINES} lines per query`);
   const lines = text.split(/\r\n|\n|\r/);
-  if (endLine > lines.length) throw new Error(`Line range exceeds output length (${lines.length} lines)`);
+  if (endLine > lines.length) throw new Error(`Line range exceeds output length (${lines.length} lines); use endLine ${lines.length} or less`);
   const selected = lines.slice(startLine - 1, endLine).map((line, index) => `${startLine + index}: ${line}`).join('\n');
-  return boundedResult(`[Lines ${startLine}-${endLine} of ${lines.length}; 1-based inclusive]\n${selected}`);
+  return boundedResult(`[Lines ${startLine}-${endLine} of ${lines.length}; 1-based inclusive]\n${selected}`, 'fewer or shorter lines');
 }
 
 function invalidPath(): never {
@@ -76,12 +77,19 @@ function parsePath(path: string): PathSegment[] {
   return segments;
 }
 
+/** The error for an index the value cannot serve, naming the indexes it can. */
+function missingIndex(value: unknown, index: number) {
+  const missing = `JSON path index ${index} does not exist; `;
+  if (!Array.isArray(value)) return new Error(`${missing}the value is not an array`);
+  if (!value.length) return new Error(`${missing}the array is empty`);
+  return new Error(`${missing}the array has ${value.length} ${value.length === 1 ? 'item' : 'items'} (indexes 0-${value.length - 1})`);
+}
+
 function resolvePath(root: unknown, segments: PathSegment[]) {
   let value = root;
   for (const segment of segments) {
     if (typeof segment === 'number') {
-      if (!Array.isArray(value) || segment >= value.length || !Object.hasOwn(value, segment))
-        throw new Error(`JSON path index ${segment} does not exist on an array`);
+      if (!Array.isArray(value) || segment >= value.length || !Object.hasOwn(value, segment)) throw missingIndex(value, segment);
       value = value[segment];
     } else {
       if (!isRecord(value)) throw new Error(`JSON path property "${segment}" requires an object`);
@@ -117,7 +125,7 @@ function jsonQuery(text: string, path: string | undefined, fields: string[] | un
   const result = fields === undefined ? value : selectFields(value, fields);
   const serialized = JSON.stringify(result);
   if (serialized === undefined) throw new Error('JSON query did not select a serializable value');
-  return boundedResult(serialized);
+  return boundedResult(serialized, 'fewer fields');
 }
 
 /** Restricted structured projection over a stored original; no expression evaluation or arbitrary JSONPath. */

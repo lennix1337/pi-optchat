@@ -7,10 +7,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { Memory, CAP, PAGE, type Compression } from '../src/memory.ts';
 import { boundedMessage, logMessage } from '../src/transcript.ts';
 import { removeDir } from './support.ts';
-
-const toolResult = (toolCallId: string, toolName: string, text: string): AgentMessage => ({
-  role: 'toolResult', toolCallId, toolName, content: [{ type: 'text', text }], isError: false, timestamp: 3,
-});
+import { toolResultMessage } from './messages.ts';
 
 test('full tool outputs stay durable and pageable while request previews remain bounded and paired', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-tool-original-'));
@@ -28,7 +25,7 @@ test('full tool outputs stay durable and pageable while request previews remain 
     ], api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'toolUse', timestamp: 2,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
     logMessage(memory, calls);
-    const rawFirst = toolResult('first', 'bash', first);
+    const rawFirst = toolResultMessage('first', 'bash', first);
     const preview = boundedMessage(rawFirst);
     assert.equal(preview.role, 'toolResult');
     if (preview.role !== 'toolResult') throw new Error('unexpected role');
@@ -37,7 +34,7 @@ test('full tool outputs stay durable and pageable while request previews remain 
     assert.ok(!previewText.includes('MIDDLE-FIRST-'), 'the live request does not contain the full large output');
 
     logMessage(memory, preview, undefined, rawFirst);
-    const rawSecond = toolResult('second', 'read', second);
+    const rawSecond = toolResultMessage('second', 'read', second);
     logMessage(memory, boundedMessage(rawSecond), undefined, rawSecond);
     await memory.settle(AbortSignal.timeout(5000), 'tree');
     assert.equal(memory.root.length, 4, 'each result stays one memory message so parallel result pairing is unchanged');

@@ -1,14 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { withTempDir } from './support.ts';
 
-function withDirectory(run: (directory: string) => void) {
-  const directory = mkdtempSync(join(tmpdir(), 'optchat-operational-state-'));
-  try { run(directory); } finally { rmSync(directory, { recursive: true, force: true }); }
-}
+const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
 
 const objective: OperationalUpdate = { kind: 'objective', text: 'Finish the authorized test task.', sourceMessageId: 'message-10' };
 const evidence = [{ kind: 'self-reported' as const, ref: 'reported by the operator; no test output attached' }];

@@ -4,7 +4,7 @@ import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core'
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { accountGroup } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
-import { IMPORT_GUIDANCE, compaction, tooLong } from './prompts.ts';
+import { IMPORT_GUIDANCE, SUMMARY_SIGNPOSTS, compaction, tooLong } from './prompts.ts';
 import { bytes, NODE, start, type Compressor, type Compression, type Part } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
@@ -33,7 +33,7 @@ const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
 /** The recipe's compaction task. A tool result also gets the call that produced it, plus its output. */
 export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string } }, targetBytes?: number) {
   const { source, part, result, call } = input;
-  const sizeHint = targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes (not characters), leaving room below the limit.\n`;
+  const sizeHint = `${SUMMARY_SIGNPOSTS}\n` + (targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes (not characters), leaving room below the limit.\n`);
   const callContext = call ? `\nThe call is in <call>: context, like <chat>.\n<call>\n${call.text}\n</call>` : '';
   if (!part.l) {
     const kind = /^(\w+): /.exec(source)?.[1];

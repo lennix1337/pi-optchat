@@ -11,6 +11,7 @@ import type { Settings } from '../src/settings.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { textContent, withoutFullChat } from '../src/transcript.ts';
 import { removeDir } from './support.ts';
+import { userTexts } from './messages.ts';
 
 /** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
 const nested = () => ({ subagentLevels: 3, maxAgents: 8 });
@@ -78,8 +79,6 @@ async function setup(prefix: string) {
   return { dir, releases, hooks, reports, warnings, make, cleanup };
 }
 
-const users = (children: Children, id: string) => children.messages(id).filter(m => m.role === 'user').map(m => textContent(m.content));
-
 test('tell resumes a finished child with its earlier conversation, also from an earlier Pi session', async () => {
   const { dir, reports, warnings, make, cleanup } = await setup('optchat-resume-');
   const children = make('first-session');
@@ -103,7 +102,7 @@ test('tell resumes a finished child with its earlier conversation, also from an 
     for (const key of ['id', 'task', 'cwd', 'model', 'depth', 'sessionFile'] as const) assert.equal(after[key], before[key]);
     assert.equal(after.parentId, undefined);
     assert.deepEqual(after.guidance.map(g => [g.text, g.state, g.from]), [['one more thing', 'delivered', 'manager']]);
-    assert.equal(users(children, id).length, 2, 'one transcript holds both runs');
+    assert.equal(userTexts(children.messages(id)).length, 2, 'one transcript holds both runs');
     assert.match(readFileSync(after.sessionFile!, 'utf8'), /one more thing/);
 
     // A new Pi session only has the run record and transcript on disk.
@@ -114,7 +113,7 @@ test('tell resumes a finished child with its earlier conversation, also from an 
     await until(() => !later!.active);
     assert.equal(reports[2], `[${id}] remember resumed after "remember first report" heard: and once more`);
     assert.equal(later.history.records.get(id)?.parentSession, 'second-session', 'usage of the new turns belongs to the session that resumed it');
-    assert.deepEqual(users(later, id).slice(1), ['one more thing', 'and once more']);
+    assert.deepEqual(userTexts(later.messages(id)).slice(1), ['one more thing', 'and once more']);
     assert.deepEqual(warnings, []);
   } finally { await cleanup(children, ...(later ? [later] : [])); }
 });
@@ -204,7 +203,7 @@ test('a child whose parent stops while it is being resumed does not start', asyn
     await until(() => !children.active);
     assert.equal(children.live(worker), undefined);
     assert.equal(children.history.records.get(worker)?.state, 'completed');
-    assert.equal(users(children, worker).length, 1, 'the cancelled child never got the message');
+    assert.equal(userTexts(children.messages(worker)).length, 1, 'the cancelled child never got the message');
     assert.equal(disposed, 1, 'the opened session is closed');
   } finally { await cleanup(children); }
 });
@@ -334,7 +333,7 @@ test('subagents cut off by Pi closing or crashing are resumed at the next start,
     assert.equal(reports[0], `Pi restarted while subagents were working. Resumed ${held}, ${crashed} from where they left off; reports arrive as usual.`);
     await until(() => !later[0].active);
     for (const id of [held, crashed]) {
-      assert.match(users(later[0], id).at(-1) ?? '', /^Pi restarted while you were working\. Your last tool call may have been cut off; check its effect before redoing it\. Continue your task\.$/);
+      assert.match(userTexts(later[0].messages(id)).at(-1) ?? '', /^Pi restarted while you were working\. Your last tool call may have been cut off; check its effect before redoing it\. Continue your task\.$/);
       assert.equal(later[0].history.records.get(id)?.state, 'completed');
       assert.ok(reports.some(r => r.startsWith(`[${id}] `)), 'the resumed run reports as usual');
     }
@@ -407,7 +406,7 @@ test('a cut-off child is named to its resumed parent, or to the main agent when 
     await later.resumeCutOff();
     assert.equal(reports[0], `Pi restarted while subagents were working. Resumed ${boss} from where it left off; reports arrive as usual.\nAlso cut off, but not resumed because their parent agent is not running: ${stray} (under ${idle}).`);
     await until(() => !later!.active);
-    assert.match(users(later, boss).at(-1) ?? '', new RegExp(`Your subagents ${worker} were cut off by a Pi restart: tell resumes one`));
+    assert.match(userTexts(later.messages(boss)).at(-1) ?? '', new RegExp(`Your subagents ${worker} were cut off by a Pi restart: tell resumes one`));
     assert.deepEqual([worker, stray].map(id => later!.history.records.get(id)?.cutOff), [undefined, undefined], 'each was named once');
     assert.deepEqual(later.ids, []);
   } finally { await cleanup(first, ...(later ? [later] : [])); }
@@ -439,7 +438,7 @@ test('a cut-off run the main agent resumes itself during startup is left alone',
     assert.ok(!stale.includes('interrupted'), 'the live record is not overwritten by the one read at startup');
     assert.equal(reports[0], `Pi restarted while subagents were working. Resumed ${slow} from where it left off; reports arrive as usual.`);
     await until(() => !later!.active);
-    assert.equal(users(later, told).at(-1), 'from main');
+    assert.equal(userTexts(later.messages(told)).at(-1), 'from main');
     assert.equal(later.history.records.get(told)?.state, 'completed');
   } finally { await cleanup(first, ...(later ? [later] : [])); }
 });

@@ -197,6 +197,8 @@ This is conservative recovery, not distributed exactly-once execution or a sandb
 
 ## Context fidelity and request budgets
 
+For old-topic resumption, exact passage lookup inside a known tree branch, or conflicting historical decisions, use the packaged **optchat-memory** skill. [Resolution-on-demand design, navigation and benchmarks](docs/resolution-on-demand.md) describe bounded reference focus, scoped literal zoom and retrieval-oriented summaries. Originals and chronological tree order remain unchanged; source updates need `/reload`.
+
 Turn refresh keeps live user instructions and custom messages verbatim, including image-bearing tasks, while older executed exchanges move into memory. Tool-result previews stay bounded, but their complete text is persisted and recoverable with paged `zoom`; `zoom(agent)` likewise pages complete child-result text. Child transcripts remain text-only and do not recover image attachments.
 
 Request budgeting uses Pi's estimate of the assembled prompt, active tool schemas, memory and live messages, with the model's output allowance and an additional 5% margin reserved. Existing summary nodes can coarsen the view without deleting originals. If retained instructions still cannot fit, OptChat aborts explicitly rather than silently dropping them. These are conservative estimates, not exact provider tokenizer counts.

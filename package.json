@@ -6,6 +6,9 @@
     "extensions": [
       "./src/index.ts"
     ],
+    "skills": [
+      "./skills"
+    ],
     "image": "https://raw.githubusercontent.com/jonaslsaa/pi-optchat/main/docs/banner.jpg"
   },
   "scripts": {
@@ -15,6 +18,7 @@
     "test:live": "tsx test/live.ts",
     "benchmark:agents": "tsx test/agent-benchmark.ts",
     "benchmark:context": "tsx --import ./test/support.ts test/context-benchmark.ts",
+    "benchmark:resolution": "tsx --import ./test/support.ts test/resolution-benchmark.ts",
     "benchmark:performance": "tsx test/performance-benchmark.ts",
     "test:reliability": "tsx --import ./test/support.ts --test test/reliability-performance.test.ts test/operations.test.ts test/operation-diagnostics.test.ts test/output-context.test.ts test/performance-lazy.test.ts",
     "benchmark:reliability": "tsx test/reliability-benchmark.ts"
@@ -60,6 +64,7 @@
   },
   "files": [
     "src",
+    "skills",
     "docs/*.md",
     "README.md",
     "LICENSE",

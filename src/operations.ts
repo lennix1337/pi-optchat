@@ -162,7 +162,7 @@ export function registerOperationSafety(pi: ExtensionAPI, journal: () => Operati
   });
   pi.registerTool({ name: 'operation_state', label: 'Operation recovery',
     description: 'Inspect uncertain tool outcomes after interruption. Resolve only after independent read-only observation; supply an evidence reference, never assume success or repeat the operation to check. This records an observation, not authorization or verified success.',
-    parameters: Type.Object({ id: Type.Optional(Type.String()), evidence: Type.Optional(Type.String({ maxLength: 1000 })) }),
+    parameters: Type.Object({ id: Type.Optional(Type.String()), evidence: Type.Optional(Type.String({ maxLength: 1000 })) }, { additionalProperties: false }),
     async execute(_id, args) {
       const current = journal();
       if (!current) throw new Error('No active operation journal');

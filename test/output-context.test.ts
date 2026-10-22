@@ -1,18 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OutputStore } from '../src/output-store.ts';
 import { OutputContext, outputReadTool } from '../src/output-context.ts';
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { tempDir } from './support.ts';
+import { toolResultMessage } from './messages.ts';
 
 const log = `${'build: compiling module successfully\n'.repeat(2000)}error CS0246: missing Type\nFAILED test one\nTests: 1 failed, 400 passed\nexit code 1\n`;
-const message = (text = log): Extract<AgentMessage, { role: 'toolResult' }> => ({ role: 'toolResult', toolName: 'bash', toolCallId: 'call', content: [{ type: 'text', text }], isError: true, timestamp: 1 });
-function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'optchat-output-'));
-  return { dir, close: () => rmSync(dir, { recursive: true, force: true }) };
-}
+const message = (text = log) => toolResultMessage('call', 'bash', text, { isError: true, timestamp: 1 });
+const fixture = () => tempDir('optchat-output-');
 test('shell projection preserves original, diagnostics and error state; originals survive restart and search', () => {
   const f = fixture();
   try {

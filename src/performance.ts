@@ -82,6 +82,6 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
 export const performanceTool = (metrics: () => PerformanceMetrics, outputs: () => object) => ({
   name: 'context_metrics', label: 'Context performance', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
   description: 'Numeric local stage timings and latest request size estimates for this session. No raw prompts/output. Not provider billing or proof of task success.',
-  parameters: Type.Object({}),
+  parameters: Type.Object({}, { additionalProperties: false }),
   async execute() { return { content: [{ type: 'text' as const, text: JSON.stringify({ ...metrics().snapshot(), output: outputs() }, null, 2) }], details: {} }; },
 });

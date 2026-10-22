@@ -13,10 +13,11 @@ import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profi
 import { estimatedContextTokens, inputTokenBudget, retainedRun, needsRunRefresh, assertContextFits } from '../src/run-context.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { isCompaction } from './support.ts';
+import { toolCallMessage, toolResultMessage } from './messages.ts';
 
 const user: AgentMessage = { role: 'user', content: 'Finish this task.', timestamp: 1 };
-const call = (id: string): AgentMessage => ({ role: 'assistant', content: [{ type: 'toolCall', id, name: 'dump', arguments: {} }], api: 'openai-completions', provider: 'fixture', model: 'fixture', timestamp: 2, stopReason: 'toolUse', usage: emptyUsage() });
-const echo = (id: string): AgentMessage => ({ role: 'toolResult', toolCallId: id, toolName: 'dump', content: [{ type: 'text', text: 'original result' }], isError: false, timestamp: 3 });
+const call = (id: string) => toolCallMessage(id, 'dump');
+const echo = (id: string) => toolResultMessage(id, 'dump', 'original result');
 
 test('refresh retains live user instructions and the last whole tool exchange, never orphaning tool results', () => {
   const steering: AgentMessage = { ...user, content: 'New constraint.', timestamp: 4 };

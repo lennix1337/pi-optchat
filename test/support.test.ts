@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { removeDir } from './support.ts';
+import { removeDir, tempDir, withTempDir } from './support.ts';
 
 test('a test process leaves nothing in the temp dir: not a forgotten dir, not one rewritten after its removal, not a worker thread\'s', () => {
   const temp = mkdtempSync(join(tmpdir(), 'optchat-support-'));
@@ -28,4 +28,20 @@ test('a test process leaves nothing in the temp dir: not a forgotten dir, not on
       { cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, TMPDIR: temp, TEMP: temp, TMP: temp } });
     assert.deepEqual(readdirSync(temp).filter(name => name.startsWith('optchat-')), []);
   } finally { removeDir(temp); }
+});
+
+test('tempDir closes its directory, and withTempDir removes it after a return, a throw, a resolved promise and a rejected one', async () => {
+  const fixture = tempDir('optchat-support-fixture-');
+  assert.ok(existsSync(fixture.dir));
+  fixture.close();
+  assert.equal(existsSync(fixture.dir), false);
+
+  const seen: string[] = [];
+  const keep = (dir: string) => { seen.push(dir); writeFileSync(join(dir, 'file'), 'x'); return dir; };
+  assert.equal(withTempDir('optchat-support-sync-', keep), seen[0]);
+  assert.throws(() => withTempDir('optchat-support-throw-', dir => { keep(dir); throw new Error('sync failure'); }), /sync failure/);
+  assert.equal(await withTempDir('optchat-support-async-', async dir => keep(dir)), seen[2]);
+  await assert.rejects(withTempDir('optchat-support-reject-', async dir => { keep(dir); throw new Error('async failure'); }), /async failure/);
+  assert.equal(seen.length, 4);
+  assert.deepEqual(seen.filter(existsSync), []);
 });
