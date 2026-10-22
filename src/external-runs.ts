@@ -271,7 +271,7 @@ export function externalStateLine(run: RunInfo): string {
   return `${state}. Read-only pi-subagents transcript; its artifacts stay in pi-subagents.`;
 }
 
-interface CacheEntry { stamp: string; runs?: RunInfo[] }
+interface CacheEntry { stamp: string; runs?: RunInfo[]; runner?: RunnerEvidence }
 interface ForegroundCache { stamp: string; runs: RunInfo[] }
 
 /** What a panel needs to reach a run: which run, which step, and where its control inbox is. */
@@ -288,6 +288,26 @@ export interface ExternalRunsOptions {
   throttleMs?: number;
   /** A live record older than this belongs to a run that died without cleaning up. */
   liveTtlMs?: number;
+  /** Whether a PID runs: false only when it is known gone, undefined when it cannot be told. */
+  processAlive?: (pid: number) => boolean | undefined;
+}
+
+/** A fresh status gets this long before a missing runner counts, so a runner exiting right after its last write is not misread. */
+const LOST_RUNNER_GRACE_MS = 30_000;
+/** The runner enforces its timeout and writes a result; this long past the deadline it is gone even if its PID was recycled. */
+const DEADLINE_GRACE_MS = 10 * 60_000;
+
+function probeProcess(pid: number): boolean | undefined {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : undefined; }
+}
+
+/** What tells whether an async run's runner still exists. */
+interface RunnerEvidence { pid?: number; lastUpdate?: number; deadlineAt?: number }
+
+function runnerEvidence(value: unknown): RunnerEvidence {
+  if (!isRecord(value)) return {};
+  return { pid: count(value.pid), lastUpdate: count(value.lastUpdate) ?? count(value.startedAt), deadlineAt: count(value.deadlineAt) };
 }
 
 /**
@@ -306,6 +326,7 @@ export class ExternalRuns {
   private readonly now: () => number;
   private readonly throttleMs: number;
   private readonly liveTtlMs: number;
+  private readonly processAlive: (pid: number) => boolean | undefined;
   private asyncRecords = new Map<string, RunInfo>();
   private foregroundRecords = new Map<string, RunInfo>();
   private liveRecords = new Map<string, RunInfo>();
@@ -320,6 +341,7 @@ export class ExternalRuns {
     this.now = options.now ?? Date.now;
     this.throttleMs = options.throttleMs ?? 750;
     this.liveTtlMs = options.liveTtlMs ?? 5 * 60 * 1000;
+    this.processAlive = options.processAlive ?? probeProcess;
     this.hiddenFile = join(profileDirectory, 'runs', 'external-hidden.json');
     this.hidden = readHidden(this.hiddenFile, this.warnings);
   }
@@ -408,17 +430,34 @@ export class ExternalRuns {
       seen.add(file);
       const cached = this.statusCache.get(file);
       if (cached?.stamp === stamp) {
-        for (const run of cached.runs ?? []) next.set(run.id, run);
+        for (const run of this.settleLostRunner(cached.runs ?? [], cached.runner)) next.set(run.id, run);
         continue;
       }
-      let runs: RunInfo[] = [];
-      try { runs = asyncStatusToRuns(JSON.parse(readFileSync(file, 'utf8')), entry.name, dir).map(run => this.withSessionMeta(run)); }
-      catch { runs = []; }
-      this.statusCache.set(file, { stamp, runs });
-      for (const run of runs) next.set(run.id, run);
+      let runs: RunInfo[] = [], runner: RunnerEvidence | undefined;
+      try {
+        const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+        runs = asyncStatusToRuns(value, entry.name, dir).map(run => this.withSessionMeta(run));
+        runner = runnerEvidence(value);
+      } catch { runs = []; }
+      this.statusCache.set(file, { stamp, runs, runner });
+      for (const run of this.settleLostRunner(runs, runner)) next.set(run.id, run);
     }
     for (const file of this.statusCache.keys()) if (!seen.has(file)) this.statusCache.delete(file);
     this.asyncRecords = next;
+  }
+
+  /**
+   * A runner killed with its Pi session leaves status.json saying "running" until pi-subagents
+   * reconciles it, which it only does for its own session's runs. Rows whose runner is known gone
+   * show as interrupted, ended at its last write; the files stay pi-subagents' to repair.
+   */
+  private settleLostRunner(runs: RunInfo[], runner: RunnerEvidence | undefined): RunInfo[] {
+    if (!runner?.pid || runner.lastUpdate === undefined || !runs.some(isActiveRun)) return runs;
+    const now = this.now(), quiet = now - runner.lastUpdate;
+    const overdue = runner.deadlineAt !== undefined && now - runner.deadlineAt > DEADLINE_GRACE_MS && quiet > DEADLINE_GRACE_MS;
+    const lost = overdue || (quiet > LOST_RUNNER_GRACE_MS && this.processAlive(runner.pid) === false);
+    if (!lost) return runs;
+    return runs.map(run => isActiveRun(run) ? { ...run, state: 'interrupted', ended: runner.lastUpdate } : run);
   }
 
   private readForeground() {

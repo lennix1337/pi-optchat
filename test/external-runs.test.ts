@@ -145,6 +145,35 @@ test('external runs are read from disk, and hiding one keeps it out of the panel
   } finally { removeDir(root); removeDir(profile); }
 });
 
+test('a pi-subagents run whose runner is gone shows as interrupted, not running, without touching its files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-subagents-root-')), profile = mkdtempSync(join(tmpdir(), 'optchat-profile-'));
+  try {
+    const minute = 60_000, now = 100 * minute;
+    const running = (runId: string, over: Record<string, unknown>) => status({ runId, state: 'running', endedAt: undefined, startedAt: minute, lastUpdate: now - 5 * minute, ...over });
+    writeRun(root, 'dead', running('dead', { pid: 11 }));
+    writeRun(root, 'alive', running('alive', { pid: 22 }));
+    writeRun(root, 'just-written', running('just-written', { pid: 33, lastUpdate: now - 1000 }));
+    // A recycled PID still answers, but the runner would have written its timeout result long ago.
+    writeRun(root, 'overdue', running('overdue', { pid: 44, timeoutMs: 30 * minute, deadlineAt: now - 20 * minute, lastUpdate: now - 15 * minute }));
+    writeRun(root, 'no-pid', running('no-pid', {}));
+    const alive = new Set([22, 44]);
+    const runs = new ExternalRuns(profile, { root, throttleMs: 0, now: () => now, processAlive: pid => alive.has(pid) });
+    runs.refresh(true);
+    assert.equal(runs.get('pi-dead')?.state, 'interrupted');
+    assert.equal(runs.get('pi-dead')?.ended, now - 5 * minute, 'ended when the runner last wrote');
+    assert.equal(runs.get('pi-alive')?.state, 'running');
+    assert.equal(runs.get('pi-just-written')?.state, 'running', 'a fresh status gets a grace period');
+    assert.equal(runs.get('pi-overdue')?.state, 'interrupted');
+    assert.equal(runs.get('pi-no-pid')?.state, 'running', 'no PID is no evidence');
+    assert.equal(runs.activeCount(), 3);
+    // The runner dies after the status was cached: the next refresh notices without the file changing.
+    alive.delete(22);
+    runs.refresh(true);
+    assert.equal(runs.get('pi-alive')?.state, 'interrupted');
+    assert.equal(JSON.parse(readFileSync(join(root, 'async-subagent-runs', 'dead', 'status.json'), 'utf8')).state, 'running', 'pi-subagents files stay read-only');
+  } finally { removeDir(root); removeDir(profile); }
+});
+
 test('a running pi-subagents run is active, and a corrupt status file is skipped instead of breaking the panel', () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-subagents-root-')), profile = mkdtempSync(join(tmpdir(), 'optchat-profile-'));
   try {
