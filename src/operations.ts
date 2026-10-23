@@ -62,7 +62,7 @@ export class OperationJournal {
   blockReason(tool: string, trustedReadOnly = false) {
     if (trustedReadOnly || READ_ONLY.has(tool)) return;
     const uncertain = this.pending().filter(o => !this.inFlight.has(o.id));
-    if (uncertain.length) return `Not executed: external outcome uncertain for ${uncertain.map(o => o.id).join(', ')} (an earlier call was interrupted or timed out). Do not repeat effects. Use read-only observation, then operation_state with an evidence reference to reconcile.`;
+    if (uncertain.length) return `Not executed: external outcome uncertain for ${uncertain.map(o => `${o.id} (${o.tool})`).join(', ')}; that earlier call was interrupted or timed out. Do not repeat effects. Read-only tools still work (read, grep, find, ls, zoom, search, installed tools marked read-only, read-only bash such as git status/diff/log, cmp, cat): use them to check the real state, then call operation_state with an evidence reference to reconcile.`;
   }
   start(session: string, call: string, tool: string, args: unknown, trustedReadOnly = false, recoveryIncidentId?: string, dispatchObserved = false) {
     if (trustedReadOnly || READ_ONLY.has(tool) || isReadOnlyDiagnostic(tool, args)) return;
@@ -104,6 +104,29 @@ export class OperationJournal {
 
 const INTERRUPTED = /timed? ?out|timeout|abort|interrupt|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|connection (?:reset|closed)|\b50[234]\b|SIG(?:KILL|TERM|INT|HUP)|terminated|outcome uncertain/i;
 
+// Only known pre-dispatch refusals bypass keyword detection; a generic "Invalid response" may
+// follow execution. Real transport failures and cut-offs still take precedence over these messages.
+const CUT_OFF = /timed? out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|connection (?:reset|closed)|SIG(?:KILL|TERM|INT|HUP)|abort|interrupt|terminated|\b50[234]\b/i;
+const REFUSED_BEFORE_RUNNING = /^(?:Invalid timeout: [\w.-]+$|Prior check active or outcome uncertain\.(?:\s|$))/;
+function completedCheckOutcome(text: string): boolean | undefined {
+  try {
+    const receipt = JSON.parse(text);
+    if (receipt?.schema === 'pi-ripwire/v1' && receipt.kind === 'check'
+      && ['passed', 'failed'].includes(receipt.status) && Number.isInteger(receipt.exitCode)
+      && receipt.exitCode >= 0) return [124, 137, 143].includes(receipt.exitCode);
+  } catch { /* Non-JSON output is classified conservatively below. */ }
+  return undefined;
+}
+
+function refusedBeforeRunning(text: string): boolean {
+  let message = text;
+  try {
+    const parsed = JSON.parse(text) as { status?: unknown; message?: unknown } | null;
+    if (parsed && typeof parsed === 'object' && parsed.status === 'error' && typeof parsed.message === 'string') message = parsed.message;
+  } catch { /* plain text */ }
+  return REFUSED_BEFORE_RUNNING.test(message.trim()) && !CUT_OFF.test(text);
+}
+
 /** An ordinary failure (non-zero exit, validation error, HTTP 4xx) is an observed outcome the model can read.
  * Only an empty, interrupted, timed-out or gateway-failed response leaves external state unknown. */
 export function outcomeUnknown(content: readonly unknown[] | undefined): boolean {
@@ -115,7 +138,12 @@ export function outcomeUnknown(content: readonly unknown[] | undefined): boolean
   if (exit) return ['124', '137', '143'].includes(exit[1]);
   // Shells append their timeout/abort status last; scanning only the tail keeps test names like
   // "handles timeout" inside an ordinary failing log from reopening the barrier.
-  return !text.trim() || INTERRUPTED.test(text.slice(-400));
+  if (!text.trim()) return true;
+  // The runner's terminal receipt is execution evidence; words in failed assertions are not.
+  const completed = completedCheckOutcome(text);
+  if (completed !== undefined) return completed;
+  if (refusedBeforeRunning(text)) return false;
+  return INTERRUPTED.test(text.slice(-400));
 }
 const failedUnobserved = (event: { isError: boolean; content?: readonly unknown[] }) => event.isError && outcomeUnknown(event.content);
 

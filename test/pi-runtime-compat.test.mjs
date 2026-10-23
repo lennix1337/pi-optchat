@@ -39,6 +39,7 @@ test('runs OptChat session start and shutdown through Pi 1.2 with an isolated no
   const previousHome = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = home;
   const lifecycle = [], statuses = [], errors = [];
+  const lifecycleEvents = new WeakSet();
   let inferenceRequests = 0;
   let session;
   let shutdownEmitted = false;
@@ -55,7 +56,11 @@ test('runs OptChat session start and shutdown through Pi 1.2 with an isolated no
     const observedOptchat = pi => optchat(new Proxy(pi, {
       get(target, property, receiver) {
         if (property === 'on') return (event, handler) => target.on(event, ['session_start', 'session_shutdown'].includes(event)
-          ? async (...args) => { lifecycle.push(event); return handler(...args); }
+          ? async (...args) => {
+            // Pi dispatches one event to multiple handlers (including native-hint cleanup).
+            if (!lifecycleEvents.has(args[0])) { lifecycleEvents.add(args[0]); lifecycle.push(event); }
+            return handler(...args);
+          }
           : handler);
         return Reflect.get(target, property, receiver);
       },

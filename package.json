@@ -21,7 +21,8 @@
     "benchmark:resolution": "tsx --import ./test/support.ts test/resolution-benchmark.ts",
     "benchmark:performance": "tsx test/performance-benchmark.ts",
     "test:reliability": "tsx --import ./test/support.ts --test test/reliability-performance.test.ts test/operations.test.ts test/operation-diagnostics.test.ts test/output-context.test.ts test/performance-lazy.test.ts",
-    "benchmark:reliability": "tsx test/reliability-benchmark.ts"
+    "benchmark:reliability": "tsx test/reliability-benchmark.ts",
+    "benchmark:summaries": "tsx test/summary-ab-benchmark.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.2.0",

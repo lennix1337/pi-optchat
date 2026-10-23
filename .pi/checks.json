@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "checks": {
+    "operation-safety": {
+      "description": "Hermetic recovery classifier, operation journal and native bash-hint regressions; no model calls",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/operations.test.ts", "test/operation-diagnostics.test.ts", "test/bash-hints.test.ts", "test/summary-ab-guard.test.ts"],
+      "timeoutMs": 120000
+    },
+    "typecheck": {
+      "description": "TypeScript no-emit check",
+      "argv": ["node", "node_modules/typescript/bin/tsc", "--noEmit"],
+      "timeoutMs": 120000
+    },
+    "pi-compat": {
+      "description": "Pi 1.2 extension loading and isolated lifecycle fixture; no inference",
+      "argv": ["node", "--import", "tsx", "--test", "test/pi-runtime-compat.test.mjs"],
+      "timeoutMs": 120000
+    },
+    "unit": {
+      "description": "Full hermetic unit suite; excludes live and paid benchmark entry points",
+      "argv": ["node", "node_modules/tsx/dist/cli.mjs", "--import", "./test/support.ts", "--test", "test/*.test.ts"],
+      "timeoutMs": 600000
+    }
+  }
+}

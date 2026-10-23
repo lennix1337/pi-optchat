@@ -91,3 +91,44 @@ test('only empty, interrupted or timed-out error responses leave the outcome unk
   }
   assert.equal(outcomeUnknown(undefined), true);
 });
+
+test('terminal native check receipts distinguish test output from an interrupted execution', async () => {
+  const { outcomeUnknown } = await import('../src/operations.ts');
+  const receipt = (extra: object) => [{ type: 'text', text: JSON.stringify({
+    schema: 'pi-ripwire/v1', kind: 'check', status: 'failed', exitCode: 1,
+    output: 'handles timeout and interrupted-turn recovery', ...extra,
+  }) }];
+  assert.equal(outcomeUnknown(receipt({})), false);
+  assert.equal(outcomeUnknown(receipt({ status: 'passed', exitCode: 0 })), false);
+  for (const exitCode of [124, 137, 143]) assert.equal(outcomeUnknown(receipt({ exitCode })), true);
+  assert.equal(outcomeUnknown(receipt({ status: 'timeout' })), true);
+  assert.equal(outcomeUnknown(receipt({ exitCode: null })), true);
+  assert.equal(outcomeUnknown(receipt({ schema: 'untrusted/v1' })), true);
+});
+
+test('a refusal returned before anything ran is an observed outcome even when it mentions timeout or uncertainty', async () => {
+  const { outcomeUnknown } = await import('../src/operations.ts');
+  const text = (value: string) => [{ type: 'text', text: value }];
+  const refusals = [
+    '{"status":"error","message":"Invalid timeout: rust-clippy","hint":"use a number of seconds"}',
+    'Prior check active or outcome uncertain. Inspect the marker before starting another check.',
+    'Invalid timeout: rust-clippy',
+  ];
+  for (const value of refusals) assert.equal(outcomeUnknown(text(value)), false, value);
+  // Real cut-offs, including ones that start like a refusal, still leave the outcome unknown.
+  const cutOff = [
+    '{"status":"error","message":"check timed out after 600 seconds"}',
+    'Invalid response: connection reset by peer',
+    'Prior check active, then the process was killed (SIGKILL)',
+    'Check running ... timed out after 600 seconds',
+    'Check failed: outcome uncertain',
+    'Invalid response: HTTP 502',
+    'Rejected after dispatch: outcome uncertain',
+    'Unsupported response after dispatch: timeout',
+    'Not executed: external outcome uncertain for s:c (bash); that earlier call was interrupted or timed out.',
+    'Invalid timeout: rust-clippy\nHTTP 502',
+    'Prior check active or outcome uncertain. HTTP 503',
+    'Invalid timeout: rust-clippy\nprocess terminated',
+  ];
+  for (const value of cutOff) assert.equal(outcomeUnknown(text(value)), true, value);
+});

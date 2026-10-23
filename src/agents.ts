@@ -22,6 +22,7 @@ import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { inputTokenBudget } from './run-context.ts';
 import type { ShellJobs } from './shells.ts';
 import { registerOperationSafety, type OperationJournal } from './operations.ts';
+import { registerBashHints } from './bash-hints.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
@@ -415,7 +416,10 @@ export class Children {
           metrics.record('projection', performance.now() - started); metrics.context(messages);
           return { messages };
         });
-        if (this.options.operations) registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
+        if (this.options.operations) {
+          registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
+          registerBashHints(pi);
+        }
         if (this.options.recoveryEvent) {
           const unsubscribe = pi.events.on('optchat:recovery', this.options.recoveryEvent);
           pi.on('session_shutdown', () => unsubscribe());

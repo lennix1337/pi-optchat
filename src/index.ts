@@ -26,6 +26,7 @@ import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
+import { registerBashHints } from './bash-hints.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -91,6 +92,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
+  registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
