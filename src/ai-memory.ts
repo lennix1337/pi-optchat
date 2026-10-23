@@ -15,14 +15,18 @@ const WRITE_TIMEOUT_MS = 30_000;
 export interface Page { path: string; body: string; abstract?: string; tags: string[] }
 export type PageWriter = (page: Page) => Promise<void>;
 
-const dataDir = () => process.env.AI_MEMORY_DATA_DIR
-  ?? (process.platform === 'win32' ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'ai-memory') : join(homedir(), '.local', 'share', 'ai-memory'));
+export function aiMemoryDataDir(platform: NodeJS.Platform = process.platform): string {
+  if (process.env.AI_MEMORY_DATA_DIR !== undefined) return process.env.AI_MEMORY_DATA_DIR;
+  if (platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'ai-memory');
+  if (platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'ai-memory');
+  return join(homedir(), '.local', 'share', 'ai-memory');
+}
 
 /** The bearer token the ai-memory installer leaves for local clients, as its own hooks read it. */
 export function aiMemoryToken() {
   const env = process.env.AI_MEMORY_AUTH_TOKEN?.trim();
   if (env) return env;
-  const file = join(dataDir(), 'auth-token');
+  const file = join(aiMemoryDataDir(), 'auth-token');
   return existsSync(file) ? readFileSync(file, 'utf8').trim() || undefined : undefined;
 }
 
