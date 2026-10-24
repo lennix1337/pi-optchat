@@ -284,12 +284,22 @@ export function messageChars(message: AgentMessage) {
 /** The share of the model's window the current turn's verbatim messages may fill before they move into memory (#146): the
  * profile's Turn refresh threshold, unless `OPTCHAT_REFRESH_AT` gives one (0 turns it off). */
 export function refreshFraction(setting: number, env = process.env.OPTCHAT_REFRESH_AT) {
-  const override = env?.trim() ? Number(env) : NaN;
-  return Number.isFinite(override) ? override : setting;
+  return envNumber(env) ?? setting;
 }
-/** That share in characters, at ~4 characters a token; none when off or the window is unknown. */
-export function refreshBudget(contextWindow: number | undefined, fraction: number) {
-  return contextWindow && fraction > 0 ? Math.floor(contextWindow * fraction * 4) : undefined;
+const envNumber = (env: string | undefined) => {
+  const value = env?.trim() ? Number(env) : NaN;
+  return Number.isFinite(value) ? value : undefined;
+};
+/** The most tokens the current turn may hold before it refreshes, whatever the window: the profile's Turn refresh cap in
+ * thousands, unless `OPTCHAT_REFRESH_TOKENS` gives one in tokens. 0 leaves only the window share. */
+export function refreshTokens(settingK: number, env = process.env.OPTCHAT_REFRESH_TOKENS) {
+  return envNumber(env) ?? settingK * 1000;
+}
+/** That share in characters, at ~4 characters a token, lowered to the token cap when one is set; none when off or the window is unknown. */
+export function refreshBudget(contextWindow: number | undefined, fraction: number, capTokens = 0) {
+  if (!contextWindow || !(fraction > 0)) return undefined;
+  const tokens = contextWindow * fraction;
+  return Math.floor((capTokens > 0 ? Math.min(tokens, capTokens) : tokens) * 4);
 }
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
 /** The run's current input: its first user message, or when a hidden extension message (a background wake) started it, its first custom one. */

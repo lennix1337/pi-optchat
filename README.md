@@ -165,6 +165,7 @@ If `Compactor returned no text` or a stream interruption recurs, keep the matchi
 | Import: summaries at once | 8 | Summaries an import builds at once, 1–64. Higher is faster but less accurate and uses more provider capacity; chat always runs 8. |
 | Shell notices | every end | What the model hears when a background shell ends: every end, failures only (a non-zero exit or an error), or never. A `shell_start` call can set its own `notify`. Applies to shells started after the change. |
 | Turn refresh threshold | 30% | Move completed exchanges into memory and continue with a fresh context when a run reaches this share of the model window. 0% disables it. Applies from the next call. |
+| Turn refresh cap | 0 K tokens | Refresh the main agent's turn at this many tokens when that comes before the threshold, so a 1M-token window does not re-read a 300K-token turn on every call. 0 means no cap; `OPTCHAT_REFRESH_TOKENS` (in tokens) overrides it. Applies from the next call. |
 
 Numbers must be whole numbers of at least 1; the refresh threshold is 0–90%. Missing keys in an older `config.json` take their defaults.
 

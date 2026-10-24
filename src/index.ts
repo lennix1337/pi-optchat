@@ -16,7 +16,7 @@ import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, coldAfter, prefixRetention, record } from './cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
+import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
@@ -553,7 +553,7 @@ export default function optchat(pi: ExtensionAPI) {
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);
-      const refresh = refreshPoint(projectedRun, keep, refreshBudget(window, refreshFraction(a.config.refreshAt)));
+      const refresh = refreshPoint(projectedRun, keep, refreshBudget(window, refreshFraction(a.config.refreshAt), refreshTokens(a.config.refreshTokensK)));
       let budgeted = inputBudget === undefined ? undefined
         : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine, focusView);
       if (refresh || budgeted && !budgeted.fits) {

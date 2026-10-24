@@ -424,7 +424,7 @@ test('the settings page cycles shell notices through every end, failures only an
     const page = settingsPage(plain, { profile: 'demo', config, models: [{ name: 'anthropic/claude-sonnet-5-5', thinking: ['low', 'medium'] }], save: next => saveConfig(dir, next) }, () => {});
     const screen = () => page.render(120).join('\n');
     assert.match(screen(), /Shell notices\s+every end\s+default/);
-    for (let i = 0; i < 18; i++) page.handleInput('\x1b[B'); // down past the model rows and the settings above Shell notices
+    for (let i = 0; i < 19; i++) page.handleInput('\x1b[B'); // down past the model rows and the settings above Shell notices
     page.handleInput('\r');
     assert.equal(config.shellNotify, 'failure');
     assert.match(screen(), /Saved shell notices failures only/);

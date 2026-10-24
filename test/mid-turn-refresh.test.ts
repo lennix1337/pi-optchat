@@ -9,7 +9,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime,
 import optchat from '../src/index.ts';
 import { Children } from '../src/agents.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { budgetContext, buildContext, messageChars, refreshBudget, refreshedRun, refreshFraction, refreshPoint, textContent } from '../src/transcript.ts';
+import { budgetContext, buildContext, messageChars, refreshBudget, refreshedRun, refreshFraction, refreshPoint, refreshTokens, textContent } from '../src/transcript.ts';
 import { Memory, type Part } from '../src/memory.ts';
 import { parsePercent } from '../src/settings-page.ts';
 import { invalid } from '../src/settings.ts';
@@ -111,6 +111,18 @@ test('the threshold is typed as 30, 30% or 0.3, OPTCHAT_REFRESH_AT overrides it,
   assert.equal(refreshBudget(200_000, refreshFraction(0.3, '0')), undefined);
 });
 
+test('a token cap bounds the refresh budget of a large window; 0 leaves the window share, and OPTCHAT_REFRESH_TOKENS overrides it', () => {
+  assert.equal(refreshBudget(1_000_000, 0.3, 80_000), 320_000, 'a 1M window refreshes at the 80K-token cap, not at 300K');
+  assert.equal(refreshBudget(200_000, 0.3, 80_000), 240_000, 'the window share applies when it is lower');
+  assert.equal(refreshBudget(1_000_000, 0.3, 0), 1_200_000, 'no cap');
+  assert.equal(refreshBudget(1_000_000, 0, 80_000), undefined, 'refresh off stays off');
+  assert.equal(refreshTokens(80, undefined), 80_000, 'the setting is in thousands of tokens');
+  assert.equal(refreshTokens(80, '20000'), 20_000);
+  assert.equal(refreshTokens(80, '0'), 0);
+  assert.equal(refreshTokens(80, 'abc'), 80_000);
+  assert.match(invalid('refreshTokensK', -1) ?? '', /of 0 or more/);
+});
+
 test('a last step too big to keep under half the budget waits for a smaller one instead of refreshing every call', () => {
   const step = (id: string, text: string): AgentMessage[] => [assistantMessage([{ type: 'toolCall', id, name: 'read', arguments: {} }], 'toolUse'),
     { role: 'toolResult', toolCallId: id, toolName: 'read', content: [{ type: 'text', text }], isError: false, timestamp: 3 }];
@@ -194,11 +206,20 @@ test('a real child provider request budgets its current prompt, active tool sche
 });
 
 test('a turn past its threshold is sent as the refreshed view, its task verbatim and only its last tool call, and memory logs every step once', async () => {
+  // A 10,000-token window at 10%: a 4,000-character refresh threshold, with room for the complete system prompt.
+  await refreshesAtFourThousandChars({ OPTCHAT_REFRESH_AT: '0.1', OPTCHAT_REFRESH_TOKENS: '0' });
+});
+
+test('a token cap below the window share refreshes the turn at the cap', async () => {
+  // The default 30% of 10,000 tokens would wait for 12,000 characters; a 1,000-token cap refreshes at 4,000, as above.
+  await refreshesAtFourThousandChars({ OPTCHAT_REFRESH_AT: undefined, OPTCHAT_REFRESH_TOKENS: '1000' });
+});
+
+async function refreshesAtFourThousandChars(env: Record<'OPTCHAT_REFRESH_AT' | 'OPTCHAT_REFRESH_TOKENS', string | undefined>) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-refresh-'));
-  const oldHome = process.env.OPTCHAT_HOME, oldBudget = process.env.OPTCHAT_REFRESH_AT;
-  process.env.OPTCHAT_HOME = dir;
-  // A 10,000-token window at 10%: the same 4,000-character refresh threshold, with room for the complete system prompt.
-  process.env.OPTCHAT_REFRESH_AT = '0.1';
+  const saved = { OPTCHAT_HOME: process.env.OPTCHAT_HOME, OPTCHAT_REFRESH_AT: process.env.OPTCHAT_REFRESH_AT, OPTCHAT_REFRESH_TOKENS: process.env.OPTCHAT_REFRESH_TOKENS };
+  const setEnv = (values: Record<string, string | undefined>) => { for (const [key, value] of Object.entries(values)) if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+  setEnv({ ...env, OPTCHAT_HOME: dir });
   const task = `Zoom message 0 eight times, then answer. ${'Context for the task. '.repeat(38)}`;
   const captured: Context[] = [], requestTokens: number[] = [], requestPromptChars: number[] = [], requestToolNames: string[][] = [], outputLimits: number[] = [], explicitOutputLimits: (number | undefined)[] = [];
   let calls = 0;
@@ -267,8 +288,7 @@ test('a turn past its threshold is sent as the refreshed view, its task verbatim
     assert.deepEqual(errors, []);
   } finally {
     if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
-    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
-    if (oldBudget === undefined) delete process.env.OPTCHAT_REFRESH_AT; else process.env.OPTCHAT_REFRESH_AT = oldBudget;
+    setEnv(saved);
     removeDir(dir);
   }
-});
+}
