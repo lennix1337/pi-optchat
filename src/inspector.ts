@@ -23,12 +23,14 @@ export const short = (n: number) => {
 const dollars = (n: number) => n > 0 && n < 0.0001 ? '<$0.0001' : `$${n.toFixed(n > 0 && n < 0.01 ? 4 : 2)}`;
 const cached = (u: Usage) => { const input = u.input + u.cacheRead + u.cacheWrite; return `${input ? Math.round(100 * u.cacheRead / input) : 0}%`; };
 const roleNames: Record<UsageRole, string> = { main: 'main', subagent: 'subagents', compactor: 'compactor', import: 'import' };
+const seconds = (ms?: number) => ms === undefined ? '-' : `${(ms / 1000).toFixed(1)}s`;
 function usageRows(groups: ReturnType<typeof summarizeUsage>['groups'], total: Usage) {
   const order = ['main', 'subagent', 'compactor', 'import'] as const;
   return groups.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role) || b.usage.cost.total - a.usage.cost.total).map((group, index) => [
     index && groups[index - 1].role === group.role ? '' : roleNames[group.role],
     oneLine(`${group.provider ?? 'unknown'}/${group.model}${group.failures ? ` · ${group.failures} failed` : ''}`), dollars(group.usage.cost.total),
     `${total.cost.total ? Math.round(100 * group.usage.cost.total / total.cost.total) : 0}%`, short(group.usage.output), cached(group.usage),
+    seconds(group.latency?.firstMs), seconds(group.latency?.responseMs),
   ]);
 }
 export const elapsed = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms / 1000) % 60}s`;
@@ -258,18 +260,21 @@ export class Inspector implements Component, Focusable {
   private usageLines(width: number) {
     const { usage, session, context, color } = this.options;
     const entries = usage.select(this.range, session);
-    const { total, failures, groups } = summarizeUsage(entries);
+    const { total, failures, groups, latency } = summarizeUsage(entries);
     // No-break spaces keep a label like "Last 7 days" on one line when the tabs wrap.
     const tabs = ranges.map(r => r.replaceAll(' ', '\u00a0')).map((r, i) => ranges[i] === this.range ? color('accent', `[${r}]`) : color('dim', r)).join('  ');
     const lines = [...wrapTextWithAnsi(tabs, width), ''];
     if (!entries.length) lines.push(color('muted', 'No usage in this period.'));
     else {
-      lines.push(`${color('accent', dollars(total.cost.total))} estimated API cost · ${short(total.totalTokens)} tokens · ${cached(total)} cached${failures ? ` · ${failures} failed` : ''}`, '');
+      lines.push(`${color('accent', dollars(total.cost.total))} estimated API cost · ${short(total.totalTokens)} tokens · ${cached(total)} cached${failures ? ` · ${failures} failed` : ''}`);
+      if (latency) lines.push(color('muted', `median of ${count(latency.calls)} measured calls: first content ${seconds(latency.firstMs)} · response ${seconds(latency.responseMs)}`));
+      lines.push('');
       const rows = usageRows(groups, total);
-      const header = ['', 'model', 'cost', 'share', 'out', 'cached'];
+      const header = ['', 'model', 'cost', 'share', 'out', 'cached', 'first', 'reply'];
       const widths = header.map((h, c) => Math.max(h.length, ...rows.map(r => r[c].length)));
       // The model column goes first when the screen is too narrow for every column.
-      const columns = widths.reduce((sum, w) => sum + w + 2, 0) - 2 <= width ? [0, 1, 2, 3, 4, 5] : [0, 2, 3, 4, 5];
+      const all = header.map((_, c) => c);
+      const columns = widths.reduce((sum, w) => sum + w + 2, 0) - 2 <= width ? all : all.filter(c => c !== 1);
       const line = (cells: string[]) => columns.map(c => c < 2 ? cells[c].padEnd(widths[c]) : cells[c].padStart(widths[c])).join('  ').trimEnd();
       lines.push(color('dim', line(header)), ...rows.map(r => {
         const text = line(r); return color('muted', text.slice(0, widths[0])) + text.slice(widths[0]);

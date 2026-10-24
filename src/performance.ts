@@ -53,9 +53,10 @@ export class PerformanceMetrics {
   snapshot() { return { stages: structuredClone(this.stages), request: { ...this.request }, payload: { ...this.payload } }; }
 }
 /** Real hook boundaries, not provider inference time or end-to-end speed claims. */
-export function registerPerformance(pi: ExtensionAPI, metrics: () => PerformanceMetrics | undefined) {
+export function registerPerformance(pi: ExtensionAPI, metrics: () => PerformanceMetrics | undefined,
+  onLatency?: (messageTimestamp: number, latency: { firstMs?: number; responseMs: number }) => void) {
   const tools = new Map<string, number>();
-  let request: number | undefined, first = false;
+  let request: number | undefined, first = false, firstMs: number | undefined;
   pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, performance.now()); });
   pi.on('tool_execution_end', event => {
     const start = tools.get(event.toolCallId); tools.delete(event.toolCallId);
@@ -63,18 +64,21 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
   });
   pi.on('before_provider_request', event => {
     const current = metrics();
-    if (current) { current.providerPayload(event.payload); request = performance.now(); first = false; }
+    if (current) { current.providerPayload(event.payload); request = performance.now(); first = false; firstMs = undefined; }
     return event.payload;
   });
   pi.on('after_provider_response', () => { if (request !== undefined) metrics()?.record('provider_headers', performance.now() - request); });
   pi.on('message_update', event => {
     if (request === undefined || first || event.message.role !== 'assistant') return;
     if (!event.message.content.some(block => block.type === 'text' && block.text.length || block.type === 'thinking' && block.thinking.length || block.type === 'toolCall')) return;
-    metrics()?.record('first_content', performance.now() - request); first = true;
+    firstMs = performance.now() - request;
+    metrics()?.record('first_content', firstMs); first = true;
   });
   pi.on('message_end', event => {
     if (request !== undefined && event.message.role === 'assistant') {
-      metrics()?.record('response', performance.now() - request); request = undefined;
+      const responseMs = performance.now() - request;
+      metrics()?.record('response', responseMs); request = undefined;
+      onLatency?.(event.message.timestamp, { ...(firstMs === undefined ? {} : { firstMs }), responseMs });
     }
   });
   pi.on('agent_settled', () => { tools.clear(); request = undefined; });

@@ -18,7 +18,10 @@ export interface UsageEntry {
   session?: string; runId?: string; usage: Usage;
   /** Optional attribution fields; omitted by pre-existing ledger records. */
   incidentId?: string; recoveryIncidentId?: string; attempt?: number; kind?: UsageKind; outcome?: UsageOutcome; failed?: boolean; errorCategory?: UsageErrorCategory;
+  /** Locally measured request→first content and request→message end, in ms; absent when unmeasured. */
+  latency?: Latency;
 }
+export interface Latency { firstMs?: number; responseMs?: number }
 export interface UsageAttribution {
   incidentId?: string; recoveryIncidentId?: string; attempt?: number; outcome?: UsageOutcome; failed?: boolean; errorCategory?: UsageErrorCategory;
 }
@@ -34,9 +37,18 @@ function validUsage(value: unknown): value is Usage {
   return usageKeys.every(k => nonnegative(value[k])) && costKeys.every(k => nonnegative(cost[k]));
 }
 const optionalString = (value: unknown) => value === undefined || typeof value === 'string';
+const latencyKeys = ['firstMs', 'responseMs'] as const;
+const validLatency = (value: unknown): value is Latency => record(value)
+  && Object.keys(value).every(k => (latencyKeys as readonly string[]).includes(k)) && latencyKeys.some(k => value[k] !== undefined)
+  && latencyKeys.every(k => value[k] === undefined || nonnegative(value[k]));
+/** Keeps the measured parts of a timing; undefined when nothing valid was measured. */
+function measured(value: Latency): Latency | undefined {
+  const kept = Object.fromEntries(latencyKeys.filter(k => nonnegative(value[k])).map(k => [k, Math.round(value[k]!)]));
+  return Object.keys(kept).length ? kept : undefined;
+}
 const stopOutcome = (value: AssistantMessage['stopReason']): UsageOutcome | undefined => outcomes.includes(value as UsageOutcome) ? value as UsageOutcome : undefined;
 type MessageEntry = Extract<SessionEntry, { type: 'message' }>;
-function backfilledMessage(entry: MessageEntry, session: string, role: 'main' | 'subagent', runId?: string): UsageEntry | undefined {
+function backfilledMessage(entry: MessageEntry, session: string, role: 'main' | 'subagent', runId?: string, latency?: Latency): UsageEntry | undefined {
   const { message } = entry;
   if ((message.role !== 'assistant' && message.role !== 'toolResult') || !message.usage) return;
   const failed = message.role === 'assistant' && (message.stopReason === 'error' || message.stopReason === 'aborted');
@@ -44,7 +56,8 @@ function backfilledMessage(entry: MessageEntry, session: string, role: 'main' | 
   return { id: `entry:${entry.id}:${entry.timestamp}`, date: new Date(message.timestamp).toISOString(), role, session, runId,
     provider: message.role === 'assistant' ? message.provider : undefined,
     model: message.role === 'assistant' ? message.model : 'tool-usage-model-unavailable', usage: message.usage,
-    kind: role === 'subagent' ? 'subagent' : 'conversation', ...(outcome ? { outcome } : {}), ...(failed ? { failed: true } : {}) };
+    kind: role === 'subagent' ? 'subagent' : 'conversation', ...(outcome ? { outcome } : {}), ...(failed ? { failed: true } : {}),
+    ...(latency ? { latency } : {}) };
 }
 function backfilledOverhead(entry: SessionEntry, session: string, role: 'main' | 'subagent', runId?: string): UsageEntry | undefined {
   if ((entry.type !== 'usage' && entry.type !== 'compaction' && entry.type !== 'branch_summary') || !entry.usage) return;
@@ -67,6 +80,7 @@ function validEntry(value: unknown): value is UsageEntry {
     && (value.outcome === undefined || (typeof value.outcome === 'string' && outcomes.includes(value.outcome as UsageOutcome)))
     && (value.failed === undefined || typeof value.failed === 'boolean')
     && (value.errorCategory === undefined || (typeof value.errorCategory === 'string' && errorCategories.includes(value.errorCategory)))
+    && (value.latency === undefined || validLatency(value.latency))
     && validUsage(value.usage);
 }
 function canonicalEntry(entry: UsageEntry): UsageEntry {
@@ -85,6 +99,7 @@ function canonicalEntry(entry: UsageEntry): UsageEntry {
     ...(entry.outcome === undefined ? {} : { outcome: entry.outcome }),
     ...(entry.failed === undefined ? {} : { failed: entry.failed }),
     ...(entry.errorCategory === undefined ? {} : { errorCategory: entry.errorCategory }),
+    ...(entry.latency === undefined ? {} : { latency: { ...entry.latency } }),
     usage: copyUsage(entry.usage),
   };
 }
@@ -96,12 +111,30 @@ export function addUsage(total: Usage, usage: Usage) {
   for (const key of costKeys) total.cost[key] += usage.cost[key];
 }
 
+/** Timings waiting for their message's turn-end backfill, keyed by assistant message timestamp; bounded. */
+class PendingTimings {
+  private readonly byTimestamp = new Map<number, Latency>();
+  set(timestamp: number, latency: Latency) {
+    const kept = measured(latency);
+    if (!kept) return;
+    this.byTimestamp.set(timestamp, kept);
+    if (this.byTimestamp.size > 256) this.byTimestamp.delete(this.byTimestamp.keys().next().value!);
+  }
+  take(entry: SessionEntry) {
+    if (entry.type !== 'message' || entry.message.role !== 'assistant') return;
+    const latency = this.byTimestamp.get(entry.message.timestamp);
+    this.byTimestamp.delete(entry.message.timestamp);
+    return latency;
+  }
+}
+
 /** One profile's ledger. Stable message IDs make resume/backfill idempotent. */
 export class UsageLedger {
   readonly entries: UsageEntry[] = [];
   private invalid = 0;
   private readonly ids = new Set<string>();
   private readonly cursors = new Map<string, number>();
+  private readonly timings = new PendingTimings();
   private readonly file: string;
   constructor(directory: string) {
     this.file = join(directory, 'usage.jsonl');
@@ -140,12 +173,14 @@ export class UsageLedger {
       ...(attribution.errorCategory === undefined ? {} : { errorCategory: attribution.errorCategory }),
     });
   }
+  /** Records the measured latency of the assistant message created at `timestamp`; invalid parts are dropped. */
+  timing(timestamp: number, latency: Latency) { this.timings.set(timestamp, latency); }
   backfill(entries: SessionEntry[], session: string, role: 'main' | 'subagent' = 'main', runId?: string) {
     const cursorKey = `${session}:${runId ?? ''}`;
     const cursor = this.cursors.get(cursorKey) ?? 0;
     for (const entry of entries.slice(cursor <= entries.length ? cursor : 0)) {
       // Pi forks preserve entry IDs/timestamps. Never count inherited responses twice.
-      const usage = entry.type === 'message' ? backfilledMessage(entry, session, role, runId) : backfilledOverhead(entry, session, role, runId);
+      const usage = entry.type === 'message' ? backfilledMessage(entry, session, role, runId, this.timings.take(entry)) : backfilledOverhead(entry, session, role, runId);
       if (usage) this.add(usage);
     }
     this.cursors.set(cursorKey, entries.length);
@@ -157,16 +192,39 @@ export class UsageLedger {
   }
 }
 
+const median = (values: number[]) => {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b), mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+};
+export interface LatencySummary { calls: number; firstMs?: number; responseMs?: number }
+class LatencySamples {
+  private readonly first: number[] = [];
+  private readonly response: number[] = [];
+  add(latency?: Latency) {
+    if (latency?.firstMs !== undefined) this.first.push(latency.firstMs);
+    if (latency?.responseMs !== undefined) this.response.push(latency.responseMs);
+  }
+  summary(): LatencySummary | undefined {
+    const calls = Math.max(this.first.length, this.response.length);
+    if (!calls) return undefined;
+    const firstMs = median(this.first), responseMs = median(this.response);
+    return { calls, ...(firstMs === undefined ? {} : { firstMs }), ...(responseMs === undefined ? {} : { responseMs }) };
+  }
+}
 export function summarizeUsage(entries: UsageEntry[]) {
-  const total = emptyUsage(), groups = new Map<string, { role: UsageRole; provider?: string; model: string; usage: Usage; failures: number }>();
+  const total = emptyUsage(), samples = new LatencySamples();
+  const groups = new Map<string, { role: UsageRole; provider?: string; model: string; usage: Usage; failures: number; samples: LatencySamples }>();
   let failures = 0;
   for (const entry of entries) {
     // Provider is part of a model's identity; legacy records without it remain grouped under unknown.
     const key = JSON.stringify([entry.role, entry.provider ?? '', entry.model]);
     let group = groups.get(key);
-    if (!group) { group = { role: entry.role, provider: entry.provider, model: entry.model, usage: emptyUsage(), failures: 0 }; groups.set(key, group); }
+    if (!group) { group = { role: entry.role, provider: entry.provider, model: entry.model, usage: emptyUsage(), failures: 0, samples: new LatencySamples() }; groups.set(key, group); }
     addUsage(group.usage, entry.usage); addUsage(total, entry.usage);
+    group.samples.add(entry.latency); samples.add(entry.latency);
     if (entry.failed) { group.failures++; failures++; }
   }
-  return { total, failures, groups: [...groups.values()] };
+  return { total, failures, latency: samples.summary(),
+    groups: [...groups.values()].map(({ samples: groupSamples, ...group }) => ({ ...group, latency: groupSamples.summary() })) };
 }

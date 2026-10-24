@@ -79,7 +79,7 @@ export default function optchat(pi: ExtensionAPI) {
   const shells = new ShellJobs();
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
   let active: Active | undefined;
-  registerPerformance(pi, () => active?.metrics);
+  registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
   const recoveryIncidents = new Map<string, string>();
   const recoveryEvent = (event: unknown) => {
     const diagnostic = sanitizeRecoveryDiagnostic(event);

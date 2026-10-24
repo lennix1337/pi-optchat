@@ -8,6 +8,33 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { emptyUsage, UsageLedger, summarizeUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
+test('measured response latency persists with the provider-reported call and summarizes as a median', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-latency-'));
+  const now = Date.now();
+  const call = (timestamp: number): AssistantMessage => ({ role: 'assistant', content: [{ type: 'text', text: 'ok' }], api: 'anthropic-messages', provider: 'anthropic', model: 'm', stopReason: 'stop', timestamp,
+    usage: { ...emptyUsage(), input: 10, cacheRead: 90, output: 1, totalTokens: 101 } });
+  try {
+    const ledger = new UsageLedger(dir);
+    const session = SessionManager.inMemory();
+    for (const [i, firstMs, responseMs] of [[0, 800, 4000], [1, 1200, 6000], [2, 1000, 5000]]) {
+      session.appendMessage(call(now + i));
+      ledger.timing(now + i, { firstMs, responseMs });
+    }
+    session.appendMessage(call(now + 3)); // unmeasured calls stay valid and are left out of the median
+    ledger.timing(now + 9, { firstMs: -1, responseMs: Number.NaN });
+    ledger.backfill(session.getEntries(), session.getSessionId());
+    const reloaded = new UsageLedger(dir);
+    assert.equal(reloaded.entries.length, 4);
+    assert.deepEqual(reloaded.entries[1].latency, { firstMs: 1200, responseMs: 6000 });
+    assert.equal(reloaded.entries[3].latency, undefined);
+    const { groups, latency } = summarizeUsage(reloaded.entries);
+    assert.deepEqual(latency, { calls: 3, firstMs: 1000, responseMs: 5000 });
+    assert.deepEqual(groups[0].latency, { calls: 3, firstMs: 1000, responseMs: 5000 });
+    appendFileSync(join(dir, 'usage.jsonl'), JSON.stringify({ ...reloaded.entries[0], id: 'bad-latency', latency: { firstMs: -5 } }) + '\n');
+    assert.equal(new UsageLedger(dir).entries.length, 4, 'a negative latency is an invalid record, not a measurement');
+  } finally { removeDir(dir); }
+});
+
 test('usage keeps roles/sessions separate, includes caches, and survives replay and a torn legacy record', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-'));
   const now = Date.now();

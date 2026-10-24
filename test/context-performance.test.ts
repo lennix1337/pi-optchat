@@ -78,3 +78,17 @@ test('real registered timing boundaries record tools and provider phases without
   for (const stage of ['tool', 'provider_headers', 'response'] as const) assert.equal(metrics.snapshot().stages[stage]!.count, 1);
   assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /SECRET|hello|secret/);
 });
+test('each measured assistant response reports its latency once, keyed by message timestamp', async () => {
+  const handlers = new Map<string, Function[]>(), metrics = new PerformanceMetrics(), reported: [number, object][] = [];
+  registerPerformance({ on: (name: string, fn: Function) => { handlers.set(name, [...handlers.get(name) ?? [], fn]); } } as unknown as ExtensionAPI,
+    () => metrics, (timestamp, latency) => reported.push([timestamp, latency]));
+  const emit = async (name: string, event: unknown) => { for (const fn of handlers.get(name) ?? []) await fn(event); };
+  await emit('before_provider_request', { payload: {} });
+  await emit('message_update', { message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } });
+  await emit('message_end', { message: { role: 'assistant', timestamp: 42 } });
+  await emit('message_end', { message: { role: 'assistant', timestamp: 43 } }); // no request in flight: nothing measured
+  await emit('before_provider_request', { payload: {} });
+  await emit('message_end', { message: { role: 'assistant', timestamp: 44 } }); // no content seen: response only
+  assert.deepEqual(reported.map(([t, l]) => [t, Object.keys(l).sort()]), [[42, ['firstMs', 'responseMs']], [44, ['responseMs']]]);
+  for (const [, latency] of reported) for (const value of Object.values(latency)) assert.ok(Number.isFinite(value) && value >= 0);
+});
