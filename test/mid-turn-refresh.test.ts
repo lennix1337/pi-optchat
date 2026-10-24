@@ -13,7 +13,7 @@ import { budgetContext, buildContext, messageChars, refreshBudget, refreshedRun,
 import { Memory, type Part } from '../src/memory.ts';
 import { parsePercent } from '../src/settings-page.ts';
 import { invalid } from '../src/settings.ts';
-import { subagentCompaction } from '../src/agents.ts';
+import { bindingTierBudget, subagentCompaction } from '../src/agents.ts';
 import { TURN_REFRESHED } from '../src/prompts.ts';
 import { isCompaction } from './support.ts';
 import { assistantMessage } from './messages.ts';
@@ -137,6 +137,16 @@ test('a model priced higher past a prompt size compacts its children before that
   assert.deepEqual(subagentCompaction(1_000_000, 0.3, 128_000, 90_000), { enabled: true, reserveTokens: 910_000 }, 'compacts at 90,000 tokens, not at the 348,000-token turn share');
   assert.deepEqual(subagentCompaction(1_000_000, 0.3, 128_000), { enabled: true, reserveTokens: 652_000 }, 'without a tier, the turn share stays');
   assert.deepEqual(subagentCompaction(200_000, 0.3, 150_000, 90_000), { enabled: true, reserveTokens: 160_000 }, 'a smaller input budget still wins');
+});
+
+test('a price tier binds a child only inside its prompt budget; beyond it the model is priced flat for children', () => {
+  const haiku = { contextWindow: 1_000_000, maxTokens: 128_000, cost: { tiers: [{ inputTokensAbove: 100_000 }] } };
+  const luna = { contextWindow: 272_000, maxTokens: 128_000, cost: { tiers: [{ inputTokensAbove: 272_000 }] } };
+  assert.equal(bindingTierBudget(haiku, 0.3), 90_000, 'Haiku 5.5: 90,000 is under its 348,000-token turn share');
+  assert.equal(subagentCompaction(haiku.contextWindow, 0.3, haiku.maxTokens, bindingTierBudget(haiku, 0.3)).reserveTokens, 910_000, 'so it compacts at 90,000 tokens');
+  assert.equal(bindingTierBudget(luna, 0.3), undefined, 'gpt-6-luna: its 244,800 tier is past its 129,600-token turn share');
+  assert.deepEqual(subagentCompaction(luna.contextWindow, 0.3, luna.maxTokens, bindingTierBudget(luna, 0.3)), { enabled: true, reserveTokens: 142_400 }, 'so it compacts at 129,600 tokens with refreshAt 0.3');
+  assert.equal(bindingTierBudget(luna, 0), undefined, 'with refresh off its 130,400-token input budget is still under the tier');
 });
 
 test('a real child provider request budgets its current prompt, active tool schemas, and transcript', async () => {

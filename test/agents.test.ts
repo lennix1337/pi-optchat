@@ -1019,7 +1019,51 @@ test('a child on a model priced higher past a prompt size gets the focused histo
     await until(() => firstPrompt.has('tiered'));
     assert.ok(!firstPrompt.get('flat')!.includes('[Focused child history'), 'a flat-priced child keeps the full view');
     assert.match(firstPrompt.get('tiered')!, /^\[Focused child history: \d+ older lines omitted/, 'a tiered child gets the focused view');
-    assert.ok(firstPrompt.get('flat')!.length > 20_000 && firstPrompt.get('tiered')!.length < 17_000, 'the focused view fits its 16 KB budget');
+    assert.ok(firstPrompt.get('flat')!.length > 20_000 && firstPrompt.get('tiered')!.length < 25_000, 'the focused view fits its 24 KB budget');
+    await until(() => !children.active);
+  } finally { await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('a tier that lies past the child budget leaves the child on the full history; a binding tier compacts at its budget', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-tier-'));
+  const memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {});
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+  const cost = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }, firstPrompt = new Map<string, string>(), reserve = new Map<string, number>();
+  runtime.registerProvider('optchat-test', {
+    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+    models: [
+      // Haiku 5.5's shape: the 100,000-token tier binds inside its 348,000-token turn share at refreshAt 0.3.
+      { id: 'haiku-like', name: 'Haiku-like', reasoning: false, input: ['text'], cost: { ...cost, tiers: [{ inputTokensAbove: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 5 }] }, contextWindow: 1_000_000, maxTokens: 128_000 },
+      // gpt-6-luna's shape: its tier starts at the window, past the 129,600-token turn share, so it never binds.
+      { id: 'luna-like', name: 'Luna-like', reasoning: false, input: ['text'], cost: { ...cost, tiers: [{ inputTokensAbove: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 }] }, contextWindow: 272_000, maxTokens: 128_000 },
+    ],
+    streamSimple: (model, context) => {
+      firstPrompt.set(model.id, textContent(context.messages.find(m => m.role === 'user')?.content));
+      const stream = createAssistantMessageEventStream();
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'done' }], api: model.api, model: model.id, provider: model.provider, stopReason: 'stop', timestamp: Date.now(), usage: emptyUsage() };
+      queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
+      return stream;
+    },
+  });
+  let model = 'haiku-like';
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model, thinking: 'minimal' }), () => '',
+    async () => {}, () => {}, join(dir, 'profile'), { settings: () => ({ ...nested(), refreshAt: 0.3 }),
+      createSession: options => {
+        const { model: created, settingsManager } = options ?? {};
+        if (created && settingsManager) reserve.set(created.id, settingsManager.getCompactionReserveTokens(created));
+        return createAgentSession({ ...options, modelRuntime: runtime });
+      } });
+  try {
+    for (let i = 0; i < 60; i++) memory.append('user', `history line ${i} `.repeat(30));
+    await children.spawn([{ task: 'haiku' }], dir);
+    await until(() => firstPrompt.has('haiku-like'));
+    model = 'luna-like';
+    await children.spawn([{ task: 'luna' }], dir);
+    await until(() => firstPrompt.has('luna-like'));
+    assert.match(firstPrompt.get('haiku-like')!, /^\[Focused child history: \d+ older lines omitted/, 'the Haiku-like child gets the focused view');
+    assert.ok(!firstPrompt.get('luna-like')!.includes('[Focused child history') && firstPrompt.get('luna-like')!.length > 20_000, 'the gpt-6-luna-like child keeps the full view');
+    assert.equal(1_000_000 - reserve.get('haiku-like')!, 90_000, 'the Haiku-like child compacts at 90,000 tokens');
+    assert.equal(272_000 - reserve.get('luna-like')!, 129_600, 'the gpt-6-luna-like child compacts at 129,600 tokens with refreshAt 0.3');
     await until(() => !children.active);
   } finally { await children.close(); await memory.close(); removeDir(dir); }
 });
