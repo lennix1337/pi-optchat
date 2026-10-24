@@ -97,6 +97,21 @@ test('an empty reply is asked again in the same compaction, so one blank answer 
   assert.equal(new Set(result.diagnostics.map(d => d.incidentId)).size, 1, 'both attempts belong to one compaction');
 });
 
+test('a reply that only thinks is empty too, and the same request is asked again', async () => {
+  // Both live empties on 2026-10-24 (19:15:22Z thinking-only, 19:46:09Z no block at all) were end_turn replies
+  // to the byte-identical request that succeeded on attempt 2: provider nondeterminism, not a malformed request.
+  const replies: AssistantMessage['content'][] = [
+    [{ type: 'thinking', thinking: 'SECRET REASONING' }],
+    [{ type: 'thinking', thinking: 'SECRET REASONING' }, { type: 'text', text: 'talk: SECRET OUTPUT' }],
+  ];
+  const result = await run(() => replies.shift() ?? []);
+  assert.equal(result.error, undefined);
+  assert.equal(result.line, 'talk: SECRET OUTPUT');
+  assert.deepEqual(result.diagnostics.map(d => d.outcome), ['empty', 'text']);
+  assert.equal(result.diagnostics[0].requestBytes, result.diagnostics[1].requestBytes, 'the retry resends the same request');
+  assert.doesNotMatch(JSON.stringify(result.diagnostics), /SECRET/);
+});
+
 test('a compactor that keeps answering with nothing still fails, naming the empty reply, after bounded tries', async () => {
   const result = await run([]);
   assert.match(String(result.error), /Compactor returned no text/);
