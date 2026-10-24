@@ -99,15 +99,25 @@ export const builtinExtensions = (names: Iterable<string>): InlineExtension[] =>
   const create = Object.hasOwn(BUILTINS, name) ? (sdk as unknown as Record<string, unknown>)[BUILTINS[name]] : undefined;
   return typeof create === 'function' ? [{ name, factory: create(), replaceable: true, builtin: true }] : [];
 });
-/** Child sessions use Pi's compactor: it estimates the current system message (prompt plus active `toolsAdded`) and all
- * non-system messages, then compacts at `contextWindow - reserveTokens`. Keep that threshold within the same output-reserved,
- * 5%-margin input budget as the main request, or earlier at the configured turn share plus the child's task view, which can
- * reach DEFER times the view budget while a merge is put off. A model whose price rises past a prompt size (`priceTierBudget`)
- * compacts before it: past Haiku 5.5's 100,000 tokens every token of the request costs five times as much. */
-export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number, tierBudget?: number) {
+/** The prompt size a child compacts within: the output-reserved, 5%-margin input budget as the main request, or the configured
+ * turn share plus the child's task view (which can reach DEFER times the view budget while a merge is put off), if that is lower. */
+function childPromptBudget(contextWindow: number, fraction: number, maxOutputTokens?: number) {
   const inputBudget = inputTokenBudget(contextWindow, maxOutputTokens);
   const turnBudget = fraction > 0 ? Math.floor(contextWindow * fraction + VIEW * DEFER / 4) : inputBudget;
-  return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(inputBudget, turnBudget, tierBudget ?? Infinity)) };
+  return Math.min(inputBudget, turnBudget);
+}
+/** The price-tier budget (`priceTierBudget`) a child of this model compacts at, when the tier lies inside its prompt budget: past
+ * Haiku 5.5's 100,000 tokens every token of the request costs five times as much. A tier beyond that budget never binds, so the
+ * model is priced flat for its children: no focused history is forced and no tier cap applies. */
+export function bindingTierBudget(model: { contextWindow: number; maxTokens?: number; cost?: { tiers?: readonly { inputTokensAbove: number }[] } }, fraction: number) {
+  const tier = priceTierBudget(model);
+  return tier !== undefined && tier < childPromptBudget(model.contextWindow, fraction, model.maxTokens) ? tier : undefined;
+}
+/** Child sessions use Pi's compactor: it estimates the current system message (prompt plus active `toolsAdded`) and all
+ * non-system messages, then compacts at `contextWindow - reserveTokens`. Keep that threshold within the child prompt budget,
+ * or earlier at a binding price tier (`bindingTierBudget`). */
+export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number, tierBudget?: number) {
+  return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(childPromptBudget(contextWindow, fraction, maxOutputTokens), tierBudget ?? Infinity)) };
 }
 export class Children {
   private readonly running = new Map<string, LiveRun>();
@@ -330,8 +340,9 @@ export class Children {
     if (!resolved) throw new Error(`Subagent model unavailable: ${chosen.provider}/${chosen.model}`);
     const selected = { ...chosen, provider: resolved.provider }, model = resolved.model;
     const fullView = this.memory.render();
-    // A tiered model gets the focused history too: the full view alone can take most of its base-price prompt.
-    const view = (this.settings.focusedSubagents || priceTierBudget(model) !== undefined) && !connected ? focusedChildView(fullView) : fullView;
+    // A model whose price tier binds gets the focused history too: the full view alone can take most of its base-price prompt.
+    const tierBudget = bindingTierBudget(model, refreshFraction(this.settings.refreshAt));
+    const view = (this.settings.focusedSubagents || tierBudget !== undefined) && !connected ? focusedChildView(fullView) : fullView;
     this.timed('view', undefined, renderingAt, view.length);
     const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, selected, model, signal, cancelled }));
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
@@ -398,8 +409,9 @@ export class Children {
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
     const instructions = [this.instructions(), delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
+    const fraction = refreshFraction(this.settings.refreshAt);
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
-      compaction: subagentCompaction(o.model.contextWindow, refreshFraction(this.settings.refreshAt), o.model.maxTokens, priceTierBudget(o.model)), cacheWarming: 'off' });
+      compaction: subagentCompaction(o.model.contextWindow, fraction, o.model.maxTokens, bindingTierBudget(o.model, fraction)), cacheWarming: 'off' });
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),

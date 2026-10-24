@@ -35,6 +35,18 @@ test('focused child history preserves complete identifiers and newest lines with
   for (const line of focused.split('\n').filter(line => /^\d+\+/.test(line))) assert.ok(view.includes(line));
   assert.equal(focusedChildView('<chat>\n0+1|small\n</chat>'), '<chat>\n0+1|small\n</chat>');
 });
+test('focused child history keeps the old broad summaries before the newest lines and drops the middle', () => {
+  const coarse = Array.from({ length: 4 }, (_, i) => `${i * 1024}+1024|user: rule ${i} ${'x'.repeat(200)}`);
+  const fine = Array.from({ length: 100 }, (_, i) => `${4096 + i}+1|tool: step ${i} ${'y'.repeat(200)}`);
+  const view = `<chat>\n${[...coarse, ...fine].join('\n')}\n</chat>`;
+  const focused = focusedChildView(view, 4000);
+  assert.ok(Buffer.byteLength(focused) <= 4000);
+  for (const line of coarse) assert.ok(focused.includes(line), 'every broad summary is kept');
+  assert.ok(focused.includes(fine.at(-1)!), 'the newest line is kept');
+  assert.ok(!focused.includes(fine[0]), 'the oldest fine line is left out');
+  const kept = focused.split('\n').filter(line => /^\d+\+/.test(line));
+  assert.deepEqual(kept, [...kept].sort((a, b) => parseInt(a) - parseInt(b)), 'lines stay in chat order');
+});
 test('telemetry is bounded, numeric-only and measures stable system/tool overhead separately', () => {
   const metrics = new PerformanceMetrics();
   const messages: AgentMessage[] = [{ role: 'system', content: 'SECRET', sections: { instructions: 'private', skills: 'catalogue' },
