@@ -8,6 +8,9 @@ export const VIEW = 128_000;
 export const DEFER = 1.5;
 /** A turn starting this long after the last request finds the provider's 5-minute cache expired, so merging then costs nothing. */
 export const COLD_MS = 270_000;
+/** With the view's older mark on the 1-hour entry (cache.ts), the batch waits as long as that entry lives: merging sooner rewrites
+ * the view under it and throws away the 1-hour write. Same 30-second margin as COLD_MS. */
+export const COLD_LONG_MS = 3_570_000;
 export const CAP = 30_000;
 /** The most characters one zoom into a message returns, so a page stays under the tool output CAP instead of losing its middle. */
 export const PAGE = 25_000;

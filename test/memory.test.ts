@@ -7,10 +7,10 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Memory, cap, CAP, start, end, bytes, mostDue, type Compression, type Part } from '../src/memory.ts';
+import { Memory, cap, CAP, start, end, bytes, mostDue, COLD_LONG_MS, COLD_MS, type Compression, type Part } from '../src/memory.ts';
 import { appendJson, FileStore, localDay } from '../src/store.ts';
 import { lockProfile } from '../src/profiles.ts';
-import { splitView, cachePayload, prefixRetention } from '../src/cache.ts';
+import { splitView, cachePayload, coldAfter, prefixRetention } from '../src/cache.ts';
 import { logMessage, buildContext, boundedMessage } from '../src/transcript.ts';
 import { Inbox } from '../src/inbox.ts';
 import { compaction } from '../src/prompts.ts';
@@ -410,6 +410,24 @@ test('with a prefix mark, the system prompt keeps its own entry, for an hour on 
   assert.equal(prefixRetention({ provider: 'anthropic' }), 'long');
   assert.equal(prefixRetention({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy' }), 'short', 'other endpoints speaking Anthropic\'s protocol keep 5 minutes');
+});
+
+test('under long retention the view\'s older mark takes the 1-hour entry too, after the system prompt and before the 5-minute marks, and a merge waits as long', () => {
+  const line = '0+1|summary of a decision\n', view = '<chat>\n' + line.repeat(1000) + '</chat>', pieces = splitView(view);
+  type Marked = { cache_control?: { type: string; ttl?: string } };
+  type Output = { system: Marked[]; messages: { content: Marked[] }[] } & Marked;
+  const request = (prefix: 'short' | 'long') => cachePayload({ system: 'system', tools: [{ name: 'zoom' }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: view }, { type: 'text', text: 'new question' }] }] }, { prefix }) as Output;
+  // Anthropic needs every 1-hour entry before a 5-minute one in request order: system prompt, older view mark, newer view mark, request end.
+  const ttls = (output: Output) => [...output.system, ...output.messages[0].content, output].flatMap(item => item.cache_control ? [item.cache_control.ttl ?? '5m'] : []);
+  assert.deepEqual(ttls(request('long')), ['1h', '1h', '5m', '5m']);
+  assert.deepEqual(ttls(request('short')), ['5m', '5m', '5m', '5m']);
+  const blocks = request('long').messages[0].content;
+  assert.deepEqual(blocks[pieces.length - 22].cache_control, { type: 'ephemeral', ttl: '1h' });
+  assert.deepEqual(blocks[pieces.length - 2].cache_control, { type: 'ephemeral' });
+  assert.equal(coldAfter({ provider: 'anthropic' }), COLD_LONG_MS, 'the chat view merges once the 1-hour entry has had its time');
+  assert.equal(coldAfter({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), COLD_MS);
+  assert.equal(coldAfter({ provider: 'some-proxy' }), COLD_MS, 'other endpoints keep the 4.5-minute merge');
 });
 
 test('after a turn adds up to 60 blocks of lines, a mark of the next call still finds one of the last call\'s within 20 blocks', () => {

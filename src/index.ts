@@ -6,7 +6,7 @@ import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { COLD_MS, DEFER, Memory } from './memory.ts';
+import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
@@ -14,7 +14,7 @@ import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiag
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
-import { cachePayload, prefixRetention, record } from './cache.ts';
+import { cachePayload, coldAfter, prefixRetention, record } from './cache.ts';
 import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
@@ -534,7 +534,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
       if (view === undefined) {
-        if (lastRequestAt === undefined || Date.now() - lastRequestAt >= COLD_MS) a.memory.cool();
+        if (lastRequestAt === undefined || Date.now() - lastRequestAt >= coldAfter(ctx.model)) a.memory.cool();
         view = await memoryView(ctx); // Capture old history before logging the new input.
         focusView = a.focus.render(a.memory);
         flush();
