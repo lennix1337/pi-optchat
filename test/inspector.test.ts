@@ -48,9 +48,9 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     const table = usagePage.render(100).filter(l => /claude-opus|claude-sonnet/.test(l));
     // Provider identity separates same-named models; older records without it remain visible as unknown.
     assert.deepEqual(table.map(l => l.trim().split(/\s+/)), [
-      ['main', 'anthropic/claude-opus-5-5', '$20.50', '24%', '164k', '90%', '-', '-'],
-      ['compactor', 'anthropic/claude-sonnet-5-5', '$60.00', '72%', '164k', '90%', '-', '-'],
-      ['unknown/claude-sonnet-5-5', '$3.35', '4%', '164k', '90%', '-', '-'],
+      ['main', 'anthropic/claude-opus-5-5', '$20.50', '24%', '1', '$20.50', '164k', '90%', '-', '-'],
+      ['compactor', 'anthropic/claude-sonnet-5-5', '$60.00', '72%', '1', '$60.00', '164k', '90%', '-', '-'],
+      ['unknown/claude-sonnet-5-5', '$3.35', '4%', '1', '$3.35', '164k', '90%', '-', '-'],
     ]);
     assert.equal(table[0].indexOf('$20.50') + 6, table[1].indexOf('$60.00') + 6);
     assert.match(usagePage.render(100).join('\n'), /estimated API cost/);
@@ -149,6 +149,25 @@ test('Usage shows provider-reported cache share and the median measured latency 
     assert.ok(lines.some(line => line.includes('median of 3 measured calls: first content 1.1s · response 5.0s')), lines.join('\n'));
     assert.ok(lines.some(line => /p\/m\s.*\s95%\s+1\.1s\s+5\.0s/.test(line)), lines.join('\n'));
     assert.ok(lines.some(line => /p\/c\s.*\s50%\s+-\s+-/.test(line)), 'unmeasured rows show no latency');
+  } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
+});
+
+test('Usage shows calls and API-rate cost per call for each model', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-per-call-'));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const usage = new UsageLedger(dir), now = new Date().toISOString();
+  const add = (role: 'main' | 'compactor', model: string, cost: number) => usage.add({ date: now, role, model, provider: 'p', session: 'parent',
+    usage: { ...emptyUsage(), output: 1, totalTokens: 1, cost: { ...emptyUsage().cost, output: cost, total: cost } } });
+  add('main', 'm', 0.1); add('main', 'm', 0.3); add('compactor', 'c', 0.004);
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
+  const page = new Inspector({ profile: 'personal', session: 'parent', children, usage, memory, page: 'usage', rows: () => 40, redraw: () => {}, done: () => {},
+    color: (_tone, text) => text, context: () => undefined });
+  try {
+    const lines = page.render(140);
+    assert.ok(lines.some(line => /\bcalls\s+\$\/call\b/.test(line)), lines.join('\n'));
+    assert.ok(lines.some(line => /p\/m\s+\$0\.40\s+99%\s+2\s+\$0\.20\s/.test(line)), lines.join('\n'));
+    assert.ok(lines.some(line => /p\/c\s+\$0\.0040\s+1%\s+1\s+\$0\.0040\s/.test(line)), lines.join('\n'));
   } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });
 

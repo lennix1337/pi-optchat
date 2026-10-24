@@ -214,13 +214,14 @@ class LatencySamples {
 }
 export function summarizeUsage(entries: UsageEntry[]) {
   const total = emptyUsage(), samples = new LatencySamples();
-  const groups = new Map<string, { role: UsageRole; provider?: string; model: string; usage: Usage; failures: number; samples: LatencySamples }>();
+  const groups = new Map<string, { role: UsageRole; provider?: string; model: string; usage: Usage; calls: number; failures: number; samples: LatencySamples }>();
   let failures = 0;
   for (const entry of entries) {
     // Provider is part of a model's identity; legacy records without it remain grouped under unknown.
     const key = JSON.stringify([entry.role, entry.provider ?? '', entry.model]);
     let group = groups.get(key);
-    if (!group) { group = { role: entry.role, provider: entry.provider, model: entry.model, usage: emptyUsage(), failures: 0, samples: new LatencySamples() }; groups.set(key, group); }
+    if (!group) { group = { role: entry.role, provider: entry.provider, model: entry.model, usage: emptyUsage(), calls: 0, failures: 0, samples: new LatencySamples() }; groups.set(key, group); }
+    group.calls++;
     addUsage(group.usage, entry.usage); addUsage(total, entry.usage);
     group.samples.add(entry.latency); samples.add(entry.latency);
     if (entry.failed) { group.failures++; failures++; }

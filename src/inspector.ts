@@ -29,7 +29,8 @@ function usageRows(groups: ReturnType<typeof summarizeUsage>['groups'], total: U
   return groups.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role) || b.usage.cost.total - a.usage.cost.total).map((group, index) => [
     index && groups[index - 1].role === group.role ? '' : roleNames[group.role],
     oneLine(`${group.provider ?? 'unknown'}/${group.model}${group.failures ? ` · ${group.failures} failed` : ''}`), dollars(group.usage.cost.total),
-    `${total.cost.total ? Math.round(100 * group.usage.cost.total / total.cost.total) : 0}%`, short(group.usage.output), cached(group.usage),
+    `${total.cost.total ? Math.round(100 * group.usage.cost.total / total.cost.total) : 0}%`, count(group.calls), dollars(group.usage.cost.total / group.calls),
+    short(group.usage.output), cached(group.usage),
     seconds(group.latency?.firstMs), seconds(group.latency?.responseMs),
   ]);
 }
@@ -270,7 +271,7 @@ export class Inspector implements Component, Focusable {
       if (latency) lines.push(color('muted', `median of ${count(latency.calls)} measured calls: first content ${seconds(latency.firstMs)} · response ${seconds(latency.responseMs)}`));
       lines.push('');
       const rows = usageRows(groups, total);
-      const header = ['', 'model', 'cost', 'share', 'out', 'cached', 'first', 'reply'];
+      const header = ['', 'model', 'cost', 'share', 'calls', '$/call', 'out', 'cached', 'first', 'reply'];
       const widths = header.map((h, c) => Math.max(h.length, ...rows.map(r => r[c].length)));
       // The model column goes first when the screen is too narrow for every column.
       const all = header.map((_, c) => c);
