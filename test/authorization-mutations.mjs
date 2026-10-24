@@ -28,14 +28,20 @@ assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push origin main')),
 assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push origin main','other'))?.block,true,'standing grant must stay in its session');
 assert.equal(gate.admit(push('git -C C:/projetos/pi-goal-x push origin main'))?.block,true,'standing grant must stay on listed roots');
 assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push --force origin main'))?.block,true,'standing grant never covers force');
+const launch = {session:'owner',cwd:'/repo',tool:'subagent',input:{agent:'worker',task:'x'}};
+assert.equal(gate.admit(launch)?.block,true,'push grant must not cover paid subagents');
+assert.equal(gate.approve('owner','interactive','approve-standing paid-subagents'),'standing');
+assert.equal(gate.admit(launch),undefined);
+assert.equal(gate.admit({...launch,tool:'codemode',input:{code:'await tools.subagent({})'}})?.block,true,'paid grant never covers nested codemode calls');
 `;
 const mutations = [
   ['provenance', "if (source !== 'interactive') return 'ignored';", ''],
   ['owner', 'entry.session !== session', 'false'],
   ['one-shot', 'this.pending.delete(token); return;', 'return;'],
   ['admission', '    if (diagnostic(call)) return;', '    return;'],
-  ['standing-session', 'this.standing.get(call.session)?.has(root)', '[...this.standing.values()].some(set => set.has(root))'],
-  ['standing-root', 'if (root && this.standing.get(call.session)?.has(root)) return;', 'if (root && this.standing.get(call.session)) return;'],
+  ['standing-session', 'this.standing.get(call.session)?.has(key)', '[...this.standing.values()].some(set => set.has(key))'],
+  ['standing-root', 'if (key && this.standing.get(call.session)?.has(key)) return;', 'if (key && this.standing.get(call.session)) return;'],
+  ['standing-paid-scope', "if (call.tool === 'subagent') return 'paid-subagents';", "if (call.tool === 'subagent' || call.tool === 'codemode') return 'paid-subagents';"],
   ['standing-exact', "const pushMain = /^git -C (\\S+) push origin main$/;", "const pushMain = /^git -C (\\S+) push .*$/;"],
 ];
 const outcomes = [];

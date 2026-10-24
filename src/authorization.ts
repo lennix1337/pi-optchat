@@ -63,11 +63,19 @@ function standingPushRoot({ tool, input }: Invocation) {
   return match ? pushRoot(match[1]) : undefined;
 }
 
-/** Operator-typed `approve-standing push-main <root>...`: 1–16 valid roots, else undefined. */
-function standingRoots(text: string) {
+/** Standing key a call needs: `push:<root>` for the exact push shape, `paid-subagents` for direct subagent launches. */
+function standingKey(call: Invocation) {
+  if (call.tool === 'subagent') return 'paid-subagents';
+  const root = standingPushRoot(call);
+  return root && `push:${root}`;
+}
+
+/** Operator-typed `approve-standing push-main <root>...` (1–16 valid roots) or `approve-standing paid-subagents`, else undefined. */
+function standingKeys(text: string) {
+  if (text === 'approve-standing paid-subagents') return ['paid-subagents'];
   const match = /^approve-standing push-main((?: \S+)+)$/.exec(text);
   const roots = match?.[1].trim().split(' ').map(pushRoot) ?? [];
-  return roots.length > 0 && roots.length <= 16 && roots.every(Boolean) ? roots as string[] : undefined;
+  return roots.length > 0 && roots.length <= 16 && roots.every(Boolean) ? roots.map(root => `push:${root}`) : undefined;
 }
 
 /** One-shot tool approval, not a shell sandbox or an authorization inferred from conversation. */
@@ -96,8 +104,8 @@ export class EffectApprovals {
       return { block: true, reason: 'Not executed: effect approval requires bounded, finite plain JSON arguments.' };
     }
     if (diagnostic(call)) return;
-    const root = standingPushRoot(call);
-    if (root && this.standing.get(call.session)?.has(root)) return;
+    const key = standingKey(call);
+    if (key && this.standing.get(call.session)?.has(key)) return;
     const fingerprint = createHash('sha256').update(serialized).digest('hex');
     for (const [token, entry] of this.pending) {
       if (entry.fingerprint !== fingerprint) continue;
@@ -115,9 +123,9 @@ export class EffectApprovals {
   approve(session: string, source: string, text: string): 'approved' | 'standing' | 'invalid' | 'ignored' {
     if (source !== 'interactive') return 'ignored';
     if (text.trim().startsWith('approve-standing ')) {
-      const roots = standingRoots(text.trim());
-      if (!roots) return 'invalid';
-      this.standing.set(session, new Set([...(this.standing.get(session) ?? []), ...roots]));
+      const keys = standingKeys(text.trim());
+      if (!keys) return 'invalid';
+      this.standing.set(session, new Set([...(this.standing.get(session) ?? []), ...keys]));
       return 'standing';
     }
     const match = /^approve-effect ([a-f0-9]{24})$/.exec(text.trim());

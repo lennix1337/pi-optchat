@@ -69,6 +69,24 @@ test('standing push-main grant is interactive, session-scoped, listed roots only
   token(gate, push('git -C C:/projetos/pi-optchat push origin main'));
 });
 
+test('standing paid-subagents grant admits subagent launches in the owner session only', () => {
+  const gate = new EffectApprovals();
+  const launch = (session = 'owner') => ({ ...invocation('subagent', { agent: 'worker', task: 'benchmark item 8' }), session });
+  token(gate, launch());
+  assert.equal(gate.approve('owner', 'extension', 'approve-standing paid-subagents'), 'ignored');
+  for (const bad of ['approve-standing paid-subagents extra', 'approve-standing paid']) assert.equal(gate.approve('owner', 'interactive', bad), 'invalid');
+  assert.equal(gate.approve('owner', 'interactive', 'approve-standing paid-subagents'), 'standing');
+  for (let i = 0; i < 2; i++) assert.equal(gate.admit(launch()), undefined);
+  assert.equal(gate.admit({ ...invocation('subagent', { workflow: 'parallel', args: { tasks: [] } }), session: 'owner' }), undefined);
+  token(gate, launch('other'));
+  token(gate, invocation('bash', { command: 'curl https://api.anthropic.com/v1/messages' }));
+  token(gate, invocation('codemode', { code: 'await tools.subagent({agent:"worker",task:"x"})' }));
+  token(gate, invocation('shell_start', { command: 'pi -p benchmark' }));
+  token(gate, invocation('bash', { command: 'git -C C:/projetos/pi-optchat push origin main' }));
+  gate.clear();
+  token(gate, launch());
+});
+
 test('diagnostics stay available but compound/opaque mutations do not gain read-only admission', () => {
   const gate = new EffectApprovals();
   for (const tool of ['read', 'zoom', 'date', 'operation_state', 'operational_state', 'project_evidence', 'get_goal']) assert.equal(gate.admit(invocation(tool, {})), undefined);

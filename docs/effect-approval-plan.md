@@ -11,5 +11,5 @@ Operator-facing contract, limits and checks: [effect-approvals.md](effect-approv
 - [x] Installed Pi 1.4.0 SDK runtime probe: refusal → hidden/prose tokens refused → interactive token → one disk write → replay refused → reload invalidates → delegated `steer` cannot grant. Network rejected, scripted provider.
 - [x] Packaged `effect-approvals` skill, discoverable in a fresh isolated profile.
 - [ ] Activation in the operator's interactive profile (`OPTCHAT_EFFECT_APPROVALS=1` + restart) — operator decision, not automatic.
-- [ ] Reusable scoped standing grants (for example push to fork `main` after green gates, this goal's paid calls), so authorized routine work does not need a token per call.
+- [x] Reusable scoped standing grants: `approve-standing push-main <roots>` (exact `git -C <root> push origin main`) and `approve-standing paid-subagents` (direct `subagent` calls), interactive and session-scoped; regression + mutation tests.
 - [ ] Direct provider/paid-call interception outside tool dispatch.
