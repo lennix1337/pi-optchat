@@ -144,7 +144,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
     let request = 0, failures = 0, attempts = 0, summaries = 0;
-    let shortest: string | undefined;
+    let shortest: string | undefined, blank: string | undefined;
     const ask = async (): Promise<AssistantMessage> => {
       for (;;) {
         signal.throwIfAborted();
@@ -204,6 +204,12 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       const reply = await ask();
       const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}`;
       if (reply.stopReason === 'length' || reply.content.some(block => block.type === 'toolCall')) continue;
+      // A model can end its turn with no text (Haiku 5.5 at high thinking does, rarely); the same
+      // request then usually succeeds, so ask again instead of failing the compaction.
+      if (reply.stopReason === 'stop' && !reply.content.some(block => block.type === 'text' && block.text.trim())) {
+        blank = `${detail}; blocks=${reply.content.map(block => block.type).join(',') || 'none'}`;
+        continue;
+      }
       const line = summaryText(reply, detail);
       summaries++;
       const size = bytes(line);
@@ -216,6 +222,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     // The byte target guides retries, not a second failure cliff. Keep the shortest
     // complete shrinking reply; persisted nodes and views account for actual bytes.
     if (shortest !== undefined) return shortest;
+    if (!summaries && blank !== undefined) throw new Error(`Compactor returned no text in ${attempts} tries (${blank}). See compactor-diagnostics.jsonl.`);
     if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
     throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; source ${sourceBytes} bytes; shortest ${shortest === undefined ? 'none' : bytes(shortest)}; it must be smaller than the source).`);
   };

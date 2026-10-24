@@ -10,7 +10,7 @@ import { createCompressor } from '../src/compactor.ts';
 import { CompactorTrace, sanitizeRecoveryDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, type CompactorDiagnostic } from '../src/compactor-diagnostics.ts';
 import { emptyUsage } from '../src/usage.ts';
 
-async function run(content: AssistantMessage['content'], stopReason: Exclude<AssistantMessage['stopReason'], 'pending'> = 'stop', failure?: { message: string; thrown?: boolean; cause?: unknown; abort?: boolean }) {
+async function run(content: AssistantMessage['content'] | (() => AssistantMessage['content']), stopReason: Exclude<AssistantMessage['stopReason'], 'pending'> = 'stop', failure?: { message: string; thrown?: boolean; cause?: unknown; abort?: boolean }) {
   const dir = mkdtempSync(join(tmpdir(), 'oc-diag-'));
   const diagnostics: CompactorDiagnostic[] = [];
   let toolChoice: unknown, declared: unknown;
@@ -24,7 +24,7 @@ async function run(content: AssistantMessage['content'], stopReason: Exclude<Ass
       if (failure?.abort) controller.abort('SECRET ABORT REASON');
       if (failure?.thrown) throw new Error(failure.message, { cause: failure.cause });
       const stream = createAssistantMessageEventStream();
-      const message: AssistantMessage = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason, rawStopReason: 'completed', usage: emptyUsage(), errorMessage: stopReason === 'error' ? failure?.message ?? 'secret credential overloaded' : undefined };
+      const message: AssistantMessage = { role: 'assistant', content: typeof content === 'function' ? content() : content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason, rawStopReason: 'completed', usage: emptyUsage(), errorMessage: stopReason === 'error' ? failure?.message ?? 'secret credential overloaded' : undefined };
       queueMicrotask(async () => {
         await options?.onPayload?.({ tools: ['synthetic'], tool_choice: toolChoice, instructions: 'SECRET INPUT' }, model);
         await options?.onResponse?.({ status: 200, headers: { 'x-request-id': 'req-123', authorization: 'SECRET AUTH' } }, model);
@@ -84,6 +84,25 @@ test('empty, tool-only, truncated and provider-error replies have distinct diagn
     assert.equal(result.diagnostics[0].events.start, 1);
     assert.doesNotMatch(JSON.stringify(result.diagnostics), /SECRET|credential/);
   }
+});
+
+test('an empty reply is asked again in the same compaction, so one blank answer is not an error', async () => {
+  // Claude Haiku 5.5 at high thinking sometimes ends its turn with no text (2026-10-24, node 47172+2);
+  // the same request then succeeds, so a blank answer is retried here rather than surfaced.
+  const replies: AssistantMessage['content'][] = [[], [{ type: 'text', text: 'talk: SECRET OUTPUT' }]];
+  const result = await run(() => replies.shift() ?? []);
+  assert.equal(result.error, undefined);
+  assert.equal(result.line, 'talk: SECRET OUTPUT');
+  assert.deepEqual(result.diagnostics.map(d => d.outcome), ['empty', 'text']);
+  assert.equal(new Set(result.diagnostics.map(d => d.incidentId)).size, 1, 'both attempts belong to one compaction');
+});
+
+test('a compactor that keeps answering with nothing still fails, naming the empty reply, after bounded tries', async () => {
+  const result = await run([]);
+  assert.match(String(result.error), /Compactor returned no text/);
+  assert.equal(result.line, undefined);
+  assert.ok(result.diagnostics.length > 1 && result.diagnostics.length <= 5, `bounded retries: ${result.diagnostics.length}`);
+  assert.ok(result.diagnostics.every(d => d.outcome === 'empty'));
 });
 
 test('interrupted streams are identified without saving partial text or adding immediate retries', async () => {
