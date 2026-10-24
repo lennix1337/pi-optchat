@@ -23,6 +23,7 @@ import { inputTokenBudget, priceTierBudget } from './run-context.ts';
 import type { ShellJobs } from './shells.ts';
 import { registerOperationSafety, type OperationJournal } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
+import { registerEffectApprovals } from './authorization-hooks.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
@@ -431,6 +432,7 @@ export class Children {
           metrics.record('projection', performance.now() - started); metrics.context(messages);
           return { messages };
         });
+        registerEffectApprovals(pi, { grant: false });
         if (this.options.operations) {
           registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
           registerBashHints(pi);

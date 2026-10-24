@@ -27,6 +27,7 @@ import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
+import { registerEffectApprovals } from './authorization-hooks.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -91,6 +92,7 @@ export default function optchat(pi: ExtensionAPI) {
     catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
+  registerEffectApprovals(pi);
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.

@@ -1,6 +1,21 @@
 {
   "version": 1,
   "checks": {
+    "effect-approval-mutations": {
+      "description": "Disposable-source mutation proof for provenance, session ownership, one-shot consumption and pre-dispatch admission",
+      "argv": ["node", "test/authorization-mutations.mjs"],
+      "timeoutMs": 60000
+    },
+    "effect-approval-runtime": {
+      "description": "Isolated installed Pi SDK input/tool/disk/reload flow with scripted provider, network rejected and no external model requests",
+      "argv": ["node", "test/authorization-runtime.mjs"],
+      "timeoutMs": 60000
+    },
+    "effect-approvals": {
+      "description": "Offline exact-invocation approvals, user provenance, one-shot dispatch and native hook lifecycle; no provider calls",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts"],
+      "timeoutMs": 30000
+    },
     "operation-safety": {
       "description": "Hermetic recovery classifier, operation journal and native bash-hint regressions; no model calls",
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/operations.test.ts", "test/operation-diagnostics.test.ts", "test/bash-hints.test.ts", "test/summary-ab-guard.test.ts"],
