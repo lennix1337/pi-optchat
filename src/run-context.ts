@@ -5,6 +5,14 @@ import { bytes, VIEW } from './memory.ts';
 const DEFAULT_OUTPUT_RESERVE = 16_384;
 // Extra input headroom for the tokenizer heuristic and provider framing not represented in Pi messages.
 const ESTIMATE_MARGIN = 0.05;
+/** Share of a price tier's threshold a request may fill: Pi estimates the newest messages, and one tool result can add many tokens. */
+const TIER_HEADROOM = 0.9;
+/** The prompt size a model's request should stay under so it keeps its base price: the lowest `cost.tiers` threshold in Pi's
+ * model table (Pi prices every token of a request at the tier its whole input, cache included, reaches), with headroom. */
+export function priceTierBudget(model?: { cost?: { tiers?: readonly { inputTokensAbove: number }[] } }) {
+  const limits = (model?.cost?.tiers ?? []).map(tier => tier.inputTokensAbove).filter(limit => limit > 0);
+  return limits.length ? Math.floor(Math.min(...limits) * TIER_HEADROOM) : undefined;
+}
 export function inputTokenBudget(window: number, maxOutputTokens?: number) {
   const output = Math.min(window, Math.max(0, maxOutputTokens ?? Math.min(DEFAULT_OUTPUT_RESERVE, Math.ceil(window / 4))));
   const margin = Math.ceil(window * ESTIMATE_MARGIN);

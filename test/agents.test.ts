@@ -988,6 +988,42 @@ test('a broken package.json above an installed extension does not block spawning
   }
 });
 
+test('a child on a model priced higher past a prompt size gets the focused history', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-tier-'));
+  const memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {});
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+  const cost = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }, firstPrompt = new Map<string, string>();
+  runtime.registerProvider('optchat-test', {
+    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+    models: [
+      { id: 'flat', name: 'Flat price', reasoning: false, input: ['text'], cost, contextWindow: 1_000_000, maxTokens: 1000 },
+      { id: 'tiered', name: 'Tiered price', reasoning: false, input: ['text'], cost: { ...cost, tiers: [{ inputTokensAbove: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 5 }] }, contextWindow: 1_000_000, maxTokens: 1000 },
+    ],
+    streamSimple: (model, context) => {
+      firstPrompt.set(model.id, textContent(context.messages.find(m => m.role === 'user')?.content));
+      const stream = createAssistantMessageEventStream();
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'done' }], api: model.api, model: model.id, provider: model.provider, stopReason: 'stop', timestamp: Date.now(), usage: emptyUsage() };
+      queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
+      return stream;
+    },
+  });
+  let model = 'flat';
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model, thinking: 'minimal' }), () => '',
+    async () => {}, () => {}, join(dir, 'profile'), { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+  try {
+    for (let i = 0; i < 60; i++) memory.append('user', `history line ${i} `.repeat(30));
+    await children.spawn([{ task: 'flat' }], dir);
+    await until(() => firstPrompt.has('flat'));
+    model = 'tiered';
+    await children.spawn([{ task: 'tiered' }], dir);
+    await until(() => firstPrompt.has('tiered'));
+    assert.ok(!firstPrompt.get('flat')!.includes('[Focused child history'), 'a flat-priced child keeps the full view');
+    assert.match(firstPrompt.get('tiered')!, /^\[Focused child history: \d+ older lines omitted/, 'a tiered child gets the focused view');
+    assert.ok(firstPrompt.get('flat')!.length > 20_000 && firstPrompt.get('tiered')!.length < 17_000, 'the focused view fits its 16 KB budget');
+    await until(() => !children.active);
+  } finally { await children.close(); await memory.close(); removeDir(dir); }
+});
+
 test('a ~\\ task cwd is the home directory on Windows only', () => {
   assert.equal(taskDirectory('/base', '~\\project', true), resolve('/base', `${homedir()}\\project`));
   assert.equal(taskDirectory('/base', '~\\project', false), resolve('/base', '~\\project'), 'a POSIX backslash is a literal character');

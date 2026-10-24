@@ -19,7 +19,7 @@ import { fullChat, refreshFraction, textContent } from './transcript.ts';
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
-import { inputTokenBudget } from './run-context.ts';
+import { inputTokenBudget, priceTierBudget } from './run-context.ts';
 import type { ShellJobs } from './shells.ts';
 import { registerOperationSafety, type OperationJournal } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
@@ -102,11 +102,12 @@ export const builtinExtensions = (names: Iterable<string>): InlineExtension[] =>
 /** Child sessions use Pi's compactor: it estimates the current system message (prompt plus active `toolsAdded`) and all
  * non-system messages, then compacts at `contextWindow - reserveTokens`. Keep that threshold within the same output-reserved,
  * 5%-margin input budget as the main request, or earlier at the configured turn share plus the child's task view, which can
- * reach DEFER times the view budget while a merge is put off. */
-export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number) {
+ * reach DEFER times the view budget while a merge is put off. A model whose price rises past a prompt size (`priceTierBudget`)
+ * compacts before it: past Haiku 5.5's 100,000 tokens every token of the request costs five times as much. */
+export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number, tierBudget?: number) {
   const inputBudget = inputTokenBudget(contextWindow, maxOutputTokens);
   const turnBudget = fraction > 0 ? Math.floor(contextWindow * fraction + VIEW * DEFER / 4) : inputBudget;
-  return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(inputBudget, turnBudget)) };
+  return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(inputBudget, turnBudget, tierBudget ?? Infinity)) };
 }
 export class Children {
   private readonly running = new Map<string, LiveRun>();
@@ -324,13 +325,14 @@ export class Children {
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
     const renderingAt = performance.now();
-    const fullView = this.memory.render();
-    const view = this.settings.focusedSubagents && !connected ? focusedChildView(fullView) : fullView;
-    this.timed('view', undefined, renderingAt, view.length);
     const chosen = this.choice();
     const resolved = resolveModel(this.registry, chosen);
     if (!resolved) throw new Error(`Subagent model unavailable: ${chosen.provider}/${chosen.model}`);
     const selected = { ...chosen, provider: resolved.provider }, model = resolved.model;
+    const fullView = this.memory.render();
+    // A tiered model gets the focused history too: the full view alone can take most of its base-price prompt.
+    const view = (this.settings.focusedSubagents || priceTierBudget(model) !== undefined) && !connected ? focusedChildView(fullView) : fullView;
+    this.timed('view', undefined, renderingAt, view.length);
     const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, selected, model, signal, cancelled }));
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;
@@ -397,7 +399,7 @@ export class Children {
     const instructions = [this.instructions(), delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
-      compaction: subagentCompaction(o.model.contextWindow, refreshFraction(this.settings.refreshAt), o.model.maxTokens), cacheWarming: 'off' });
+      compaction: subagentCompaction(o.model.contextWindow, refreshFraction(this.settings.refreshAt), o.model.maxTokens, priceTierBudget(o.model)), cacheWarming: 'off' });
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),

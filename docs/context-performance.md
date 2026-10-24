@@ -35,6 +35,8 @@ Stage aggregates contain count/total/max/last duration, not unbounded samples: c
 
 `Focused child history` is implemented but **off by default** until task-quality measurements justify enabling it. When enabled, new task agents receive whole history lines within a 16 KiB budget, retaining an initial overview and newest lines. Omitted history remains accessible through zoom and is explicitly labelled. This is recent-history selection, **not semantic relevance retrieval**.
 
+The exception is a child model whose price rises past a prompt size (`cost.tiers` in Pi's model table, such as Claude Haiku 5.5 at 100,000 input tokens, cache included). Such a child always gets the focused history and compacts at 90% of that size (`priceTierBudget` in `src/run-context.ts`): with the full view it started at 63,000–99,000 tokens and ran at about 211,000, so 12,476 of 13,036 Haiku subagent calls in the 2026-10-08..24 usage log paid the higher tier ($186.43, against $37.29 for the same tokens at the base price). Its task quality under the smaller view and more frequent compaction is not measured yet.
+
 The task, installed instructions and current operational state are not shortened. Still, an old chat-only restriction could be omitted: the parent must include task-specific constraints, contracts, evidence IDs and relevant files in the task. Connected conversations and resumed sessions do not have their historical transcript silently rewritten. Turn the setting off for broad historical work.
 
 ## Immutable child resources

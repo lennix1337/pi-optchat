@@ -17,7 +17,7 @@ import { subagentCompaction } from '../src/agents.ts';
 import { TURN_REFRESHED } from '../src/prompts.ts';
 import { isCompaction } from './support.ts';
 import { assistantMessage } from './messages.ts';
-import { estimatedContextTokens, inputTokenBudget } from '../src/run-context.ts';
+import { estimatedContextTokens, inputTokenBudget, priceTierBudget } from '../src/run-context.ts';
 import { removeDir } from './support.ts';
 
 test('with the refresh off the request is the one sent before mid-turn refresh existed', () => {
@@ -127,6 +127,16 @@ test('subagent compaction reserves output and Pi-estimates the current system pr
   assert.deepEqual(subagentCompaction(200_000, 0.3, 8_192), { enabled: true, reserveTokens: 92_000 }, 'turn share 60,000 plus a deferred view of up to 48,000 tokens');
   assert.deepEqual(subagentCompaction(200_000, 0.3, 150_000), { enabled: true, reserveTokens: 160_000 });
   assert.deepEqual(subagentCompaction(200_000, 0), { enabled: true, reserveTokens: 26_384 });
+});
+
+test('a model priced higher past a prompt size compacts its children before that size', () => {
+  const haiku = { cost: { tiers: [{ inputTokensAbove: 200_000 }, { inputTokensAbove: 100_000 }] } };
+  assert.equal(priceTierBudget(haiku), 90_000, '90% of the lowest tier threshold');
+  assert.equal(priceTierBudget({ cost: {} }), undefined);
+  assert.equal(priceTierBudget(undefined), undefined);
+  assert.deepEqual(subagentCompaction(1_000_000, 0.3, 128_000, 90_000), { enabled: true, reserveTokens: 910_000 }, 'compacts at 90,000 tokens, not at the 348,000-token turn share');
+  assert.deepEqual(subagentCompaction(1_000_000, 0.3, 128_000), { enabled: true, reserveTokens: 652_000 }, 'without a tier, the turn share stays');
+  assert.deepEqual(subagentCompaction(200_000, 0.3, 150_000, 90_000), { enabled: true, reserveTokens: 160_000 }, 'a smaller input budget still wins');
 });
 
 test('a real child provider request budgets its current prompt, active tool schemas, and transcript', async () => {
