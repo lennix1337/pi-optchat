@@ -1,10 +1,11 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { EffectApprovals } from './authorization.ts';
+import { EffectApprovals, type ApprovalMode } from './authorization.ts';
 
-/** All grants are user-input provenance checked; no model-callable grant tool exists. */
-export function registerEffectApprovals(pi: ExtensionAPI, { enabled = process.env.OPTCHAT_EFFECT_APPROVALS === '1', grant = true } = {}) {
-  if (!enabled) return;
-  const gate = new EffectApprovals();
+/** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
+export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined } = {}) {
+  const env = process.env.OPTCHAT_EFFECT_APPROVALS;
+  if (!(enabled ?? (env === '1' || env === 'risk'))) return;
+  const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all') });
   // Child SDK prompt/steer calls default to interactive even when manager-authored.
   if (grant) pi.on('input', (event, ctx) => {
     const result = gate.approve(ctx.sessionManager.getSessionId(), event.source, event.text);

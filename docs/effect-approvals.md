@@ -4,9 +4,25 @@ For authorization refusals and activation, use the packaged `effect-approvals` s
 This boundary prevents accidental unapproved **tool dispatch**. It is not a security
 sandbox for installed plugins, repository code, the SDK, or an adversarial model.
 
+## Modes
+
+- `OPTCHAT_EFFECT_APPROVALS=1` (**all**): every non-diagnostic call needs an exact approval, edits included.
+- `OPTCHAT_EFFECT_APPROVALS=risk`: ordinary work runs; only these classes need one, matched in
+  `bash`/`shell_start` commands and `codemode` script text:
+  - **push**: any `git ... push`;
+  - **publish**: `npm`/`pnpm`/`yarn`/`cargo`/`vsce publish`, `gh release create`, `gh pr merge`, `gh repo create|delete`;
+  - **global install**: `npm|pnpm|yarn i|install|add|link -g|--global`, `cargo|winget|choco|scoop install`;
+  - **recursive delete** (`rm -r`, `Remove-Item -Recurse`, `rd /s`) unless every target is in a temp folder (`C:/tmp`, `/tmp`, `$TMP`, `%TEMP%`);
+  - **discard**: `git reset --hard`, `git clean -f`, `git worktree remove --force`, `git branch -D`, `git stash drop|clear`;
+  - **paid model call**: `subagent`/`spawn`/`tell` (except `subagent` list/models/guide/status/validate), `pi -p|--print`, `bench.mjs run`, codemode `models.*` or `tools.subagent|spawn|tell`.
+
+  Risk mode is a guardrail against accidental high-impact effects: a command that hides its
+  verb (variables, `eval`, encoded scripts, a script file that pushes) is not recognized, and
+  MCP tools are not classified. Use `1` when that boundary matters. Standing grants work in both modes.
+
 ## Operator flow
 
-1. Start an isolated Pi with `OPTCHAT_EFFECT_APPROVALS=1`. Existing sessions need a
+1. Start an isolated Pi with `OPTCHAT_EFFECT_APPROVALS=1` (or `=risk`). Existing sessions need a
    reload or restart to load code, and the environment flag must already be present.
    No installer or this extension changes that environment or reloads automatically.
 2. A non-diagnostic invocation is blocked **before execution**. Its native result

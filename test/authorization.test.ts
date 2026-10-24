@@ -209,6 +209,59 @@ test('fresh package discovery finds the effect approval skill without this conve
   });
 });
 
+test('risk mode runs ordinary work and gates push, publish, global install, recursive delete outside temp and paid calls', () => {
+  const gate = new EffectApprovals({ mode: 'risk' });
+  const ordinary = ['git status', 'git commit -m "push the fix"', 'npm test', 'npm install', 'node build.mjs', 'rm -f out.log', 'rm -rf C:/tmp/scratch', 'rm -rf /tmp/a /tmp/b', 'node bench.mjs verify', 'git log --grep=publish'];
+  for (const command of ordinary) assert.equal(gate.admit(invocation('bash', { command })), undefined, command);
+  assert.equal(gate.admit(invocation('shell_start', { command: 'npm test' })), undefined);
+  for (const tool of ['edit', 'write', 'unknown']) assert.equal(gate.admit(invocation(tool, { path: '/repo/a' })), undefined, tool);
+  assert.equal(gate.admit(invocation('project_checks', { root: '/repo', name: 'unit' })), undefined);
+  assert.equal(gate.admit(invocation('codemode', { code: 'await tools.bash({command:"npm test"})' })), undefined);
+  assert.equal(gate.admit(invocation('subagent', { action: 'list' })), undefined);
+  const classes: [string, string][] = [
+    ['git push origin main', 'push'], ['git -C C:/projetos/x push', 'push'], ['npm test && git push', 'push'],
+    ['npm publish', 'publish'], ['pnpm publish --access public', 'publish'], ['gh pr merge 12 --squash', 'publish'], ['gh release create v1', 'publish'],
+    ['npm install -g typescript', 'global install'], ['npm i --global x', 'global install'], ['pnpm add -g x', 'global install'], ['cargo install ripwire', 'global install'], ['winget install Git.Git', 'global install'],
+    ['rm -rf C:/projetos/x', 'recursive delete'], ['rm -r node_modules', 'recursive delete'], ['rm -rf C:/tmp/a C:/projetos/b', 'recursive delete'], ['rm -rf', 'recursive delete'],
+    ['pwsh -c "Remove-Item -Recurse -Force C:/x"', 'recursive delete'], ['git clean -fdx', 'discard'], ['git reset --hard origin/main', 'discard'], ['git worktree remove --force wt', 'discard'],
+    ['pi -p "solve it"', 'paid model call'], ['node bench.mjs run --label x', 'paid model call'],
+  ];
+  for (const [command, kind] of classes) {
+    const refusal = gate.admit(invocation('bash', { command }));
+    assert.equal(refusal?.block, true, command);
+    assert.match(refusal!.reason, new RegExp(kind), command);
+  }
+  token(gate, invocation('shell_start', { command: 'npm publish' }));
+  token(gate, invocation('codemode', { code: 'await tools.bash({command:"git push origin main"})' }));
+  token(gate, invocation('codemode', { code: 'await models.classify({})' }));
+  for (const tool of ['subagent', 'spawn', 'tell']) token(gate, invocation(tool, { task: 'x' }));
+  const value = token(gate);
+  assert.equal(gate.approve('owner', 'interactive', `approve-effect ${value}`), 'approved');
+  assert.equal(gate.admit(invocation()), undefined);
+  token(gate);
+  assert.equal(gate.approve('owner', 'interactive', 'approve-standing push-main C:/projetos/pi-optchat'), 'standing');
+  assert.equal(gate.admit(invocation('bash', { command: 'git -C C:/projetos/pi-optchat push origin main' })), undefined);
+  token(gate, invocation('bash', { command: 'git -C C:/projetos/pi-optchat push --force origin main' }));
+});
+
+test('OPTCHAT_EFFECT_APPROVALS=risk registers the risk-class gate; =1 keeps the gate on every effect', async () => {
+  const previous = process.env.OPTCHAT_EFFECT_APPROVALS;
+  const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'owner' }, ui: { notify() {} } };
+  const edit = { toolName: 'edit', toolCallId: 'e', input: { path: '/repo/a' } };
+  const push = { toolName: 'bash', toolCallId: 'p', input: { command: 'git push origin main' } };
+  try {
+    for (const [value, editBlocked] of [['risk', false], ['1', true]] as const) {
+      process.env.OPTCHAT_EFFECT_APPROVALS = value;
+      const hooks = new Map<string, (...args: any[]) => any>();
+      registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI);
+      assert.equal(!!(await hooks.get('tool_call')!(edit, ctx))?.block, editBlocked, value);
+      assert.equal((await hooks.get('tool_call')!(push, ctx))?.block, true, value);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.OPTCHAT_EFFECT_APPROVALS; else process.env.OPTCHAT_EFFECT_APPROVALS = previous;
+  }
+});
+
 test('gate is opt-in and disabled registration has no hooks or prompt effects', () => {
   let registered = 0;
   registerEffectApprovals({ on() { registered++; } } as unknown as ExtensionAPI, { enabled: false });

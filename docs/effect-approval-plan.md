@@ -12,4 +12,5 @@ Operator-facing contract, limits and checks: [effect-approvals.md](effect-approv
 - [x] Packaged `effect-approvals` skill, discoverable in a fresh isolated profile.
 - [ ] Activation in the operator's interactive profile (`OPTCHAT_EFFECT_APPROVALS=1` + restart) — operator decision, not automatic.
 - [x] Reusable scoped standing grants: `approve-standing push-main <roots>` (exact `git -C <root> push origin main`) and `approve-standing paid-subagents` (direct `subagent` calls), interactive and session-scoped; regression + mutation tests.
+- [x] Risk mode (`OPTCHAT_EFFECT_APPROVALS=risk`): only push, publish, global install, recursive delete outside temp, discard and paid-call classes need approval; unit tests red before the mode existed, then 16/16; `effect-approval-risk-runtime` drives the real `bash` tool in the installed SDK (ordinary command runs, disposable local push blocked, authorized once, replay blocked).
 - [ ] Direct provider/paid-call interception outside tool dispatch.

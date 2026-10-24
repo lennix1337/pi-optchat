@@ -4,7 +4,9 @@ import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
 interface Pending { session: string; fingerprint: string; expires: number; approved: boolean }
-interface Options { now?: () => number; ttlMs?: number; maxPending?: number }
+/** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
+export type ApprovalMode = 'all' | 'risk';
+interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode }
 
 const reads = new Set(['read', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status']);
 const navigation = new Set(['map', 'task', 'search', 'symbol', 'callers', 'callees', 'impact', 'exemplar', 'edit_check', 'quality', 'test_gate']);
@@ -47,6 +49,44 @@ function diagnostic({ tool, input }: Invocation) {
   return tool === 'ripwire' && record(input) && typeof input.action === 'string' && navigation.has(input.action);
 }
 
+// Risk mode is a guardrail against accidental high-impact effects, not a shell sandbox:
+// obfuscated commands (eval, variables, encoded scripts) pass it. `all` mode is the boundary.
+const riskClasses: [string, RegExp][] = [
+  ['push', /\bgit\b[^;&|\n]*\spush\b/],
+  ['publish', /\b(?:npm|pnpm|yarn|cargo|vsce)\s+publish\b|\bgh\s+(?:release\s+create|pr\s+merge|repo\s+(?:create|delete))\b/],
+  ['global install', /\b(?:npm|pnpm|yarn)\s+(?:i|install|add|link)\b[^;&|\n]*\s(?:-g|--global)\b|\b(?:cargo|winget|choco|scoop)\s+install\b/],
+  ['discard', /\bgit\b[^;&|\n]*\s(?:reset\s+--hard|clean\s+-[a-zA-Z]*f[a-zA-Z]*|worktree\s+remove\b[^;&|\n]*--force|branch\s+-D|stash\s+(?:drop|clear))\b/],
+  ['paid model call', /\bpi\b[^;&|\n]*\s(?:-p|--print)\b|\bbench\.mjs\s+run\b|\bmodels\.(?:classify|generateImages)\b|\btools\.(?:subagent|spawn|tell)\b/],
+];
+const paidTools = new Set(['subagent', 'spawn', 'tell']);
+const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
+const tempPath = /^(?:[a-zA-Z]:[\\/](?:tmp|temp)[\\/]|\/tmp\/|\/c\/tmp\/|\$\{?(?:TMP|TEMP|TMPDIR)\b|%TEMP%)/i;
+
+/** A recursive delete (rm -r, Remove-Item -Recurse, rd /s) whose targets are not all inside a temp folder. */
+function recursiveDelete(command: string) {
+  for (const segment of command.split(/[;&|\n]+/)) {
+    const words = segment.trim().split(/\s+/).map(word => word.replace(/^['"]|['"]$/g, ''));
+    const at = words.findIndex(word => /^(?:rm|Remove-Item|ri|rmdir|rd)$/i.test(word));
+    if (at < 0) continue;
+    const args = words.slice(at + 1);
+    const flags = args.filter(arg => /^[-/]/.test(arg) && !tempPath.test(arg));
+    if (!flags.some(flag => /^-[a-zA-Z]*[rR]|^--recursive$|^-Recurse$|^\/s$/i.test(flag))) continue;
+    const targets = args.filter(arg => !flags.includes(arg));
+    if (!targets.length || !targets.every(target => tempPath.test(target))) return true;
+  }
+  return false;
+}
+
+/** The high-impact class a call belongs to in risk mode, or undefined for ordinary work. */
+function riskClass({ tool, input }: Invocation) {
+  if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
+  const text = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? input.command
+    : record(input) && typeof input.code === 'string' && tool === 'codemode' ? input.code : undefined;
+  if (text === undefined) return;
+  if (recursiveDelete(text)) return 'recursive delete';
+  return riskClasses.find(([, pattern]) => pattern.test(text))?.[0];
+}
+
 const pushMain = /^git -C (\S+) push origin main$/;
 
 /** Lowercase forward-slash absolute path without dot segments, or undefined. */
@@ -85,9 +125,10 @@ export class EffectApprovals {
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly maxPending: number;
-  constructor({ now = Date.now, ttlMs = 5 * 60_000, maxPending = 32 }: Options = {}) {
+  private readonly mode: ApprovalMode;
+  constructor({ now = Date.now, ttlMs = 5 * 60_000, maxPending = 32, mode = 'all' }: Options = {}) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 256) throw new Error('Invalid approval bounds');
-    this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending;
+    this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode;
   }
   /** Session lifecycle reset: one-shot approvals and standing grants end together. */
   clear() { for (const grants of [this.pending, this.standing]) grants.clear(); }
@@ -104,21 +145,23 @@ export class EffectApprovals {
       return { block: true, reason: 'Not executed: effect approval requires bounded, finite plain JSON arguments.' };
     }
     if (diagnostic(call)) return;
+    const kind = this.mode === 'risk' ? riskClass(call) : undefined;
+    if (this.mode === 'risk' && !kind) return;
     const key = standingKey(call);
     if (key && this.standing.get(call.session)?.has(key)) return;
     const fingerprint = createHash('sha256').update(serialized).digest('hex');
     for (const [token, entry] of this.pending) {
       if (entry.fingerprint !== fingerprint) continue;
       if (entry.approved) { this.pending.delete(token); return; }
-      return this.refusal(call.tool, token);
+      return this.refusal(call.tool, token, kind);
     }
     if (this.pending.size >= this.maxPending) return { block: true, reason: 'Not executed: effect approval capacity reached. Wait for expiry or session reset; do not dispatch a substitute action.' };
     const token = randomBytes(12).toString('hex');
     this.pending.set(token, { session: call.session, fingerprint, expires: this.now() + this.ttlMs, approved: false });
-    return this.refusal(call.tool, token);
+    return this.refusal(call.tool, token, kind);
   }
-  private refusal(tool: string, token: string): Refusal {
-    return { block: true, token, reason: `Not executed: ${tool} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. To approve once, enter exactly:\napprove-effect ${token}` };
+  private refusal(tool: string, token: string, kind?: string): Refusal {
+    return { block: true, token, reason: `Not executed: ${tool}${kind ? ` is a ${kind} effect and` : ''} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. To approve once, enter exactly:\napprove-effect ${token}` };
   }
   approve(session: string, source: string, text: string): 'approved' | 'standing' | 'invalid' | 'ignored' {
     if (source !== 'interactive') return 'ignored';

@@ -11,6 +11,11 @@
       "argv": ["node", "test/authorization-runtime.mjs"],
       "timeoutMs": 60000
     },
+    "effect-approval-risk-runtime": {
+      "description": "Risk mode in the installed Pi SDK with the real bash tool: ordinary command runs, disposable local push blocked, authorized once, replay blocked; scripted provider, network rejected",
+      "argv": ["node", "test/authorization-risk-runtime.mjs"],
+      "timeoutMs": 60000
+    },
     "effect-approvals": {
       "description": "Offline exact-invocation approvals, user provenance, one-shot dispatch and native hook lifecycle; no provider calls",
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts"],
