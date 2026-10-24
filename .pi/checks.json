@@ -18,6 +18,8 @@
     },
     "effect-approvals": {
       "description": "Offline exact-invocation approvals, user provenance, one-shot dispatch and native hook lifecycle; no provider calls",
+    "onEdit": true,
+    "watch": ["src/authorization.ts", "src/authorization-hooks.ts", "test/authorization.test.ts"],
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts"],
       "timeoutMs": 30000
     },
