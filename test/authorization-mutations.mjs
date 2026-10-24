@@ -22,12 +22,21 @@ assert.notEqual(gate.approve('other','interactive',text),'approved','foreign ses
 assert.equal(gate.approve('owner','interactive',text),'approved');
 assert.equal(gate.admit(call),undefined);
 assert.equal(gate.admit(call)?.block,true,'approval must be consumed once');
+const push = (command, session='owner') => ({session,cwd:'/repo',tool:'bash',input:{command}});
+assert.equal(gate.approve('owner','interactive','approve-standing push-main C:/projetos/pi-optchat'),'standing');
+assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push origin main')),undefined);
+assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push origin main','other'))?.block,true,'standing grant must stay in its session');
+assert.equal(gate.admit(push('git -C C:/projetos/pi-goal-x push origin main'))?.block,true,'standing grant must stay on listed roots');
+assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push --force origin main'))?.block,true,'standing grant never covers force');
 `;
 const mutations = [
   ['provenance', "if (source !== 'interactive') return 'ignored';", ''],
   ['owner', 'entry.session !== session', 'false'],
   ['one-shot', 'this.pending.delete(token); return;', 'return;'],
   ['admission', '    if (diagnostic(call)) return;', '    return;'],
+  ['standing-session', 'this.standing.get(call.session)?.has(root)', '[...this.standing.values()].some(set => set.has(root))'],
+  ['standing-root', 'if (root && this.standing.get(call.session)?.has(root)) return;', 'if (root && this.standing.get(call.session)) return;'],
+  ['standing-exact', "const pushMain = /^git -C (\\S+) push origin main$/;", "const pushMain = /^git -C (\\S+) push .*$/;"],
 ];
 const outcomes = [];
 function run(name, contents) {

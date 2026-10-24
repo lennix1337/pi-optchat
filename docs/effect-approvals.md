@@ -51,9 +51,19 @@ perform the action in the owning interactive session instead of relaying tokens.
 Headless/RPC inputs cannot grant themselves tokens.
 
 The gate does **not** silently convert natural-language standing authorization
-into permanent machine permissions. Reusable scoped `push main`/paid-goal grants,
-separate direct-provider interception, and active-profile activation remain open
-roadmap requirements. A legitimate user authorization still governs the agent;
+into permanent machine permissions. The one modeled standing grant is typed by the
+operator as the entire interactive input:
+
+    approve-standing push-main C:/projetos/pi-optchat C:/projetos/dotfiles
+
+Until session start/shutdown/reload it admits only bash input `{command, timeout?}`
+whose command is exactly `git -C <listed root> push origin main` (root compared
+lowercase with `/` separators; up to 16 absolute roots, no dot segments or shell
+characters). Force, `+main`, refspecs, tags, other remotes, subdirectories, chained
+commands, Code Mode wrappers and other sessions still need exact approval. Retargeting
+`origin` or Git config is itself a gated effect. The paid-goal grant, separate
+direct-provider interception, and active-profile activation remain open roadmap
+requirements. A legitimate user authorization still governs the agent;
 this optional stricter layer can require an explicit machine token as well.
 Existing normal chat/compaction provider requests are not intercepted by tool hooks.
 

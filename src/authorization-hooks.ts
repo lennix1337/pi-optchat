@@ -10,7 +10,11 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = process.en
     const result = gate.approve(ctx.sessionManager.getSessionId(), event.source, event.text);
     if (result === 'ignored') return;
     if (result === 'invalid') {
-      ctx.ui.notify('Effect approval refused: token expired, already used or belongs to another session. No execution occurred.', 'warning');
+      ctx.ui.notify('Effect approval refused: token expired or used, another session, or not `approve-standing push-main <absolute root>...`. No execution occurred.', 'warning');
+      return { action: 'handled' };
+    }
+    if (result === 'standing') {
+      ctx.ui.notify('Standing grant active until session reset: exactly `git -C <listed root> push origin main`. Force, other refs, tags and other commands still need exact approval.', 'info');
       return { action: 'handled' };
     }
     ctx.ui.notify('Exact invocation approved once. Nested calls and retries still require their own approval.', 'info');

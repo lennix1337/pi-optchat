@@ -47,9 +47,33 @@ function diagnostic({ tool, input }: Invocation) {
   return tool === 'ripwire' && record(input) && typeof input.action === 'string' && navigation.has(input.action);
 }
 
+const pushMain = /^git -C (\S+) push origin main$/;
+
+/** Lowercase forward-slash absolute path without dot segments, or undefined. */
+function pushRoot(path: string) {
+  const root = path.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
+  return /^[a-z]:(\/[a-z0-9_-][a-z0-9._-]*)+$/.test(root) && !root.split('/').some(part => part === '.' || part === '..') ? root : undefined;
+}
+
+/** Standing grant shape: exactly `git -C <listed root> push origin main`, optional numeric timeout, nothing else. */
+function standingPushRoot({ tool, input }: Invocation) {
+  if (tool !== 'bash' || !record(input) || typeof input.command !== 'string') return;
+  if (!Object.keys(input).every(key => key === 'command' || (key === 'timeout' && typeof input.timeout === 'number'))) return;
+  const match = pushMain.exec(input.command);
+  return match ? pushRoot(match[1]) : undefined;
+}
+
+/** Operator-typed `approve-standing push-main <root>...`: 1–16 valid roots, else undefined. */
+function standingRoots(text: string) {
+  const match = /^approve-standing push-main((?: \S+)+)$/.exec(text);
+  const roots = match?.[1].trim().split(' ').map(pushRoot) ?? [];
+  return roots.length > 0 && roots.length <= 16 && roots.every(Boolean) ? roots as string[] : undefined;
+}
+
 /** One-shot tool approval, not a shell sandbox or an authorization inferred from conversation. */
 export class EffectApprovals {
   private readonly pending = new Map<string, Pending>();
+  private readonly standing = new Map<string, Set<string>>();
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly maxPending: number;
@@ -57,7 +81,8 @@ export class EffectApprovals {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 256) throw new Error('Invalid approval bounds');
     this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending;
   }
-  clear() { this.pending.clear(); }
+  /** Session lifecycle reset: one-shot approvals and standing grants end together. */
+  clear() { for (const grants of [this.pending, this.standing]) grants.clear(); }
   private expire() {
     this.pending.forEach((entry, token) => { if (this.now() >= entry.expires) this.pending.delete(token); });
   }
@@ -71,6 +96,8 @@ export class EffectApprovals {
       return { block: true, reason: 'Not executed: effect approval requires bounded, finite plain JSON arguments.' };
     }
     if (diagnostic(call)) return;
+    const root = standingPushRoot(call);
+    if (root && this.standing.get(call.session)?.has(root)) return;
     const fingerprint = createHash('sha256').update(serialized).digest('hex');
     for (const [token, entry] of this.pending) {
       if (entry.fingerprint !== fingerprint) continue;
@@ -85,8 +112,14 @@ export class EffectApprovals {
   private refusal(tool: string, token: string): Refusal {
     return { block: true, token, reason: `Not executed: ${tool} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. To approve once, enter exactly:\napprove-effect ${token}` };
   }
-  approve(session: string, source: string, text: string): 'approved' | 'invalid' | 'ignored' {
+  approve(session: string, source: string, text: string): 'approved' | 'standing' | 'invalid' | 'ignored' {
     if (source !== 'interactive') return 'ignored';
+    if (text.trim().startsWith('approve-standing ')) {
+      const roots = standingRoots(text.trim());
+      if (!roots) return 'invalid';
+      this.standing.set(session, new Set([...(this.standing.get(session) ?? []), ...roots]));
+      return 'standing';
+    }
     const match = /^approve-effect ([a-f0-9]{24})$/.exec(text.trim());
     if (!match) return 'ignored';
     this.expire();

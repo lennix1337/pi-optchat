@@ -51,6 +51,24 @@ test('approval binds exact inputs/cwd/session and is consumed once without neste
   token(gate, invocation());
 });
 
+test('standing push-main grant is interactive, session-scoped, listed roots only and never force', () => {
+  const gate = new EffectApprovals();
+  const push = (command: string, session = 'owner', extra: Record<string, unknown> = {}) => ({ ...invocation('bash', { command, ...extra }), session });
+  const grant = 'approve-standing push-main C:/projetos/pi-optchat C:/projetos/dotfiles';
+  for (const source of ['extension', 'rpc']) assert.equal(gate.approve('owner', source, grant), 'ignored');
+  token(gate, push('git -C C:/projetos/pi-optchat push origin main'));
+  for (const bad of ['approve-standing push-main relative/path', 'approve-standing push-main C:/a;rm', 'approve-standing push-main', 'approve-standing deploy C:/projetos/x']) assert.equal(gate.approve('owner', 'interactive', bad), 'invalid');
+  assert.equal(gate.approve('owner', 'interactive', grant), 'standing');
+  for (let i = 0; i < 2; i++) assert.equal(gate.admit(push('git -C C:/projetos/pi-optchat push origin main')), undefined);
+  assert.equal(gate.admit(push('git -C c:\\projetos\\dotfiles\\ push origin main', 'owner', { timeout: 120 })), undefined);
+  for (const command of ['git -C C:/projetos/pi-optchat push --force origin main', 'git -C C:/projetos/pi-optchat push -f origin main', 'git -C C:/projetos/pi-optchat push origin +main', 'git -C C:/projetos/pi-optchat push origin main:release', 'git -C C:/projetos/pi-optchat push origin main --tags', 'git -C C:/projetos/pi-optchat push origin main; rm -rf /', 'git -C C:/projetos/Genexus18MCP push origin main', 'git -C C:/projetos/pi-optchat/sub push origin main', 'git push origin main']) token(gate, push(command));
+  token(gate, push('git -C C:/projetos/pi-optchat push origin main', 'other'));
+  token(gate, push('git -C C:/projetos/pi-optchat push origin main', 'owner', { env: { GIT_DIR: '/x' } }));
+  token(gate, invocation('codemode', { code: 'await tools.bash({command:"git -C C:/projetos/pi-optchat push origin main"})' }));
+  gate.clear();
+  token(gate, push('git -C C:/projetos/pi-optchat push origin main'));
+});
+
 test('diagnostics stay available but compound/opaque mutations do not gain read-only admission', () => {
   const gate = new EffectApprovals();
   for (const tool of ['read', 'zoom', 'date', 'operation_state', 'operational_state', 'project_evidence', 'get_goal']) assert.equal(gate.admit(invocation(tool, {})), undefined);
@@ -112,8 +130,13 @@ test('native hooks preserve provenance and consume permission before an attempte
   await hooks.get('input')!({ text: `approve-effect ${value}`, source: 'interactive' }, ctx);
   assert.equal(await hooks.get('tool_call')!(event, ctx), undefined);
   assert.equal((await hooks.get('tool_call')!(event, ctx)).block, true);
+  const push = { ...event, input: { command: 'git -C C:/projetos/pi-optchat push origin main' } };
+  assert.deepEqual(await hooks.get('input')!({ text: 'approve-standing push-main C:/projetos/pi-optchat', source: 'interactive' }, ctx), { action: 'handled' });
+  assert.equal(await hooks.get('tool_call')!(push, ctx), undefined);
   await hooks.get('session_shutdown')!({}, ctx);
+  assert.equal((await hooks.get('tool_call')!(push, ctx)).block, true);
   assert.ok(notices.some(text => /approved once/i.test(text)));
+  assert.ok(notices.some(text => /standing grant active/i.test(text)));
 });
 
 test('manager-style interactive child input cannot grant a delegated invocation', async () => {
