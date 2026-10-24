@@ -8,9 +8,9 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { allowSearch, CONNECTED, cutOffChildren, delegation, NO_DELEGATION, NOT_CONNECTED, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, VIEW_DOC } from './prompts.ts';
 import { memoryTools, searchTool } from './tools.ts';
-import { VIEW, type Memory } from './memory.ts';
+import { DEFER, VIEW, type Memory } from './memory.ts';
 import { resolveModel, type ModelChoice } from './compactor.ts';
-import { cachePayload } from './cache.ts';
+import { cachePayload, prefixRetention } from './cache.ts';
 import { CUT_OFF, RunHistory, isRunning, orderRuns, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
 import { ExternalRuns, SubagentRpc, type SubagentEvents } from './external-runs.ts';
 import { requestInterrupt, requestSteer, requestStop } from './external-control.ts';
@@ -101,10 +101,11 @@ export const builtinExtensions = (names: Iterable<string>): InlineExtension[] =>
 });
 /** Child sessions use Pi's compactor: it estimates the current system message (prompt plus active `toolsAdded`) and all
  * non-system messages, then compacts at `contextWindow - reserveTokens`. Keep that threshold within the same output-reserved,
- * 5%-margin input budget as the main request, or earlier at the configured turn share plus the child's task view. */
+ * 5%-margin input budget as the main request, or earlier at the configured turn share plus the child's task view, which can
+ * reach DEFER times the view budget while a merge is put off. */
 export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number) {
   const inputBudget = inputTokenBudget(contextWindow, maxOutputTokens);
-  const turnBudget = fraction > 0 ? Math.floor(contextWindow * fraction + VIEW / 4) : inputBudget;
+  const turnBudget = fraction > 0 ? Math.floor(contextWindow * fraction + VIEW * DEFER / 4) : inputBudget;
   return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(inputBudget, turnBudget)) };
 }
 export class Children {
@@ -431,7 +432,7 @@ export class Children {
           event.systemPromptOptions.customPrompt = allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch);
           event.systemPromptOptions.sections.instructions = instructions;
         });
-        pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload) : event.payload);
+        pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload);
       }],
     });
     await loader.reload();

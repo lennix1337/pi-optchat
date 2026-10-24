@@ -124,7 +124,7 @@ test('subagent compaction reserves output and Pi-estimates the current system pr
   const system: AgentMessage = { role: 'system', content: 'child prompt', toolsAdded: [{ name: 'parent', description: 'active schema', parameters: { type: 'object' } }], timestamp: 0 };
   const request = [system, { role: 'user' as const, content: 'task', timestamp: 1 }];
   assert.ok(estimatedContextTokens(request) > estimatedContextTokens(request.slice(1)), 'the system prompt and active tools contribute to Pi token estimates');
-  assert.deepEqual(subagentCompaction(200_000, 0.3, 8_192), { enabled: true, reserveTokens: 108_000 });
+  assert.deepEqual(subagentCompaction(200_000, 0.3, 8_192), { enabled: true, reserveTokens: 92_000 }, 'turn share 60,000 plus a deferred view of up to 48,000 tokens');
   assert.deepEqual(subagentCompaction(200_000, 0.3, 150_000), { enabled: true, reserveTokens: 160_000 });
   assert.deepEqual(subagentCompaction(200_000, 0), { enabled: true, reserveTokens: 26_384 });
 });

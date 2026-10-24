@@ -20,6 +20,17 @@ export function splitView(text: string) {
  * earlier entry, so the marks 20 and 40 blocks back still find the last call's entry after a turn of tool calls adds up to
  * 60 blocks (240 lines). With the end of the request, that is Anthropic's limit of 4 marks. */
 const MARKS = [0, 20, 40];
+/** With a prefix mark, the view keeps two: a turn can then add up to 40 blocks (160 lines) and still find the last call's entry. */
+const PREFIX_MARKS = [0, 20];
+/** `prefix` also marks the system prompt, and with it the tools before it, at the cost of the view's oldest mark. They change
+ * only with the session's setup, while the view's batch merges rewrite it from near its top every ~150 messages: replayed
+ * over the profile's log, a quarter of turn starts found no view entry, and with no mark before the view each rewrote the
+ * ~18K-token system prompt and tools too. `long` keeps that entry an hour, past the 5-minute gaps between most turns, for a
+ * write premium paid only when the prefix changes. Leave it off where the system prompt is too short to cache (the compactor). */
+export interface CacheOptions { prefix?: 'short' | 'long' }
+/** Anthropic's own API takes the 1-hour TTL; other endpoints speaking its protocol may not, so they keep the 5-minute one. */
+export const prefixRetention = (model?: { provider?: string; compat?: unknown }): 'short' | 'long' =>
+  model?.provider === 'anthropic' && !(record(model.compat) && model.compat.supportsLongCacheRetention === false) ? 'long' : 'short';
 
 /** OptChat's status line (agents and background shells at work), in Pi's context and in Anthropic's payload alike. */
 export const isAtWork = (message: unknown) => record(message) && message.role === 'user' && Array.isArray(message.content) && message.content.length === 1
@@ -32,15 +43,16 @@ function lastBlock(message: Record<string, unknown>) {
 
 /** Anthropic: marks on the view (see MARKS) plus automatic end-of-request caching, so the next call finds the last one's entry
  * and pays only for the lines after it. */
-export function cachePayload(payload: unknown): unknown {
+export function cachePayload(payload: unknown, options: CacheOptions = {}): unknown {
   if (!record(payload) || !Array.isArray(payload.messages)) return payload;
+  const offsets = options.prefix ? PREFIX_MARKS : MARKS;
   const messages = payload.messages;
   const view = new Set<unknown>();
   for (const message of messages) {
     if (!record(message) || message.role !== 'user' || !Array.isArray(message.content)) continue;
     const at = message.content.findIndex((block: unknown) => record(block) && block.type === 'text' && typeof block.text === 'string' && isView(block.text));
     if (at < 0) continue;
-    const pieces = splitView(message.content[at].text), marked = new Set(MARKS.map(back => pieces.length - 2 - back));
+    const pieces = splitView(message.content[at].text), marked = new Set(offsets.map(back => pieces.length - 2 - back));
     const blocks = pieces.map((text, j) => ({ type: 'text', text, ...(marked.has(j) ? { cache_control: { type: 'ephemeral' } } : {}) }));
     message.content.splice(at, 1, ...blocks);
     for (const block of blocks) view.add(block);
@@ -55,6 +67,11 @@ export function cachePayload(payload: unknown): unknown {
     if (!record(message)) continue;
     delete message.cache_control;
     if (Array.isArray(message.content)) for (const item of message.content) if (record(item) && !view.has(item)) delete item.cache_control;
+  }
+  if (options.prefix) {
+    if (typeof payload.system === 'string' && payload.system) payload.system = [{ type: 'text', text: payload.system }];
+    const last: unknown = Array.isArray(payload.system) && payload.system.length ? payload.system.at(-1) : Array.isArray(payload.tools) ? payload.tools.at(-1) : undefined;
+    if (record(last)) last.cache_control = { type: 'ephemeral', ...(options.prefix === 'long' ? { ttl: '1h' } : {}) };
   }
   // The status line changes between calls, so the turn's mark goes on the block before it rather than at the end of the request.
   // Pi may end the request with an empty system message carrying settings (effort); it holds nothing to cache.

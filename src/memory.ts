@@ -3,6 +3,11 @@ import { FileStore, storeFor, type Saved, type Store, type TerminalRecord } from
 
 export const NODE = 512;
 export const VIEW = 128_000;
+/** While the prompt cache is warm the chat view puts off its batch merge until it reaches this many times its budget, since
+ * the batch rewrites the view from near its top and the next request misses the cache. */
+export const DEFER = 1.5;
+/** A turn starting this long after the last request finds the provider's 5-minute cache expired, so merging then costs nothing. */
+export const COLD_MS = 270_000;
 export const CAP = 30_000;
 /** The most characters one zoom into a message returns, so a page stays under the tool output CAP instead of losing its middle. */
 export const PAGE = 25_000;
@@ -62,13 +67,15 @@ export function mostDue(view: readonly Part[], total: number, built: (part: Part
   }
   return best;
 }
-/** A view (recipe §3.2): lines that tile the log, oldest first. It grows a line per message and, once over `high` bytes or when
- * forced, merges its most due pairs in one batch down to `low`, merging what it can at each change until then. */
+/** A view (recipe §3.2): lines that tile the log, oldest first. It grows a line per message and, once over `ceiling` bytes, over
+ * `high` when the cache is cold, or when forced, merges its most due pairs in one batch down to `low`, merging what it can at each
+ * change until then. */
 class Sawtooth {
   readonly parts: Part[] = [];
   private measured = 0;
   merging = false;
-  constructor(private readonly high: number, private readonly low: number, private readonly node: (part: Part) => Summary | undefined) {}
+  constructor(private readonly high: number, private readonly low: number, private readonly node: (part: Part) => Summary | undefined,
+    private readonly ceiling = high) {}
   private lineSize(part: Part) { return bytes(`${start(part)}+${2 ** part.l}|\n`) + (this.node(part)?.size ?? UNBUILT_BYTES); }
   get size() { return VIEW_FRAME_BYTES + this.measured + (this.parts.length ? 0 : 1); } // render() keeps a blank line in an empty view.
   push(part: Part) { this.parts.push(part); this.measured += this.lineSize(part); }
@@ -84,9 +91,9 @@ class Sawtooth {
   /** A message got its node. Its line is usually still shown, but after a damaged tree file a saved parent can already hide it. */
   built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - UNBUILT_BYTES; }
   /** Returns whether any lines merged. */
-  fit(total: number, force = false) {
+  fit(total: number, force = false, cold = false) {
     const lines = this.parts.length;
-    if (force || this.size > this.high) this.merging = true;
+    if (force || this.size > (cold ? this.high : this.ceiling)) this.merging = true;
     for (let best: number; this.merging && this.size > this.low && (best = mostDue(this.parts, total, part => !!this.node(part))) >= 0;) {
       const a = this.parts[best], b = this.parts[best + 1], parent = { l: a.l + 1, i: a.i / 2 };
       this.measured += this.lineSize(parent) - this.lineSize(a) - this.lineSize(b);
@@ -117,7 +124,8 @@ function isPolicyRefusal(error: unknown) {
 }
 
 /** The log is authoritative. The tree and the view follow the recipe: the view grows a line per message and, once it passes
- * `budget`, merges its most due pairs in one batch down to half of it, so between batches it only grows at its end.
+ * `budget`, merges its most due pairs in one batch down to half of it, so between batches it only grows at its end. With `defer`
+ * above 1 it waits for a cold turn (`cool`) or `defer` times the budget, so warm turns keep the cached prefix.
  * Compactions get their own view (recipe §4): the chat's merged further, to between an eighth and a quarter of the budget,
  * and again whenever the chat's merges, so parallel compactions read it from the cache. */
 export class Memory {
@@ -153,16 +161,16 @@ export class Memory {
   lastError?: string;
 
   /** Opens the memory in `directory` through the store `storeFor` picks, after its load. */
-  static async open(directory: string, compress: Compressor, warn: (s: string) => void = console.error, budget = VIEW, jobs = 8, retryMs?: number) {
+  static async open(directory: string, compress: Compressor, warn: (s: string) => void = console.error, budget = VIEW, jobs = 8, retryMs?: number, defer = 1) {
     const store = storeFor(directory, warn);
-    return new Memory({ directory, store, saved: await store.load() }, compress, warn, budget, jobs, retryMs);
+    return new Memory({ directory, store, saved: await store.load() }, compress, warn, budget, jobs, retryMs, defer);
   }
   /** A directory alone opens a FileStore there. `jobs`: summaries built at once, and how many unbuilt lines a new message's node
    * waits behind. Chat keeps 8; imports pass the "Import: summaries at once" setting. */
   constructor(source: string | { directory: string; store: Store; saved: Saved }, private readonly compress: Compressor,
     private readonly warn: (s: string) => void = console.error,
-    readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number) {
-    this.chat = new Sawtooth(budget, budget / 2, part => this.node(part));
+    readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number, defer = 1) {
+    this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), budget * Math.max(1, defer));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
     let saved: Saved;
     if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; saved = store.load(); }
@@ -313,10 +321,16 @@ export class Memory {
   onChange(listener: () => void) { this.events.on('change', listener); return () => { this.events.off('change', listener); }; }
   /** The view line covering message `at`. */
   covering(at: number) { return this.chat.covering(at); }
+  /** The prompt cache has expired: start the batch merge the view put off, if it is over budget. Returns whether the view merged. */
+  cool() {
+    const merged = this.fit(this.root.length, true);
+    if (merged) this.save();
+    return merged;
+  }
   /** Returns whether the chat's view or batch state changed. */
-  private fit(total = this.root.length) {
+  private fit(total = this.root.length, cold = false) {
     const merging = this.chat.merging;
-    const merged = this.chat.fit(total);
+    const merged = this.chat.fit(total, false, cold);
     this.compaction.fit(total, merged);
     const owed = this.owed();
     this.peak = owed > 0 ? Math.max(this.peak, owed) : 0;

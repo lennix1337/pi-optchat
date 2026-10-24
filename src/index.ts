@@ -6,7 +6,7 @@ import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { Memory } from './memory.ts';
+import { COLD_MS, DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
@@ -14,7 +14,7 @@ import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiag
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
-import { cachePayload, record } from './cache.ts';
+import { cachePayload, prefixRetention, record } from './cache.ts';
 import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
@@ -107,6 +107,8 @@ export default function optchat(pi: ExtensionAPI) {
   let view: string | undefined;
   // Like the chronological view, focus is frozen between turn/refresh boundaries for cache stability.
   let focusView: string | undefined;
+  /** When this profile last sent the main model a request: a turn starting long after it may merge the view (DEFER). */
+  let lastRequestAt: number | undefined;
   let prompt = '';
   /** A compaction is a call like a turn (recipe §4): once a turn has built them, it gets the turns' system prompt and tools. */
   const shared = () => {
@@ -218,7 +220,7 @@ export default function optchat(pi: ExtensionAPI) {
       await checkpoint(old.dir);
     } finally {
       await old.memory.close(); await old.unlock(); active = undefined;
-      run = []; previous = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
+      run = []; previous = []; logged = 0; keep = 0; view = undefined; focusView = undefined; lastRequestAt = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
       untitle?.(); untitle = undefined; title.clear(); working = false;
     }
   };
@@ -263,7 +265,7 @@ export default function optchat(pi: ExtensionAPI) {
         const started = performance.now();
         try { return await compress(input, signal); }
         finally { metrics.record('compaction', performance.now() - started); }
-      }, warning => ctx.ui.notify(warning, 'error'));
+      }, warning => ctx.ui.notify(warning, 'error'), undefined, undefined, undefined, DEFER);
       openingMemory = memory;
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
@@ -532,6 +534,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
       if (view === undefined) {
+        if (lastRequestAt === undefined || Date.now() - lastRequestAt >= COLD_MS) a.memory.cool();
         view = await memoryView(ctx); // Capture old history before logging the new input.
         focusView = a.focus.render(a.memory);
         flush();
@@ -576,7 +579,10 @@ export default function optchat(pi: ExtensionAPI) {
       return { messages: [{ role: 'system', content: 'OptChat context unavailable. Stop.', timestamp: 0 }] };
     } finally { active?.metrics.record('context', performance.now() - contextStarted); }
   });
-  pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload) : event.payload);
+  pi.on('before_provider_request', (event, ctx) => {
+    if (active) lastRequestAt = Date.now();
+    return ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload;
+  });
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
   pi.on('session_before_compact', async (event, ctx) => {
     if (!active) return; // Unbound Pi keeps its own compaction policy.

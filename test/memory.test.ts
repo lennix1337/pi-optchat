@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { Memory, cap, CAP, start, end, bytes, mostDue, type Compression, type Part } from '../src/memory.ts';
 import { appendJson, FileStore, localDay } from '../src/store.ts';
 import { lockProfile } from '../src/profiles.ts';
-import { splitView, cachePayload } from '../src/cache.ts';
+import { splitView, cachePayload, prefixRetention } from '../src/cache.ts';
 import { logMessage, buildContext, boundedMessage } from '../src/transcript.ts';
 import { Inbox } from '../src/inbox.ts';
 import { compaction } from '../src/prompts.ts';
@@ -63,6 +63,33 @@ test('tree covers all history, fits incrementally, and exact originals survive r
     assert.deepEqual(memory.root.slice(0, 48).map(e => e.text), originals);
     assert.match(memory.zoom(17, 1), /valuable detail/);
     assert.throws(() => memory.zoom(3, 4), /No line/);
+  } finally { await memory.close(); removeDir(dir); }
+});
+
+test('a deferring view keeps growing at its end while warm, merges when cooled, and merges by itself past the ceiling', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
+  const compress = async (input: Compression) => input.source.slice(0, 170);
+  const memory = new Memory(dir, compress, () => {}, 1500, 8, undefined, 2);
+  const add = async (i: number) => { memory.append('user', `Original ${i}: ${'valuable detail '.repeat(30)}`); await memory.settle(AbortSignal.timeout(5000), 'tree'); };
+  try {
+    let i = 0;
+    while (memory.size <= 1500) await add(i++);
+    assert.ok(memory.view.every(p => p.l === 0), 'past the budget but under the ceiling, a warm view only grows at its end');
+    const warm = memory.render();
+    await add(i++);
+    assert.ok(memory.render().startsWith(warm.slice(0, -'</chat>'.length)), 'the next warm view extends the previous one');
+    const before = memory.size;
+    assert.equal(memory.cool(), true);
+    assert.ok(memory.view.some(p => p.l > 0) && memory.size < before, 'a cold turn runs the put-off batch');
+    assert.equal(memory.cool(), false, 'under budget, cooling changes nothing');
+    let lines = memory.view.length, mergedAlone = false;
+    for (let n = 0; n < 40; n++) {
+      await add(i++);
+      assert.ok(memory.size <= 3000 + 300, 'the ceiling bounds a warm view');
+      if (memory.view.length < lines) mergedAlone = true;
+      lines = memory.view.length;
+    }
+    assert.ok(mergedAlone, 'past the ceiling the view merges without a cold turn');
   } finally { await memory.close(); removeDir(dir); }
 });
 
@@ -363,6 +390,26 @@ test('the view goes in blocks of 4 lines, with marks on its last whole block, 20
     assert.ok(output.cache_control);
     assert.equal(blocks.map(b => b.text).join(''), view + 'new question');
   }
+});
+
+test('with a prefix mark, the system prompt keeps its own entry, for an hour on Anthropic, and the view keeps two marks', () => {
+  const line = '0+1|summary of a decision\n', view = '<chat>\n' + line.repeat(1000) + '</chat>', pieces = splitView(view);
+  const request = () => ({ system: [{ type: 'text', text: 'identity', cache_control: { type: 'ephemeral' } }, { type: 'text', text: 'system' }],
+    tools: [{ name: 'zoom', cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: view }, { type: 'text', text: 'new question' }] }] });
+  for (const prefix of ['short', 'long'] as const) {
+    const output = cachePayload(request(), { prefix }) as ReturnType<typeof request> & { cache_control?: unknown };
+    assert.equal((JSON.stringify(output).match(/cache_control/g) ?? []).length, 4, 'Anthropic\'s limit');
+    assert.ok(!('cache_control' in output.system[0]) && !('cache_control' in output.tools[0]));
+    assert.deepEqual((output.system[1] as { cache_control?: unknown }).cache_control, { type: 'ephemeral', ...(prefix === 'long' ? { ttl: '1h' } : {}) });
+    assert.deepEqual(output.messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []), [pieces.length - 22, pieces.length - 2]);
+    assert.ok(output.cache_control);
+  }
+  const plain = cachePayload({ system: 'system', messages: request().messages }, { prefix: 'short' }) as { system: unknown };
+  assert.deepEqual(plain.system, [{ type: 'text', text: 'system', cache_control: { type: 'ephemeral' } }], 'a string system prompt becomes a marked block');
+  assert.equal(prefixRetention({ provider: 'anthropic' }), 'long');
+  assert.equal(prefixRetention({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), 'short');
+  assert.equal(prefixRetention({ provider: 'some-proxy' }), 'short', 'other endpoints speaking Anthropic\'s protocol keep 5 minutes');
 });
 
 test('after a turn adds up to 60 blocks of lines, a mark of the next call still finds one of the last call\'s within 20 blocks', () => {
