@@ -1,0 +1,148 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, wakeText, type Beat } from '../src/heartbeat.ts';
+
+const MIN = 60_000;
+
+/** A clock and one timer slot the test advances by hand. */
+function harness({ minutes = 30, wakes = 2, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')) } = {}) {
+  let now = 0, timer: { at: number; run: () => void } | undefined;
+  const checks: number[] = [], woken: string[] = [], notes: string[] = [];
+  const beat = new Heartbeat({
+    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, busy,
+    setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
+    clearTimer: handle => { if (timer === handle) timer = undefined; },
+    check: async () => { checks.push(now); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
+    wake: beat => { woken.push(beat.text); },
+    note: text => { notes.push(text); },
+  });
+  const advance = async (ms: number) => {
+    const until = now + ms;
+    while (timer && timer.at <= until) { const t = timer; timer = undefined; now = t.at; t.run(); await beat.settled(); }
+    now = until;
+  };
+  return { beat, checks, woken, notes, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
+}
+
+test('an idle chat gets one cheap check after the interval, and a SLEEP backs the next one off', async () => {
+  const h = harness();
+  h.beat.arm();
+  await h.advance(29 * MIN); assert.deepEqual(h.checks, []);
+  await h.advance(1 * MIN); assert.deepEqual(h.checks, [30 * MIN]);
+  assert.equal(h.pending(), 60 * MIN, 'a quiet check doubles the wait');
+  await h.advance(60 * MIN); assert.equal(h.checks.length, 2);
+  assert.equal(h.pending(), 120 * MIN);
+  assert.deepEqual(h.woken, []);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the backoff stops at eight intervals', async () => {
+  const h = harness();
+  h.beat.arm();
+  await h.advance(30 * MIN * (1 + 2 + 4 + 8 + 8));
+  assert.equal(h.checks.length, 5);
+  assert.equal(h.pending(), 8 * 30 * MIN);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a WAKE verdict wakes the main agent with the task, and no timer runs while it works', async () => {
+  const h = harness({ verdicts: [{ wake: true, text: 'finish the DENTA-90 PR' }] });
+  h.beat.arm();
+  await h.advance(30 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.match(h.woken[0], /finish the DENTA-90 PR/);
+  assert.equal(h.pending(), undefined, 'the woken turn re-arms it when it settles');
+  h.beat.arm();
+  assert.equal(h.pending(), 30 * MIN, 'a wake resets the backoff');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('wakes per day are capped; past the cap a WAKE is noted and the check backs off', async () => {
+  const wake = { wake: true, text: 'do it' };
+  const h = harness({ wakes: 1, verdicts: [wake, wake] });
+  h.beat.arm(); await h.advance(30 * MIN);
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.match(h.notes.join('\n'), /1 wake.*24 h/);
+  assert.equal(h.pending(), 60 * MIN);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the daily count survives a reload', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+  const first = harness({ dir, wakes: 1, verdicts: [{ wake: true, text: 'a' }] });
+  first.beat.arm(); await first.advance(30 * MIN);
+  const second = harness({ dir, wakes: 1, verdicts: [{ wake: true, text: 'b' }] });
+  second.beat.arm(); await second.advance(30 * MIN);
+  assert.deepEqual(second.woken, []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a busy chat skips the model call and tries again an interval later', async () => {
+  let reason: string | undefined = 'main agent working';
+  const h = harness({ busy: () => reason });
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.deepEqual(h.checks, []);
+  assert.equal(h.pending(), 30 * MIN);
+  reason = undefined; await h.advance(30 * MIN);
+  assert.equal(h.checks.length, 1);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('operator input disarms it and resets the backoff; 0 minutes turns it off', async () => {
+  const h = harness();
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.equal(h.pending(), 60 * MIN);
+  h.beat.operatorSpoke();
+  assert.equal(h.pending(), undefined);
+  h.beat.arm(); assert.equal(h.pending(), 30 * MIN);
+  h.beat.disarm(); h.setMinutes(0); h.beat.arm();
+  assert.equal(h.pending(), undefined);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a failed check is noted once and backs off like a SLEEP', async () => {
+  const h = harness({ verdicts: [new Error('rate limited'), new Error('rate limited')] });
+  h.beat.arm(); await h.advance(30 * MIN); await h.advance(60 * MIN);
+  assert.equal(h.checks.length, 2);
+  assert.equal(h.notes.filter(n => /rate limited/.test(n)).length, 1);
+  assert.deepEqual(h.woken, []);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+const model = { provider: 'anthropic', id: 'claude-haiku-5-5', api: 'anthropic-messages', reasoning: false, contextWindow: 200_000, maxTokens: 64_000 };
+function registry(text: string) {
+  const sent: any[] = [];
+  return { sent, find: (provider: string, id: string) => (provider === model.provider && id === model.id ? model : undefined),
+    streamSimple: (_m: unknown, context: unknown, options: unknown) => { sent.push({ context, options }); return { result: async () => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop', usage: {}, timestamp: 0 }) }; } } as any;
+}
+const choice = { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'high' as const };
+
+test('the check reads one WAKE/SLEEP line from the cheap model, thinking off', async () => {
+  const wake = registry('WAKE: the last turn stopped on a quota error mid-task');
+  assert.deepEqual(await checkBeat(wake, choice, 'snapshot', () => {}), { wake: true, text: 'the last turn stopped on a quota error mid-task', model: 'anthropic/claude-haiku-5-5' });
+  assert.equal(wake.sent[0].context.systemPrompt, HEARTBEAT_PROMPT);
+  assert.equal(wake.sent[0].options.reasoning, undefined);
+  assert.equal((await checkBeat(registry('sleep - waiting on the operator'), choice, 's', () => {})).wake, false);
+  await assert.rejects(checkBeat(registry('maybe'), choice, 's', () => {}), /verdict/);
+});
+
+test('the snapshot carries the stall evidence and only the tail of a long view', () => {
+  const text = beatSnapshot({ view: `${'old line\n'.repeat(10_000)}newest line`, state: 'objective: x', idleMinutes: 42,
+    lastStop: 'error: 429 quota exhausted', agents: ['a1 working 3h: build'], shells: [] });
+  assert.match(text, /newest line/);
+  assert.ok(text.length < 40_000);
+  assert.match(text, /42 min/); assert.match(text, /429 quota/); assert.match(text, /a1 working 3h/); assert.match(text, /objective: x/);
+});
+
+test('the wake message bounds what an unattended turn may do', () => {
+  const text = wakeText('fix the flaky test', 'anthropic/claude-haiku-5-5', 45);
+  assert.match(text, /^\[OptChat heartbeat\]/);
+  assert.match(text, /fix the flaky test/);
+  assert.match(text, /pull request/i);
+  assert.match(text, /never merge|not merge/i);
+  assert.match(text, /deploy/);
+});

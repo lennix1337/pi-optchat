@@ -29,6 +29,7 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
+import { Heartbeat, beatSnapshot, checkBeat, wakeText } from './heartbeat.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -147,6 +148,22 @@ export default function optchat(pi: ExtensionAPI) {
   const title = new TabTitle();
   let working = false;
   let untitle: (() => void) | undefined;
+  /** Wakes the main agent after a long idle when a cheap check finds work (heartbeatMinutes); interactive owner only. */
+  let heartbeat: Heartbeat | undefined;
+  let settledAt = Date.now();
+  const idleMinutes = () => Math.round((Date.now() - settledAt) / 60_000);
+  /** What the heartbeat's cheap model reads: why the chat stopped, what still runs, the state and the newest memory lines. */
+  const beatState = (ctx: ExtensionContext, a: Active) => {
+    const now = Date.now(), age = (since: number) => { const m = Math.round((now - since) / 60_000); return m < 120 ? `${m} min` : `${Math.round(m / 60)} h`; };
+    const last = ctx.sessionManager.getBranch().findLast(e => e.type === 'message' && e.message.role === 'assistant');
+    const message = last?.type === 'message' && last.message.role === 'assistant' ? last.message : undefined;
+    const lastStop = message && message.stopReason !== 'stop' ? `${message.stopReason}${message.errorMessage ? `: ${oneLine(message.errorMessage).slice(0, 300)}` : ''}` : undefined;
+    const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
+    const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
+    const wishes = join(a.dir, 'heartbeat.md');
+    return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
+      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, wishes: existsSync(wishes) ? readFileSync(wishes, 'utf8') : undefined });
+  };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
     if (a) title.show(text => ctx.ui.setTitle(text), mainTitle(a.name, working, a.children.ids.length));
@@ -213,7 +230,21 @@ export default function optchat(pi: ExtensionAPI) {
     reports = [...reports.filter(r => r.batch !== batch), ...texts.length ? [{ text: texts.join('\n\n'), count: texts.length, batch }] : []];
     saveReports();
   };
+  const startHeartbeat = (ctx: ExtensionContext, profile: Active) => {
+    const own = () => active === profile ? profile : undefined;
+    heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
+      minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0,
+      busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
+      check: () => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile),
+        message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
+      wake: beat => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes())).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
+      note: text => ctx.ui.notify(text, 'warning'),
+      setTimer: (run, ms) => setTimeout(run, ms).unref(),
+      clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
+    settledAt = Date.now(); heartbeat.arm();
+  };
   const stop = async () => {
+    heartbeat?.disarm(); heartbeat = undefined;
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
@@ -317,6 +348,7 @@ export default function optchat(pi: ExtensionAPI) {
         recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents')] : []]).then(() => {});
       }
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r); });
+      if (ctx.mode === 'tui') startHeartbeat(ctx, active);
     } catch (error) {
       await closeWindows?.(); closeWindows = undefined;
       untitle?.(); untitle = undefined; title.clear();
@@ -453,6 +485,7 @@ export default function optchat(pi: ExtensionAPI) {
     }
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
+      heartbeat?.operatorSpoke();
       try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
       catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
     }
@@ -466,7 +499,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   // A report sent while Pi is idle starts its run without before_agent_start; it reuses the last built prompt.
   pi.on('agent_start', (_event, ctx) => {
-    working = true; showTitle(ctx);
+    working = true; showTitle(ctx); heartbeat?.disarm();
     if (active && !runStarted) startRun(ctx);
   });
   pi.on('before_agent_start', (event, ctx) => {
@@ -622,6 +655,8 @@ export default function optchat(pi: ExtensionAPI) {
     if (runStarted) pi.appendEntry(RUN_BOUNDARY, { state: 'end' });
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
+    settledAt = Date.now();
+    if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;
       void active.sync.now();

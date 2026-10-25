@@ -22,10 +22,10 @@ export const short = (n: number) => {
 };
 const dollars = (n: number) => n > 0 && n < 0.0001 ? '<$0.0001' : `$${n.toFixed(n > 0 && n < 0.01 ? 4 : 2)}`;
 const cached = (u: Usage) => { const input = u.input + u.cacheRead + u.cacheWrite; return `${input ? Math.round(100 * u.cacheRead / input) : 0}%`; };
-const roleNames: Record<UsageRole, string> = { main: 'main', subagent: 'subagents', compactor: 'compactor', import: 'import', advisor: 'approvals' };
+const roleNames: Record<UsageRole, string> = { main: 'main', subagent: 'subagents', compactor: 'compactor', import: 'import', advisor: 'approvals', heartbeat: 'heartbeat' };
 const seconds = (ms?: number) => ms === undefined ? '-' : `${(ms / 1000).toFixed(1)}s`;
 function usageRows(groups: ReturnType<typeof summarizeUsage>['groups'], total: Usage) {
-  const order = ['main', 'subagent', 'compactor', 'advisor', 'import'] as const;
+  const order = ['main', 'subagent', 'compactor', 'advisor', 'heartbeat', 'import'] as const;
   return groups.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role) || b.usage.cost.total - a.usage.cost.total).map((group, index) => [
     index && groups[index - 1].role === group.role ? '' : roleNames[group.role],
     oneLine(`${group.provider ?? 'unknown'}/${group.model}${group.failures ? ` · ${group.failures} failed` : ''}`), dollars(group.usage.cost.total),

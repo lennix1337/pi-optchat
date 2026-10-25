@@ -1,6 +1,7 @@
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
-import { reasoningFor, resolveModel, type ModelChoice } from './compactor.ts';
+import type { ModelChoice } from './compactor.ts';
+import { askOneLine } from './one-line.ts';
 
 /** A high-impact call the gate stopped, with what the operator recently asked for. */
 export interface AdvisorRequest { kind?: string; tool: string; input: unknown; cwd: string; requests: string[] }
@@ -35,17 +36,6 @@ function describe({ kind, tool, input, cwd, requests }: AdvisorRequest) {
 /** One cheap, thinking-free verdict; throws on anything but a clear APPROVE or DENY so the operator decides instead. */
 export async function adviseEffect(registry: ModelRegistry, choice: ModelChoice, request: AdvisorRequest,
   usage: (message: AssistantMessage) => void, signal: AbortSignal = AbortSignal.timeout(30_000)): Promise<AdvisorVerdict> {
-  const resolved = resolveModel(registry, choice);
-  if (!resolved) throw new Error(`advisor model unavailable: ${choice.provider}/${choice.model}`);
-  const { model } = resolved;
-  const reply = await registry.streamSimple(model, {
-    systemPrompt: ADVISOR_PROMPT,
-    messages: [{ role: 'user', timestamp: Date.now(), content: describe(request) }],
-  }, { reasoning: reasoningFor(model, 'off'), maxTokens: 120, signal }).result();
-  usage(reply);
-  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? reply.stopReason);
-  const text = reply.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('').trim();
-  const match = verdictLine.exec(text.split('\n')[0] ?? '');
-  if (!match) throw new Error(`no clear verdict from ${model.provider}/${model.id}: ${text.slice(0, 80) || '(empty)'}`);
-  return { approve: match[1].toUpperCase() === 'APPROVE', reason: match[2].trim() || '(no reason given)', model: `${model.provider}/${model.id}` };
+  const { word, reason, model } = await askOneLine(registry, choice, { systemPrompt: ADVISOR_PROMPT, content: describe(request), maxTokens: 120, line: verdictLine, what: 'advisor' }, usage, signal);
+  return { approve: word === 'APPROVE', reason, model };
 }
