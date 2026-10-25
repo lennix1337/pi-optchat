@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { Type } from 'typebox';
 import { record as isRecord } from './cache.ts';
 import { atomicWrite } from './store.ts';
+import { stringEnum } from './string-enum.ts';
 
 /** Structured operational facts are bounded, append-only records; they never grant authorization. */
 export const OPERATIONAL_STATE_VERSION = 1 as const;
@@ -75,11 +76,11 @@ export type OperationalUpdate = UpdateBase & (
 );
 
 const evidenceSchema = Type.Object({
-  kind: Type.Union(['self-reported', 'test', 'log', 'tool-result', 'external'].map(value => Type.Literal(value))),
+  kind: stringEnum(['self-reported', 'test', 'log', 'tool-result', 'external']),
   ref: Type.String({ minLength: 1, maxLength: MAX_EVIDENCE_REF_CHARS }),
 }, { additionalProperties: false });
 const grantSchema = Type.Object({
-  action: Type.Union(GRANT_ACTIONS.map(value => Type.Literal(value))),
+  action: stringEnum(GRANT_ACTIONS),
   scope: Type.String({ minLength: 1, maxLength: MAX_SCOPE_CHARS }),
   allow: Type.Boolean(),
   until: Type.String({ minLength: 1, maxLength: 32 }),
@@ -94,14 +95,14 @@ const nonCheckKinds = ['objective', 'decision', 'constraint', 'authorization', '
 export const OperationalUpdateSchema = Type.Union([
   Type.Object({
     ...updateCommon,
-    kind: Type.Union(nonCheckKinds.map(value => Type.Literal(value))),
+    kind: stringEnum(nonCheckKinds),
     grant: Type.Optional(grantSchema),
     evidence: Type.Optional(Type.Array(evidenceSchema, { minItems: 1, maxItems: MAX_EVIDENCE_REFS })),
   }, { additionalProperties: false }),
   Type.Object({
     ...updateCommon,
     kind: Type.Literal('check'),
-    status: Type.Union([Type.Literal('verified'), Type.Literal('not_verified'), Type.Literal('blocked')]),
+    status: stringEnum(['verified', 'not_verified', 'blocked']),
     evidence: Type.Array(evidenceSchema, { minItems: 1, maxItems: MAX_EVIDENCE_REFS }),
   }, { additionalProperties: false }),
 ]);

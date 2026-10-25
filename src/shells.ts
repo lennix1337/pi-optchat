@@ -3,6 +3,7 @@ import { createBashTool, createLocalBashOperations, type BashOperations, type Ex
 import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
+import { stringEnum } from './string-enum.ts';
 import { textContent } from './transcript.ts';
 
 export interface ShellJob {
@@ -163,9 +164,9 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
   pi.on('tool_execution_update', event => { if (shell(event.toolName)) jobs.update(event.toolCallId, textContent(event.partialResult?.content, false)); });
   pi.on('tool_execution_end', event => { if (shell(event.toolName)) jobs.end(event.toolCallId, textContent(event.result?.content, false), event.isError); });
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
-    description: 'Start an explicitly requested background shell (for example a local server or a long build), returning its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a message starting "[shell ID]" with its outcome, exit code and the end of its output, between your tool calls or as a new turn. Do not poll or sleep for it: go on with other work, or end your turn and say what is running. Use shell_status only to read more output while it runs. Jobs are session-local and stopped when the profile closes. Detached child processes are not managed. Do not put secrets in commands. notify sets which ends reach you: "end" (the default: every end), "failure" (only a failed or timed-out shell) or "none". alert is a JavaScript regular expression: plain text is matched case-sensitively, and /pattern/flags takes the flags i, m, s or u (for example /merged|fail/i). When a new output line matches, you get that line with the two before it, rate-limited (at most one alert every 10 seconds; matches in between are counted).',
+    description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs are session-local and stopped when the profile closes; detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
-      notify: Type.Optional(Type.Union(['end', 'failure', 'none'].map(value => Type.Literal(value)))), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }, { additionalProperties: false }),
+      notify: Type.Optional(stringEnum(['end', 'failure', 'none'])), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }, { additionalProperties: false }),
     async execute(_id, args, signal, _update, ctx) {
       canStart();
       if (signal?.aborted) throw new Error('Shell start cancelled');
