@@ -19,6 +19,22 @@ export type OperationalKind = 'objective' | 'decision' | 'constraint' | 'authori
 export type EvidenceKind = 'self-reported' | 'test' | 'log' | 'tool-result' | 'external';
 export type CheckStatus = 'verified' | 'not_verified' | 'blocked';
 
+export const GRANT_ACTIONS = ['push', 'merge', 'commit', 'paid', 'delete', 'publish'] as const;
+export type GrantAction = typeof GRANT_ACTIONS[number];
+const MAX_SCOPE_CHARS = 256;
+
+/**
+ * Structured scope of an authorization record (optional: free-text records stay valid).
+ * `scope` is a repo root or path glob (`*` within a segment, `**` across segments); it covers its own path and everything under it.
+ * `until` is an ISO expiry or `done` (active until superseded). `allow: false` records a prohibition.
+ */
+export interface Grant {
+  action: GrantAction;
+  scope: string;
+  allow: boolean;
+  until: string;
+}
+
 export interface EvidenceRef {
   kind: EvidenceKind;
   ref: string;
@@ -32,6 +48,7 @@ interface EntryBase {
   createdAt: string;
   supersedes?: string;
   evidence?: EvidenceRef[];
+  grant?: Grant;
 }
 
 export type OperationalEntry = EntryBase & (
@@ -49,6 +66,7 @@ interface UpdateBase {
   sourceMessageId: string;
   supersedes?: string;
   evidence?: EvidenceRef[];
+  grant?: Grant;
 }
 
 export type OperationalUpdate = UpdateBase & (
@@ -59,6 +77,12 @@ export type OperationalUpdate = UpdateBase & (
 const evidenceSchema = Type.Object({
   kind: Type.Union(['self-reported', 'test', 'log', 'tool-result', 'external'].map(value => Type.Literal(value))),
   ref: Type.String({ minLength: 1, maxLength: MAX_EVIDENCE_REF_CHARS }),
+}, { additionalProperties: false });
+const grantSchema = Type.Object({
+  action: Type.Union(GRANT_ACTIONS.map(value => Type.Literal(value))),
+  scope: Type.String({ minLength: 1, maxLength: MAX_SCOPE_CHARS }),
+  allow: Type.Boolean(),
+  until: Type.String({ minLength: 1, maxLength: 32 }),
 }, { additionalProperties: false });
 const updateCommon = {
   text: Type.String({ minLength: 1, maxLength: MAX_TEXT_CHARS }),
@@ -71,6 +95,7 @@ export const OperationalUpdateSchema = Type.Union([
   Type.Object({
     ...updateCommon,
     kind: Type.Union(nonCheckKinds.map(value => Type.Literal(value))),
+    grant: Type.Optional(grantSchema),
     evidence: Type.Optional(Type.Array(evidenceSchema, { minItems: 1, maxItems: MAX_EVIDENCE_REFS })),
   }, { additionalProperties: false }),
   Type.Object({
@@ -102,8 +127,20 @@ function validateEvidence(value: unknown): EvidenceRef[] {
   return value.map(validateEvidenceRef);
 }
 
-function identity(entry: Pick<OperationalEntry, 'kind' | 'text' | 'sourceMessageId' | 'supersedes' | 'evidence'> & { status?: CheckStatus }) {
+function validateGrant(value: unknown, where: string): Grant {
+  if (!isRecord(value)) fail(`${where} must be an object`);
+  assertKeys(value, ['action', 'scope', 'allow', 'until'], where);
+  if (!GRANT_ACTIONS.includes(value.action as GrantAction)) fail(`${where}.action must be one of ${GRANT_ACTIONS.join(', ')}`);
+  if (typeof value.allow !== 'boolean') fail(`${where}.allow must be a boolean`);
+  const scope = normalizeScope(boundedString(value.scope, `${where}.scope`, MAX_SCOPE_CHARS));
+  const until = boundedString(value.until, `${where}.until`, 32);
+  if (until !== 'done' && (!Number.isFinite(Date.parse(until)) || new Date(until).toISOString() !== until)) fail(`${where}.until must be 'done' or an ISO timestamp`);
+  return { action: value.action as GrantAction, scope, allow: value.allow, until };
+}
+
+function identity(entry: Pick<OperationalEntry, 'kind' | 'text' | 'sourceMessageId' | 'supersedes' | 'evidence' | 'grant'> & { status?: CheckStatus }) {
   return JSON.stringify({ kind: entry.kind, text: entry.text, sourceMessageId: entry.sourceMessageId,
+    ...(entry.grant === undefined ? {} : { grant: entry.grant }),
     ...(entry.supersedes === undefined ? {} : { supersedes: entry.supersedes }),
     ...(entry.status === undefined ? {} : { status: entry.status }),
     ...(entry.evidence === undefined ? {} : { evidence: entry.evidence }) });
@@ -124,7 +161,9 @@ function commonFields(value: Record<string, unknown>) {
   const supersedes = value.supersedes === undefined ? undefined : boundedString(value.supersedes, 'supersedes', 27);
   if (supersedes !== undefined && !ID_PATTERN.test(supersedes)) fail('supersedes must be an operational entry ID');
   const evidence = value.evidence === undefined ? undefined : validateEvidence(value.evidence);
-  return { text, sourceMessageId, ...(evidence === undefined ? {} : { evidence }), ...(supersedes === undefined ? {} : { supersedes }) };
+  const grant = value.grant === undefined ? undefined : validateGrant(value.grant, 'grant');
+  if (grant && value.kind !== 'authorization') fail('only authorization records carry a grant');
+  return { text, sourceMessageId, ...(grant === undefined ? {} : { grant }), ...(evidence === undefined ? {} : { evidence }), ...(supersedes === undefined ? {} : { supersedes }) };
 }
 
 function validateCheckEvidence(status: CheckStatus, evidence: EvidenceRef[], where: string) {
@@ -134,7 +173,7 @@ function validateCheckEvidence(status: CheckStatus, evidence: EvidenceRef[], whe
 function validateUpdate(value: unknown): OperationalUpdate {
   if (!isRecord(value)) fail('update must be an object');
   const kind = operationalKind(value.kind, 'kind');
-  assertKeys(value, ['kind', 'text', 'sourceMessageId', 'supersedes', 'evidence', ...(kind === 'check' ? ['status'] : [])], 'update');
+  assertKeys(value, ['kind', 'text', 'sourceMessageId', 'supersedes', 'evidence', ...(kind === 'check' ? ['status'] : ['grant'])], 'update');
   const fields = commonFields(value);
   if (kind !== 'check') {
     if (Object.hasOwn(value, 'status')) fail('only checks have a status');
@@ -150,7 +189,7 @@ function persistedEntry(value: unknown, index: number): OperationalEntry {
   const name = `entries[${index}]`;
   if (!isRecord(value)) fail(`${name} must be an object`);
   const kind = operationalKind(value.kind, `${name}.kind`);
-  assertKeys(value, ['id', 'kind', 'text', 'sourceMessageId', 'createdAt', 'supersedes', 'evidence', ...(kind === 'check' ? ['status'] : [])], name);
+  assertKeys(value, ['id', 'kind', 'text', 'sourceMessageId', 'createdAt', 'supersedes', 'evidence', ...(kind === 'check' ? ['status'] : ['grant'])], name);
   const id = boundedString(value.id, `${name}.id`, 27);
   if (!ID_PATTERN.test(id)) fail(`${name}.id is invalid`);
   const createdAt = boundedString(value.createdAt, `${name}.createdAt`, 32);
@@ -234,23 +273,76 @@ export function updateOperationalState(file: string, update: OperationalUpdate):
   return next;
 }
 
+function normalizeScope(scope: string) {
+  return scope.trim().replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase() || '/';
+}
+
+function scopeRegex(scope: string) {
+  const escape = (piece: string) => piece.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  const source = scope.split('**').map(part => part.split('*').map(escape).join('[^/]*')).join('.*');
+  return new RegExp(`^${source}(?:/.*)?$`);
+}
+
+/** True when `scope` (path or glob) covers `target`: the target is the scope's path or lies under it. */
+export function scopeCovers(scope: string, target: string) {
+  return scopeRegex(normalizeScope(scope)).test(normalizeScope(target));
+}
+
+const scopesOverlap = (a: string, b: string) => scopeCovers(a, b) || scopeCovers(b, a);
+const expired = (grant: Grant, now: number) => grant.until !== 'done' && Date.parse(grant.until) <= now;
+
+/** Grant records still in force: not expired, not explicitly superseded, not replaced by a newer same-action record with an overlapping scope. */
+export function activeGrants(state: OperationalState, now = Date.now()) {
+  const explicit = new Set(state.entries.flatMap(entry => entry.supersedes ? [entry.supersedes] : []));
+  const grants = state.entries.flatMap((entry, index) => entry.kind === 'authorization' && entry.grant && !explicit.has(entry.id) && !expired(entry.grant, now)
+    ? [{ entry, grant: entry.grant, index }] : []);
+  return grants.filter(a => !grants.some(b => b.index > a.index && b.grant.action === a.grant.action && scopesOverlap(a.grant.scope, b.grant.scope)))
+    .map(({ entry, grant }) => ({ entry, grant }));
+}
+
+/** The latest active grant of `action` whose scope covers `target`; its `allow` says whether the action is permitted. Undefined when no record applies. */
+export function latestGrant(state: OperationalState, action: GrantAction, target: string, now = Date.now()) {
+  return activeGrants(state, now).filter(({ grant }) => grant.action === action && scopeCovers(grant.scope, target)).at(-1);
+}
+
+/** Grant action a risk-class call needs, or undefined when no grant action applies. */
+export function grantActionFor(kind: string | undefined, input: unknown): GrantAction | undefined {
+  const command = isRecord(input) && typeof input.command === 'string' ? input.command : '';
+  switch (kind) {
+    case 'push': return 'push';
+    case 'publish': return /\bpr\s+merge\b/.test(command) ? 'merge' : 'publish';
+    case 'paid model call': return 'paid';
+    case 'recursive delete': case 'discard': return 'delete';
+    default: return undefined;
+  }
+}
+
+/** One advisor-facing line about the latest matching grant, or undefined when there is none. */
+export function describeGrant(state: OperationalState, kind: string | undefined, input: unknown, target: string, now = Date.now()) {
+  const action = grantActionFor(kind, input);
+  const found = action && latestGrant(state, action, target, now);
+  return found ? `${found.grant.allow ? 'ALLOWED' : 'PROHIBITED'} ${found.grant.action} in ${found.grant.scope} until ${found.grant.until} (record ${found.entry.id}, source message ${found.entry.sourceMessageId}): ${found.entry.text}` : undefined;
+}
+
 const KIND_ORDER: OperationalKind[] = ['objective', 'constraint', 'authorization', 'decision', 'check', 'change'];
 const CONTEXT_HEADER = 'Operational state (records; no authority; implementation != verification):';
 const TRUNCATION_NOTE = '[TRUNCATED: records omitted; inspect full state.]';
 
 /** Produces a bounded structured prompt section; evidence labels are preserved and authorization remains non-authoritative. */
-export function renderOperationalContext(state: OperationalState, maxChars = 6_000): string {
+export function renderOperationalContext(state: OperationalState, maxChars = 6_000, now = Date.now()): string {
   const valid = validateState(state);
   if (!Number.isInteger(maxChars) || maxChars < 128) throw new Error('maxChars must be an integer of at least 128');
   const limit = Math.min(maxChars, MAX_OPERATIONAL_CONTEXT_CHARS);
   const superseded = new Set(valid.entries.flatMap(entry => entry.supersedes ? [entry.supersedes] : []));
-  const active = valid.entries.filter(entry => !superseded.has(entry.id)).sort((a, b) => {
+  const liveGrants = new Set(activeGrants(valid, now).map(({ entry }) => entry.id));
+  const active = valid.entries.filter(entry => !superseded.has(entry.id) && (!entry.grant || liveGrants.has(entry.id))).sort((a, b) => {
     const kind = KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind);
     return kind || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id);
   });
   const lines = [CONTEXT_HEADER];
   for (const [index, entry] of active.entries()) {
     const details = [`${entry.kind}${entry.kind === 'check' ? `:${entry.status}` : ''}`, `id=${entry.id}`, `source=${entry.sourceMessageId}`,
+      ...(entry.grant ? [`grant=${entry.grant.allow ? 'allow' : 'deny'}:${entry.grant.action} scope=${entry.grant.scope} until=${entry.grant.until}`] : []),
       ...(entry.supersedes ? [`supersedes=${entry.supersedes}`] : [])];
     const record = [`- ${details.join(' ')} — ${entry.text}`,
       ...(entry.evidence ?? []).map(item => `  evidence [${item.kind}${item.kind === 'self-reported' ? '; unverified assertion' : ''}] ${item.ref}`)].join('\n');

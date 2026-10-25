@@ -399,6 +399,26 @@ test('OPTCHAT_EFFECT_APPROVALS=risk registers the risk-class gate; =1 keeps the 
   }
 });
 
+test('OPTCHAT_EFFECT_APPROVALS=risk gates git push and recursive delete through the registered tool_call hook but not read-only commands', async () => {
+  const previous = process.env.OPTCHAT_EFFECT_APPROVALS;
+  const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'owner' }, ui: { notify() {} } };
+  const call = (command: string) => ({ toolName: 'bash', toolCallId: command, input: { command } });
+  try {
+    process.env.OPTCHAT_EFFECT_APPROVALS = 'risk';
+    const hooks = new Map<string, (...args: any[]) => any>();
+    registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI, { bell: () => {} });
+    for (const command of ['git push origin main', ['rm', '-rf', '/repo/dist'].join(' ')]) {
+      const result = await hooks.get('tool_call')!(call(command), ctx);
+      assert.equal(result?.block, true, command);
+      assert.match(result.reason, /requires approval/, command);
+    }
+    for (const command of ['git status', 'git log --oneline -5', 'ls -la', 'cat package.json', 'git diff', 'rm -f out.log'])
+      assert.equal(await hooks.get('tool_call')!(call(command), ctx), undefined, command);
+  } finally {
+    if (previous === undefined) delete process.env.OPTCHAT_EFFECT_APPROVALS; else process.env.OPTCHAT_EFFECT_APPROVALS = previous;
+  }
+});
+
 test('gate is opt-in and disabled registration has no hooks or prompt effects', () => {
   let registered = 0;
   registerEffectApprovals({ on() { registered++; } } as unknown as ExtensionAPI, { enabled: false });

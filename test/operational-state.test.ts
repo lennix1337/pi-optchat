@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { describeGrant, latestGrant, readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -108,4 +108,45 @@ test('rendering and stored entries stay bounded', () => withDirectory(directory 
   assert.ok(minimum.length <= 128);
   assert.match(minimum, /TRUNCATED/);
   assert.throws(() => updateOperationalState(file, { ...objective, text: 'x'.repeat(2_001) }), /text/);
+}));
+
+const scopedGrant = (text: string, source: string, grant: { action: 'push' | 'delete'; scope: string; allow: boolean; until: string }): OperationalUpdate =>
+  ({ kind: 'authorization', text, sourceMessageId: source, grant });
+
+test('a newer grant with overlapping scope supersedes the older one in queries and the per-turn block', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  updateOperationalState(file, scopedGrant('no Git/push', '1', { action: 'push', scope: 'C:/projetos/x', allow: false, until: 'done' }));
+  let state = readOperationalState(file);
+  assert.equal(latestGrant(state, 'push', 'C:\\Projetos\\X')?.grant.allow, false);
+  state = updateOperationalState(file, scopedGrant('pode pushar tudo', '2', { action: 'push', scope: 'C:/projetos/**', allow: true, until: 'done' }));
+  assert.equal(latestGrant(state, 'push', 'c:/projetos/x')?.grant.allow, true);
+  assert.equal(latestGrant(state, 'push', 'c:/other/x'), undefined, 'outside the scope no grant applies');
+  assert.equal(latestGrant(state, 'delete', 'c:/projetos/x'), undefined, 'a different action is not covered');
+  const context = renderOperationalContext(state);
+  assert.match(context, /pode pushar tudo/);
+  assert.doesNotMatch(context, /no Git\/push/);
+  assert.match(describeGrant(state, 'push', { command: 'git push' }, 'C:/projetos/x')!, /^ALLOWED push/);
+  assert.equal(describeGrant(state, 'discard', {}, 'C:/projetos/x'), undefined);
+}));
+
+test('a disjoint scope does not supersede, and expired grants disappear from queries and the block', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  updateOperationalState(file, scopedGrant('push repo a', '1', { action: 'push', scope: 'c:/a', allow: true, until: '2030-01-01T00:00:00.000Z' }));
+  const state = updateOperationalState(file, scopedGrant('no push to b', '2', { action: 'push', scope: 'c:/b', allow: false, until: 'done' }));
+  assert.equal(latestGrant(state, 'push', 'c:/a', Date.parse('2029-01-01T00:00:00.000Z'))?.grant.allow, true);
+  assert.equal(latestGrant(state, 'push', 'c:/b')?.grant.allow, false);
+  const later = Date.parse('2031-01-01T00:00:00.000Z');
+  assert.equal(latestGrant(state, 'push', 'c:/a', later), undefined);
+  assert.doesNotMatch(renderOperationalContext(state, 6000, later), /push repo a/);
+  assert.match(renderOperationalContext(state, 6000, later), /no push to b/);
+}));
+
+test('free-text authorizations still load and render; malformed grants are rejected', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  const state = updateOperationalState(file, { kind: 'authorization', text: 'pode commitar', sourceMessageId: '3' });
+  assert.equal(state.entries[0]!.grant, undefined);
+  assert.match(renderOperationalContext(readOperationalState(file)), /pode commitar/);
+  assert.throws(() => updateOperationalState(file, scopedGrant('x', '4', { action: 'push', scope: 'c:/a', allow: true, until: 'tomorrow' })), /until/);
+  assert.throws(() => updateOperationalState(file, scopedGrant('x', '4', { action: 'fly' as 'push', scope: 'c:/a', allow: true, until: 'done' })), /action/);
+  assert.throws(() => updateOperationalState(file, { kind: 'decision', text: 'x', sourceMessageId: '5', grant: { action: 'push', scope: 'c:/a', allow: true, until: 'done' } } as OperationalUpdate), /grant|authorization/);
 }));
