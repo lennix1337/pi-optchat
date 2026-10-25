@@ -216,6 +216,68 @@ test('approving one call clears the calls it superseded from the screen', async 
   assert.equal((await hooks.get('tool_call')!(first, ctx)).block, true, 'a superseded call is not approved by the newer approval');
 });
 
+test('a cheap advisor approves ordinary risky calls itself; only its refusals and failures wait for the operator', async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  const notices: [string, string?][] = [];
+  const widgets: (string[] | undefined)[] = [];
+  let bells = 0;
+  const asked: any[] = [];
+  const verdicts: Record<string, { approve: boolean; reason: string } | Error> = {
+    'git -C C:/projetos/a push origin main': { approve: true, reason: 'own repo, requested' },
+    'git push --force origin main': { approve: false, reason: 'force push rewrites shared history' },
+    'npm publish': new Error('provider down'),
+  };
+  const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => { bells++; }, advisor: async request => {
+    asked.push(request);
+    const verdict = verdicts[(request.input as { command: string }).command];
+    if (verdict instanceof Error) throw verdict;
+    return { ...verdict, model: 'anthropic/claude-haiku-5-5' };
+  } });
+  const branch = [
+    { type: 'message', message: { role: 'user', content: 'push everything to main' } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } },
+    { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'and publish when green' }] } },
+  ];
+  const ctx = { cwd: 'C:/projetos/a', sessionManager: { getSessionId: () => 'owner', getBranch: () => branch },
+    ui: { notify: (message: string, type?: string) => notices.push([message, type]), setWidget: (_key: string, lines?: string[]) => widgets.push(lines) } };
+  const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', toolCallId: command, input: { command } }, ctx);
+
+  assert.equal(await call('git -C C:/projetos/a push origin main'), undefined, 'approved by the advisor: runs without the operator');
+  assert.equal(asked[0].kind, 'push');
+  assert.deepEqual(asked[0].requests, ['push everything to main', 'and publish when green'], 'the advisor weighs the operator\'s recent requests');
+  assert.ok(notices.some(([text]) => /auto-approved/i.test(text) && /own repo, requested/.test(text)));
+  assert.equal(bells, 0);
+  assert.equal(widgets.at(-1), undefined, 'nothing left waiting');
+  assert.equal(await call('git status'), undefined);
+  assert.equal(asked.length, 1, 'ordinary calls never reach the advisor');
+
+  const refused = await call('git push --force origin main');
+  assert.equal(refused.block, true);
+  assert.match(refused.reason, /force push rewrites shared history/);
+  assert.match(refused.reason, /\/approve/, 'the operator can still overrule the advisor');
+  assert.equal(bells, 1);
+  assert.match(widgets.at(-1)!.join('\n'), /git push --force origin main/);
+  assert.equal((await call('git push --force origin main')).block, true);
+  assert.equal(asked.length, 2, 'a refused call is not sent to the advisor again');
+  assert.deepEqual(await hooks.get('input')!({ text: '/approve', source: 'interactive' }, ctx), { action: 'transform', text: `approve-effect ${/approve-effect ([a-f0-9]{24})/.exec(refused.reason)![1]}` });
+  assert.equal(await call('git push --force origin main'), undefined, 'the operator overrules a refusal');
+
+  const failed = await call('npm publish');
+  assert.equal(failed.block, true, 'an advisor failure falls back to the operator, never to running');
+  assert.ok(notices.some(([text, type]) => /advisor/i.test(text) && /provider down/.test(text) && type === 'warning'));
+});
+
+test('delegated sessions never consult the advisor', async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  let asked = 0;
+  const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', grant: false, advisor: async () => { asked++; return { approve: true, reason: 'x', model: 'm' }; } });
+  const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'child', getBranch: () => [] }, ui: { notify() {} } };
+  assert.equal((await hooks.get('tool_call')!({ toolName: 'bash', toolCallId: 'c', input: { command: 'git push origin main' } }, ctx)).block, true);
+  assert.equal(asked, 0);
+});
+
 test('pending approvals expire from the screen', async () => {
   let now = 0;
   const gate = new EffectApprovals({ now: () => now, ttlMs: 100 });

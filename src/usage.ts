@@ -7,8 +7,8 @@ import { record } from './cache.ts';
 import { appendJson } from './store.ts';
 import { nonnegative, safeIdentifier } from './diagnostic-metadata.ts';
 
-export type UsageRole = 'main' | 'subagent' | 'compactor' | 'import';
-export type UsageKind = 'conversation' | 'subagent' | 'compaction' | 'session-overhead' | 'import';
+export type UsageRole = 'main' | 'subagent' | 'compactor' | 'import' | 'advisor';
+export type UsageKind = 'conversation' | 'subagent' | 'compaction' | 'session-overhead' | 'import' | 'approval';
 export type UsageOutcome = 'stop' | 'toolUse' | 'length' | 'error' | 'aborted' | 'text' | 'tool_call' | 'empty' | 'exception';
 export type UsageErrorCategory = 'cancelled' | 'timeout' | 'connection_failure' | 'stream_interrupted' | 'rate_or_usage_limit' | 'authentication' | 'policy_refusal' | 'unavailable' | 'context_limit' | 'other';
 export const ranges = ['This session', 'Last hour', 'Today', 'Last 7 days', 'All time'] as const;
@@ -27,8 +27,8 @@ export interface UsageAttribution {
 }
 const usageKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const;
 const costKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const;
-const roles: UsageRole[] = ['main', 'subagent', 'compactor', 'import'];
-const kinds: UsageKind[] = ['conversation', 'subagent', 'compaction', 'session-overhead', 'import'];
+const roles: UsageRole[] = ['main', 'subagent', 'compactor', 'import', 'advisor'];
+const kinds: UsageKind[] = ['conversation', 'subagent', 'compaction', 'session-overhead', 'import', 'approval'];
 const outcomes: UsageOutcome[] = ['stop', 'toolUse', 'length', 'error', 'aborted', 'text', 'tool_call', 'empty', 'exception'];
 const errorCategories = ['cancelled', 'timeout', 'connection_failure', 'stream_interrupted', 'rate_or_usage_limit', 'authentication', 'policy_refusal', 'unavailable', 'context_limit', 'other'];
 function validUsage(value: unknown): value is Usage {
@@ -158,13 +158,13 @@ export class UsageLedger {
     appendJson(this.file, safeEntry);
     this.entries.push(safeEntry); if (safeEntry.id) this.ids.add(safeEntry.id);
   }
-  compression(message: AssistantMessage, role: 'compactor' | 'import', session: string, attribution: UsageAttribution = {}) {
+  compression(message: AssistantMessage, role: 'compactor' | 'import' | 'advisor', session: string, attribution: UsageAttribution = {}) {
     const hasText = message.content.some(block => block.type === 'text' && block.text.trim());
     const hasToolCall = message.content.some(block => block.type === 'toolCall');
     const failed = attribution.failed ?? (message.stopReason === 'error' || message.stopReason === 'aborted' || message.stopReason === 'length' || !hasText || hasToolCall);
     this.add({ id: randomUUID(), date: new Date(message.timestamp).toISOString(), role, session,
       provider: message.provider, model: message.model, usage: message.usage,
-      kind: role === 'import' ? 'import' : 'compaction',
+      kind: role === 'import' ? 'import' : role === 'advisor' ? 'approval' : 'compaction',
       outcome: attribution.outcome ?? (hasToolCall ? 'tool_call' : hasText ? stopOutcome(message.stopReason) : 'empty'),
       failed,
       ...(attribution.incidentId === undefined ? {} : { incidentId: attribution.incidentId }),

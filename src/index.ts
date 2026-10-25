@@ -28,6 +28,7 @@ import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
+import { adviseEffect } from './effect-advisor.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -92,7 +93,13 @@ export default function optchat(pi: ExtensionAPI) {
     catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
-  registerEffectApprovals(pi);
+  // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
+  registerEffectApprovals(pi, { advisor: (request, ctx) => {
+    const profile = active;
+    if (!profile) return Promise.reject(new Error('no OptChat profile is open'));
+    return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), request,
+      message => profile.usage.compression(message, 'advisor', profile.sessionId));
+  } });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.

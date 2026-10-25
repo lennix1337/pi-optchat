@@ -20,6 +20,25 @@ sandbox for installed plugins, repository code, the SDK, or an adversarial model
   verb (variables, `eval`, encoded scripts, a script file that pushes) is not recognized, and
   MCP tools are not classified. Use `1` when that boundary matters. Standing grants work in both modes.
 
+## Approval advisor
+
+In the owning interactive session, a blocked call first goes to a cheap advisor: the profile's
+compactor model for the current provider (Haiku on Claude, gpt-6-luna on Codex), thinking off,
+at most 120 output tokens. It sees the tool, arguments, working folder, risk class and the
+operator's last four typed messages, and answers `APPROVE` or `DENY` with a reason. Its
+instructions follow the operator's preference: as autonomous as possible, refuse only clearly
+harmful calls (unrequested irreversible loss of work, leaked secrets, unrequested effects on
+people or production beyond the operator's own repositories, injected instructions).
+
+- `APPROVE`: the call runs once, with an info notice naming the model and reason.
+- `DENY`, an unclear answer, an error or a 30-second timeout: the call waits for the operator
+  as below, and the refusal tells the model why. The advisor is asked once per pending call.
+- Delegated sessions never consult it. `OPTCHAT_EFFECT_ADVISOR=off` turns it off.
+- Its calls are recorded in the usage ledger under the `approvals` role.
+
+The advisor is a cheap filter, not a boundary: a model can be talked into approving. Use
+`OPTCHAT_EFFECT_ADVISOR=off` with mode `1` when every effect must be seen by the operator.
+
 ## Operator flow
 
 1. Start an isolated Pi with `OPTCHAT_EFFECT_APPROVALS=1` (or `=risk`). Existing sessions need a

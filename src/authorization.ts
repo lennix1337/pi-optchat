@@ -191,6 +191,13 @@ export class EffectApprovals {
     entry.approved = true;
     this.pending.forEach((other, key) => { if (other.session === entry.session && !other.approved && other.created <= entry.created && key !== token) this.pending.delete(key); });
   }
+  /** The advisor's approval of one pending call; unlike the operator's, it leaves the other pending calls waiting. */
+  approveByAdvisor(session: string, token: string) {
+    const entry = this.pending.get(token);
+    if (!entry || entry.session !== session || entry.approved) return false;
+    entry.approved = true;
+    return true;
+  }
   /** Operator `/approve`: approves the newest pending call of this session once. */
   approveLatest(session: string, source: string): PendingApproval | undefined {
     if (source !== 'interactive') return;
