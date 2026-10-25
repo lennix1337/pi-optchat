@@ -28,24 +28,24 @@ function harness({ minutes = 30, wakes = 2, verdicts = [] as (Beat | Error)[], b
   return { beat, checks, woken, notes, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
 }
 
-test('an idle chat gets one cheap check after the interval, and a SLEEP backs the next one off', async () => {
+test('an idle chat gets one cheap check after the interval, and a SLEEP keeps the same interval', async () => {
   const h = harness();
   h.beat.arm();
   await h.advance(29 * MIN); assert.deepEqual(h.checks, []);
   await h.advance(1 * MIN); assert.deepEqual(h.checks, [30 * MIN]);
-  assert.equal(h.pending(), 60 * MIN, 'a quiet check doubles the wait');
-  await h.advance(60 * MIN); assert.equal(h.checks.length, 2);
-  assert.equal(h.pending(), 120 * MIN);
+  assert.equal(h.pending(), 30 * MIN, 'a quiet check does not stretch the wait');
+  await h.advance(30 * MIN); assert.equal(h.checks.length, 2);
+  assert.equal(h.pending(), 30 * MIN);
   assert.deepEqual(h.woken, []);
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('the backoff stops at eight intervals', async () => {
+test('a long idle stretch is checked every interval, never less often', async () => {
   const h = harness();
   h.beat.arm();
-  await h.advance(30 * MIN * (1 + 2 + 4 + 8 + 8));
-  assert.equal(h.checks.length, 5);
-  assert.equal(h.pending(), 8 * 30 * MIN);
+  await h.advance(8 * 30 * MIN);
+  assert.deepEqual(h.checks, [1, 2, 3, 4, 5, 6, 7, 8].map(n => n * 30 * MIN));
+  assert.equal(h.pending(), 30 * MIN);
   rmSync(h.dir, { recursive: true, force: true });
 });
 
@@ -57,18 +57,18 @@ test('a WAKE verdict wakes the main agent with the task, and no timer runs while
   assert.match(h.woken[0], /finish the DENTA-90 PR/);
   assert.equal(h.pending(), undefined, 'the woken turn re-arms it when it settles');
   h.beat.arm();
-  assert.equal(h.pending(), 30 * MIN, 'a wake resets the backoff');
+  assert.equal(h.pending(), 30 * MIN, 'the woken turn re-arms the same interval');
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('wakes per day are capped; past the cap a WAKE is noted and the check backs off', async () => {
+test('wakes per day are capped; past the cap a WAKE is noted and checks go on at the interval', async () => {
   const wake = { wake: true, text: 'do it' };
   const h = harness({ wakes: 1, verdicts: [wake, wake] });
   h.beat.arm(); await h.advance(30 * MIN);
   h.beat.arm(); await h.advance(30 * MIN);
   assert.equal(h.woken.length, 1);
   assert.match(h.notes.join('\n'), /1 wake.*24 h/);
-  assert.equal(h.pending(), 60 * MIN);
+  assert.equal(h.pending(), 30 * MIN);
   rmSync(h.dir, { recursive: true, force: true });
 });
 
@@ -93,10 +93,10 @@ test('a busy chat skips the model call and tries again an interval later', async
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('operator input disarms it and resets the backoff; 0 minutes turns it off', async () => {
+test('operator input disarms it; 0 minutes turns it off', async () => {
   const h = harness();
   h.beat.arm(); await h.advance(30 * MIN);
-  assert.equal(h.pending(), 60 * MIN);
+  assert.equal(h.pending(), 30 * MIN);
   h.beat.operatorSpoke();
   assert.equal(h.pending(), undefined);
   h.beat.arm(); assert.equal(h.pending(), 30 * MIN);
@@ -105,9 +105,9 @@ test('operator input disarms it and resets the backoff; 0 minutes turns it off',
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('a failed check is noted once and backs off like a SLEEP', async () => {
+test('a failed check is noted once and retried at the interval like a SLEEP', async () => {
   const h = harness({ verdicts: [new Error('rate limited'), new Error('rate limited')] });
-  h.beat.arm(); await h.advance(30 * MIN); await h.advance(60 * MIN);
+  h.beat.arm(); await h.advance(30 * MIN); await h.advance(30 * MIN);
   assert.equal(h.checks.length, 2);
   assert.equal(h.notes.filter(n => /rate limited/.test(n)).length, 1);
   assert.deepEqual(h.woken, []);
@@ -158,6 +158,11 @@ test('the wake hands the configured plan to the main agent, which does the work 
   assert.match(text, /message customers/);
   assert.match(text, /you do the work/i);
   assert.doesNotMatch(text, /deploy/);
+});
+
+test('a question the operator already answered does not count as waiting on them, for the check or the woken turn', () => {
+  assert.match(HEARTBEAT_PROMPT, /already answer[^]*does not wait on the operator/);
+  assert.match(wakeText('x', 'm', 30, plan), /does not wait on them when their earlier words already answer it/);
 });
 
 test('the check reads the configured jobs and limits, so it only wakes for allowed work', () => {

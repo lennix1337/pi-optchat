@@ -51,7 +51,7 @@ export const SETTINGS = {
     description: 'What the main agent hears when a managed background shell ends: every end, only a failure (exit code or error), or never. A shell_start call can set its own notify. Alerts on a pattern (shell_start alert) are separate.',
     applies: 'Applies to shells started after this.' },
   heartbeatMinutes: { kind: 'number', label: 'Heartbeat', default: 0, min: 0, unit: 'min',
-    description: 'Once the chat has sat idle this long, the compactor model (thinking off) reads the newest memory lines, the recorded state and how the last turn ended, and decides whether to wake the main agent for one more turn: a stalled task, unfinished work, or an open job from the `heartbeat` entry of config.json (jobs, allowed, never). The check only wakes; the main agent does the work. A quiet check doubles the wait, up to eight times; your next message resets it. Interactive Pi only. 0: off.',
+    description: 'Once the chat has sat idle this long, the compactor model (thinking off) reads the newest memory lines, the recorded state and how the last turn ended, and decides whether to wake the main agent for one more turn: a stalled task, unfinished work, or an open job from the `heartbeat` entry of config.json (jobs, allowed, never). The check only wakes; the main agent does the work. It repeats every interval while the chat stays idle. Interactive Pi only. 0: off.',
     applies: 'Applies when the chat next settles.' },
   heartbeatWakes: { kind: 'number', label: 'Heartbeat wakes per day', default: 6, min: 1, unit: '',
     description: 'The most main-agent turns the heartbeat may start in 24 hours; each one costs a full main-model turn. Checks that find nothing do not count.',
