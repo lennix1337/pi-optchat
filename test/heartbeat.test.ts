@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, wakeText, type Beat } from '../src/heartbeat.ts';
+import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText, type Beat } from '../src/heartbeat.ts';
+import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 
 const MIN = 60_000;
 
@@ -138,11 +139,41 @@ test('the snapshot carries the stall evidence and only the tail of a long view',
   assert.match(text, /42 min/); assert.match(text, /429 quota/); assert.match(text, /a1 working 3h/); assert.match(text, /objective: x/);
 });
 
-test('the wake message bounds what an unattended turn may do', () => {
-  const text = wakeText('fix the flaky test', 'anthropic/claude-haiku-5-5', 45);
+test('the default wake plan bounds what an unattended turn may do', () => {
+  const text = wakeText('fix the flaky test', 'anthropic/claude-haiku-5-5', 45, DEFAULT_HEARTBEAT);
   assert.match(text, /^\[OptChat heartbeat\]/);
   assert.match(text, /fix the flaky test/);
   assert.match(text, /pull request/i);
-  assert.match(text, /never merge|not merge/i);
+  assert.match(text, /Never[^]*Merge/);
   assert.match(text, /deploy/);
+});
+
+const plan = { jobs: ['DentAI: leave a Plane issue PR ready'], allowed: ['improve the harness, measured'], never: ['message customers'] };
+
+test('the wake hands the configured plan to the main agent, which does the work itself', () => {
+  const text = wakeText('continue task-7', 'anthropic/claude-haiku-5-5', 45, plan);
+  assert.match(text, /continue task-7/);
+  assert.match(text, /DentAI: leave a Plane issue PR ready/);
+  assert.match(text, /improve the harness, measured/);
+  assert.match(text, /message customers/);
+  assert.match(text, /you do the work/i);
+  assert.doesNotMatch(text, /deploy/);
+});
+
+test('the check reads the configured jobs and limits, so it only wakes for allowed work', () => {
+  const text = beatSnapshot({ view: 'v', state: '', idleMinutes: 30, agents: [], shells: [], plan });
+  assert.match(text, /DentAI: leave a Plane issue PR ready/);
+  assert.match(text, /improve the harness, measured/);
+  assert.match(text, /message customers/);
+});
+
+test('a profile keeps its heartbeat plan in config.json; without one it uses the default', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-heartbeat-config-'));
+  saveConfig(dir, { ...defaults, heartbeat: plan });
+  assert.deepEqual(loadConfig(dir).heartbeat, plan);
+  saveConfig(dir, defaults);
+  assert.deepEqual(heartbeatPlan(loadConfig(dir)), DEFAULT_HEARTBEAT);
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...defaults, heartbeat: { jobs: 'x', allowed: [], never: [] } }));
+  assert.throws(() => loadConfig(dir), /heartbeat/);
+  rmSync(dir, { recursive: true, force: true });
 });

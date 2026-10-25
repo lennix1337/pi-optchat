@@ -29,7 +29,7 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
-import { Heartbeat, beatSnapshot, checkBeat, wakeText } from './heartbeat.ts';
+import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText } from './heartbeat.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -160,9 +160,8 @@ export default function optchat(pi: ExtensionAPI) {
     const lastStop = message && message.stopReason !== 'stop' ? `${message.stopReason}${message.errorMessage ? `: ${oneLine(message.errorMessage).slice(0, 300)}` : ''}` : undefined;
     const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
-    const wishes = join(a.dir, 'heartbeat.md');
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
-      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, wishes: existsSync(wishes) ? readFileSync(wishes, 'utf8') : undefined });
+      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config) });
   };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
@@ -237,7 +236,7 @@ export default function optchat(pi: ExtensionAPI) {
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       check: () => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
-      wake: beat => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes())).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
+      wake: beat => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config))).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
