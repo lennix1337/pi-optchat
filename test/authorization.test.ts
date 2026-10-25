@@ -199,6 +199,23 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   assert.ok(notices.some(([text]) => /nothing.*pending/i.test(text)));
 });
 
+test('approving one call clears the calls it superseded from the screen', async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  const widgets: (string[] | undefined)[] = [];
+  const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {} });
+  const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'owner' }, ui: { notify() {}, setWidget(_key: string, lines?: string[]) { widgets.push(lines); } } };
+  const first = { toolName: 'bash', toolCallId: 'a', input: { command: 'git -C C:/projetos/a push origin main' } };
+  const second = { toolName: 'bash', toolCallId: 'b', input: { command: 'git -C C:/projetos/a push origin main && git -C C:/projetos/b push origin main' } };
+  await hooks.get('tool_call')!(first, ctx);
+  const blocked = await hooks.get('tool_call')!(second, ctx);
+  const value = /approve-effect ([a-f0-9]{24})/.exec(blocked.reason)![1];
+  assert.deepEqual(await hooks.get('input')!({ text: `approve-effect ${value}`, source: 'interactive' }, ctx), { action: 'continue' });
+  assert.equal(widgets.at(-1), undefined, 'the older, abandoned call no longer waits on screen');
+  assert.equal(await hooks.get('tool_call')!(second, ctx), undefined);
+  assert.equal((await hooks.get('tool_call')!(first, ctx)).block, true, 'a superseded call is not approved by the newer approval');
+});
+
 test('pending approvals expire from the screen', async () => {
   let now = 0;
   const gate = new EffectApprovals({ now: () => now, ttlMs: 100 });

@@ -185,11 +185,17 @@ export class EffectApprovals {
       .sort(([, a], [, b]) => b.created - a.created)
       .map(([token, { tool, kind, summary, expires }]) => ({ token, tool, kind, summary, expires }));
   }
+  /** Approves one call and drops the older calls it superseded: the model was told to wait, so they were abandoned. */
+  private grant(token: string) {
+    const entry = this.pending.get(token)!;
+    entry.approved = true;
+    this.pending.forEach((other, key) => { if (other.session === entry.session && !other.approved && other.created <= entry.created && key !== token) this.pending.delete(key); });
+  }
   /** Operator `/approve`: approves the newest pending call of this session once. */
   approveLatest(session: string, source: string): PendingApproval | undefined {
     if (source !== 'interactive') return;
     const latest = this.pendingFor(session)[0];
-    if (latest) this.pending.get(latest.token)!.approved = true;
+    if (latest) this.grant(latest.token);
     return latest;
   }
   /** Operator `/deny`: drops every pending call of this session. */
@@ -213,7 +219,7 @@ export class EffectApprovals {
     this.expire();
     const entry = this.pending.get(match[1]);
     if (!entry || entry.session !== session || entry.approved) return 'invalid';
-    entry.approved = true;
+    this.grant(match[1]);
     return 'approved';
   }
 }
