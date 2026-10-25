@@ -1,0 +1,3 @@
+# Store and check out text as LF on every OS: core.autocrlf=true on Windows otherwise
+# rewrites every checkout as CRLF and floods each commit with LF/CRLF warnings.
+* text=auto eol=lf
