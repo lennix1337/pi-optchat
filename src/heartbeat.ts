@@ -81,8 +81,11 @@ export async function checkBeat(registry: ModelRegistry, choice: ModelChoice, sn
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
 export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan) {
-  return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. A cheap check (${model}) woke you and suggests: ${task}
-The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first. If it is wrong, done or waits on the operator, take the first open job below that you can do instead; if none, say so in one line and end the turn.
+  const opening = task
+    ? `A cheap check (${model}) woke you and suggests: ${task}
+The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first. If it is wrong, done or waits on the operator, take the first open job below that you can do instead; if none, say so in one line and end the turn.`
+    : `The operator's fixed ${idleMinutes}-min schedule woke you; no check ran. Take the first open job below that you can do and work through it with your own judgment and tools; if none, say so in one line and end the turn.`;
+  return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. ${opening}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
 The operator's jobs for idle time, in order:
 ${numbered(plan.jobs)}
@@ -98,6 +101,8 @@ export interface HeartbeatDeps {
   now: () => number;
   minutes: () => number;
   maxWakes: () => number;
+  /** Wake the main agent every interval without asking the cheap model first. */
+  always: () => boolean;
   /** Why a check would be pointless right now (the main agent is working, reports are queued), or undefined. */
   busy: () => string | undefined;
   check: () => Promise<Beat>;
@@ -133,8 +138,8 @@ export class Heartbeat {
   private async fire() {
     const reason = this.deps.busy();
     if (reason !== undefined) { this.arm(); return; }
-    let beat: Beat;
-    try { beat = await this.deps.check(); this.failed = false; }
+    let beat: Beat = { wake: true, text: '' };
+    if (!this.deps.always()) try { beat = await this.deps.check(); this.failed = false; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!this.failed) this.deps.note(`Heartbeat check failed: ${message}`);
@@ -146,7 +151,7 @@ export class Heartbeat {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);
       this.save({ verdict: 'WAKE', text: `${beat.text} (not woken: ${cap} wakes in 24 h)` }); this.arm(); return;
     }
-    this.save({ verdict: 'WAKE', text: beat.text }, [...recent, this.deps.now()]);
+    this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, this.deps.now()]);
     this.deps.wake(beat);
   }
   /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */

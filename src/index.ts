@@ -232,7 +232,7 @@ export default function optchat(pi: ExtensionAPI) {
   const startHeartbeat = (ctx: ExtensionContext, profile: Active) => {
     const own = () => active === profile ? profile : undefined;
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
-      minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0,
+      minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       check: () => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),

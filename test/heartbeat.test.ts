@@ -9,11 +9,11 @@ import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 const MIN = 60_000;
 
 /** A clock and one timer slot the test advances by hand. */
-function harness({ minutes = 30, wakes = 2, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')) } = {}) {
+function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')) } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
   const checks: number[] = [], woken: string[] = [], notes: string[] = [];
   const beat = new Heartbeat({
-    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, busy,
+    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy,
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async () => { checks.push(now); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
@@ -90,6 +90,35 @@ test('the daily count survives a reload', async () => {
   second.beat.arm(); await second.advance(30 * MIN);
   assert.deepEqual(second.woken, []);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('on a fixed schedule every idle interval wakes the main agent, with no cheap check', async () => {
+  const h = harness({ always: true, wakes: 48 });
+  for (let n = 0; n < 3; n++) { h.beat.arm(); await h.advance(30 * MIN); }
+  assert.deepEqual(h.checks, []);
+  assert.equal(h.woken.length, 3);
+  const saved = JSON.parse(readFileSync(join(h.dir, 'heartbeat.json'), 'utf8'));
+  assert.deepEqual(saved.wakes, [30, 60, 90].map(m => m * MIN));
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the fixed schedule still respects a busy chat and the daily cap', async () => {
+  let reason: string | undefined = 'main agent working';
+  const h = harness({ always: true, wakes: 1, busy: () => reason });
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.deepEqual(h.woken, []);
+  reason = undefined; await h.advance(30 * MIN);
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.match(h.notes.join('\n'), /1 wake.*24 h/);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a scheduled wake tells the agent no check ran and to take the first open job', () => {
+  const text = wakeText('', '', 30, DEFAULT_HEARTBEAT);
+  assert.match(text, /fixed 30-min schedule/);
+  assert.doesNotMatch(text, /cheap check/);
+  assert.match(text, /first open job/);
 });
 
 test('a busy chat skips the model call and tries again an interval later', async () => {
