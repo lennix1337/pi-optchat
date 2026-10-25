@@ -3,7 +3,7 @@ import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { reasoningFor, resolveModel, type ModelChoice } from './compactor.ts';
 
 /** One cheap, thinking-free call whose first line must match `line`; throws on a failed call or an unclear answer. */
-export async function askOneLine(registry: ModelRegistry, choice: ModelChoice, request: { systemPrompt: string; content: string; maxTokens: number; line: RegExp; what: string },
+export async function askOneLine(registry: ModelRegistry, choice: ModelChoice, request: { systemPrompt: string; content: string; maxTokens: number; line: RegExp; what: string; cacheRetention?: 'none' | 'short' | 'long' },
   usage: (message: AssistantMessage) => void, signal: AbortSignal): Promise<{ word: string; reason: string; model: string }> {
   const resolved = resolveModel(registry, choice);
   if (!resolved) throw new Error(`${request.what} model unavailable: ${choice.provider}/${choice.model}`);
@@ -13,7 +13,7 @@ export async function askOneLine(registry: ModelRegistry, choice: ModelChoice, r
     messages: [{ role: 'user', timestamp: Date.now(), content: request.content }],
     // Temperature 0 where the API takes it (Codex rejects the parameter): the same call gets the same verdict,
     // so a sampling fluke cannot stop an approved call.
-  }, { reasoning: reasoningFor(model, 'off'), maxTokens: request.maxTokens, ...(model.api === 'anthropic-messages' ? { temperature: 0 } : {}), signal }).result();
+  }, { reasoning: reasoningFor(model, 'off'), maxTokens: request.maxTokens, ...(request.cacheRetention ? { cacheRetention: request.cacheRetention } : {}), ...(model.api === 'anthropic-messages' ? { temperature: 0 } : {}), signal }).result();
   usage(reply);
   if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? reply.stopReason);
   const text = reply.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('').trim();

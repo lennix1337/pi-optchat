@@ -75,7 +75,7 @@ export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shell
 /** One cheap, thinking-free verdict; throws on anything but a clear WAKE or SLEEP. */
 export async function checkBeat(registry: ModelRegistry, choice: ModelChoice, snapshot: string,
   usage: (message: AssistantMessage) => void, signal: AbortSignal = AbortSignal.timeout(60_000)): Promise<Beat> {
-  const { word, reason, model } = await askOneLine(registry, choice, { systemPrompt: HEARTBEAT_PROMPT, content: snapshot, maxTokens: 160, line: verdictLine, what: 'heartbeat' }, usage, signal);
+  const { word, reason, model } = await askOneLine(registry, choice, { systemPrompt: HEARTBEAT_PROMPT, content: snapshot, maxTokens: 160, line: verdictLine, what: 'heartbeat', cacheRetention: 'none' }, usage, signal);
   return { wake: word === 'WAKE', text: reason, model };
 }
 
@@ -107,7 +107,8 @@ export interface HeartbeatDeps {
   clearTimer: (handle: unknown) => void;
 }
 
-const DAY = 24 * 60 * 60_000;
+const DAY = 24 * 60 * 60_000, KEPT_CHECKS = 48;
+type Check = { at: number; verdict: 'WAKE' | 'SLEEP' | 'FAILED'; text: string };
 
 /** Arms when the chat settles, disarms when a turn starts; checks every interval while the chat stays idle. */
 export class Heartbeat {
@@ -135,24 +136,31 @@ export class Heartbeat {
     let beat: Beat;
     try { beat = await this.deps.check(); this.failed = false; }
     catch (error) {
-      if (!this.failed) this.deps.note(`Heartbeat check failed: ${error instanceof Error ? error.message : String(error)}`);
-      this.failed = true; this.arm(); return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!this.failed) this.deps.note(`Heartbeat check failed: ${message}`);
+      this.failed = true; this.save({ verdict: 'FAILED', text: message }); this.arm(); return;
     }
-    if (!beat.wake) { this.arm(); return; }
-    const recent = this.wakes().filter(at => this.deps.now() - at < DAY), cap = this.deps.maxWakes();
+    if (!beat.wake) { this.save({ verdict: 'SLEEP', text: beat.text }); this.arm(); return; }
+    const recent = this.saved().wakes.filter(at => this.deps.now() - at < DAY), cap = this.deps.maxWakes();
     if (recent.length >= cap) {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);
-      this.arm(); return;
+      this.save({ verdict: 'WAKE', text: `${beat.text} (not woken: ${cap} wakes in 24 h)` }); this.arm(); return;
     }
-    atomicWrite(this.file, JSON.stringify({ wakes: [...recent, this.deps.now()] }));
+    this.save({ verdict: 'WAKE', text: beat.text }, [...recent, this.deps.now()]);
     this.deps.wake(beat);
   }
-  private wakes(): number[] {
-    if (!existsSync(this.file)) return [];
+  /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */
+  private save(check: Omit<Check, 'at'>, wakes?: number[]) {
+    const saved = this.saved();
+    atomicWrite(this.file, JSON.stringify({ wakes: wakes ?? saved.wakes, checks: [...saved.checks, { at: this.deps.now(), ...check }].slice(-KEPT_CHECKS) }));
+  }
+  private saved(): { wakes: number[]; checks: Check[] } {
+    if (!existsSync(this.file)) return { wakes: [], checks: [] };
     try {
-      const saved: unknown = JSON.parse(readFileSync(this.file, 'utf8'));
-      const list = saved && typeof saved === 'object' && Array.isArray((saved as { wakes?: unknown }).wakes) ? (saved as { wakes: unknown[] }).wakes : [];
-      return list.filter((at): at is number => typeof at === 'number');
-    } catch { return []; }
+      const saved = JSON.parse(readFileSync(this.file, 'utf8')) as { wakes?: unknown; checks?: unknown } | null;
+      const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
+      const checks = Array.isArray(saved?.checks) ? saved.checks.filter((c): c is Check => !!c && typeof c === 'object' && typeof (c as Check).at === 'number') : [];
+      return { wakes, checks };
+    } catch { return { wakes: [], checks: [] }; }
   }
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText, type Beat } from '../src/heartbeat.ts';
@@ -37,6 +37,16 @@ test('an idle chat gets one cheap check after the interval, and a SLEEP keeps th
   await h.advance(30 * MIN); assert.equal(h.checks.length, 2);
   assert.equal(h.pending(), 30 * MIN);
   assert.deepEqual(h.woken, []);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('each verdict is kept with its reason, so a quiet night can be audited', async () => {
+  const h = harness({ verdicts: [{ wake: false, text: 'all waits on the operator' }, new Error('rate limited'), { wake: true, text: 'merge PR 673' }] });
+  h.beat.arm(); await h.advance(90 * MIN);
+  const saved = JSON.parse(readFileSync(join(h.dir, 'heartbeat.json'), 'utf8'));
+  assert.deepEqual(saved.checks.map((c: any) => [c.at, c.verdict, c.text]), [
+    [30 * MIN, 'SLEEP', 'all waits on the operator'], [60 * MIN, 'FAILED', 'rate limited'], [90 * MIN, 'WAKE', 'merge PR 673']]);
+  assert.deepEqual(saved.wakes, [90 * MIN]);
   rmSync(h.dir, { recursive: true, force: true });
 });
 
@@ -127,6 +137,7 @@ test('the check reads one WAKE/SLEEP line from the cheap model, thinking off', a
   assert.deepEqual(await checkBeat(wake, choice, 'snapshot', () => {}), { wake: true, text: 'the last turn stopped on a quota error mid-task', model: 'anthropic/claude-haiku-5-5' });
   assert.equal(wake.sent[0].context.systemPrompt, HEARTBEAT_PROMPT);
   assert.equal(wake.sent[0].options.reasoning, undefined);
+  assert.equal(wake.sent[0].options.cacheRetention, 'none', 'checks are 30 min apart, past any prompt cache: writing one only costs');
   assert.equal((await checkBeat(registry('sleep - waiting on the operator'), choice, 's', () => {})).wake, false);
   await assert.rejects(checkBeat(registry('maybe'), choice, 's', () => {}), /verdict/);
 });

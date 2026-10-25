@@ -12,13 +12,13 @@ for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR'
 // The operator's own settings must not change test behavior; OPTCHAT_EFFECT_APPROVALS=risk would gate fixture subagent calls.
 for (const name of ['OPTCHAT_PROFILE', 'OPTCHAT_REFRESH_AT', 'OPTCHAT_EFFECT_APPROVALS']) delete process.env[name];
 
-/** Removes a test's temp dir. On Windows a process that just exited can hold its cwd a moment longer than `process.kill(pid, 0)` admits, so rmdir fails with EBUSY (#164). rmSync's own `maxRetries` doesn't cover that: it retries only after ENOTEMPTY, not a first rmdir that fails EBUSY. */
+/** Removes a test's temp dir. On Windows a process that just exited can hold its cwd a moment longer than `process.kill(pid, 0)` admits, so rmdir fails with EBUSY (#164). rmSync's own `maxRetries` doesn't cover that: it retries only after ENOTEMPTY, not a first rmdir that fails EBUSY. Under the full suite's load the hold outlasted ten 100 ms waits (headless.test.ts EPERM, 2026-10-25), so each wait grows: 5.5 s in all. */
 export function removeDir(path: string) {
   for (let attempt = 1; ; attempt++) {
     try { return rmSync(path, { recursive: true, force: true }); } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (attempt === 10 || !(code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY')) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * attempt);
     }
   }
 }
