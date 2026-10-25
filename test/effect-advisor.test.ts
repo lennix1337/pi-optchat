@@ -24,6 +24,12 @@ test('the advisor reads one APPROVE/DENY line and records its usage', async () =
   assert.match(prompt, /git push origin main/); assert.match(prompt, /push it/); assert.match(prompt, /C:\/projetos\/a/);
   assert.equal(options.reasoning, undefined, 'no thinking: a short verdict is all it pays for');
   assert.ok(options.maxTokens <= 200);
+  assert.equal(options.temperature, 0, 'the same call must get the same verdict; a sampling fluke once refused an operator-requested call');
+  const codex = registry('APPROVE: ok');
+  await adviseEffect({ ...codex, find: () => ({ ...model, provider: 'openai-codex', api: 'openai-codex-responses' }) } as any, choice, request, () => {});
+  assert.equal(codex.sent[0].options.temperature, undefined, 'Codex rejects temperature: Unsupported parameter');
+  assert.match(ADVISOR_PROMPT, /already approved it/, 'an operator request counts as approval');
+  assert.match(ADVISOR_PROMPT, /Subagents and other model calls are always approved/, 'model cost is not a refusal reason');
   assert.deepEqual(await adviseEffect(registry('deny - deletes the only copy'), choice, request, () => {}), { approve: false, reason: 'deletes the only copy', model: 'anthropic/claude-haiku-5-5' });
 });
 

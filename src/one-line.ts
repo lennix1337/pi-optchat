@@ -11,7 +11,9 @@ export async function askOneLine(registry: ModelRegistry, choice: ModelChoice, r
   const reply = await registry.streamSimple(model, {
     systemPrompt: request.systemPrompt,
     messages: [{ role: 'user', timestamp: Date.now(), content: request.content }],
-  }, { reasoning: reasoningFor(model, 'off'), maxTokens: request.maxTokens, signal }).result();
+    // Temperature 0 where the API takes it (Codex rejects the parameter): the same call gets the same verdict,
+    // so a sampling fluke cannot stop an approved call.
+  }, { reasoning: reasoningFor(model, 'off'), maxTokens: request.maxTokens, ...(model.api === 'anthropic-messages' ? { temperature: 0 } : {}), signal }).result();
   usage(reply);
   if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? reply.stopReason);
   const text = reply.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('').trim();
