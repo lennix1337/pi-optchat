@@ -13,7 +13,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --import ./test/support.ts --test test/*.test.ts",
+    "test": "node --experimental-transform-types --import ./test/support.ts --test test/*.test.ts",
     "test:pi-compat": "node --import tsx --test test/pi-runtime-compat.test.mjs",
     "test:live": "tsx test/live.ts",
     "benchmark:agents": "tsx test/agent-benchmark.ts",

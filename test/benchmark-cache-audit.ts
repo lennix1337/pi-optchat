@@ -1,6 +1,6 @@
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { summarizeCache } from './benchmark-cache.js';
+import { summarizeCache } from './benchmark-cache.ts';
 
 const directory = process.argv[2];
 const output = process.argv[3];

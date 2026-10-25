@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BenchmarkCacheTrace, summarizeCache, ResponseBudget } from './benchmark-cache.js';
+import { BenchmarkCacheTrace, summarizeCache, ResponseBudget } from './benchmark-cache.ts';
 
 test('response budget aborts once and disallows another request, without resetting on completion', async () => {
   let aborted = 0;

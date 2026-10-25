@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, getAgentDir, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { lastProfile } from '../src/profiles.ts';
-import { BenchmarkCacheTrace, ResponseBudget, LEAN_CONTAINER_INSTRUCTIONS } from './benchmark-cache.js';
+import { BenchmarkCacheTrace, ResponseBudget, LEAN_CONTAINER_INSTRUCTIONS } from './benchmark-cache.ts';
 
 export const BENCHMARK_MODEL = { provider: 'openai-codex-account-2', id: 'gpt-6-luna' } as const;
 export const REQUESTED_THINKING = 'high' as const;
