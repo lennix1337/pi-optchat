@@ -310,8 +310,10 @@ test('the pi-subagents RPC answers are correlated per request, and a missing pee
   reply = request => { events.emit(`subagents:rpc:v1:reply:${request.requestId}`, { version: 1, requestId: request.requestId, success: false, error: { code: 'not_found', message: 'No such run in this session.' } }); };
   await assert.rejects(() => rpc.call('steer', { id: 'run-a', message: 'hi' }), /No such run in this session/);
   // Without a peer the call says so instead of hanging.
+  // The RPC timer is unref'd so it never keeps Pi alive; hold the loop open here or Node 22 ends the file before it fires.
   const silent = new SubagentRpc({ emit: () => {}, on: () => () => {} }, 20);
-  await assert.rejects(() => silent.call('stop', { id: 'run-a' }), /did not answer stop/);
+  const keepAlive = setInterval(() => {}, 1000);
+  try { await assert.rejects(() => silent.call('stop', { id: 'run-a' }), /did not answer stop/); } finally { clearInterval(keepAlive); }
   await assert.rejects(() => new SubagentRpc(undefined).call('stop', {}), /no extension event bus/);
 });
 
