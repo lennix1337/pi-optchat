@@ -18,6 +18,7 @@ WAKE when one of these is true and nothing in it waits on the operator:
 - the operator asked for something that is still unfinished and the agent can go on with it;
 - a running agent or shell has been silent far longer than its work should take;
 - there is a concrete, useful job in the operator's idle-time jobs below, allowed by their limits, that the memory shows is still open;
+- the operator's work queue below names an open item that their limits allow;
 - the agent ended its turn asking the operator something their earlier words already answer (a broad order like "merge all the PRs" covers fixing what blocks those merges): that question does not wait on the operator.
 SLEEP when everything open waits on the operator (a decision, an approval, credentials, payment, a reload), when the only work left is something the limits forbid, when the newest lines show the agent was already woken for the same thing and got nowhere, or when you cannot name one concrete next step.
 You only wake the main agent; it decides and does the work itself.
@@ -54,16 +55,17 @@ export const heartbeatPlan = (config: { heartbeat?: HeartbeatPlan }) => config.h
 const list = (items: string[]) => items.length ? items.map(item => `- ${item}`).join('\n') : '(none)';
 const numbered = (items: string[]) => items.length ? items.map((item, i) => `${i + 1}. ${item}`).join('\n') : '(none)';
 
-export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan }
+export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan; queueItem?: string }
 
 const tail = (text: string, max: number) => text.length > max ? `[older lines omitted]\n${text.slice(text.indexOf('\n', text.length - max) + 1)}` : text;
 
-export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shells, plan = DEFAULT_HEARTBEAT }: Snapshot) {
+export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shells, plan = DEFAULT_HEARTBEAT, queueItem }: Snapshot) {
   return [
     `Idle for ${idleMinutes} min since the last turn ended.`,
     `How the last turn ended: ${lastStop ?? 'normally'}`,
     `Running agents: ${agents.length ? `\n${agents.map(a => `- ${a}`).join('\n')}` : 'none'}`,
     `Running shells: ${shells.length ? `\n${shells.map(s => `- ${s}`).join('\n')}` : 'none'}`,
+    ...queueItem ? [`Operator's work queue, next open item (take it before the jobs): ${queueItem}`] : [],
     `Operator's jobs for idle time, in order:\n${numbered(plan.jobs)}`,
     `Allowed in a woken turn:\n${list(plan.allowed)}`,
     `Never in a woken turn:\n${list(plan.never)}`,
@@ -80,12 +82,16 @@ export async function checkBeat(registry: ModelRegistry, choice: ModelChoice, sn
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
-export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan) {
+export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }) {
   const opening = task
     ? `A cheap check (${model}) woke you and suggests: ${task}
 The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first. If it is wrong, done or waits on the operator, take the first open job below that you can do instead; if none, say so in one line and end the turn.`
     : `The operator's fixed ${idleMinutes}-min schedule woke you; no check ran. Take the first open job below that you can do and work through it with your own judgment and tools; if none, say so in one line and end the turn.`;
-  return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. ${opening}
+  const intro = `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away.`;
+  const backlog = queue?.item && `Work queue first: ${queue.path} is the operator's backlog. Its next open item is:
+${queue.item}
+Do it before the jobs below and before any suggestion, within the limits below. When you finish it, change its line to \`- [x]\`; if you cannot go on, change it to \`- [!]\` and add why. Never take an item marked \`- [!]\` or described as blocked. Then take the next open item the same way.`;
+  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
 The operator's jobs for idle time, in order:
 ${numbered(plan.jobs)}
@@ -112,8 +118,29 @@ export interface HeartbeatDeps {
   clearTimer: (handle: unknown) => void;
 }
 
-const DAY = 24 * 60 * 60_000, KEPT_CHECKS = 48;
+const DAY = 24 * 60 * 60_000, KEPT_CHECKS = 48, KEPT_WAKES = 48, KEPT_WAKE_DAYS = 7, REPLY_MAX = 300;
 type Check = { at: number; verdict: 'WAKE' | 'SLEEP' | 'FAILED'; text: string };
+
+/** What a woken turn did, read from its messages when the chat settles. */
+export interface WakeSummary { reply: string; tools: number; commits: string[]; stopReason?: string }
+/** One wake in heartbeat.json: why it fired and how its turn ended. `running` and `unsettled` have no end; `interrupted` is the operator speaking or aborting. */
+export interface WakeRecord {
+  at: number; trigger: 'schedule' | 'check'; reason: string; outcome: 'running' | 'done' | 'interrupted' | 'error' | 'unsettled';
+  endedAt?: number; reply?: string; tools?: number; commits?: string[];
+}
+interface Saved { wakes: number[]; checks: Check[]; wakeLog: WakeRecord[] }
+
+function readSaved(file: string): Saved {
+  if (!existsSync(file)) return { wakes: [], checks: [], wakeLog: [] };
+  try {
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown } | null;
+    const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
+    const timed = <T>(items: unknown) => Array.isArray(items) ? items.filter((c): c is T => !!c && typeof c === 'object' && typeof (c as { at?: unknown }).at === 'number') : [];
+    return { wakes, checks: timed<Check>(saved?.checks), wakeLog: timed<WakeRecord>(saved?.wakeLog) };
+  } catch { return { wakes: [], checks: [], wakeLog: [] }; }
+}
+/** The profile's saved wakes and checks, for the /heartbeat report. */
+export const readHeartbeat = (dir: string) => readSaved(join(dir, 'heartbeat.json'));
 
 /** Arms when the chat settles, disarms when a turn starts; checks every interval while the chat stays idle. */
 export class Heartbeat {
@@ -121,7 +148,13 @@ export class Heartbeat {
   private running = Promise.resolve();
   private failed = false;
   private readonly file: string;
-  constructor(private readonly deps: HeartbeatDeps) { this.file = join(deps.dir, 'heartbeat.json'); }
+  /** The wake whose turn has not settled yet (its `at`). */
+  private open: number | undefined;
+  constructor(private readonly deps: HeartbeatDeps) {
+    this.file = join(deps.dir, 'heartbeat.json');
+    // A wake still running when this profile is opened again lost its turn with the old process.
+    if (this.saved().wakeLog.some(wake => wake.outcome === 'running')) this.amend(log => this.unsettled(log));
+  }
 
   arm() {
     this.disarm();
@@ -131,7 +164,19 @@ export class Heartbeat {
   }
   disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; }
   /** The operator is back: their turn decides what comes next. */
-  operatorSpoke() { this.disarm(); }
+  operatorSpoke() {
+    this.disarm();
+    if (this.open !== undefined) this.amend(log => log.map(wake => wake.at === this.open ? { ...wake, outcome: 'interrupted' } : wake));
+  }
+  /** The chat settled: if a wake's turn was running, record how it went (once; later settles are the operator's turns). */
+  turnSettled(summary: WakeSummary) {
+    if (this.open === undefined) return;
+    const reply = summary.reply.length > REPLY_MAX ? `${summary.reply.slice(0, REPLY_MAX - 1)}…` : summary.reply;
+    this.amend(log => log.map(wake => wake.at !== this.open ? wake : {
+      ...wake, endedAt: this.deps.now(), reply, tools: summary.tools, commits: summary.commits,
+      outcome: wake.outcome === 'interrupted' || summary.stopReason === 'aborted' ? 'interrupted' : summary.stopReason === 'error' ? 'error' : 'done' }));
+    this.open = undefined;
+  }
   /** Resolves once the current check, if any, has finished. */
   settled() { return this.running; }
 
@@ -139,7 +184,8 @@ export class Heartbeat {
     const reason = this.deps.busy();
     if (reason !== undefined) { this.arm(); return; }
     let beat: Beat = { wake: true, text: '' };
-    if (!this.deps.always()) try { beat = await this.deps.check(); this.failed = false; }
+    const scheduled = this.deps.always();
+    if (!scheduled) try { beat = await this.deps.check(); this.failed = false; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!this.failed) this.deps.note(`Heartbeat check failed: ${message}`);
@@ -151,21 +197,21 @@ export class Heartbeat {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);
       this.save({ verdict: 'WAKE', text: `${beat.text} (not woken: ${cap} wakes in 24 h)` }); this.arm(); return;
     }
-    this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, this.deps.now()]);
+    this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, this.deps.now()],
+      { at: this.deps.now(), trigger: scheduled ? 'schedule' : 'check', reason: scheduled ? '' : beat.text, outcome: 'running' });
+    this.open = this.deps.now();
     this.deps.wake(beat);
   }
   /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */
-  private save(check: Omit<Check, 'at'>, wakes?: number[]) {
+  private save(check: Omit<Check, 'at'>, wakes?: number[], wake?: WakeRecord) {
     const saved = this.saved();
-    atomicWrite(this.file, JSON.stringify({ wakes: wakes ?? saved.wakes, checks: [...saved.checks, { at: this.deps.now(), ...check }].slice(-KEPT_CHECKS) }));
+    const wakeLog = wake ? [...this.unsettled(saved.wakeLog), wake].filter(w => this.deps.now() - w.at < KEPT_WAKE_DAYS * DAY).slice(-KEPT_WAKES) : saved.wakeLog;
+    atomicWrite(this.file, JSON.stringify({ wakes: wakes ?? saved.wakes, checks: [...saved.checks, { at: this.deps.now(), ...check }].slice(-KEPT_CHECKS), wakeLog }));
   }
-  private saved(): { wakes: number[]; checks: Check[] } {
-    if (!existsSync(this.file)) return { wakes: [], checks: [] };
-    try {
-      const saved = JSON.parse(readFileSync(this.file, 'utf8')) as { wakes?: unknown; checks?: unknown } | null;
-      const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
-      const checks = Array.isArray(saved?.checks) ? saved.checks.filter((c): c is Check => !!c && typeof c === 'object' && typeof (c as Check).at === 'number') : [];
-      return { wakes, checks };
-    } catch { return { wakes: [], checks: [] }; }
+  private amend(change: (log: WakeRecord[]) => WakeRecord[]) {
+    const saved = this.saved();
+    atomicWrite(this.file, JSON.stringify({ ...saved, wakeLog: change(saved.wakeLog) }));
   }
+  private unsettled(log: WakeRecord[]): WakeRecord[] { return log.map(wake => wake.outcome === 'running' ? { ...wake, outcome: 'unsettled' } : wake); }
+  private saved() { return readSaved(this.file); }
 }

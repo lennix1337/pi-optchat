@@ -222,3 +222,89 @@ test('a profile keeps its heartbeat plan in config.json; without one it uses the
   assert.throws(() => loadConfig(dir), /heartbeat/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+const saved = (dir: string) => JSON.parse(readFileSync(join(dir, 'heartbeat.json'), 'utf8'));
+const turn = { reply: 'merged PR 12', tools: 4, commits: ['commit abc1234'] };
+
+test('each wake is kept with when, why, how it ended, its reply, tool count and commits', async () => {
+  const h = harness({ verdicts: [{ wake: true, text: 'merge PR 12' }] });
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.deepEqual(saved(h.dir).wakeLog, [{ at: 30 * MIN, trigger: 'check', reason: 'merge PR 12', outcome: 'running' }]);
+  await h.advance(5 * MIN); h.beat.turnSettled(turn);
+  assert.deepEqual(saved(h.dir).wakeLog, [{ at: 30 * MIN, trigger: 'check', reason: 'merge PR 12', outcome: 'done', endedAt: 35 * MIN, ...turn }]);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a fixed-schedule wake says so; a turn that settles with no wake running records nothing', async () => {
+  const h = harness({ always: true });
+  h.beat.turnSettled(turn);
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.deepEqual(saved(h.dir).wakeLog.map((w: any) => [w.trigger, w.reason, w.outcome]), [['schedule', '', 'running']]);
+  h.beat.turnSettled(turn); h.beat.turnSettled({ reply: 'again', tools: 0, commits: [] });
+  assert.equal(saved(h.dir).wakeLog.length, 1);
+  assert.equal(saved(h.dir).wakeLog[0].reply, 'merged PR 12', 'only the first settle closes the wake');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the reply is truncated to 300 characters', async () => {
+  const h = harness({ always: true });
+  h.beat.arm(); await h.advance(30 * MIN);
+  h.beat.turnSettled({ reply: 'x'.repeat(500), tools: 0, commits: [] });
+  const reply: string = saved(h.dir).wakeLog[0].reply;
+  assert.equal(reply.length, 300); assert.ok(reply.endsWith('…'));
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a wake the operator interrupts is recorded as interrupted, an aborted or failed turn likewise, and none is called done', async () => {
+  const h = harness({ always: true, wakes: 9 });
+  h.beat.arm(); await h.advance(30 * MIN);
+  h.beat.operatorSpoke();
+  assert.equal(saved(h.dir).wakeLog[0].outcome, 'interrupted');
+  h.beat.turnSettled(turn);
+  assert.equal(saved(h.dir).wakeLog[0].outcome, 'interrupted');
+  assert.equal(saved(h.dir).wakeLog[0].reply, 'merged PR 12');
+  h.beat.arm(); await h.advance(30 * MIN); h.beat.turnSettled({ ...turn, stopReason: 'aborted' });
+  h.beat.arm(); await h.advance(30 * MIN); h.beat.turnSettled({ ...turn, stopReason: 'error', reply: '429 quota' });
+  assert.deepEqual(saved(h.dir).wakeLog.map((w: any) => w.outcome), ['interrupted', 'interrupted', 'error']);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('an operator message outside a wake changes nothing on disk', async () => {
+  const h = harness({ always: true });
+  h.beat.operatorSpoke();
+  assert.throws(() => readFileSync(join(h.dir, 'heartbeat.json'), 'utf8'), /ENOENT/);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a wake that never settles is unsettled once the profile is opened again or the next wake starts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+  const first = harness({ dir, always: true, wakes: 9 });
+  first.beat.arm(); await first.advance(30 * MIN);
+  first.beat.arm(); await first.advance(30 * MIN);
+  assert.deepEqual(saved(dir).wakeLog.map((w: any) => w.outcome), ['unsettled', 'running']);
+  harness({ dir, always: true });
+  assert.deepEqual(saved(dir).wakeLog.map((w: any) => w.outcome), ['unsettled', 'unsettled']);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the wake log keeps the newest 48 wakes from the last 7 days, and checks and wake counts are untouched by it', async () => {
+  const DAYS = 24 * 60 * MIN;
+  const h = harness({ always: true, minutes: 60, wakes: 1000 });
+  for (let n = 0; n < 60; n++) { h.beat.arm(); await h.advance(60 * MIN); h.beat.turnSettled(turn); }
+  assert.equal(saved(h.dir).wakeLog.length, 48);
+  assert.equal(saved(h.dir).wakeLog.at(-1).at, 60 * 60 * MIN);
+  await h.advance(8 * DAYS); h.beat.arm(); await h.advance(60 * MIN);
+  assert.equal(saved(h.dir).wakeLog.length, 1, 'older than 7 days is dropped');
+  assert.equal(saved(h.dir).checks.length, 48);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a heartbeat.json from before the wake log still loads', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+  writeFileSync(join(dir, 'heartbeat.json'), JSON.stringify({ wakes: [1], checks: [] }));
+  const h = harness({ dir, always: true });
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.deepEqual(saved(dir).wakes, [1, 30 * MIN]);
+  assert.equal(saved(dir).wakeLog.length, 1);
+  rmSync(dir, { recursive: true, force: true });
+});

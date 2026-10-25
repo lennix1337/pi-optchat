@@ -30,6 +30,8 @@ import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText } from './heartbeat.ts';
+import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
+import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -151,6 +153,8 @@ export default function optchat(pi: ExtensionAPI) {
   /** Wakes the main agent after a long idle when a cheap check finds work (heartbeatMinutes); interactive owner only. */
   let heartbeat: Heartbeat | undefined;
   let settledAt = Date.now();
+  /** The messages of the current run, read when it settles to report what a heartbeat wake did. */
+  let turn: AgentMessage[] = [];
   const idleMinutes = () => Math.round((Date.now() - settledAt) / 60_000);
   /** What the heartbeat's cheap model reads: why the chat stopped, what still runs, the state and the newest memory lines. */
   const beatState = (ctx: ExtensionContext, a: Active) => {
@@ -161,7 +165,7 @@ export default function optchat(pi: ExtensionAPI) {
     const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
-      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config) });
+      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir) });
   };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
@@ -236,7 +240,7 @@ export default function optchat(pi: ExtensionAPI) {
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       check: () => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
-      wake: beat => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config))).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
+      wake: beat => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) })).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
@@ -498,7 +502,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   // A report sent while Pi is idle starts its run without before_agent_start; it reuses the last built prompt.
   pi.on('agent_start', (_event, ctx) => {
-    working = true; showTitle(ctx); heartbeat?.disarm();
+    working = true; turn = []; showTitle(ctx); heartbeat?.disarm();
     if (active && !runStarted) startRun(ctx);
   });
   pi.on('before_agent_start', (event, ctx) => {
@@ -514,6 +518,7 @@ export default function optchat(pi: ExtensionAPI) {
   });
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
+    turn.push(event.message);
     if (!active || !runStarted) return;
     // Shell evidence stays exact in the session; only the provider projection is reduced.
     const shell = event.message.role === 'toolResult' && ['bash', 'powershell'].includes(event.message.toolName);
@@ -655,6 +660,7 @@ export default function optchat(pi: ExtensionAPI) {
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
     settledAt = Date.now();
+    heartbeat?.turnSettled(summarizeTurn(turn));
     if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;
@@ -835,6 +841,14 @@ export default function optchat(pi: ExtensionAPI) {
     if (!remote) { ctx.ui.notify('/tell-main is for connected subagent windows.', 'info'); return; }
     try { await remote.tell(args); } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
   } });
+  pi.registerCommand('heartbeat', { description: 'Heartbeat: wakes today and the wake budget left; "queue" lists and "add <text>" appends to the idle-time work queue',
+    getArgumentCompletions: prefix => ['report', 'queue', 'add'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
+    handler: async (args, ctx) => {
+      try {
+        const a = required();
+        ctx.ui.notify(heartbeatCommand(args, { dir: a.dir, now: Date.now(), cap: a.config.heartbeatWakes, minutes: a.config.heartbeatMinutes }), 'info');
+      } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
+    } });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
     getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'shells', 'instructions', 'browse', 'import', 'retry-summary'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
