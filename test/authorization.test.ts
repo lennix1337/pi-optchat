@@ -157,6 +157,64 @@ test('native hooks preserve provenance and consume permission before an attempte
   assert.ok(notices.some(text => /standing grant active/i.test(text)));
 });
 
+test('a pending approval stays on screen until approved, denied or expired; /approve and /deny are operator-typed', async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  const notices: [string, string?][] = [];
+  const widgets: (string[] | undefined)[] = [];
+  let bells = 0;
+  const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
+  registerEffectApprovals(pi, { enabled: true, bell: () => { bells++; } });
+  const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner' },
+    ui: { notify: (message: string, type?: string) => notices.push([message, type]), setWidget: (_key: string, lines?: string[]) => widgets.push(lines) } };
+  const event = { toolName: 'bash', toolCallId: 'call', input: { command: 'git push --dry-run origin main' } };
+  const blocked = await hooks.get('tool_call')!(event, ctx);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /\/approve/, 'the model can tell the operator the short way to approve');
+  const shown = widgets.at(-1)!.join('\n');
+  assert.match(shown, /push/); assert.match(shown, /git push --dry-run origin main/); assert.match(shown, /\/approve/); assert.match(shown, /\/deny/);
+  assert.equal(notices.filter(([, type]) => type === 'warning').length, 1);
+  assert.equal(bells, 1, 'the terminal is alerted once per new pending call');
+  await hooks.get('tool_call')!(event, ctx);
+  assert.equal(bells, 1, 'a repeated refusal of the same call does not alert again');
+  // Only operator-typed input approves; the extension (or a report) cannot.
+  assert.equal(await hooks.get('input')!({ text: '/approve', source: 'extension' }, ctx), undefined);
+  assert.equal((await hooks.get('tool_call')!(event, ctx)).block, true);
+  // A token inside a sentence is not an approval, and the operator is told why.
+  const value = /approve-effect ([a-f0-9]{24})/.exec(blocked.reason)![1];
+  assert.equal(await hooks.get('input')!({ text: `ok then approve-effect ${value}`, source: 'interactive' }, ctx), undefined);
+  assert.ok(notices.some(([text]) => /not approved/i.test(text) && /\/approve/.test(text)));
+  assert.equal((await hooks.get('tool_call')!(event, ctx)).block, true);
+  const approved = await hooks.get('input')!({ text: '/approve', source: 'interactive' }, ctx);
+  assert.deepEqual(approved, { action: 'transform', text: `approve-effect ${value}` });
+  assert.equal(await hooks.get('tool_call')!(event, ctx), undefined);
+  assert.equal(widgets.at(-1), undefined, 'nothing pending: the widget is cleared');
+  // /deny drops the pending call and tells the model not to retry it.
+  await hooks.get('tool_call')!(event, ctx);
+  assert.ok(widgets.at(-1));
+  const denied = await hooks.get('input')!({ text: '/deny', source: 'interactive' }, ctx);
+  assert.equal(denied.action, 'transform');
+  assert.match(denied.text, /denied/i); assert.match(denied.text, /git push --dry-run origin main/);
+  assert.equal(widgets.at(-1), undefined);
+  assert.deepEqual(await hooks.get('input')!({ text: '/approve', source: 'interactive' }, ctx), { action: 'handled' });
+  assert.ok(notices.some(([text]) => /nothing.*pending/i.test(text)));
+});
+
+test('pending approvals expire from the screen', async () => {
+  let now = 0;
+  const gate = new EffectApprovals({ now: () => now, ttlMs: 100 });
+  token(gate);
+  assert.equal(gate.pendingFor('owner').length, 1);
+  assert.equal(gate.pendingFor('other').length, 0);
+  now = 100;
+  assert.equal(gate.pendingFor('owner').length, 0);
+});
+
+test('git stash push is not a remote push', () => {
+  const gate = new EffectApprovals({ mode: 'risk' });
+  for (const command of ['git stash push -q payload/a.js', 'git stash push -m wip && git stash pop']) assert.equal(gate.admit(invocation('bash', { command })), undefined, command);
+  token(gate, invocation('bash', { command: 'git stash pop && git push origin main' }));
+});
+
 test('manager-style interactive child input cannot grant a delegated invocation', async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;

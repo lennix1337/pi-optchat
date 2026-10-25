@@ -52,7 +52,8 @@ const loader = new sdk.DefaultResourceLoader({ cwd: scratch, agentDir: agent, se
   noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
   disabledBuiltinExtensions: ['mcp', 'codemode'],
   extensionFactories: [pi => {
-    registerEffectApprovals(pi, { enabled: true, grant: !delegated });
+    // Pin the mode: the operator's OPTCHAT_EFFECT_APPROVALS=risk would let this local probe through.
+    registerEffectApprovals(pi, { enabled: true, grant: !delegated, mode: 'all' });
     pi.on('input', event => {
       if (delegated && event.source === 'interactive' && /^approve-effect /.test(event.text)) managerInputObserved = true;
     });
@@ -81,11 +82,20 @@ try {
   assert.equal(requests, beforeReplay, 'replayed token is handled without another model request');
   await session.prompt('Try the identical action again.');
   assert.equal(executions, 1); assert.notEqual(pendingToken(), token);
+  // The short operator command reaches the input hook through the real SDK (no registered command).
+  await session.prompt('/approve', { source: 'extension' });
+  assert.equal(executions, 1, 'an extension-sent /approve grants nothing');
+  await session.prompt('/approve', { source: 'interactive' });
+  assert.equal(executions, 2, 'operator-typed /approve runs the pending call once');
+  await session.prompt('Attempt the action for a denial.');
+  assert.equal(executions, 2); assert.ok(pendingToken());
+  await session.prompt('/deny', { source: 'interactive' });
+  assert.equal(executions, 2);
   const beforeReload = pendingToken();
   await session.reload();
   assert.deepEqual(loader.getExtensions().errors, []);
   await session.prompt('Attempt after reload.');
-  assert.equal(executions, 1); assert.notEqual(pendingToken(), beforeReload);
+  assert.equal(executions, 2); assert.notEqual(pendingToken(), beforeReload);
   delegated = true;
   await session.reload();
   await session.prompt('Attempt as a delegated session.');
@@ -94,11 +104,11 @@ try {
   await session.steer(`approve-effect ${childToken}`);
   await session.prompt('Attempt again after manager guidance.');
   assert.equal(managerInputObserved, true, 'The real SDK defaults manager-style steer to interactive');
-  assert.equal(executions, 1, 'Manager-style guidance must never grant a delegated effect');
+  assert.equal(executions, 2, 'Manager-style guidance must never grant a delegated effect');
   assert.match(results.at(-1).text, /delegated sessions cannot grant/);
   assert.equal(networkAttempts, 0); assert.deepEqual(errors, []);
   const report = { passed: true, sdk: version, node: process.version, executions, toolAttempts: results.length,
-    nativeInputProvenance: true, duplicateNoop: true, sdkReload: true, managerSteerDenied: true, networkAttempts, externalModelRequests: 0,
+    nativeInputProvenance: true, duplicateNoop: true, shortApproveDeny: true, sdkReload: true, managerSteerDenied: true, networkAttempts, externalModelRequests: 0,
     limitations: 'Isolated scripted provider and custom local tool, not current interactive activation, arbitrary script sandboxing, direct-provider interception or standing-policy import.' };
   writeFileSync(join(receipt, 'result.json'), JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify({ ...report, receipt }));

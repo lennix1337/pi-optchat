@@ -9,7 +9,8 @@ const root = mkdtempSync(join(process.platform === 'darwin' && !nested ? '/tmp' 
 for (const name of ['TMPDIR', 'TEMP', 'TMP']) process.env[name] = root;
 // os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so both are sandboxed: no test may touch the user's real ~/.optchat or ~/.pi.
 for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR']) process.env[name] = mkdtempSync(join(root, `optchat-${name.toLowerCase()}-`));
-for (const name of ['OPTCHAT_PROFILE', 'OPTCHAT_REFRESH_AT']) delete process.env[name];
+// The operator's own settings must not change test behavior; OPTCHAT_EFFECT_APPROVALS=risk would gate fixture subagent calls.
+for (const name of ['OPTCHAT_PROFILE', 'OPTCHAT_REFRESH_AT', 'OPTCHAT_EFFECT_APPROVALS']) delete process.env[name];
 
 /** Removes a test's temp dir. On Windows a process that just exited can hold its cwd a moment longer than `process.kill(pid, 0)` admits, so rmdir fails with EBUSY (#164). rmSync's own `maxRetries` doesn't cover that: it retries only after ENOTEMPTY, not a first rmdir that fails EBUSY. */
 export function removeDir(path: string) {

@@ -29,9 +29,15 @@ sandbox for installed plugins, repository code, the SDK, or an adversarial model
    supplies a random pending token. Inspect the exact original tool and arguments
    in the transcript; the compact refusal deliberately does not repeat credentials
    or arbitrary script contents.
-3. Enter `approve-effect <token>` as the entire interactive input. This is a plain
-   input token, not a model tool or slash command. It approves one matching invocation
-   in the same session and working directory for up to five minutes.
+3. The blocked call stays on screen above the editor (kind, command or tool, and
+   working folder) with a warning notice and one terminal bell, until it is approved,
+   denied or expires. Type `/approve` to approve the newest pending call once, or
+   `/deny` to drop every pending call (the model is told not to retry). Both are read
+   by the input hook with its source, not registered as commands, so only typed
+   interactive input counts. `approve-effect <token>` as the entire input still
+   approves that exact token; a token inside a longer message is not an approval and
+   the operator is told so. Approval lasts up to 30 minutes, in the same session and
+   working directory.
 4. The next identical invocation consumes permission before dispatch. Another guard
    (including operation recovery) can still refuse it. Failures, retries, nested
    calls and modified arguments do not inherit or replenish approval.

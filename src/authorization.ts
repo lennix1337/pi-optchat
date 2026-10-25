@@ -3,7 +3,9 @@ import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
-interface Pending { session: string; fingerprint: string; expires: number; approved: boolean }
+interface Pending { session: string; fingerprint: string; expires: number; approved: boolean; tool: string; kind?: string; summary: string; created: number }
+/** What the operator sees for a call waiting on approval. */
+export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; expires: number }
 /** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
 export type ApprovalMode = 'all' | 'risk';
 interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode }
@@ -52,7 +54,8 @@ function diagnostic({ tool, input }: Invocation) {
 // Risk mode is a guardrail against accidental high-impact effects, not a shell sandbox:
 // obfuscated commands (eval, variables, encoded scripts) pass it. `all` mode is the boundary.
 const riskClasses: [string, RegExp][] = [
-  ['push', /\bgit\b[^;&|\n]*\spush\b/],
+  // `git stash push` saves local changes; it is not a remote push.
+  ['push', /\bgit\b(?:(?!\bstash\b)[^;&|\n])*\spush\b/],
   ['publish', /\b(?:npm|pnpm|yarn|cargo|vsce)\s+publish\b|\bgh\s+(?:release\s+create|pr\s+merge|repo\s+(?:create|delete))\b/],
   ['global install', /\b(?:npm|pnpm|yarn)\s+(?:i|install|add|link)\b[^;&|\n]*\s(?:-g|--global)\b|\b(?:cargo|winget|choco|scoop)\s+install\b/],
   ['discard', /\bgit\b[^;&|\n]*\s(?:reset\s+--hard|clean\s+-[a-zA-Z]*f[a-zA-Z]*|worktree\s+remove\b[^;&|\n]*--force|branch\s+-D|stash\s+(?:drop|clear))\b/],
@@ -85,6 +88,16 @@ function riskClass({ tool, input }: Invocation) {
   if (text === undefined) return;
   if (recursiveDelete(text)) return 'recursive delete';
   return riskClasses.find(([, pattern]) => pattern.test(text))?.[0];
+}
+
+/** One line the operator can recognise: the command for shell tools, otherwise the tool and its action. */
+function summarize({ tool, input, cwd }: Invocation) {
+  const where = cwd ? ` (in ${cwd.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)})` : '';
+  const text = record(input) && typeof input.command === 'string' ? input.command
+    : record(input) && typeof input.code === 'string' ? `${tool} script`
+      : record(input) ? [tool, input.action, input.agent, input.name].filter(part => typeof part === 'string').join(' ') : tool;
+  const line = text.replace(/\s+/g, ' ').trim();
+  return (line.length > 120 ? `${line.slice(0, 119)}…` : line) + where;
 }
 
 const pushMain = /^git -C (\S+) push origin main$/;
@@ -126,7 +139,8 @@ export class EffectApprovals {
   private readonly ttlMs: number;
   private readonly maxPending: number;
   private readonly mode: ApprovalMode;
-  constructor({ now = Date.now, ttlMs = 5 * 60_000, maxPending = 32, mode = 'all' }: Options = {}) {
+  // Long enough for an operator who stepped away; the call stays visible on screen meanwhile.
+  constructor({ now = Date.now, ttlMs = 30 * 60_000, maxPending = 32, mode = 'all' }: Options = {}) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 256) throw new Error('Invalid approval bounds');
     this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode;
   }
@@ -157,13 +171,36 @@ export class EffectApprovals {
     }
     if (this.pending.size >= this.maxPending) return { block: true, reason: 'Not executed: effect approval capacity reached. Wait for expiry or session reset; do not dispatch a substitute action.' };
     const token = randomBytes(12).toString('hex');
-    this.pending.set(token, { session: call.session, fingerprint, expires: this.now() + this.ttlMs, approved: false });
+    const now = this.now();
+    this.pending.set(token, { session: call.session, fingerprint, expires: now + this.ttlMs, approved: false, tool: call.tool, kind, summary: summarize(call), created: now });
     return this.refusal(call.tool, token, kind);
   }
   private refusal(tool: string, token: string, kind?: string): Refusal {
-    return { block: true, token, reason: `Not executed: ${tool}${kind ? ` is a ${kind} effect and` : ''} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. To approve once, enter exactly:\napprove-effect ${token}` };
+    return { block: true, token, reason: `Not executed: ${tool}${kind ? ` is a ${kind} effect and` : ''} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. The operator approves it once by typing /approve (or exactly: approve-effect ${token}), or drops it with /deny. Tell them in one line what this call does and wait.` };
   }
-  approve(session: string, source: string, text: string): 'approved' | 'standing' | 'invalid' | 'ignored' {
+  /** Calls of this session still waiting on the operator, newest first. */
+  pendingFor(session: string): PendingApproval[] {
+    this.expire();
+    return [...this.pending].filter(([, entry]) => entry.session === session && !entry.approved)
+      .sort(([, a], [, b]) => b.created - a.created)
+      .map(([token, { tool, kind, summary, expires }]) => ({ token, tool, kind, summary, expires }));
+  }
+  /** Operator `/approve`: approves the newest pending call of this session once. */
+  approveLatest(session: string, source: string): PendingApproval | undefined {
+    if (source !== 'interactive') return;
+    const latest = this.pendingFor(session)[0];
+    if (latest) this.pending.get(latest.token)!.approved = true;
+    return latest;
+  }
+  /** Operator `/deny`: drops every pending call of this session. */
+  deny(session: string, source: string): PendingApproval[] {
+    if (source !== 'interactive') return [];
+    const dropped = this.pendingFor(session);
+    for (const { token } of dropped) this.pending.delete(token);
+    return dropped;
+  }
+  /** `embedded`: a token inside other text, never an approval (it may be pasted transcript). */
+  approve(session: string, source: string, text: string): 'approved' | 'standing' | 'invalid' | 'ignored' | 'embedded' {
     if (source !== 'interactive') return 'ignored';
     if (text.trim().startsWith('approve-standing ')) {
       const keys = standingKeys(text.trim());
@@ -172,7 +209,7 @@ export class EffectApprovals {
       return 'standing';
     }
     const match = /^approve-effect ([a-f0-9]{24})$/.exec(text.trim());
-    if (!match) return 'ignored';
+    if (!match) return /\bapprove-effect [a-f0-9]{24}\b/.test(text) ? 'embedded' : 'ignored';
     this.expire();
     const entry = this.pending.get(match[1]);
     if (!entry || entry.session !== session || entry.approved) return 'invalid';
