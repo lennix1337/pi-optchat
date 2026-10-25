@@ -7,7 +7,8 @@ import { operationalStateTool } from '../src/operational-tool.ts';
 const tool = operationalStateTool(() => { throw new Error('unused'); }, () => {});
 
 test('operational_state definition stays small enough to send every turn', () => {
-  assert.ok(JSON.stringify(tool).length <= 2100, `operational_state definition is ${JSON.stringify(tool).length} characters`);
+  // 1,992 after the enum trim, plus ~560 for the optional authorization grant (scope/action/allow/until).
+  assert.ok(JSON.stringify(tool).length <= 2600, `operational_state definition is ${JSON.stringify(tool).length} characters`);
 });
 
 test('operational_state schema still accepts and rejects the same updates', () => {
