@@ -16,6 +16,7 @@ test('a checkpoint writes the ignore file whenever it is missing, and never repl
     execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main']);
     mkdirSync(join(dir, 'main'));
     writeFileSync(join(dir, 'main', 'a.jsonl'), '{}\n'); writeFileSync(join(dir, 'usage.jsonl'), '{}\n'); writeFileSync(join(dir, 'memory.html'), '<p>');
+    writeFileSync(join(dir, 'usage.db'), 'index');
     await checkpoint(dir);
     assert.deepEqual(tracked(dir), ['.gitignore', 'main/a.jsonl']);
     writeFileSync(join(dir, '.gitignore'), '/mine/\n');
@@ -23,9 +24,11 @@ test('a checkpoint writes the ignore file whenever it is missing, and never repl
     writeFileSync(join(dir, 'compactor-diagnostics.jsonl.1'), '{}\n');
     writeFileSync(join(dir, 'recovery-diagnostics.jsonl'), '{}\n');
     writeFileSync(join(dir, 'recovery-diagnostics.jsonl.1'), '{}\n');
+    for (const suffix of ['', '-wal', '-shm', '-journal']) writeFileSync(join(dir, `usage.db${suffix}`), 'index');
     await checkpoint(dir);
     assert.equal(readFileSync(join(dir, '.gitignore'), 'utf8'), '/mine/\n');
     assert.ok(!tracked(dir).some(file => /^(compactor|recovery)-diagnostics/.test(file)), 'diagnostics stay untracked even with an older/custom ignore file');
+    assert.ok(!tracked(dir).some(file => file.startsWith('usage.db')), 'the disposable usage index stays untracked even with an older/custom ignore file');
   } finally { removeDir(dir); }
 });
 

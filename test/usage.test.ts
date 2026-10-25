@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { emptyUsage, UsageLedger, summarizeUsage } from '../src/usage.ts';
+import { emptyUsage, ranges, UsageLedger, summarizeUsage, type UsageEntry } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
 test('measured response latency persists with the provider-reported call and summarizes as a median', () => {
@@ -186,6 +186,100 @@ test('All time keeps entries dated after now', () => {
     ledger.add({ id: 'future', date: new Date(now + 3600_000).toISOString(), role: 'main', model: 'test', session: 's', usage: emptyUsage() });
     assert.equal(ledger.select('All time', 's', now).length, 1);
     assert.equal(ledger.select('Last hour', 's', now).length, 0);
+  } finally { removeDir(dir); }
+});
+
+/** A ledger line, as another writer (or an older OptChat) would append it. */
+function record(i: number, now: number, extra: Partial<UsageEntry> = {}): UsageEntry {
+  const usage = { ...emptyUsage(), input: i, output: 2 * i, cacheRead: 10 * i, totalTokens: 13 * i, cost: { ...emptyUsage().cost, input: i / 1000, total: i / 300 } };
+  return { id: `r${i}`, date: new Date(now - i * 600_000).toISOString(), role: i % 3 ? 'main' : 'compactor', provider: i % 2 ? 'anthropic' : undefined,
+    model: `m${i % 4}`, session: i % 5 ? 's1' : 's2', usage, ...(i % 4 ? { latency: { firstMs: 100 * i, responseMs: 200 * i } } : {}), ...(i % 7 ? {} : { failed: true }), ...extra };
+}
+const writeLedger = (dir: string, lines: unknown[]) => writeFileSync(join(dir, 'usage.jsonl'), lines.map(l => JSON.stringify(l) + '\n').join(''));
+/** The index's SQL totals must equal summing the same records in JavaScript, for every range. */
+function assertSummariesMatch(ledger: UsageLedger, session: string, now: number) {
+  for (const range of ranges) {
+    const records = ledger.select(range, session, now), expected = summarizeUsage(records), actual = ledger.summary(range, session, now);
+    assert.equal(actual.calls, records.length, range);
+    assert.equal(actual.failures, expected.failures, range);
+    assert.deepEqual(actual.latency, expected.latency, range);
+    assert.deepEqual(actual.groups.map(g => [g.role, g.provider, g.model, g.calls, g.failures, g.usage.totalTokens, g.latency]),
+      expected.groups.map(g => [g.role, g.provider, g.model, g.calls, g.failures, g.usage.totalTokens, g.latency]), range);
+    assert.ok(Math.abs(actual.total.cost.total - expected.total.cost.total) < 1e-9, range);
+    assert.equal(actual.total.totalTokens, expected.total.totalTokens, range);
+  }
+}
+
+test('usage.db is a disposable index: it picks up other writers, rebuilds when deleted, corrupt or out of date, and matches the full read', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-index-'));
+  const now = Date.now(), db = join(dir, 'usage.db');
+  try {
+    writeLedger(dir, [...Array.from({ length: 40 }, (_, i) => record(i + 1, now)), { torn: true }, record(1, now, { model: 'duplicate id' })]);
+    let ledger = new UsageLedger(dir);
+    assert.ok(existsSync(db), 'opening a profile builds the index');
+    const full = new UsageLedger(dir, { sqlite: false });
+    assert.deepEqual(ledger.entries, full.entries, 'the index returns what the full read returns, first record per ID winning');
+    assert.deepEqual(ledger.warnings, full.warnings);
+    assert.equal(ledger.entries.length, 40);
+    assertSummariesMatch(ledger, 's1', now);
+    assertSummariesMatch(full, 's1', now);
+
+    appendFileSync(join(dir, 'usage.jsonl'), JSON.stringify(record(41, now)) + '\n' + JSON.stringify(record(42, now)).slice(0, 20));
+    assert.equal(ledger.select('All time', '', now).length, 41, 'another writer\'s complete line is indexed; its unfinished line waits');
+    appendFileSync(join(dir, 'usage.jsonl'), JSON.stringify(record(42, now)).slice(20) + '\n');
+    assert.equal(ledger.select('All time', '', now).length, 42, 'the line is read once it ends');
+    assertSummariesMatch(ledger, 's1', now); // the late records join hours the index had already totalled
+
+    rmSync(db);
+    assert.equal(new UsageLedger(dir).entries.length, 42, 'a deleted index is rebuilt from the ledger');
+    writeFileSync(db, 'not a database');
+    for (const suffix of ['-wal', '-shm']) rmSync(db + suffix, { force: true });
+    ledger = new UsageLedger(dir);
+    assert.equal(ledger.entries.length, 42, 'a corrupt index is rebuilt from the ledger');
+    assert.deepEqual(ledger.warnings, full.warnings);
+
+    writeLedger(dir, Array.from({ length: 50 }, (_, i) => record(i + 100, now)));
+    assert.deepEqual(new UsageLedger(dir).entries.map(e => e.id), Array.from({ length: 50 }, (_, i) => `r${i + 100}`), 'a replaced ledger is reindexed, not appended to the old one');
+    writeLedger(dir, [record(7, now)]);
+    assert.deepEqual(new UsageLedger(dir).entries.map(e => e.id), ['r7'], 'a shorter ledger is reindexed');
+    rmSync(join(dir, 'usage.jsonl'));
+    assert.deepEqual(new UsageLedger(dir).entries, [], 'a missing ledger empties the index');
+  } finally { removeDir(dir); }
+});
+
+test('reopening reads only what the ledger gained, and adding keeps one record per ID across processes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-incremental-'));
+  const now = Date.now();
+  try {
+    writeLedger(dir, Array.from({ length: 60 }, (_, i) => record(i + 1, now)));
+    new UsageLedger(dir);
+    // Rewrite the first record in place, far before the bytes the index fingerprints: an append-only ledger never does this,
+    // so an index that re-read the whole file on open would show the change in its totals and this one does not.
+    const file = join(dir, 'usage.jsonl'), text = readFileSync(file, 'utf8');
+    writeFileSync(file, text.replace('"model":"m1"', '"model":"mX"'));
+    const ledger = new UsageLedger(dir);
+    const models = ledger.summary('All time', '', now).groups.map(g => g.model);
+    assert.ok(models.includes('m1') && !models.includes('mX'), models.join());
+    const other = new UsageLedger(dir);
+    other.add(record(61, now));
+    ledger.add(record(61, now));
+    ledger.add(record(62, now));
+    assert.equal(readFileSync(file, 'utf8').split('\n').filter(l => l.includes('"id":"r61"')).length, 1, 'an ID another process already wrote is not appended again');
+    assert.equal(new UsageLedger(dir).entries.length, 62);
+  } finally { removeDir(dir); }
+});
+
+test('without node:sqlite the ledger reads usage.jsonl in full and gives the same results', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-memory-'));
+  const now = Date.now();
+  try {
+    writeLedger(dir, Array.from({ length: 20 }, (_, i) => record(i + 1, now)));
+    const ledger = new UsageLedger(dir, { sqlite: false });
+    ledger.add(record(21, now)); ledger.add(record(21, now));
+    assert.ok(!existsSync(join(dir, 'usage.db')));
+    assert.equal(ledger.entries.length, 21);
+    assertSummariesMatch(ledger, 's2', now);
+    assert.deepEqual(new UsageLedger(dir).entries, new UsageLedger(dir, { sqlite: false }).entries);
   } finally { removeDir(dir); }
 });
 

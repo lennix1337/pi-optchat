@@ -260,12 +260,11 @@ export class Inspector implements Component, Focusable {
   /** Period tabs, one headline, then an aligned table with a row per role and model. */
   private usageLines(width: number) {
     const { usage, session, context, color } = this.options;
-    const entries = usage.select(this.range, session);
-    const { total, failures, groups, latency } = summarizeUsage(entries);
+    const { total, failures, groups, latency, calls } = usage.summary(this.range, session);
     // No-break spaces keep a label like "Last 7 days" on one line when the tabs wrap.
     const tabs = ranges.map(r => r.replaceAll(' ', '\u00a0')).map((r, i) => ranges[i] === this.range ? color('accent', `[${r}]`) : color('dim', r)).join('  ');
     const lines = [...wrapTextWithAnsi(tabs, width), ''];
-    if (!entries.length) lines.push(color('muted', 'No usage in this period.'));
+    if (!calls) lines.push(color('muted', 'No usage in this period.'));
     else {
       lines.push(`${color('accent', dollars(total.cost.total))} estimated API cost · ${short(total.totalTokens)} tokens · ${cached(total)} cached${failures ? ` · ${failures} failed` : ''}`);
       if (latency) lines.push(color('muted', `median of ${count(latency.calls)} measured calls: first content ${seconds(latency.firstMs)} · response ${seconds(latency.responseMs)}`));

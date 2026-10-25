@@ -317,7 +317,8 @@ Profile data lives in `~/.optchat/profiles/<name>/` (override the root with `OPT
 | `config.json` | Compactor and subagent models, their per-provider fallbacks, settings |
 | `pending-inputs.json`, `pending-reports.json` | Recovery journals |
 | `runs/` | Subagent sessions and run metadata |
-| `usage.jsonl` | Usage ledger |
+| `usage.jsonl` | Usage ledger, append-only; the only copy of each record |
+| `usage.db` | Disposable SQLite index of `usage.jsonl` (Node's `node:sqlite`): opening reads only new lines and the usage page sums hourly totals. Delete it any time; it is rebuilt from the ledger. Without `node:sqlite` the ledger is read in full. Excluded from memory Git checkpoints |
 | `operational-state.json` | Bounded structured facts, evidence references and supersession history |
 | `operations.json` | Tool intents, observed responses and recovery reconciliation (not proof of external success) |
 | `recovery-diagnostics.jsonl` | Rotating metadata-only recovery incidents, excluded from memory Git checkpoints |

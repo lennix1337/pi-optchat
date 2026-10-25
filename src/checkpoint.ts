@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWrite } from './store.ts';
 const exec = promisify(execFile);
@@ -10,7 +10,14 @@ const LOOSE_LIMIT_KIB = 16_384;
 export async function checkpoint(directory: string) {
   const git = (args: string[]) => exec('git', ['-C', directory, ...args], { maxBuffer: 1_000_000 });
   if (!existsSync(join(directory, '.git'))) await git(['init', '-q', '-b', 'main']);
-  if (!existsSync(join(directory, '.gitignore'))) atomicWrite(join(directory, '.gitignore'), '/runs/\n/memory.html\n/usage.jsonl\n*.tmp\n');
+  if (!existsSync(join(directory, '.gitignore'))) atomicWrite(join(directory, '.gitignore'), '/runs/\n/memory.html\n/usage.jsonl\n/usage.db*\n*.tmp\n');
+  // usage.db is a disposable index of usage.jsonl; profiles whose .gitignore predates it must not commit it either. An exclude
+  // pathspec would fail on profiles whose .gitignore already lists it, so the repository's own exclude file carries it.
+  const exclude = join(directory, '.git', 'info', 'exclude'), excluded = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+  if (!excluded.split('\n').includes('/usage.db*')) {
+    mkdirSync(join(directory, '.git', 'info'), { recursive: true });
+    appendFileSync(exclude, `${excluded && !excluded.endsWith('\n') ? '\n' : ''}/usage.db*\n`);
+  }
   await git(['add', '-A', '--', '.', ':!compactor-diagnostics.jsonl', ':!compactor-diagnostics.jsonl.1', ':!recovery-diagnostics.jsonl', ':!recovery-diagnostics.jsonl.1']);
   const status = await git(['diff', '--cached', '--name-only']);
   if (!status.stdout.trim()) return;
