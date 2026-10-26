@@ -23,6 +23,8 @@ Artifacts are local to `PROFILE/outputs/<hashed-session>/`, with private file/di
 
 Retention is seven days, with expired files cleaned lazily on subsequent writes. Originals are limited to 8 MiB each and the on-disk records share a 64 MiB profile quota; live references are not evicted to admit new ones. Local transcript/memory originals remain independent of artifact retention. Missing/corrupt/expired artifacts fail explicitly; use the original session or memory zoom. Storage is not a sandbox or an encrypted vault.
 
+Line sampling for output previews scans matches directly and selects head/tail indexes without mapping the entire source into temporary arrays. This preserves the selected lines, order, diagnostic counts and metadata. Paired synthetic measurements are recorded in `plans/context-improvements-validation.md` (output-preview speed); they measure local preview generation, not provider response time.
+
 ## Prompt budget and latency diagnostics
 
 `/optchat-perf` displays **in-memory numeric-only** aggregates without a model request. `context_metrics` is also registered, but inactive by default and marked `deferred` using Pi 1.2's tool-exposure API; tool discovery or explicit activation can expose it. This defers model-facing discovery, not JavaScript loading or extension hooks, and does not claim additional default-schema savings over the prior inactive setting; Child sessions have their own metrics tool.

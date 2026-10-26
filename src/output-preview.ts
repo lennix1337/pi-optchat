@@ -55,28 +55,36 @@ function addSome(target: Set<number>, source: readonly number[], limit: number, 
   for (const value of values) target.add(value);
 }
 
+function matchingLines(lines: readonly string[], matches: (line: string) => boolean) {
+  const indexes: number[] = [];
+  for (let index = 0; index < lines.length; index++) if (matches(lines[index])) indexes.push(index);
+  return indexes;
+}
+
+function addEdges(target: Set<number>, length: number, head: number, tail: number) {
+  for (let index = 0; index < Math.min(length, head); index++) target.add(index);
+  for (let index = Math.max(0, length - tail); index < length; index++) target.add(index);
+}
+
 function selectedLines(lines: readonly string[], format: OutputPreviewFormat) {
   const chosen = new Set<number>();
-  const diagnostics = lines.flatMap((line, index) => DIAGNOSTIC.test(line) ? [index] : []);
+  const diagnostics = matchingLines(lines, line => DIAGNOSTIC.test(line));
   if (format === 'diff') {
-    const structure = lines.flatMap((line, index) => DIFF_MARKER.test(line) || /^(?:--- |\+\+\+ )/.test(line) ? [index] : []);
-    const changes = lines.flatMap((line, index) => /^[+-]/.test(line) && !/^(?:\+\+\+ |--- )/.test(line) ? [index] : []);
+    const structure = matchingLines(lines, line => DIFF_MARKER.test(line) || /^(?:--- |\+\+\+ )/.test(line));
+    const changes = matchingLines(lines, line => /^[+-]/.test(line) && !/^(?:\+\+\+ |--- )/.test(line));
     addSome(chosen, structure, 10); addSome(chosen, structure, 10, true);
     addSome(chosen, diagnostics, 10); addSome(chosen, diagnostics, 10, true);
     addSome(chosen, changes, 8); addSome(chosen, changes, 8, true);
-    addSome(chosen, lines.map((_, index) => index), 3);
-    addSome(chosen, lines.map((_, index) => index), 3, true);
+    addEdges(chosen, lines.length, 3, 3);
   } else if (format === 'search') {
-    const hits = lines.flatMap((line, index) => SEARCH_LINE.test(line) || SEARCH_SUMMARY.test(line) ? [index] : []);
-    const summary = lines.flatMap((line, index) => SEARCH_SUMMARY.test(line) ? [index] : []);
+    const hits = matchingLines(lines, line => SEARCH_LINE.test(line) || SEARCH_SUMMARY.test(line));
+    const summary = matchingLines(lines, line => SEARCH_SUMMARY.test(line));
     addSome(chosen, summary, 8);
     addSome(chosen, hits, 14); addSome(chosen, hits, 14, true);
     addSome(chosen, diagnostics, 8); addSome(chosen, diagnostics, 8, true);
-    addSome(chosen, lines.map((_, index) => index), 2);
-    addSome(chosen, lines.map((_, index) => index), 2, true);
+    addEdges(chosen, lines.length, 2, 2);
   } else {
-    addSome(chosen, lines.map((_, index) => index), 8);
-    addSome(chosen, lines.map((_, index) => index), 12, true);
+    addEdges(chosen, lines.length, 8, 12);
     addSome(chosen, diagnostics, 12); addSome(chosen, diagnostics, 12, true);
   }
   const all = [...chosen].sort((a, b) => a - b);

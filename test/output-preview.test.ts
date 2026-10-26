@@ -5,6 +5,33 @@ import { previewOutput } from '../src/output-preview.ts';
 const savings = (preview: ReturnType<typeof previewOutput>) =>
   Math.round((1 - preview.previewBytes / preview.originalBytes) * 100);
 
+test('large previews avoid full-size mapped index arrays while retaining edge diagnostics', () => {
+  const lines = Array.from({ length: 4000 }, (_, i) => `Compiling synthetic module ${i}`);
+  lines[0] = 'warning: first diagnostic';
+  lines[3999] = 'error: last diagnostic';
+  const text = lines.join('\n');
+  let mappedLines = 0;
+  const map = Array.prototype.map, flatMap = Array.prototype.flatMap;
+  // Synchronous instrumentation; restore the built-ins before assertions or another test can run.
+  Array.prototype.map = function (this: unknown[], ...args) {
+    if (this.length >= lines.length) mappedLines += this.length;
+    return Reflect.apply(map, this, args);
+  };
+  Array.prototype.flatMap = function (this: unknown[], ...args) {
+    if (this.length >= lines.length) mappedLines += this.length;
+    return Reflect.apply(flatMap, this, args);
+  };
+  let preview: ReturnType<typeof previewOutput>;
+  try { preview = previewOutput(text); }
+  finally { Array.prototype.map = map; Array.prototype.flatMap = flatMap; }
+  assert.equal(mappedLines, 0, 'line sampling must not map the whole source into temporary index arrays');
+  assert.equal(preview.format, 'build/log');
+  assert.equal(preview.diagnosticMatches, 2);
+  assert.match(preview.text, /1: warning: first diagnostic/);
+  assert.match(preview.text, /4000: error: last diagnostic/);
+  assert.equal(preview.omittedLines, 3980);
+});
+
 test('JSON preview surfaces diagnostic fields and reports measured byte savings', () => {
   const original = JSON.stringify({
     status: 'failed',
