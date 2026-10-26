@@ -2,8 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Model, Tool } from '@earendil-works/pi-ai';
+import { readFileSync } from 'node:fs';
 import { stream } from '@earendil-works/pi-ai/api/anthropic-messages';
-import { StableHead } from '../src/stable-head.ts';
+import { stream as codexStream } from '@earendil-works/pi-ai/api/openai-codex-responses';
+import { nativeHead, StableHead } from '../src/stable-head.ts';
 import { cachePayload } from '../src/cache.ts';
 
 const tool = (name: string, description = name): Tool => ({ name, description, parameters: { type: 'object', properties: {} } as Tool['parameters'] });
@@ -111,4 +113,36 @@ test('the head is rewritten when its entry cannot be read anyway: cold cache, an
     assert.deepEqual(head.apply(built(WEB, []), options(1, later)), built(WEB, []), JSON.stringify(later));
     if (!later.native) assert.deepEqual(head.apply(built(WEB, [], PROMPT()), options(2))[0], built(WEB, [])[0], 'the rewritten head is the new base');
   }
+});
+
+/** The failover model as Pi's catalog ships it: later developer messages and anchored tool additions, but no Anthropic tool blocks. */
+const codexModel = (() => {
+  const catalog = JSON.parse(readFileSync(new URL('../node_modules/@earendil-works/pi-ai/dist/providers/data/openai-codex.json', import.meta.url), 'utf8')) as
+    Record<string, Record<string, Model<'openai-codex-responses'>>>;
+  return catalog['openai-codex-responses']['chat:gpt-6.1-sol'];
+})();
+/** A token shaped like a ChatGPT login (the account id is all Pi reads from it); nothing leaves the process. */
+const codexToken = ['e30', Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'offline' } })).toString('base64url'), 'x'].join('.');
+async function codexWire(messages: AgentMessage[]) {
+  let body: { instructions: string; tools?: { name: string }[]; input: Record<string, unknown>[] } | undefined;
+  const events = codexStream(codexModel, { messages } as never, { apiKey: codexToken, onPayload: (payload: unknown) => { body = structuredClone(payload) as typeof body; throw new Error('offline'); } });
+  for await (const _event of events) { /* drain until Pi reports the offline error */ }
+  assert.ok(body, 'Pi built a request');
+  return body;
+}
+
+test('on the Codex failover model an AGENTS.md edit and an enabled tool keep the cached instructions and tool list', async () => {
+  assert.ok(codexModel?.compat, 'gpt-6.1-sol is in Pi\'s catalog');
+  const head = new StableHead();
+  const at = (epoch: number, sections = { instructions: OLD }) =>
+    options(epoch, { model: 'openai-codex/gpt-6.1-sol', native: nativeHead(codexModel.compat as Record<string, unknown>), sections });
+  const first = await codexWire(head.apply(built(BASE, call('a', 2)), at(1)));
+  const next = await codexWire(head.apply(built(WEB, call('b', 5), PROMPT(NEW)), at(2, { instructions: NEW })));
+  assert.equal(next.instructions, first.instructions, 'the instructions the cache entry was written with');
+  assert.deepEqual(next.tools?.map(t => t.name), first.tools?.map(t => t.name), 'the tool list the cache entry was written with');
+  // A new turn sends a new run after the view; the view itself is the cached prefix.
+  assert.deepEqual(next.input[0], first.input[0], 'the view stays first');
+  const added = next.input.find(item => item.type === 'additional_tools') as { tools: { name: string }[] } | undefined;
+  assert.deepEqual(added?.tools.map(t => t.name), ['web_search'], 'the new tool arrives as an anchored addition');
+  assert.ok(next.input.some(item => item.role === 'developer' && String(item.content ?? '').includes('new rules')), 'the edited section follows the view');
 });

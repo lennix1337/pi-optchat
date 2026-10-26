@@ -14,7 +14,7 @@ const isSaved = (value: unknown): value is SavedHead => {
 export interface HeadOptions {
   /** `provider/id`: another model has no entry to keep. */
   model: string;
-  /** The model takes later system messages with tool changes in place (Pi's `supportsMidConvo*` compat). */
+  /** The model takes later system messages in place ({@link nativeHead}). */
   native: boolean;
   /** The prefix's entry has expired: rewriting the head costs nothing more. */
   cold: boolean;
@@ -23,6 +23,13 @@ export interface HeadOptions {
   /** Pi's current prompt sections, replayed from the session's system messages. */
   sections: Sections;
 }
+
+/**
+ * Whether Pi sends this model later system messages in place, so the head can stay as its cache entry was written. Tool
+ * changes need no flag of their own: Pi sends them natively where the API allows (Anthropic tool blocks, Responses
+ * `additional_tools`) and otherwise falls back to the current tool list, which the head would have sent anyway.
+ */
+export const nativeHead = (compat: Readonly<Record<string, unknown>>) => compat.supportsMidConvoSystemMessages === true;
 
 const text = (content: SystemMessage['content']) => typeof content === 'string' ? content : content.map(block => block.text).join('');
 const holdsView = (message: AgentMessage) => (message.role === 'user' || message.role === 'custom') && Array.isArray(message.content)

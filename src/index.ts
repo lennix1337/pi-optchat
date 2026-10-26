@@ -15,7 +15,7 @@ import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProf
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, coldAfter, prefixRetention, record, ViewEntries } from './cache.ts';
-import { StableHead, type SavedHead } from './stable-head.ts';
+import { nativeHead, StableHead, type SavedHead } from './stable-head.ts';
 import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
@@ -641,7 +641,7 @@ export default function optchat(pi: ExtensionAPI) {
       const compat: Record<string, unknown> = record(ctx.model?.compat) ? ctx.model.compat : {};
       const messages = stableHead.apply(
         budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine, focusView),
-        { model: `${ctx.model?.provider}/${ctx.model?.id}`, native: compat.supportsMidConvoSystemMessages === true && compat.supportsMidConvoToolChanges === true,
+        { model: `${ctx.model?.provider}/${ctx.model?.id}`, native: nativeHead(compat),
           cold: lastRequestAt === undefined || Date.now() - lastRequestAt >= coldAfter(ctx.model), epoch: viewEpoch,
           sections: getCurrentSystemMessage(event.messages)?.sections ?? {} });
       const head = stableHead.saved();
