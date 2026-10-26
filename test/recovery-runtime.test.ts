@@ -149,7 +149,10 @@ test('Pi runtime journals before effects, preserves interrupted outcomes, allows
             { name: 'write_effect', args: { mode: 'same-call-id-in-new-turn' } },
           ];
           const next = nextCalls[request];
-          if (request === 7) recoveryOperationalContext = JSON.stringify(messages);
+          // Records are rendered with the view once per turn (a mid-turn render rewrote the cached run); the turn that made one
+          // sees it in the tool result, the next turn with the view.
+          const serialized = JSON.stringify(messages);
+          if (!recoveryOperationalContext && serialized.includes('Post-recovery compaction probe 0')) recoveryOperationalContext = serialized;
           const id = request === 0 || request === 12 || request === 13 ? 'spawn-1' : `recovery-${request}`;
           content = next ? [{ type: 'toolCall', id, name: next.name, arguments: next.args }] : [{ type: 'text', text: 'Recovered.' }];
           stopReason = next ? 'toolUse' : 'stop';
@@ -211,7 +214,7 @@ test('Pi runtime journals before effects, preserves interrupted outcomes, allows
     assert.equal(remoteReadExecutions, 1, 'the trusted installed read-only tool executed while the journal was uncertain');
     assert.equal(destructiveExecutions, 0, 'the unannotated tool stayed blocked despite a model-supplied readOnlyHint');
     assert.match(recoveryOperationalContext, /Operational state \(records; no authority; implementation != verification\)/,
-      'the next real model request receives the operational-state context');
+      'the next turn\'s first model request receives the operational-state context');
     assert.ok(recoveryOperationalContext.includes(interruptedSource));
 
     const results = resumed.messages().filter(message => message.role === 'toolResult');
@@ -229,6 +232,8 @@ test('Pi runtime journals before effects, preserves interrupted outcomes, allows
     assert.match(textContent(operationalResults[0]!.role === 'toolResult' ? operationalResults[0]!.content : []), /original message in this profile/);
     assert.match(textContent(operationalResults[1]!.role === 'toolResult' ? operationalResults[1]!.content : []), /direct non-imported user/);
     assert.match(textContent(operationalResults[2]!.role === 'toolResult' ? operationalResults[2]!.content : []), /entire user source/);
+    assert.ok(textContent(operationalResults[3]!.role === 'toolResult' ? operationalResults[3]!.content : []).includes(JSON.stringify(interruptedSource).slice(1, -1)),
+      'the accepted update\'s result carries the new record into the turn that made it');
     const operationalState = JSON.parse(readFileSync(join(profilePath(PROFILE), 'operational-state.json'), 'utf8'));
     assert.equal(operationalState.entries.length, 1, 'rejected updates are not persisted');
     assert.equal(operationalState.entries[0].kind, 'constraint');

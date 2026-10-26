@@ -137,6 +137,9 @@ export default function optchat(pi: ExtensionAPI) {
   let savedHead: SavedHead | undefined;
   /** Counts view captures (turn starts and refreshes): after one, the request is new from the view on. */
   let viewEpoch = 0;
+  /** The operational records as rendered at the view's capture. They sit in the message that holds the view, so re-rendering
+   * them mid-turn rewrote the turn's whole run; a record made since then is in its operational_state result. */
+  let records: { epoch: number; text: string } | undefined;
   let prompt = '';
   /** A compaction is a call like a turn (recipe §4): once a turn has built them, it gets the turns' system prompt and tools. */
   const shared = () => {
@@ -280,6 +283,7 @@ export default function optchat(pi: ExtensionAPI) {
     } finally {
       await old.memory.close(); await old.unlock(); active = undefined;
       run = []; previous = []; logged = 0; keep = 0; view = undefined; focusView = undefined; lastRequestAt = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
+      records = undefined;
       untitle?.(); untitle = undefined; title.clear(); working = false;
     }
   };
@@ -614,8 +618,11 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(PROMPT.slice(0, 40))) prompt = current;
       const system = stateless(promptFor(prompt, a.config));
-      const operational = readOperationalState(join(a.dir, 'operational-state.json'));
-      system.state = [system.state, a.operations.context(), operational.entries.length ? renderOperationalContext(operational) : ''].filter(Boolean).join('\n\n');
+      if (records?.epoch !== viewEpoch) {
+        const operational = readOperationalState(join(a.dir, 'operational-state.json'));
+        records = { epoch: viewEpoch, text: operational.entries.length ? renderOperationalContext(operational) : '' };
+      }
+      system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
       const statusLine = atWork(a.children.working, runningShells(shells));

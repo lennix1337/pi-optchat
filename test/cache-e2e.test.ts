@@ -26,7 +26,7 @@ after(() => {
 });
 
 type Block = Record<string, unknown>;
-interface Usage { read: number; write: number; input: number; marks: number; tools: string; status: number; error?: string }
+interface Usage { read: number; write: number; input: number; marks: number; tools: string; status: number; error?: string; body?: string }
 const tokens = (block: Block) => Math.ceil(JSON.stringify(block).length / 4);
 /** Anthropic's prompt cache as documented: tools, then system, then messages, block by block. */
 class SimulatedCache {
@@ -57,17 +57,18 @@ class SimulatedCache {
     for (const mark of marks) this.entries.add(chain[mark]);
     const size = (from: number, to: number) => { let sum = 0; for (const b of blocks.slice(from, to)) sum += tokens(b.block); return sum; };
     const end = marks.length ? marks.at(-1)! + 1 : 0;
-    const usage = { read: size(0, found + 1), write: size(found + 1, end), input: size(Math.max(end, found + 1), blocks.length), marks: marks.length, tools, status: 200 };
+    const usage = { read: size(0, found + 1), write: size(found + 1, end), input: size(Math.max(end, found + 1), blocks.length), marks: marks.length, tools, status: 200,
+      body: JSON.stringify(body.messages) };
     this.requests.push(usage);
     return usage;
   }
 }
 
 /** The scripted model behind the server: one call to `enable_web` when asked, `n` calls to `noop` for "busy n",
- * one `bash` call sleeping `n` seconds for "wait n", else text. */
+ * one `bash` call sleeping `n` seconds for "wait n", one `operational_state` record for "record state", else text. */
 function reply(body: { messages: { role: string; content: string | Block[] }[] }): { tool?: string; input?: Record<string, unknown>; text?: string } {
   const blocks = (m: { content: string | Block[] }) => typeof m.content === 'string' ? [{ type: 'text', text: m.content }] as Block[] : m.content;
-  const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|wait \d+|question)\s*$/.test(String(b.text))));
+  const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|wait \d+|record state|question)\s*$/.test(String(b.text))));
   const prompt = asked < 0 ? '' : blocks(body.messages[asked]).map(b => String(b.text ?? '')).join('');
   const results = body.messages.slice(asked + 1).flatMap(m => blocks(m).filter(b => b.type === 'tool_result')).length;
   if (/enable web\s*$/.test(prompt) && !results) return { tool: 'enable_web' };
@@ -75,6 +76,8 @@ function reply(body: { messages: { role: string; content: string | Block[] }[] }
   if (busy && results < Number(busy[1])) return { tool: 'noop' };
   const wait = /wait (\d+)\s*$/.exec(prompt);
   if (wait && !results) return { tool: 'bash', input: { command: `sleep ${wait[1]}; echo waited` } };
+  if (/record state\s*$/.test(prompt) && !results)
+    return { tool: 'operational_state', input: { update: { kind: 'decision', text: 'Recorded mid-turn: keep the cached run.', sourceMessageId: '0' } } };
   return { text: 'OK' };
 }
 
@@ -189,6 +192,37 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
       JSON.stringify(diagnostics));
     assert.ok(diagnostics.some(d => d.changedAt === null), `a later request whose view only grew says so: ${JSON.stringify(diagnostics)}`);
     console.log(JSON.stringify({ e2e: 'reload', before: [last.read, last.write], after: [first.read, first.write] }));
+  } finally {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+    await anthropic.close();
+  }
+});
+
+test('real Pi + OptChat: an operational_state record mid-turn keeps the cached run; the next turn shows it with the view', { timeout: 120_000 }, async () => {
+  const anthropic = await simulatedAnthropic();
+  const { session, errors } = await piSession(anthropic, 'cache-state', () => {});
+  const requests = anthropic.cache.requests;
+  try {
+    assert.ok(session.getActiveToolNames().includes('operational_state'));
+    await session.prompt('first question');
+    let from = requests.length;
+    await session.prompt('please record state');
+    const turn = requests.slice(from);
+    assert.equal(turn.length, 2, 'the operational_state call, then the answer after it');
+    const result = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'operational_state');
+    assert.ok(result && result.role === 'toolResult' && !result.isError, JSON.stringify(result));
+    assert.match(JSON.stringify(result.content), /Recorded mid-turn/, 'the tool result carries the new record into this turn');
+    // The record used to be rendered into the message that holds the view, so the turn's whole run after it was written again.
+    assert.ok(turn[1].read >= turn[0].read + turn[0].write,
+      `after the record the request read ${turn[1].read} of the ${turn[0].read + turn[0].write} tokens cached before it`);
+    from = requests.length;
+    await session.prompt('next question');
+    const messages = JSON.parse(requests[from].body!) as { role: string; content: string | Block[] }[];
+    const withView = messages.map(m => typeof m.content === 'string' ? m.content : m.content.map(b => String(b.text ?? '')).join(''))
+      .find(text => text.includes('<chat>'));
+    assert.match(withView ?? '', /Operational state \(records[\s\S]*Recorded mid-turn/, 'the next turn shows the record after the view');
+    assert.deepEqual(requests.filter(r => r.status !== 200), []);
+    assert.deepEqual(errors, []);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
