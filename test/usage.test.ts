@@ -35,6 +35,24 @@ test('measured response latency persists with the provider-reported call and sum
   } finally { removeDir(dir); }
 });
 
+test('the ledger keeps the 1-hour share of cache writes the provider reported, so 1h and 5m writes can be told apart later', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-1h-'));
+  const now = Date.now();
+  const call = (timestamp: number, cacheWrite1h?: number): AssistantMessage => ({ role: 'assistant', content: [{ type: 'text', text: 'ok' }], api: 'anthropic-messages', provider: 'anthropic', model: 'm', stopReason: 'stop', timestamp,
+    usage: { ...emptyUsage(), input: 10, cacheWrite: 900, output: 1, totalTokens: 911, ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }) } });
+  try {
+    const session = SessionManager.inMemory();
+    session.appendMessage(call(now, 600));
+    session.appendMessage(call(now + 1));
+    new UsageLedger(dir).backfill(session.getEntries(), session.getSessionId());
+    const [long, plain] = new UsageLedger(dir).entries;
+    assert.equal(long.usage.cacheWrite1h, 600);
+    assert.equal('cacheWrite1h' in plain.usage, false, 'a provider that reports no 1h share gets no invented zero');
+    appendFileSync(join(dir, 'usage.jsonl'), JSON.stringify({ ...long, id: 'bad-1h', usage: { ...long.usage, cacheWrite1h: -1 } }) + '\n');
+    assert.equal(new UsageLedger(dir).entries.length, 2, 'a negative 1h share is an invalid record');
+  } finally { removeDir(dir); }
+});
+
 test('usage keeps roles/sessions separate, includes caches, and survives replay and a torn legacy record', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-'));
   const now = Date.now();

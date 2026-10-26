@@ -35,7 +35,8 @@ const errorCategories = ['cancelled', 'timeout', 'connection_failure', 'stream_i
 function validUsage(value: unknown): value is Usage {
   if (!record(value) || !record(value.cost)) return false;
   const cost = value.cost;
-  return usageKeys.every(k => nonnegative(value[k])) && costKeys.every(k => nonnegative(cost[k]));
+  return usageKeys.every(k => nonnegative(value[k])) && costKeys.every(k => nonnegative(cost[k]))
+    && (value.cacheWrite1h === undefined || nonnegative(value.cacheWrite1h));
 }
 const optionalString = (value: unknown) => value === undefined || typeof value === 'string';
 const latencyKeys = ['firstMs', 'responseMs'] as const;
@@ -68,7 +69,7 @@ function backfilledOverhead(entry: SessionEntry, session: string, role: 'main' |
 function copyUsage(value: Usage): Usage {
   return {
     input: value.input, output: value.output, cacheRead: value.cacheRead, cacheWrite: value.cacheWrite,
-    totalTokens: value.totalTokens,
+    totalTokens: value.totalTokens, ...(value.cacheWrite1h === undefined ? {} : { cacheWrite1h: value.cacheWrite1h }),
     cost: { input: value.cost.input, output: value.cost.output, cacheRead: value.cost.cacheRead, cacheWrite: value.cost.cacheWrite, total: value.cost.total },
   };
 }
