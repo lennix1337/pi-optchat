@@ -22,10 +22,20 @@ function lineRange(text: string, startLine: number, endLine: number) {
   if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine
     || endLine - startLine + 1 > OUTPUT_QUERY_MAX_LINES)
     throw new Error(`Invalid line range: use 1-based startLine <= endLine, at most ${OUTPUT_QUERY_MAX_LINES} lines per query`);
-  const lines = text.split(/\r\n|\n|\r/);
-  if (endLine > lines.length) throw new Error(`Line range exceeds output length (${lines.length} lines); use endLine ${lines.length} or less`);
-  const selected = lines.slice(startLine - 1, endLine).map((line, index) => `${startLine + index}: ${line}`).join('\n');
-  return boundedResult(`[Lines ${startLine}-${endLine} of ${lines.length}; 1-based inclusive]\n${selected}`, 'fewer or shorter lines');
+  // Count every line for the header, but retain offsets only for the requested range.
+  const breaks = /\r\n|\n|\r/g;
+  let count = 1, from = 0, to = text.length;
+  while (breaks.test(text)) {
+    if (count === endLine) {
+      to = breaks.lastIndex - 1;
+      if (text[to] === '\n' && text[to - 1] === '\r') to--;
+    }
+    count++;
+    if (count === startLine) from = breaks.lastIndex;
+  }
+  if (endLine > count) throw new Error(`Line range exceeds output length (${count} lines); use endLine ${count} or less`);
+  const selected = text.slice(from, to).split(/\r\n|\n|\r/).map((line, index) => `${startLine + index}: ${line}`).join('\n');
+  return boundedResult(`[Lines ${startLine}-${endLine} of ${count}; 1-based inclusive]\n${selected}`, 'fewer or shorter lines');
 }
 
 function invalidPath(): never {

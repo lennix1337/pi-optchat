@@ -48,6 +48,29 @@ test('findText finds literal text in any case, with the exact original offset, U
   assert.equal(reads.length, 5, 'only the successful finds with a hit report reads');
 }));
 
+test('sigma-only folding keeps exact offsets without rebuilding a per-character map', t => withZoom(async (memory, zoom, reads) => {
+  const text = 'ΟΔΟΣ σ ς 😀 '.repeat(128) + 'END Σ';
+  add(memory, [['user', text]]);
+  const points = t.mock.method(String, 'fromCodePoint');
+  const found = textOf(await zoom({ id: 0, n: 1, findText: 'end σ' }));
+  assert.deepEqual(hitsOf(found).map(hit => hit.at), [text.indexOf('END')]);
+  assert.equal(reads[0].offset, text.indexOf('END') - FIND.context);
+  assert.equal(textOf(await zoom({ id: 0, n: 1, findText: 'οδοσ' })).startsWith('8+ matches'), true);
+  assert.equal(textOf(await zoom({ id: 0, n: 1, findText: 'ς' })).startsWith('8+ matches'), true);
+  assert.equal(points.mock.callCount(), 0, 'length-preserving sigma folding needs no code-point map');
+}));
+
+test('sigma normalization preserves lowercase final sigma and expanding Unicode offsets', () => withZoom(async (memory, zoom) => {
+  for (const prefix of ['', 'İ😀 ']) {
+    const text = prefix + 'ΟΣ ος οσ Σ ς σ';
+    memory.append('user', text);
+    const id = memory.root.length - 1;
+    for (const [needle, positions] of [['οσ', [0, 6]], ['ος', [3]], ['σ', [1, 7, 9, 13]], ['ς', [4, 11]]] as const) {
+      assert.deepEqual(hitsOf(textOf(await zoom({ id, n: 1, findText: needle }))).map(hit => hit.at), positions.map(at => prefix.length + at));
+    }
+  }
+}));
+
 test('an excerpt never splits a surrogate pair and the callback gets its exact source location', () => withZoom(async (memory, zoom, reads) => {
   const left = `${'q'.repeat(10)}😀${'p'.repeat(FIND.context - 1)}NEEDLE${'p'.repeat(FIND.context - 1)}😀 tail`;
   add(memory, [['user', left]]);

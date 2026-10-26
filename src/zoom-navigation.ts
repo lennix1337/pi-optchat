@@ -19,11 +19,11 @@ const quote = (text: string) => JSON.stringify(text);
 
 interface Folded { text: string; start(index: number): number; end(index: number): number }
 
-/** Lowercases text and maps folded indexes back to original ones. Only U+0130 lengthens when lowered, and whole-string
- * lowering of a final sigma depends on its neighbours, so those texts are lowered code point by code point. */
+/** Lowercases text and maps folded indexes back to original ones. Normalize capital sigma first to avoid contextual final
+ * sigma; only length-changing folds (U+0130) need the code-point map. Existing lowercase final sigma stays distinct. */
 function fold(text: string): Folded {
-  const lower = text.toLowerCase();
-  if (lower.length === text.length && !text.includes('\u03a3')) return { text: lower, start: index => index, end: index => index };
+  const lower = (text.includes('\u03a3') ? text.replaceAll('\u03a3', '\u03c3') : text).toLowerCase();
+  if (lower.length === text.length) return { text: lower, start: index => index, end: index => index };
   let folded = '';
   const origin: number[] = [];
   for (let at = 0; at < text.length;) {

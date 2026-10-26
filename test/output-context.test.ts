@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { utimesSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OutputStore } from '../src/output-store.ts';
 import { OutputContext, outputReadTool } from '../src/output-context.ts';
@@ -75,6 +75,83 @@ test('unverifiable profile records still count against shared quota', () => {
     const ref = one.put('a'.repeat(80));
     writeFileSync(join(one.directory, `${ref}.json`), 'invalid'.repeat(40));
     assert.throws(() => new OutputStore(f.dir, 'two', { maxBytes: 200 }).put('b'.repeat(80)), /full/);
+  } finally { f.close(); }
+});
+test('quota scans reuse validated live metadata, but reads always validate the original', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'one');
+    const text = 'retained-original '.repeat(1000), ref = store.put(text);
+    store.put('prime retention scan');
+    let parses = 0;
+    const parse = JSON.parse;
+    const tracked = mock.method(JSON, 'parse', (source: string, ...args: unknown[]) => {
+      if (source.includes(text)) parses++;
+      return Reflect.apply(parse, JSON, [source, ...args]);
+    });
+    try {
+      store.put('next tool result');
+      assert.equal(parses, 0, 'unchanged live originals must not be decoded again for quota accounting');
+      assert.equal(store.read(ref), text);
+      assert.equal(parses, 1, 'retrieval must still validate the complete original');
+    } finally { tracked.mock.restore(); }
+  } finally { f.close(); }
+});
+test('retention metadata notices external replacements, quota changes and expiry without trusting mtime', () => {
+  const f = fixture(); let now = 1000;
+  try {
+    const store = new OutputStore(f.dir, 'one', { ttlMs: 100, maxBytes: 2000, now: () => now });
+    const ref = store.put('original'), file = join(store.directory, `${ref}.json`);
+    store.put('prime retention scan');
+    const before = statSync(file), saved = readFileSync(file, 'utf8');
+    writeFileSync(file, saved.replace('original', 'tampered'));
+    utimesSync(file, before.atime, before.mtime);
+    store.put('after same-size overwrite');
+    assert.throws(() => store.read(ref), /integrity/);
+    now += 101;
+    store.put('expiry must preserve invalid evidence');
+    assert.equal(readFileSync(file, 'utf8'), saved.replace('original', 'tampered'));
+    writeFileSync(`${file}.new`, saved);
+    renameSync(`${file}.new`, file);
+    store.put('expire restored valid original');
+    assert.throws(() => store.read(ref), /unavailable/);
+    const external = new OutputStore(f.dir, 'two', { now: () => now });
+    external.put('x'.repeat(1000));
+    assert.throws(() => store.put('y'.repeat(1000)), /full/);
+  } finally { f.close(); }
+});
+test('live retention metadata invalidates when another writer restores mtime on an older valid record', () => {
+  const f = fixture(); let now = 2000;
+  try {
+    const store = new OutputStore(f.dir, 'one', { ttlMs: 100, now: () => now });
+    const ref = store.put('valid original'), file = join(store.directory, `${ref}.json`);
+    store.put('prime retention scan');
+    const stat = statSync(file), source = readFileSync(file, 'utf8');
+    writeFileSync(file, source.replace('"created":2000', '"created":1000'));
+    utimesSync(file, stat.atime, stat.mtime);
+    now += 50;
+    store.put('cleanup externally aged record');
+    assert.throws(() => store.read(ref), /unavailable/);
+  } finally { f.close(); }
+});
+test('expiry revalidates previously cached records before deleting them', () => {
+  const f = fixture(); let now = 1000;
+  try {
+    const store = new OutputStore(f.dir, 'one', { ttlMs: 100, now: () => now });
+    const ref = store.put('cached original');
+    store.put('prime retention scan');
+    const parse = JSON.parse;
+    const tracked = mock.method(JSON, 'parse', (source: string, ...args: unknown[]) => {
+      if (source.includes('cached original')) throw new Error('injected unreadable record');
+      return Reflect.apply(parse, JSON, [source, ...args]);
+    });
+    try {
+      now += 101;
+      store.put('cleanup');
+      assert.match(readFileSync(join(store.directory, `${ref}.json`), 'utf8'), /cached original/);
+    } finally { tracked.mock.restore(); }
+    store.put('cleanup after validation recovers');
+    assert.throws(() => store.read(ref), /unavailable/);
   } finally { f.close(); }
 });
 test('omitted diagnostic matches remain recoverable, never silently treated as success', () => {

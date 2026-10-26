@@ -23,7 +23,15 @@ Artifacts are local to `PROFILE/outputs/<hashed-session>/`, with private file/di
 
 Retention is seven days, with expired files cleaned lazily on subsequent writes. Originals are limited to 8 MiB each and the on-disk records share a 64 MiB profile quota; live references are not evicted to admit new ones. Local transcript/memory originals remain independent of artifact retention. Missing/corrupt/expired artifacts fail explicitly; use the original session or memory zoom. Storage is not a sandbox or an encrypted vault.
 
+Quota scans keep up to 1,024 validated retention timestamps in memory, keyed by file identity, size and nanosecond modification/change times. Unchanged live records need not be reread on every new shell result; scans still enumerate all sessions and count current file sizes. Changed files are revalidated, and expiration always requires a full record validation before deletion. Retrieval and durable-write read-back never use this metadata cache. The first scan after opening/reload is still cold; no output format or on-disk index changes are needed. Offline full-projection timings and limits are recorded in `plans/context-improvements-validation.md` (retained-output write speed).
+
 Line sampling for output previews scans matches directly and selects head/tail indexes without mapping the entire source into temporary arrays. This preserves the selected lines, order, diagnostic counts and metadata. Paired synthetic measurements are recorded in `plans/context-improvements-validation.md` (output-preview speed); they measure local preview generation, not provider response time.
+
+Line-range queries over saved originals scan delimiters to count all lines, then split only the selected range (at most 200 lines). Labels, mixed line endings, trailing empty lines and byte limits are unchanged; session/expiry/integrity checks still run on every read. Paired offline measurements in `plans/context-improvements-validation.md` separate selection cost from stored-file reading; they do not measure provider latency.
+
+## Literal zoom lookup
+
+Case-insensitive `zoom(findText)` normalizes capital sigma before native lowercasing, avoiding a per-character offset map when text length stays unchanged. Existing lowercase final sigma remains distinct; length-expanding dotted-I text retains the original mapping path. Match offsets, excerpts, search bounds and continuation calls are unchanged. Offline results in `plans/context-improvements-validation.md` concern this specific Unicode case, not faster ordinary ASCII lookup or provider responses.
 
 ## Prompt budget and latency diagnostics
 

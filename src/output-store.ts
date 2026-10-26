@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, type BigIntStats } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWrite } from './store.ts';
 import { runPage } from './tools.ts';
@@ -16,6 +16,7 @@ export class OutputStore {
   readonly now: () => number;
   private readonly maxBytes: number;
   private readonly maxResultBytes: number;
+  private readonly retention = new Map<string, { stat: BigIntStats; created: number }>();
   constructor(profile: string, session: string, limits: OutputLimits = {}) {
     this.root = join(profile, 'outputs');
     this.directory = join(this.root, hash(session));
@@ -28,6 +29,19 @@ export class OutputStore {
     if (!/^[a-f0-9]{64}$/.test(ref)) throw new Error('Invalid output reference');
     return join(this.directory, `${ref}.json`);
   }
+  /** Only quota scans reuse metadata. Retrieval always validates the full record, and deletion always revalidates expiry. */
+  private expired(file: string, ref: string, stat: BigIntStats) {
+    const known = this.retention.get(file), now = this.now();
+    if (known && now - known.created <= this.ttlMs
+      && (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'] as const).every(key => known.stat[key] === stat[key])) return false;
+    this.retention.delete(file);
+    const { created } = this.record(file, ref);
+    if (now - created > this.ttlMs) return true;
+    // Bound metadata for profiles with many tiny outputs; evicted entries are simply validated again.
+    if (this.retention.size >= 1024) this.retention.delete(this.retention.keys().next().value!);
+    this.retention.set(file, { stat, created });
+    return false;
+  }
   /** Never evict unexpired references just to admit a new output. */
   put(text: string) {
     if (Buffer.byteLength(text) > this.maxResultBytes) throw new Error('Output exceeds storage limit');
@@ -38,14 +52,14 @@ export class OutputStore {
       const dir = join(this.root, scope);
       if (!lstatSync(dir).isDirectory()) continue;
       for (const name of readdirSync(dir).filter(name => /^[a-f0-9]{64}\.json$/.test(name))) {
-        const file = join(dir, name), stat = lstatSync(file);
+        const file = join(dir, name), stat = lstatSync(file, { bigint: true });
         if (!stat.isFile()) throw new Error('Invalid output storage entry');
         // Restores can change mtime independently of retention. Only validated records may expire.
         let expired = false;
-        try { expired = this.now() - this.record(file, name.slice(0, -5)).created > this.ttlMs; }
+        try { expired = this.expired(file, name.slice(0, -5), stat); }
         catch { /* Keep unverifiable evidence and count it against the quota. */ }
         if (expired) rmSync(file);
-        else used += stat.size;
+        else used += Number(stat.size);
       }
     }
     const ref = hash(text), file = this.file(ref);
