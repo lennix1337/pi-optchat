@@ -474,6 +474,39 @@ test('a view that jumps past the 20-block lookback still reads the last call\'s 
   assert.deepEqual((cachePayload(plain, { prefix: 'long' }) as typeof plain).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []), usual(1640));
 });
 
+test('each call reports where its view first differs from the last call\'s, so a cache miss can be told apart: rewrite, head change or lookback', () => {
+  const line = '0+1|summary of a decision\n';
+  let clock = 0;
+  const reports: unknown[] = [];
+  const entries = new ViewEntries(() => clock, report => reports.push(report));
+  const call = (lines: number, options: { top?: string; system?: string } = {}) => {
+    clock += 1000;
+    const payload = { model: 'claude-opus-5-5', system: options.system ?? 'system', tools: [{ name: 'zoom' }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + (options.top ?? '') + line.repeat(lines) + '</chat>' }, { type: 'text', text: 'question' }] }] };
+    cachePayload(payload, { prefix: 'long', entries });
+    return entries.last!;
+  };
+  const first = call(400);
+  assert.equal(first.blocks, splitView('<chat>\n' + line.repeat(400) + '</chat>').length);
+  assert.equal(first.changedAt, undefined, 'the first call has nothing to compare');
+  assert.equal(call(480).changedAt, null, 'a view that only grew at its end keeps every block');
+  const marks = call(480).marks;
+  assert.equal(marks.length, 2, 'the view\'s two marks are reported');
+  assert.equal(call(400, { top: '0+1024|merged summary\n' }).changedAt, 0, 'a batch merge near the top rewrites from its first block');
+  assert.equal(call(400, { top: '0+1024|merged summary\n', system: 'new system' }).headChanged, true, 'a changed system prompt is told apart');
+  const lines = line.repeat(200) + '0+2|a later merge\n' + line.repeat(199);
+  call(400);
+  const payload = { model: 'claude-opus-5-5', system: 'system', tools: [{ name: 'zoom' }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + lines + '</chat>' }, { type: 'text', text: 'question' }] }] };
+  cachePayload(payload, { prefix: 'long', entries });
+  assert.equal(entries.last!.changedAt, Math.floor((1 + 200) / 4), 'the first block holding the changed line');
+  assert.equal(entries.last!.headChanged, false);
+  assert.equal(entries.last!.model, 'claude-opus-5-5');
+  assert.equal(entries.last!.gapMs, 0, 'time since the last call');
+  assert.equal(first.gapMs, undefined);
+  assert.equal(reports.length, 7, 'every call is reported to the sink (cache-diagnostics.jsonl)');
+});
+
 test('the most due pair is the one that ended longest ago in its own line size, so the view merges as Taelin\'s rollback push', () => {
   // Recipe §3.2: at T=10 the old rule, measured from a pair's first message, merged 0-7; push merges 8-9.
   assert.equal(mostDue([{ l: 2, i: 0 }, { l: 2, i: 1 }, { l: 0, i: 8 }, { l: 0, i: 9 }], 10, () => true), 2);

@@ -10,7 +10,7 @@ import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
-import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
+import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
@@ -133,7 +133,7 @@ export default function optchat(pi: ExtensionAPI) {
   /** When this profile last sent the main model a request: a turn starting long after it may merge the view (DEFER). */
   let lastRequestAt: number | undefined;
   /** The cache entries the main requests' view marks wrote, and the system head those requests keep (see their modules). */
-  const viewEntries = new ViewEntries(), stableHead = new StableHead();
+  const viewEntries = new ViewEntries(undefined, report => { if (active) writeCacheDiagnostic(active.dir, report); }), stableHead = new StableHead();
   let savedHead: SavedHead | undefined;
   /** Counts view captures (turn starts and refreshes): after one, the request is new from the view on. */
   let viewEpoch = 0;

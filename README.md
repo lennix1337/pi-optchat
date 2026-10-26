@@ -322,6 +322,7 @@ Profile data lives in `~/.optchat/profiles/<name>/` (override the root with `OPT
 | `operational-state.json` | Bounded structured facts, evidence references and supersession history |
 | `operations.json` | Tool intents, observed responses and recovery reconciliation (not proof of external success) |
 | `recovery-diagnostics.jsonl` | Rotating metadata-only recovery incidents, excluded from memory Git checkpoints |
+| `cache-diagnostics.jsonl` | One line per main Anthropic request: view blocks, marks, time since the last request, and where the view first differs from the last request's (`changedAt`: a block index for a rewrite, `null` when it only grew; `headChanged` for system/tools/model). Joined to `usage.jsonl` by date, it tells a cache miss's cause. Rotating at 1 MB, no message text, excluded from memory Git checkpoints |
 | `memory.html` | Snapshot from `/optchat browse` |
 
 Each profile folder is a local Git repository, committed after each turn and on clean shutdown (memory and config; not runs, HTML, or usage). It has no remote, so it is not a backup. To back up, copy the folder while Pi is closed.

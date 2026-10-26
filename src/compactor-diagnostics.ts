@@ -215,6 +215,12 @@ function writeProjectedDiagnostic<T>(directory: string, name: string, value: T, 
 /** Metadata-only compactor diagnostics; each JSONL stream retains one rotated 1 MB file. */
 export const writeCompactorDiagnostic = (directory: string, diagnostic: CompactorDiagnostic) =>
   writeProjectedDiagnostic(directory, 'compactor-diagnostics.jsonl', diagnostic, sanitizeCompactorDiagnostic);
+/** One main request's view against the last one's (cache.ts ViewReport), joined to usage.jsonl by date. It runs while the request
+ * is built, so a failed write is reported and the request goes on. */
+export function writeCacheDiagnostic(directory: string, report: object) {
+  try { appendBoundedDiagnostic(directory, 'cache-diagnostics.jsonl', report); }
+  catch { console.error('OptChat could not write cache-diagnostics.jsonl; requests are unchanged.'); }
+}
 /** Persist a metadata-only main recovery event for correlation with attempts and session journals. */
 export const writeRecoveryDiagnostic = (directory: string, event: RecoveryIncidentEvent) =>
   writeProjectedDiagnostic(directory, 'recovery-diagnostics.jsonl', event, sanitizeRecoveryDiagnostic);

@@ -40,12 +40,32 @@ const TTL_MS = { '5m': 300_000, '1h': 3_600_000 } as const;
 /** Forget an entry a little before Anthropic does, so a mark is never put on one already gone. */
 const TTL_MARGIN_MS = 15_000;
 const ENTRIES = 64;
+/** A call's view against the last call's, so a cache miss in usage.jsonl can be told apart: the view rewritten from `changedAt`
+ * (a batch merge near the top), a changed head (system, tools, model, thinking), or a view that only grew (null: lookback or expiry). */
+export interface ViewReport { date: string; model?: string; gapMs?: number; blocks: number; changedAt?: number | null; headChanged?: boolean; marks: number[] }
 /** The view blocks earlier calls marked, by a digest of the whole request up to and including the block. When a view grows by
  * more than its marks can look back (a turn moved into memory, a long turn folded in at the next one), the next call puts one
  * mark back on the newest of those blocks still unchanged and alive, and reads that entry instead of writing the view again. */
 export class ViewEntries {
   private readonly entries = new Map<string, { at: number; until: number }>();
-  constructor(private readonly now = () => Date.now()) {}
+  private previous?: { base: string; chain: readonly string[]; time: number };
+  last?: ViewReport;
+  constructor(private readonly now = () => Date.now(), private readonly report?: (report: ViewReport) => void) {}
+  /** Compare this call's view with the last call's: `changedAt` is the first block that differs (null: it only grew). The last
+   * piece is not a whole block (it ends with the view's close), so growth changes it. */
+  observe(base: string, chain: readonly string[], marks: Iterable<number>, model?: unknown) {
+    const before = this.previous, time = this.now();
+    let changedAt: number | null | undefined;
+    if (before) {
+      const whole = Math.min(chain.length, before.chain.length) - 1;
+      const index = chain.findIndex((digest, block) => block < whole && digest !== before.chain[block]);
+      changedAt = index >= 0 ? index : chain.length < before.chain.length ? whole : null;
+    }
+    this.previous = { base, chain, time };
+    this.last = { date: new Date(time).toISOString(), ...(typeof model === 'string' ? { model } : {}), gapMs: before && time - before.time,
+      blocks: chain.length, changedAt, headChanged: before && before.base !== base, marks: [...marks].sort((a, b) => a - b) };
+    this.report?.(this.last);
+  }
   /** The newest block of `chain` (digests by block) an earlier call marked, whose entry still lives. */
   latest(chain: readonly string[]): number | undefined {
     const time = this.now();
@@ -71,9 +91,10 @@ function viewChain(payload: Record<string, unknown>, messages: unknown[], index:
   const before = JSON.stringify([payload.model, payload.thinking, payload.output_config, payload.tools, payload.system, messages.slice(0, index),
     message.content.slice(0, at)], (key, value) => key === 'cache_control' ? undefined : value);
   const chain: string[] = [];
-  let digest = createHash('sha256').update(before).digest('hex');
+  const base = createHash('sha256').update(before).digest('hex');
+  let digest = base;
   for (const piece of pieces) chain.push(digest = createHash('sha256').update(digest).update(piece).digest('hex'));
-  return chain;
+  return { base, chain };
 }
 /** Anthropic's own API takes the 1-hour TTL; other endpoints speaking its protocol may not, so they keep the 5-minute one. */
 export const prefixRetention = (model?: { provider?: string; compat?: unknown }): 'short' | 'long' =>
@@ -119,9 +140,13 @@ export function cachePayload(payload: unknown, options: CacheOptions = {}): unkn
     const at = message.content.findIndex((block: unknown) => record(block) && block.type === 'text' && typeof block.text === 'string' && isView(block.text));
     if (at < 0) continue;
     const pieces = splitView(message.content[at].text);
-    const chain = options.entries && viewChain(payload, messages, index, at, pieces);
+    const digests = options.entries && viewChain(payload, messages, index, at, pieces);
+    const chain = digests?.chain;
     const marks = viewMarks(pieces, offsets, options.entries, chain);
-    if (chain) for (const [block, back] of marks) options.entries!.marked(chain[block], block, viewMark(back, options).ttl ?? '5m');
+    if (digests) {
+      for (const [block, back] of marks) options.entries!.marked(digests.chain[block], block, viewMark(back, options).ttl ?? '5m');
+      options.entries!.observe(digests.base, digests.chain, marks.keys(), payload.model);
+    }
     const blocks = pieces.map((text, j) => {
       const back = marks.get(j);
       return { type: 'text', text, ...(back === undefined ? {} : { cache_control: viewMark(back, options) }) };

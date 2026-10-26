@@ -2,7 +2,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
@@ -182,6 +182,12 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
     assert.ok(first.read > 0, `the first request after /reload read ${first.read} and wrote ${first.write}; the one before it read ${last.read} and wrote ${last.write}`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
     assert.deepEqual(errors, []);
+    // Every request leaves one line saying how its view compares with the last one's, so a miss in usage.jsonl can be explained.
+    const diagnostics = readFileSync(join(profilePath('cache-reload'), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(diagnostics.length, requests.length);
+    assert.ok(diagnostics.every(d => d.blocks > 0 && Array.isArray(d.marks) && d.model === 'claude-sim' && Number.isFinite(Date.parse(d.date))),
+      JSON.stringify(diagnostics));
+    assert.ok(diagnostics.some(d => d.changedAt === null), `a later request whose view only grew says so: ${JSON.stringify(diagnostics)}`);
     console.log(JSON.stringify({ e2e: 'reload', before: [last.read, last.write], after: [first.read, first.write] }));
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
