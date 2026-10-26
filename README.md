@@ -210,7 +210,7 @@ Request budgeting uses Pi's estimate of the assembled prompt, active tool schema
 
 ### Context performance
 
-Large shell results can reach the model as a deterministic preview with a session-scoped, searchable original (`output_read`); canonical shell evidence and the operation journal stay intact. Storage failure falls back to the original. `/optchat-perf` shows numeric request-size and stage-latency diagnostics without an LLM call. Focused child history is an opt-in setting, enabled automatically only for a child model whose price rises past a prompt size; such a child also compacts before that size (see `docs/context-performance.md`).
+Large shell results can reach the model as a deterministic preview with a session-scoped, searchable original (`output_read`); canonical shell evidence and the operation journal stay intact. Storage failure falls back to the original. `/optchat-perf` shows numeric request-size and stage-latency diagnostics without an LLM call, including each tool's own execution time (count, total, average, p50, p90, max per tool name). Focused child history is an opt-in setting, enabled automatically only for a child model whose price rises past a prompt size; such a child also compacts before that size (see `docs/context-performance.md`).
 
 The Agents panel includes an actual `model(thinking)` column (for example `gpt-6-luna(xhigh)`), using effective SDK reasoning levels rather than current profile defaults. [Retention, privacy, offline benchmarks and limitations](docs/context-performance.md).
 
@@ -355,7 +355,7 @@ OptChat follows [Victor Taelin's recipe](https://gist.github.com/VictorTaelin/91
 Where it still differs:
 
 1. **Settings** turn on what the recipe leaves out, all off by default: Previous exchange (your last request and its answer replayed in full with the next turn, left out over the limit), Memory search (a `search` tool over the original messages), a Summary size tolerance above 512 bytes, and Group subagent reports.
-2. **Two more cache marks**, 20 and 40 blocks before the last whole one: Anthropic looks back only 20 blocks from a mark, so with the recipe's single view mark a turn that added more than 80 lines of tool calls made the next turn rewrite the whole view.
+2. **Two more cache marks**, 20 and 40 blocks before the last whole one: Anthropic looks back only 20 blocks from a mark, so with the recipe's single view mark a turn that added more than 80 lines of tool calls made the next turn rewrite the whole view. When the view grows further than those marks reach (a long turn folded in, or moved into memory mid-turn), the older mark goes back on the newest block an earlier call marked whose entry is still alive and unchanged, so that entry is read instead of the view being written again.
 3. **Subagents have their own system prompt** (`src/prompts.ts`), and are built in with Pi's SDK. With Subagent levels above 1 they can delegate further.
 4. **Pi's own prompt sections** (your global and repository `AGENTS.md` files and skills) stay in the system prompt, before the profile's instructions.
 5. **Imports, profiles, the inspector, the usage ledger, images and connected windows** are additions. An import logs each imported message whole, adds historical-record guidance to its compactions, and retries a failed summary after 10 seconds, since no next message comes to retry it.
@@ -363,7 +363,8 @@ Where it still differs:
 7. **A tool call is summarized with its result**: its summary waits until the call's result is logged (or a turn needs every line) and the task shows the result, capped at 12,000 characters, so the line says what the call found instead of "output unseen".
 8. **Blocks start on their own paragraph**: the working directory, your message and a compaction's task begin with a blank line, because some providers (OpenAI's Responses API) join a message's text blocks with nothing between them (`</chat>Working directory: C:/Users/youok ...`).
 9. **`zoom(id, 1)` answers under `id+1|`**, the line it opens, as the view would show it.
-10. **Not done**: computer use and hosting on an always-on machine.
+10. **The system prompt and tools stay as their cache entry was written**: a tool enabled mid-session (`web_enable`, a goal's tools) or an edited `AGENTS.md` section is sent after the view as one of Pi's native system messages (`tool_addition`, `tool_removal`, section update) on models that take them, instead of rewriting the whole request. The head is rebuilt when its entry is gone anyway (cold cache, another model) or a prompt change is not a section update.
+11. **Not done**: computer use and hosting on an always-on machine.
 
 See `docs/victor-recipe.md` for the mapping to the source files.
 

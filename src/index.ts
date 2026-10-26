@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
-import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
+import { getCurrentSystemMessage, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -14,7 +14,8 @@ import { writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiag
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
-import { cachePayload, coldAfter, prefixRetention, record } from './cache.ts';
+import { cachePayload, coldAfter, prefixRetention, record, ViewEntries } from './cache.ts';
+import { StableHead, type SavedHead } from './stable-head.ts';
 import { saveImages } from './images.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
@@ -55,6 +56,8 @@ import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
 
 const binding = 'optchat.profile';
+/** The request head the prompt cache holds (StableHead), kept in the session so /reload sends it again. */
+const HEAD_ENTRY = 'optchat.head';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
 /** Print mode routes `process.stdout` to stderr so only the answer reaches stdout; the joined reply goes to fd 1 itself. */
 async function printReply(text: string) {
@@ -126,6 +129,11 @@ export default function optchat(pi: ExtensionAPI) {
   let focusView: string | undefined;
   /** When this profile last sent the main model a request: a turn starting long after it may merge the view (DEFER). */
   let lastRequestAt: number | undefined;
+  /** The cache entries the main requests' view marks wrote, and the system head those requests keep (see their modules). */
+  const viewEntries = new ViewEntries(), stableHead = new StableHead();
+  let savedHead: SavedHead | undefined;
+  /** Counts view captures (turn starts and refreshes): after one, the request is new from the view on. */
+  let viewEpoch = 0;
   let prompt = '';
   /** A compaction is a call like a turn (recipe §4): once a turn has built them, it gets the turns' system prompt and tools. */
   const shared = () => {
@@ -433,6 +441,15 @@ export default function optchat(pi: ExtensionAPI) {
         }
       }
       if (name !== boundName) pi.appendEntry(binding, { name });
+      if (active) {
+        // After /reload the prompt cache is still warm: keep the head it holds and the time of the last request.
+        const branch = ctx.sessionManager.getBranch();
+        const head = branch.findLast(e => e.type === 'custom' && e.customType === HEAD_ENTRY);
+        stableHead.restore(head?.type === 'custom' ? head.data : undefined);
+        savedHead = stableHead.saved();
+        const last = branch.findLast(e => e.type === 'message' && e.message.role === 'assistant');
+        lastRequestAt = last?.type === 'message' && last.message.role === 'assistant' ? last.message.timestamp : undefined;
+      }
     } catch (error) {
       if (active) await stop().catch(() => {});
       fault = errorText(error);
@@ -500,7 +517,7 @@ export default function optchat(pi: ExtensionAPI) {
     return { action: 'continue' };
   });
   const startRun = (ctx: ExtensionContext) => {
-    flush(); run = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = true;
+    flush(); run = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = true; viewEpoch++;
     const config = active?.config;
     previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
@@ -612,13 +629,24 @@ export default function optchat(pi: ExtensionAPI) {
           ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
           try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
           if (!a.memory.ready) throw new Error('OptChat cannot refresh this run while summaries are missing. Originals are preserved; fix the compactor and continue in a new turn.');
-          view = a.memory.render(); focusView = a.focus.render(a.memory); keep = cut;
+          view = a.memory.render(); focusView = a.focus.render(a.memory); keep = cut; viewEpoch++;
           ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
           budgeted = inputBudget === undefined ? undefined
             : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine, focusView);
         }
       }
-      const messages = budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine, focusView);
+      const compat: Record<string, unknown> = record(ctx.model?.compat) ? ctx.model.compat : {};
+      const messages = stableHead.apply(
+        budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine, focusView),
+        { model: `${ctx.model?.provider}/${ctx.model?.id}`, native: compat.supportsMidConvoSystemMessages === true && compat.supportsMidConvoToolChanges === true,
+          cold: lastRequestAt === undefined || Date.now() - lastRequestAt >= coldAfter(ctx.model), epoch: viewEpoch,
+          sections: getCurrentSystemMessage(event.messages)?.sections ?? {} });
+      const head = stableHead.saved();
+      // Written when the head is rewritten with other content; a cold rewrite of the same head adds nothing.
+      if (head && head !== savedHead) {
+        if (!savedHead || JSON.stringify(head) !== JSON.stringify(savedHead)) pi.appendEntry(HEAD_ENTRY, head);
+        savedHead = head;
+      }
       if (window) assertContextFits(messages, window, ctx.model?.maxTokens);
       a.metrics.context(messages);
       return { messages };
@@ -632,7 +660,7 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_provider_request', (event, ctx) => {
     if (active) lastRequestAt = Date.now();
-    return ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload;
+    return ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model), entries: viewEntries }) : event.payload;
   });
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
   pi.on('session_before_compact', async (event, ctx) => {

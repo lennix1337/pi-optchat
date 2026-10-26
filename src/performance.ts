@@ -6,9 +6,33 @@ import { estimatedContextTokens } from './run-context.ts';
 
 export type Stage = 'context' | 'projection' | 'tool' | 'provider_headers' | 'first_content' | 'response' | 'persistence' | 'settle' | 'child_open' | 'compaction';
 interface Timing { count: number; totalMs: number; maxMs: number; lastMs: number }
+/** Tool names kept apart; later ones are counted together. Recent durations kept per tool for its percentiles. */
+const TOOL_NAMES = 64, TOOL_SAMPLES = 256, OTHER_TOOLS = '(other)';
+const round = (ms: number) => Math.round(ms * 10) / 10;
+/** Nearest-rank percentile of sorted durations. */
+const rank = (sorted: readonly number[], p: number) => sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)];
+/** Each tool's own execution time by name, slowest total first. */
+class ToolTimings {
+  private readonly tools = new Map<string, { count: number; totalMs: number; maxMs: number; samples: number[] }>();
+  record(name: string, duration: number) {
+    const key = this.tools.has(name) || this.tools.size < TOOL_NAMES ? name : OTHER_TOOLS;
+    const timing = this.tools.get(key) ?? { count: 0, totalMs: 0, maxMs: 0, samples: [] };
+    timing.count++; timing.totalMs += duration; timing.maxMs = Math.max(timing.maxMs, duration);
+    timing.samples.push(duration); if (timing.samples.length > TOOL_SAMPLES) timing.samples.shift();
+    this.tools.set(key, timing);
+  }
+  snapshot() {
+    return Object.fromEntries([...this.tools].sort(([, a], [, b]) => b.totalMs - a.totalMs).map(([name, t]) => {
+      const sorted = [...t.samples].sort((a, b) => a - b);
+      return [name, { count: t.count, totalMs: round(t.totalMs), avgMs: round(t.totalMs / t.count), p50Ms: round(rank(sorted, 0.5)),
+        p90Ms: round(rank(sorted, 0.9)), maxMs: round(t.maxMs) }];
+    }));
+  }
+}
 /** In-memory bounded numeric aggregates only; raw prompts, tool args, outputs and errors never enter telemetry. */
 export class PerformanceMetrics {
   private readonly stages: Partial<Record<Stage, Timing>> = {};
+  private readonly tools = new ToolTimings();
   private prefix?: string;
   private payload = { enabled: false, calls: 0, bytes: 0, maxBytes: 0, measurementFailures: 0 };
   measurePayload(enabled: boolean) { this.payload.enabled = enabled; }
@@ -26,13 +50,20 @@ export class PerformanceMetrics {
     const old = this.stages[stage] ?? { count: 0, totalMs: 0, maxMs: 0, lastMs: 0 };
     this.stages[stage] = { count: old.count + 1, totalMs: old.totalMs + duration, maxMs: Math.max(old.maxMs, duration), lastMs: duration };
   }
+  /** One tool execution, from Pi's start to its end event: the tool's own time, without the model's. */
+  recordTool(name: string, duration: number) {
+    if (!Number.isFinite(duration) || duration < 0) return;
+    this.record('tool', duration);
+    this.tools.record(name, duration);
+  }
   context(messages: readonly AgentMessage[]) {
     let systemBytes = 0, toolSchemaBytes = 0, instructionBytes = 0, skillCatalogueBytes = 0;
     const prefix: string[] = [];
-    for (const message of messages) if (message.role === 'system') {
+    for (const [index, message] of messages.entries()) if (message.role === 'system') {
       const text = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
       const sections = message.sections ?? {};
-      const stable = JSON.stringify([text, sections, message.toolsAdded, message.toolsRemoved]); prefix.push(stable);
+      // The cached prefix is the leading system message; later ones are changes sent after it.
+      if (index === 0) prefix.push(JSON.stringify([text, sections, message.toolsAdded, message.toolsRemoved]));
       systemBytes += Buffer.byteLength(text) + Buffer.byteLength(JSON.stringify(sections));
       if (message.toolsAdded?.length) toolSchemaBytes += Buffer.byteLength(JSON.stringify(message.toolsAdded));
       // Main OptChat flattens Pi's sections; account for tagged instructions/catalogues there too.
@@ -50,17 +81,17 @@ export class PerformanceMetrics {
     this.request = { calls: this.request.calls + 1, estimatedTokens: estimatedContextTokens(messages), systemBytes, toolSchemaBytes,
       instructionBytes, skillCatalogueBytes, prefixChanges: this.request.prefixChanges + changed };
   }
-  snapshot() { return { stages: structuredClone(this.stages), request: { ...this.request }, payload: { ...this.payload } }; }
+  snapshot() { return { stages: structuredClone(this.stages), tools: this.tools.snapshot(), request: { ...this.request }, payload: { ...this.payload } }; }
 }
 /** Real hook boundaries, not provider inference time or end-to-end speed claims. */
 export function registerPerformance(pi: ExtensionAPI, metrics: () => PerformanceMetrics | undefined,
   onLatency?: (messageTimestamp: number, latency: { firstMs?: number; responseMs: number }) => void) {
-  const tools = new Map<string, number>();
+  const tools = new Map<string, { name: string; start: number }>();
   let request: number | undefined, first = false, firstMs: number | undefined;
-  pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, performance.now()); });
+  pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now() }); });
   pi.on('tool_execution_end', event => {
-    const start = tools.get(event.toolCallId); tools.delete(event.toolCallId);
-    if (start !== undefined) metrics()?.record('tool', performance.now() - start);
+    const started = tools.get(event.toolCallId); tools.delete(event.toolCallId);
+    if (started) metrics()?.recordTool(started.name, performance.now() - started.start);
   });
   pi.on('before_provider_request', event => {
     const current = metrics();

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { Memory, cap, CAP, start, end, bytes, mostDue, COLD_LONG_MS, COLD_MS, type Compression, type Part } from '../src/memory.ts';
 import { appendJson, FileStore, localDay } from '../src/store.ts';
 import { lockProfile } from '../src/profiles.ts';
-import { splitView, cachePayload, coldAfter, prefixRetention } from '../src/cache.ts';
+import { splitView, cachePayload, coldAfter, prefixRetention, ViewEntries } from '../src/cache.ts';
 import { logMessage, buildContext, boundedMessage } from '../src/transcript.ts';
 import { Inbox } from '../src/inbox.ts';
 import { compaction } from '../src/prompts.ts';
@@ -430,14 +430,48 @@ test('under long retention the view\'s older mark takes the 1-hour entry too, af
   assert.equal(coldAfter({ provider: 'some-proxy' }), COLD_MS, 'other endpoints keep the 4.5-minute merge');
 });
 
+/** Whether some mark of the next call is at most 20 blocks after one of the last call's, so Anthropic finds that entry. */
+const reaches = (next: number[], last: number[]) => next.some(n => last.some(l => n >= l && n - l <= 20));
+
 test('after a turn adds up to 60 blocks of lines, a mark of the next call still finds one of the last call\'s within 20 blocks', () => {
   const line = '0+1|summary of a decision\n', marks = (lines: number) => {
     const payload = { messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + line.repeat(lines) + '</chat>' }] }] };
     return (cachePayload(payload) as typeof payload).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []);
   };
-  const found = (added: number) => marks(1000 + added).some(next => marks(1000).some(last => next >= last && next - last <= 20));
+  const found = (added: number) => reaches(marks(1000 + added), marks(1000));
   assert.ok([4, 100, 240].every(found), 'a turn that adds 1, 25 or 60 blocks');
   assert.ok(!found(400), 'beyond 60 blocks the last entry is out of reach');
+});
+
+test('a view that jumps past the 20-block lookback still reads the last call\'s entry: one mark goes back on the block it marked', () => {
+  const line = '0+1|summary of a decision\n';
+  let clock = 0;
+  const entries = new ViewEntries(() => clock);
+  const call = (lines: number, options: { model?: string; top?: string; prefix?: 'short' | 'long' } = {}) => {
+    const payload = { model: options.model ?? 'claude-opus-5-5', system: 'system', tools: [{ name: 'zoom' }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + (options.top ?? '') + line.repeat(lines) + '</chat>' }, { type: 'text', text: 'question' }] }] };
+    const output = cachePayload(payload, { prefix: options.prefix ?? 'long', entries }) as typeof payload;
+    assert.equal((JSON.stringify(output).match(/cache_control/g) ?? []).length, 4, 'Anthropic\'s limit of 4 marks');
+    return output.messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []);
+  };
+  const first = call(1000);
+  // The turn's tool calls are moved into memory: the view grows by 640 lines (160 blocks) at once.
+  const second = call(1640);
+  assert.ok(reaches(second, first), `marks ${second} reach none of ${first}`);
+  assert.ok(second.includes(first.at(-1)!), 'the newest block the last call marked is marked again');
+  assert.equal(second.at(-1), splitView('<chat>\n' + line.repeat(1640) + '</chat>').length - 2, 'the newest mark stays on the last whole block');
+  // A turn later, after 10 quiet minutes: the 5-minute entries are gone, the 1-hour one still answers.
+  clock += 10 * 60_000;
+  const third = call(2400);
+  assert.ok(third.includes(second[0]), 'the 1-hour entry of the older mark is used after a 10-minute gap');
+  assert.ok(!third.includes(second.at(-1)!), 'an expired 5-minute entry is not chosen');
+  // Nothing to reuse: another model, or a view rewritten from its top, keeps the usual marks 0 and 20 blocks back.
+  const usual = (lines: number) => { const n = splitView('<chat>\n' + line.repeat(lines) + '</chat>').length; return [n - 22, n - 2]; };
+  assert.deepEqual(call(3200, { model: 'claude-fable-5-1' }), usual(3200));
+  assert.deepEqual(call(4000, { top: '0+1024|merged summary\n' }), usual(4001));
+  // Without a memory of entries, the marks are as before.
+  const plain = { messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + line.repeat(1640) + '</chat>' }] }] };
+  assert.deepEqual((cachePayload(plain, { prefix: 'long' }) as typeof plain).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []), usual(1640));
 });
 
 test('the most due pair is the one that ended longest ago in its own line size, so the view merges as Taelin\'s rollback push', () => {
