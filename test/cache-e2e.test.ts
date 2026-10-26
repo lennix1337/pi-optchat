@@ -198,6 +198,42 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
   }
 });
 
+test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the view past the marks\' lookback still reads the view cached before it', { timeout: 300_000 }, async () => {
+  const anthropic = await simulatedAnthropic();
+  const { session, errors } = await piSession(anthropic, 'cache-reload-view', webTools);
+  const requests = anthropic.cache.requests;
+  try {
+    await session.prompt('first question');
+    // The first busy turn makes the view long; the second adds its 320 messages as about 80 blocks of lines, past the 20-block
+    // lookback of every default mark.
+    await session.prompt('now get busy 160');
+    const from = requests.length;
+    await session.prompt('again get busy 160');
+    const start = requests[from];
+    await session.reload();
+    const after = requests.length;
+    await session.prompt('next question');
+    const next = requests[after];
+    const diagnostics = readFileSync(join(profilePath('cache-reload-view'), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    // Side calls (compaction) leave no line: the last two are the busy turn's last call and the one after /reload.
+    assert.equal(requests.length, after + 1);
+    const [busyView, reloaded] = diagnostics.slice(-2);
+    // The view entries the busy turn's start left live for minutes. /reload used to forget them with the rest of OptChat's
+    // state, so the next call marked only its last 20 blocks, out of reach of those entries, read tools + system alone and wrote
+    // the whole view again (session 01a1704e, 2026-10-26 12:17: read 33022, wrote 78664, marks [91, 111] with the last at 69).
+    // Here a side call happens to cache the longer view, so the read alone would not show it: the marks do.
+    assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${JSON.stringify(reloaded)}`);
+    assert.ok(reloaded.marks.some((block: number) => block <= Math.max(...busyView.marks)),
+      `the first call after /reload marks an entry the busy turn left (${busyView.marks}): ${JSON.stringify(reloaded.marks)}`);
+    assert.ok(next.read > start.read + start.write / 2, `after /reload the next turn read ${next.read} and wrote ${next.write}; the busy turn had cached ${start.read} + ${start.write} at its start`);
+    assert.deepEqual(requests.filter(r => r.status !== 200), []);
+    assert.deepEqual(errors, []);
+  } finally {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+    await anthropic.close();
+  }
+});
+
 test('real Pi + OptChat: an operational_state record mid-turn keeps the cached run; the next turn shows it with the view', { timeout: 120_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const { session, errors } = await piSession(anthropic, 'cache-state', () => {});

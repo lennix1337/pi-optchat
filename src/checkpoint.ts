@@ -19,7 +19,7 @@ export async function checkpoint(directory: string) {
     appendFileSync(exclude, `${excluded && !excluded.endsWith('\n') ? '\n' : ''}/usage.db*\n`);
   }
   await git(['add', '-A', '--', '.', ':!compactor-diagnostics.jsonl', ':!compactor-diagnostics.jsonl.1', ':!recovery-diagnostics.jsonl', ':!recovery-diagnostics.jsonl.1',
-    ':!cache-diagnostics.jsonl', ':!cache-diagnostics.jsonl.1']);
+    ':!cache-diagnostics.jsonl', ':!cache-diagnostics.jsonl.1', ':!cache-entries.json']);
   const status = await git(['diff', '--cached', '--name-only']);
   if (!status.stdout.trim()) return;
   await git(['-c', 'user.name=OptChat', '-c', 'user.email=optchat@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Save OptChat memory']);

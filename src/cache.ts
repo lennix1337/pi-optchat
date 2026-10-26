@@ -46,6 +46,10 @@ export interface ViewReport { date: string; model?: string; gapMs?: number; bloc
 /** The view blocks earlier calls marked, by a digest of the whole request up to and including the block. When a view grows by
  * more than its marks can look back (a turn moved into memory, a long turn folded in at the next one), the next call puts one
  * mark back on the newest of those blocks still unchanged and alive, and reads that entry instead of writing the view again. */
+export interface ViewEntriesState {
+  entries: [string, { at: number; until: number; ttl: keyof typeof TTL_MS }][];
+  previous?: { base: string; chain: readonly string[]; time: number };
+}
 export class ViewEntries {
   private readonly entries = new Map<string, { at: number; until: number; ttl: keyof typeof TTL_MS }>();
   private previous?: { base: string; chain: readonly string[]; time: number };
@@ -65,6 +69,24 @@ export class ViewEntries {
     this.last = { date: new Date(time).toISOString(), ...(typeof model === 'string' ? { model } : {}), gapMs: before && time - before.time,
       blocks: chain.length, changedAt, headChanged: before && before.base !== base, marks: [...marks].sort((a, b) => a - b) };
     this.report?.(this.last);
+  }
+  /** The entries and the last call's view, to carry across a /reload: the prompt cache outlives OptChat's own state, and a
+   * restored entry that no longer matches the request is never marked. */
+  snapshot(): ViewEntriesState {
+    return { entries: [...this.entries], ...(this.previous ? { previous: this.previous } : {}) };
+  }
+  restore(state: unknown) {
+    if (!record(state) || !Array.isArray(state.entries)) return;
+    const time = this.now();
+    for (const item of state.entries) {
+      if (!Array.isArray(item) || typeof item[0] !== 'string' || !record(item[1])) continue;
+      const { at, until, ttl } = item[1];
+      if (typeof at === 'number' && typeof until === 'number' && until > time && (ttl === '5m' || ttl === '1h')) this.entries.set(item[0], { at, until, ttl });
+    }
+    while (this.entries.size > ENTRIES) this.entries.delete(this.entries.keys().next().value!);
+    const previous = state.previous;
+    if (record(previous) && typeof previous.base === 'string' && typeof previous.time === 'number' && Array.isArray(previous.chain)
+      && previous.chain.every(digest => typeof digest === 'string')) this.previous = { base: previous.base, chain: previous.chain as string[], time: previous.time };
   }
   /** The newest block of `chain` (digests by block) an earlier call marked, whose entry still lives. */
   latest(chain: readonly string[]): number | undefined {

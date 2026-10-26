@@ -59,6 +59,7 @@ import { PerformanceMetrics, registerPerformance, performanceTool } from './perf
 const binding = 'optchat.profile';
 /** The request head the prompt cache holds (StableHead), kept in the session so /reload sends it again. */
 const HEAD_ENTRY = 'optchat.head';
+const VIEW_ENTRIES_FILE = 'cache-entries.json';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
 /** Print mode routes `process.stdout` to stderr so only the answer reaches stdout; the joined reply goes to fd 1 itself. */
 async function printReply(text: string) {
@@ -133,7 +134,12 @@ export default function optchat(pi: ExtensionAPI) {
   /** When this profile last sent the main model a request: a turn starting long after it may merge the view (DEFER). */
   let lastRequestAt: number | undefined;
   /** The cache entries the main requests' view marks wrote, and the system head those requests keep (see their modules). */
-  const viewEntries = new ViewEntries(undefined, report => { if (active) writeCacheDiagnostic(active.dir, report); }), stableHead = new StableHead();
+  const viewEntries = new ViewEntries(undefined, report => {
+    if (!active) return;
+    writeCacheDiagnostic(active.dir, report);
+    try { atomicWrite(join(active.dir, VIEW_ENTRIES_FILE), JSON.stringify(viewEntries.snapshot())); }
+    catch { console.error(`OptChat could not write ${VIEW_ENTRIES_FILE}; after /reload the view is written to the cache again.`); }
+  }), stableHead = new StableHead();
   let savedHead: SavedHead | undefined;
   /** Counts view captures (turn starts and refreshes): after one, the request is new from the view on. */
   let viewEpoch = 0;
@@ -454,6 +460,13 @@ export default function optchat(pi: ExtensionAPI) {
         const head = branch.findLast(e => e.type === 'custom' && e.customType === HEAD_ENTRY);
         stableHead.restore(head?.type === 'custom' ? head.data : undefined);
         savedHead = stableHead.saved();
+        // And the view entries it holds: without them the first call marks only its last blocks, and a view that grew by more
+        // than their lookback since is written again whole.
+        const entriesFile = join(active.dir, VIEW_ENTRIES_FILE);
+        if (existsSync(entriesFile)) {
+          try { viewEntries.restore(JSON.parse(readFileSync(entriesFile, 'utf8'))); }
+          catch { console.error(`OptChat could not read ${VIEW_ENTRIES_FILE}; the view is written to the cache again.`); }
+        }
         const last = branch.findLast(e => e.type === 'message' && e.message.role === 'assistant');
         lastRequestAt = last?.type === 'message' && last.message.role === 'assistant' ? last.message.timestamp : undefined;
       }
