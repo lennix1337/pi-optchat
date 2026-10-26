@@ -47,6 +47,28 @@ test('request budgeting coarsens a captured view only through an existing built 
   assert.ok(!JSON.stringify(fitted.messages).includes('a'.repeat(100)), 'raw content is not silently cut or copied into the request');
 });
 
+test('request coarsening estimates unchanged system schemas once per call without stale cross-call caching', () => {
+  let serializations = 0;
+  let description = 'Current schema';
+  const tools = [{ name: 'fixture', description: '', parameters: { toJSON() { serializations++; return { description, type: 'object' }; } } }];
+  const canonical: AgentMessage[] = [{ role: 'system', content: '', toolsAdded: tools, timestamp: 0 }];
+  const run: AgentMessage[] = [{ role: 'user', content: 'Exact user instruction.', timestamp: 1 }];
+  const memory = { node: (part: Part) => ({ text: `Summary ${part.l}:${part.i}` }) } as Memory;
+  const view = `<chat>\n${Array.from({ length: 32 }, (_, i) => `${i}+1|${'original '.repeat(100)}`).join('\n')}\n</chat>`;
+  const expected = buildContext(canonical, run, '<chat>\n0+32|Summary 5:0\n</chat>', 'system');
+  const allowance = estimatedContextTokens(expected);
+  serializations = 0;
+  const result = budgetContext(memory, canonical, run, view, 'system', allowance);
+  assert.equal(serializations, 1, 'coarsening must not reserialize the unchanged system schema');
+  assert.deepEqual(result, { messages: expected, tokens: allowance, fits: true });
+  description = 'Changed tool schema. '.repeat(80);
+  serializations = 0;
+  const changed = budgetContext(memory, canonical, run, view, 'system', allowance);
+  assert.equal(serializations, 1);
+  assert.equal(changed.tokens, estimatedContextTokens(changed.messages));
+  assert.equal(changed.fits, false, 'a schema changed in place between calls must still count');
+});
+
 test('whole-request budgeting includes prompt, active schemas, memory, prior history, current input, state and status before output reserve', () => {
   const prompt = 'Current system prompt guidance. '.repeat(80);
   const tools = [{ name: 'zoom', description: 'Fetch a page of remembered context. '.repeat(12), parameters: { type: 'object', properties: { id: { type: 'string' } } } }];

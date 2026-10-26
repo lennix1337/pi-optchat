@@ -250,7 +250,11 @@ export function budgetContext(memory: Memory, canonical: AgentMessage[], run: Ag
     if (tokens <= inputBudget) return { messages, tokens, fits: true };
   }
   const build = (text: string) => buildContext(canonical, run, text, prompt, previous, state, status);
-  let messages = build(view), tokens = estimatedContextTokens(messages), best = { messages, tokens, fits: tokens <= inputBudget };
+  let messages = build(view);
+  // Coarsening changes only the view; buildContext's system prompt and active schemas stay fixed within this call.
+  const headTokens = estimatedContextTokens(messages.slice(0, 1));
+  const count = (request: AgentMessage[]) => headTokens + estimatedContextTokens(request.slice(1));
+  let tokens = count(messages), best = { messages, tokens, fits: tokens <= inputBudget };
   if (best.fits) return best;
   const lines = viewParts(view);
   if (!lines) return best;
@@ -264,7 +268,7 @@ export function budgetContext(memory: Memory, canonical: AgentMessage[], run: Ag
     parts.splice(at, 2, parent);
     lines.splice(at, 2, { part: parent, text: flat(summary.text) });
     const text = `${VIEW_OPEN}${lines.map(({ part, text: line }) => `${start(part)}+${2 ** part.l}|${line}`).join('\n')}${VIEW_CLOSE}`;
-    messages = build(text); tokens = estimatedContextTokens(messages);
+    messages = build(text); tokens = count(messages);
     if (tokens <= inputBudget) return { messages, tokens, fits: true };
     if (tokens < best.tokens) best = { messages, tokens, fits: false };
   }

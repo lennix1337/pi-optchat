@@ -33,6 +33,8 @@ Stage aggregates contain count/total/max/last duration, not unbounded samples: c
 
 Per-tool aggregates include `count`, `errors`, total/average/p50/p90/max milliseconds, sorted by total time. `errors` counts completed, timed calls whose Pi `tool_execution_end` event has `isError: true`; it does not parse output or infer whether a task succeeded. Duplicate/unmatched end events and calls with no end before settlement are not counted. At most 64 tool names plus an `(other)` bucket are retained; percentiles use the most recent 256 durations per bucket, while counts, errors, totals and maxima cover the session. Both `/optchat-perf` and `context_metrics` expose these same local aggregates, including in child sessions.
 
+When the request needs view coarsening, the budget loop estimates the unchanged system prompt and active schemas once for that invocation. Every candidate still uses Pi's message estimates and the same built summaries; the estimate is recomputed on the next call, including after in-place schema changes. Synthetic paired results and limits are recorded in `plans/context-improvements-validation.md` (request-budget speed); they do not establish faster provider responses.
+
 ## Focused child history
 
 `Focused child history` is implemented but **off by default** until task-quality measurements justify enabling it. When enabled, new task agents receive whole history lines within a 24 KiB budget: up to 60% of it goes to the oldest broad summary lines (those covering 512 messages or more), the rest to the newest lines, and the middle is dropped. Omitted history remains accessible through zoom and is explicitly labelled. This is coverage-by-granularity selection, **not semantic relevance retrieval**.
