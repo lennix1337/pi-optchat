@@ -28,6 +28,7 @@ import { exportBrowser } from './browser.ts';
 import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
+import { registerForegroundWaitGuard } from './foreground-wait.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText } from './heartbeat.ts';
@@ -99,6 +100,8 @@ export default function optchat(pi: ExtensionAPI) {
     catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
+  // First: a refused wait never ran, so it needs no approval and leaves no operation to journal.
+  registerForegroundWaitGuard(pi);
   // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
   registerEffectApprovals(pi, { advisor: (request, ctx) => {
     const profile = active;

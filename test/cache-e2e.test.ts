@@ -63,26 +63,29 @@ class SimulatedCache {
   }
 }
 
-/** The scripted model behind the server: one call to `enable_web` when asked, `n` calls to `noop` for "busy n", else text. */
-function reply(body: { messages: { role: string; content: string | Block[] }[] }) {
+/** The scripted model behind the server: one call to `enable_web` when asked, `n` calls to `noop` for "busy n",
+ * one `bash` call sleeping `n` seconds for "wait n", else text. */
+function reply(body: { messages: { role: string; content: string | Block[] }[] }): { tool?: string; input?: Record<string, unknown>; text?: string } {
   const blocks = (m: { content: string | Block[] }) => typeof m.content === 'string' ? [{ type: 'text', text: m.content }] as Block[] : m.content;
-  const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|question)\s*$/.test(String(b.text))));
+  const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|wait \d+|question)\s*$/.test(String(b.text))));
   const prompt = asked < 0 ? '' : blocks(body.messages[asked]).map(b => String(b.text ?? '')).join('');
   const results = body.messages.slice(asked + 1).flatMap(m => blocks(m).filter(b => b.type === 'tool_result')).length;
   if (/enable web\s*$/.test(prompt) && !results) return { tool: 'enable_web' };
   const busy = /busy (\d+)\s*$/.exec(prompt);
   if (busy && results < Number(busy[1])) return { tool: 'noop' };
+  const wait = /wait (\d+)\s*$/.exec(prompt);
+  if (wait && !results) return { tool: 'bash', input: { command: `sleep ${wait[1]}; echo waited` } };
   return { text: 'OK' };
 }
 
-function sse(response: ServerResponse, usage: Usage, answer: { tool?: string; text?: string }, id: number) {
+function sse(response: ServerResponse, usage: Usage, answer: ReturnType<typeof reply>, id: number) {
   const send = (event: Record<string, unknown>) => response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   send({ type: 'message_start', message: { id: `msg_${id}`, type: 'message', role: 'assistant', model: 'claude-sim', content: [], stop_reason: null, stop_sequence: null,
     usage: { input_tokens: usage.input, cache_read_input_tokens: usage.read, cache_creation_input_tokens: usage.write, output_tokens: 1 } } });
   if (answer.tool) {
     send({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: `toolu_${id}`, name: answer.tool, input: {} } });
-    send({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } });
+    send({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(answer.input ?? {}) } });
   } else {
     send({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
     send({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: answer.text } });
@@ -180,6 +183,27 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ e2e: 'reload', before: [last.read, last.write], after: [first.read, first.write] }));
+  } finally {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+    await anthropic.close();
+  }
+});
+
+test('real Pi + OptChat: a foreground sleep in bash is refused before it runs, pointing to shell_start', { timeout: 60_000 }, async () => {
+  const anthropic = await simulatedAnthropic();
+  const { session, errors } = await piSession(anthropic, 'foreground-wait', () => {});
+  try {
+    assert.ok(session.getActiveToolNames().includes('shell_start'));
+    const started = Date.now();
+    await session.prompt('wait 30');
+    const result = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'bash');
+    assert.ok(result && result.role === 'toolResult' && result.isError, 'the bash call comes back as an error');
+    const text = JSON.stringify(result.content);
+    assert.match(text, /sleeps 30 s/);
+    assert.match(text, /shell_start/);
+    assert.doesNotMatch(text, /waited/, 'the command never ran');
+    assert.ok(Date.now() - started < 20_000, 'the turn did not wait');
+    assert.deepEqual(errors, []);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
