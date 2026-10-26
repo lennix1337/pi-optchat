@@ -474,6 +474,34 @@ test('a view that jumps past the 20-block lookback still reads the last call\'s 
   assert.deepEqual((cachePayload(plain, { prefix: 'long' }) as typeof plain).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []), usual(1640));
 });
 
+test('a mark before the entry a call reads writes nothing, so the next turn goes back to the entry that exists, not to that mark', () => {
+  // Session 01a1704e, 2026-10-26: each turn start that found the view read exactly the 1-hour entry an earlier turn start
+  // had written (33022 + 61635, + 30008, + 64679 tokens); the turn starts after a turn that had re-marked read the system alone.
+  const line = '0+1|summary of a decision\n';
+  let clock = 0;
+  const entries = new ViewEntries(() => clock);
+  const call = (lines: number) => {
+    const payload = { model: 'claude-opus-5-5', system: 'system', tools: [{ name: 'zoom' }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + line.repeat(lines) + '</chat>' }, { type: 'text', text: 'question' }] }] };
+    return (cachePayload(payload, { prefix: 'long', entries }) as typeof payload).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []);
+  };
+  call(1000);
+  clock += 30 * 60_000;
+  // 25 blocks later: past the lookback, so the older mark goes back on the last turn's 1-hour entry, which this call reads.
+  const read = call(1100)[0];
+  // The turn's next call, same view: Anthropic reads the last request's entry past the view, and the mark 20 blocks back writes nothing.
+  clock += 10_000;
+  call(1100);
+  clock += 30 * 60_000;
+  const next = call(1120);
+  assert.ok(next.includes(read), `marks ${next} go back on the entry the last turn read (${read})`);
+  // A quick next turn whose view grew a little reads the last call's 5-minute entry at its end: the mark before it writes nothing either.
+  clock += 60_000;
+  call(1140);
+  clock += 30 * 60_000;
+  assert.ok(call(1160).includes(read), 'still the 1-hour entry that was read, not the mark the quick turn put before its read');
+});
+
 test('each call reports where its view first differs from the last call\'s, so a cache miss can be told apart: rewrite, head change or lookback', () => {
   const line = '0+1|summary of a decision\n';
   let clock = 0;

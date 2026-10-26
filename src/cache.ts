@@ -47,7 +47,7 @@ export interface ViewReport { date: string; model?: string; gapMs?: number; bloc
  * more than its marks can look back (a turn moved into memory, a long turn folded in at the next one), the next call puts one
  * mark back on the newest of those blocks still unchanged and alive, and reads that entry instead of writing the view again. */
 export class ViewEntries {
-  private readonly entries = new Map<string, { at: number; until: number }>();
+  private readonly entries = new Map<string, { at: number; until: number; ttl: keyof typeof TTL_MS }>();
   private previous?: { base: string; chain: readonly string[]; time: number };
   last?: ViewReport;
   constructor(private readonly now = () => Date.now(), private readonly report?: (report: ViewReport) => void) {}
@@ -76,11 +76,24 @@ export class ViewEntries {
     }
     return found;
   }
+  /** What this call's marks (block -> TTL) leave at Anthropic, before `observe`. Anthropic reads the newest entry the request
+   * reaches, refreshing it, and writes entries only at the marks after it: a mark before it leaves nothing. Within 5 minutes
+   * of a call whose request this one repeats through the view, that is the last call's entry at the end of its request, so no
+   * view mark is written or refreshed. Counting those marks as entries sent the next turn back to blocks Anthropic never
+   * cached (session 01a1704e, 2026-10-26: every turn start that found the view read an entry an earlier turn start wrote). */
+  record(chain: readonly string[], marks: ReadonlyMap<number, keyof typeof TTL_MS>) {
+    const before = this.previous?.chain;
+    if (before && this.now() - this.previous!.time < TTL_MS['5m'] - TTL_MARGIN_MS && before.length === chain.length
+      && before.every((digest, block) => digest === chain[block])) return;
+    const read = this.latest(chain);
+    if (read !== undefined && !marks.has(read)) this.marked(chain[read], read, this.entries.get(chain[read])!.ttl);
+    for (const [block, ttl] of marks) if (read === undefined || block >= read) this.marked(chain[block], block, ttl);
+  }
   /** A mark on block `at`: its entry is written or read, and lives `ttl` from now either way. */
-  marked(digest: string, at: number, ttl: keyof typeof TTL_MS) {
-    const until = Math.max(this.now() + TTL_MS[ttl] - TTL_MARGIN_MS, this.entries.get(digest)?.until ?? 0);
+  private marked(digest: string, at: number, ttl: keyof typeof TTL_MS) {
+    const entry = this.entries.get(digest), until = Math.max(this.now() + TTL_MS[ttl] - TTL_MARGIN_MS, entry?.until ?? 0);
     this.entries.delete(digest);
-    this.entries.set(digest, { at, until });
+    this.entries.set(digest, { at, until, ttl: entry?.ttl === '1h' ? '1h' : ttl });
     while (this.entries.size > ENTRIES) this.entries.delete(this.entries.keys().next().value!);
   }
 }
@@ -144,7 +157,7 @@ export function cachePayload(payload: unknown, options: CacheOptions = {}): unkn
     const chain = digests?.chain;
     const marks = viewMarks(pieces, offsets, options.entries, chain);
     if (digests) {
-      for (const [block, back] of marks) options.entries!.marked(digests.chain[block], block, viewMark(back, options).ttl ?? '5m');
+      options.entries!.record(digests.chain, new Map([...marks].map(([block, back]) => [block, viewMark(back, options).ttl ?? '5m'])));
       options.entries!.observe(digests.base, digests.chain, marks.keys(), payload.model);
     }
     const blocks = pieces.map((text, j) => {
