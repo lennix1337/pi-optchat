@@ -99,8 +99,8 @@ test('tool execution time is kept per tool name, with percentiles over bounded s
     await emit('tool_execution_end', { toolCallId: 'p', toolName: 'codemode' });
     const { tools, stages } = metrics.snapshot();
     assert.deepEqual(Object.keys(tools), ['bash', 'read', 'codemode'], 'slowest total first');
-    assert.deepEqual(tools.read, { count: 11, totalMs: 62, avgMs: 5.6, p50Ms: 6, p90Ms: 9, maxMs: 10 });
-    assert.deepEqual(tools.bash, { count: 1, totalMs: 5000, avgMs: 5000, p50Ms: 5000, p90Ms: 5000, maxMs: 5000 });
+    assert.deepEqual(tools.read, { count: 11, errors: 0, totalMs: 62, avgMs: 5.6, p50Ms: 6, p90Ms: 9, maxMs: 10 });
+    assert.deepEqual(tools.bash, { count: 1, errors: 0, totalMs: 5000, avgMs: 5000, p50Ms: 5000, p90Ms: 5000, maxMs: 5000 });
     assert.equal(tools.codemode.totalMs, 10);
     assert.equal(stages.tool!.count, 13);
     assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /SECRET/);
@@ -108,6 +108,32 @@ test('tool execution time is kept per tool name, with percentiles over bounded s
     assert.ok(Object.keys(metrics.snapshot().tools).length <= 65, 'names are bounded, the rest counted together');
     assert.ok(metrics.snapshot().tools['(other)']);
   } finally { performance.now = now; }
+});
+test('tool diagnostics count only signalled failures, once per completed call, without retaining errors', async () => {
+  const handlers = new Map<string, Function[]>(), metrics = new PerformanceMetrics();
+  registerPerformance({ on: (name: string, fn: Function) => { handlers.set(name, [...handlers.get(name) ?? [], fn]); } } as unknown as ExtensionAPI, () => metrics);
+  const emit = async (name: string, event: unknown) => { for (const fn of handlers.get(name) ?? []) await fn(event); };
+  for (const [id, isError] of [['ok', false], ['failed', true], ['legacy', undefined]] as const) {
+    await emit('tool_execution_start', { toolCallId: id, toolName: 'read', args: 'PRIVATE_ARGUMENT' });
+    await emit('tool_execution_end', { toolCallId: id, toolName: 'read', isError, result: 'PRIVATE_ERROR' });
+  }
+  await emit('tool_execution_end', { toolCallId: 'failed', toolName: 'read', isError: true });
+  await emit('tool_execution_end', { toolCallId: 'unstarted', toolName: 'read', isError: true });
+  await emit('tool_execution_start', { toolCallId: 'aborted', toolName: 'read' });
+  await emit('agent_settled', {});
+  await emit('tool_execution_end', { toolCallId: 'aborted', toolName: 'read', isError: true });
+  const { tools, stages } = metrics.snapshot();
+  assert.equal(tools.read.count, 3);
+  assert.equal(tools.read.errors, 1);
+  assert.equal(stages.tool!.count, 3);
+  assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /PRIVATE_ARGUMENT|PRIVATE_ERROR/);
+  for (let i = 0; i < 100; i++) metrics.recordTool(`tool${i}`, 1, i % 2 === 0);
+  const grouped = metrics.snapshot().tools['(other)'];
+  assert.ok(grouped.count > 0);
+  assert.equal(Object.values(metrics.snapshot().tools).reduce((sum, tool) => sum + tool.errors, 0), 51, 'overflow preserves error counts');
+  metrics.recordTool('invalid', NaN, true);
+  metrics.recordTool('invalid', -1, true);
+  assert.equal(metrics.snapshot().tools.invalid, undefined);
 });
 test('each measured assistant response reports its latency once, keyed by message timestamp', async () => {
   const handlers = new Map<string, Function[]>(), metrics = new PerformanceMetrics(), reported: [number, object][] = [];

@@ -13,18 +13,18 @@ const round = (ms: number) => Math.round(ms * 10) / 10;
 const rank = (sorted: readonly number[], p: number) => sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)];
 /** Each tool's own execution time by name, slowest total first. */
 class ToolTimings {
-  private readonly tools = new Map<string, { count: number; totalMs: number; maxMs: number; samples: number[] }>();
-  record(name: string, duration: number) {
+  private readonly tools = new Map<string, { count: number; errors: number; totalMs: number; maxMs: number; samples: number[] }>();
+  record(name: string, duration: number, isError: boolean) {
     const key = this.tools.has(name) || this.tools.size < TOOL_NAMES ? name : OTHER_TOOLS;
-    const timing = this.tools.get(key) ?? { count: 0, totalMs: 0, maxMs: 0, samples: [] };
-    timing.count++; timing.totalMs += duration; timing.maxMs = Math.max(timing.maxMs, duration);
+    const timing = this.tools.get(key) ?? { count: 0, errors: 0, totalMs: 0, maxMs: 0, samples: [] };
+    timing.count++; timing.errors += Number(isError); timing.totalMs += duration; timing.maxMs = Math.max(timing.maxMs, duration);
     timing.samples.push(duration); if (timing.samples.length > TOOL_SAMPLES) timing.samples.shift();
     this.tools.set(key, timing);
   }
   snapshot() {
     return Object.fromEntries([...this.tools].sort(([, a], [, b]) => b.totalMs - a.totalMs).map(([name, t]) => {
       const sorted = [...t.samples].sort((a, b) => a - b);
-      return [name, { count: t.count, totalMs: round(t.totalMs), avgMs: round(t.totalMs / t.count), p50Ms: round(rank(sorted, 0.5)),
+      return [name, { count: t.count, errors: t.errors, totalMs: round(t.totalMs), avgMs: round(t.totalMs / t.count), p50Ms: round(rank(sorted, 0.5)),
         p90Ms: round(rank(sorted, 0.9)), maxMs: round(t.maxMs) }];
     }));
   }
@@ -51,10 +51,10 @@ export class PerformanceMetrics {
     this.stages[stage] = { count: old.count + 1, totalMs: old.totalMs + duration, maxMs: Math.max(old.maxMs, duration), lastMs: duration };
   }
   /** One tool execution, from Pi's start to its end event: the tool's own time, without the model's. */
-  recordTool(name: string, duration: number) {
+  recordTool(name: string, duration: number, isError = false) {
     if (!Number.isFinite(duration) || duration < 0) return;
     this.record('tool', duration);
-    this.tools.record(name, duration);
+    this.tools.record(name, duration, isError);
   }
   context(messages: readonly AgentMessage[]) {
     let systemBytes = 0, toolSchemaBytes = 0, instructionBytes = 0, skillCatalogueBytes = 0;
@@ -91,7 +91,7 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
   pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now() }); });
   pi.on('tool_execution_end', event => {
     const started = tools.get(event.toolCallId); tools.delete(event.toolCallId);
-    if (started) metrics()?.recordTool(started.name, performance.now() - started.start);
+    if (started) metrics()?.recordTool(started.name, performance.now() - started.start, event.isError === true);
   });
   pi.on('before_provider_request', event => {
     const current = metrics();
@@ -116,7 +116,7 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
 }
 export const performanceTool = (metrics: () => PerformanceMetrics, outputs: () => object) => ({
   name: 'context_metrics', label: 'Context performance', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
-  description: 'Numeric local stage timings and latest request size estimates for this session. No raw prompts/output. Not provider billing or proof of task success.',
+  description: 'Numeric local stage/per-tool timings, tool error counts and latest request size estimates for this session. No raw prompts/output. Not provider billing or proof of task success.',
   parameters: Type.Object({}, { additionalProperties: false }),
   async execute() { return { content: [{ type: 'text' as const, text: JSON.stringify({ ...metrics().snapshot(), output: outputs() }, null, 2) }], details: {} }; },
 });

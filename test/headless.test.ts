@@ -1,5 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Type } from 'typebox';
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -104,6 +105,41 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
   const close = async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); };
   return { ask, bindings, close, errors, notes, sent, turns, dir, activeTools: () => session.getActiveToolNames(), compact: () => session.compact() };
 }
+
+test('optchat-perf exposes actual SDK tool failures without another model request or error text', async () => {
+  const previousProfile = lastProfile()!;
+  const pi = await headless('print', {
+    flag: 'work', connect: 'off', realTools: true,
+    later: api => {
+      api.registerTool({ name: 'diagnostic_probe', label: 'Diagnostic probe', description: 'Offline fixture',
+        parameters: Type.Object({ fail: Type.Boolean() }),
+        async execute(_id, args) {
+          if (args.fail) throw new Error('PRIVATE_TOOL_FAILURE');
+          return { content: [{ type: 'text', text: 'PRIVATE_TOOL_OUTPUT' }], details: {} };
+        } });
+      api.on('session_start', () => api.setActiveTools([...api.getActiveTools(), 'diagnostic_probe']));
+    },
+    script: messages => {
+      const last = messages.at(-1), text = last ? textContent(last.content) : '';
+      if (last?.role === 'user' && /diagnostic probe (ok|fail)$/.test(text))
+        return { name: 'diagnostic_probe', arguments: { fail: text.endsWith('fail') } };
+      return undefined;
+    },
+  });
+  try {
+    await pi.ask('diagnostic probe ok');
+    await pi.ask('diagnostic probe fail');
+    const requests = pi.sent.length;
+    await pi.ask('/optchat-perf');
+    assert.equal(pi.sent.length, requests, 'the command is local, with no model request');
+    const note = pi.notes.at(-1)!;
+    const report = JSON.parse(note);
+    assert.equal(report.tools.diagnostic_probe.count, 2);
+    assert.equal(report.tools.diagnostic_probe.errors, 1);
+    assert.doesNotMatch(note, /PRIVATE_TOOL_FAILURE|PRIVATE_TOOL_OUTPUT/);
+    assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); rememberProfile(previousProfile); }
+});
 
 test('a headless run without a binding or --optchat-profile is plain Pi: it answers, and no profile is picked or created', async () => {
   for (const mode of ['print', 'rpc'] as const) {

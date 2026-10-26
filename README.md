@@ -210,7 +210,7 @@ Request budgeting uses Pi's estimate of the assembled prompt, active tool schema
 
 ### Context performance
 
-Large shell results can reach the model as a deterministic preview with a session-scoped, searchable original (`output_read`); canonical shell evidence and the operation journal stay intact. Storage failure falls back to the original. `/optchat-perf` shows numeric request-size and stage-latency diagnostics without an LLM call, including each tool's own execution time (count, total, average, p50, p90, max per tool name). Focused child history is an opt-in setting, enabled automatically only for a child model whose price rises past a prompt size; such a child also compacts before that size (see `docs/context-performance.md`).
+Large shell results can reach the model as a deterministic preview with a session-scoped, searchable original (`output_read`); canonical shell evidence and the operation journal stay intact. Storage failure falls back to the original. `/optchat-perf` shows numeric request-size and stage-latency diagnostics without an LLM call, including each tool's own execution time (count, errors signalled by Pi, total, average, p50, p90, max per tool name). Focused child history is an opt-in setting, enabled automatically only for a child model whose price rises past a prompt size; such a child also compacts before that size (see `docs/context-performance.md`).
 
 The Agents panel includes an actual `model(thinking)` column (for example `gpt-6-luna(xhigh)`), using effective SDK reasoning levels rather than current profile defaults. [Retention, privacy, offline benchmarks and limitations](docs/context-performance.md).
 

@@ -25,6 +25,13 @@ Independent review verified main-path original persistence and parallel result p
 
 After fetching origin, `origin/main` and branch HEAD both resolve to `90d6ab7` (0 ahead/0 behind). The earlier 48-ahead count used a stale remote-tracking ref. Preserve the main checkout; publish the verified worktree branch `lennix/shell-panel` without a force push.
 
+## Per-tool failure diagnostics (2026-10-26)
+
+- Goal: distinguish slow successful calls from Pi-signalled tool errors in `/optchat-perf` and `context_metrics`, without retaining error text or adding provider calls.
+- Verified: new regression failed before implementation (`errors` absent); 9 focused performance tests pass, covering duplicate/unmatched ends, settlement, legacy events, invalid durations and bounded overflow. Real SDK fixture executes one successful tool and one throwing tool; `/optchat-perf` shows `count: 2, errors: 1` without another scripted model request or private fixture text.
+- Verified: full unit gate 760 passed / 0 failed / 1 Windows skip (receipt `af7ff7e0-90f3-4e84-b67a-c9e88c7cf32d`), Pi compatibility 2/2 and typecheck. The first integrated run exposed fixture profile-state leakage; restoring the previous last-used profile fixed it before the green run. Scoped diff reviewed; Ripwire quality has no gating regressions (8 minor churn findings), optional `recordTool` parameter has no incompatible callers. Test-gate exit 4 lists broad affected tests/uncovered symbols; it is not a passing coverage gate. No live/paid benchmarks were run.
+- Activation not verified: the production session has not loaded this change; apply on a later reload/new Pi process, not an automatic reload. Publication is tracked by the repository commit/upstream, not by the test receipts.
+
 ## Boundaries
 
 `zoom(agent)` exposes a text transcript: child tool-result text is complete and pageable, but image blocks are omitted by `textContent(..., false)`. This image omission is unchanged by the text-output recovery fix; image retrieval/storage remains out of scope. Synthetic/no-provider checks do not prove real-model semantic recall, provider token accounting, cache hits, or live Shells UI activation. Do not substitute approximate budgeting for an exact tokenizer claim. No paid generation, deployment, secrets, or personal histories in fixtures.
