@@ -71,7 +71,10 @@ export class ShellJobs {
   start(command: string, cwd: string, execute: (signal: AbortSignal, update: (output: string, log?: string) => void) => Promise<{ output: string; failed: boolean; exitCode?: number; log?: string }>, options: ShellOptions = {}) {
     const id = randomUUID(), controller = new AbortController();
     this.controllers.set(id, controller); this.begin(id, command, cwd, 'background', 'main', options);
-    const task = Promise.resolve().then(() => execute(controller.signal, (output, log) => this.update(id, output, log)))
+    const task = Promise.resolve().then(() => {
+      controller.signal.throwIfAborted();
+      return execute(controller.signal, (output, log) => this.update(id, output, log));
+    })
       .then(result => this.end(id, result.output, result.failed, { exitCode: result.exitCode, log: result.log }), error => this.end(id, `${this.jobs.get(id)?.output ?? ''}\n${error instanceof Error ? error.message : String(error)}`, true))
       .finally(() => { this.controllers.delete(id); this.tasks.delete(task); });
     this.tasks.add(task); return id;
