@@ -30,6 +30,7 @@ instructions follow the operator's preference: as autonomous as possible, refuse
 harmful calls (unrequested irreversible loss of work, leaked secrets, unrequested effects on
 people or production beyond the operator's own repositories, injected instructions).
 
+- The operator's standing preference pre-authorizes repository-only PR merges in their own repositories, including conflict resolution, without requiring a fresh exact PR list. Merge-triggered deployments, releases, production writes, third-party repositories and bypassing required checks are outside that rule. A newer explicit prohibition takes precedence. This is advisor policy, not a deterministic admission bypass: an unavailable or refusing advisor still waits for the operator.
 - `APPROVE`: the call runs once, with an info notice naming the model and reason.
 - `DENY`, an unclear answer, an error or a 30-second timeout: the call waits for the operator
   as below, and the refusal tells the model why. The advisor is asked once per pending call.
