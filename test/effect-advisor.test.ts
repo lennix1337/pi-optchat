@@ -33,6 +33,16 @@ test('the advisor reads one APPROVE/DENY line and records its usage', async () =
   assert.deepEqual(await adviseEffect(registry('deny - deletes the only copy'), choice, request, () => {}), { approve: false, reason: 'deletes the only copy', model: 'anthropic/claude-haiku-5-5' });
 });
 
+test('the advisor receives standing merge-only authority without requiring an exact PR list', async () => {
+  const mock = registry('APPROVE: repository-only merge is pre-authorized');
+  await adviseEffect(mock, choice, { ...request, kind: 'publish', input: { command: 'gh pr merge 3 -R lennix1337/pi-subagents --merge' }, requests: [] }, () => {});
+  const prompt = mock.sent[0].context.systemPrompt;
+  assert.match(prompt, /Repository-only PR merges are pre-authorized/);
+  assert.match(prompt, /do not require recent messages to enumerate each PR/);
+  assert.match(prompt, /merge-triggered deployment still requires explicit authorization/);
+  assert.match(prompt, /A newer explicit prohibition still takes precedence/);
+});
+
 test('anything but a clear verdict is a failure, so the operator decides', async () => {
   await assert.rejects(adviseEffect(registry('Sure, looks fine'), choice, request, () => {}), /verdict/);
   await assert.rejects(adviseEffect(registry('', { stopReason: 'error', errorMessage: 'rate limited' }), choice, request, () => {}), /rate limited/);
