@@ -26,3 +26,5 @@ Base: OptChat 0.8.4, `90d6ab7`, matching the installed Git package. Worktree: `w
 - The current interactive Pi has not reloaded the extension; final live keyboard/visual validation remains pending.
 - Ripwire edit-check reports no baseline for the new function; quality-delta could not find its baseline. Test-gate emits conservative, unresolved call-graph coverage; the full suite was run instead.
 - Abrupt OS termination does not execute extension cleanup; native process lifecycle behavior is Pi's responsibility.
+
+The offline provider-catalog regression is `node --experimental-transform-types --import ./test/support.ts --test test/tool-catalog.test.ts`. It measures serialized default tool schemas with a synthetic provider and checks catalog order and the system prefix across tool discovery and explicit deferred-tool activation; it does not measure live provider savings.
