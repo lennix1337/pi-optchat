@@ -18,7 +18,7 @@ const validInputs: Record<string, Record<string, unknown>> = {
   zoom: { id: 0 }, date: { id: 0 }, search: { text: 'fixture' }, output_read: { ref: 'a'.repeat(64) },
   shell_start: { command: 'not executed', timeout: 1, notify: 'none' }, shell_status: {}, shell_stop: { id: 'fixture' },
   operation_state: {}, operational_state: {}, context_metrics: {}, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
-  tell: { id: 'fixture', message: 'not sent' },
+  tell: { id: 'fixture', message: 'not sent' }, catchup_report: {},
 };
 const tools = registeredTools();
 test('the registered tool set is completely covered by strict input cases', () => {

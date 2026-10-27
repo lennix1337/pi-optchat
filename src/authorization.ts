@@ -10,7 +10,7 @@ export interface PendingApproval { token: string; tool: string; kind?: string; s
 export type ApprovalMode = 'all' | 'risk';
 interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode }
 
-const reads = new Set(['read', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status']);
+const reads = new Set(['read', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status', 'catchup_report']);
 const navigation = new Set(['map', 'task', 'search', 'symbol', 'callers', 'callees', 'impact', 'exemplar', 'edit_check', 'quality', 'test_gate']);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 

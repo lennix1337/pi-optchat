@@ -34,6 +34,7 @@ import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
+import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
@@ -104,7 +105,7 @@ export default function optchat(pi: ExtensionAPI) {
   // First: a refused wait never ran, so it needs no approval and leaves no operation to journal.
   registerForegroundWaitGuard(pi);
   // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
-  registerEffectApprovals(pi, { advisor: (request, ctx) => {
+  const approvals = registerEffectApprovals(pi, { advisor: (request, ctx) => {
     const profile = active;
     if (!profile) return Promise.reject(new Error('no OptChat profile is open'));
     let grants: string[] = [];
@@ -508,6 +509,8 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.on('session_before_switch', (event, ctx) => blockSwitch(event.reason === 'new' ? '/new' : '/resume', ctx));
   pi.on('session_before_fork', (event, ctx) => blockSwitch(event.position === 'at' ? '/clone' : '/fork', ctx));
+  const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
+    ? catchupSource(active, flush, approvals, shells) : undefined);
   pi.on('input', async (event, ctx) => {
     if (joined) {
       try {
@@ -633,7 +636,7 @@ export default function optchat(pi: ExtensionAPI) {
       const system = stateless(promptFor(prompt, a.config));
       if (records?.epoch !== viewEpoch) {
         const operational = readOperationalState(join(a.dir, 'operational-state.json'));
-        records = { epoch: viewEpoch, text: operational.entries.length ? renderOperationalContext(operational) : '' };
+        records = { epoch: viewEpoch, text: [operational.entries.length ? renderOperationalContext(operational) : '', catchup.context()].filter(Boolean).join('\n\n') };
       }
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
@@ -804,6 +807,7 @@ export default function optchat(pi: ExtensionAPI) {
         compactor: a.config.compactor, agents: a.config.subagent, error: a.memory.lastError,
         compactorLabel: roleModel(a.config, 'compactor', main), agentsLabel: roleModel(a.config, 'subagent', main) }) ?? '';
     }
+    if (action === 'catchup' || action.startsWith('catchup ')) return catchup.command(action.slice('catchup'.length).trim(), ctx);
     if (action === 'retry-summary' || action.startsWith('retry-summary ')) {
       await retrySummary(required().memory, action.slice('retry-summary'.length), ctx); return;
     }
@@ -887,7 +891,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.hasUI) execFile(isWindows ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open', [file], error => { if (error && (!isWindows || error.code === 'ENOENT')) ctx.ui.notify(`Open ${file}`, 'info'); });
       ctx.ui.notify(file, 'info'); return;
     }
-    if (action) throw new Error('Use /optchat [profile|settings|model|fallback|agents|agents model|agents fallback|usage|activity|shells|instructions|browse|import].');
+    if (action) throw new Error('Use /optchat [catchup|profile|settings|model|fallback|agents|agents model|agents fallback|usage|activity|shells|instructions|browse|import].');
   };
   pi.registerCommand('complete', { description: 'End this connected conversation and hand off to the main agent', handler: async (_args, ctx) => {
     if (!remote) { ctx.ui.notify('/complete is for connected subagent windows.', 'info'); return; }
@@ -906,7 +910,7 @@ export default function optchat(pi: ExtensionAPI) {
       } catch (error) { ctx.ui.notify(errorText(error), 'error'); }
     } });
   pi.registerCommand('optchat', { description: 'OptChat profiles, settings, models, agents, instructions, memory browser, and imports',
-    getArgumentCompletions: prefix => ['profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'shells', 'instructions', 'browse', 'import', 'retry-summary'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
+    getArgumentCompletions: prefix => ['catchup', 'profile', 'settings', 'model', 'fallback', 'agents', 'agents model', 'agents fallback', 'usage', 'activity', 'shells', 'instructions', 'browse', 'import', 'retry-summary'].filter(s => s.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(errorText(error), 'error'); } },
   });
 }

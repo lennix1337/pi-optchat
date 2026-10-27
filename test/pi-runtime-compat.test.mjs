@@ -24,10 +24,11 @@ test('loads OptChat with Pi 1.2 and registers its tools and lifecycle handlers',
   assert.equal(loaded.extensions.length, 1);
 
   const [extension] = loaded.extensions;
-  for (const name of ['shell_start', 'shell_status', 'shell_stop', 'zoom', 'search']) {
+  for (const name of ['shell_start', 'shell_status', 'shell_stop', 'zoom', 'search', 'catchup_report']) {
     assert.ok(extension.tools.has(name), `Pi 1.2 did not register the ${name} tool`);
   }
   assert.ok(extension.commands.has('optchat'), 'Pi 1.2 did not register the /optchat command');
+  assert.ok(extension.commands.has('catchup'), 'Pi 1.2 did not register the /catchup command');
   for (const event of ['session_start', 'session_shutdown', 'before_agent_start']) {
     assert.ok(extension.handlers.has(event), `Pi 1.2 did not register the ${event} lifecycle handler`);
   }

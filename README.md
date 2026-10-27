@@ -77,9 +77,18 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/optchat instructions` | Edit this profile's `AGENTS.md`. |
 | `/optchat browse` | Open a readable snapshot of memory: the shape of what the model sees, summaries you can open down to the original messages, and search that shows where each message is folded. Run again to refresh. |
 | `/optchat import` | Import history, or resume/discard a paused import. |
+| `/catchup` or `/optchat catchup` | Read-only receipt since your previous recorded human message: all wakes across midnight, reported work, latest observed PRs/checks and current local approval/recovery counts. `history`, `window <index>`, `log <offset> [window]`, `json`, and `live` disclose details. |
 | `/heartbeat` | Today's heartbeat wakes (time, trigger, how the turn ended, its last reply, commits and pushes) and the wake budget left in the rolling 24 h. `/heartbeat queue` lists the idle-time work queue; `/heartbeat add <text>` appends an item to it. |
 | `/complete` | In a connected window: end the conversation and hand off to the main agent. |
 | `/tell-main <message>` | In a connected window: message the main agent. |
+
+## Catch up after an absence
+
+The first interactive TUI message starts tracking; the next freezes the original-message range before that input. A small return widget links to `/catchup`. Commands, extension events, RPC inputs and report reads do not reset or acknowledge it. Intervals survive restart in the profile's `catchup.json`; the last 32 are retained with an explicit omitted count. Every original remains in memory and is reachable through paged `log` entries and `zoom`.
+
+The page puts observed open PRs/non-passing checks first, followed by **self-reported** work and the complete wake timeline (bounded lists explicitly disclose omissions). PR observations are deduplicated by URL; repeated wakes are counted separately. Only recognized structured result records are extracted, so zero extracted items is not proof that no decision remains. States are last observed, not live GitHub checks. The separate live-local section shows mechanical approval requests, uncertain tool outcomes and jobs; it grants no permission and never retries work.
+
+For old history without recorded human provenance, `/catchup range <from> <to>` reports an explicit original-message range, end exclusive. It never guesses a human boundary. `/catchup live` shows current work; `history` keeps the earlier absence findable after follow-up questions. Counts cover this profile's transcript only, with Code Mode counted as one outer call. No model, network, paid request or rewriting of originals is needed to derive the receipt. Agent discovery: [optchat-catchup skill](skills/optchat-catchup/SKILL.md); the model-facing read-only tool is `catchup_report`.
 
 ## Zoom in Code Mode
 
