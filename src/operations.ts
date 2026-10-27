@@ -20,7 +20,7 @@ interface Operation {
   /** Pi dispatch event precedes validation/tool_call; it does not prove the tool body ran. */
   dispatchObserved?: boolean;
 }
-const READ_ONLY = new Set(['read', 'grep', 'find', 'ls', 'zoom', 'date', 'search', 'operation_state', 'operational_state']);
+const READ_ONLY = new Set(['read', 'grep', 'find', 'ls', 'zoom', 'date', 'search', 'operation_state', 'operational_state', 'catchup_report']);
 const LIMIT = 1000;
 const bounded = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
 function valid(value: unknown): value is Operation {

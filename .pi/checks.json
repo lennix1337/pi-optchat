@@ -42,6 +42,21 @@
       "argv": ["node", "--import", "tsx", "--test", "test/pi-runtime-compat.test.mjs"],
       "timeoutMs": 120000
     },
+    "catchup-mutations": {
+      "description": "Disposable-source proof that extension/RPC messages cannot advance human receipt boundaries",
+      "argv": ["node", "test/catchup-mutations.mjs"],
+      "timeoutMs": 60000
+    },
+    "catchup-benchmark": {
+      "description": "Synthetic 14-wake local receipt assembly latency; no provider/cache/end-to-end gain claim",
+      "argv": ["node", "--import", "tsx", "test/catchup-benchmark.mjs"],
+      "timeoutMs": 30000
+    },
+    "catchup": {
+      "description": "Deterministic human-boundary receipt, hook/command/tool chain and narrow-terminal UI; no inference/network",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/catchup.test.ts", "test/catchup-integration.test.ts", "test/catchup-runtime.test.ts"],
+      "timeoutMs": 30000
+    },
     "unit": {
       "description": "Full hermetic unit suite; excludes live and paid benchmark entry points",
       "argv": ["node", "node_modules/tsx/dist/cli.mjs", "--import", "./test/support.ts", "--test", "test/*.test.ts"],

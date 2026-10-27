@@ -150,4 +150,5 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const reset = (ctx: UiContext) => { gate.clear(); alerted.clear(); advised.clear(); if (grant) display.hide(ctx); };
   pi.on('session_start', (_event, ctx) => reset(ctx));
   pi.on('session_shutdown', (_event, ctx) => reset(ctx));
+  return gate;
 }
