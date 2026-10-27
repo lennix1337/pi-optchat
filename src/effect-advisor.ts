@@ -1,10 +1,22 @@
-import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ModelChoice } from './compactor.ts';
 import { askOneLine } from './one-line.ts';
 
 /** A high-impact call the gate stopped, with what the operator recently asked for. */
-export interface AdvisorRequest { kind?: string; tool: string; input: unknown; cwd: string; requests: string[]; grants?: string[] }
+export type GitHubIdentity = { status: 'verified'; login: string } | { status: 'unavailable' };
+export interface AdvisorRequest { kind?: string; tool: string; input: unknown; cwd: string; requests: string[]; grants?: string[]; githubIdentity?: GitHubIdentity }
+
+/** Read public identity only; never switch accounts, inspect tokens, or grant permission. */
+export async function readGitHubIdentity(exec: ExtensionAPI['exec'] | undefined): Promise<GitHubIdentity> {
+  if (!exec) return { status: 'unavailable' };
+  try {
+    const result = await exec('gh', ['api', '--hostname', 'github.com', 'user', '--jq', '.login'], { timeout: 3000 });
+    const login = result.stdout.trim();
+    return result.code === 0 && !result.killed && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(login)
+      ? { status: 'verified', login } : { status: 'unavailable' };
+  } catch { return { status: 'unavailable' }; } // Missing CLI/auth/timeout is reported as unknown, never invented ownership.
+}
 export interface AdvisorVerdict { approve: boolean; reason: string; model: string }
 
 // The operator's stated preference (2026-10-25): as autonomous as possible; refuse only the clearly harmful.
@@ -12,6 +24,7 @@ export const ADVISOR_PROMPT = `You review one tool call that an autonomous codin
 The operator wants the agent to be as autonomous as possible: approve by default.
 When the operator's recent messages ask for the work this call does, the operator has already approved it: approve, whatever its size or model cost.
 Repository-only PR merges are pre-authorized in the operator's own repositories: approve without a fresh permission request, and do not require recent messages to enumerate each PR. Resolving merge conflicts and retaining both sides' tests are part of that work. A merge is not a deploy, but a merge-triggered deployment still requires explicit authorization; do not extend this rule to releases, production writes, third-party repositories or bypassing required checks. A newer explicit prohibition still takes precedence; an older quoted restriction does not override the operator's newer merge authorization.
+When a verified GitHub identity snapshot is provided, an explicitly named repository whose owner matches that login (case-insensitive) belongs to the authenticated operator, even if cwd is their home or the checkout has a different name. The snapshot is ownership evidence, not authorization: it does not approve every operation, organization ownership, other owners, a later account switch, deployments or bypasses. An unavailable snapshot means unknown, not third-party. A question about why approval is needed is not itself an instruction revoking standing merge authority.
 Deny only when the call is clearly harmful:
 - it destroys work or data that cannot be recovered and the operator's recent messages did not ask for it: force-pushing over a remote branch, deleting repositories or branches or worktrees that hold unpushed or uncommitted work, recursively deleting a home, project or system folder, git reset --hard or git clean over uncommitted changes;
 - it leaks secrets, credentials or personal data, or sends data to an unknown destination;
@@ -25,11 +38,12 @@ Answer with exactly one line: APPROVE or DENY, a colon, then the reason in at mo
 const MAX_INPUT = 6000;
 const verdictLine = /^\s*\**\s*(APPROVE|DENY)\b\**\s*[:\-–—]?\s*(.*)$/i;
 
-function describe({ kind, tool, input, cwd, requests, grants }: AdvisorRequest) {
+function describe({ kind, tool, input, cwd, requests, grants, githubIdentity }: AdvisorRequest) {
   const args = JSON.stringify(input, null, 1);
   return [
     `Operator's most recent messages, oldest first:\n${requests.length ? requests.map(text => `- ${text}`).join('\n') : '(none)'}`,
     ...(grants?.length ? [`Recorded authorizations for this action (latest matching record; superseded and expired ones are omitted):\n${grants.map(line => `- ${line}`).join('\n')}`] : []),
+    ...(githubIdentity ? [`GitHub identity snapshot from fixed read-only gh api lookup (not a permission grant): ${JSON.stringify(githubIdentity)}`] : []),
     `Working directory: ${cwd}`,
     `Risk class: ${kind ?? 'effect'}`,
     `Tool: ${tool}`,
