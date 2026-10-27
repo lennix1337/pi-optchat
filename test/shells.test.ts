@@ -38,6 +38,36 @@ test('managed jobs return immediately, stop independently and close waits for cl
   assert.ok(jobs.list().every(j => j.ended));
 });
 
+test('stopping a queued managed job prevents execution and reports its stop once', async () => {
+  const jobs = new ShellJobs(), reports: string[] = [];
+  let executions = 0;
+  jobs.setReporter({ finished: job => reports.push(job.state), alerted() {} });
+  const id = jobs.start('queued effect', '/project', async () => {
+    executions++;
+    return { output: 'effect executed', failed: false };
+  });
+  assert.equal(jobs.stop(id), true);
+  await jobs.close();
+  assert.equal(executions, 0, 'cancellation before dispatch must prevent the effect, not merely label it stopped');
+  assert.equal(jobs.list()[0].state, 'stopped');
+  assert.deepEqual(reports, ['stopped']);
+  assert.equal(jobs.stop(id), false);
+  await jobs.close();
+  assert.deepEqual(reports, ['stopped'], 'repeated close must not report again');
+});
+
+test('closing immediately prevents every queued executor from starting', async () => {
+  const jobs = new ShellJobs();
+  let executions = 0;
+  for (let i = 0; i < 3; i++) jobs.start(`queued ${i}`, '/project', async () => {
+    executions++;
+    return { output: 'effect executed', failed: false };
+  });
+  await jobs.close();
+  assert.equal(executions, 0);
+  assert.ok(jobs.list().every(job => job.state === 'stopped' && job.ended !== undefined));
+});
+
 test('managed background captures successful and rejected execution without unhandled rejection', async () => {
   const jobs = new ShellJobs();
   jobs.start('ok', '.', async () => ({ output: 'done', failed: false }));

@@ -77,6 +77,11 @@
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/catchup.test.ts", "test/catchup-integration.test.ts", "test/catchup-runtime.test.ts"],
       "timeoutMs": 30000
     },
+    "shell-lifecycle": {
+      "description": "Offline managed shell dispatch/cancellation, child exit and SDK headless notification/cleanup regressions",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/shells.test.ts", "test/headless.test.ts"],
+      "timeoutMs": 120000
+    },
     "unit": {
       "description": "Full hermetic unit suite; excludes live and paid benchmark entry points",
       "argv": ["node", "node_modules/tsx/dist/cli.mjs", "--import", "./test/support.ts", "--test", "test/*.test.ts"],
