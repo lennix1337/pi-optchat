@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
 import { EffectApprovals, type ApprovalMode, type PendingApproval } from './authorization.ts';
-import type { AdvisorRequest, AdvisorVerdict } from './effect-advisor.ts';
+import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
@@ -80,13 +80,14 @@ const RESULTS = { embedded: undefined, invalid: { action: 'handled' }, standing:
   approved: { action: 'continue' } } as const satisfies Record<keyof typeof NOTICES, InputEventResult | undefined>;
 
 /** Gate admission where a refused call first goes to the advisor, once per pending call; `note` explains a refusal it did not lift. */
-function advisedAdmission(gate: EffectApprovals, advisor: Advisor | undefined, grant: boolean) {
+function advisedAdmission(gate: EffectApprovals, advisor: Advisor | undefined, grant: boolean, pi: ExtensionAPI) {
   // A delegated session never gets one: its calls wait for the operator in the owning session.
   const advise = grant && process.env.OPTCHAT_EFFECT_ADVISOR !== 'off' ? advisor : undefined;
   const notes = new Map<string, string>();
   const ask = async (pending: PendingApproval, call: { session: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
     try {
-      const verdict = await advise!({ kind: pending.kind, tool: call.tool, input: call.input, cwd: ctx.cwd, requests: recentRequests(ctx) }, ctx);
+      const githubIdentity = pending.kind === 'push' || pending.kind === 'publish' ? await readGitHubIdentity(pi.exec?.bind(pi)) : undefined;
+      const verdict = await advise!({ kind: pending.kind, tool: call.tool, input: call.input, cwd: ctx.cwd, requests: recentRequests(ctx), githubIdentity }, ctx);
       if (verdict.approve && gate.approveByAdvisor(call.session, pending.token)) {
         ctx.ui.notify(`Auto-approved by ${verdict.model} \u2014 ${label(pending)}: ${pending.summary} (${verdict.reason})`, 'info');
         return undefined;
@@ -120,7 +121,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all') });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
-  const advised = advisedAdmission(gate, advisor, grant);
+  const advised = advisedAdmission(gate, advisor, grant, pi);
   // Child SDK prompt/steer calls default to interactive even when manager-authored.
   if (grant) pi.on('input', (event, ctx) => {
     const command = operatorCommand(gate, event.text, event.source, ctx);

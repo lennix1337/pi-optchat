@@ -268,6 +268,27 @@ test('a cheap advisor approves ordinary risky calls itself; only its refusals an
   assert.ok(notices.some(([text, type]) => /advisor/i.test(text) && /provider down/.test(text) && type === 'warning'));
 });
 
+test('advisor receives a verified GitHub login through the registered hook, without granting the call', async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  const lookups: unknown[] = [], asked: any[] = [];
+  let output = 'lennix1337\n';
+  const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); },
+    async exec(...args: unknown[]) { lookups.push(args); return { code: 0, stdout: output, stderr: '', killed: false }; } } as unknown as ExtensionAPI;
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, advisor: async request => {
+    asked.push(request); return { approve: false, reason: 'fixture veto retained', model: 'fixture' };
+  } });
+  const ctx = { cwd: 'C:/Users/operator', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] }, ui: { notify() {} } };
+  const call = (repo: string) => hooks.get('tool_call')!({ toolName: 'bash', input: { command: `gh pr merge 2 --repo ${repo} --merge` } }, ctx);
+  assert.equal((await call('lennix1337/pi-ripwire-but-better')).block, true, 'identity is evidence, not a permission bypass');
+  assert.deepEqual(asked[0].githubIdentity, { status: 'verified', login: 'lennix1337' });
+  assert.deepEqual(lookups[0], ['gh', ['api', '--hostname', 'github.com', 'user', '--jq', '.login'], { timeout: 3000 }]);
+  output = 'other-account\n';
+  await call('third-party/project');
+  assert.deepEqual(asked[1].githubIdentity, { status: 'verified', login: 'other-account' }, 'identity is refreshed for each decision, not a stale session cache');
+  assert.equal((await call('third-party/project')).block, true);
+  assert.equal(lookups.length, 2, 'a denied invocation is not replayed or looked up again');
+});
+
 test('delegated sessions never consult the advisor', async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
   let asked = 0;
