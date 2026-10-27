@@ -174,7 +174,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
       return { content: [{ type: 'text', text: `Background shell ${id} started. Inspect with shell_status or /optchat shells.` }], details: { id } };
     },
   });
-  pi.registerTool({ name: 'shell_status', label: 'Inspect background shell', description: 'Read a managed background shell state and bounded output, or list current session shells. Reading never waits for completion. A shell that ends is reported to you automatically, so read it only when you need more of its output.',
+  pi.registerTool({ name: 'shell_status', label: 'Inspect background shell', description: 'Read managed shell state and bounded output, or list session shells. Reading never waits; shell completion is reported automatically. Read only when you need more output.',
     parameters: Type.Object({ id: Type.Optional(Type.String()) }, { additionalProperties: false }),
     async execute(_id, args) {
       const list = jobs.list(), job = args.id ? list.find(j => j.id === args.id) : undefined;

@@ -567,7 +567,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (!active || !runStarted) return;
     // Shell evidence stays exact in the session; only the provider projection is reduced.
     const shell = event.message.role === 'toolResult' && ['bash', 'powershell'].includes(event.message.toolName);
-    const bounded = shell && active.config.recoverableOutput ? event.message : boundedMessage(event.message);
+    const bounded = active.config.recoverableOutput && (shell || active.outputs.preserveOriginal(event.message)) ? event.message : boundedMessage(event.message);
     const message = asUser(bounded);
     if (event.message.role === 'toolResult') fullToolResults.set(message, event.message);
     // Before the message is logged, so the image its text names is already there for zoom; zoom's own images are kept already.

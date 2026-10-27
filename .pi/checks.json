@@ -37,6 +37,11 @@
       "argv": ["node", "node_modules/typescript/bin/tsc", "--noEmit"],
       "timeoutMs": 120000
     },
+    "compact-output": {
+      "description": "Offline provider projection, exact originals, rejected shapes and stable catalog/deferred activation; no external API calls",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/output-context.test.ts", "test/output-native-runtime.test.ts", "test/output-runtime.test.ts", "test/reliability-performance.test.ts", "test/tool-catalog.test.ts"],
+      "timeoutMs": 60000
+    },
     "pi-compat": {
       "description": "Pi 1.2 extension loading and isolated lifecycle fixture; no inference",
       "argv": ["node", "--import", "tsx", "--test", "test/pi-runtime-compat.test.mjs"],

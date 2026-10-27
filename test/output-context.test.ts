@@ -197,3 +197,75 @@ test('bounded retention, integrity and Unicode-safe paging', () => {
     assert.throws(() => store.read(next), /unavailable/);
   } finally { f.close(); }
 });
+
+test('safe native and explicitly allowed MCP reports project text while preserving protocol and readback', async () => {
+  const f = fixture();
+  try {
+    const context = new OutputContext(new OutputStore(f.dir, 'safe'));
+    const native = { ...message(Array.from({ length: 800 }, (_, i) => `src/file${i}.ts:${i + 1}: ordinary match`).join('\n')), toolName: 'grep', isError: false };
+    const report = JSON.stringify({ dimensionHeaders: [{ name: 'country' }], metricHeaders: [{ name: 'sessions', type: 'TYPE_INTEGER' }], rows: Array.from({ length: 500 }, (_, i) => ({ dimensionValues: [{ value: `country${i}` }], metricValues: [{ value: '10' }] })), rowCount: 500, metadata: { currencyCode: 'USD' }, propertyQuota: { tokensPerDay: { remaining: 100 } } });
+    const image = { type: 'image' as const, data: 'image-data', mimeType: 'image/png' };
+    const mcp = { ...message(report), toolName: 'mcp__google_analytics__run_report', isError: false, details: { structuredContent: { retained: true } }, content: [{ type: 'text' as const, text: report }, image] };
+    const [a, b] = context.project([native, mcp]);
+    assert.notEqual(a, native); assert.notEqual(b, mcp);
+    assert.equal(b.role, 'toolResult'); if (b.role !== 'toolResult') throw new Error('unexpected role');
+    assert.equal(b.toolCallId, mcp.toolCallId); assert.equal(b.toolName, mcp.toolName); assert.equal(b.isError, false);
+    assert.deepEqual(b.details, mcp.details); assert.deepEqual(b.content[1], image);
+    const text = b.content[0].type === 'text' ? b.content[0].text : '';
+    for (const field of ['dimensionHeaders', 'metricHeaders', 'rowCount', 'metadata', 'propertyQuota']) assert.match(text, new RegExp(field));
+    const ref = /output:([a-f0-9]{64})/.exec(text)![1];
+    assert.match((await outputReadTool(() => context).execute('read', { ref, findText: 'country250' })).content[0].text, /country250/);
+    assert.equal(mcp.content[0].type === 'text' && mcp.content[0].text, report);
+  } finally { f.close(); }
+});
+
+test('unsafe shapes, errors, control tools and unapproved MCP tools remain exact', () => {
+  const f = fixture();
+  try {
+    const context = new OutputContext(new OutputStore(f.dir, 'safe'));
+    const values = [
+      { ...message(), toolName: 'grep' },
+      { ...message(), toolName: 'mcp__unknown__run_report', isError: false },
+      { ...message(), toolName: 'output_read', isError: false },
+      { ...message(log), toolName: 'mcp__google_analytics__run_report', isError: false },
+    ];
+    assert.deepEqual(context.project(values), values);
+  } finally { f.close(); }
+});
+
+test('report projection renews expired references and rejects unknown row shapes', () => {
+  const f = fixture(); let now = 1000;
+  try {
+    const context = new OutputContext(new OutputStore(f.dir, 'expiry', { ttlMs: 100, now: () => now }));
+    const rows = Array.from({ length: 200 }, (_, i) => ({ dimensionValues: [{ value: `country${i}` }], metricValues: [{ value: '10' }] }));
+    const report = { dimensionHeaders: [{ name: 'country' }], metricHeaders: [{ name: 'sessions' }], rowCount: 200, rows };
+    const original = { ...message(JSON.stringify(report)), toolName: 'mcp__google_analytics__run_realtime_report', isError: false };
+    const first = JSON.stringify(context.project([original]));
+    const ref = /output:([a-f0-9]{64})/.exec(first)![1];
+    now += 101;
+    assert.throws(() => context.read(ref, {}), /expired/);
+    const second = JSON.stringify(context.project([original]));
+    const renewed = /output:([a-f0-9]{64})/.exec(second)![1];
+    assert.match(context.read(renewed, { findText: 'country100' }), /country100/);
+    const unsafe = { ...original, content: [{ type: 'text' as const, text: JSON.stringify({ ...report, rows: [{ ...rows[0], control: 'retry' }, ...rows.slice(1)] }) }] };
+    assert.equal(context.project([unsafe])[0], unsafe);
+  } finally { f.close(); }
+});
+
+test('analytics report rejects unknown nested value objects beyond preview rows', () => {
+  const f = fixture();
+  try {
+    const context = new OutputContext(new OutputStore(f.dir, 'nested'));
+    const rows = Array.from({ length: 200 }, (_, i) => ({ dimensionValues: [{ value: `country${i}` }], metricValues: [{ value: '10' }] }));
+    for (const [field, value] of [
+      ['dimensionValues', { value: 'country10', control: { next: 'retry' } }],
+      ['metricValues', { value: { number: '10' } }],
+      ['metricValues', { value: '10', note: 'continue' }],
+    ] as const) {
+      const modified = rows.map((row, i) => i === 10 ? { ...row, [field]: [value] } : row);
+      const text = JSON.stringify({ dimensionHeaders: [{ name: 'country' }], metricHeaders: [{ name: 'sessions' }], rowCount: 200, rows: modified });
+      const original = { ...message(text), toolName: 'mcp__google_analytics__run_report', isError: false };
+      assert.equal(context.project([original])[0], original, `unsafe ${field} must not be projected`);
+    }
+  } finally { f.close(); }
+});
