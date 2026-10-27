@@ -56,6 +56,7 @@ import { Sync } from './sync.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
+import { registerSelfReload } from './self-reload.ts';
 
 const binding = 'optchat.profile';
 /** The request head the prompt cache holds (StableHead), kept in the session so /reload sends it again. */
@@ -728,6 +729,19 @@ export default function optchat(pi: ExtensionAPI) {
       await checkpoints;
     }
   });
+  registerSelfReload(pi, () => {
+    if (!active) return undefined;
+    const blockers = [
+      (stopping || fault) && 'Profile is closing or has a persistence fault.',
+      (remote || joined) && 'Reload belongs to the original local session, not a connected window.',
+      (importing || pendingImport(active.dir)) && 'Finish or close the import first.',
+      active.children.active && 'OptChat subagents are active; wait for their completion.',
+      runningShells(shells).length > 0 && 'Managed background shells are active; wait for their completion.',
+      reports.length > 0 && 'Pending reports must be delivered first.',
+      active.operations.blockReason('self_reload'),
+    ];
+    return { profile: active.name, blocked: blockers.find((reason): reason is string => typeof reason === 'string') };
+  }, async () => { flush(); await checkpoints; await checkpoint(required().dir); });
   registerConnectedRenderer(pi);
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id), ref => required().focus.observe(ref));

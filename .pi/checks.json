@@ -1,6 +1,21 @@
 {
   "version": 1,
   "checks": {
+    "self-reload-mutations": {
+      "description": "Disposable copies prove owner, busy, queue, abort, delegation readiness and resource-completion guards",
+      "argv": ["node", "test/self-reload-mutations.mjs"],
+      "timeoutMs": 60000
+    },
+    "self-reload-installed": {
+      "description": "Disposable installed Pi SDK real reload -> fresh extension -> tool -> final reply; network forbidden, no live profile",
+      "argv": ["node", "test/self-reload-installed.mjs"],
+      "timeoutMs": 40000
+    },
+    "self-reload": {
+      "description": "Offline checkpoint, native reload, fresh-runtime continuation and no-replay guards; no external model calls",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/self-reload.test.ts", "test/self-reload-runtime.test.ts", "test/tool-inputs.test.ts"],
+      "timeoutMs": 60000
+    },
     "effect-approval-mutations": {
       "description": "Disposable-source mutation proof for provenance, session ownership, one-shot consumption and pre-dispatch admission",
       "argv": ["node", "test/authorization-mutations.mjs"],
