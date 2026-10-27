@@ -28,6 +28,10 @@ It runs inside ordinary Pi, without a Pi runtime fork or separate launcher.
 
 This remains a **TypeScript Pi extension**; OptMem is the separate Rust companion. Provider requests consume your existing credentials and quota. Recovery is conservative, not exactly-once execution, a sandbox, or a guarantee against process crashes.
 
+## Reload and continue working
+
+With operator authorization, `self_reload` saves a task checkpoint, waits for the current run to finish, reloads Pi resources and resumes once from the fresh extension. No extra “continue” message is needed. Active work, queued messages and uncertain effects block it; it does not migrate running jobs or restart Pi. The first installation still needs a manual reload. See the [self-reload skill](skills/self-reload/SKILL.md) and [contract and validation](docs/self-reload.md).
+
 ## Install
 
 Install **this fork** from GitHub:
