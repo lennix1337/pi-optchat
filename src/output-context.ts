@@ -34,7 +34,7 @@ function safePreview(toolName: string, text: string): string | undefined {
   } catch { return; }
 }
 type ToolResult = Extract<AgentMessage, { role: 'toolResult' }>;
-type PreparedOutput = { message: ToolResult; textPart: Extract<ToolResult['content'][number], { type: 'text' }>; size: number; preview: string };
+type PreparedOutput = { message: ToolResult; textPart: Extract<ToolResult['content'][number], { type: 'text' }>; size: number; preview: string | undefined };
 
 function eligibleText(message: ToolResult, shell: boolean) {
   if (!shell && (message.isError || !(message.toolName === 'grep' || REPORT_TOOLS.has(message.toolName)))) return;
@@ -54,7 +54,6 @@ function prepareOutput(message: AgentMessage): PreparedOutput | undefined {
   if (size < MIN_BYTES) return;
   const shellPreview = shell ? previewOutput(textPart.text) : undefined;
   const preview = shell ? (shellPreview?.useful ? shellPreview.text : undefined) : safePreview(message.toolName, textPart.text);
-  if (!preview) return;
   return { message, textPart, size, preview };
 }
 
@@ -89,7 +88,7 @@ export class OutputContext {
         const { message: result, textPart, size, preview } = prepared;
         const text = textPart.text;
         this.totals.analyzed++;
-        if (Buffer.byteLength(preview) + 300 >= size * 0.8) { this.unchanged.add(message); return message; }
+        if (!preview || Buffer.byteLength(preview) + 300 >= size * 0.8) { this.unchanged.add(message); return message; }
         const ref = this.store.put(text);
         const content = `[Original saved as output:${ref}; use output_read with ref "${ref}" and offset/limit or findText. Expires after 7 days. Original transcript retained. Error flag: ${result.isError}.]\n${preview}`;
         if (Buffer.byteLength(content) >= size * 0.8) { this.unchanged.add(message); return message; }
