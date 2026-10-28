@@ -36,7 +36,7 @@ import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
-import { describeGrant, readOperationalState, renderOperationalContext } from './operational-state.ts';
+import { describeGrant, grantTargets, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
@@ -112,7 +112,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (!profile) return Promise.reject(new Error('no OptChat profile is open'));
     let grants: string[] = [];
     try {
-      const line = describeGrant(readOperationalState(join(profile.dir, 'operational-state.json')), request.kind, request.input, request.cwd);
+      const line = describeGrant(readOperationalState(join(profile.dir, 'operational-state.json')), request.kind, request.input, grantTargets(request.input, request.cwd));
       if (line) grants = [line];
     } catch { /* an unreadable state file must not block the advisor; the operator still decides */ }
     return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },

@@ -133,6 +133,15 @@ test('the first live rule that matches the action and a target decides; otherwis
   assert.equal(verdict('git status'), 'advisor', 'no effect: nothing to decide here; the gate already let it through');
 });
 
+test('a call with no recognised effect goes to the advisor even when the default asks', () => {
+  // The live contract defaults to ask; the fixture above defaults to advisor and would hide this.
+  const strict = parseContract({ version: 1, default: 'ask', rules: [{ action: 'push', scope: ['lennix1337/*'], level: 'free' }] });
+  const level = (command: string, cwd = 'C:/Users/swluc') => decide(strict, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo)).level;
+  assert.equal(level('git status'), 'advisor', 'nothing for the contract to decide');
+  assert.equal(level('git push origin main', 'C:/projetos/dentai-mono'), 'ask', 'an effect no rule names still gets the default');
+  assert.equal(level('git push -u origin feat/x', 'C:/projetos/pi-optchat'), 'free');
+});
+
 test('a call with several effects gets the strictest decision', () => {
   assert.equal(verdict('git push -u origin feat/x && pwsh -File deploy-changed.ps1', 'C:/projetos/pi-optchat'), 'ask');
   assert.equal(verdict('git push origin feat/x --force', 'C:/projetos/pi-optchat'), 'ask');
@@ -229,11 +238,14 @@ test('only a call that can change the contract file is a contract change; search
     `cat ~/.optchat/${f}`, `ls ~/.optchat/${f} 2>&1`, `jq .rules ~/.optchat/${f} 2>/dev/null`,
     `Get-Content C:/Users/swluc/.optchat/${f}`, `git log --oneline -- src/${f}`,
     `cd C:/projetos/pi-optchat && cat > vc-tmp.mts <<'EOF'\nconsole.log(decide(c, call('grep -n ${f} src/autonomy.ts')));\nEOF\nnode vc-tmp.mts; rm -f vc-tmp.mts`,
+    `cat ~/.optchat/${f} > /tmp/contract-copy.json`, `diff proposed.json ~/.optchat/${f} > /tmp/d.txt 2>&1`,
+    `cp ~/.optchat/${f} /tmp/backup.json`, `node scripts/check.mjs && grep -c ${f} src/autonomy.ts`,
   ]) assert.equal(bash(command), false, command);
   for (const command of [
     `echo '{}' > ~/.optchat/${f}`, `cp proposed.json ~/.optchat/${f}`, `grep a b | tee ~/.optchat/${f}`,
     `sed -i s/ask/free/ ~/.optchat/${f}`, `cat $(cp a ~/.optchat/${f})`, `node -e "fs.writeFileSync('${f}', '{}')"`,
     `cat > ~/.optchat/${f} <<'EOF'\n{}\nEOF`, `tee ~/.optchat/${f} <<EOF\n{}\nEOF`,
+    `echo x >> ~/.optchat/${f}`, `cat a 1> "~/.optchat/${f}"`, `mv proposed.json ~/.optchat/${f}`,
   ]) assert.equal(bash(command), true, command);
   assert.equal(touchesContract({ tool: 'edit', input: { path: `C:/Users/swluc/.optchat/${f}`, edits: [] } }), true);
   assert.equal(touchesContract({ tool: 'write', input: { path: `~/.optchat/${f}`, content: '{}' } }), true);

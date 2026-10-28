@@ -419,6 +419,7 @@ Restart Pi after source changes. Use `OPTCHAT_HOME` to test against a throwaway 
 ```sh
 npm run check      # type check
 npm test           # offline tests, no paid model calls
+npm run test:one -- --test-name-pattern="<name>" test/<file>.test.ts # one file or test, same loader flags
 npm run test:pi-compat # real Pi runtime compatibility checks, no paid model calls
 npm run test:live  # paid Anthropic calls on synthetic data in a disposable profile
 ```

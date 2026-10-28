@@ -61,15 +61,16 @@ export function decideEffect(contract: Contract, effect: Effect, now = Date.now(
   return rule ? { level: rule.level, effect, rule } : { level: contract.default, effect };
 }
 
-/** The strictest decision over every effect of a call; `advisor` when any effect has no rule and nothing asks. */
+/** The strictest decision over every effect of a call; `advisor` when nothing asks and an effect has no rule, or the call has no recognised effect. */
 export function decide(contract: Contract, effects: Effect[], now = Date.now()): Decision {
+  // The gate stopped the call for a reason the classifier cannot name: the contract has nothing to say about it.
+  if (!effects.length) return { level: 'advisor' };
   const decisions = effects.map(effect => decideEffect(contract, effect, now));
   const asked = decisions.find(d => d.level === 'ask');
   if (asked) return asked;
   const open = decisions.find(d => d.level === 'advisor');
   if (open) return open;
-  return decisions.reduce<Decision | undefined>((worst, d) => !worst || strictness[d.level as Level] > strictness[worst.level as Level] ? d : worst, undefined)
-    ?? { level: contract.default };
+  return decisions.reduce((worst, d) => strictness[d.level as Level] > strictness[worst.level as Level] ? d : worst);
 }
 
 /** A removed worktree or a file path still belongs to the checkout around it: use the nearest existing folder. */

@@ -71,16 +71,28 @@ const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerC
 const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor']);
 const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|jq|echo|printf|test|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
 
-/** Shell text that only reads: every segment a read-only command, no file redirect, no command substitution. */
-function readOnlyShell(command: string) {
-  const text = command.replace(/\d*>&\d/g, '').replace(/\d*>\s*\/dev\/null\b/g, '');
-  if (/[`>]|\$\(/.test(text)) return false;
-  return segments(text, '.').every(segment => readOnlyCommand.test(segment.command.replace(/^(?:\w+=\S*\s+)*/, '')));
-}
-
 /** Shell text without here-document bodies: a body is content for the file its command line names, like a write's content. */
 const withoutHeredocBodies = (command: string) =>
   command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, match => match.slice(0, match.indexOf('\n')));
+const redirect = /\d*>>?\s*("[^"]*"|'[^']*'|[^\s;&|]+)/g;
+/** A copy writes only its last argument; its sources are read. */
+const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
+
+/**
+ * Whether shell text can write the contract file: a redirect into it, a copy onto it, or any other segment that names it
+ * and is not a read-only command. Command substitution naming it counts, since its segments cannot be told apart.
+ */
+function shellWritesContract(command: string) {
+  const text = withoutHeredocBodies(command).replace(/\d*>&\d/g, '');
+  if (!namesContract(text)) return false;
+  if (/`|\$\(/.test(text)) return true;
+  return segments(text, '.').some(({ command: segment }) => {
+    if ([...segment.matchAll(redirect)].some(match => namesContract(match[1]))) return true;
+    const rest = segment.replace(redirect, '').replace(/^(?:\w+=\S*\s+)*/, '').trim();
+    if (copyCommand.test(rest)) return namesContract(rest.split(/\s+/).filter(arg => !arg.startsWith('-')).at(-1));
+    return namesContract(rest) && !readOnlyCommand.test(rest);
+  });
+}
 
 /**
  * A call that can change the contract: an edit or write of the file, a shell command naming it that is not read-only,
@@ -89,10 +101,7 @@ const withoutHeredocBodies = (command: string) =>
 export function touchesContract({ tool, input }: { tool: string; input: unknown }) {
   if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
   if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && namesContract(input.path);
-  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') {
-    const command = withoutHeredocBodies(input.command);
-    return !readOnlyShell(command) && namesContract(command);
-  }
+  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command);
   return namesContract(input);
 }
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);

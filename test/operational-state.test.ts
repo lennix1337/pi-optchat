@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describeGrant, latestGrant, readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { describeGrant, grantTargets, latestGrant, readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -127,6 +127,18 @@ test('a newer grant with overlapping scope supersedes the older one in queries a
   assert.doesNotMatch(context, /no Git\/push/);
   assert.match(describeGrant(state, 'push', { command: 'git push' }, 'C:/projetos/x')!, /^ALLOWED push/);
   assert.equal(describeGrant(state, 'discard', {}, 'C:/projetos/x'), undefined);
+}));
+
+test('a grant covers the folder a command acts in, not only the session folder', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  const state = updateOperationalState(file, scopedGrant('sim pode remover sempre se ja foi mergeada', '1', { action: 'delete', scope: 'C:/projetos', allow: true, until: 'done' }));
+  const grantFor = (command: string) => describeGrant(state, 'discard', { command }, grantTargets({ command }, 'C:/Users/swluc'));
+  assert.match(grantFor('cd C:/projetos/Genexus18MCP && git worktree remove worktrees/pr708 && git branch -D pr708-sync')!, /^ALLOWED delete in c:\/projetos /);
+  assert.match(grantFor('git -C C:/projetos/pi-optchat branch -D feat/x')!, /^ALLOWED delete/);
+  assert.equal(grantFor('git branch -D feat/x'), undefined, 'the home folder is outside the scope');
+  // A prose scope never covers a path, so the advisor would never see the grant it describes.
+  assert.throws(() => updateOperationalState(file, scopedGrant('sim', '2', { action: 'delete', scope: 'git worktrees whose branch is merged, any project in c:/projetos', allow: true, until: 'done' })), /grant\.scope/);
+  assert.throws(() => updateOperationalState(file, scopedGrant('sim', '3', { action: 'push', scope: 'c:/a; c:/b', allow: true, until: 'done' })), /grant\.scope/);
 }));
 
 test('a disjoint scope does not supersede, and expired grants disappear from queries and the block', () => withDirectory(directory => {

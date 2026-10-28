@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { Type } from 'typebox';
 import { record as isRecord } from './cache.ts';
+import { normalPath, segments } from './effect-classifier.ts';
 import { atomicWrite } from './store.ts';
 import { stringEnum } from './string-enum.ts';
 
@@ -255,6 +256,8 @@ export function readOperationalState(file: string): OperationalState {
 /** Appends one explicit fact, preserving prior records and their supersession lineage. */
 export function updateOperationalState(file: string, update: OperationalUpdate): OperationalState {
   const input = validateUpdate(update);
+  // Older records may hold prose scopes; a new one must be matchable, or the grant it describes never applies.
+  if (input.grant && /[\s;,#]/.test(input.grant.scope)) fail('grant.scope must be one repo root, path or glob (no spaces, lists or prose); put the details in text');
   const current = readOperationalState(file);
   const id = stableId(input);
   const duplicate = current.entries.find(entry => entry.id === id);
@@ -318,10 +321,18 @@ export function grantActionFor(kind: string | undefined, input: unknown): GrantA
   }
 }
 
-/** One advisor-facing line about the latest matching grant, or undefined when there is none. */
-export function describeGrant(state: OperationalState, kind: string | undefined, input: unknown, target: string, now = Date.now()) {
-  const action = grantActionFor(kind, input);
-  const found = action && latestGrant(state, action, target, now);
+/** Where a call acts: the session folder, each folder its shell segments `cd` into, and every `git -C` folder. */
+export function grantTargets(input: unknown, cwd: string) {
+  const command = isRecord(input) && typeof input.command === 'string' ? input.command : '';
+  const dirs = segments(command, cwd).flatMap(({ command: segment, dir }) =>
+    [dir, ...[...segment.matchAll(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/g)].map(match => normalPath(match[1], dir))]);
+  return [...new Set([cwd, ...dirs])];
+}
+
+/** One advisor-facing line about the latest grant matching any of the call's targets, or undefined when there is none. */
+export function describeGrant(state: OperationalState, kind: string | undefined, input: unknown, target: string | string[], now = Date.now()) {
+  const action = grantActionFor(kind, input), targets = [target].flat();
+  const found = action && activeGrants(state, now).filter(({ grant }) => grant.action === action && targets.some(t => scopeCovers(grant.scope, t))).at(-1);
   return found ? `${found.grant.allow ? 'ALLOWED' : 'PROHIBITED'} ${found.grant.action} in ${found.grant.scope} until ${found.grant.until} (record ${found.entry.id}, source message ${found.entry.sourceMessageId}): ${found.entry.text}` : undefined;
 }
 
