@@ -1,6 +1,11 @@
 {
   "version": 1,
   "checks": {
+    "ai-memory": {
+      "description": "Offline original/summary fidelity, bounded explicit repair, cursor preservation, sync and authenticated writer",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/ai-memory-provenance.test.ts", "test/ai-memory-auth.test.ts", "test/sync.test.ts"],
+      "timeoutMs": 60000
+    },
     "self-reload-mutations": {
       "description": "Disposable copies prove owner, busy, queue, abort, delegation readiness and resource-completion guards",
       "argv": ["node", "test/self-reload-mutations.mjs"],
