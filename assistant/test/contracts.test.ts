@@ -5,10 +5,11 @@ import { parseTask, parseAttempt, assertTaskTransition, parseTaskResponse } from
 import { parseApproval } from '../src/contracts/approvals.ts';
 import { parseConnector } from '../src/contracts/connectors.ts';
 import { parseArtifact } from '../src/contracts/artifacts.ts';
+import { object } from '../src/contracts/validation.ts';
 
 const source = { actorId: 'actor-a', sourceKind: 'external', sourceEventId: 'source-event-a' };
 const event = { version: 1, eventId: 'event-a', profileId: 'profile-a', sessionId: 'session-a', channelId: 'channel-a', taskId: 'task-a', runId: 'run-a', source, observedAt: '2026-10-28T12:00:00Z', sequence: 1, correlationId: 'correlation-a', evidence: { kind: 'observed', reference: 'evidence-a' } };
-const task = { version: 1, profileId: 'profile-a', taskId: 'task-a', status: 'needs_input', verification: 'not_verified', revision: 3, inputRevision: 2, sourceEventId: 'event-a' };
+const task = { version: 1, profileId: 'profile-a', taskId: 'task-a', title: 'Review plan', status: 'needs_input', verification: 'not_verified', revision: 3, inputRevision: 2, sourceEventId: 'event-a' };
 
 test('event boundary requires supported version, source and ordered profile-local sequence', () => {
   assert.deepEqual(parseEvent(event), event);
@@ -49,6 +50,31 @@ test('approval, connector and artifact shapes reject unknown or incomplete bound
   assert.deepEqual(parseConnector(connector), connector);
   assert.deepEqual(parseArtifact(artifact), artifact);
   assert.throws(() => parseApproval({ ...approval, scope: 'rule' }));
+  assert.throws(() => parseApproval({ ...approval, expiresAt: '2026-02-31T12:00:00Z' }), /contract\.expiresAt/);
   assert.throws(() => parseConnector({ ...connector, effect: 'assumed_read' }));
   assert.throws(() => parseArtifact({ ...artifact, review: 'approved', surprise: true }));
+});
+
+test('task title is required nonempty display metadata', () => {
+  const { title, ...missingTitle } = task;
+  assert.throws(() => parseTask(missingTitle), /contract.title/);
+  assert.throws(() => parseTask({ ...task, title: '  ' }));
+  assert.equal(parseTask({ ...task, title: 'Review plan' }).title, 'Review plan');
+});
+
+test('timestamps must be real canonical UTC calendar values', () => {
+  for (const observedAt of ['2026-02-31T12:00:00Z', '2025-02-29T00:00:00Z', '2026-04-31T00:00:00Z', '2026-01-01T24:00:00Z', '2026-01-01T00:00:00.1Z', '2026-13-01T00:00:00Z', '2026-01-00T00:00:00Z', '2026-01-01T00:00:60Z', '2026-01-01T00:00:00+00:00']) {
+    assert.throws(() => parseEvent({ ...event, observedAt }), observedAt);
+  }
+  for (const observedAt of ['2024-02-29T23:59:59Z', '2026-12-31T23:59:59.999Z']) {
+    assert.equal(parseEvent({ ...event, observedAt }).observedAt, observedAt);
+  }
+});
+
+
+test('nested validation identifies fields and preserves programming errors', () => {
+  assert.throws(() => parseEvent({ ...event, source: { ...source, sourceKind: 'bad' } }), /contract\.source\.sourceKind/);
+  assert.throws(() => parseEvent({ ...event, evidence: { kind: 'observed' } }), /contract\.evidence\.reference/);
+  const error = new Error('rule bug');
+  assert.throws(() => object({ nested: { field: 'x' } }, { nested: { field: () => { throw error; } } }), value => value === error);
 });
