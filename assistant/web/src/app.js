@@ -149,11 +149,26 @@ function responseForm(task) {
   const label = el('label', `Sua resposta · pedido ${draft.inputRevision}`); label.htmlFor = id;
   const input = el('textarea'); input.id = id; input.required = true; input.maxLength = 4000; input.value = draft.text;
   input.addEventListener('input', () => lifecycle.saveDraft(task, input.value));
-  const button = el('button', 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = uncertain() || mutationPending;
-  form.append(label, input, button);
+  const stale = draft.revision !== task.revision || draft.inputRevision !== task.inputRevision;
+  const button = el('button', 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = stale || uncertain() || mutationPending;
+  form.append(label, input);
+  if (stale) {
+    form.append(el('p', `Rascunho: pedido ${draft.inputRevision}, revisão da tarefa ${draft.revision}. Pedido atual: ${task.inputRevision}, revisão da tarefa ${task.revision}. Revise o pedido atual antes de vincular este texto a ele.`, 'hint'));
+    const review = el('button', 'Revisar pedido atual'); review.type = 'button';
+    review.addEventListener('click', () => {
+      const current = state.tasks.get(task.taskId);
+      if (!current || current.revision !== task.revision || current.inputRevision !== task.inputRevision || current.status !== 'needs_input') {
+        renderedKey = undefined; render(); return;
+      }
+      lifecycle.rebaseDraft(current);
+      renderedKey = undefined; render();
+    });
+    form.append(review);
+  }
+  form.append(button);
   form.addEventListener('submit', event => {
     event.preventDefault();
-    if (!input.value.trim()) return;
+    if (stale || !input.value.trim()) return;
     void mutate(`/web/api/tasks/${encodeURIComponent(task.taskId)}/respond`, { revision: draft.revision, inputRevision: draft.inputRevision, text: input.value });
   });
   return form;

@@ -38,6 +38,18 @@ test('storage failure prevents dispatch and pending writes cannot be replayed; s
   assert.equal(life.marker, null);
 });
 
+test('a stale draft keeps its text and revisions until explicitly rebound to the reviewed task', () => {
+  const life = new PanelLifecycle('p', storage());
+  const original = { taskId: 't', revision: 2, inputRevision: 3 };
+  const current = { taskId: 't', revision: 4, inputRevision: 5 };
+  life.saveDraft(original, 'private response');
+  life.saveDraft(current, 'edited response');
+  assert.deepEqual(life.draft(current), { revision: 2, inputRevision: 3, text: 'edited response' });
+  life.rebaseDraft(current);
+  assert.deepEqual(life.draft(current), { revision: 4, inputRevision: 5, text: 'edited response' });
+  assert.equal(life.storage.data.size, 0);
+});
+
 test('paging progress survives polls and drafts retain their original decision', () => {
   const life = new PanelLifecycle('p', storage());
   life.pollPage('page2'); life.nextPage('page3'); life.pollPage('page2');

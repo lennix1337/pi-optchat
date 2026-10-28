@@ -49,6 +49,10 @@ export class PanelLifecycle {
     this.drafts.set(task.taskId, { revision: previous?.revision ?? task.revision, inputRevision: previous?.inputRevision ?? task.inputRevision, text });
   }
   draft(task) { return this.drafts.get(task.taskId) ?? { revision: task.revision, inputRevision: task.inputRevision, text: '' }; }
+  rebaseDraft(task) {
+    const draft = this.drafts.get(task.taskId);
+    if (draft) this.drafts.set(task.taskId, { ...draft, revision: task.revision, inputRevision: task.inputRevision });
+  }
   clearDraft(taskId) { this.drafts.delete(taskId); }
   clearMarker() { this.storage.removeItem(this.key); this.marker = null; }
   reconcile(entries) {
