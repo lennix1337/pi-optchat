@@ -91,6 +91,16 @@
       "argv": ["node", "assistant/test/web-mutations.mjs"],
       "timeoutMs": 120000
     },
+    "assistant-setup": {
+      "description": "T11 honest setup: only exercised recent probes are ready, invalid URL/credential/identity never ready, no paid model call, local mode labels, onboarding provenance and corrections, read-only web status",
+      "argv": ["node", "--test", "assistant/test/setup.test.ts", "assistant/test/onboarding.test.ts", "assistant/test/web-setup.test.ts"],
+      "timeoutMs": 60000
+    },
+    "assistant-setup-mutations": {
+      "description": "Disposable-source proof that each setup honesty guard (presence, evidence, age, timeout, identity, revocation, URL, consent, declined label, correction authority) is load-bearing",
+      "argv": ["node", "assistant/test/setup-mutations.mjs"],
+      "timeoutMs": 300000
+    },
     "assistant-web": {
       "description": "Disposable loopback web channel: cookie, origin/CSRF, stale decisions, events, assets and browser state; no personal service",
       "argv": ["node", "--test", "assistant/test/web.test.ts", "assistant/test/web-state.test.mjs", "assistant/test/web-render.test.mjs", "assistant/test/web-session.test.ts", "assistant/test/web-lifecycle.test.mjs", "assistant/test/web-views.test.mjs"],

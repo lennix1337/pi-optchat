@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { TaskStore } from '../src/store/db.ts';
 import { createAssistantServer } from '../src/http/server.ts';
+import { defaultComponents } from '../src/setup.ts';
+import { osKeyProtector } from '../src/secrets/protector.ts';
 
 const dir = resolve(process.env.ASSISTANT_BROWSER_EVIDENCE ?? 'C:/projetos/local-validation/runs/personal-assistant-parity/t10-browser');
 mkdirSync(dir, { recursive: true });
@@ -25,7 +27,9 @@ for (let i = 0; i < extraTasks; i++) {
   const entry = event('fixture://pagination', taskId);
   store.create({ version: 1, profileId: 'browser-acceptance', taskId, title: `Tarefa de paginação ${i}`, status: 'queued', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: entry.source.sourceEventId }, entry);
 }
-const server = createAssistantServer({ store, token: 'DISPOSABLE-BROWSER-ONLY', profileId: 'browser-acceptance', web: true });
+// Setup probes are local and unpaid: SQLite read, DPAPI round trip, `docker info`; nothing is connected or pulled.
+const setup = () => defaultComponents({ databasePath, protector: osKeyProtector() });
+const server = createAssistantServer({ store, token: 'DISPOSABLE-BROWSER-ONLY', profileId: 'browser-acceptance', web: true, setup });
 let responseConsumed = false;
 const worker = setInterval(() => {
   const task = store.get(id);

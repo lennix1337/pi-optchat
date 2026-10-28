@@ -68,7 +68,11 @@ async function main(): Promise<void> {
   try { store = new TaskStore(config.databasePath, config.profileId); }
   catch { console.error('Database could not be opened.'); process.exitCode = 1; return; }
   let server: ReturnType<typeof createAssistantServer>;
-  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web: args[2] === '--web' }); }
+  const web = args[2] === '--web';
+  const { defaultComponents } = await import('./setup.ts');
+  const { osKeyProtector } = await import('./secrets/protector.ts');
+  const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
+  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}) }); }
   catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   let closing = false;
   const shutdown = () => {

@@ -147,16 +147,26 @@ export class ResponseQueue {
     return true;
   }
 }
-export class ChannelArchive {
-  constructor(profileId, storage) {
-    this.storage = storage; this.key = `assistant-panel-archived-channels:${profileId}`;
+class StoredNames {
+  constructor(key, storage) {
+    this.storage = storage; this.key = key;
     let saved = [];
     try { saved = JSON.parse(storage.getItem(this.key) ?? '[]'); } catch { saved = []; }
     this.names = new Set(Array.isArray(saved) ? saved.filter(name => typeof name === 'string') : []);
   }
   has(name) { return this.names.has(name); }
-  archive(name) { this.names.add(name); this.save(); }
-  restore(name) { this.names.delete(name); this.save(); }
+  add(name) { this.names.add(name); this.save(); }
+  delete(name) { this.names.delete(name); this.save(); }
   save() { this.storage.setItem(this.key, JSON.stringify([...this.names])); }
 }
+export class ChannelArchive extends StoredNames {
+  constructor(profileId, storage) { super(`assistant-panel-archived-channels:${profileId}`, storage); }
+  archive(name) { this.add(name); }
+  restore(name) { this.delete(name); }
+}
+/** Sources the operator answered "Agora não" for; only changes labels, never connects or disconnects anything. */
+export class DeclinedSources extends StoredNames {
+  constructor(profileId, storage) { super(`assistant-panel-declined:${profileId}`, storage); }
+}
+export const setupLabels = { ready: 'Pronto', not_verified: 'Não verificado', needs_setup: 'Precisa configurar' };
 export function attention(task) { return ['needs_input', 'ready_for_review', 'suggested'].includes(task.status); }

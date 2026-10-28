@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { channelMark, deepLinkTask, taskLink, originalAccess, ResponseQueue, ChannelArchive } from '../web/src/state.js';
+import { channelMark, deepLinkTask, taskLink, originalAccess, ResponseQueue, ChannelArchive, DeclinedSources, setupLabels } from '../web/src/state.js';
 
 test('a channel mark is a stable view decoration derived only from the channel name', () => {
   const a = channelMark('Pesquisa'); const b = channelMark('Pesquisa'); const c = channelMark('Pessoal');
@@ -44,4 +44,12 @@ test('archiving a channel hides it from the subject list without touching tasks,
   assert.ok(new ChannelArchive('p', api).has('Pesquisa'), 'survives reload');
   p.restore('Pesquisa'); assert.equal(p.has('Pesquisa'), false);
   storage.set('assistant-panel-archived-channels:p', '{not json'); assert.equal(new ChannelArchive('p', api).has('x'), false);
+});
+
+test('"Agora não" choices are per profile, separate from archived subjects, and setup has exactly three honest labels', () => {
+  const storage = new Map(); const api = { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) };
+  const declined = new DeclinedSources('p', api); declined.add('google');
+  assert.ok(new DeclinedSources('p', api).has('google')); assert.equal(new DeclinedSources('q', api).has('google'), false);
+  assert.equal(new ChannelArchive('p', api).has('google'), false);
+  assert.deepEqual(Object.keys(setupLabels), ['ready', 'not_verified', 'needs_setup']);
 });

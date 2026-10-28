@@ -56,7 +56,15 @@ main { padding: 2.5rem 3vw 4rem; }
 .task h3 a:hover, .task h3 a:focus-visible { text-decoration: underline; }
 .task:focus { outline: none; }
 .task:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
-#archive-channel { width: 100%; margin-bottom: .6rem; font-size: .875rem; }
+#archive-channel, #open-setup { width: 100%; margin-bottom: .6rem; font-size: .875rem; }
+#setup { padding: 1.5rem 0; }
+#setup ul { list-style: none; padding: 0; margin: 1rem 0 1.5rem; }
+.setup-item { border-top: 1px solid var(--line); padding: .85rem 0; display: grid; gap: .3rem; }
+.setup-item button { justify-self: start; font-size: .875rem; }
+.setup-status { font-size: .8125rem; font-weight: 650; color: var(--muted); }
+.setup-ready .setup-status { color: var(--accent); }
+.setup-needs_setup .setup-status { color: var(--danger); }
+#capability-list li { padding: .3rem 0; font-size: .875rem; }
 .queued { margin: .75rem 0; padding-left: 1.25rem; font-size: .875rem; }
 .queued li { margin-top: .4rem; }
 .queued button { margin-left: .5rem; font-size: .8125rem; }

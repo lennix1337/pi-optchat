@@ -1,4 +1,4 @@
-import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels } from './state.js';
+import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, DeclinedSources, setupLabels, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels } from './state.js';
 
 const $ = selector => document.querySelector(selector);
 let state;
@@ -11,6 +11,7 @@ let syncing = false;
 let mutationPending = false;
 let draining = false;
 let archive;
+let declined;
 const queue = new ResponseQueue();
 const uncertain = () => Boolean(lifecycle?.marker);
 let renderedKey;
@@ -42,11 +43,13 @@ function signedOut() {
   clearTimeout(timer); state = undefined; csrf = undefined;
   $('#workspace').hidden = true; $('#logout').hidden = true; $('#login').hidden = false;
   $('#task-list').replaceChildren(); $('#evidence-list').replaceChildren();
+  $('#setup').hidden = true; $('#task-list').hidden = false;
 }
 async function start(session) {
   csrf = session.csrf; state = new PanelState(session.profileId);
   lifecycle = new PanelLifecycle(session.profileId, localStorage);
   archive = new ChannelArchive(session.profileId, localStorage);
+  declined = new DeclinedSources(session.profileId, localStorage);
   $('#login').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false;
   $('#profile').textContent = `Perfil ${session.profileId} · serviço local`;
   selectedTask = undefined; renderedKey = undefined;
@@ -316,6 +319,31 @@ function openDeepLink() {
   node?.focus(); node?.scrollIntoView({ block: 'start', behavior: 'auto' });
 }
 window.addEventListener('hashchange', openDeepLink);
+const optional = new Set(['model', 'isolation', 'google', 'notifications']);
+async function showSetup() {
+  $('#setup').hidden = false; $('#task-list').hidden = true; $('#more').hidden = true;
+  $('#setup-list').replaceChildren(el('li', 'Verificando localmente\u2026'));
+  let body;
+  try { body = await request(`/web/api/setup?declined=${encodeURIComponent([...declined.names].join(','))}`); }
+  catch (error) {
+    if (error.status === 401) { signedOut(); notice('Sess\u00e3o encerrada. Entre novamente.'); return; }
+    $('#setup-list').replaceChildren(el('li', error.status === 404 ? 'Este servi\u00e7o n\u00e3o exp\u00f5e a configura\u00e7\u00e3o.' : 'N\u00e3o foi poss\u00edvel verificar agora. Nada foi marcado como pronto.')); return;
+  }
+  $('#setup-list').replaceChildren(...body.items.map(item => {
+    const li = el('li', undefined, `setup-item setup-${item.status}`);
+    li.append(el('strong', item.label), el('span', setupLabels[item.status], 'setup-status'), el('p', item.detail));
+    if (item.status !== 'ready') li.append(el('p', `Como resolver: ${item.fix}`, 'hint'));
+    if (optional.has(item.id) && item.status !== 'ready') {
+      const skip = el('button', declined.has(item.id) ? 'Desfazer "Agora não"' : 'Agora não'); skip.type = 'button';
+      skip.addEventListener('click', () => { if (declined.has(item.id)) declined.delete(item.id); else declined.add(item.id); void showSetup(); });
+      li.append(skip);
+    }
+    return li;
+  }));
+  $('#capability-list').replaceChildren(...body.capabilities.map(cap => el('li', `${cap.available ? '\u2713' : '\u2014'} ${cap.capability}: ${cap.reason}`)));
+}
+$('#open-setup').addEventListener('click', () => void showSetup());
+$('#close-setup').addEventListener('click', () => { $('#setup').hidden = true; $('#task-list').hidden = false; renderedKey = undefined; render(); });
 $('#archive-channel').addEventListener('click', () => {
   const name = $('#channel').value; if (!name) return;
   if (archive.has(name)) { archive.restore(name); notice(`Assunto ${name} restaurado na lista.`); }

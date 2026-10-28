@@ -5,6 +5,7 @@ import { oneOf, positive, text, version } from '../contracts/validation.ts';
 import type { Event } from '../contracts/events.ts';
 import { TaskStore } from '../store/db.ts';
 import { securityHeaders, WebChannel } from '../channels/web.ts';
+import type { SetupComponent } from '../setup.ts';
 import { authenticate } from './auth.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from './io.ts';
 
@@ -80,9 +81,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
   }
 }
-export function createAssistantServer({ store, token, profileId, web = false, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; onError?: ErrorObserver }): Server {
+export function createAssistantServer({ store, token, profileId, web = false, setup, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; onError?: ErrorObserver }): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId)) throw new TypeError('Invalid server binding');
-  const channel = web ? new WebChannel({ store, token, profileId }) : null;
+  const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}) }) : null;
   const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;

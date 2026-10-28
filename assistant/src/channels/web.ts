@@ -5,6 +5,7 @@ import type { Event } from '../contracts/events.ts';
 import type { Task, TaskStatus } from '../contracts/tasks.ts';
 import { boundedText, oneOf, positive, text } from '../contracts/validation.ts';
 import type { TaskStore } from '../store/db.ts';
+import { capabilities, checkSetup, type SetupComponent } from '../setup.ts';
 import { authenticate } from '../http/auth.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from '../http/io.ts';
 
@@ -47,7 +48,8 @@ export const securityHeaders = {
 };
 
 type Session = { csrf: string; label: string; created: number; seen: number };
-type Options = { store: TaskStore; token: string; profileId: string; now?: () => number };
+type Options = { store: TaskStore; token: string; profileId: string; now?: () => number; setup?: () => SetupComponent[] };
+const componentId = /^[a-z][a-z0-9-]{0,39}$/;
 
 /** Browser access is authenticated, but is never trusted-local-human approval authority. */
 export class WebChannel {
@@ -57,8 +59,9 @@ export class WebChannel {
   private readonly token: string;
   private readonly profileId: string;
   private readonly now: () => number;
-  constructor({ store, token, profileId, now = Date.now }: Options) {
-    this.store = store; this.token = token; this.profileId = profileId; this.now = now;
+  private readonly setup: (() => SetupComponent[]) | undefined;
+  constructor({ store, token, profileId, now = Date.now, setup }: Options) {
+    this.store = store; this.token = token; this.profileId = profileId; this.now = now; this.setup = setup;
   }
   owns(pathname: string): boolean { return Object.hasOwn(assets, pathname) || pathname === '/web' || pathname.startsWith('/web/') || pathname.startsWith('/app/'); }
 
@@ -137,6 +140,7 @@ export class WebChannel {
       query(url, ['after', 'limit']);
       send(res, 200, this.store.events(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 100, 1, 100)), securityHeaders); return;
     }
+    if (req.method === 'GET' && url.pathname === '/web/api/setup' && this.setup) { await this.setupStatus(res, url); return; }
     if (req.method !== 'POST' || !(url.pathname === '/web/api/tasks' || match)) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
     query(url, []);
     const body = await readBody(req);
@@ -170,6 +174,15 @@ export class WebChannel {
     const response = { version: 1 as const, profileId: this.profileId, taskId: id, revision: input.revision, inputRevision: input.inputRevision, text: input.text };
     const result = this.conflictWithTask(res, id, () => this.store.respond(response, this.event(id, input, session)));
     if (result) send(res, 200, result, securityHeaders);
+  }
+  /** Read-only: probes are local and unpaid; declining a source ("Agora não") only changes labels. */
+  private async setupStatus(res: ServerResponse, url: URL): Promise<void> {
+    query(url, ['declined']);
+    const declined = (url.searchParams.get('declined') ?? '').split(',').filter(Boolean);
+    if (declined.length > 20 || !declined.every(id => componentId.test(id))) throw new BadRequest();
+    const components = this.setup!();
+    const items = await checkSetup(components, { now: this.now });
+    send(res, 200, { items, capabilities: capabilities(items, components, new Set(declined)) }, securityHeaders);
   }
   /** Stale decisions return the current card so the client replaces it rather than guessing. */
   private conflictWithTask(res: ServerResponse, id: string, operation: () => Task): Task | null {

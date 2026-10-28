@@ -37,6 +37,7 @@
             <button data-filter="all" aria-pressed="false">Todas as tarefas</button>
             <button data-filter="archive" aria-pressed="false">Arquivo</button>
           </nav>
+          <button id="open-setup" type="button">Configuração</button>
           <label for="channel">Assunto</label><select id="channel"><option value="">Todos os assuntos</option></select>
           <button id="archive-channel" type="button" hidden>Arquivar assunto</button>
           <p class="hint">Assuntos vêm do canal original. Arquivar um assunto só o tira desta lista; tarefas e fontes continuam guardadas.</p>
@@ -46,7 +47,7 @@
             <button class="primary" type="submit">Colocar na fila</button><p class="hint">Entrar na fila não inicia um executor. Ativação é separada.</p>
           </form></details>
         </aside>
-        <div class="inbox"><div id="task-list" aria-label="Tarefas"></div><button id="more" hidden>Carregar mais tarefas</button></div>
+        <div class="inbox"><section id="setup" hidden aria-labelledby="setup-heading"><h2 id="setup-heading">Configuração</h2><p class="hint">Pronto só depois de uma verificação local recente. Nada aqui chama modelo pago nem conecta contas.</p><ul id="setup-list"></ul><h3>O que funciona agora</h3><ul id="capability-list"></ul><button id="close-setup" type="button">Voltar às tarefas</button></section><div id="task-list" aria-label="Tarefas"></div><button id="more" hidden>Carregar mais tarefas</button></div>
         <aside class="evidence" aria-labelledby="evidence-heading"><h2 id="evidence-heading">Fontes e histórico</h2><p id="evidence-intro" class="muted">Selecione “Ver fontes” em uma tarefa. Consultar não aprova nem resolve nada.</p><ol id="evidence-list"></ol><button id="more-events" hidden>Carregar mais eventos</button></aside>
       </div>
     </section>
