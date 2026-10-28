@@ -78,6 +78,10 @@ function readOnlyShell(command: string) {
   return segments(text, '.').every(segment => readOnlyCommand.test(segment.command.replace(/^(?:\w+=\S*\s+)*/, '')));
 }
 
+/** Shell text without here-document bodies: a body is content for the file its command line names, like a write's content. */
+const withoutHeredocBodies = (command: string) =>
+  command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, match => match.slice(0, match.indexOf('\n')));
+
 /**
  * A call that can change the contract: an edit or write of the file, a shell command naming it that is not read-only,
  * or any other tool (codemode, subagents) naming it. Searches, reads and prose such as a reload checkpoint never are.
@@ -85,7 +89,10 @@ function readOnlyShell(command: string) {
 export function touchesContract({ tool, input }: { tool: string; input: unknown }) {
   if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
   if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && namesContract(input.path);
-  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string' && readOnlyShell(input.command)) return false;
+  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') {
+    const command = withoutHeredocBodies(input.command);
+    return !readOnlyShell(command) && namesContract(command);
+  }
   return namesContract(input);
 }
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);

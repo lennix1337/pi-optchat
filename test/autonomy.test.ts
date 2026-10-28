@@ -228,10 +228,12 @@ test('only a call that can change the contract file is a contract change; search
     `cd C:/projetos/pi-optchat && grep -rn "touchesContract\\|${f}" src/*.ts | grep -v "^src/a" | head -15`,
     `cat ~/.optchat/${f}`, `ls ~/.optchat/${f} 2>&1`, `jq .rules ~/.optchat/${f} 2>/dev/null`,
     `Get-Content C:/Users/swluc/.optchat/${f}`, `git log --oneline -- src/${f}`,
+    `cd C:/projetos/pi-optchat && cat > vc-tmp.mts <<'EOF'\nconsole.log(decide(c, call('grep -n ${f} src/autonomy.ts')));\nEOF\nnode vc-tmp.mts; rm -f vc-tmp.mts`,
   ]) assert.equal(bash(command), false, command);
   for (const command of [
     `echo '{}' > ~/.optchat/${f}`, `cp proposed.json ~/.optchat/${f}`, `grep a b | tee ~/.optchat/${f}`,
     `sed -i s/ask/free/ ~/.optchat/${f}`, `cat $(cp a ~/.optchat/${f})`, `node -e "fs.writeFileSync('${f}', '{}')"`,
+    `cat > ~/.optchat/${f} <<'EOF'\n{}\nEOF`, `tee ~/.optchat/${f} <<EOF\n{}\nEOF`,
   ]) assert.equal(bash(command), true, command);
   assert.equal(touchesContract({ tool: 'edit', input: { path: `C:/Users/swluc/.optchat/${f}`, edits: [] } }), true);
   assert.equal(touchesContract({ tool: 'write', input: { path: `~/.optchat/${f}`, content: '{}' } }), true);
