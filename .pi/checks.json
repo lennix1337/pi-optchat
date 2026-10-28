@@ -101,6 +101,16 @@
       "argv": ["node", "assistant/test/setup-mutations.mjs"],
       "timeoutMs": 300000
     },
+    "assistant-channels": {
+      "description": "T14 Slack/Teams boundaries offline: request signing, bot framework JWT, workspace/tenant, sender authorization/revocation, redelivery, thread-bound answers, remote approvals refused, outbound through gateway+egress",
+      "argv": ["node", "--test", "assistant/test/slack-boundary.test.ts", "assistant/test/teams-boundary.test.ts", "assistant/test/channel-approval.test.ts"],
+      "timeoutMs": 60000
+    },
+    "assistant-channel-mutations": {
+      "description": "Disposable-source proof that each Slack/Teams boundary guard is load-bearing (18 mutants)",
+      "argv": ["node", "assistant/test/channel-mutations.mjs"],
+      "timeoutMs": 600000
+    },
     "assistant-web": {
       "description": "Disposable loopback web channel: cookie, origin/CSRF, stale decisions, events, assets and browser state; no personal service",
       "argv": ["node", "--test", "assistant/test/web.test.ts", "assistant/test/web-state.test.mjs", "assistant/test/web-render.test.mjs", "assistant/test/web-session.test.ts", "assistant/test/web-lifecycle.test.mjs", "assistant/test/web-views.test.mjs"],
