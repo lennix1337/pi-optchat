@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ShellJobs, alertReport, endNoticeWanted, registerShells, runningShells, shellReport, type ShellJob } from '../src/shells.ts';
+import { ShellJobs, adoptShells, alertReport, endNoticeWanted, handOffShells, registerShells, runningShells, shellReport, type ShellJob } from '../src/shells.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from '../src/shell-alerts.ts';
 import { Check } from 'typebox/value';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -104,6 +104,25 @@ test('native background command streams output and cancellation terminates its s
     assert.equal(jobs.list()[0].state, 'stopped');
     assert.throws(() => process.kill(pid, 0), 'native cancellation must terminate the child, not only mark the UI stopped');
   } finally { await jobs.close(); }
+});
+
+test('a handed-off shell keeps running, its end waits for the next reporter, and the handoff is taken once', async () => {
+  const jobs = new ShellJobs(), first: string[] = [], second: string[] = [];
+  jobs.setReporter({ finished: job => first.push(job.id), alerted() {} });
+  let finish!: () => void;
+  const id = jobs.start('node build.js', '.', () => new Promise(resolve => { finish = () => resolve({ output: 'built', failed: false, exitCode: 0 }); }));
+  await new Promise(resolve => setImmediate(resolve));
+  handOffShells(jobs, 'main');
+  finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(jobs.list()[0].state, 'completed', 'the handoff did not stop it');
+  assert.deepEqual(first, [], 'the closing profile no longer hears from it');
+  const adopted = adoptShells();
+  assert.equal(adopted?.jobs, jobs); assert.equal(adopted?.profile, 'main');
+  assert.equal(adoptShells(), undefined, 'a second load does not adopt the same shells');
+  adopted.jobs.setReporter({ finished: job => second.push(job.id), alerted() {} });
+  adopted.jobs.setReporter({ finished: job => second.push(job.id), alerted() {} });
+  assert.deepEqual(second, [id], 'the held end is delivered once, to the reloaded profile');
+  await jobs.close();
 });
 
 test('retention bounds finished history without dropping active executions', () => {

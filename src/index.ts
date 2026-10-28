@@ -45,7 +45,7 @@ import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
-import { ShellJobs, registerShells, runningShells, shellReport } from './shells.ts';
+import { ShellJobs, adoptShells, handOffShells, registerShells, runningShells, shellReport } from './shells.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -88,7 +88,10 @@ export const version = ((): string | undefined => {
 const brand = version ? `OptChat v${version}` : 'OptChat';
 
 export default function optchat(pi: ExtensionAPI) {
-  const shells = new ShellJobs();
+  // Shells a /reload handed over keep running under the same IDs; another profile opening first stops them.
+  const adopted = adoptShells();
+  const shells = adopted?.jobs ?? new ShellJobs();
+  let adoptedProfile = adopted?.profile;
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
   let active: Active | undefined;
   registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
@@ -292,19 +295,20 @@ export default function optchat(pi: ExtensionAPI) {
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
     settledAt = Date.now(); heartbeat.arm();
   };
-  const stop = async () => {
+  const stop = async (reason?: string) => {
     heartbeat?.disarm(); heartbeat = undefined;
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
-    await shells.close();
-    shells.setReporter(undefined);
+    const handOff = reason === 'reload' && active !== undefined;
+    if (handOff) handOffShells(shells, active!.name);
+    else { await shells.close(); shells.setReporter(undefined); }
     if (!active) return;
     const old = active;
     try {
       await closeWindows?.(); closeWindows = undefined;
       await recovery;
-      await old.children.close(); shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
+      await old.children.close(); if (!handOff) shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
       await old.sync.close(); await old.memory.close(); await checkpoints;
       await checkpoint(old.dir);
     } finally {
@@ -380,7 +384,12 @@ export default function optchat(pi: ExtensionAPI) {
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
-      // A background shell's end (shellReport) and its pattern alerts (alertReport) reach the main agent as messages. Closing the profile stops shells silently.
+      // A background shell's end (shellReport) and its pattern alerts (alertReport) reach the main agent as messages. Closing the profile stops shells silently; a /reload hands them to the reloaded profile, which hears the ends it missed.
+      if (adoptedProfile !== undefined && adoptedProfile !== name) {
+        ctx.ui.notify(`Stopped ${runningShells(shells).length} background shells that ${adoptedProfile} left running across the reload.`, 'warning');
+        await shells.close(); shells.clear();
+      }
+      adoptedProfile = undefined;
       shells.setReporter({
         finished: job => {
           if (stopping || active?.memory !== memory) return;
@@ -503,8 +512,8 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; active?.sync.schedule(); });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
-  pi.on('session_shutdown', async () => {
-    try { await stop(); }
+  pi.on('session_shutdown', async event => {
+    try { await stop(event.reason); }
     finally { unsubscribeRecovery(); recoveryIncidents.clear(); }
   });
   // Pi shows nothing when a switch is cancelled, so say why and what lets it through.
@@ -758,7 +767,6 @@ export default function optchat(pi: ExtensionAPI) {
       (remote || joined) && 'Reload belongs to the original local session, not a connected window.',
       (importing || pendingImport(active.dir)) && 'Finish or close the import first.',
       active.children.active && 'OptChat subagents are active; wait for their completion.',
-      runningShells(shells).length > 0 && 'Managed background shells are active; wait for their completion.',
       reports.length > 0 && 'Pending reports must be delivered first.',
       active.operations.blockReason('self_reload'),
     ];

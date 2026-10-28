@@ -36,11 +36,13 @@ export class ShellJobs {
   private readonly tasks = new Set<Promise<void>>();
   private readonly listeners = new Set<() => void>();
   private reporter?: ShellReporter;
+  /** End notices that came while no profile listened (between a /reload's shutdown and the reloaded profile), delivered by the next setReporter. */
+  private unreported: ShellJob[] = [];
   list() { return [...this.jobs.values()].reverse().sort((a, b) => Number(b.state === 'running' || b.state === 'stopping') - Number(a.state === 'running' || a.state === 'stopping') || b.started - a.started); }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   /** The open profile's reporter for managed background shells: each one's end (when its notify mode wants it) and its alerts. Foreground bash
    * calls are not reported: Pi shows their results. It must not throw: it runs inside the job's own completion, as `subscribe` listeners do. */
-  setReporter(reporter: ShellReporter | undefined) { this.reporter = reporter; }
+  setReporter(reporter: ShellReporter | undefined) { this.reporter = reporter; if (reporter) for (const job of this.unreported.splice(0)) reporter.finished(job); }
   private changed() { for (const listener of this.listeners) listener(); }
   begin(id: string, command: string, cwd: string, mode: ShellJob['mode'], owner = 'main', options: ShellOptions = {}) {
     this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert });
@@ -61,7 +63,7 @@ export class ShellJobs {
     // Never evict an active execution, even when many jobs finish together.
     for (const finished of this.list().filter(j => j.ended !== undefined).slice(50)) this.jobs.delete(finished.id);
     this.changed();
-    if (job.mode === 'background' && endNoticeWanted(job.notify, job.state)) this.reporter?.finished(job);
+    if (job.mode === 'background' && endNoticeWanted(job.notify, job.state)) void (this.reporter ? this.reporter.finished(job) : this.unreported.push(job));
   }
   stop(id: string) {
     const job = this.jobs.get(id), controller = this.controllers.get(id);
@@ -86,8 +88,29 @@ export class ShellJobs {
     job.matches = alert.total;
     this.reporter?.alerted(job, alertReport(id, job.alert ?? '', alert), alert);
   }
-  clear() { if (this.tasks.size) throw new Error('Stop managed shells before clearing their history'); this.jobs.clear(); this.changed(); }
+  clear() { if (this.tasks.size) throw new Error('Stop managed shells before clearing their history'); this.jobs.clear(); this.unreported = []; this.changed(); }
   async close() { for (const id of this.controllers.keys()) this.stop(id); await Promise.all(this.tasks); }
+}
+
+/** A /reload re-runs the extension in the same process, so running shells are handed to the reloaded OptChat instead of being stopped. */
+const HANDOFF = Symbol.for('pi-optchat.shell-handoff');
+/** Bump when ShellJobs' methods change: the reloaded code drives the old instance, so it adopts only one whose methods it knows. */
+const HANDOFF_VERSION = 1;
+interface ShellHandoff { version: number; profile: string; jobs: ShellJobs }
+const handoffStore = globalThis as Record<symbol, ShellHandoff | undefined>;
+/** Leaves the profile's shells running for the reloaded OptChat. Their ends are held until it sets a reporter. */
+export function handOffShells(jobs: ShellJobs, profile: string) {
+  jobs.setReporter(undefined);
+  handoffStore[HANDOFF] = { version: HANDOFF_VERSION, profile, jobs };
+}
+/** Takes the shells a /reload handed over, once. An inventory from an incompatible OptChat version is stopped instead, as before handoffs existed. */
+export function adoptShells(): { jobs: ShellJobs; profile: string } | undefined {
+  const handoff = handoffStore[HANDOFF];
+  delete handoffStore[HANDOFF];
+  if (!handoff) return undefined;
+  if (handoff.version === HANDOFF_VERSION) return { jobs: handoff.jobs, profile: handoff.profile };
+  void handoff.jobs.close(); // Its tasks settle their own errors, so close() does not reject.
+  return undefined;
 }
 
 const ALERT_INTERVAL_MS = 10_000;
@@ -167,7 +190,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
   pi.on('tool_execution_update', event => { if (shell(event.toolName)) jobs.update(event.toolCallId, textContent(event.partialResult?.content, false)); });
   pi.on('tool_execution_end', event => { if (shell(event.toolName)) jobs.end(event.toolCallId, textContent(event.result?.content, false), event.isError); });
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
-    description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs are session-local and stopped when the profile closes; detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
+    description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs keep running across /reload and are stopped when the profile closes or Pi quits; detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
       notify: Type.Optional(stringEnum(['end', 'failure', 'none'])), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }, { additionalProperties: false }),
     async execute(_id, args, signal, _update, ctx) {
