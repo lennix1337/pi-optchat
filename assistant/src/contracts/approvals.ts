@@ -1,4 +1,5 @@
 import { object, oneOf, text, timestamp, version } from './validation.ts';
+import { taskId } from './tasks.ts';
 export type Approval = {
   version: 1;
   approvalId: string;
@@ -19,7 +20,7 @@ export function parseApproval(value: unknown): Approval {
     version,
     approvalId: text,
     profileId: text,
-    taskId: text,
+    taskId,
     runId: text,
     accountId: text,
     effect: text,

@@ -28,6 +28,19 @@ It runs inside ordinary Pi, without a Pi runtime fork or separate launcher.
 
 This remains a **TypeScript Pi extension**; OptMem is the separate Rust companion. Provider requests consume your existing credentials and quota. Recovery is conservative, not exactly-once execution, a sandbox, or a guarantee against process crashes.
 
+## Optional assistant inbox
+
+The experimental `/assistant` command shows read-only local journal metadata, plus durable task snapshots and input responses from an optional, manually started Node **24+** process. Service requests are off without a profile-local `assistant.json`; `/assistant local` needs no service. Loading OptChat makes no assistant requests. The Pi extension still requires Node 22.19+ and does not import SQLite on startup.
+
+- `/assistant local [cursor]` pages current-session approvals, operations and agents, plus profile-scoped external agents, without copying grants or raw source content.
+- `/assistant list [cursor]` includes the local projection plus optional service snapshots; `show <id>` and `evidence <id> [afterSequence]` are read-only.
+- `/assistant respond <id>` prompts in the owning interactive session; stale replies refuse and uncertain writes are never retried automatically.
+- `/assistant original <id> <eventSequence> [offset]` pages a validated local OptChat original. IDs/cursors in commands are URL-encoded; foreign references are displayed, not opened.
+
+Task state, outcome verification and permission are separate: a response is data, not approval, and `succeeded` metadata does not prove real work. Detail also links to existing local approval, uncertain-operation and agent journals; those journals are not copied or consumed. This first slice has no executor, scheduler, external connector or web dashboard.
+
+Manual setup, protocol and privacy boundaries: [assistant README](assistant/README.md). Agent discovery: [personal-assistant skill](skills/personal-assistant/SKILL.md). Starting a personal service, adding a real config or reloading an active session remains an explicit operator action, not an installation side effect.
+
 ## ai-memory source fidelity and repair
 
 Export format 2 separates original authorship from generated summaries. Legacy format-1 pages can contain inaccurate user-labelled summaries; validate them against OptChat originals instead of treating them as quotations or current permission. Existing cursors are preserved, so upgrading does not silently rewrite old history.

@@ -27,12 +27,13 @@ export type Attempt = {
   runId: string;
   status: 'planned' | 'claimed' | 'running' | 'effect_uncertain' | 'reconciled' | 'finished';
 };
+export const taskId = (value: unknown): boolean => text(value) && value !== '.' && value !== '..';
 const statuses = oneOf('suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'succeeded', 'failed', 'cancelled', 'resolved');
 export function parseTask(value: unknown): Task {
   object(value, {
     version,
     profileId: text,
-    taskId: text,
+    taskId,
     title: text,
     status: statuses,
     verification: oneOf('verified', 'not_verified', 'blocked'),
@@ -46,7 +47,7 @@ export function parseAttempt(value: unknown): Attempt {
   object(value, {
     version,
     profileId: text,
-    taskId: text,
+    taskId,
     runId: text,
     status: oneOf('planned', 'claimed', 'running', 'effect_uncertain', 'reconciled', 'finished'),
   });
@@ -71,7 +72,7 @@ export function parseTaskResponse(value: unknown, current: unknown): TaskRespons
   object(value, {
     version,
     profileId: text,
-    taskId: text,
+    taskId,
     revision: positive,
     inputRevision: positive,
     text,

@@ -4,11 +4,13 @@ import { randomUUID } from 'node:crypto';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { parseTask, type Task } from '../assistant/src/contracts/tasks.ts';
 import { parseEvent } from '../assistant/src/contracts/events.ts';
+import { renderLocalInbox, type LocalInboxPage } from './assistant-projection.ts';
 
 export interface AssistantOwner {
   identity: object; name: string; dir: string; sessionId: string;
   zoom: (id: number, offset?: number, limit?: number) => string;
   attention: () => { approvals: number; uncertain: number; agents: number };
+  localInbox?: (cursor?: string) => LocalInboxPage;
 }
 const safe = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 1000);
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -100,6 +102,20 @@ function localOriginal(ref: string, profile: string): number | undefined {
   return Number.isSafeInteger(id) ? id : undefined;
 }
 
+function localPage(owner: AssistantOwner, cursor?: string): string {
+  const page = owner.localInbox?.(cursor);
+  if (!page) return 'Local journals unavailable in this runtime.';
+  return renderLocalInbox(page) + (page.nextCursor ? `\nContinue: /assistant local ${encodeURIComponent(page.nextCursor)}` : '');
+}
+
+async function servicePage(c: ReturnType<typeof config>, owner: AssistantOwner, cursor?: string): Promise<string> {
+  const query = new URLSearchParams(); if (cursor) query.set('cursor', token(cursor));
+  const { value: page, limit } = await pagedRequest(c, '/v1/tasks', query, LIMIT);
+  if (!record(page) || Object.keys(page).sort().join(',') !== 'nextCursor,tasks' || !Array.isArray(page.tasks) || page.tasks.length > limit || !(page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor.length > 0)) throw new Error('Invalid page');
+  const tasks = page.tasks.map(v => task(v, owner));
+  return [`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${encodeURIComponent(page.nextCursor as string)}`].join('\n');
+}
+
 function readErrorMessage(error: unknown): string {
   if (error instanceof ResponseTooLarge) return 'Assistant item exceeds the safe response size; inspect it with another bounded client.';
   if (error instanceof HttpError) return 'Assistant request failed.';
@@ -111,27 +127,29 @@ function readErrorMessage(error: unknown): string {
 export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner | undefined) {
   pi.registerCommand('assistant', { description: 'Read assistant task snapshots or respond to a current input request', handler: async (args, ctx) => {
     const words = args.trim().split(/\s+/).filter(Boolean), action = words[0] ?? 'list';
-    const arity: Record<string, readonly number[]> = { list: [0, 1, 2], show: [2], respond: [2], evidence: [2, 3], original: [3, 4] };
-    if (!Object.hasOwn(arity, action) || !arity[action].includes(words.length)) { ctx.ui.notify('Usage: /assistant [list [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]] (IDs and cursors URL-encoded)', 'error'); return; }
+    const arity: Record<string, readonly number[]> = { list: [0, 1, 2], local: [1, 2], show: [2], respond: [2], evidence: [2, 3], original: [3, 4] };
+    if (!Object.hasOwn(arity, action) || !arity[action].includes(words.length)) { ctx.ui.notify('Usage: /assistant [list [cursor]|local [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]] (IDs and cursors URL-encoded)', 'error'); return; }
     const owner = source();
     if (!owner || owner.sessionId !== ctx.sessionManager.getSessionId()) { ctx.ui.notify('Open an available local profile before /assistant.', 'error'); return; }
     const stillOwned = () => { const current = source(); return current?.identity === owner.identity && current.name === owner.name && current.sessionId === owner.sessionId && ctx.sessionManager.getSessionId() === owner.sessionId; };
-    let write = false;
+    let write = false, local = '';
     try {
+      if (action === 'local' || action === 'list') {
+        local = localPage(owner, action === 'local' && words[1] ? token(words[1]) : undefined);
+        if (!stillOwned()) throw new Error('Owner changed');
+        if (action === 'local') { ctx.ui.notify(local, 'info'); return; }
+      }
       const c = config(owner);
       if (action === 'list') {
-        const query = new URLSearchParams(); if (words[1]) query.set('cursor', token(words[1]));
-        const { value: page, limit } = await pagedRequest(c, '/v1/tasks', query, LIMIT);
-        if (!record(page) || Object.keys(page).sort().join(',') !== 'nextCursor,tasks' || !Array.isArray(page.tasks) || page.tasks.length > limit || !(page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor.length > 0)) throw new Error('Invalid page');
-        const tasks = page.tasks.map(v => task(v, owner));
+        const page = await servicePage(c, owner, words[1]);
         if (!stillOwned()) throw new Error('Owner changed');
-        ctx.ui.notify([`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${encodeURIComponent(page.nextCursor as string)}`].join('\n'), 'info'); return;
+        ctx.ui.notify(`${local}\n${page}`, 'info'); return;
       }
       const id = token(words[1]), current = task(await request(c, `/v1/tasks/${encodeURIComponent(id)}`), owner, id);
       if (!stillOwned()) throw new Error('Owner changed');
       if (action === 'show') {
         const a = owner.attention();
-        ctx.ui.notify(`${card(current)}\nLocal owner journals (not exhaustive): ${a.approvals} approvals (/approve, /deny), ${a.uncertain} uncertain operations (operation_state), ${a.agents} agents (/optchat agents). No grants copied.`, 'info'); return;
+        ctx.ui.notify(`${card(current)}\nLocal owner journals (not exhaustive): ${a.approvals} approvals, ${a.uncertain} uncertain operations, ${a.agents} agents. Inspect /assistant local; no grants copied or consumed.`, 'info'); return;
       }
       if (action === 'evidence' || action === 'original') {
         const original = action === 'original';
@@ -175,7 +193,7 @@ Continue with /assistant original ${encodeURIComponent(id)} ${sequence} <offset>
       ctx.ui.notify('Response recorded as data, not authorization or verified work.', 'info');
     } catch (error) {
       ctx.ui.notify(write ? error instanceof HttpError && error.status === 409 ? 'Response is stale. Refresh the task before responding; no automatic retry.' : 'Response outcome uncertain. Inspect current state before any further action; do not automatically retry.'
-        : readErrorMessage(error), 'error');
+        : [action === 'list' && stillOwned() ? local : '', readErrorMessage(error)].filter(Boolean).join('\n'), 'error');
     }
   } });
 }

@@ -70,6 +70,7 @@ test('Windows ACL owner guard refuses an untrusted owner independently of DACL g
   try {
     acl(root);
     const config = join(root, 'config'), copy = join(root, 'privacy.ts');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
     writeFileSync(config, '{}');
     const source = readFileSync(fileURLToPath(new URL('../src/store/privacy.ts', import.meta.url)), 'utf8');
     const owner = '$owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value';

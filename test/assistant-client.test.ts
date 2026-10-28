@@ -84,7 +84,8 @@ test('disposable mutations defeat profile and post-input guards', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'assistant-mutation-'));
   const original = readFileSync(new URL('../src/assistant-client.ts', import.meta.url), 'utf8')
     .replaceAll("'../assistant/src/contracts/tasks.ts'", JSON.stringify(new URL('../assistant/src/contracts/tasks.ts', import.meta.url).href))
-    .replaceAll("'../assistant/src/contracts/events.ts'", JSON.stringify(new URL('../assistant/src/contracts/events.ts', import.meta.url).href));
+    .replaceAll("'../assistant/src/contracts/events.ts'", JSON.stringify(new URL('../assistant/src/contracts/events.ts', import.meta.url).href))
+    .replaceAll("'./assistant-projection.ts'", JSON.stringify(new URL('../src/assistant-projection.ts', import.meta.url).href));
   const task = { version: 1, profileId: 'p', taskId: 'a', title: 'Task', status: 'needs_input', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: 'origin' };
   let posts = 0;
   const server = createServer((req, res) => { if (req.method === 'POST') posts++; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(req.url?.includes('/events?') ? [{ operation: 'create', task, event: { version: 1, eventId: 'e', profileId: 'foreign', sessionId: 's', channelId: 'c', taskId: 'a', runId: 'r', source: { actorId: 'x', sourceKind: 'model', sourceEventId: 'origin' }, observedAt: '2026-01-01T00:00:00Z', sequence: 1, correlationId: 'x', evidence: { kind: 'observed', reference: 'optchat:p:0' } } }] : task)); });

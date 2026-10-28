@@ -66,6 +66,9 @@
   },
   "files": [
     "src",
+    "assistant/src",
+    "assistant/package.json",
+    "assistant/README.md",
     "skills",
     "docs/*.md",
     "README.md",

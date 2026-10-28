@@ -1,4 +1,5 @@
 import { object, oneOf, positive, text, timestamp, version } from './validation.ts';
+import { taskId } from './tasks.ts';
 
 export type SourceKind = 'trusted-local-human' | 'external' | 'worker' | 'model';
 export type Source = {
@@ -36,7 +37,7 @@ export function parseEvent(value: unknown): Event {
     profileId: text,
     sessionId: text,
     channelId: text,
-    taskId: text,
+    taskId,
     runId: text,
     source: {
       actorId: text,

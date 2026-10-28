@@ -27,6 +27,17 @@ function child(config: string) {
   return { process, exited, output: () => output };
 }
 function processExec() { return process.execPath; }
+/** On Windows a just-exited child can keep a fixture handle briefly, so the first rmdir fails EPERM/EBUSY even though the
+ * owner has FullControl and no process remains (observed 2026-10-28; same cause as the root suite's removeDir). Bounded: 5.5 s. */
+function removeFixture(path: string) {
+  for (let attempt = 1; ; attempt++) {
+    try { return rmSync(path, { recursive: true, force: true }); } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt === 10 || !(code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY')) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * attempt);
+    }
+  }
+}
 function privateTemp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   if (process.platform === 'win32') {
@@ -38,7 +49,7 @@ foreach($sid in @([System.Security.Principal.WindowsIdentity]::GetCurrent().User
 }
 [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($env:ENTRY_FIXTURE),$a)`;
     const result = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, ENTRY_FIXTURE: dir }, timeout: 10000 });
-    if (result.status !== 0) { rmSync(dir, { recursive: true, force: true }); throw new Error('Could not secure disposable entry fixture'); }
+    if (result.status !== 0) { removeFixture(dir); throw new Error('Could not secure disposable entry fixture'); }
   }
   return dir;
 }
@@ -71,7 +82,7 @@ test('help is side-effect free; invalid configs cannot open a database', async (
       const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
       assert.equal(result.status, 1); assert.match(result.stderr, /configuration/i); assert.doesNotMatch(result.stderr + result.stdout, new RegExp(secret)); assert.equal(existsSync(db), false);
     }
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { removeFixture(dir); }
 });
 
 test('configuration guards reject disposable mutations', { timeout: 180000 }, () => {
@@ -102,7 +113,7 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
       assert.equal(result.status, 1, `${before}: ${result.stderr}`);
       assert.match(result.stdout, /AssertionError/, before);
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { removeFixture(root); }
 });
 
 test('shutdown bounds active connections', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
@@ -120,7 +131,7 @@ test('shutdown bounds active connections', { skip: process.platform === 'win32',
     socket.destroy();
   } finally {
     if (running.process.exitCode === null && running.process.signalCode === null) await stop(running);
-    rmSync(dir, { recursive: true, force: true });
+    removeFixture(dir);
   }
 });
 
@@ -149,6 +160,6 @@ test('manual process persists authenticated state and handles bind collision', {
   } finally {
     if (running && running.process.exitCode === null && running.process.signalCode === null) await stop(running);
     if (running) assert.doesNotMatch(running.output(), new RegExp(`${secret}|${answer}`));
-    rmSync(dir, { recursive: true, force: true });
+    removeFixture(dir);
   }
 });
