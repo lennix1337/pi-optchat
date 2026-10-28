@@ -67,6 +67,8 @@
   "files": [
     "src",
     "assistant/src",
+    "assistant/web/index.html",
+    "assistant/web/src",
     "assistant/package.json",
     "assistant/README.md",
     "skills",

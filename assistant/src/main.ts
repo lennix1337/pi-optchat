@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
-Usage: node assistant/src/main.ts --config <absolute-path>
+Usage: node assistant/src/main.ts --config <absolute-path> [--web]
        node assistant/src/main.ts --help
 
 Supply a user-controlled secret JSON file outside Git, maximum 8192 bytes:
@@ -13,6 +13,8 @@ No other fields are accepted. Keep the token out of arguments and logs.
 Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
 Activation is manual and requires operator permission; this installs no service.
+--web explicitly enables the browser panel on the same loopback endpoint; off by default.
+Web authentication is not native-terminal approval authority. No remote/mobile exposure.
 The client uses its owner-profile assistant.json with version, profileId, endpoint and token.
 `;
 
@@ -51,7 +53,7 @@ function readConfig(path: string): Config {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') { process.stdout.write(help); return; }
-  if (args.length !== 2 || args[0] !== '--config' || !isAbsolute(args[1])) { console.error('Usage: node assistant/src/main.ts --config <absolute-path> (or --help)'); process.exitCode = 1; return; }
+  if (!(args.length === 2 || (args.length === 3 && args[2] === '--web')) || args[0] !== '--config' || !isAbsolute(args[1])) { console.error('Usage: node assistant/src/main.ts --config <absolute-path> [--web] (or --help)'); process.exitCode = 1; return; }
   if (Number(process.versions.node.split('.')[0]) < 24) { console.error('Assistant server requires Node.js >=24.'); process.exitCode = 1; return; }
   try { checkConfigPrivacy(args[1]); }
   catch { console.error('Configuration privacy check failed: use a private directory and file; verify permissions and ACL inspection.'); process.exitCode = 1; return; }
@@ -66,7 +68,7 @@ async function main(): Promise<void> {
   try { store = new TaskStore(config.databasePath, config.profileId); }
   catch { console.error('Database could not be opened.'); process.exitCode = 1; return; }
   let server: ReturnType<typeof createAssistantServer>;
-  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId }); }
+  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web: args[2] === '--web' }); }
   catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   let closing = false;
   const shutdown = () => {

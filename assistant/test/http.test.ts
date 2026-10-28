@@ -151,20 +151,20 @@ test('auth and provenance guards resist disposable mutations', { skip: process.e
   const original = dirname(dirname(fileURLToPath(import.meta.url)));
   const root = mkdtempSync(join(tmpdir(), 'http-mutations-'));
   const variants = [
-    ["if (!authenticate(req.headers.authorization, token))", "if (false)", /200 !== 401/],
-    ["try { object(value, schema); }", "try { const input = value as any; if (input?.context) { delete input.context.sourceKind; delete input.context.profileId; } object(value, schema); }", /200 !== 400/],
-    [" || req.headers.origin !== undefined", "", /200 !== 403/],
-    [" || !store.matchesProfile(profileId)", "", /Missing expected exception/],
-    ["!isAllowedRemote(req.socket.remoteAddress)", "false", /200 !== 403/],
+    ['server.ts', "if (!authenticate(req.headers.authorization, token))", "if (false)", /200 !== 401/],
+    ['io.ts', "try { object(value, schema); }", "try { const input = value as any; if (input?.context) { delete input.context.sourceKind; delete input.context.profileId; } object(value, schema); }", /200 !== 400/],
+    ['server.ts', "if (req.headers.origin !== undefined)", "if (false)", /200 !== 403/],
+    ['server.ts', " || !store.matchesProfile(profileId)", "", /Missing expected exception/],
+    ['server.ts', "!isAllowedRemote(req.socket.remoteAddress)", "false", /200 !== 403/],
   ] as const;
   try {
-    for (const [index, [before, after, expected]] of variants.entries()) {
+    for (const [index, [target, before, after, expected]] of variants.entries()) {
       const copy = join(root, String(index));
       mkdirSync(join(copy, 'test'), { recursive: true });
       cpSync(join(original, 'src'), join(copy, 'src'), { recursive: true });
       cpSync(join(original, 'test', 'http.test.ts'), join(copy, 'test', 'http.test.ts'));
       cpSync(join(original, 'package.json'), join(copy, 'package.json'));
-      const file = join(copy, 'src', 'http', 'server.ts');
+      const file = join(copy, 'src', 'http', target);
       const source = readFileSync(file, 'utf8'); assert.ok(source.includes(before));
       writeFileSync(file, source.replace(before, after));
       const env = { ...process.env, HTTP_MUTATION_CHILD: '1' }; delete env.NODE_TEST_CONTEXT;

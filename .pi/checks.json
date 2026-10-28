@@ -86,6 +86,16 @@
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/assistant-client.test.ts", "test/assistant-pages.test.ts", "test/assistant-local-command.test.ts", "test/assistant-projection.test.ts"],
       "timeoutMs": 30000
     },
+    "assistant-web-mutations": {
+      "description": "Disposable-source negative controls for web host, origin, CSRF, authority, expiry, rotation and resource bounds",
+      "argv": ["node", "assistant/test/web-mutations.mjs"],
+      "timeoutMs": 120000
+    },
+    "assistant-web": {
+      "description": "Disposable loopback web channel: cookie, origin/CSRF, stale decisions, events, assets and browser state; no personal service",
+      "argv": ["node", "--test", "assistant/test/web.test.ts", "assistant/test/web-state.test.mjs", "assistant/test/web-render.test.mjs", "assistant/test/web-session.test.ts"],
+      "timeoutMs": 60000
+    },
     "assistant-http": {
       "description": "Native authenticated loopback API, private response separation and disposable boundary mutations",
       "argv": ["node", "--test", "assistant/test/http.test.ts"],

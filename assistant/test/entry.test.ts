@@ -20,8 +20,8 @@ async function port(): Promise<number> {
   const number = (server.address() as { port: number }).port;
   await new Promise<void>(resolve => server.close(() => resolve())); return number;
 }
-function child(config: string) {
-  const process = spawn(processExec(), [main, '--config', config], { stdio: ['ignore', 'pipe', 'pipe'] });
+function child(config: string, web = false) {
+  const process = spawn(processExec(), [main, '--config', config, ...(web ? ['--web'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; process.stdout!.on('data', data => { output += data; }); process.stderr!.on('data', data => { output += data; });
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => process.once('exit', (code, signal) => resolve({ code, signal })));
   return { process, exited, output: () => output };
@@ -144,6 +144,7 @@ test('manual process persists authenticated state and handles bind collision', {
   try {
     running = child(config); await ready(running);
     const request = (path: string, body?: unknown, token = secret) => fetch(endpoint + path, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(3000) });
+    assert.equal((await request('/', undefined, 'wrong')).status, 401, 'web is off by default');
     assert.equal((await request('/v1/tasks', undefined, 'wrong')).status, 401);
     assert.equal((await request('/v1/tasks', { task, context: context('source-1') })).status, 200);
     assert.equal((await request('/v1/tasks/task-id/transition', { expectedRevision: 1, nextStatus: 'working', context: context('source-2') })).status, 200);
@@ -154,7 +155,10 @@ test('manual process persists authenticated state and handles bind collision', {
     const stopped = await stop(running);
     if (process.platform !== 'win32') assert.deepEqual(stopped, { code: 0, signal: null });
     assert.doesNotMatch(running.output(), new RegExp(`${secret}|${answer}`));
-    running = child(config); await ready(running);
+    running = child(config, true); await ready(running);
+    const page = await request('/', undefined, 'wrong');
+    assert.equal(page.status, 200); assert.match(await page.text(), /Caixa de trabalho/);
+    assert.equal((await request('/web/api/tasks')).status, 401, 'native bearer is not web authentication');
     const restored = await (await request('/v1/tasks/task-id')).json() as typeof task;
     assert.equal(restored.profileId, profileId); assert.equal(restored.status, 'working'); assert.equal(restored.revision, 4);
   } finally {

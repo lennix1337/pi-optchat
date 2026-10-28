@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Caixa de trabalho · OptChat</title>
+  <link rel="stylesheet" href="/app/app.css">
+  <script type="module" src="/app/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Ir para tarefas</a>
+  <header class="masthead">
+    <a class="wordmark" href="/">OptChat<span> / assistente</span></a>
+    <div class="header-actions"><label class="theme-label">Tema <select id="theme"><option value="auto">Sistema</option><option value="light">Claro</option><option value="dark">Escuro</option></select></label><button id="logout" hidden>Sair</button></div>
+  </header>
+  <main id="main" tabindex="-1">
+    <section id="login" class="login" aria-labelledby="login-heading">
+      <h1 id="login-heading">Seu trabalho,<br>sem perder o fio.</h1>
+      <p>Entre na caixa local deste perfil para responder pendências e revisar resultados com suas fontes.</p>
+      <form id="login-form">
+        <label for="token">Chave de acesso local</label>
+        <input id="token" type="password" autocomplete="off" required spellcheck="false">
+        <p class="hint">Use a chave do serviço descartável ou configurado por você. Não a envie no chat. Ela não fica salva no navegador.</p>
+        <button class="primary" type="submit">Entrar na caixa</button>
+      </form>
+      <p class="footnote">Somente neste computador. Acesso remoto e celular real não estão configurados.</p>
+    </section>
+    <section id="workspace" hidden aria-labelledby="page-heading">
+      <div class="page-heading"><div><h1 id="page-heading">Caixa de trabalho</h1><p id="profile" class="muted"></p></div><button id="refresh">Atualizar</button></div>
+      <div class="connection"><span id="connection">Conectando…</span><span>Concluir não significa verificar.</span></div>
+      <div class="workspace-grid">
+        <aside class="sidebar" aria-label="Organização da caixa">
+          <nav aria-label="Mostrar tarefas" id="filters">
+            <button data-filter="attention" aria-pressed="true">Precisa de você <span id="attention-count">0</span></button>
+            <button data-filter="active" aria-pressed="false">Em andamento</button>
+            <button data-filter="all" aria-pressed="false">Todas as tarefas</button>
+            <button data-filter="archive" aria-pressed="false">Arquivo</button>
+          </nav>
+          <label for="channel">Assunto</label><select id="channel"><option value="">Todos os assuntos</option></select>
+          <p class="hint">Assuntos vêm do canal original. O arquivo preserva a tarefa e suas fontes.</p>
+          <details class="new-task"><summary>Nova tarefa</summary><form id="create-form">
+            <label for="title">O que precisa ser feito?</label><input id="title" maxlength="200" required>
+            <label for="new-channel">Assunto</label><input id="new-channel" maxlength="80" value="Pessoal" required>
+            <button class="primary" type="submit">Colocar na fila</button><p class="hint">Entrar na fila não inicia um executor. Ativação é separada.</p>
+          </form></details>
+        </aside>
+        <div class="inbox"><div id="task-list" aria-label="Tarefas"></div><button id="more" hidden>Carregar mais tarefas</button></div>
+        <aside class="evidence" aria-labelledby="evidence-heading"><h2 id="evidence-heading">Fontes e histórico</h2><p id="evidence-intro" class="muted">Selecione “Ver fontes” em uma tarefa. Consultar não aprova nem resolve nada.</p><ol id="evidence-list"></ol><button id="more-events" hidden>Carregar mais eventos</button></aside>
+      </div>
+    </section>
+    <p id="notice" role="status" aria-live="polite" tabindex="-1"></p>
+  </main>
+  <footer>Estado observado, com origem. O chat continua sendo a fonte canônica.</footer>
+</body>
+</html>
