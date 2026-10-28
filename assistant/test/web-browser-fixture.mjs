@@ -1,5 +1,5 @@
 // Disposable browser acceptance fixture. No real account, provider, secret or production executor.
-import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -12,12 +12,19 @@ const databasePath = join(dir, `fixture-${Date.now()}.db`);
 const store = new TaskStore(databasePath, 'browser-acceptance');
 const db = new DatabaseSync(databasePath);
 const id = 'browser-task';
-function event(reference = 'fixture://original/request') {
-  return { version: 1, eventId: randomUUID(), profileId: 'browser-acceptance', taskId: id, sessionId: 'fixture', channelId: 'Pesquisa', runId: 'scripted-fixture-only', source: { actorId: 'scripted-fixture-worker', sourceKind: 'worker', sourceEventId: randomUUID() }, observedAt: new Date().toISOString(), sequence: store.nextSequence(), correlationId: randomUUID(), evidence: { kind: 'observed', reference } };
+function event(reference = 'fixture://original/request', taskId = id) {
+  return { version: 1, eventId: randomUUID(), profileId: 'browser-acceptance', taskId, sessionId: 'fixture', channelId: 'Pesquisa', runId: 'scripted-fixture-only', source: { actorId: 'scripted-fixture-worker', sourceKind: 'worker', sourceEventId: randomUUID() }, observedAt: new Date().toISOString(), sequence: store.nextSequence(), correlationId: randomUUID(), evidence: { kind: 'observed', reference } };
 }
 const initial = event();
 store.create({ version: 1, profileId: 'browser-acceptance', taskId: id, title: 'Revisar resumo da pesquisa local', status: 'queued', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: initial.source.sourceEventId }, initial);
 store.transition(id, 1, 'working', event()); store.transition(id, 2, 'needs_input', event());
+const extraTasks = Number(process.env.ASSISTANT_BROWSER_TASK_COUNT ?? 0);
+if (!Number.isSafeInteger(extraTasks) || extraTasks < 0 || extraTasks > 300) throw new Error('Invalid disposable fixture task count');
+for (let i = 0; i < extraTasks; i++) {
+  const taskId = `page-${String(i).padStart(3, '0')}`;
+  const entry = event('fixture://pagination', taskId);
+  store.create({ version: 1, profileId: 'browser-acceptance', taskId, title: `Tarefa de paginação ${i}`, status: 'queued', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: entry.source.sourceEventId }, entry);
+}
 const server = createAssistantServer({ store, token: 'DISPOSABLE-BROWSER-ONLY', profileId: 'browser-acceptance', web: true });
 let responseConsumed = false;
 const worker = setInterval(() => {

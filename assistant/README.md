@@ -42,9 +42,30 @@ After authorization, start manually with `node assistant/src/main.ts --config <a
 
 The active profile reads its client config only on an explicit `/assistant` command. See the [discovery skill](../skills/personal-assistant/SKILL.md) for commands. This version has no model-facing write tool or task-creation command: a trusted local producer must use the authenticated metadata API below. Existing approvals, operations and agents remain in their original journals. `/assistant local [cursor]` pages their current-session metadata (external agents are profile-scoped), with exact operation/agent references and safe approval metadata; `/assistant list` includes the first local page even without service configuration. Reading neither consumes grants nor reconciles outcomes; approval tokens, arguments, reports and private evidence stay with their source owners. These journals are not automatically ingested as mutable task records; suggestions use the service’s explicit `suggested` task status.
 
+## Local web panel (T10, experimental and incomplete)
+
+After explicitly authorizing the local service, add `--web` to the manual command:
+
+```text
+node assistant/src/main.ts --config <absolute-config-path> --web
+```
+
+Open only the canonical `http://127.0.0.1:<port>` endpoint in a browser and enter the server token in the masked local form, never a URL or command argument. The panel rejects `localhost`, IPv6 and other aliases so they cannot split the origin-scoped Web Locks and pending-write markers. Coordination covers tabs in the same browser profile, **not separate browser profiles or native clients**. Do not repeat an uncertain action in a different profile/client: reconcile it in its original journal first. The panel is **off by default**; installing the package or reloading Pi never opens it. No proxy, LAN exposure, TLS termination or real-phone access is configured. A narrow viewport is not a phone test.
+
+The panel lists profile-bound tasks, answers the current input revision, reviews result status, archives tasks and pages the existing event journal. Task completion is not effect approval or verification. Task creation places metadata in a queue; it does not start a worker. Native effects still require the host gateway and trusted terminal review. Browser events are `external`, never `trusted-local-human`.
+
+- Browser sessions use opaque HttpOnly/SameSite=Strict cookies, exact loopback Host, same-origin POST and a separate CSRF value. Native bearer auth cannot substitute for a browser session. Session expiry is two hours idle/twelve hours absolute, with bounded login attempts and session count. Logout, rotation and expiry are rechecked after body consumption before committing a mutation.
+- All task/source strings render as text, not HTML. The page uses self-hosted static assets, restrictive CSP and no external resources. Private response text remains excluded from task/event projections.
+- Events resume by the profile-local sequence. Lower-revision history cannot replace a newer task. Opening history is read-only. An uncertain write is not automatically retried; inspect its request identity against the journal before continuing.
+- Light/dark/system themes, keyboard-labelled forms and responsive layouts are present. Browser evidence under `local-validation/runs/personal-assistant-parity/t10-browser` is from disposable, scripted execution only, not personal activation or integrated Pi execution.
+
+**Pending:** independent lifecycle review fixes and final browser postchecks, read-only opening of supported original sources (references currently display only), and complete subject/channel views. Subject filters use each task's original event channel; no competing conversation store exists. Do not describe this as complete T10 or full assistant parity.
+
+Focused recipes: `assistant-web`, `assistant-web-mutations`, `assistant-http`, `assistant-entry`, `assistant-typecheck`, `assistant-pack`. The disposable browser fixture is `assistant/test/web-browser-fixture.mjs`. Before running it, check that no existing process/service owns port 43218. It binds that port, uses only a fixed fake credential, and runs a scripted test worker, not the production executor. Its runtime data belongs outside Git. Stop the fixture and verify the port is closed after testing.
+
 ## HTTP boundary
 
-`createAssistantServer({store,token,profileId,onError?})` returns an **unlistened** Node HTTP server. The profile must match the bound `TaskStore`. `nextSequence()` and `matchesProfile()` are read-only store accessors; sequence admission is still rechecked inside each write transaction. HTTP requests carry `Authorization: Bearer <token>`; browser Origin headers and non-allowlisted remote addresses refuse. No CORS or proxy support is enabled. The client only accepts a literal `http://127.0.0.1:<port>` endpoint and refuses redirects.
+`createAssistantServer({store,token,profileId,web?,onError?})` returns an **unlistened** Node HTTP server. The profile must match the bound `TaskStore`. `nextSequence()` and `matchesProfile()` are read-only store accessors; sequence admission is still rechecked inside each write transaction. Native `/v1` requests carry `Authorization: Bearer <token>`; browser Origin headers and non-allowlisted remote addresses refuse. The separately opt-in `/web` channel has its own cookie/origin/CSRF boundary described above. No CORS or proxy support is enabled. The client only accepts a literal `http://127.0.0.1:<port>` endpoint and refuses redirects.
 
 - `GET /v1/tasks?cursor=<opaque>&limit=50` → `{tasks,nextCursor}`; `GET /v1/tasks/<encodedId>` → task.
 - `GET /v1/events?after=0&limit=50` → stored event records; page sizes are 1–100. Sequence is profile-local, not task-local.

@@ -65,6 +65,25 @@ test('in-flight mutations cannot survive logout, rotation, or expiry', async () 
   });
 });
 
+test('alternate loopback origins cannot serve a panel, authenticate or independently dispatch', async () => clockFixture(async f => {
+  const session = await f.login(); const cookie = cookieOf(session);
+  const { csrf } = await session.json() as { csrf: string };
+  const port = new URL(f.base).port;
+  for (const host of [`localhost:${port}`, `[::1]:${port}`, `127.0.0.2:${port}`]) {
+    for (const path of ['/', '/app/app.js', '/web/session', '/web/api/tasks']) {
+      const method = path.startsWith('/web/') ? 'POST' : 'GET';
+      const body = path === '/web/session' ? { token: 'TEST-ONLY' } : { requestId: randomUUID(), title: 'Do not duplicate', channelId: 'test' };
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const req = request(`${f.base}${path}`, { method, headers: { host, origin: `http://${host}`, cookie, 'x-assistant-csrf': csrf, 'content-type': 'application/json' } }, res => { res.resume(); res.once('end', () => resolve(res.statusCode)); });
+        req.once('error', reject); req.end(method === 'POST' ? JSON.stringify(body) : undefined);
+      });
+      assert.equal(status, 403, `${host}${path}`);
+    }
+  }
+  assert.equal(f.store.events().length, 0);
+  assert.equal(f.store.list().tasks.length, 0);
+}));
+
 test('wrong hosts, login floods and session storage are bounded', async () => clockFixture(async f => {
   // Native fetch replaces Host with the URL authority; exercise the raw HTTP boundary instead.
   const status = await new Promise<number | undefined>((resolve, reject) => {

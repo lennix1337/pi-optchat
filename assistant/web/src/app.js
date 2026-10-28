@@ -1,4 +1,4 @@
-import { PanelState, PanelLifecycle, actions, attention, labels } from './state.js';
+import { PanelState, PanelLifecycle, coordinatedWrite, coordinatedReconcile, actions, attention, labels } from './state.js';
 
 const $ = selector => document.querySelector(selector);
 let state;
@@ -74,7 +74,7 @@ async function sync(manual = false) {
 async function events() {
   const entries = await request(`/web/api/events?after=${state.after}&limit=100`);
   state.apply(entries);
-  const reconciled = lifecycle.reconcile(entries);
+  const reconciled = await coordinatedReconcile(lifecycle, navigator.locks, state.events);
   if (reconciled) {
     notice('A ação anterior foi encontrada no histórico. Confira o resultado antes de continuar.');
     $('#create-form button').disabled = mutationPending;
@@ -181,7 +181,7 @@ async function mutate(path, input) {
     const requestId = crypto.randomUUID();
     const match = /^\/web\/api\/tasks\/([^/]+)\/(transition|respond)$/.exec(path);
     const marker = { requestId, action: match?.[2] ?? 'create', ...(match ? { taskId: decodeURIComponent(match[1]) } : {}) };
-    const result = await lifecycle.write(marker, () => request(path, { requestId, channelId, ...input }), events);
+    const result = await coordinatedWrite(lifecycle, navigator.locks, marker, () => request(path, { requestId, channelId, ...input }), events);
     state.upsert(result.task);
     if (marker.action === 'respond') lifecycle.clearDraft(marker.taskId);
     notice(result.historyError ? 'Estado salvo, mas o histórico está indisponível. Atualize para consultá-lo.' : 'Estado salvo. Nenhum efeito externo foi autorizado.');
@@ -191,6 +191,9 @@ async function mutate(path, input) {
       if (error.body.task) state.upsert(error.body.task);
       notice('Esta decisão já mudou. Revise o estado atual antes de responder outra vez.');
     } else if (error.status === 401) { signedOut(); notice('Sessão encerrada. Entre novamente.'); }
+    else if ([400, 403, 404].includes(error.status)) notice('Pedido recusado sem alterar a tarefa. Atualize a página para renovar a sessão e revise o pedido antes de tentar novamente.');
+    else if (error.message === 'panel busy') notice('Outra aba está enviando uma ação. Confira o estado depois que ela terminar; nada foi enviado nesta aba.');
+    else if (error.message === 'coordination unavailable') notice('Este navegador não oferece coordenação segura entre abas. Use Edge ou Chromium neste computador; nada foi enviado.');
     else {
       notice(uncertain() ? 'Resultado não confirmado. Não repita o clique: use Atualizar para procurar a ação no histórico. As ações ficam bloqueadas até a confirmação.' : 'Não foi possível guardar o marcador de segurança. Nenhuma ação foi enviada.');
     }
@@ -222,6 +225,17 @@ function updateFilters() {
 $('#filters').addEventListener('click', event => {
   const button = event.target.closest('[data-filter]'); if (!button) return;
   filter = button.dataset.filter; updateFilters(); render();
+});
+window.addEventListener('storage', event => {
+  if (!state || (event.key !== null && event.key !== lifecycle.key)) return;
+  try {
+    lifecycle.refreshMarker();
+    $('#create-form button').disabled = uncertain() || mutationPending;
+    if (uncertain()) notice('Outra aba tem uma ação sem resultado confirmado. Atualize o histórico antes de enviar outra ação.');
+    renderedKey = undefined; render();
+  } catch {
+    signedOut(); notice('Não foi possível consultar o marcador de segurança. Entre novamente antes de continuar.');
+  }
 });
 $('#channel').addEventListener('change', render);
 $('#refresh').addEventListener('click', () => sync(true));

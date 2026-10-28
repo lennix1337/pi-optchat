@@ -9,6 +9,7 @@ const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'assistant-web-mutants-'));
 const variants = [
   ['host', 'if (!host) {', 'if (false) {', /200 !== 403/],
+  ['host-alias', 'host === `127.0.0.1:${port}`', '[`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(host)', /200 !== 403/],
   ['origin', "req.headers.origin === `http://${host}`", 'true', /200 !== 403/],
   ['csrf', "req.method === 'POST' && req.headers['x-assistant-csrf'] !== session.csrf", 'false', /200 !== 403/],
   ['web-is-not-terminal', "sourceKind: 'external'", "sourceKind: 'trusted-local-human'", /trusted-local-human/],

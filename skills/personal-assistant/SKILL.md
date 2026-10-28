@@ -3,7 +3,7 @@ name: personal-assistant
 description: Use the optional personal-assistant inbox to list or inspect tasks, respond to input, or inspect evidence and originals.
 ---
 
-The server is optional and starts only with explicit operator permission. The operator supplies its secret config outside Git; do not put tokens in arguments or logs. See the repository README and `node assistant/src/main.ts --help` for manual setup. The active owner profile has its own `assistant.json` client config.
+The server is optional and starts only with explicit operator permission. The operator supplies its secret config outside Git; do not put tokens in arguments or logs. See the repository README and `node assistant/src/main.ts --help` for manual setup. The active owner profile has its own `assistant.json` client config. For the optional local web inbox, read `assistant/README.md` → “Local web panel”; `--web` is off by default and starting a personal service still needs permission. Web intent never becomes native-terminal approval. Evidence originals and full channel views are still pending; do not describe displayed references as opened originals.
 
 - `/assistant local [cursor]` pages read-only metadata from the current session’s approval, operation and agent journals, plus profile-scoped external agents; no service config or network is needed. It grants or reconciles nothing.
 - `/assistant list [cursor]` shows the first local page plus optional service snapshots; `/assistant show <id>` shows one task and local attention counts.

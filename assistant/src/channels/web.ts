@@ -82,7 +82,8 @@ export class WebChannel {
   private allowedHost(req: IncomingMessage): string | null {
     const port = req.socket.localPort;
     const host = req.headers.host ?? '';
-    return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(host) ? host : null;
+    // Web Locks and pending-write storage share only this canonical browser origin.
+    return host === `127.0.0.1:${port}` ? host : null;
   }
   private sameOrigin(req: IncomingMessage, host: string): boolean {
     const site = req.headers['sec-fetch-site'];
