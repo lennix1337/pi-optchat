@@ -7,7 +7,7 @@ import { parseEvent } from '../assistant/src/contracts/events.ts';
 
 export interface AssistantOwner {
   identity: object; name: string; dir: string; sessionId: string;
-  zoom: (id: number) => string;
+  zoom: (id: number, offset?: number, limit?: number) => string;
   attention: () => { approvals: number; uncertain: number; agents: number };
 }
 const safe = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 1000);
@@ -38,8 +38,12 @@ async function request(c: ReturnType<typeof config>, path: string, body?: unknow
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status); }
   if (!response.body) throw new Error('Invalid response');
   const reader = response.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
-  try { for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 256 * 1024) throw new Error('Response too large'); chunks.push(value); } }
-  finally { await reader.cancel().catch(() => {}); }
+  try {
+    for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 256 * 1024) throw new Error('Response too large'); chunks.push(value); }
+  } catch (error) {
+    try { await reader.cancel(); } catch { /* Preserve the original read failure. */ }
+    throw error;
+  } finally { reader.releaseLock(); }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 function task(value: unknown, owner: AssistantOwner, id?: string): Task {
@@ -47,13 +51,41 @@ function task(value: unknown, owner: AssistantOwner, id?: string): Task {
   if (t.profileId !== owner.name || id !== undefined && t.taskId !== id) throw new Error('Invalid identity');
   return t;
 }
-const card = (t: Task) => `${safe(t.taskId)} · ${safe(t.title)} · ${t.status} · verification: ${t.verification} · revision ${t.revision}/${t.inputRevision}\nSource event ID: ${safe(t.sourceEventId)} (not verification)`;
+const card = (t: Task) => `${encodeURIComponent(t.taskId)} · ${safe(t.title)} · ${t.status} · verification: ${t.verification} · revision ${t.revision}/${t.inputRevision}\nSource event ID: ${safe(t.sourceEventId)} (not verification)`;
+function token(value: string): string {
+  const decoded = decodeURIComponent(value);
+  if (!decoded.trim()) throw new Error('Invalid token');
+  return decoded;
+}
+function integer(value: string | undefined, fallback: number, min: number): number {
+  if (value === undefined) return fallback;
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error('Invalid integer');
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < min) throw new Error('Invalid integer');
+  return n;
+}
+function eventPage(value: unknown, owner: AssistantOwner, after: number, limit: number) {
+  if (!Array.isArray(value) || value.length > limit) throw new Error('Invalid events');
+  return value.map((v, i) => {
+    if (!record(v) || Object.keys(v).sort().join(',') !== 'event,operation,task' || !['create', 'transition', 'respond'].includes(String(v.operation))) throw new Error('Invalid event');
+    const e = parseEvent(v.event), t = task(v.task, owner);
+    if (e.profileId !== owner.name || e.taskId !== t.taskId || e.sequence !== after + i + 1) throw new Error('Invalid event identity');
+    return e;
+  });
+}
+function localOriginal(ref: string, profile: string): number | undefined {
+  const match = /^optchat:([^:]+):(0|[1-9][0-9]*)$/.exec(ref);
+  if (!match || match[1] !== encodeURIComponent(profile)) return undefined;
+  const id = Number(match[2]);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
 
 /** Explicit operator command; no background requests or model-facing tools. */
 export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner | undefined) {
   pi.registerCommand('assistant', { description: 'Read assistant task snapshots or respond to a current input request', handler: async (args, ctx) => {
     const words = args.trim().split(/\s+/).filter(Boolean), action = words[0] ?? 'list';
-    if (!(['list', 'show', 'respond', 'evidence'].includes(action)) || words.length > 2 || action !== 'list' && words.length !== 2) { ctx.ui.notify('Usage: /assistant [list [cursor]|show <id>|respond <id>|evidence <id>]', 'error'); return; }
+    const arity: Record<string, readonly number[]> = { list: [0, 1, 2], show: [2], respond: [2], evidence: [2, 3], original: [3, 4] };
+    if (!arity[action]?.includes(words.length)) { ctx.ui.notify('Usage: /assistant [list [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]] (IDs and cursors URL-encoded)', 'error'); return; }
     const owner = source();
     if (!owner || owner.sessionId !== ctx.sessionManager.getSessionId()) { ctx.ui.notify('Open an available local profile before /assistant.', 'error'); return; }
     const stillOwned = () => { const current = source(); return current?.identity === owner.identity && current.name === owner.name && current.sessionId === owner.sessionId && ctx.sessionManager.getSessionId() === owner.sessionId; };
@@ -61,41 +93,45 @@ export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner
     try {
       const c = config(owner);
       if (action === 'list') {
-        const query = new URLSearchParams({ limit: String(LIMIT) }); if (words[1]) query.set('cursor', words[1]);
+        const query = new URLSearchParams({ limit: String(LIMIT) }); if (words[1]) query.set('cursor', token(words[1]));
         const page = await request(c, `/v1/tasks?${query}`);
         if (!record(page) || Object.keys(page).sort().join(',') !== 'nextCursor,tasks' || !Array.isArray(page.tasks) || page.tasks.length > LIMIT || !(page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor.length > 0)) throw new Error('Invalid page');
         const tasks = page.tasks.map(v => task(v, owner));
         if (!stillOwned()) throw new Error('Owner changed');
-        ctx.ui.notify([`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${safe(page.nextCursor as string)}`].join('\n'), 'info'); return;
+        ctx.ui.notify([`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${encodeURIComponent(page.nextCursor as string)}`].join('\n'), 'info'); return;
       }
-      const id = words[1], current = task(await request(c, `/v1/tasks/${encodeURIComponent(id)}`), owner, id);
+      const id = token(words[1]), current = task(await request(c, `/v1/tasks/${encodeURIComponent(id)}`), owner, id);
       if (!stillOwned()) throw new Error('Owner changed');
       if (action === 'show') {
         const a = owner.attention();
         ctx.ui.notify(`${card(current)}\nLocal owner journals (not exhaustive): ${a.approvals} approvals (/approve, /deny), ${a.uncertain} uncertain operations (operation_state), ${a.agents} agents (/optchat agents). No grants copied.`, 'info'); return;
       }
-      if (action === 'evidence') {
-        const events = await request(c, `/v1/events?after=0&limit=${LIMIT}`);
-        if (!Array.isArray(events) || events.length > LIMIT) throw new Error('Invalid events');
-        const matches = events.map((v, i) => {
-          if (!record(v) || Object.keys(v).sort().join(',') !== 'event,operation,task' || !['create', 'transition', 'respond'].includes(String(v.operation))) throw new Error('Invalid event');
-          const e = parseEvent(v.event), t = task(v.task, owner);
-          if (e.profileId !== owner.name || e.taskId !== t.taskId || e.sequence !== i + 1) throw new Error('Invalid event identity');
-          return e;
-        }).filter(e => e.taskId === id);
+      if (action === 'evidence' || action === 'original') {
+        const original = action === 'original';
+        const sequence = original ? integer(words[2], 0, 1) : integer(words[2], 0, 0);
+        const offset = original ? integer(words[3], 0, 0) : 0;
+        const after = original ? sequence - 1 : sequence, limit = original ? 1 : LIMIT;
+        const events = eventPage(await request(c, `/v1/events?after=${after}&limit=${limit}`), owner, after, limit);
         if (!stillOwned()) throw new Error('Owner changed');
-        const lines = [card(current), 'Original references below are observed, not verified. First 50 profile events only.'];
-        for (const e of matches) {
-          const ref = e.evidence.reference; lines.push(`Source event ID: ${safe(e.source.sourceEventId)} · evidence reference: ${safe(ref)} (unverified)`);
-          const match = /^optchat:([^:]+):(0|[1-9][0-9]*)$/.exec(ref);
-          if (match) {
-            let profile = ''; try { profile = decodeURIComponent(match[1]); } catch { /* unsupported reference */ }
-            const n = Number(match[2]);
-            if (profile === owner.name && encodeURIComponent(profile) === match[1] && Number.isSafeInteger(n)) {
-              try { lines.push(`Original message ${n}:\n${safe(owner.zoom(n))}`); } catch { lines.push('Original message unavailable.'); }
-            } else lines.push('Foreign or invalid original reference; not opened.');
-          } else lines.push('Unsupported reference; not opened.');
+        if (original) {
+          const event = events[0];
+          if (!event || event.taskId !== id) throw new Error('Invalid original event');
+          const ref = event.evidence.reference, messageId = localOriginal(ref, owner.name);
+          if (messageId === undefined) { ctx.ui.notify('Foreign or unsupported reference; not opened (unverified).', 'warning'); return; }
+          const page = owner.zoom(messageId, offset, 6000).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+          ctx.ui.notify(`Historical original · ${ref} · unverified source
+${page}
+Continue with /assistant original ${encodeURIComponent(id)} ${sequence} <offset> using the next page offset above.`, 'info'); return;
         }
+        const lines = [card(current), `Observed references, not verification · profile events after ${after}.`];
+        for (const event of events.filter(e => e.taskId === id)) {
+          const ref = event.evidence.reference;
+          lines.push(`Sequence ${event.sequence} · source event ID: ${safe(event.source.sourceEventId)} · evidence reference: ${safe(ref)} (unverified)`);
+          if (localOriginal(ref, owner.name) !== undefined) lines.push(`Open: /assistant original ${encodeURIComponent(id)} ${event.sequence}`);
+          else lines.push('Foreign or unsupported reference; not opened.');
+        }
+        if (events.length === limit) lines.push(`Continue: /assistant evidence ${encodeURIComponent(id)} ${after + events.length}`);
+        else lines.push('End of profile events.');
         ctx.ui.notify(lines.join('\n'), 'info'); return;
       }
       if (ctx.mode !== 'tui' || !ctx.hasUI) { ctx.ui.notify('Respond requires interactive Pi.', 'error'); return; }
@@ -107,6 +143,7 @@ export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner
       const sourceEventId = randomUUID(); write = true;
       const result = await request(c, `/v1/tasks/${encodeURIComponent(id)}/respond`, { response: { version: 1, profileId: owner.name, taskId: id, revision: current.revision, inputRevision: current.inputRevision, text }, context: { sessionId: owner.sessionId, channelId: 'pi-terminal', runId: sourceEventId, sourceEventId, evidenceReference: `assistant-response:${sourceEventId}` } });
       task(result, owner, id);
+      if (!stillOwned()) throw new Error('Owner changed');
       ctx.ui.notify('Response recorded as data, not authorization or verified work.', 'info');
     } catch (error) {
       ctx.ui.notify(write ? error instanceof HttpError && error.status === 409 ? 'Response is stale. Refresh the task before responding; no automatic retry.' : 'Response outcome uncertain. Inspect current state before any further action; do not automatically retry.'
