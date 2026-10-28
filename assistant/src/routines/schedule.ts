@@ -27,7 +27,8 @@ function formatter(timeZone: string): Intl.DateTimeFormat {
 type Local = { year: number; month: number; day: number; hour: number; minute: number; weekday: number };
 const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-function local(instant: number, timeZone: string): Local & { second: number } {
+/** Wall-clock fields of an instant in an IANA zone; throws RangeError for an unknown zone. */
+export function local(instant: number, timeZone: string): Local & { second: number } {
   const parts: Record<string, string> = {};
   for (const part of formatter(timeZone).formatToParts(instant)) parts[part.type] = part.value;
   return { year: +parts.year, month: +parts.month, day: +parts.day, hour: +parts.hour, minute: +parts.minute, second: +parts.second, weekday: weekdays.indexOf(parts.weekday) };

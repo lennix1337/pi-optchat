@@ -41,6 +41,16 @@
       "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/connector-grants.test.ts", "assistant/test/mcp-discovery.test.ts", "assistant/test/connector-revocation.test.ts"],
       "timeoutMs": 120000
     },
+    "assistant-google": {
+      "description": "T07 read-only Google against a loopback fake: OAuth state/PKCE/identity/revocation, mail+calendar bounds, triage eval, briefing dedup and Start, gateway-only send; no real account",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/google-oauth.test.ts", "assistant/test/google-boundaries.test.ts", "assistant/test/triage.test.ts", "assistant/test/briefing.test.ts"],
+      "timeoutMs": 180000
+    },
+    "assistant-google-mutations": {
+      "description": "Disposable-source proof that removing each T07 guard (state, redirect, PKCE, identity, scope, revocation, grant, injection isolation, Start authority, daily dedup) fails its test",
+      "argv": ["node", "assistant/test/google-mutations.mjs"],
+      "timeoutMs": 600000
+    },
     "assistant-memory": {
       "description": "T09 memory view (provenance, corrections, isolation) and learning proposals (measure, approve, apply, revert)",
       "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/memory-provenance.test.ts", "assistant/test/memory-correction.test.ts", "assistant/test/learning-lifecycle.test.ts"],
