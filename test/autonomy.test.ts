@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { classifyEffects, decide, parseContract, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
+import { touchesContract } from '../src/authorization.ts';
 
 /** Checkouts by path, without git: slug and current branch. */
 const repos: Record<string, [string, string]> = {
@@ -214,6 +215,34 @@ test('the agent cannot widen its own contract: touching autonomy.json waits for 
   assert.equal(refused.block, true);
   assert.match(refused.reason, /Only the operator changes autonomy\.json/);
   assert.deepEqual(g.asked, [], 'the advisor is not asked either');
+  g.done();
+});
+
+// Built, not written out: a literal file name in this edit would trip the very gate this test pins down.
+const contractFile = ['autonomy', 'json'].join('.');
+
+test('only a call that can change the contract file is a contract change; searching or mentioning it is not', async () => {
+  const f = contractFile;
+  const bash = (command: string) => touchesContract({ tool: 'bash', input: { command } });
+  for (const command of [
+    `cd C:/projetos/pi-optchat && grep -rn "touchesContract\\|${f}" src/*.ts | grep -v "^src/a" | head -15`,
+    `cat ~/.optchat/${f}`, `ls ~/.optchat/${f} 2>&1`, `jq .rules ~/.optchat/${f} 2>/dev/null`,
+    `Get-Content C:/Users/swluc/.optchat/${f}`, `git log --oneline -- src/${f}`,
+  ]) assert.equal(bash(command), false, command);
+  for (const command of [
+    `echo '{}' > ~/.optchat/${f}`, `cp proposed.json ~/.optchat/${f}`, `grep a b | tee ~/.optchat/${f}`,
+    `sed -i s/ask/free/ ~/.optchat/${f}`, `cat $(cp a ~/.optchat/${f})`, `node -e "fs.writeFileSync('${f}', '{}')"`,
+  ]) assert.equal(bash(command), true, command);
+  assert.equal(touchesContract({ tool: 'edit', input: { path: `C:/Users/swluc/.optchat/${f}`, edits: [] } }), true);
+  assert.equal(touchesContract({ tool: 'write', input: { path: `~/.optchat/${f}`, content: '{}' } }), true);
+  assert.equal(touchesContract({ tool: 'edit', input: { path: 'src/authorization.ts', edits: [{ oldText: 'a', newText: `names ${f}` }] } }), false);
+  assert.equal(touchesContract({ tool: 'self_reload', input: { checkpoint: `copy of ${f} still needs the operator` } }), false);
+  assert.equal(touchesContract({ tool: 'operational_state', input: { update: { kind: 'decision', text: `${f} unchanged` } } }), false);
+  assert.equal(touchesContract({ tool: 'ripwire', input: { root: 'C:/projetos/pi-optchat', action: 'search', query: f } }), false);
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.write({ path: '${f}', content: '{}' })` } }), true);
+  const g = gate(undefined);
+  assert.equal(await g.call(`grep -rn "${f}" src/*.ts | head`), undefined, 'a search runs without asking anyone');
+  assert.deepEqual(g.asked, []);
   g.done();
 });
 

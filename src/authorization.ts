@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
-import { productionWriteHost, runsDeploy } from './effect-classifier.ts';
+import { productionWriteHost, runsDeploy, segments } from './effect-classifier.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
@@ -65,9 +65,29 @@ const riskClasses: [string, RegExp][] = [
 const paidTools = new Set(['subagent', 'spawn', 'tell']);
 /** Risk class of a call that touches the operator's autonomy contract; only the operator may approve it. */
 export const CONTRACT_CHANGE = 'autonomy contract change';
-/** A non-read call whose arguments name autonomy.json (an edit, a write, a shell command or script touching it). */
-export const touchesContract = ({ tool, input }: { tool: string; input: unknown }) =>
-  !reads.has(tool) && JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
+/** Whether a call's arguments name autonomy.json, the operator's contract file. */
+const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
+/** Tools whose arguments are prose for the operator or the ledger: naming a file there cannot change it. */
+const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor']);
+const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|jq|echo|printf|test|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
+
+/** Shell text that only reads: every segment a read-only command, no file redirect, no command substitution. */
+function readOnlyShell(command: string) {
+  const text = command.replace(/\d*>&\d/g, '').replace(/\d*>\s*\/dev\/null\b/g, '');
+  if (/[`>]|\$\(/.test(text)) return false;
+  return segments(text, '.').every(segment => readOnlyCommand.test(segment.command.replace(/^(?:\w+=\S*\s+)*/, '')));
+}
+
+/**
+ * A call that can change the contract: an edit or write of the file, a shell command naming it that is not read-only,
+ * or any other tool (codemode, subagents) naming it. Searches, reads and prose such as a reload checkpoint never are.
+ */
+export function touchesContract({ tool, input }: { tool: string; input: unknown }) {
+  if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
+  if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && namesContract(input.path);
+  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string' && readOnlyShell(input.command)) return false;
+  return namesContract(input);
+}
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
 const tempPath = /^(?:[a-zA-Z]:[\\/](?:tmp|temp)[\\/]|\/tmp\/|\/c\/tmp\/|\$\{?(?:TMP|TEMP|TMPDIR)\b|%TEMP%)/i;
 
@@ -88,7 +108,7 @@ function recursiveDelete(command: string) {
 
 /** The high-impact class a call belongs to in risk mode, or undefined for ordinary work. */
 function riskClass({ tool, input }: Invocation) {
-  // The agent never widens its own contract: any non-read call naming autonomy.json waits for the operator.
+  // The agent never widens its own contract: any call that can write autonomy.json waits for the operator.
   if (touchesContract({ tool, input })) return CONTRACT_CHANGE;
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
   const text = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? input.command
