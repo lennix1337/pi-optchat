@@ -1,7 +1,7 @@
 export type Rule = (value: unknown) => boolean;
 type Schema = { [key: string]: Rule | Schema };
 
-export const text: Rule = value => typeof value === 'string' && value.trim().length > 0;
+export const text: Rule = value => typeof value === 'string' && value.isWellFormed() && value.trim().length > 0;
 export const positive: Rule = value => Number.isSafeInteger(value) && (value as number) > 0;
 export const timestamp: Rule = value => {
   if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(value)) return false;
