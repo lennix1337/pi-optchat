@@ -1,6 +1,7 @@
-import { openSync, readSync, closeSync } from 'node:fs';
+import { constants, fstatSync, openSync, readSync, closeSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
 Usage: node assistant/src/main.ts --config <absolute-path>
@@ -9,6 +10,8 @@ Usage: node assistant/src/main.ts --config <absolute-path>
 Supply a user-controlled secret JSON file outside Git, maximum 8192 bytes:
 {"version":1,"profileId":"<nonblank>","databasePath":"<absolute durable path>","endpoint":"http://127.0.0.1:<port 1..65535>","token":"<nonempty ASCII printable without whitespace>"}
 No other fields are accepted. Keep the token out of arguments and logs.
+Config and database must be in private, owner-controlled directories; existing
+files and SQLite sidecars must be private. No permissions are changed.
 Activation is manual and requires operator permission; this installs no service.
 The client uses its owner-profile assistant.json with version, profileId, endpoint and token.
 `;
@@ -16,9 +19,12 @@ The client uses its owner-profile assistant.json with version, profileId, endpoi
 type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string };
 function readConfig(path: string): Config {
   if (!isAbsolute(path)) throw new Error('Invalid configuration path');
-  const fd = openSync(path, 'r');
+  // The privacy precheck assumes a quiescent, user-controlled directory.
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   let data: Buffer;
   try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error('Invalid configuration file');
     data = Buffer.alloc(8193);
     let count = 0;
     while (count < data.length) {
@@ -47,9 +53,13 @@ async function main(): Promise<void> {
   if (args.length === 1 && args[0] === '--help') { process.stdout.write(help); return; }
   if (args.length !== 2 || args[0] !== '--config' || !isAbsolute(args[1])) { console.error('Usage: node assistant/src/main.ts --config <absolute-path> (or --help)'); process.exitCode = 1; return; }
   if (Number(process.versions.node.split('.')[0]) < 24) { console.error('Assistant server requires Node.js >=24.'); process.exitCode = 1; return; }
+  try { checkConfigPrivacy(args[1]); }
+  catch { console.error('Configuration privacy check failed: use a private directory and file; verify permissions and ACL inspection.'); process.exitCode = 1; return; }
   let config: Config;
   try { config = readConfig(args[1]); }
   catch { console.error('Configuration unavailable or invalid (see --help).'); process.exitCode = 1; return; }
+  try { prepareDatabase(config.databasePath); }
+  catch { console.error('Database privacy check failed: use a private directory and files; verify permissions and ACL inspection.'); process.exitCode = 1; return; }
   const { TaskStore } = await import('./store/db.ts');
   const { createAssistantServer } = await import('./http/server.ts');
   let store: InstanceType<typeof TaskStore>;

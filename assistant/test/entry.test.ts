@@ -27,6 +27,21 @@ function child(config: string) {
   return { process, exited, output: () => output };
 }
 function processExec() { return process.execPath; }
+function privateTemp(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  if (process.platform === 'win32') {
+    const script = `$ErrorActionPreference='Stop'
+$a=[System.Security.AccessControl.DirectorySecurity]::new()
+$a.SetAccessRuleProtection($true,$false)
+foreach($sid in @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')) {
+ $a.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+}
+[System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($env:ENTRY_FIXTURE),$a)`;
+    const result = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, ENTRY_FIXTURE: dir }, timeout: 10000 });
+    if (result.status !== 0) { rmSync(dir, { recursive: true, force: true }); throw new Error('Could not secure disposable entry fixture'); }
+  }
+  return dir;
+}
 async function ready(c: ReturnType<typeof child>) {
   await Promise.race([
     new Promise<void>((resolve, reject) => {
@@ -44,7 +59,7 @@ async function stop(c: ReturnType<typeof child>) {
 }
 
 test('help is side-effect free; invalid configs cannot open a database', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'entry-invalid-'));
+  const dir = privateTemp('entry-invalid-');
   try {
     const help = spawnSync(process.execPath, [main, '--help'], { cwd: dir, encoding: 'utf8', timeout: 5000 });
     assert.equal(help.status, 0); assert.match(help.stdout, /manual/i); assert.match(help.stdout, /databasePath/); assert.deepEqual(readdirSync(dir), []);
@@ -53,14 +68,14 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     const invalid = ['{', JSON.stringify({ ...base, extra: true }), JSON.stringify({ ...base, version: 2 }), JSON.stringify({ ...base, endpoint: 'http://localhost:80' }), JSON.stringify({ ...base, endpoint: 'http://127.0.0.1:65536' }), JSON.stringify({ ...base, databasePath: ':memory:' }), JSON.stringify({ ...base, databasePath: 'relative.db' }), JSON.stringify({ ...base, profileId: ' ' }), JSON.stringify({ ...base, token: 'bad token' }), JSON.stringify(base) + ' '.repeat(8193)];
     for (const data of invalid) {
       writeFileSync(config, data);
-      const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 1500 });
+      const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
       assert.equal(result.status, 1); assert.match(result.stderr, /configuration/i); assert.doesNotMatch(result.stderr + result.stdout, new RegExp(secret)); assert.equal(existsSync(db), false);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('configuration guards reject disposable mutations', { timeout: 60000 }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'entry-mutations-'));
+test('configuration guards reject disposable mutations', { timeout: 180000 }, () => {
+  const root = privateTemp('entry-mutations-');
   const assistant = fileURLToPath(new URL('../', import.meta.url));
   const variants: [string, string][] = [
     ['count > 8192', 'false'],
@@ -83,7 +98,7 @@ test('configuration guards reject disposable mutations', { timeout: 60000 }, () 
       const source = readFileSync(sourcePath, 'utf8'); assert.ok(source.includes(before), before);
       writeFileSync(sourcePath, source.replace(before, after));
       const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-      const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=help is side-effect free', join(copy, 'test', 'entry.test.ts')], { env, encoding: 'utf8', timeout: 12000 });
+      const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=help is side-effect free', join(copy, 'test', 'entry.test.ts')], { env, encoding: 'utf8', timeout: 30000 });
       assert.equal(result.status, 1, `${before}: ${result.stderr}`);
       assert.match(result.stdout, /AssertionError/, before);
     }
@@ -91,7 +106,7 @@ test('configuration guards reject disposable mutations', { timeout: 60000 }, () 
 });
 
 test('shutdown bounds active connections', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'entry-shutdown-'));
+  const dir = privateTemp('entry-shutdown-');
   const config = join(dir, 'config.json'), number = await port();
   writeFileSync(config, JSON.stringify({ version: 1, profileId, databasePath: join(dir, 'store.db'), endpoint: `http://127.0.0.1:${number}`, token: secret }));
   const running = child(config);
@@ -110,7 +125,7 @@ test('shutdown bounds active connections', { skip: process.platform === 'win32',
 });
 
 test('manual process persists authenticated state and handles bind collision', { timeout: 30000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'entry-journey-'));
+  const dir = privateTemp('entry-journey-');
   const config = join(dir, 'config.json'), db = join(dir, 'store.db');
   const endpoint = `http://127.0.0.1:${await port()}`;
   writeFileSync(config, JSON.stringify({ version: 1, profileId, databasePath: db, endpoint, token: secret }));
