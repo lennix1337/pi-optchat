@@ -106,6 +106,16 @@
       "argv": ["node", "assistant/test/ops-mutations.mjs"],
       "timeoutMs": 600000
     },
+    "assistant-artifacts": {
+      "description": "T12 disposable artifact registry (versions, review, restart), sandboxed preview/download over the loopback web client, and the fail-closed voice review contract; no provider or microphone",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/artifact-flow.test.ts", "assistant/test/preview-isolation.test.ts", "assistant/test/voice-flow.test.ts"],
+      "timeoutMs": 90000
+    },
+    "assistant-artifacts-mutations": {
+      "description": "Disposable-source negative controls for managed-root traversal, source roots, integrity, preview sandbox/CSP, download auth, capability binding/expiry and voice confirmation",
+      "argv": ["node", "assistant/test/artifact-mutations.mjs"],
+      "timeoutMs": 300000
+    },
     "assistant-web-mutations": {
       "description": "Disposable-source negative controls for web host, origin, CSRF, authority, expiry, rotation and resource bounds",
       "argv": ["node", "assistant/test/web-mutations.mjs"],

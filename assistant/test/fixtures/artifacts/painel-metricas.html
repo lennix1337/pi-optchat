@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Painel de métricas — exemplar descartável</title>
+<style>
+  body { margin: 0; padding: 1.5rem; font: 15px/1.5 'Segoe UI', system-ui, sans-serif; background: #f8f7f3; color: #252b29; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; }
+  .card { background: #fff; border: 1px solid #d5d9d3; padding: 1rem; }
+  .value { font-size: 2rem; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>Painel semanal</h1>
+<div class="grid">
+  <div class="card"><p>Tarefas concluídas</p><p class="value">12</p></div>
+  <div class="card"><p>Aguardando você</p><p class="value">3</p></div>
+  <div class="card">
+    <p>Tarefas por dia</p>
+    <svg viewBox="0 0 140 60" width="100%" role="img" aria-label="Gráfico de barras: 2, 4, 3, 5, 1">
+      <rect x="5" y="36" width="20" height="24" fill="#226146"/><rect x="32" y="12" width="20" height="48" fill="#226146"/>
+      <rect x="59" y="24" width="20" height="36" fill="#226146"/><rect x="86" y="0" width="20" height="60" fill="#226146"/>
+      <rect x="113" y="48" width="20" height="12" fill="#226146"/>
+    </svg>
+  </div>
+</div>
+</body>
+</html>

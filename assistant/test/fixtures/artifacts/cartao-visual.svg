@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" width="320" height="180" role="img" aria-label="Cartão visual de exemplo">
+  <rect width="320" height="180" fill="#f8f7f3"/>
+  <rect x="16" y="16" width="288" height="148" fill="none" stroke="#226146" stroke-width="2"/>
+  <circle cx="64" cy="90" r="28" fill="#226146"/>
+  <text x="108" y="84" font-family="Georgia, serif" font-size="22" fill="#252b29">Design exemplar</text>
+  <text x="108" y="110" font-family="Segoe UI, sans-serif" font-size="13" fill="#5d6662">Formas e texto, sem recursos externos</text>
+</svg>

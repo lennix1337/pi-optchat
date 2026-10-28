@@ -4,6 +4,7 @@ import { parseTask, type TaskResponse, type TaskStatus } from '../contracts/task
 import { oneOf, positive, text, version } from '../contracts/validation.ts';
 import type { Event } from '../contracts/events.ts';
 import { TaskStore } from '../store/db.ts';
+import type { ArtifactRegistry } from '../artifacts/registry.ts';
 import { securityHeaders, WebChannel } from '../channels/web.ts';
 import type { SetupComponent } from '../setup.ts';
 import { authenticate } from './auth.ts';
@@ -81,9 +82,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
   }
 }
-export function createAssistantServer({ store, token, profileId, web = false, setup, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; onError?: ErrorObserver }): Server {
-  if (!text(token) || !text(profileId) || !store.matchesProfile(profileId)) throw new TypeError('Invalid server binding');
-  const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}) }) : null;
+export function createAssistantServer({ store, token, profileId, web = false, setup, artifacts, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; onError?: ErrorObserver }): Server {
+  if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
+  const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}), ...(artifacts ? { artifacts } : {}) }) : null;
   const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;

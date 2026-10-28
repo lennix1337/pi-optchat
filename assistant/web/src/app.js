@@ -1,4 +1,6 @@
 import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, DeclinedSources, setupLabels, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels } from './state.js';
+import { startArtifacts, stopArtifacts } from './artifacts/artifacts.js';
+import { startVoice, stopVoice } from './voice/voice-ui.js';
 
 const $ = selector => document.querySelector(selector);
 let state;
@@ -41,6 +43,7 @@ async function request(path, body) {
 }
 function signedOut() {
   clearTimeout(timer); state = undefined; csrf = undefined;
+  stopArtifacts(); stopVoice();
   $('#workspace').hidden = true; $('#logout').hidden = true; $('#login').hidden = false;
   $('#task-list').replaceChildren(); $('#evidence-list').replaceChildren();
   $('#setup').hidden = true; $('#task-list').hidden = false;
@@ -54,6 +57,12 @@ async function start(session) {
   $('#profile').textContent = `Perfil ${session.profileId} · serviço local`;
   selectedTask = undefined; renderedKey = undefined;
   $('#create-form button').disabled = uncertain();
+  startArtifacts(request);
+  // Voice text enters only through the same create path; a busy or uncertain panel refuses it.
+  void startVoice(request, async ({ text }) => {
+    if (uncertain() || mutationPending) throw new Error('panel busy');
+    await mutate('/web/api/tasks', { title: text, channelId: 'Voz' });
+  });
   if (uncertain()) notice('Resultado não confirmado. Atualize o histórico antes de repetir a ação.');
   await sync(true);
   openDeepLink();

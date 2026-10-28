@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Página hostil — exemplar descartável</title>
+<meta http-equiv="refresh" content="0; url=/web/api/hostile-refresh">
+<base href="/web/api/hostile-base/">
+<style>body { font-family: system-ui, sans-serif; } .bg { background: url(/web/api/hostile-css); }</style>
+<script>
+  // If any of this runs, the fixture server records the request path.
+  fetch('/web/api/hostile-fetch', { method: 'POST', credentials: 'include', body: document.cookie });
+  try { parent.document.title = 'HOSTILE-PARENT'; } catch (error) { fetch('/web/api/hostile-parent-blocked'); }
+  document.title = 'HOSTILE-SCRIPT-RAN';
+</script>
+</head>
+<body class="bg">
+<h1 id="marker">Conteúdo não confiável</h1>
+<img src="/web/api/hostile-img" alt="">
+<img src="x" onerror="fetch('/web/api/hostile-onerror')" alt="">
+<form action="/web/api/hostile-form" method="post"><button>Enviar</button></form>
+<a href="/web/api/hostile-link" target="_top">Link</a>
+<iframe src="/web/api/hostile-frame"></iframe>
+</body>
+</html>

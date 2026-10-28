@@ -50,6 +50,28 @@
         <div class="inbox"><section id="setup" hidden aria-labelledby="setup-heading"><h2 id="setup-heading">Configuração</h2><p class="hint">Pronto só depois de uma verificação local recente. Nada aqui chama modelo pago nem conecta contas.</p><ul id="setup-list"></ul><h3>O que funciona agora</h3><ul id="capability-list"></ul><button id="close-setup" type="button">Voltar às tarefas</button></section><div id="task-list" aria-label="Tarefas"></div><button id="more" hidden>Carregar mais tarefas</button></div>
         <aside class="evidence" aria-labelledby="evidence-heading"><h2 id="evidence-heading">Fontes e histórico</h2><p id="evidence-intro" class="muted">Selecione “Ver fontes” em uma tarefa. Consultar não aprova nem resolve nada.</p><ol id="evidence-list"></ol><button id="more-events" hidden>Carregar mais eventos</button></aside>
       </div>
+      <section class="artifacts" aria-labelledby="artifacts-heading">
+        <div class="section-heading"><h2 id="artifacts-heading">Artefatos</h2>
+          <div class="artifact-controls"><label for="artifact-type">Tipo</label><select id="artifact-type"><option value="">Todos os tipos</option><option value="document">Documento</option><option value="slides">Apresentação</option><option value="page">Página</option><option value="dashboard">Painel de dados</option><option value="design">Design</option><option value="design_system">Design system</option></select><button id="artifacts-refresh">Atualizar artefatos</button></div></div>
+        <p id="artifacts-status" class="muted" role="status"></p>
+        <div id="artifact-list" class="artifact-list"></div>
+        <div id="artifact-preview" class="artifact-preview" hidden>
+          <div class="preview-bar"><h3 id="preview-title" tabindex="-1"></h3><button id="preview-close">Fechar prévia</button></div>
+          <iframe id="preview-frame" title="Prévia isolada do artefato" sandbox="" referrerpolicy="no-referrer"></iframe>
+          <p class="hint">Conteúdo não confiável, isolado: sem scripts nem acesso à sua sessão. O link da prévia vale por poucos minutos e só neste navegador.</p>
+        </div>
+      </section>
+      <section class="voice" aria-labelledby="voice-heading">
+        <h2 id="voice-heading">Mensagem por voz</h2>
+        <p id="voice-status" class="muted" role="status">Consultando o transcritor local…</p>
+        <p class="hint">Ao gravar, o áudio fica só na memória desta aba e é descartado após a transcrição ou ao cancelar. O texto só vira tarefa depois que você revisa e envia.</p>
+        <div class="voice-actions"><button id="voice-record" disabled aria-describedby="voice-status">Gravar mensagem</button><button id="voice-stop" hidden>Parar e transcrever</button><button id="voice-cancel" hidden>Cancelar e descartar</button></div>
+        <form id="voice-review" hidden>
+          <label for="voice-transcript">Transcrição para revisar</label><textarea id="voice-transcript" maxlength="200"></textarea>
+          <p class="hint">Falar “aprovo” ou “pode enviar” não aprova nada. Revise o texto; ele entra como nova tarefa, assunto Voz.</p>
+          <div class="voice-actions"><button class="primary" type="submit">Enviar como nova tarefa</button><button id="voice-discard" type="button">Descartar</button></div>
+        </form>
+      </section>
     </section>
     <p id="notice" role="status" aria-live="polite" tabindex="-1"></p>
   </main>

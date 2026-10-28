@@ -6,6 +6,8 @@ import type { Task, TaskStatus } from '../contracts/tasks.ts';
 import { boundedText, oneOf, positive, text } from '../contracts/validation.ts';
 import type { TaskStore } from '../store/db.ts';
 import { capabilities, checkSetup, type SetupComponent } from '../setup.ts';
+import type { ArtifactRegistry } from '../artifacts/registry.ts';
+import { ArtifactRoutes } from '../artifacts/preview.ts';
 import { authenticate } from '../http/auth.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from '../http/io.ts';
 
@@ -35,10 +37,15 @@ const assets: Record<string, { file: string; type: string }> = {
   '/app/app.js': { file: 'src/app.js', type: 'text/javascript; charset=utf-8' },
   '/app/state.js': { file: 'src/state.js', type: 'text/javascript; charset=utf-8' },
   '/app/app.css': { file: 'src/app.css', type: 'text/css; charset=utf-8' },
+  '/app/artifacts/artifacts.js': { file: 'src/artifacts/artifacts.js', type: 'text/javascript; charset=utf-8' },
+  '/app/voice/voice.js': { file: 'src/voice/voice.js', type: 'text/javascript; charset=utf-8' },
+  '/app/voice/voice-ui.js': { file: 'src/voice/voice-ui.js', type: 'text/javascript; charset=utf-8' },
 };
+/** No local transcription provider exists on this host (no Portuguese-capable recognizer), so voice fails closed. */
+const voiceStatus = { version: 1, state: 'blocked', reason: 'provider_unavailable', languages: [] };
 const webRoot = new URL('../../web/', import.meta.url);
 export const securityHeaders = {
-  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
   'cross-origin-opener-policy': 'same-origin',
@@ -48,7 +55,7 @@ export const securityHeaders = {
 };
 
 type Session = { csrf: string; label: string; created: number; seen: number };
-type Options = { store: TaskStore; token: string; profileId: string; now?: () => number; setup?: () => SetupComponent[] };
+type Options = { store: TaskStore; token: string; profileId: string; artifacts?: ArtifactRegistry; now?: () => number; setup?: () => SetupComponent[] };
 const componentId = /^[a-z][a-z0-9-]{0,39}$/;
 
 /** Browser access is authenticated, but is never trusted-local-human approval authority. */
@@ -60,8 +67,10 @@ export class WebChannel {
   private readonly profileId: string;
   private readonly now: () => number;
   private readonly setup: (() => SetupComponent[]) | undefined;
-  constructor({ store, token, profileId, now = Date.now, setup }: Options) {
+  private readonly artifacts: ArtifactRoutes | null;
+  constructor({ store, token, profileId, artifacts, now = Date.now, setup }: Options) {
     this.store = store; this.token = token; this.profileId = profileId; this.now = now; this.setup = setup;
+    this.artifacts = artifacts ? new ArtifactRoutes(artifacts, now) : null;
   }
   owns(pathname: string): boolean { return Object.hasOwn(assets, pathname) || pathname === '/web' || pathname.startsWith('/web/') || pathname.startsWith('/app/'); }
 
@@ -79,6 +88,11 @@ export class WebChannel {
       query(url, []); this.sessions.delete(id!);
       send(res, 200, { ok: true }, { ...securityHeaders, 'set-cookie': `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` }); return;
     }
+    if (ArtifactRoutes.owns(url.pathname)) {
+      if (!this.artifacts) { send(res, 503, { error: 'Artifacts not configured' }, securityHeaders); return; }
+      await this.artifacts.handle(req, res, url, { sessionId: id!, host, headers: securityHeaders, stillCurrent: () => this.stillCurrent(req, id!, session) }); return;
+    }
+    if (req.method === 'GET' && url.pathname === '/web/api/voice/status') { query(url, []); send(res, 200, voiceStatus, securityHeaders); return; }
     await this.api(req, res, url, id!, session);
   }
 
@@ -87,6 +101,11 @@ export class WebChannel {
     const host = req.headers.host ?? '';
     // Web Locks and pending-write storage share only this canonical browser origin.
     return host === `127.0.0.1:${port}` ? host : null;
+  }
+  /** Revocation (logout, rotation, expiry) during a slow body read must stop the mutation. */
+  private stillCurrent(req: IncomingMessage, sessionId: string, session: Session): boolean {
+    const [currentId, currentSession] = this.current(req);
+    return currentId === sessionId && currentSession === session;
   }
   private sameOrigin(req: IncomingMessage, host: string): boolean {
     const site = req.headers['sec-fetch-site'];
