@@ -1,4 +1,5 @@
 import { constants, existsSync, fstatSync, openSync, readSync, closeSync } from 'node:fs';
+import type { Server } from 'node:http';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
@@ -75,6 +76,10 @@ async function main(): Promise<void> {
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
   try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}) }); }
   catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
+  serve(server, store, config);
+}
+
+function serve(server: Server, store: { close(): void }, config: Config): void {
   let closing = false;
   let stopWatch: NodeJS.Timeout | undefined;
   const shutdown = () => {

@@ -81,6 +81,10 @@ export class WebChannel {
     if (!url.pathname.startsWith('/web/')) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
     if (req.method === 'POST' && !this.sameOrigin(req, host)) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
     if (url.pathname === '/web/session') { await this.session(req, res, url); return; }
+    await this.authenticated(req, res, url, host);
+  }
+
+  private async authenticated(req: IncomingMessage, res: ServerResponse, url: URL, host: string): Promise<void> {
     const [id, session] = this.current(req);
     if (!session) { send(res, 401, { error: 'Unauthorized' }, securityHeaders); return; }
     if (req.method === 'POST' && req.headers['x-assistant-csrf'] !== session.csrf) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
