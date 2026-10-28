@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -16,13 +16,21 @@ const LIMIT = 50;
 
 function config(owner: AssistantOwner) {
   let raw: string;
-  try { raw = readFileSync(join(owner.dir, 'assistant.json'), 'utf8'); }
+  try {
+    const fd = openSync(join(owner.dir, 'assistant.json'), constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error('Not a regular file');
+      const bytes = Buffer.alloc(8193); let size = 0;
+      while (size < bytes.length) { const n = readSync(fd, bytes, size, bytes.length - size, null); if (!n) break; size += n; }
+      if (size > 8192) throw new Error('Configuration too large');
+      raw = bytes.subarray(0, size).toString('utf8');
+    } finally { closeSync(fd); }
+  }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('Assistant disabled. Add assistant.json to the active profile to enable it.');
     throw new Error('Assistant configuration unavailable.');
   }
   try {
-    if (raw.length > 8192) throw 0;
     const v: unknown = JSON.parse(raw);
     if (!record(v) || Object.keys(v).sort().join(',') !== 'endpoint,profileId,token,version' || v.version !== 1 || v.profileId !== owner.name || typeof v.endpoint !== 'string' || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(v.endpoint) || typeof v.token !== 'string' || !v.token.trim() || !/^[\x21-\x7e]+$/.test(v.token)) throw 0;
     const port = Number(v.endpoint.slice(v.endpoint.lastIndexOf(':') + 1));
@@ -32,6 +40,7 @@ function config(owner: AssistantOwner) {
 }
 
 class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
+class ResponseTooLarge extends Error {}
 async function request(c: ReturnType<typeof config>, path: string, body?: unknown): Promise<unknown> {
   const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -39,12 +48,23 @@ async function request(c: ReturnType<typeof config>, path: string, body?: unknow
   if (!response.body) throw new Error('Invalid response');
   const reader = response.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
   try {
-    for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 256 * 1024) throw new Error('Response too large'); chunks.push(value); }
+    for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 256 * 1024) throw new ResponseTooLarge(); chunks.push(value); }
   } catch (error) {
     try { await reader.cancel(); } catch { /* Preserve the original read failure. */ }
     throw error;
   } finally { reader.releaseLock(); }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+}
+async function pagedRequest(c: ReturnType<typeof config>, path: string, params: URLSearchParams, initialLimit: number) {
+  let limit = initialLimit;
+  for (;;) {
+    params.set('limit', String(limit));
+    try { return { value: await request(c, `${path}?${params}`), limit }; }
+    catch (error) {
+      if (!(error instanceof ResponseTooLarge) || limit === 1) throw error;
+      limit = Math.floor(limit / 2);
+    }
+  }
 }
 function task(value: unknown, owner: AssistantOwner, id?: string): Task {
   const t = parseTask(value);
@@ -80,6 +100,13 @@ function localOriginal(ref: string, profile: string): number | undefined {
   return Number.isSafeInteger(id) ? id : undefined;
 }
 
+function readErrorMessage(error: unknown): string {
+  if (error instanceof ResponseTooLarge) return 'Assistant item exceeds the safe response size; inspect it with another bounded client.';
+  if (error instanceof HttpError) return 'Assistant request failed.';
+  if (error instanceof Error && (error.message.startsWith('Assistant disabled.') || error.message.startsWith('Invalid assistant.json') || error.message === 'Assistant configuration unavailable.')) return error.message;
+  return 'Assistant request or response invalid; no data displayed.';
+}
+
 /** Explicit operator command; no background requests or model-facing tools. */
 export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner | undefined) {
   pi.registerCommand('assistant', { description: 'Read assistant task snapshots or respond to a current input request', handler: async (args, ctx) => {
@@ -93,9 +120,9 @@ export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner
     try {
       const c = config(owner);
       if (action === 'list') {
-        const query = new URLSearchParams({ limit: String(LIMIT) }); if (words[1]) query.set('cursor', token(words[1]));
-        const page = await request(c, `/v1/tasks?${query}`);
-        if (!record(page) || Object.keys(page).sort().join(',') !== 'nextCursor,tasks' || !Array.isArray(page.tasks) || page.tasks.length > LIMIT || !(page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor.length > 0)) throw new Error('Invalid page');
+        const query = new URLSearchParams(); if (words[1]) query.set('cursor', token(words[1]));
+        const { value: page, limit } = await pagedRequest(c, '/v1/tasks', query, LIMIT);
+        if (!record(page) || Object.keys(page).sort().join(',') !== 'nextCursor,tasks' || !Array.isArray(page.tasks) || page.tasks.length > limit || !(page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor.length > 0)) throw new Error('Invalid page');
         const tasks = page.tasks.map(v => task(v, owner));
         if (!stillOwned()) throw new Error('Owner changed');
         ctx.ui.notify([`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${encodeURIComponent(page.nextCursor as string)}`].join('\n'), 'info'); return;
@@ -110,8 +137,9 @@ export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner
         const original = action === 'original';
         const sequence = original ? integer(words[2], 0, 1) : integer(words[2], 0, 0);
         const offset = original ? integer(words[3], 0, 0) : 0;
-        const after = original ? sequence - 1 : sequence, limit = original ? 1 : LIMIT;
-        const events = eventPage(await request(c, `/v1/events?after=${after}&limit=${limit}`), owner, after, limit);
+        const after = original ? sequence - 1 : sequence;
+        const { value, limit } = await pagedRequest(c, '/v1/events', new URLSearchParams({ after: String(after) }), original ? 1 : LIMIT);
+        const events = eventPage(value, owner, after, limit);
         if (!stillOwned()) throw new Error('Owner changed');
         if (original) {
           const event = events[0];
@@ -147,7 +175,7 @@ Continue with /assistant original ${encodeURIComponent(id)} ${sequence} <offset>
       ctx.ui.notify('Response recorded as data, not authorization or verified work.', 'info');
     } catch (error) {
       ctx.ui.notify(write ? error instanceof HttpError && error.status === 409 ? 'Response is stale. Refresh the task before responding; no automatic retry.' : 'Response outcome uncertain. Inspect current state before any further action; do not automatically retry.'
-        : error instanceof HttpError ? 'Assistant request failed.' : error instanceof Error && (error.message.startsWith('Assistant disabled.') || error.message.startsWith('Invalid assistant.json') || error.message === 'Assistant configuration unavailable.') ? error.message : 'Assistant request or response invalid; no data displayed.', 'error');
+        : readErrorMessage(error), 'error');
     }
   } });
 }

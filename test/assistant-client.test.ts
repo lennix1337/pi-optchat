@@ -43,6 +43,9 @@ test('registered command uses loopback, guards owner, and keeps response private
     await handler('list', ctx); assert.equal(calls.length, 0); assert.match(output.pop()!, /disabled/);
     const save = (endpoint: string) => writeFileSync(join(dir, 'assistant.json'), JSON.stringify({ version: 1, profileId: 'p', endpoint, token: 'secret' }));
     save('http://localhost:1234'); await handler('list', ctx); assert.equal(calls.length, 0);
+    const validConfig = JSON.stringify({ version: 1, profileId: 'p', endpoint: `http://127.0.0.1:${address.port}`, token: 'secret' });
+    writeFileSync(join(dir, 'assistant.json'), validConfig + ' '.repeat(8193 - Buffer.byteLength(validConfig))); await handler('list', ctx); assert.match(output.pop()!, /configuration unavailable/); assert.equal(calls.length, 0);
+    writeFileSync(join(dir, 'assistant.json'), validConfig + ' '.repeat(8192 - Buffer.byteLength(validConfig))); await handler('list', ctx); assert.match(output.pop()!, /snapshots/);
     save(`http://127.0.0.1:${address.port}`);
     await handler('list', ctx); assert.match(output.pop()!, /Continue: \/assistant list next/);
     await handler('list next', ctx); assert.match(calls.at(-1)!.url!, /cursor=next/);
@@ -63,7 +66,7 @@ test('registered command uses loopback, guards owner, and keeps response private
     foreignEvent = true; await handler('evidence a 50', ctx); assert.match(output.pop()!, /invalid/); foreignEvent = false;
     malformedEvent = true; await handler('original a 51', ctx); assert.match(output.pop()!, /invalid/); malformedEvent = false; assert.equal(zooms, 1);
     unauthorized = true; await handler('list', ctx); assert.match(output.pop()!, /failed/); unauthorized = false;
-    oversized = true; await handler('list', ctx); assert.match(output.pop()!, /invalid/); oversized = false;
+    oversized = true; const beforeOversized = calls.length; await handler('list', ctx); assert.match(output.pop()!, /safe response size/); assert.equal(calls.length - beforeOversized, 6); oversized = false;
     redirect = true; await handler('list', ctx); assert.match(output.pop()!, /invalid/); redirect = false;
     input = async () => 'private answer'; stale = true; await handler('respond a', ctx); assert.match(output.pop()!, /stale/);
     stale = false; await handler('respond a', ctx); assert.match(output.pop()!, /not authorization/);
@@ -92,6 +95,7 @@ test('disposable mutations defeat profile and post-input guards', async () => {
     for (const [index, mutation] of [
       [0, (s: string) => s.replace('e.profileId !== owner.name || ', '')],
       [1, (s: string) => s.replace('latest.identity !== owner.identity || ', '')],
+      [2, (s: string) => s.replace('Buffer.alloc(8193)', 'Buffer.alloc(16384)').replace('size > 8192', 'size > 16383')],
     ] as const) {
       const changed = mutation(original); assert.notEqual(changed, original); const file = join(dir, `mutant${index}.ts`); writeFileSync(file, changed);
       const mod = await import(pathToFileURL(file).href) as typeof import('../src/assistant-client.ts');
@@ -101,7 +105,12 @@ test('disposable mutations defeat profile and post-input guards', async () => {
       const ctx = { mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => 's' }, ui: { notify: (s: string) => messages.push(s), input: async () => { owner = { ...owner, identity: {} }; return 'private'; } } } as unknown as ExtensionCommandContext;
       mod.registerAssistant(pi, () => owner);
       if (index === 0) { await handler('evidence a', ctx); assert.match(messages.at(-1)!, /Sequence 1/); }
-      else { await handler('respond a', ctx); assert.equal(posts, 1); }
+      else if (index === 1) { await handler('respond a', ctx); assert.equal(posts, 1); }
+      else {
+        const cfg = JSON.stringify({ version: 1, profileId: 'p', endpoint: `http://127.0.0.1:${address.port}`, token: 'secret' });
+        writeFileSync(join(dir, 'assistant.json'), cfg + ' '.repeat(8193 - Buffer.byteLength(cfg)));
+        await handler('show a', ctx); assert.match(messages.at(-1)!, /Task/);
+      }
     }
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
 });
