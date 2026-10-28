@@ -53,7 +53,6 @@ export function invalidPlan(value: unknown) {
 export const heartbeatPlan = (config: { heartbeat?: HeartbeatPlan }) => config.heartbeat ?? DEFAULT_HEARTBEAT;
 
 const list = (items: string[]) => items.length ? items.map(item => `- ${item}`).join('\n') : '(none)';
-const numbered = (items: string[]) => items.length ? items.map((item, i) => `${i + 1}. ${item}`).join('\n') : '(none)';
 
 export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan; queueItem?: string }
 
@@ -65,8 +64,9 @@ export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shell
     `How the last turn ended: ${lastStop ?? 'normally'}`,
     `Running agents: ${agents.length ? `\n${agents.map(a => `- ${a}`).join('\n')}` : 'none'}`,
     `Running shells: ${shells.length ? `\n${shells.map(s => `- ${s}`).join('\n')}` : 'none'}`,
-    ...queueItem ? [`Operator's work queue, next open item (take it before the jobs): ${queueItem}`] : [],
-    `Operator's jobs for idle time, in order:\n${numbered(plan.jobs)}`,
+    ...queueItem ? [`Operator's work queue candidate (not a priority order): ${queueItem}`] : [],
+    `Operator's jobs for idle time (candidates, not a priority order):\n${list(plan.jobs)}`,
+    'Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers. Neither queue position nor the previous suggestion decides the next delivery.',
     `Allowed in a woken turn:\n${list(plan.allowed)}`,
     `Never in a woken turn:\n${list(plan.never)}`,
     `Recorded state:\n${tail(state || '(none)', STATE_MAX)}`,
@@ -85,16 +85,17 @@ export async function checkBeat(registry: ModelRegistry, choice: ModelChoice, sn
 export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }) {
   const opening = task
     ? `A cheap check (${model}) woke you and suggests: ${task}
-The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first. If it is wrong, done or waits on the operator, take the first open job below that you can do instead; if none, say so in one line and end the turn.`
-    : `The operator's fixed ${idleMinutes}-min schedule woke you; no check ran. Take the first open job below that you can do and work through it with your own judgment and tools; if none, say so in one line and end the turn.`;
+The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first; it is a candidate, not a selection or permission.`
+    : `The operator's fixed ${idleMinutes}-min schedule woke you; no check ran. Choose the delivery with your own judgment and tools.`;
   const intro = `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away.`;
-  const backlog = queue?.item && `Work queue first: ${queue.path} is the operator's backlog. Its next open item is:
+  const backlog = queue?.item && `Work queue candidate: ${queue.path} is the operator's backlog, not a priority order. One open item is:
 ${queue.item}
-Do it before the jobs below and before any suggestion, within the limits below. When you finish it, change its line to \`- [x]\`; if you cannot go on, change it to \`- [!]\` and add why. Never take an item marked \`- [!]\` or described as blocked. Then take the next open item the same way.`;
+Read the backlog to inspect other open items before choosing, within the limits below. Mark an item \`- [x]\` only after delivery, or \`- [!]\` with a concrete blocker; not being selected is not a blocker. Never take an item marked \`- [!]\` or described as blocked. Do not drain the backlog automatically.`;
   return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
-The operator's jobs for idle time, in order:
-${numbered(plan.jobs)}
+Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance; if every useful candidate is blocked, report why instead of inventing work.
+The operator's jobs for idle time (candidates, not a priority order):
+${list(plan.jobs)}
 Allowed, unattended:
 ${list(plan.allowed)}
 Never, unless the operator already asked for exactly that:

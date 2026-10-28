@@ -106,7 +106,8 @@ export const preview = (text: string, max = 180) => {
   const safe = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim();
   return safe.length > max ? `${safe.slice(0, max - 1)}…` : safe;
 };
-const ref = (source: number) => `zoom(${source}, 1)`;
+export const catchupLiteral = (text: string) => text.replace(/[\\`*_{}\[\]<>!#|~]/g, '\\$&');
+const ref = (source: number) => `\`zoom(${source}, 1)\``;
 
 /** A small decision-first summary. Every cut names its extent and exact follow-up. */
 export function renderCatchup(report: CatchupReport) {
@@ -114,21 +115,21 @@ export function renderCatchup(report: CatchupReport) {
   const open = prs.filter(pr => pr.state === 'OPEN'), failed = checks.filter(check => check.status !== 'passed');
   const allEvents = `/catchup range ${span.from} ${span.to} 0`;
   const lines = [
-    `Since your last message · ${span.id}`,
+    `# Since your last message · ${span.id}`,
     `${span.start} → ${span.end} (UTC) · ${span.provenance === 'interactive' ? 'recorded operator boundary' : 'explicit historical range; human provenance not recorded'}`,
     `${wakes.length} wakes · ${report.tools} tool calls · ${report.results} results · ${report.covered} original messages`, '',
-    'Your attention — observations, not permission',
-    ...open.slice(0, 12).map(pr => `- Review: ${pr.url} · checks ${pr.checks} · ${ref(pr.source)}`),
+    '## Your attention — observations, not permission',
+    ...open.slice(0, 12).map(pr => `- **Review:** <${pr.url}> · checks **${pr.checks}** · ${ref(pr.source)}`),
     ...open.length > 12 ? [`${open.length - 12} more open PRs; /catchup json for the complete observation list.`] : [],
-    ...failed.slice(0, 12).map(check => `- ${check.root} / ${check.name}: ${check.status} · ${ref(check.source)}`),
+    ...failed.slice(0, 12).map(check => `- ${catchupLiteral(preview(check.root))} / ${catchupLiteral(preview(check.name))}: **${check.status}** · ${ref(check.source)}`),
     ...failed.length > 12 ? [`${failed.length - 12} more non-passing checks; /catchup json for all observations.`] : [],
     ...!open.length && !failed.length ? ['- No structured pending item found in this interval. This is NOT proof that nothing needs approval.'] : [],
     'PR/check states are last observed in this interval, not live remote verification. No action is authorized by this report.', '',
-    'Work reported by the assistant — not independently verified',
-    ...replies.slice(-24).map(reply => `- ${preview(reply.text, 240)} · ${ref(reply.source)}`),
+    '## Work reported by the assistant — not independently verified',
+    ...replies.slice(-24).map(reply => `- ${catchupLiteral(preview(reply.text, 240))} · ${ref(reply.source)}`),
     ...replies.length > 24 ? [`${replies.length - 24} older reports not shown; ${allEvents} for every source.`] : [],
     ...!replies.length ? ['- No completed text report recorded.'] : [], '',
-    'Wake timeline — every recorded wake in this interval',
+    '## Wake timeline — every recorded wake in this interval',
     ...wakes.slice(0, 24).map(wake => `- ${wake.at} · ${ref(wake.source)} · ${wake.reply === undefined ? 'no reply recorded' : `report ${ref(wake.reply)}`}`),
     ...wakes.length > 24 ? [`${wakes.length - 24} more wakes; ${allEvents} for all events.`] : [],
     ...!report.covered ? ['No activity recorded in this interval.'] : [],
