@@ -16,6 +16,11 @@
       "argv": ["node", "--test", "--test-timeout=30000", "assistant/test/gateway.test.ts", "assistant/test/approval-replay.test.ts", "assistant/test/gateway-snapshot.test.ts"],
       "timeoutMs": 60000
     },
+    "assistant-runtime-worker": {
+      "description": "T03 durable worker: lease fencing, crash at each boundary in real child processes, no-repeat effects, outbox, stop/cancel/backpressure, with disposable mutants",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/fencing.test.ts", "assistant/test/outbox.test.ts", "assistant/test/restart.test.ts", "assistant/test/recovery.test.ts"],
+      "timeoutMs": 180000
+    },
     "assistant-egress": {
       "description": "Offline exact-byte known-secret and heuristic outbound-content inspection; no dispatch or live credentials",
       "argv": ["node", "--test", "assistant/test/egress.test.ts"],
