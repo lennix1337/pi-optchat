@@ -110,4 +110,53 @@ export const actions = {
   succeeded: [['resolved', 'Arquivar']], failed: [['queued', 'Tentar novamente'], ['resolved', 'Arquivar']],
   cancelled: [['resolved', 'Arquivar']], resolved: [],
 };
+export function channelMark(name) {
+  const trimmed = name.trim();
+  let hash = 0;
+  for (const char of trimmed) hash = (hash * 31 + char.codePointAt(0)) % 360;
+  return { hue: hash, initial: trimmed ? [...trimmed][0].toLocaleUpperCase('pt-BR') : '#' };
+}
+const MAX_TASK_ID = 200;
+export function taskLink(taskId) { return `#tarefa=${encodeURIComponent(taskId)}`; }
+export function deepLinkTask(hash) {
+  const match = /^#tarefa=([^&=#]+)$/.exec(hash);
+  if (!match) return null;
+  let taskId;
+  try { taskId = decodeURIComponent(match[1]); } catch { return null; }
+  return taskId.length <= MAX_TASK_ID && !/\p{Cc}/u.test(taskId) ? taskId : null;
+}
+// Chat originals are opened by the terminal client; the panel never fetches or links an evidence reference.
+export function originalAccess(reference) {
+  return /^optchat:[A-Za-z0-9_.-]+:\d+$/.test(reference) ? { kind: 'chat', command: `/assistant original ${reference}` } : { kind: 'text' };
+}
+export class ResponseQueue {
+  constructor() { this.items = []; }
+  add({ taskId, text, revision, inputRevision }) {
+    if (!text.trim()) throw new Error('empty response');
+    const item = { id: crypto.randomUUID(), taskId, text, revision, inputRevision };
+    this.items.push(item); return item;
+  }
+  pending() { return [...this.items]; }
+  remove(id) { this.items = this.items.filter(item => item.id !== id); }
+  // send resolves true only when the result was confirmed; anything else holds the rest in order.
+  async drain(send) {
+    while (this.items.length) {
+      const item = this.items.shift();
+      if (!await send(item)) return false;
+    }
+    return true;
+  }
+}
+export class ChannelArchive {
+  constructor(profileId, storage) {
+    this.storage = storage; this.key = `assistant-panel-archived-channels:${profileId}`;
+    let saved = [];
+    try { saved = JSON.parse(storage.getItem(this.key) ?? '[]'); } catch { saved = []; }
+    this.names = new Set(Array.isArray(saved) ? saved.filter(name => typeof name === 'string') : []);
+  }
+  has(name) { return this.names.has(name); }
+  archive(name) { this.names.add(name); this.save(); }
+  restore(name) { this.names.delete(name); this.save(); }
+  save() { this.storage.setItem(this.key, JSON.stringify([...this.names])); }
+}
 export function attention(task) { return ['needs_input', 'ready_for_review', 'suggested'].includes(task.status); }

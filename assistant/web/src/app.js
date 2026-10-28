@@ -1,4 +1,4 @@
-import { PanelState, PanelLifecycle, coordinatedWrite, coordinatedReconcile, actions, attention, labels } from './state.js';
+import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels } from './state.js';
 
 const $ = selector => document.querySelector(selector);
 let state;
@@ -9,6 +9,9 @@ let lifecycle;
 let timer;
 let syncing = false;
 let mutationPending = false;
+let draining = false;
+let archive;
+const queue = new ResponseQueue();
 const uncertain = () => Boolean(lifecycle?.marker);
 let renderedKey;
 const channelId = `panel-${crypto.randomUUID()}`;
@@ -43,12 +46,14 @@ function signedOut() {
 async function start(session) {
   csrf = session.csrf; state = new PanelState(session.profileId);
   lifecycle = new PanelLifecycle(session.profileId, localStorage);
+  archive = new ChannelArchive(session.profileId, localStorage);
   $('#login').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false;
   $('#profile').textContent = `Perfil ${session.profileId} · serviço local`;
   selectedTask = undefined; renderedKey = undefined;
   $('#create-form button').disabled = uncertain();
   if (uncertain()) notice('Resultado não confirmado. Atualize o histórico antes de repetir a ação.');
   await sync(true);
+  openDeepLink();
 }
 async function sync(manual = false) {
   if (!state || syncing) return;
@@ -62,6 +67,7 @@ async function sync(manual = false) {
     $('#create-form button').disabled = uncertain() || mutationPending;
     $('#connection').textContent = `Atualizado às ${new Date().toLocaleTimeString('pt-BR')} · evento ${state.after}`;
     render();
+    void drainQueue();
   } catch (error) {
     if (error.status === 401) { signedOut(); notice('Sessão encerrada. Entre novamente.'); }
     else { $('#connection').textContent = 'Sem conexão · estado pode estar desatualizado'; notice('Não foi possível atualizar. Nenhuma ação será reenviada automaticamente.'); }
@@ -86,12 +92,21 @@ async function events() {
 function channelOptions() {
   const select = $('#channel'); const selected = select.value;
   const channels = [...new Set(state.channels.values())].sort();
-  select.replaceChildren(new Option('Todos os assuntos', ''), ...channels.map(name => new Option(name, name)));
+  const archived = channels.filter(name => archive.has(name));
+  const options = [new Option('Todos os assuntos', ''), ...channels.filter(name => !archive.has(name)).map(name => new Option(name, name))];
+  if (archived.length) {
+    const group = document.createElement('optgroup'); group.label = 'Assuntos arquivados';
+    group.append(...archived.map(name => new Option(name, name))); options.push(group);
+  }
+  select.replaceChildren(...options);
   if (channels.includes(selected)) select.value = selected;
+  const toggle = $('#archive-channel');
+  toggle.hidden = !select.value;
+  toggle.textContent = archive.has(select.value) ? 'Restaurar assunto' : 'Arquivar assunto';
 }
 function render() {
   if (!state) return;
-  const key = `${state.revision}:${filter}:${$('#channel').value}:${uncertain()}:${mutationPending}:${lifecycle.cursor}`;
+  const key = `${state.revision}:${filter}:${$('#channel').value}:${uncertain()}:${mutationPending}:${lifecycle.cursor}:${queue.pending().map(item => item.id).join()}:${[...archive.names].join()}`;
   if (key === renderedKey) return;
   renderedKey = key;
   channelOptions();
@@ -100,6 +115,7 @@ function render() {
   const selected = $('#channel').value;
   const visible = tasks.filter(task => {
     if (selected && state.channels.get(task.taskId) !== selected) return false;
+    if (!selected && archive.has(state.channels.get(task.taskId))) return false;
     if (filter === 'attention') return attention(task);
     if (filter === 'active') return ['queued', 'working'].includes(task.status);
     if (filter === 'archive') return task.status === 'resolved';
@@ -125,8 +141,17 @@ function render() {
 function card(task) {
   const article = el('article', undefined, 'task'); article.dataset.taskId = task.taskId;
   const meta = el('div', undefined, 'task-meta');
-  meta.append(el('span', labels[task.status], 'task-status'), el('span', state.channels.get(task.taskId) ?? 'Canal não carregado'), el('span', `rev. ${task.revision}`));
-  article.append(meta, el('h3', task.title));
+  const channel = state.channels.get(task.taskId);
+  const subject = el('span', undefined, 'task-channel');
+  if (channel) {
+    const mark = channelMark(channel);
+    const badge = el('span', mark.initial, 'channel-mark'); badge.setAttribute('aria-hidden', 'true'); badge.style.setProperty('--hue', String(mark.hue));
+    subject.append(badge, channel);
+  } else subject.textContent = 'Canal não carregado';
+  meta.append(el('span', labels[task.status], 'task-status'), subject, el('span', `rev. ${task.revision}`));
+  const heading = el('h3'); const link = el('a', task.title); link.href = taskLink(task.taskId); heading.append(link);
+  article.tabIndex = -1;
+  article.append(meta, heading);
   const verification = { verified: 'Verificado', not_verified: 'Resultado não verificado', blocked: 'Verificação bloqueada' };
   article.append(el('p', verification[task.verification], 'task-verification'));
   const details = el('details'); details.append(el('summary', 'Identidade da tarefa'), el('p', `${task.taskId} · origem ${task.sourceEventId}`)); article.append(details);
@@ -150,8 +175,20 @@ function responseForm(task) {
   const input = el('textarea'); input.id = id; input.required = true; input.maxLength = 4000; input.value = draft.text;
   input.addEventListener('input', () => lifecycle.saveDraft(task, input.value));
   const stale = draft.revision !== task.revision || draft.inputRevision !== task.inputRevision;
-  const button = el('button', 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = stale || uncertain() || mutationPending;
+  const button = el('button', mutationPending ? 'Enfileirar resposta' : 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = stale || uncertain();
   form.append(label, input);
+  const queued = queue.pending().filter(item => item.taskId === task.taskId);
+  if (queued.length) {
+    const list = el('ol', undefined, 'queued');
+    list.setAttribute('aria-label', 'Respostas na fila, na ordem em que você escreveu');
+    for (const item of queued) {
+      const entry = el('li', `Na fila: ${item.text}`);
+      const remove = el('button', 'Tirar da fila'); remove.type = 'button';
+      remove.addEventListener('click', () => { queue.remove(item.id); renderedKey = undefined; render(); });
+      entry.append(remove); list.append(entry);
+    }
+    form.append(list);
+  }
   if (stale) {
     form.append(el('p', `Rascunho: pedido ${draft.inputRevision}, revisão da tarefa ${draft.revision}. Pedido atual: ${task.inputRevision}, revisão da tarefa ${task.revision}. Revise o pedido atual antes de vincular este texto a ele.`, 'hint'));
     const review = el('button', 'Revisar pedido atual'); review.type = 'button';
@@ -168,13 +205,28 @@ function responseForm(task) {
   form.append(button);
   form.addEventListener('submit', event => {
     event.preventDefault();
-    if (stale || !input.value.trim()) return;
+    if (stale || !input.value.trim() || uncertain()) return;
+    if (mutationPending || queue.pending().length) {
+      queue.add({ taskId: task.taskId, text: input.value, revision: draft.revision, inputRevision: draft.inputRevision });
+      lifecycle.clearDraft(task.taskId);
+      notice('Resposta na fila. Ela será enviada depois que a ação atual for confirmada, na ordem em que você escreveu.');
+      renderedKey = undefined; render(); return;
+    }
     void mutate(`/web/api/tasks/${encodeURIComponent(task.taskId)}/respond`, { revision: draft.revision, inputRevision: draft.inputRevision, text: input.value });
   });
   return form;
 }
+async function drainQueue() {
+  if (draining || uncertain() || mutationPending || !queue.pending().length) return;
+  draining = true;
+  try {
+    const done = await queue.drain(item => mutate(`/web/api/tasks/${encodeURIComponent(item.taskId)}/respond`, { revision: item.revision, inputRevision: item.inputRevision, text: item.text }));
+    if (!done && queue.pending().length) notice('A fila parou porque uma resposta não foi confirmada. As próximas continuam guardadas; revise antes de enviar.');
+  } finally { draining = false; renderedKey = undefined; render(); }
+}
 async function mutate(path, input) {
-  if (uncertain() || mutationPending) return;
+  if (uncertain() || mutationPending) return false;
+  let confirmed = false;
   mutationPending = true;
   document.querySelectorAll('.task-actions button, .response-form button, #create-form button').forEach(button => { button.disabled = true; });
   try {
@@ -186,6 +238,7 @@ async function mutate(path, input) {
     if (marker.action === 'respond') lifecycle.clearDraft(marker.taskId);
     notice(result.historyError ? 'Estado salvo, mas o histórico está indisponível. Atualize para consultá-lo.' : 'Estado salvo. Nenhum efeito externo foi autorizado.');
     if (path === '/web/api/tasks') { $('#title').value = ''; filter = 'active'; updateFilters(); }
+    confirmed = true;
   } catch (error) {
     if (error.status === 409) {
       if (error.body.task) state.upsert(error.body.task);
@@ -202,7 +255,9 @@ async function mutate(path, input) {
     $('#create-form button').disabled = uncertain();
     renderedKey = undefined;
     render();
+    if (confirmed && !draining) void drainQueue();
   }
+  return confirmed;
 }
 function renderEvidence() {
   if (!state || !selectedTask) return;
@@ -214,6 +269,15 @@ function renderEvidence() {
     const time = el('time', new Date(event.observedAt).toLocaleString('pt-BR')); time.dateTime = event.observedAt;
     li.append(el('p', `${labels[entry.task.status]} · evento ${event.sequence}`), time,
       el('p', `${event.source.actorId} · ${event.source.sourceKind}`), el('p', event.channelId), el('code', event.evidence.reference));
+    const access = originalAccess(event.evidence.reference);
+    if (access.kind === 'chat') {
+      const copy = el('button', 'Copiar comando do original');
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(access.command); notice('Comando copiado. Abra o original no terminal do OptChat; o painel não lê o chat.'); }
+        catch { notice(`Copie e rode no terminal: ${access.command}`); }
+      });
+      li.append(copy);
+    }
     return li;
   });
   if (!entries.length) nodes.push(el('li', 'Ainda não há eventos carregados para esta tarefa. Atualize ou carregue mais eventos.'));
@@ -237,7 +301,28 @@ window.addEventListener('storage', event => {
     signedOut(); notice('Não foi possível consultar o marcador de segurança. Entre novamente antes de continuar.');
   }
 });
-$('#channel').addEventListener('change', render);
+function openDeepLink() {
+  const taskId = deepLinkTask(location.hash);
+  if (!taskId || !state) return;
+  const task = state.tasks.get(taskId);
+  if (!task) { notice('A tarefa do link não está carregada neste perfil. Carregue mais tarefas ou confira o link.'); return; }
+  const channel = state.channels.get(taskId);
+  filter = 'all'; if (task.status === 'resolved') filter = 'archive';
+  if ($('#channel').value && $('#channel').value !== channel) $('#channel').value = '';
+  if (archive.has(channel)) $('#channel').value = channel;
+  updateFilters(); renderedKey = undefined; render();
+  selectedTask = taskId; renderEvidence();
+  const node = [...$('#task-list').children].find(child => child.dataset.taskId === taskId);
+  node?.focus(); node?.scrollIntoView({ block: 'start', behavior: 'auto' });
+}
+window.addEventListener('hashchange', openDeepLink);
+$('#archive-channel').addEventListener('click', () => {
+  const name = $('#channel').value; if (!name) return;
+  if (archive.has(name)) { archive.restore(name); notice(`Assunto ${name} restaurado na lista.`); }
+  else { archive.archive(name); $('#channel').value = ''; notice(`Assunto ${name} arquivado nesta caixa. As tarefas e fontes continuam guardadas.`); }
+  renderedKey = undefined; render();
+});
+$('#channel').addEventListener('change', () => { renderedKey = undefined; render(); });
 $('#refresh').addEventListener('click', () => sync(true));
 $('#more').addEventListener('click', async () => {
   try {

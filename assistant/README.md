@@ -42,7 +42,7 @@ After authorization, start manually with `node assistant/src/main.ts --config <a
 
 The active profile reads its client config only on an explicit `/assistant` command. See the [discovery skill](../skills/personal-assistant/SKILL.md) for commands. This version has no model-facing write tool or task-creation command: a trusted local producer must use the authenticated metadata API below. Existing approvals, operations and agents remain in their original journals. `/assistant local [cursor]` pages their current-session metadata (external agents are profile-scoped), with exact operation/agent references and safe approval metadata; `/assistant list` includes the first local page even without service configuration. Reading neither consumes grants nor reconciles outcomes; approval tokens, arguments, reports and private evidence stay with their source owners. These journals are not automatically ingested as mutable task records; suggestions use the service’s explicit `suggested` task status.
 
-## Local web panel (T10, experimental and incomplete)
+## Local web panel (T10, experimental)
 
 After explicitly authorizing the local service, add `--web` to the manual command:
 
@@ -59,7 +59,12 @@ The panel lists profile-bound tasks, answers the current input revision, reviews
 - Events resume by the profile-local sequence. Lower-revision history cannot replace a newer task. Opening history is read-only. An uncertain write is not automatically retried; inspect its request identity against the journal before continuing.
 - Light/dark/system themes, keyboard-labelled forms and responsive layouts are present. Browser evidence under `local-validation/runs/personal-assistant-parity/t10-browser` is from disposable, scripted execution only, not personal activation or integrated Pi execution.
 
-**Pending:** independent lifecycle review fixes and final browser postchecks, read-only opening of supported original sources (references currently display only), and complete subject/channel views. Subject filters use each task's original event channel; no competing conversation store exists. Do not describe this as complete T10 or full assistant parity.
+- Subjects are views over each task's original event channel, never a competing conversation store. Each subject gets a stable colour/initial mark derived from its name; archiving a subject only hides it from this browser profile's list (tasks and sources stay stored and reachable by selecting it).
+- `#tarefa=<encoded id>` deep links select and focus a loaded task; they never carry tokens and malformed or unknown links only show a notice.
+- Answers typed while another action is in flight join an in-memory queue, shown on the card, and are sent in typed order after the current action is confirmed; an unconfirmed send stops the queue and keeps the rest for review. Reloading the page drops queued (unsent) answers.
+- Chat originals (`optchat:<profile>:<message>`) offer only a copy of the terminal command `/assistant original …`; the panel never reads the chat. Other references stay inert text, never links.
+
+**Not verified:** a real phone and any access outside this host (needs a separately authorized private connection), and personal activation. Do not describe this as full assistant parity.
 
 Focused recipes: `assistant-web`, `assistant-web-mutations`, `assistant-http`, `assistant-entry`, `assistant-typecheck`, `assistant-pack`. The disposable browser fixture is `assistant/test/web-browser-fixture.mjs`. Before running it, check that no existing process/service owns port 43218. It binds that port, uses only a fixed fake credential, and runs a scripted test worker, not the production executor. Its runtime data belongs outside Git. Stop the fixture and verify the port is closed after testing.
 

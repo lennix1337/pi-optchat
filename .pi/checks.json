@@ -93,7 +93,7 @@
     },
     "assistant-web": {
       "description": "Disposable loopback web channel: cookie, origin/CSRF, stale decisions, events, assets and browser state; no personal service",
-      "argv": ["node", "--test", "assistant/test/web.test.ts", "assistant/test/web-state.test.mjs", "assistant/test/web-render.test.mjs", "assistant/test/web-session.test.ts", "assistant/test/web-lifecycle.test.mjs"],
+      "argv": ["node", "--test", "assistant/test/web.test.ts", "assistant/test/web-state.test.mjs", "assistant/test/web-render.test.mjs", "assistant/test/web-session.test.ts", "assistant/test/web-lifecycle.test.mjs", "assistant/test/web-views.test.mjs"],
       "timeoutMs": 60000
     },
     "assistant-http": {

@@ -38,7 +38,8 @@
             <button data-filter="archive" aria-pressed="false">Arquivo</button>
           </nav>
           <label for="channel">Assunto</label><select id="channel"><option value="">Todos os assuntos</option></select>
-          <p class="hint">Assuntos vêm do canal original. O arquivo preserva a tarefa e suas fontes.</p>
+          <button id="archive-channel" type="button" hidden>Arquivar assunto</button>
+          <p class="hint">Assuntos vêm do canal original. Arquivar um assunto só o tira desta lista; tarefas e fontes continuam guardadas.</p>
           <details class="new-task"><summary>Nova tarefa</summary><form id="create-form">
             <label for="title">O que precisa ser feito?</label><input id="title" maxlength="200" required>
             <label for="new-channel">Assunto</label><input id="new-channel" maxlength="80" value="Pessoal" required>
