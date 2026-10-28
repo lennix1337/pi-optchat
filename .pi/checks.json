@@ -36,6 +36,11 @@
       "argv": ["node", "--test", "--test-timeout=120000", "assistant/test/computer-boundary.test.ts", "assistant/test/computer-lifecycle.test.ts", "assistant/test/takeover.test.ts"],
       "timeoutMs": 300000
     },
+    "assistant-connectors": {
+      "description": "T08 governed MCP connectors over a local stdio fixture server: grants, discovery paging, revocation, revalidation",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/connector-grants.test.ts", "assistant/test/mcp-discovery.test.ts", "assistant/test/connector-revocation.test.ts"],
+      "timeoutMs": 120000
+    },
     "assistant-egress": {
       "description": "Offline exact-byte known-secret and heuristic outbound-content inspection; no dispatch or live credentials",
       "argv": ["node", "--test", "assistant/test/egress.test.ts"],
