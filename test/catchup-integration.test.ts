@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { initTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Entry } from '../src/memory.ts';
 import { registerCatchup } from '../src/catchup-integration.ts';
-import { CatchupView } from '../src/catchup-ui.ts';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { CatchupView, catchupJson, showCatchup } from '../src/catchup-ui.ts';
+import { getCapabilities, setCapabilities, visibleWidth } from '@earendil-works/pi-tui';
 import { withTempDir } from './support.ts';
+
+initTheme('dark', false);
 
 function fixture(dir: string) {
   const handlers = new Map<string, Function[]>(), commands = new Map<string, any>(), tools = new Map<string, any>();
@@ -68,6 +70,55 @@ test('history is navigable after follow-up messages and raw event pages have exa
   await assert.rejects(tool.execute('bad-window', { window: 99 }), /No such/);
   await f.commands.get('catchup').handler('range 0 2', { ...f.context, mode: 'rpc' });
   assert.match(f.notifications.at(-1)!, /explicit historical range/);
+}));
+
+test('native catchup command renders Markdown, code colors and terminal hyperlinks with a visible URL fallback', async () => withTempDir('catchup-ui-', async dir => {
+  const f = fixture(dir);
+  f.input('interactive');
+  f.add('echo', 'bash: {"url":"https://github.com/owner/repo/pull/7","state":"OPEN"}');
+  f.add('talk', '[untrusted](javascript:alert(1)) ````');
+  f.input('interactive', 'return');
+  const caps = getCapabilities();
+  try {
+    for (const hyperlinks of [true, false]) {
+      setCapabilities({ ...caps, hyperlinks });
+      let shown = false;
+      const ctx = { ...f.context, ui: { ...f.context.ui, custom: async (factory: Function) => {
+        const view = factory({ terminal: { rows: 70 }, requestRender() {} }, undefined, undefined, () => {});
+        const rendered = view.render(160).join('\n');
+        assert.doesNotMatch(rendered, /^## /m, 'section markers must render, not display raw');
+        assert.match(rendered, /\x1b\[/, 'native theme styles must reach the screen');
+        assert.match(rendered, /https:\/\/github.com\/owner\/repo\/pull\/7/);
+        assert.equal(rendered.includes('\x1b]8;;https://github.com/owner/repo/pull/7'), hyperlinks);
+        assert.doesNotMatch(rendered, /\x1b\]8;;javascript:/, 'reported text cannot inject a Markdown action');
+        for (const width of [32, 80]) {
+          view.handleInput('g');
+          const narrow = view.render(width);
+          assert.ok(narrow.length <= 70);
+          assert.ok(narrow.every((line: string) => visibleWidth(line) <= width));
+          view.handleInput('G');
+          assert.match(view.render(width).join('\n'), /Current work|exhaustive machine/);
+        }
+        shown = true;
+      } } } as unknown as ExtensionCommandContext;
+      await f.commands.get('catchup').handler('', ctx);
+      assert.equal(shown, true);
+    }
+    let rendered = '';
+    await showCatchup({ ...f.context, ui: { custom: async (factory: Function) => {
+      rendered = factory({ terminal: { rows: 30 }, requestRender() {} }, undefined, undefined, () => {}).render(80).join('\n');
+    } } } as unknown as ExtensionContext, '```json\n{"status": true, "count": 3}\n```');
+    // Pi intentionally displays dim code fences; token colors distinguish a rendered block from raw text.
+    assert.match(rendered, /\x1b\[[0-9;]+m"status"\x1b\[39m/);
+    assert.match(rendered, /\x1b\[[0-9;]+mtrue\x1b\[39m/);
+    await f.commands.get('catchup').handler('json', { ...f.context, ui: { custom: async (factory: Function) => {
+      rendered = factory({ terminal: { rows: 100 }, requestRender() {} }, undefined, undefined, () => {}).render(160).join('\n');
+    } } } as unknown as ExtensionCommandContext);
+    assert.match(catchupJson({ text: '````' }), /^`````json\n/, 'fences in transcript data cannot end the JSON block');
+    assert.match(rendered, /javascript:alert/, 'untrusted text stays visible inside JSON, not a link');
+    assert.doesNotMatch(rendered, /\x1b\]8;;javascript:/);
+    assert.match(rendered, /\x1b\[[0-9;]+m"covered"\x1b\[39m/);
+  } finally { setCapabilities(caps); }
 }));
 
 test('narrow native receipt reflows, scrolls to all content and closes without mutations', () => {

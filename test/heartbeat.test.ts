@@ -114,11 +114,13 @@ test('the fixed schedule still respects a busy chat and the daily cap', async ()
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('a scheduled wake tells the agent no check ran and to take the first open job', () => {
+test('every scheduled wake evaluates current value rather than list position', () => {
   const text = wakeText('', '', 30, DEFAULT_HEARTBEAT);
   assert.match(text, /fixed 30-min schedule/);
   assert.doesNotMatch(text, /cheap check/);
-  assert.match(text, /first open job/);
+  assert.match(text, /Reassess candidates on every wake/);
+  assert.match(text, /impact, urgency, evidence, effort and blockers/);
+  assert.doesNotMatch(text, /first open job|jobs for idle time, in order/);
 });
 
 test('a busy chat skips the model call and tries again an interval later', async () => {
@@ -210,6 +212,8 @@ test('the check reads the configured jobs and limits, so it only wakes for allow
   assert.match(text, /DentAI: leave a Plane issue PR ready/);
   assert.match(text, /improve the harness, measured/);
   assert.match(text, /message customers/);
+  assert.match(text, /Reassess candidates on every wake/);
+  assert.doesNotMatch(text, /in order|take it before the jobs/);
 });
 
 test('a profile keeps its heartbeat plan in config.json; without one it uses the default', () => {

@@ -65,13 +65,15 @@ test('the listing shows open and blocked items and counts the done ones', () => 
 });
 
 const queue = { path: '/p/heartbeat-queue.md', item: 'fix the flaky test' };
-test('a wake names the next queue item and its file first, with how to tick or block it', () => {
+test('queue entries are candidates, not unconditional priorities or a drain-until-empty instruction', () => {
   for (const task of ['', 'continue task-7']) {
     const text = wakeText(task, 'anthropic/claude-haiku-5-5', 30, DEFAULT_HEARTBEAT, queue);
     assert.match(text, /fix the flaky test/);
     assert.ok(text.includes('/p/heartbeat-queue.md'));
     assert.match(text, /- \[x\]/); assert.match(text, /- \[!\]/);
-    assert.ok(text.indexOf('fix the flaky test') < text.indexOf('The operator\'s jobs for idle time'), 'queue before the jobs');
+    assert.match(text, /not a priority order/);
+    assert.match(text, /inspect other open items/);
+    assert.doesNotMatch(text, /Do it before|Then take the next open item|first open job/);
     assert.match(text, /Never[^]*Merge/, 'the plan limits stay in force');
     assert.match(text, /within the limits below/);
   }
@@ -79,5 +81,5 @@ test('a wake names the next queue item and its file first, with how to tick or b
 
 test('with an empty queue the wake is the plan jobs, as before', () => {
   assert.equal(wakeText('x', 'm', 30, DEFAULT_HEARTBEAT, { path: '/p/q.md' }), wakeText('x', 'm', 30, DEFAULT_HEARTBEAT));
-  assert.doesNotMatch(wakeText('x', 'm', 30, DEFAULT_HEARTBEAT), /queue/i);
+  assert.doesNotMatch(wakeText('x', 'm', 30, DEFAULT_HEARTBEAT), /Work queue candidate:|\/p\/q\.md/);
 });

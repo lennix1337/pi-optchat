@@ -62,6 +62,11 @@
       "argv": ["node", "--import", "tsx", "--test", "test/pi-runtime-compat.test.mjs"],
       "timeoutMs": 120000
     },
+    "heartbeat-selection": {
+      "description": "Offline scheduled/check wake candidate selection, queue and permissions; no provider requests",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/heartbeat.test.ts", "test/heartbeat-queue.test.ts", "test/heartbeat-report.test.ts"],
+      "timeoutMs": 30000
+    },
     "catchup-mutations": {
       "description": "Disposable-source proof that extension/RPC messages cannot advance human receipt boundaries",
       "argv": ["node", "test/catchup-mutations.mjs"],

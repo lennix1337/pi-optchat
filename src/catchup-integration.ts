@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { Entry } from './memory.ts';
-import { CatchupWindows, buildCatchup, catchupPage, renderCatchup, type CatchupReport, type CatchupSpan } from './catchup.ts';
-import { showCatchup } from './catchup-ui.ts';
+import { CatchupWindows, buildCatchup, catchupPage, catchupLiteral, renderCatchup, type CatchupReport, type CatchupSpan } from './catchup.ts';
+import { catchupJson, showCatchup } from './catchup-ui.ts';
 import { runningShells, type ShellJobs } from './shells.ts';
 import type { EffectApprovals } from './authorization.ts';
 
@@ -69,8 +69,8 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
       throw new Error('Usage: /catchup [live|history|window <index>|log <offset> [window]|json|range <from> <to>]');
     let span = pick(s);
     if (action === 'history') {
-      return showCatchup(ctx, [`Recorded intervals · ${s.windows.history().length} retained · ${s.windows.omitted} older intervals omitted`,
-        ...s.windows.history().map((w, i) => `${i}: ${w.start} → ${w.end} · messages [${w.from}, ${w.to}) · /catchup window ${i}`),
+      return showCatchup(ctx, [`# Recorded intervals · ${s.windows.history().length} retained · ${s.windows.omitted} older intervals omitted`,
+        ...s.windows.history().map((w, i) => `- **${i}:** ${w.start} → ${w.end} · messages [${w.from}, ${w.to}) · \`/catchup window ${i}\``),
         'Reads do not acknowledge or advance intervals. Every original remains in zoom.'].join('\n'));
     }
     if (action === 'window') span = pick(s, Number(words[1]));
@@ -85,12 +85,12 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
     if (action === 'log' || action === 'range' && words[3] !== undefined) {
       const offset = action === 'range' ? Number(words[3]) : words[1] === undefined ? 0 : Number(words[1]);
       const page = catchupPage(s.entries, span, offset);
-      return showCatchup(ctx, [`All activity · ${span.id} · ${page.returned} of ${page.total} events · offset ${page.offset}`,
-        ...page.items.map(e => `${e.i} · ${e.at} · ${e.kind}: ${e.preview}\n  ${e.zoom}`),
+      return showCatchup(ctx, [`# All activity · ${span.id} · ${page.returned} of ${page.total} events · offset ${page.offset}`,
+        ...page.items.map(e => `- **${e.i} · ${e.kind}** · ${e.at}: ${catchupLiteral(e.preview)}\n  \`${e.zoom}\``),
         page.nextOffset === null ? 'End of interval.' : `Continue: /catchup range ${span.from} ${span.to} ${page.nextOffset}`].join('\n'));
     }
     const report = projection(s, span);
-    return showCatchup(ctx, action === 'json' ? JSON.stringify(report, null, 2) : display(s, span));
+    return showCatchup(ctx, action === 'json' ? catchupJson(report) : display(s, span));
   };
   pi.registerCommand('catchup', { description: 'Deterministic receipt since your previous human message: wakes, observed PRs/checks, reports and complete paged log; no model/network',
     getArgumentCompletions: prefix => ['live', 'history', 'window', 'log', 'json', 'range'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
