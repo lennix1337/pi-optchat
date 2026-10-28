@@ -85,7 +85,7 @@ export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner
   pi.registerCommand('assistant', { description: 'Read assistant task snapshots or respond to a current input request', handler: async (args, ctx) => {
     const words = args.trim().split(/\s+/).filter(Boolean), action = words[0] ?? 'list';
     const arity: Record<string, readonly number[]> = { list: [0, 1, 2], show: [2], respond: [2], evidence: [2, 3], original: [3, 4] };
-    if (!arity[action]?.includes(words.length)) { ctx.ui.notify('Usage: /assistant [list [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]] (IDs and cursors URL-encoded)', 'error'); return; }
+    if (!Object.hasOwn(arity, action) || !arity[action].includes(words.length)) { ctx.ui.notify('Usage: /assistant [list [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]] (IDs and cursors URL-encoded)', 'error'); return; }
     const owner = source();
     if (!owner || owner.sessionId !== ctx.sessionManager.getSessionId()) { ctx.ui.notify('Open an available local profile before /assistant.', 'error'); return; }
     const stillOwned = () => { const current = source(); return current?.identity === owner.identity && current.name === owner.name && current.sessionId === owner.sessionId && ctx.sessionManager.getSessionId() === owner.sessionId; };

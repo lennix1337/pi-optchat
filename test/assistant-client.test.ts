@@ -37,6 +37,9 @@ test('registered command uses loopback, guards owner, and keeps response private
   const ctx = { mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => session }, ui: { notify: (s: string) => output.push(s), input: () => input() } } as unknown as ExtensionCommandContext;
   registerAssistant(pi, () => owner);
   try {
+    for (const invalid of ['toString', 'constructor', '__proto__']) {
+      await handler(invalid, ctx); assert.match(output.pop()!, /Usage:/);
+    }
     await handler('list', ctx); assert.equal(calls.length, 0); assert.match(output.pop()!, /disabled/);
     const save = (endpoint: string) => writeFileSync(join(dir, 'assistant.json'), JSON.stringify({ version: 1, profileId: 'p', endpoint, token: 'secret' }));
     save('http://localhost:1234'); await handler('list', ctx); assert.equal(calls.length, 0);

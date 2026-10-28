@@ -17,7 +17,7 @@ const mutations = [
   ['response inputRevision guard', 'src/contracts/tasks.ts', ' || response.inputRevision !== task.inputRevision', '', 'tasks.test.ts', 'stale response revisions', /Missing expected exception/],
   ['event ID deduplication', 'src/store/db.ts', ', UNIQUE(profile,event_id)', '', 'ownership.test.ts', 'profile scope, conflicts', /Missing expected exception/],
   ['source ID deduplication', 'src/store/db.ts', ', UNIQUE(profile,source_id)', '', 'ownership.test.ts', 'profile scope, conflicts', /Missing expected exception/],
-  ['sequence admission', 'src/store/db.ts', "if (event.sequence !== Number(row.sequence) + 1) throw new TypeError('Invalid event sequence');", '', 'ownership.test.ts', 'profile scope, conflicts', /Missing expected exception/],
+  ['sequence admission', 'src/store/db.ts', "if (event.sequence !== this.nextSequence()) throw new TypeError('Invalid event sequence');", '', 'ownership.test.ts', 'profile scope, conflicts', /Missing expected exception/],
 ];
 function run(dir, file, name) {
   const result = spawnSync(process.execPath, ['--test', '--test-name-pattern', name, join(dir, 'test', file)], { encoding: 'utf8' });
