@@ -11,6 +11,11 @@
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/assistant-policy.test.ts", "test/assistant-review.test.ts"],
       "timeoutMs": 30000
     },
+    "assistant-secrets": {
+      "description": "Vault (AES-GCM, DPAPI-wrapped key on Windows) + masked /assistant-secret entry -> disposable loopback origin; canary never on screen, session, notices or disk",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "assistant/test/vault.test.ts", "test/assistant-secret.test.ts"],
+      "timeoutMs": 90000
+    },
     "assistant-gateway": {
       "description": "Disposable SQLite exact approvals, bounded rules, independent-process consume race, snapshot and uncertain-effect guards",
       "argv": ["node", "--test", "--test-timeout=30000", "assistant/test/gateway.test.ts", "assistant/test/approval-replay.test.ts", "assistant/test/gateway-snapshot.test.ts"],

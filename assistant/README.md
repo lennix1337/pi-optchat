@@ -71,7 +71,7 @@ Effect paths today, and what governs each:
 | Native Pi tools (bash, write, edit, subagent, shell_start, codemode...) | anything the tool does | OptChat effect approvals (opt-in: `OPTCHAT_EFFECT_APPROVALS=1|risk`) + `autonomy.json` + uncertain-operation journal. Off by default: then only the journal fences replays. Not a sandbox. |
 | Assistant HTTP API / `/assistant respond` | task metadata and private responses in SQLite | bearer + loopback + profile; never dispatches work or grants effects |
 | Manual service entry `assistant/src/main.ts` | binds 127.0.0.1, writes its SQLite | explicit operator start; privacy checks before opening files |
-| Worker `effect` jobs (T03), routines (T04, via worker), future connectors, browser, channels (T05-T13) | external sends/mutations | must call `createAssistantPolicy().dispatch`; an adapter that invokes outside it is a defect |
+| Worker `effect` jobs (T03), routines (T04, via worker), vault injection sinks (T05), future connectors, browser, channels (T06-T13) | external sends/mutations | must call `createAssistantPolicy().dispatch`; an adapter that invokes outside it is a defect |
 
 
 ## Durable worker and notification outbox (T03, library only)
@@ -95,6 +95,17 @@ Effect paths today, and what governs each:
 - A clock that moves backwards fires nothing and records `clock_skew`. Several schedulers on one database claim each slot once (the claim commits before the enqueue; an interrupted claim is completed by the next tick with the same job ID). A slot key that already ran never runs again, even after a time-zone edit.
 - No overlap: a slot due while the previous job is unfinished records `skipped_overlap`. A full worker queue keeps the claim and retries. `maxFailures` consecutive failures pause it (`consecutive_failures`); an `effect_uncertain` job pauses it at once (`effect_uncertain`) for reconciliation. `get`/`list` show state, reason, `nextRunAt` and failures; `history` lists runs newest first.
 - `adopt()` imports an existing wake or dream as a paused routine with no capabilities and no authorization: its old permissions do not carry over, and it does not run until an operator re-grants and activates it. The existing OptChat wakes and `optchat-dream` task are not changed by this library.
+
+## Secret vault (T05, library + operator command)
+
+`src/secrets/vault.ts` stores secrets that can be injected but never read back. There is no method that returns a value.
+
+- Each value is sealed with AES-256-GCM (`node:crypto`). The 32-byte data key is wrapped by `src/secrets/protector.ts` `osKeyProtector()`: on Windows that is DPAPI for the current user, and only the wrapped blob is stored. Other platforms have no dependency-free OS keystore here, so `Vault.open` refuses (`vault_unavailable`) rather than keep a key beside the data. The database must pass the same owner-only privacy check as the task store, and `secure_delete` zeroes freed pages.
+- `put(value, { profileId, origin, action }, expiresAt?)` returns a random `sec_…` reference. The origin must be an exact `https://` origin (or `http://` loopback), with no path or credentials. The ciphertext's associated data binds the reference, profile, origin and action, so copying it to another row fails authentication.
+- `inject(ref, binding, sink)` decrypts only for the exact binding, hands the bytes to `sink` (the consented destination's adapter), then wipes the buffer. A changed origin, action or profile is `binding_mismatch` before decryption. A sink failure is `injection_failed`, without its message. Errors carry only a code.
+- `rotate` overwrites the value. `revoke` is final and erases the ciphertext. `purge` deletes revoked and expired (ephemeral) references.
+- `src/assistant-secret.ts` `registerAssistantSecrets(pi, source)` adds `/assistant-secret [list | add <origin> <action> | rotate <ref> | revoke <ref>]`. Values are typed or pasted into a masked dialog in the interactive terminal only. They are not echoed or copied, and they never reach the model, the session, notices or RPC. Only the reference is shown. JavaScript strings cannot be wiped, so typed characters live in memory until the dialog closes.
+- Limits: the vault ends at the sink. No browser or shell injection exists yet. T06 must keep a page, DOM, shell or artifact from reading an injected value back; until then, browser injection stays blocked. Nothing registers the vault or the command by default.
 
 ## Verification
 

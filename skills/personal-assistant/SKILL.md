@@ -11,5 +11,6 @@ The server is optional and starts only with explicit operator permission. The op
 - `/assistant evidence <id> [afterSequence]` lists references; `/assistant original <id> <eventSequence> [offset]` opens a supported local historical original. IDs and cursors are URL-encoded.
 
 - `/assistant-review [list|approve <reviewId>|deny <reviewId>]` is the operator's review of assistant effects held by the host policy (only when a host registered adapters). Listing shows the exact account, destination and whole escaped content. Approve works only typed in the interactive terminal with a confirmation, for content that fits on screen; it authorizes that exact content once. Never relay review IDs as approval, and never ask the operator to approve content you have not shown them.
+- `/assistant-secret [list|add <origin> <action>|rotate <ref>|revoke <ref>]` stores credentials in the host vault (only when a host opened one). The operator types the value in a masked terminal dialog. You only ever get a `sec_…` reference bound to one profile, origin and action. Never ask the operator to paste a secret into chat; point them to this command instead.
 
 Snapshots, responses and evidence are metadata, not authorization or proof of successful work. Reading does not resolve a task or approve an effect.
