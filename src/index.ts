@@ -1,3 +1,4 @@
+import { registerAssistant } from './assistant-client.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -538,6 +539,10 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.on('session_before_switch', (event, ctx) => blockSwitch(event.reason === 'new' ? '/new' : '/resume', ctx));
   pi.on('session_before_fork', (event, ctx) => blockSwitch(event.position === 'at' ? '/clone' : '/fork', ctx));
+  registerAssistant(pi, () => {
+    const a = active;
+    return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: id => a.memory.zoom(id, 1), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
+  });
   const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
     ? catchupSource(active, flush, approvals, shells) : undefined);
   pi.on('input', async (event, ctx) => {
