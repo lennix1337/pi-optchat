@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { Gateway, EffectRequest } from '../policy/gateway.ts';
 import { boundedInteger } from '../limits.ts';
+import { immediate } from '../store/transaction.ts';
 
 export type ToolEffect = 'read' | 'write' | 'unknown';
 export type McpTool = { name: string; description?: string; inputSchema?: unknown; annotations?: Record<string, unknown> };
@@ -170,10 +171,7 @@ export class ConnectorRegistry {
 
   private authorize(authority: object): void { if (authority !== this.options.operatorAuthority) fail('unauthorized'); }
 
-  private transaction(work: () => void): void {
-    this.db.exec('BEGIN IMMEDIATE');
-    try { work(); this.db.exec('COMMIT'); } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-  }
+  private transaction(work: () => void): void { immediate(this.db, work); }
 }
 
 /** One owned, plain copy of the call: scope checks, review and dispatch all see the same values (no getters, no later mutation). */

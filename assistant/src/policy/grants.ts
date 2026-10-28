@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256 } from '../hash.ts';
 
 export type EffectRequest = {
   version: 1; operationId: string; profileId: string; sessionId: string; taskId: string; runId: string;
@@ -39,8 +39,7 @@ export function snapshot(request: EffectRequest, profileId: string, now: number)
   } catch {
     throw new Error('invalid_request');
   }
-  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-  const payloadHash = createHash('sha256').update(payload).digest('hex');
+  const payloadHash = sha256(payload);
   const { operationId, ...scope } = metadata;
-  return { metadata, payload, binding: digest([scope, payloadHash]), operation: digest([profileId, operationId]) };
+  return { metadata, payload, binding: sha256(JSON.stringify([scope, payloadHash])), operation: sha256(JSON.stringify([profileId, operationId])) };
 }

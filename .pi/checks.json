@@ -41,6 +41,11 @@
       "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/connector-grants.test.ts", "assistant/test/mcp-discovery.test.ts", "assistant/test/connector-revocation.test.ts"],
       "timeoutMs": 120000
     },
+    "assistant-memory": {
+      "description": "T09 memory view (provenance, corrections, isolation) and learning proposals (measure, approve, apply, revert)",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/memory-provenance.test.ts", "assistant/test/memory-correction.test.ts", "assistant/test/learning-lifecycle.test.ts"],
+      "timeoutMs": 90000
+    },
     "assistant-egress": {
       "description": "Offline exact-byte known-secret and heuristic outbound-content inspection; no dispatch or live credentials",
       "argv": ["node", "--test", "assistant/test/egress.test.ts"],

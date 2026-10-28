@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -51,12 +51,13 @@ test('independent processes race one grant against a quiescent private database'
 test('disposable mutation of sink-error guard breaks the canary assertion', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gateway-mutant-'));
   try {
-    const src = join(dir, 'src', 'policy'); const tests = join(dir, 'test'); mkdirSync(src, { recursive: true }); mkdirSync(tests, { recursive: true });
+    // The whole source tree, so a new shared module never turns the mutant into a module-not-found pass.
+    cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(dir, 'src'), { recursive: true });
+    const src = join(dir, 'src', 'policy'); const tests = join(dir, 'test'); mkdirSync(tests, { recursive: true });
     const gatewayPath = fileURLToPath(new URL('../src/policy/gateway.ts', import.meta.url));
     const source = readFileSync(gatewayPath, 'utf8'); const anchor = "catch { throw new Error('effect_uncertain'); }";
     assert.equal(source.split(anchor).length, 2);
     writeFileSync(join(src, 'gateway.ts'), source.replace(anchor, 'catch (error) { throw error; }'));
-    writeFileSync(join(src, 'grants.ts'), readFileSync(fileURLToPath(new URL('../src/policy/grants.ts', import.meta.url))));
     writeFileSync(join(tests, 'gateway.test.ts'), readFileSync(fileURLToPath(new URL('./gateway.test.ts', import.meta.url))));
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
     const childenv = { ...process.env };

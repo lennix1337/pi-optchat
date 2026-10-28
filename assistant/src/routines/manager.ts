@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { WorkerRuntime, Job } from '../runtime/worker.ts';
 import { boundedInteger as bounded } from '../limits.ts';
+import { immediate } from '../store/transaction.ts';
 import { dueOccurrences, nextOccurrence, validateSchedule, type Schedule } from './schedule.ts';
 
 /**
@@ -80,11 +81,7 @@ export class RoutineManager {
         job_id TEXT, missed INTEGER NOT NULL DEFAULT 0, detail TEXT, input TEXT, PRIMARY KEY (routine_id, slot));`);
   }
 
-  private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try { const value = fn(); this.db.exec('COMMIT'); return value; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
-  }
+  private transaction<T>(fn: () => T): T { return immediate(this.db, fn); }
   private row(id: string): Row {
     const row = this.db.prepare("SELECT * FROM routines WHERE id = ? AND state != 'deleted'").get(id) as Row | undefined;
     if (!row) throw new Error('unknown_routine');

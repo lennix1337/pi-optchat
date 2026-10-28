@@ -127,6 +127,14 @@ Effect paths today, and what governs each:
 - `connectors/stdio.ts` is a minimal MCP stdio client (no shell; the server gets only `PATH`, `SystemRoot`, `TEMP`, `TMP` and the variables the operator lists). Existing servers (Drive, Notion, others) are reused through it; there is no Composio/CopilotKit dependency and no built-in Drive/Notion preset, because the real servers' tool names are unverified until an account is connected (blocked, needs consent).
 - Check `assistant-connectors` runs against a disposable local fixture server (`test/mcp-fixture-server.mjs`); it is not proof against a live Drive or Notion account.
 
+## Visible memory and learning proposals (T09, library only)
+
+- `memory/projection.ts` `MemoryView` reads memory that lives elsewhere: the OptChat chat (zoom) stays the authority for the conversation and ABOUT-ME for durable facts. It stores no copy of their text, only operator corrections. A read returns the original as the source holds it now (text, date, author, kind `fact | summary | hypothesis`), the corrections bound to it, and the current text.
+- A correction needs the operator authority object and the hash of the original the operator saw. The original is never edited; if it later changes, earlier corrections are listed as `stale` instead of reapplied. Sources are mounted per profile (`memory_profile_mismatch` otherwise) and a ref is looked up only in its own source.
+- `markdownFactSource` exposes ABOUT-ME bullets as facts addressed by line (`ABOUT-ME.md#L12`), re-reading the file on each lookup; its date is the file's modification time.
+- `memory/proposals.ts` `LearningProposals` records versioned changes to allow-listed files only (justification, test, risk, rollback, evidence). `measure` scores the current file and the proposal with the caller's evaluator on a retained set; no improvement rejects the proposal and keeps both scores. Approve, apply and revert take the operator authority; nothing in a proposal's text can approve it. Apply refuses if the file changed since measurement and keeps the old content; revert restores it exactly and refuses to clobber a later edit.
+- Not wired to Pi yet (T13): the chat-store source adapter and the real retained set/evaluator come with integration. Check `assistant-memory` uses disposable files and databases.
+
 ## Verification
 
 Use disposable databases only. Root `.pi/checks.json` exposes focused contract, store, mutation, HTTP, manual entry, client, native runtime and source-typecheck recipes; the Pi checks tool requires the repository root, not this nested package. Tests do not activate a personal service, use real credentials or invoke a provider. Installed-runtime checks are isolated temporary sessions; they do not prove live-user activation or every terminal/browser integration. The extension's existing Node 22 CI and standalone Node 24 service are separate compatibility boundaries.

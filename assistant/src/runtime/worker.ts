@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { Gateway, EffectMetadata, EffectRequest } from '../policy/gateway.ts';
 import { boundedInteger } from '../limits.ts';
+import { immediate } from '../store/transaction.ts';
 
 /**
  * Durable worker decoupled from the TUI. Exactly one owner holds the lease; every
@@ -81,11 +82,7 @@ export class WorkerRuntime {
         state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, UNIQUE (id, channel));`);
   }
 
-  private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try { const value = fn(); this.db.exec('COMMIT'); return value; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
-  }
+  private transaction<T>(fn: () => T): T { return immediate(this.db, fn); }
   /** Every owner write runs here: it commits only while this process still holds the lease token. */
   private fenced<T>(fn: () => T): T {
     return this.transaction(() => {

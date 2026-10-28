@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { DatabaseSync } from 'node:sqlite';
+import { immediate } from './transaction.ts';
 import { parseEvent, type Event } from '../contracts/events.ts';
 import { assertTaskTransition, parseTask, parseTaskResponse, type Task, type TaskResponse, type TaskStatus } from '../contracts/tasks.ts';
 
@@ -34,11 +35,7 @@ export class TaskStore {
     const row = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events WHERE profile = ?').get(this.profileId)!;
     return Number(row.sequence) + 1;
   }
-  private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try { const result = fn(); this.db.exec('COMMIT'); return result; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
-  }
+  private transaction<T>(fn: () => T): T { return immediate(this.db, fn); }
   private append(eventInput: Event, task: Task, operation: StoredEvent['operation']): void {
     const event = parseEvent(eventInput);
     if (event.profileId !== this.profileId || event.taskId !== task.taskId) throw new TypeError('Event identity mismatch');

@@ -19,8 +19,9 @@ export function privateDir(prefix: string, fn: (dir: string) => void | Promise<v
   return withDir(prefix, dir => {
     if (process.platform !== 'win32') chmodSync(dir, 0o700);
     else {
-      const r = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', ownerOnly], { env: { ...process.env, VAULT_FIXTURE: dir }, timeout: 15000, windowsHide: true });
-      if (r.status !== 0) throw new Error('could not make the disposable fixture owner-only');
+      const r = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', ownerOnly], { env: { ...process.env, VAULT_FIXTURE: dir }, timeout: 60000, windowsHide: true });
+      // pwsh startup alone can pass 15 s while the whole unit suite runs in parallel.
+      if (r.status !== 0) throw new Error(`could not make the disposable fixture owner-only: ${r.error?.message ?? `status ${r.status} signal ${r.signal}`} ${String(r.stderr ?? '').trim().slice(0, 300)}`);
     }
     return fn(dir);
   });
