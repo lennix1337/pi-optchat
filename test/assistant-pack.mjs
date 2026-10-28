@@ -11,9 +11,9 @@ const manifest = Array.isArray(result) ? result[0] : result['pi-optchat'];
 assert.equal(manifest?.name, 'pi-optchat');
 assert.ok(Array.isArray(manifest.files), 'Missing package file manifest');
 const paths = new Set(manifest.files.map(file => file.path));
-for (const path of ['src/index.ts', 'src/assistant-client.ts', 'assistant/src/main.ts', 'assistant/src/store/db.ts', 'assistant/src/store/privacy.ts', 'assistant/package.json', 'assistant/README.md', 'skills/personal-assistant/SKILL.md', 'assistant/web/index.html', 'assistant/web/src/app.js', 'assistant/web/src/state.js', 'assistant/web/src/app.css']) {
+for (const path of ['src/index.ts', 'src/assistant-client.ts', 'assistant/src/main.ts', 'assistant/src/store/db.ts', 'assistant/src/store/privacy.ts', 'assistant/package.json', 'assistant/README.md', 'skills/personal-assistant/SKILL.md', 'assistant/web/index.html', 'assistant/web/src/app.js', 'assistant/web/src/state.js', 'assistant/web/src/app.css', 'assistant/scripts/cli.mjs', 'assistant/scripts/start.mjs', 'assistant/scripts/stop.mjs', 'assistant/scripts/health.mjs', 'assistant/scripts/backup.mjs', 'assistant/scripts/restore.mjs', 'assistant/scripts/autostart.mjs', 'assistant/src/ops/service.ts', 'assistant/src/ops/backup.ts', 'assistant/src/ops/autostart.ts', 'assistant/src/notifications/center.ts']) {
   assert.ok(paths.has(path), `Missing packaged entry: ${path}`);
 }
 const forbidden = [...paths].filter(path => /(?:^|\/)(?:node_modules|worktrees|scratchpad|\.optchat|\.pi)(?:\/|$)|\.(?:sqlite|db)(?:-(?:wal|shm|journal))?$|(?:^|\/)(?:assistant|auth|autonomy)\.json$/.test(path));
 assert.deepEqual(forbidden, [], 'Runtime or secret configuration must not be packaged');
-console.log(JSON.stringify({ dryRun: true, entries: paths.size, required: 12, privateArtifacts: forbidden.length }));
+console.log(JSON.stringify({ dryRun: true, entries: paths.size, required: 23, privateArtifacts: forbidden.length }));

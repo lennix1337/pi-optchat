@@ -67,6 +67,7 @@
   "files": [
     "src",
     "assistant/src",
+    "assistant/scripts",
     "assistant/web/index.html",
     "assistant/web/src",
     "assistant/package.json",

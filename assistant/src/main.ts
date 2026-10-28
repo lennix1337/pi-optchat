@@ -1,4 +1,4 @@
-import { constants, fstatSync, openSync, readSync, closeSync } from 'node:fs';
+import { constants, existsSync, fstatSync, openSync, readSync, closeSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
@@ -16,10 +16,11 @@ Activation is manual and requires operator permission; this installs no service.
 --web explicitly enables the browser panel on the same loopback endpoint; off by default.
 Web authentication is not native-terminal approval authority. No remote/mobile exposure.
 The client uses its owner-profile assistant.json with version, profileId, endpoint and token.
+Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/scripts/<name>.mjs --help.
 `;
 
-type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string };
-function readConfig(path: string): Config {
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string };
+export function readConfig(path: string): Config {
   if (!isAbsolute(path)) throw new Error('Invalid configuration path');
   // The privacy precheck assumes a quiescent, user-controlled directory.
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -75,13 +76,18 @@ async function main(): Promise<void> {
   try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}) }); }
   catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   let closing = false;
+  let stopWatch: NodeJS.Timeout | undefined;
   const shutdown = () => {
     if (closing) return;
     closing = true;
+    clearInterval(stopWatch);
     const deadline = setTimeout(() => server.closeAllConnections(), 2000);
     server.closeIdleConnections();
-    server.close(() => { clearTimeout(deadline); store.close(); });
+    server.close(() => { clearTimeout(deadline); store.close(); console.log('Assistant stopped: admission closed, requests drained, database closed.'); });
   };
+  // Set only by assistant/scripts/start.mjs: Windows has no graceful signal for a detached process, so stop.mjs
+  // asks for a drain by creating this file in the private config directory.
+  const stopFile = process.env.OPTCHAT_ASSISTANT_STOP_FILE;
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
   server.once('error', (error: NodeJS.ErrnoException) => {
@@ -90,6 +96,7 @@ async function main(): Promise<void> {
     if (!closing) { closing = true; store.close(); }
   });
   server.listen(Number(config.endpoint.slice(config.endpoint.lastIndexOf(':') + 1)), '127.0.0.1', () => {
+    if (stopFile && isAbsolute(stopFile)) stopWatch = setInterval(() => { if (existsSync(stopFile)) shutdown(); }, 200);
     const profile = config.profileId.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ').slice(0, 200);
     console.log(`Assistant listening: profile ${profile} at ${config.endpoint}; database opened.`.replaceAll(config.token, '[redacted]'));
   });

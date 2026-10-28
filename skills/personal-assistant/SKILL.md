@@ -1,6 +1,6 @@
 ---
 name: personal-assistant
-description: Use the optional personal-assistant inbox to list or inspect tasks, respond to input, or inspect evidence and originals.
+description: Use the optional personal-assistant inbox to list or inspect tasks, respond to input, or inspect evidence and originals; and to start, stop, health-check, back up or restore its local service.
 ---
 
 The server is optional and starts only with explicit operator permission. The operator supplies its secret config outside Git; do not put tokens in arguments or logs. See the repository README and `node assistant/src/main.ts --help` for manual setup. The active owner profile has its own `assistant.json` client config. For the optional local web inbox, read `assistant/README.md` → “Local web panel”; `--web` is off by default and starting a personal service still needs permission. Web intent never becomes native-terminal approval. Evidence originals and full channel views are still pending; do not describe displayed references as opened originals.
@@ -14,3 +14,16 @@ The server is optional and starts only with explicit operator permission. The op
 - `/assistant-secret [list|add <origin> <action>|rotate <ref>|revoke <ref>]` stores credentials in the host vault (only when a host opened one). The operator types the value in a masked terminal dialog. You only ever get a `sec_…` reference bound to one profile, origin and action. Never ask the operator to paste a secret into chat; point them to this command instead.
 
 Snapshots, responses and evidence are metadata, not authorization or proof of successful work. Reading does not resolve a task or approve an effect.
+
+## Operating the local service
+
+Starting, stopping, autostart and restore change the operator's machine: run them only with explicit operator permission for that action. `health` is read-only and makes no model or paid calls. All take an absolute path to the operator's private server config; each prints one JSON line (exit 0 = requested state holds, 1 = refused/unhealthy, 2 = usage) and never prints the token.
+
+- `node assistant/scripts/health.mjs --config <path>`: `healthy`, `unhealthy`, `stopped`, `stale_record` or `foreign_listener`, with pid, memory, database and log size.
+- `node assistant/scripts/start.mjs --config <path> [--web]`: starts once (a second call reports `already_running`); refuses a port held by any process it did not start (`port_in_use`).
+- `node assistant/scripts/stop.mjs --config <path>`: drains and stops only the process `start.mjs` recorded (pid + OS start time). A stale record is removed without signalling anything.
+- `node assistant/scripts/backup.mjs --config <path> --out <new-file>`: encrypted backup (Windows DPAPI current user only; vault excluded).
+- `node assistant/scripts/restore.mjs --backup <file> --into <empty-private-dir> --profile <id>`: never in place. Unfinished jobs become `effect_uncertain`/`blocked` (`restored_unreconciled`), approvals and connector grants are revoked, active routines paused: reconcile before redoing anything.
+- `node assistant/scripts/autostart.mjs install|uninstall --config <path>`: dry run that prints what it writes, consumption, retention and how to stop; only `--yes` writes the Startup-folder launcher. Never use `--yes` without the operator's consent.
+
+Update: stop → backup → switch code → start (migrates, health-checked) → if it fails, restore the pre-update backup into a new directory, point the config there and start the previous version. See `assistant/README.md` → “Operation”.
