@@ -1,22 +1,14 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
 import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval } from './authorization.ts';
 import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
-import { classifyEffects, decide, describeDecision, loadContract, logReported, type Decision, type Repo } from './autonomy.ts';
+import { classifyEffects, describeDecision, logReported, type Decision, type Repo } from './autonomy.ts';
+import { readProfileEffectPolicy } from './effect-policy.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
 export type Advisor = (request: AdvisorRequest, ctx: ExtensionContext) => Promise<AdvisorVerdict>;
 /** Where the operator's autonomy.json lives (the open profile), or undefined when no profile is open. */
 export type ContractDir = () => string | undefined;
-
-/** The contract's decision for a call; an unreadable contract fails closed to `ask`. Undefined without a contract. */
-function contractDecision(dir: string | undefined, call: { tool: string; input: unknown; cwd: string }, repo?: Repo): Decision & { problem?: string } | undefined {
-  if (!dir) return undefined;
-  try {
-    const contract = loadContract(dir);
-    return contract && decide(contract, classifyEffects(call, repo));
-  } catch (error) { return { level: 'ask', problem: error instanceof Error ? error.message : String(error) }; }
-}
 
 const textOf = (content: unknown) => typeof content === 'string' ? content
   : Array.isArray(content) ? content.flatMap(block => (block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n') : '';
@@ -104,7 +96,7 @@ function reportEffect(dir: string, decision: Decision, pending: PendingApproval,
 /** The contract's word on a refused call: `run`, a refusal note, or undefined when it has no rule (the advisor decides). */
 function contractVerdict({ dir: contractDir, repo }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
   if (touchesContract(call)) return { note: 'Only the operator changes autonomy.json: neither the contract nor the advisor can approve this. ' };
-  const dir = contractDir(), decision = contractDecision(dir, call, repo);
+  const dir = contractDir(), decision = readProfileEffectPolicy(dir, () => classifyEffects(call, repo));
   if (!decision || decision.level === 'advisor') return undefined;
   if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
     : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ` };

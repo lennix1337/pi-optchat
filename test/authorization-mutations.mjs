@@ -7,8 +7,10 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const sourcePath = fileURLToPath(new URL('../src/authorization.ts', import.meta.url));
-const diagnostic = new URL('../src/operation-diagnostics.ts', import.meta.url).href;
-const source = readFileSync(sourcePath, 'utf8').replace("'./operation-diagnostics.ts'", JSON.stringify(diagnostic));
+const subjectSource = () => readFileSync(sourcePath, 'utf8').replace(/(from\s+)(['"])(\.\/[^'"]+)\2/g,
+  (_match, from, _quote, path) => from + JSON.stringify(new URL(path, new URL('../src/authorization.ts', import.meta.url)).href));
+const source = subjectSource();
+const loader = new URL('../node_modules/tsx/dist/loader.mjs', import.meta.url).href;
 const root = mkdtempSync(join(tmpdir(), 'effect-approval-mutations-'));
 const driver = `import assert from 'node:assert/strict';
 import { EffectApprovals } from './subject.ts';
@@ -36,7 +38,7 @@ assert.equal(gate.admit({...launch,tool:'codemode',input:{code:'await tools.suba
 `;
 const mutations = [
   ['provenance', "if (source !== 'interactive') return 'ignored';", ''],
-  ['owner', 'entry.session !== session', 'false'],
+  ['owner', "if (!entry || entry.session !== session || entry.approved) return 'invalid';", "if (!entry || entry.approved) return 'invalid';"],
   ['one-shot', 'this.pending.delete(token); return;', 'return;'],
   ['admission', '    if (diagnostic(call)) return;', '    return;'],
   ['standing-session', 'this.standing.get(call.session)?.has(key)', '[...this.standing.values()].some(set => set.has(key))'],
@@ -47,9 +49,10 @@ const mutations = [
 const outcomes = [];
 function run(name, contents) {
   const dir = join(root, name); mkdirSync(dir);
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
   writeFileSync(join(dir, 'subject.ts'), contents);
   writeFileSync(join(dir, 'probe.mjs'), driver);
-  const result = spawnSync(process.execPath, ['probe.mjs'], { cwd: dir, encoding: 'utf8', timeout: 10000 });
+  const result = spawnSync(process.execPath, ['--import', loader, 'probe.mjs'], { cwd: dir, encoding: 'utf8', timeout: 10000 });
   if (result.error) throw result.error;
   const log = result.stdout + result.stderr;
   writeFileSync(join(dir, 'output.log'), log);
@@ -65,6 +68,6 @@ for (const [name, from, to] of mutations) {
   assert.equal(result.moduleFailure, false, JSON.stringify(result));
   outcomes.push(result);
 }
-assert.equal(readFileSync(sourcePath, 'utf8').replace("'./operation-diagnostics.ts'", JSON.stringify(diagnostic)), source, 'working source bytes preserved');
+assert.equal(subjectSource(), source, 'working source bytes preserved');
 writeFileSync(join(root, 'result.json'), JSON.stringify({ baseline, mutations: outcomes, sourceUnchanged: true }, null, 2) + '\n');
 console.log(JSON.stringify({ passed: true, mutationsKilled: outcomes.length, sourceUnchanged: true, receipt: pathToFileURL(root).href }));
