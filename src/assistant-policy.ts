@@ -22,6 +22,10 @@ export interface AssistantPolicyOptions {
   now?: () => number;
 }
 
+export interface AssistantReview { reviewId: string; metadata: Readonly<EffectMetadata>; payload: Uint8Array; reasons: readonly string[] }
+const MAX_REVIEWS = 32;
+export type AssistantPolicy = ReturnType<typeof createAssistantPolicy>;
+
 /** Explicit host-only factory. No service activation, model tool, bearer approval endpoint or shell sandbox. */
 export function createAssistantPolicy(options: AssistantPolicyOptions) {
   const { contractDir, policyVersion, knownSecrets } = options;
@@ -41,9 +45,25 @@ export function createAssistantPolicy(options: AssistantPolicyOptions) {
       return decision?.level === 'free' || decision?.level === 'report' ? 'allow' : 'review';
     },
   });
+  // Exact bytes awaiting a human live only in this process: a reload drops them and the producer must prepare again.
+  const reviews = new Map<string, AssistantReview>();
+  const live = () => { const now = (options.now ?? Date.now)(); for (const [id, r] of reviews) if (r.metadata.expiresAt <= now) reviews.delete(id); return reviews; };
   return {
-    prepare: gateway.prepare.bind(gateway),
-    decide: gateway.decide.bind(gateway),
+    prepare(request: EffectRequest) {
+      const result = gateway.prepare(request);
+      if (result.decision === 'review') {
+        const pending = live();
+        if (pending.size >= MAX_REVIEWS) pending.delete(pending.keys().next().value!);
+        pending.set(result.reviewId, Object.freeze({ reviewId: result.reviewId, metadata: result.metadata, payload: result.payload, reasons: inspectEgress(result.payload, knownSecrets()).reasons }));
+      }
+      return result.decision === 'review' ? { decision: result.decision, reviewId: result.reviewId } : result;
+    },
+    /** Pending exact reviews for display; holds no authority. */
+    reviews: () => [...live().values()],
+    decide(reviewId: string, decision: 'approve' | 'deny', authority: object, rule?: Parameters<typeof gateway.decide>[3]) {
+      gateway.decide(reviewId, decision, authority, rule);
+      reviews.delete(reviewId);
+    },
     revoke: gateway.revoke.bind(gateway),
     status: gateway.status.bind(gateway),
     close: gateway.close.bind(gateway),

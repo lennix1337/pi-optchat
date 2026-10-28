@@ -8,7 +8,7 @@
     },
     "assistant-policy": {
       "description": "Trusted host adapter registry -> shared native policy -> durable approval -> actual disposable loopback sink; no live accounts",
-      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/assistant-policy.test.ts"],
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/assistant-policy.test.ts", "test/assistant-review.test.ts"],
       "timeoutMs": 30000
     },
     "assistant-gateway": {

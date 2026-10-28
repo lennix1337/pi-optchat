@@ -34,12 +34,13 @@ export class Gateway {
     if (policy === 'deny' || inspection === 'deny') throw new Error('denied');
     return { ...item, review: policy === 'review' || inspection === 'review' };
   }
-  prepare(request: EffectRequest): { decision: 'allow' | 'review'; reviewId?: string } {
+  /** A review result carries owned copies of the exact bound metadata and bytes, so a reviewer sees what dispatch will send. */
+  prepare(request: EffectRequest): { decision: 'allow'; reviewId?: undefined } | { decision: 'review'; reviewId: string; metadata: Readonly<EffectMetadata>; payload: Uint8Array } {
     const item = this.evaluate(request);
     if (!item.review) return { decision: 'allow' };
     const id = randomUUID();
     this.db.prepare('INSERT INTO reviews VALUES (?, ?, ?, ?, ?)').run(id, item.binding, item.operation, item.metadata.expiresAt, 'pending');
-    return { decision: 'review', reviewId: id };
+    return { decision: 'review', reviewId: id, metadata: Object.freeze({ ...item.metadata }), payload: Buffer.from(item.payload) };
   }
   decide(reviewId: string, decision: 'approve' | 'deny', authority: object, rule?: BoundedRule): void {
     if (authority !== this.options.operatorAuthority) throw new Error('unauthorized');
