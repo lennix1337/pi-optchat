@@ -7,7 +7,7 @@ import type { ModelChoice } from './compactor.ts';
 import { record } from './cache.ts';
 import { atomicWrite, type Store } from './store.ts';
 import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
-import { invalidPlan, type HeartbeatPlan } from './heartbeat.ts';
+import { invalidPlan, invalidRadar, type HeartbeatPlan } from './heartbeat.ts';
 
 export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
@@ -15,7 +15,7 @@ const PIPE_PREFIX = '\\\\.\\pipe\\';
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
 export type Role = 'compactor' | 'subagent';
 /** alternates: per-provider models a role uses while the main model is on that provider, e.g. a Codex model on a Codex account. */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan }
+export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[] }
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
@@ -91,10 +91,11 @@ export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
-    const problem = invalidPlan(value.heartbeat);
+    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar);
     if (problem) throw new Error(problem);
     return { compactor: value.compactor, subagent: value.subagent, ...(value.alternates ? { alternates: value.alternates } : {}),
-      ...(value.heartbeat ? { heartbeat: value.heartbeat as HeartbeatPlan } : {}), ...readSettings(value) };
+      ...(value.heartbeat ? { heartbeat: value.heartbeat as HeartbeatPlan } : {}),
+      ...(value.heartbeatRadar ? { heartbeatRadar: value.heartbeatRadar as string[] } : {}), ...readSettings(value) };
   }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
