@@ -193,14 +193,15 @@ export class Heartbeat {
       this.failed = true; this.save({ verdict: 'FAILED', text: message }); this.arm(); return;
     }
     if (!beat.wake) { this.save({ verdict: 'SLEEP', text: beat.text }); this.arm(); return; }
-    const recent = this.saved().wakes.filter(at => this.deps.now() - at < DAY), cap = this.deps.maxWakes();
+    const at = this.deps.now(), recent = this.saved().wakes.filter(wake => at - wake < DAY), cap = this.deps.maxWakes();
     if (recent.length >= cap) {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);
       this.save({ verdict: 'WAKE', text: `${beat.text} (not woken: ${cap} wakes in 24 h)` }); this.arm(); return;
     }
-    this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, this.deps.now()],
-      { at: this.deps.now(), trigger: scheduled ? 'schedule' : 'check', reason: scheduled ? '' : beat.text, outcome: 'running' });
-    this.open = this.deps.now();
+    // One reading of the clock: the save takes milliseconds, and turnSettled finds the wake by this exact `at`.
+    this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, at],
+      { at, trigger: scheduled ? 'schedule' : 'check', reason: scheduled ? '' : beat.text, outcome: 'running' });
+    this.open = at;
     this.deps.wake(beat);
   }
   /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */
