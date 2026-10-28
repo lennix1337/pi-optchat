@@ -7,6 +7,18 @@ import { TaskStore } from '../store/db.ts';
 import { authenticate } from './auth.ts';
 
 const maxBody = 64 * 1024;
+const bodyIdleMs = 2_000;
+const bodyDeadlineMs = 5_000;
+type Diagnostic = { category: 'internal'; operation: 'request' };
+type ErrorObserver = (diagnostic: Diagnostic) => void | Promise<void>;
+function safeLog(message: string): void {
+  try { console.error(message); } catch { /* Diagnostics must not disrupt the request. */ }
+}
+function reportError(observer: ErrorObserver): void {
+  try {
+    Promise.resolve(observer({ category: 'internal', operation: 'request' })).catch(() => safeLog('assistant HTTP diagnostic observer failed'));
+  } catch { safeLog('assistant HTTP diagnostic observer failed'); }
+}
 const statuses = oneOf('suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'succeeded', 'failed', 'cancelled', 'resolved');
 type Context = { sessionId: string; channelId: string; runId: string; sourceEventId: string; evidenceReference: string };
 class BadRequest extends Error {}
@@ -22,20 +34,34 @@ function shape(value: unknown, schema: Parameters<typeof object>[1]): void {
   try { object(value, schema); } catch (error) { if (error instanceof TypeError) throw new BadRequest(); throw error; }
 }
 function send(res: ServerResponse, status: number, value: unknown): void {
+  if (res.destroyed || res.writableEnded) return;
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(value));
 }
 async function readBody(req: IncomingMessage): Promise<unknown> {
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) throw new BadRequest();
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += data.length;
-    if (size <= maxBody) chunks.push(data);
-  }
-  if (size > maxBody) throw new BadRequest();
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (error) { if (error instanceof SyntaxError) throw new BadRequest(); throw error; }
+  const bytes = await new Promise<Buffer>((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let idle: NodeJS.Timeout;
+    const deadline = setTimeout(refuse, bodyDeadlineMs);
+    function cleanup(): void {
+      clearTimeout(idle); clearTimeout(deadline);
+      req.off('data', data); req.off('end', end); req.off('error', interrupted); req.off('aborted', interrupted);
+    }
+    function refuse(): void { cleanup(); req.destroy(); reject(new BadRequest()); }
+    function interrupted(): void { cleanup(); reject(new BadRequest()); }
+    function resetIdle(): void { clearTimeout(idle); idle = setTimeout(refuse, bodyIdleMs); }
+    function data(chunk: Buffer): void {
+      size += chunk.length;
+      if (size > maxBody) { refuse(); return; }
+      chunks.push(chunk); resetIdle();
+    }
+    function end(): void { cleanup(); resolve(Buffer.concat(chunks)); }
+    req.on('data', data); req.once('end', end); req.once('error', interrupted); req.once('aborted', interrupted);
+    resetIdle();
+  });
+  try { return JSON.parse(bytes.toString('utf8')); } catch (error) { if (error instanceof SyntaxError) throw new BadRequest(); throw error; }
 }
 function query(url: URL, allowed: string[]): void {
   for (const key of url.searchParams.keys()) if (!allowed.includes(key) || url.searchParams.getAll(key).length !== 1) throw new BadRequest();
@@ -54,10 +80,13 @@ function event(store: TaskStore, profileId: string, taskId: string, context: Con
 const contextSchema = { sessionId: text, channelId: text, runId: text, sourceEventId: text, evidenceReference: text };
 const responseSchema = { version, profileId: text, taskId: text, revision: positive, inputRevision: positive, text };
 
-async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string): Promise<void> {
-  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '') || req.headers.origin !== undefined) { send(res, 403, { error: 'Forbidden' }); return; }
-  if (!authenticate(req.headers.authorization, token)) { send(res, 401, { error: 'Unauthorized' }); return; }
+export function isAllowedRemote(address: string | undefined): boolean {
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address ?? '');
+}
+async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver): Promise<void> {
   try {
+    if (!isAllowedRemote(req.socket.remoteAddress) || req.headers.origin !== undefined) { send(res, 403, { error: 'Forbidden' }); return; }
+    if (!authenticate(req.headers.authorization, token)) { send(res, 401, { error: 'Unauthorized' }); return; }
     const url = new URL(req.url ?? '/', 'http://localhost');
     const match = /^\/v1\/tasks\/([^/]+)(?:\/(transition|respond))?$/.exec(url.pathname);
     let id: string | undefined;
@@ -97,12 +126,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
   } catch (error) {
     if (error instanceof BadRequest) send(res, 400, { error: 'Bad request' });
     else if (error instanceof Conflict) send(res, 409, { error: 'Conflict' });
-    else send(res, 500, { error: 'Internal error' });
+    else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
   }
 }
-export function createAssistantServer({ store, token, profileId }: { store: TaskStore; token: string; profileId: string }): Server {
+export function createAssistantServer({ store, token, profileId, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; onError?: ErrorObserver }): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId)) throw new TypeError('Invalid server binding');
-  const server = createServer((req, res) => { void handle(req, res, store, token, profileId); });
+  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
   return server;

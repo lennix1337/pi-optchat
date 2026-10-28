@@ -6,8 +6,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
+import { connect } from 'node:net';
 import { TaskStore } from '../src/store/db.ts';
-import { createAssistantServer } from '../src/http/server.ts';
+import { createAssistantServer, isAllowedRemote } from '../src/http/server.ts';
 
 const token = 'test-secret';
 const context = (sourceEventId: string) => ({ sessionId: 'session', channelId: 'channel', runId: 'run', sourceEventId, evidenceReference: 'evidence' });
@@ -33,7 +34,8 @@ test('HTTP boundary, metadata journey and persisted events', async () => {
     assert.equal((await request('/v1/tasks', { headers: { origin: 'https://example.test' } })).status, 403);
     assert.equal((await request('/v1/tasks', { method: 'POST', body: '{}' })).status, 400);
     assert.equal((await request('/v1/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' })).status, 400);
-    assert.equal((await request('/v1/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(65537) })).status, 400);
+    const oversized = await request('/v1/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(65537) }).catch(() => null);
+    if (oversized) assert.equal(oversized.status, 400);
     assert.equal((await post('/v1/tasks', { task, context: { ...context('source-1'), sourceKind: 'trusted-local-human' } })).status, 400);
     assert.equal((await post('/v1/tasks', { task, context: { ...context('source-1'), profileId: 'other' } })).status, 400);
     assert.equal((await post('/v1/tasks', { task: { ...task, profileId: 'other' }, context: context('source-1') })).status, 400);
@@ -58,6 +60,9 @@ test('HTTP boundary, metadata journey and persisted events', async () => {
     assert.equal((await request('/v1/tasks/missing')).status, 404);
     assert.equal((await request('/v1/tasks/%ZZ')).status, 400);
     assert.equal((await request('/v1/events?limit=101')).status, 400);
+    assert.equal((await request('/v1/events?limit=1&limit=2')).status, 400);
+    assert.equal((await request('/v1/events?after=-1')).status, 400);
+    assert.equal((await request('/v1/tasks?cursor=')).status, 400);
     assert.equal((await request('/v1/tasks', { method: 'DELETE' })).status, 404);
     await new Promise<void>(resolve => server.close(() => resolve())); store.close();
     store = new TaskStore(path, 'profile'); server = createAssistantServer({ store, token, profileId: 'profile' }); base = await listen();
@@ -66,15 +71,94 @@ test('HTTP boundary, metadata journey and persisted events', async () => {
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('non-loopback address is refused by handler guard', async () => {
+  assert.equal(isAllowedRemote('127.0.0.1'), true);
+  assert.equal(isAllowedRemote('::1'), true);
+  assert.equal(isAllowedRemote('::ffff:127.0.0.1'), true);
+  assert.equal(isAllowedRemote('127.0.0.2'), false);
+  assert.equal(isAllowedRemote(undefined), false);
+  const store = new TaskStore(':memory:', 'profile');
+  const server = createAssistantServer({ store, token, profileId: 'profile' });
+  server.prependListener('request', req => { Object.defineProperty(req.socket, 'remoteAddress', { value: '192.0.2.1' }); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as any).port}/v1/tasks`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 403);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); store.close(); }
+});
+
+test('incomplete oversized and stalled bodies close promptly without mutation', async () => {
+  const store = new TaskStore(':memory:', 'profile');
+  const server = createAssistantServer({ store, token, profileId: 'profile' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const port = (server.address() as any).port;
+  const probe = async (body: string, timeout: number, trickle = false) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    let received = '';
+    socket.on('data', data => { received += data.toString(); });
+    const closed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { socket.destroy(); reject(new Error('body refusal timed out')); }, timeout);
+      socket.once('error', () => {});
+      socket.once('close', () => { clearTimeout(timer); resolve(); });
+    });
+    await once(socket, 'connect');
+    socket.write(`POST /v1/tasks HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\n\r\n${body}`);
+    const interval = trickle ? setInterval(() => socket.write('x'), 500) : undefined;
+    try { await closed; } finally { if (interval) clearInterval(interval); }
+    assert.ok(!received || received.startsWith('HTTP/1.1 400 '));
+  };
+  try {
+    await probe('x'.repeat(65537), 1500); await probe('{', 4000); await probe('{', 7000, true);
+    const disconnected = connect({ host: '127.0.0.1', port }); await once(disconnected, 'connect');
+    disconnected.write(`POST /v1/tasks HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{`);
+    disconnected.destroy(); await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(store.list().tasks, []);
+  }
+  finally { await new Promise<void>(resolve => server.close(() => resolve())); store.close(); }
+});
+
+test('closed SQLite yields one safe diagnostic and 500', async () => {
+  const store = new TaskStore(':memory:', 'profile');
+  const diagnostics: unknown[] = [];
+  const server = createAssistantServer({ store, token, profileId: 'profile', onError: diagnostic => { diagnostics.push(diagnostic); } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); store.close();
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as any).port}/v1/tasks?cursor=PRIVATE-RESPONSE`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 500); assert.equal(await response.text(), '{"error":"Internal error"}');
+    assert.deepEqual(diagnostics, [{ category: 'internal', operation: 'request' }]);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE-RESPONSE|test-secret|SQLITE|stack/i);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test('failed diagnostic observers cannot leak or cause unhandled rejections', async () => {
+  const logs: string[] = []; const original = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  try {
+    for (const onError of [() => { throw new Error('PRIVATE-RESPONSE'); }, async () => { throw new Error('PRIVATE-RESPONSE'); }, undefined]) {
+      const store = new TaskStore(':memory:', 'profile');
+      const server = createAssistantServer({ store, token, profileId: 'profile', onError });
+      server.listen(0, '127.0.0.1'); await once(server, 'listening'); store.close();
+      try {
+        const response = await fetch(`http://127.0.0.1:${(server.address() as any).port}/v1/tasks`, { headers: { authorization: `Bearer ${token}` } });
+        assert.equal(response.status, 500); await response.text();
+      } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+    }
+    assert.deepEqual(logs, ['assistant HTTP diagnostic observer failed', 'assistant HTTP diagnostic observer failed', 'assistant HTTP internal request failure']);
+  } finally { console.error = original; }
+});
+
 test('auth and provenance guards resist disposable mutations', { skip: process.env.HTTP_MUTATION_CHILD === '1' }, () => {
   const original = dirname(dirname(fileURLToPath(import.meta.url)));
   const root = mkdtempSync(join(tmpdir(), 'http-mutations-'));
   const variants = [
-    ["if (!authenticate(req.headers.authorization, token))", "if (false)"],
-    ["try { object(value, schema); }", "try { const input = value as any; if (input?.context) { delete input.context.sourceKind; delete input.context.profileId; } object(value, schema); }"],
-  ];
+    ["if (!authenticate(req.headers.authorization, token))", "if (false)", /200 !== 401/],
+    ["try { object(value, schema); }", "try { const input = value as any; if (input?.context) { delete input.context.sourceKind; delete input.context.profileId; } object(value, schema); }", /200 !== 400/],
+    [" || req.headers.origin !== undefined", "", /200 !== 403/],
+    [" || !store.matchesProfile(profileId)", "", /Missing expected exception/],
+    ["!isAllowedRemote(req.socket.remoteAddress)", "false", /200 !== 403/],
+  ] as const;
   try {
-    for (const [index, [before, after]] of variants.entries()) {
+    for (const [index, [before, after, expected]] of variants.entries()) {
       const copy = join(root, String(index));
       mkdirSync(join(copy, 'test'), { recursive: true });
       cpSync(join(original, 'src'), join(copy, 'src'), { recursive: true });
@@ -84,8 +168,8 @@ test('auth and provenance guards resist disposable mutations', { skip: process.e
       const source = readFileSync(file, 'utf8'); assert.ok(source.includes(before));
       writeFileSync(file, source.replace(before, after));
       const env = { ...process.env, HTTP_MUTATION_CHILD: '1' }; delete env.NODE_TEST_CONTEXT;
-      const result = spawnSync(process.execPath, ['--test', join(copy, 'test', 'http.test.ts')], { env, encoding: 'utf8', timeout: 15000 });
-      assert.equal(result.status, 1, result.stderr); assert.match(result.stdout, /AssertionError/);
+      const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=HTTP boundary|non-loopback', join(copy, 'test', 'http.test.ts')], { env, encoding: 'utf8', timeout: 15000 });
+      assert.equal(result.status, 1, result.stderr); assert.match(result.stdout, expected);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
