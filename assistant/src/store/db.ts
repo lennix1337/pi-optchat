@@ -29,6 +29,11 @@ export class TaskStore {
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     } catch (error) { this.db.close(); throw error; }
   }
+  matchesProfile(profileId: string): boolean { return this.profileId === profileId; }
+  nextSequence(): number {
+    const row = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events WHERE profile = ?').get(this.profileId)!;
+    return Number(row.sequence) + 1;
+  }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -37,8 +42,7 @@ export class TaskStore {
   private append(eventInput: Event, task: Task, operation: StoredEvent['operation']): void {
     const event = parseEvent(eventInput);
     if (event.profileId !== this.profileId || event.taskId !== task.taskId) throw new TypeError('Event identity mismatch');
-    const row = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events WHERE profile = ?').get(this.profileId)!;
-    if (event.sequence !== Number(row.sequence) + 1) throw new TypeError('Invalid event sequence');
+    if (event.sequence !== this.nextSequence()) throw new TypeError('Invalid event sequence');
     const payload: StoredEvent = { event, operation, task };
     this.db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?)').run(this.profileId, event.sequence, event.eventId, event.source.sourceEventId, JSON.stringify(payload));
   }
