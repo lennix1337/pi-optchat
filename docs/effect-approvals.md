@@ -14,11 +14,47 @@ sandbox for installed plugins, repository code, the SDK, or an adversarial model
   - **global install**: `npm|pnpm|yarn i|install|add|link -g|--global`, `cargo|winget|choco|scoop install`;
   - **recursive delete** (`rm -r`, `Remove-Item -Recurse`, `rd /s`) unless every target is in a temp folder (`C:/tmp`, `/tmp`, `$TMP`, `%TEMP%`);
   - **discard**: `git reset --hard`, `git clean -f`, `git worktree remove --force`, `git branch -D`, `git stash drop|clear`;
-  - **paid model call**: `subagent`/`spawn`/`tell` (except `subagent` list/models/guide/status/validate), `pi -p|--print`, `bench.mjs run`, codemode `models.*` or `tools.subagent|spawn|tell`.
+  - **paid model call**: `subagent`/`spawn`/`tell` (except `subagent` list/models/guide/status/validate), `pi -p|--print`, `bench.mjs run`, codemode `models.*` or `tools.subagent|spawn|tell`;
+  - **production write**: an `ssh` command that also writes SQL (`update ... set`, `insert into`, `delete from`, `drop`, `truncate`, `alter table`) or changes remote containers or services (`docker restart|rm|stop|compose up`, `systemctl restart`, `kubectl apply`...); reads over ssh pass;
+  - **deploy**: running a `deploy*.ps1|sh|mjs` script (not with `-PlanOnly`/`-WhatIf`/`--dry-run`), `wrangler|fly|netlify|railway deploy`, `vercel --prod`, `gh workflow run` of a deploy/release workflow, `docker push`, `kubectl apply|rollout`;
+  - **autonomy contract change**: any non-read call whose arguments name `autonomy.json`.
 
   Risk mode is a guardrail against accidental high-impact effects: a command that hides its
   verb (variables, `eval`, encoded scripts, a script file that pushes) is not recognized, and
   MCP tools are not classified. Use `1` when that boundary matters. Standing grants work in both modes.
+
+## Autonomy contract (`autonomy.json`)
+
+A profile may hold `autonomy.json`: the operator's standing decisions on which high-impact effects
+the agent runs alone, runs and reports, or always brings to the operator. It is read from the call
+itself, never from the conversation, so a misread "sim" cannot widen it.
+
+```json
+{ "version": 1, "default": "ask", "rules": [
+  { "action": "push", "scope": ["lennix1337/*"], "level": "free", "note": "branches and PRs" },
+  { "action": "push-main", "scope": ["lennix1337/pi-*"], "level": "report" },
+  { "action": "merge", "scope": ["tecnologia-ai/*"], "level": "ask", "until": "2027-01-01T00:00:00Z" }
+] }
+```
+
+- **Actions** (`src/effect-classifier.ts`): `push` (a branch), `push-main` (`main`/`master`, by refspec or by the
+  checked-out branch), `force-push`, `merge` (`gh pr merge`), `publish` (package publish, `gh release create`,
+  `gh repo create|delete`, `release.ps1`/`publish.ps1`), `deploy`, `production-write`, `paid` (targets `subagent`
+  or `model-run`; a local script whose source builds a model runtime or provider client counts as `model-run`),
+  `discard` (hard reset, forced clean, branch -D, remote branch delete, `Invoke-PcMaintenance|WorktreeCleanup -Apply`
+  with targets `pc-maintenance` / `worktree-cleanup`), `recursive-delete`, `global-install`; `*` matches any.
+- **Targets**: the working folder (`git -C`, the last `cd`, else cwd; lowercase, forward slashes), the GitHub
+  `owner/repo` of the remote it uses (`--repo`/`-R`, the pushed remote, else `origin`, read with local git), or
+  `ssh:<host>`. `scope` patterns use `*` as a wildcard; `*` alone matches everything.
+- **Levels**: `free` runs; `report` runs and appends `{ at, action, targets, summary, rule }` to
+  `autonomy-log.jsonl` in the profile with an info notice; `ask` waits for `/approve` and skips the advisor.
+- **Order**: the first live rule (unexpired `until`) whose action and scope match decides; a call with several
+  effects takes the strictest (`ask` > no rule > `report` > `free`). An effect with no rule uses `default`
+  (`advisor`, the default, keeps the advisor below; or a level).
+- An unreadable or invalid file fails closed: every gated call waits for the operator, with the parse error.
+- The agent cannot change it: any non-read call naming `autonomy.json` needs the operator, whatever the rules
+  say. Edit it yourself, or approve the exact call.
+- The contract applies where the gate applies (mode `1` or `risk`), in the owning session only.
 
 ## Approval advisor
 

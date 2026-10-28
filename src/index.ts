@@ -116,7 +116,7 @@ export default function optchat(pi: ExtensionAPI) {
     } catch { /* an unreadable state file must not block the advisor; the operator still decides */ }
     return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },
       message => profile.usage.compression(message, 'advisor', profile.sessionId));
-  } });
+  }, contractDir: () => active?.dir });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.

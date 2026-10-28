@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
+import { productionWriteHost, runsDeploy } from './effect-classifier.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
@@ -62,6 +63,11 @@ const riskClasses: [string, RegExp][] = [
   ['paid model call', /\bpi\b[^;&|\n]*\s(?:-p|--print)\b|\bbench\.mjs\s+run\b|\bmodels\.(?:classify|generateImages)\b|\btools\.(?:subagent|spawn|tell)\b/],
 ];
 const paidTools = new Set(['subagent', 'spawn', 'tell']);
+/** Risk class of a call that touches the operator's autonomy contract; only the operator may approve it. */
+export const CONTRACT_CHANGE = 'autonomy contract change';
+/** A non-read call whose arguments name autonomy.json (an edit, a write, a shell command or script touching it). */
+export const touchesContract = ({ tool, input }: { tool: string; input: unknown }) =>
+  !reads.has(tool) && JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
 const tempPath = /^(?:[a-zA-Z]:[\\/](?:tmp|temp)[\\/]|\/tmp\/|\/c\/tmp\/|\$\{?(?:TMP|TEMP|TMPDIR)\b|%TEMP%)/i;
 
@@ -82,11 +88,15 @@ function recursiveDelete(command: string) {
 
 /** The high-impact class a call belongs to in risk mode, or undefined for ordinary work. */
 function riskClass({ tool, input }: Invocation) {
+  // The agent never widens its own contract: any non-read call naming autonomy.json waits for the operator.
+  if (touchesContract({ tool, input })) return CONTRACT_CHANGE;
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
   const text = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? input.command
     : record(input) && typeof input.code === 'string' && tool === 'codemode' ? input.code : undefined;
   if (text === undefined) return;
   if (recursiveDelete(text)) return 'recursive delete';
+  if (productionWriteHost(text)) return 'production write';
+  if (runsDeploy(text)) return 'deploy';
   return riskClasses.find(([, pattern]) => pattern.test(text))?.[0];
 }
 
