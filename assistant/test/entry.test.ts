@@ -15,6 +15,7 @@ const profileId = 'entry-profile';
 const context = (sourceEventId: string) => ({ sessionId: 'session', channelId: 'channel', runId: 'run', sourceEventId, evidenceReference: 'reference' });
 const task = { version: 1, profileId, taskId: 'task-id', title: 'task', status: 'queued', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: 'source-1' };
 
+/** Kept local: the mutation test copies this file alone into a disposable tree. */
 async function port(): Promise<number> {
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const number = (server.address() as { port: number }).port;

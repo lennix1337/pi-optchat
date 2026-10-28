@@ -7,6 +7,7 @@ import { boundedInteger } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { local } from '../routines/schedule.ts';
 import { immediate } from '../store/transaction.ts';
+import { allRows } from '../store/rows.ts';
 
 /**
  * Google mail and calendar, read-only. Each connection is an operator-named account (for example `personal` and
@@ -158,7 +159,7 @@ export class GoogleConnections {
   }
 
   list(): GoogleConnection[] {
-    return (this.db.prepare('SELECT * FROM google_connections WHERE profile = ? ORDER BY connection_id').all(this.options.profileId) as Row[]).map(connection);
+    return allRows<Row, GoogleConnection>(this.db, 'SELECT * FROM google_connections WHERE profile = ? ORDER BY connection_id', connection, this.options.profileId);
   }
 
   /** Local revocation commits first, so access ends whatever Google answers; then Google is asked and the tokens erased. */

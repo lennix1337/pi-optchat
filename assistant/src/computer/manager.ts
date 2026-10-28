@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { boundedInteger } from '../limits.ts';
+import { allRows } from '../store/rows.ts';
 import { dockerCli, type DockerRunner } from './docker.ts';
 
 export type ComputerState = 'ready' | 'paused' | 'human';
@@ -114,7 +115,7 @@ export class ComputerManager {
 
   get(id: string): Computer { return this.view(this.row(id)); }
   list(): Computer[] {
-    return (this.db.prepare('SELECT id, profile, agent, container, state, expires FROM computers WHERE owner = ? ORDER BY id').all(this.options.owner) as Row[]).map(row => this.view(row));
+    return allRows<Row, Computer>(this.db, 'SELECT id, profile, agent, container, state, expires FROM computers WHERE owner = ? ORDER BY id', row => this.view(row), this.options.owner);
   }
 
   /** Throws the reason this computer cannot take agent work now (takeover, pause, expiry, wrong container). */

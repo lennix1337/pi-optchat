@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Gateway, EffectMetadata, EffectRequest } from '../policy/gateway.ts';
 import { boundedInteger } from '../limits.ts';
 import { immediate } from '../store/transaction.ts';
+import { allRows } from '../store/rows.ts';
 
 /**
  * Durable worker decoupled from the TUI. Exactly one owner holds the lease; every
@@ -299,7 +300,7 @@ export class WorkerRuntime {
     const row = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as Row | undefined;
     return row && this.toJob(row);
   }
-  jobs(): Job[] { return (this.db.prepare('SELECT * FROM jobs ORDER BY seq').all() as Row[]).map(row => this.toJob(row)); }
+  jobs(): Job[] { return allRows<Row, Job>(this.db, 'SELECT * FROM jobs ORDER BY seq', row => this.toJob(row)); }
   notifications(): Notification[] {
     return this.db.prepare('SELECT id, channel, body, state, attempts, error FROM outbox ORDER BY seq').all() as Notification[];
   }

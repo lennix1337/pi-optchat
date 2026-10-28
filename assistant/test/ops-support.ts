@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TaskStore } from '../src/store/db.ts';
 import { processInfo } from '../src/ops/service.ts';
+import { queuedTask, storeEvent } from './task-fixtures.ts';
 
 export const PROFILE = 'ops-profile';
 export const TOKEN = 'OPS-TEST-TOKEN-5c1d';
@@ -17,14 +18,9 @@ export function seedTask(path: string, title: string, taskId = 'task-1'): void {
   const store = new TaskStore(path, PROFILE);
   try { store.create(newTask(taskId, title), newTaskEvent(taskId, store.nextSequence())); } finally { store.close(); }
 }
-export function newTask(taskId: string, title: string) {
-  return { version: 1 as const, profileId: PROFILE, taskId, title, status: 'queued' as const, verification: 'not_verified' as const, revision: 1, inputRevision: 1, sourceEventId: `source-${taskId}` };
-}
-function newTaskEvent(taskId: string, sequence: number) {
-  return { version: 1 as const, eventId: `event-${taskId}`, correlationId: `correlation-${taskId}`, profileId: PROFILE, taskId, sessionId: 'session', channelId: 'channel', runId: 'run',
-    source: { actorId: 'ops-test', sourceKind: 'trusted-local-human' as const, sourceEventId: `source-${taskId}` }, observedAt: '2026-10-28T12:00:00Z', sequence,
-    evidence: { kind: 'observed' as const, reference: 'ops-test' } };
-}
+export const newTask = (taskId: string, title: string) => queuedTask(PROFILE, taskId, title, `source-${taskId}`);
+const newTaskEvent = (taskId: string, sequence: number) => storeEvent(PROFILE, taskId, sequence,
+  { eventId: `event-${taskId}`, sourceEventId: `source-${taskId}`, correlationId: `correlation-${taskId}`, actorId: 'ops-test', sourceKind: 'trusted-local-human', reference: 'ops-test' });
 
 export async function freePort(): Promise<number> {
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');

@@ -5,10 +5,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TaskStore } from '../src/store/db.ts';
+import { queuedTask, storeEvent } from './task-fixtures.ts';
 
 const id = "x'); DROP TABLE tasks;--";
-function task(profileId: string) { return { version: 1 as const, profileId, taskId: id, title: 'title', status: 'queued' as const, verification: 'not_verified' as const, revision: 1, inputRevision: 1, sourceEventId: 'source1' }; }
-function event(profileId: string, sequence: number) { return { version: 1 as const, eventId: `event${sequence}`, profileId, sessionId: 'session', channelId: 'channel', taskId: id, runId: 'run', source: { actorId: 'actor', sourceKind: 'external' as const, sourceEventId: `source${sequence}` }, observedAt: '2026-10-28T12:00:00Z', sequence, correlationId: 'correlation', evidence: { kind: 'observed' as const, reference: 'reference' } }; }
+const task = (profileId: string) => queuedTask(profileId, id, 'title', 'source1');
+const event = (profileId: string, sequence: number) => storeEvent(profileId, id, sequence,
+  { eventId: `event${sequence}`, sourceEventId: `source${sequence}`, correlationId: 'correlation', actorId: 'actor', sourceKind: 'external', reference: 'reference' });
 function fixture(fn: (path: string) => void) { const dir = mkdtempSync(join(tmpdir(), 'assistant-ownership-')); try { fn(join(dir, 'db')); } finally { rmSync(dir, { recursive: true, force: true }); } }
 test('profile scope, conflicts, sequence, pagination and independent writers', () => fixture(path => {
   const a = new TaskStore(path, 'a'); const b = new TaskStore(path, 'b'); const other = new TaskStore(path, 'a');

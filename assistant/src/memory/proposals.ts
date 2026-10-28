@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { boundedText } from '../contracts/validation.ts';
 import { sha256 as sha } from '../hash.ts';
 import { immediate } from '../store/transaction.ts';
+import { allRows } from '../store/rows.ts';
 
 /**
  * Versioned learning proposals: a concrete change to one allow-listed file, with its justification, test,
@@ -138,8 +139,7 @@ export class LearningProposals {
 
   /** Every version, oldest first; superseded and rejected versions stay readable as evidence. */
   history(id: string): Proposal[] {
-    const rows = this.db.prepare('SELECT * FROM learning_proposals WHERE id = ? AND profile = ? ORDER BY version').all(id, this.profileId) as Record<string, unknown>[];
-    return rows.map(r => this.toProposal(r));
+    return allRows<Record<string, unknown>, Proposal>(this.db, 'SELECT * FROM learning_proposals WHERE id = ? AND profile = ? ORDER BY version', r => this.toProposal(r), id, this.profileId);
   }
 
   close(): void { this.db.close(); }

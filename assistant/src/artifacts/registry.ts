@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { allRows } from '../store/rows.ts';
 import { parseArtifact, type Artifact } from '../contracts/artifacts.ts';
 import { boundedText, text } from '../contracts/validation.ts';
 import { sha256 } from '../hash.ts';
@@ -101,7 +102,7 @@ export class ArtifactRegistry {
     return { artifacts: rows.slice(0, pageSize).map(row => this.record(row)), more: rows.length > pageSize };
   }
   versions(artifactId: string): ArtifactRecord[] {
-    return this.db.prepare('SELECT * FROM artifacts WHERE profile = ? AND artifact_id = ? ORDER BY version').all(this.profileId, artifactId).map(row => this.record(row));
+    return allRows<Record<string, unknown>, ArtifactRecord>(this.db, 'SELECT * FROM artifacts WHERE profile = ? AND artifact_id = ? ORDER BY version', row => this.record(row), this.profileId, artifactId);
   }
   get(artifactId: string, version: number): ArtifactRecord | null {
     const row = this.db.prepare('SELECT * FROM artifacts WHERE profile = ? AND artifact_id = ? AND version = ?').get(this.profileId, artifactId, version);
