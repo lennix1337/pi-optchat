@@ -109,6 +109,13 @@ The page puts observed open PRs/non-passing checks first, followed by **self-rep
 
 For old history without recorded human provenance, `/catchup range <from> <to>` reports an explicit original-message range, end exclusive. It never guesses a human boundary. `/catchup live` shows current work; `history` keeps the earlier absence findable after follow-up questions. Counts cover this profile's transcript only, with Code Mode counted as one outer call. No model, network, paid request or rewriting of originals is needed to derive the receipt. Agent discovery: [optchat-catchup skill](skills/optchat-catchup/SKILL.md); the model-facing read-only tool is `catchup_report`.
 
+## Nightly dream: lessons and morning summary
+
+The dream itself runs outside Pi (dotfiles `payload/tools/dream`, a 03:00 scheduled task): it reads the day's messages, asks one tool-less subscription model to write cited lessons, checks every citation and keeps the result in `~/.optchat/dreams/<day>/`. OptChat only reads what it leaves:
+
+- `~/.optchat/dreams/active-lessons.md` (at most 2 KB) is added after the profile's instructions as **Active lessons**, read once per local day so the system prompt and its cache stay stable all day. Lessons grant no permission; standing instructions and the operator's newest words prevail. A missing, empty or oversized file adds nothing.
+- From 07:00, the first turn shows a three-line summary of that night's dream (outcome, lessons and whether they are active, citation problems, scoreboard and open-item counts, file path): as a notice when the operator types, or inside the heartbeat report when a wake comes first. It is shown once per day (`briefed.json`).
+
 ## Zoom in Code Mode
 
 Prefer direct `zoom` for a single read or tree navigation: the next branch usually depends on the previous result. `n > 1` opens two child summaries; `n = 1` reads a message. Do not batch guesses at deeper nodes before reading their parent.

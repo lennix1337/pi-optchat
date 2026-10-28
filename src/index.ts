@@ -33,6 +33,7 @@ import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, runRadar, wakeText } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
+import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, readOperationalState, renderOperationalContext } from './operational-state.ts';
@@ -179,6 +180,8 @@ export default function optchat(pi: ExtensionAPI) {
   let untitle: (() => void) | undefined;
   /** Wakes the main agent after a long idle when a cheap check finds work (heartbeatMinutes); interactive owner only. */
   let heartbeat: Heartbeat | undefined;
+  /** The nightly dream's active lessons, frozen for the local day so the system prompt stays cacheable. */
+  const dreamLessons = new DayFrozenLessons();
   let settledAt = Date.now();
   /** The messages of the current run, read when it settles to report what a heartbeat wake did. */
   let turn: AgentMessage[] = [];
@@ -260,6 +263,11 @@ export default function optchat(pi: ExtensionAPI) {
     reports = [...reports.filter(r => r.batch !== batch), ...texts.length ? [{ text: texts.join('\n\n'), count: texts.length, batch }] : []];
     saveReports();
   };
+  /** Today's dream summary, once; a failure to read it is shown instead of breaking the turn. */
+  const briefDream = (ctx: ExtensionContext) => {
+    try { return morningSummary(); }
+    catch (error) { ctx.ui.notify(`Could not read the nightly dream summary: ${errorText(error)}`, 'warning'); return undefined; }
+  };
   const startHeartbeat = (ctx: ExtensionContext, profile: Active) => {
     const own = () => active === profile ? profile : undefined;
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
@@ -275,7 +283,10 @@ export default function optchat(pi: ExtensionAPI) {
       },
       check: radar => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile, radar),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
-      wake: (beat, radar) => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar)).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
+      wake: (beat, radar) => {
+        const dream = briefDream(ctx);
+        const text = wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar);
+        deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
@@ -567,8 +578,11 @@ export default function optchat(pi: ExtensionAPI) {
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
     event.systemPromptOptions.customPrompt = allowSearch(`${PROMPT}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}${NAVIGATION_DOC}`, a.config.memorySearch);
-    event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
+    const lessons = dreamLessons.get();
+    event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}${lessons ? `\n\n${lessons}` : ''}`;
     prompt = event.systemPrompt;
+    const summary = briefDream(ctx);
+    if (summary) ctx.ui.notify(summary, 'info');
   });
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
