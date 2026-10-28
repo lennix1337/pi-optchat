@@ -97,14 +97,14 @@
       "timeoutMs": 30000
     },
     "assistant-ops": {
-      "description": "T13 disposable operation: idempotent start/stop/health with pid+start-time ownership, opt-in autostart against a disposable APPDATA, encrypted backup/restore without replay, notification consent/quiet hours/read state, update rollback and the install->restore journey; loopback only, no real service or autostart",
+      "description": "T13 disposable ops: idempotent start/stop/health with pid+start-time ownership, dry-run autostart in a disposable APPDATA, encrypted backup/restore without replay, notification consent/quiet hours, update rollback; loopback only",
       "argv": ["node", "--test", "--test-timeout=180000", "assistant/test/notifications.test.ts", "assistant/test/backup-restore.test.ts", "assistant/test/install.test.ts", "assistant/test/shutdown.test.ts", "assistant/test/ops-journey.test.ts"],
       "timeoutMs": 600000
     },
     "assistant-ops-mutations": {
       "description": "Disposable-source negative controls for T13: process ownership, foreign port, graceful drain, autostart dry run, backup authentication, restore no-replay and approval fences, notification consent, quiet hours and free-text refusal",
       "argv": ["node", "assistant/test/ops-mutations.mjs"],
-      "timeoutMs": 900000
+      "timeoutMs": 600000
     },
     "assistant-web-mutations": {
       "description": "Disposable-source negative controls for web host, origin, CSRF, authority, expiry, rotation and resource bounds",
