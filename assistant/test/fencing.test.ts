@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRuntime as realCreateRuntime, type InternalHandler, type RuntimeOptions } from '../src/runtime/worker.ts';
@@ -55,12 +55,10 @@ test('disposable mutant without the fencing check lets the stale owner overwrite
   const source = readFileSync(fileURLToPath(new URL('../src/runtime/worker.ts', import.meta.url)), 'utf8');
   const anchor = "throw new Error('lease_lost');";
   assert.equal(source.split(anchor).length, 2);
-  mkdirSync(join(dir, 'src', 'runtime'), { recursive: true });
+  // Copy the whole source tree so the mutant keeps every import the real worker has.
+  cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
   writeFileSync(join(dir, 'src', 'runtime', 'worker.ts'), source.replace(anchor, 'void 0;'));
-  mkdirSync(join(dir, 'src', 'policy'), { recursive: true });
-  copyFileSync(fileURLToPath(new URL('../src/policy/gateway.ts', import.meta.url)), join(dir, 'src', 'policy', 'gateway.ts'));
-  copyFileSync(fileURLToPath(new URL('../src/policy/grants.ts', import.meta.url)), join(dir, 'src', 'policy', 'grants.ts'));
   const mutant = await import(pathToFileURL(join(dir, 'src', 'runtime', 'worker.ts')).href) as { createRuntime: Create };
   const { job } = await staleOwnerScenario(join(dir, 'src'), mutant.createRuntime);
   assert.notDeepEqual(job.result, { by: 'b' }, 'the mutant must let the stale write land, proving the test detects it');

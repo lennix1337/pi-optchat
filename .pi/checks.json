@@ -21,6 +21,11 @@
       "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/fencing.test.ts", "assistant/test/outbox.test.ts", "assistant/test/restart.test.ts", "assistant/test/recovery.test.ts"],
       "timeoutMs": 180000
     },
+    "assistant-routines": {
+      "description": "T04 routines: time zones/DST, missed-run policy, clock skew, two schedulers, crash between claim and enqueue, pause/suspend, and a real two-process journey with a scripted provider (local only)",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/timezone.test.ts", "assistant/test/routines.test.ts", "assistant/test/missed-runs.test.ts", "assistant/test/routine-journey.test.ts"],
+      "timeoutMs": 120000
+    },
     "assistant-egress": {
       "description": "Offline exact-byte known-secret and heuristic outbound-content inspection; no dispatch or live credentials",
       "argv": ["node", "--test", "assistant/test/egress.test.ts"],

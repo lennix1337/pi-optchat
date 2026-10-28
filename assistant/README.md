@@ -62,6 +62,17 @@ Nothing here is a model tool, HTTP endpoint or shell sandbox; native Pi tool cal
 - `createGateway({databasePath, profileId, operatorAuthority, policy, inspect})` keeps its own private SQLite file (not the task store). `prepare(request)` snapshots the request once (plain data only; accessors and non-plain objects refuse) and binds profile, session, task, run, adapter, action, account, destination, policy version, expiry and a payload digest; it stores digests and states, never payload or authority. `decide(reviewId, 'approve'|'deny', authority, rule?)` accepts only the exact host-owned authority object; a field such as `source: 'operator'`, a bearer token, task response or email content is not authority. Approval is once by default; an explicit `{scope:'rule', uses ≤ 100, expiresAt}` reuses the same exact binding for distinct operation IDs and is never renewed by reopen. A sensitive-content `deny` or policy `deny` cannot be approved away.
 - `dispatch(request, invoke)` re-runs policy and inspection under `BEGIN IMMEDIATE`, conditionally consumes the grant and records a durable intent before calling `invoke(bytes, metadata)`. Adapters must deliver using those two arguments, which are owned copies of the approved snapshot, not the caller's request. A thrown sink or a failed result write returns the fixed `effect_uncertain`; the intent stays uncertain and the same operation ID is refused until independently reconciled. A returned response is `response_recorded`, not verified. Two connections or processes cannot spend one grant (tested against a quiescent private database).
 - Root `src/assistant-policy.ts` `createAssistantPolicy` is the host wiring: a trusted adapter registry, the profile's `autonomy.json` decided through the same `readProfileEffectPolicy` as native hooks (`free`/`report` run, `report` is logged without payload, anything else needs review), and `inspectEgress`. Unknown adapters, mismatched accounts/destinations or a stale policy version deny. No adapter is registered by default and no real account is connected.
+- `src/assistant-review.ts` `registerAssistantReview(pi, policy, authority)` adds `/assistant-review`. The host passes the same authority object it gave the policy, and nothing else holds it. `list` shows each pending review's exact adapter/action/account/destination, expiry, flagged reason codes and whole content with terminal controls escaped. `approve <reviewId>` runs only in interactive TUI mode, only for content that fits whole on screen (≤4000 escaped characters, valid UTF-8), and only after `ctx.ui.confirm`; `deny` is final. Pending exact bytes live in host memory only, so after reload the producer must prepare again; the durable grant table never gains anything from a reload.
+
+Effect paths today, and what governs each:
+
+| Path | Effect | Governed by |
+| --- | --- | --- |
+| Native Pi tools (bash, write, edit, subagent, shell_start, codemode...) | anything the tool does | OptChat effect approvals (opt-in: `OPTCHAT_EFFECT_APPROVALS=1|risk`) + `autonomy.json` + uncertain-operation journal. Off by default: then only the journal fences replays. Not a sandbox. |
+| Assistant HTTP API / `/assistant respond` | task metadata and private responses in SQLite | bearer + loopback + profile; never dispatches work or grants effects |
+| Manual service entry `assistant/src/main.ts` | binds 127.0.0.1, writes its SQLite | explicit operator start; privacy checks before opening files |
+| Worker `effect` jobs (T03), routines (T04, via worker), future connectors, browser, channels (T05-T13) | external sends/mutations | must call `createAssistantPolicy().dispatch`; an adapter that invokes outside it is a defect |
+
 
 ## Durable worker and notification outbox (T03, library only)
 
@@ -73,6 +84,17 @@ Nothing here is a model tool, HTTP endpoint or shell sandbox; native Pi tool cal
 - `cancel` stops queued jobs at once and running ones at their next boundary; a dispatched effect cannot be recalled. `stop` refuses new jobs, children and effects, aborts handlers, requeues interrupted work and releases the lease.
 - `notify(id, channels, body)` stores one row per channel under a stable ID; `deliver(channel, send)` is at-least-once (a crash between send and acknowledgement resends the same ID, so channels deduplicate by ID). Failures keep a minimized `delivery_failed` diagnostic and become `failed` after `maxAttempts`, still listed by `notifications()`.
 - Effect inputs, including the payload, are stored in the runtime database: keep it under the same private-directory rules as the task store.
+
+## Routines (T04, library only)
+
+`src/routines/manager.ts` `createRoutines({ databasePath, runtime })` schedules jobs on the T03 worker; it never runs work or effects itself, and effects inside a routine job still need gateway grants. Call `tick()` from the host loop; nothing ticks automatically.
+
+- A routine is bound to a profile, a handler kind, a capability list and an authorization reference, all passed to the job input. It is created **paused** (`not_activated`); `resume(id, operator)` activates it and schedules from now, so time spent paused is never "missed". Changing kind, profile, capabilities or authorization pauses it again (`needs_reactivation`); changing only time or input keeps it active.
+- Schedules (`src/routines/schedule.ts`): `daily`/`weekly` at a local `HH:MM` in an IANA zone, or `interval` minutes from an anchor. A time skipped by a DST gap runs one gap later; a time repeated by a fold runs once. Each occurrence has a slot key (local date and time) and its job ID is `routine:<id>:<slot>`.
+- Missed time (sleep, restart, clock jump): `missed: 'once'` (default) runs one consolidated job for the newest slot, with `missed` = how many earlier slots were skipped; `'skip'` runs it only within `graceMs`, else records `skipped_missed`. Missed slots are never replayed one by one.
+- A clock that moves backwards fires nothing and records `clock_skew`. Several schedulers on one database claim each slot once (the claim commits before the enqueue; an interrupted claim is completed by the next tick with the same job ID). A slot key that already ran never runs again, even after a time-zone edit.
+- No overlap: a slot due while the previous job is unfinished records `skipped_overlap`. A full worker queue keeps the claim and retries. `maxFailures` consecutive failures pause it (`consecutive_failures`); an `effect_uncertain` job pauses it at once (`effect_uncertain`) for reconciliation. `get`/`list` show state, reason, `nextRunAt` and failures; `history` lists runs newest first.
+- `adopt()` imports an existing wake or dream as a paused routine with no capabilities and no authorization: its old permissions do not carry over, and it does not run until an operator re-grants and activates it. The existing OptChat wakes and `optchat-dream` task are not changed by this library.
 
 ## Verification
 

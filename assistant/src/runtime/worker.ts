@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { Gateway, EffectMetadata, EffectRequest } from '../policy/gateway.ts';
+import { boundedInteger } from '../limits.ts';
 
 /**
  * Durable worker decoupled from the TUI. Exactly one owner holds the lease; every
@@ -33,11 +34,7 @@ type Row = { id: string; kind: string; parent_id: string | null; input: string; 
 const EFFECT = 'effect';
 const MAX_RESULT = 64 * 1024;
 
-function positive(value: number | undefined, fallback: number, max: number): number {
-  const n = value ?? fallback;
-  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new Error('invalid_options');
-  return n;
-}
+const positive = (value: number | undefined, fallback: number, max: number) => boundedInteger(value, fallback, 1, max);
 function identifier(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 200 || value.trim() !== value || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error('invalid_id');
   return value;
