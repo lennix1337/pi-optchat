@@ -239,6 +239,21 @@ test('each wake is kept with when, why, how it ended, its reply, tool count and 
   rmSync(h.dir, { recursive: true, force: true });
 });
 
+test('a wake is closed when its turn settles even if the clock moves while the wake is saved', async () => {
+  // Live heartbeat.json had 43 of 43 wakes `unsettled`: Date.now() read after the save no longer equalled the logged `at`.
+  const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+  let now = 0, timer: (() => void) | undefined;
+  const beat = new Heartbeat({
+    dir, now: () => (now += 1), minutes: () => 30, maxWakes: () => 9, always: () => true, busy: () => undefined,
+    setTimer: run => { timer = run; return run; }, clearTimer: () => { timer = undefined; },
+    check: async () => ({ wake: true, text: '' }), wake: () => {}, note: () => {},
+  });
+  beat.arm(); const run = timer!; timer = undefined; run(); await beat.settled();
+  beat.turnSettled(turn);
+  assert.deepEqual(saved(dir).wakeLog.map((w: any) => [w.outcome, w.reply]), [['done', 'merged PR 12']]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('a fixed-schedule wake says so; a turn that settles with no wake running records nothing', async () => {
   const h = harness({ always: true });
   h.beat.turnSettled(turn);
