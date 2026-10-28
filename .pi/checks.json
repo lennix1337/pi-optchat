@@ -37,10 +37,10 @@
       "timeoutMs": 60000
     },
     "effect-approvals": {
-      "description": "Offline exact-invocation approvals, user provenance, one-shot dispatch and native hook lifecycle; no provider calls",
+      "description": "Offline exact-invocation approvals, autonomy contract, user provenance, one-shot dispatch and native hook lifecycle; no provider calls",
     "onEdit": true,
-    "watch": ["src/authorization.ts", "src/authorization-hooks.ts", "src/effect-advisor.ts", "src/one-line.ts", "src/heartbeat.ts", "test/authorization.test.ts", "test/effect-advisor.test.ts", "test/heartbeat.test.ts"],
-      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts", "test/effect-advisor.test.ts", "test/heartbeat.test.ts"],
+    "watch": ["src/authorization.ts", "src/authorization-hooks.ts", "src/autonomy.ts", "src/effect-classifier.ts", "src/effect-advisor.ts", "src/one-line.ts", "src/heartbeat.ts", "test/authorization.test.ts", "test/autonomy.test.ts", "test/effect-advisor.test.ts", "test/heartbeat.test.ts"],
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts", "test/autonomy.test.ts", "test/effect-advisor.test.ts", "test/heartbeat.test.ts"],
       "timeoutMs": 30000
     },
     "operation-safety": {

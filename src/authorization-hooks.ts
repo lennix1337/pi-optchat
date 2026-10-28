@@ -1,10 +1,22 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
-import { EffectApprovals, type ApprovalMode, type PendingApproval } from './authorization.ts';
+import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval } from './authorization.ts';
 import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
+import { classifyEffects, decide, describeDecision, loadContract, logReported, type Decision, type Repo } from './autonomy.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
 export type Advisor = (request: AdvisorRequest, ctx: ExtensionContext) => Promise<AdvisorVerdict>;
+/** Where the operator's autonomy.json lives (the open profile), or undefined when no profile is open. */
+export type ContractDir = () => string | undefined;
+
+/** The contract's decision for a call; an unreadable contract fails closed to `ask`. Undefined without a contract. */
+function contractDecision(dir: string | undefined, call: { tool: string; input: unknown; cwd: string }, repo?: Repo): Decision & { problem?: string } | undefined {
+  if (!dir) return undefined;
+  try {
+    const contract = loadContract(dir);
+    return contract && decide(contract, classifyEffects(call, repo));
+  } catch (error) { return { level: 'ask', problem: error instanceof Error ? error.message : String(error) }; }
+}
 
 const textOf = (content: unknown) => typeof content === 'string' ? content
   : Array.isArray(content) ? content.flatMap(block => (block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n') : '';
@@ -79,35 +91,66 @@ const RESULTS = { embedded: undefined, invalid: { action: 'handled' }, standing:
   // Keep the exact interactive token as input; do not manufacture a broader user request.
   approved: { action: 'continue' } } as const satisfies Record<keyof typeof NOTICES, InputEventResult | undefined>;
 
-/** Gate admission where a refused call first goes to the advisor, once per pending call; `note` explains a refusal it did not lift. */
-function advisedAdmission(gate: EffectApprovals, advisor: Advisor | undefined, grant: boolean, pi: ExtensionAPI) {
+/** Where the contract lives and how its targets are read. */
+interface ContractSource { dir: ContractDir; repo?: Repo }
+
+function reportEffect(dir: string, decision: Decision, pending: PendingApproval, ctx: ExtensionContext) {
+  const effect = decision.effect!;
+  try { logReported(dir, { at: Date.now(), action: effect.action, targets: effect.targets, summary: pending.summary, rule: decision.rule?.note }); }
+  catch (error) { ctx.ui.notify(`Could not record a reported effect in autonomy-log.jsonl: ${error instanceof Error ? error.message : String(error)}`, 'warning'); }
+  ctx.ui.notify(`Ran under autonomy.json (report) \u2014 ${describeDecision(decision)}: ${pending.summary}`, 'info');
+}
+
+/** The contract's word on a refused call: `run`, a refusal note, or undefined when it has no rule (the advisor decides). */
+function contractVerdict({ dir: contractDir, repo }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
+  if (touchesContract(call)) return { note: 'Only the operator changes autonomy.json: neither the contract nor the advisor can approve this. ' };
+  const dir = contractDir(), decision = contractDecision(dir, call, repo);
+  if (!decision || decision.level === 'advisor') return undefined;
+  if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
+    : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ` };
+  if (decision.level === 'report' && dir && decision.effect) reportEffect(dir, decision, pending, ctx);
+  return 'run';
+}
+
+/** One advisor verdict on a pending call: undefined when it approved (the call may run once), else the refusal note. */
+async function askAdvisor(advise: Advisor, gate: EffectApprovals, pi: ExtensionAPI, pending: PendingApproval, call: { session: string; tool: string; input: unknown }, ctx: ExtensionContext) {
+  try {
+    const githubIdentity = pending.kind === 'push' || pending.kind === 'publish' ? await readGitHubIdentity(pi.exec?.bind(pi)) : undefined;
+    const verdict = await advise({ kind: pending.kind, tool: call.tool, input: call.input, cwd: ctx.cwd, requests: recentRequests(ctx), githubIdentity }, ctx);
+    if (verdict.approve && gate.approveByAdvisor(call.session, pending.token)) {
+      ctx.ui.notify(`Auto-approved by ${verdict.model} \u2014 ${label(pending)}: ${pending.summary} (${verdict.reason})`, 'info');
+      return undefined;
+    }
+    return `The approval advisor (${verdict.model}) refused it: ${verdict.reason}. `;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(`Approval advisor unavailable (${reason}); this call waits for you.`, 'warning');
+    return `The approval advisor was unavailable (${reason}). `;
+  }
+}
+
+/** Gate admission where a refused call is decided by the operator's autonomy.json when it has a rule, else goes to the
+ * advisor, once per pending call; `note` explains a refusal neither lifted. */
+function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, grant, contract }: { advisor?: Advisor; grant: boolean; contract: ContractSource }) {
   // A delegated session never gets one: its calls wait for the operator in the owning session.
   const advise = grant && process.env.OPTCHAT_EFFECT_ADVISOR !== 'off' ? advisor : undefined;
   const notes = new Map<string, string>();
-  const ask = async (pending: PendingApproval, call: { session: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
-    try {
-      const githubIdentity = pending.kind === 'push' || pending.kind === 'publish' ? await readGitHubIdentity(pi.exec?.bind(pi)) : undefined;
-      const verdict = await advise!({ kind: pending.kind, tool: call.tool, input: call.input, cwd: ctx.cwd, requests: recentRequests(ctx), githubIdentity }, ctx);
-      if (verdict.approve && gate.approveByAdvisor(call.session, pending.token)) {
-        ctx.ui.notify(`Auto-approved by ${verdict.model} \u2014 ${label(pending)}: ${pending.summary} (${verdict.reason})`, 'info');
-        return undefined;
-      }
-      return `The approval advisor (${verdict.model}) refused it: ${verdict.reason}. `;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Approval advisor unavailable (${reason}); this call waits for you.`, 'warning');
-      return `The approval advisor was unavailable (${reason}). `;
-    }
+  /** The refusal note for a pending call, or undefined once the contract or the advisor approved it. */
+  const decide = async (pending: PendingApproval, call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
+    const verdict = contractVerdict(contract, pending, call, ctx);
+    if (verdict === 'run') { gate.approveByAdvisor(call.session, pending.token); return undefined; }
+    if (verdict) return verdict.note;
+    return advise ? askAdvisor(advise, gate, pi, pending, call, ctx) : '';
   };
   return {
     async admit(call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) {
       const refusal = gate.admit(call);
-      const pending = refusal?.token && advise ? gate.pendingFor(call.session).find(p => p.token === refusal.token) : undefined;
+      const pending = refusal?.token ? gate.pendingFor(call.session).find(p => p.token === refusal.token) : undefined;
       if (!pending || notes.has(pending.token)) return { refusal, note: (pending && notes.get(pending.token)) ?? '' };
-      const note = await ask(pending, call, ctx);
+      const note = await decide(pending, call, ctx);
       // Approved: admitting the same call again consumes the one-shot approval.
       if (note === undefined) return { refusal: gate.admit(call), note: '' };
-      notes.set(pending.token, note);
+      if (note) notes.set(pending.token, note);
       return { refusal, note };
     },
     clear: () => notes.clear(),
@@ -115,13 +158,14 @@ function advisedAdmission(gate: EffectApprovals, advisor: Advisor | undefined, g
 }
 
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
-export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined } = {}) {
+export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined,
+  contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   if (!(enabled ?? (env === '1' || env === 'risk'))) return;
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all') });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
-  const advised = advisedAdmission(gate, advisor, grant, pi);
+  const advised = advisedAdmission(gate, pi, { advisor, grant, contract: { dir: contractDir, repo } });
   // Child SDK prompt/steer calls default to interactive even when manager-authored.
   if (grant) pi.on('input', (event, ctx) => {
     const command = operatorCommand(gate, event.text, event.source, ctx);
