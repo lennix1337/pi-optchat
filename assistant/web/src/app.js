@@ -1,16 +1,15 @@
-import { PanelState, actions, attention, labels } from './state.js';
+import { PanelState, PanelLifecycle, actions, attention, labels } from './state.js';
 
 const $ = selector => document.querySelector(selector);
 let state;
 let csrf;
 let filter = 'attention';
 let selectedTask;
-let nextCursor = null;
+let lifecycle;
 let timer;
 let syncing = false;
-let uncertain = false;
 let mutationPending = false;
-let pendingRequest;
+const uncertain = () => Boolean(lifecycle?.marker);
 let renderedKey;
 const channelId = `panel-${crypto.randomUUID()}`;
 
@@ -43,9 +42,12 @@ function signedOut() {
 }
 async function start(session) {
   csrf = session.csrf; state = new PanelState(session.profileId);
+  lifecycle = new PanelLifecycle(session.profileId, localStorage);
   $('#login').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false;
   $('#profile').textContent = `Perfil ${session.profileId} · serviço local`;
-  nextCursor = null; selectedTask = undefined; uncertain = false; renderedKey = undefined;
+  selectedTask = undefined; renderedKey = undefined;
+  $('#create-form button').disabled = uncertain();
+  if (uncertain()) notice('Resultado não confirmado. Atualize o histórico antes de repetir a ação.');
   await sync(true);
 }
 async function sync(manual = false) {
@@ -54,28 +56,32 @@ async function sync(manual = false) {
   try {
     const page = await request('/web/api/tasks?limit=100');
     for (const task of page.tasks) state.upsert(task);
-    nextCursor = page.nextCursor;
-    await events();
-    if (uncertain && pendingRequest && state.events.some(entry => entry.event.source.sourceEventId === pendingRequest)) {
-      uncertain = false; pendingRequest = undefined;
-      notice('A ação anterior foi encontrada no histórico. Confira o resultado antes de continuar.');
-    } else if (manual && !uncertain) notice('');
-    $('#create-form button').disabled = uncertain;
+    lifecycle.pollPage(page.nextCursor);
+    const reconciled = await events();
+    if (manual && !uncertain() && !reconciled) notice('');
+    $('#create-form button').disabled = uncertain() || mutationPending;
     $('#connection').textContent = `Atualizado às ${new Date().toLocaleTimeString('pt-BR')} · evento ${state.after}`;
-    // Do not replace a form while the operator is typing. Its revision stays bound to that visible decision.
-    if (manual || !$('#task-list').contains(document.activeElement)) render();
+    render();
   } catch (error) {
     if (error.status === 401) { signedOut(); notice('Sessão encerrada. Entre novamente.'); }
     else { $('#connection').textContent = 'Sem conexão · estado pode estar desatualizado'; notice('Não foi possível atualizar. Nenhuma ação será reenviada automaticamente.'); }
   } finally {
     syncing = false;
+    $('#more').disabled = false;
     if (state) timer = setTimeout(() => sync(), 5000);
   }
 }
 async function events() {
   const entries = await request(`/web/api/events?after=${state.after}&limit=100`);
-  state.apply(entries); $('#more-events').hidden = entries.length < 100;
+  state.apply(entries);
+  const reconciled = lifecycle.reconcile(entries);
+  if (reconciled) {
+    notice('A ação anterior foi encontrada no histórico. Confira o resultado antes de continuar.');
+    $('#create-form button').disabled = mutationPending;
+  }
+  $('#more-events').hidden = entries.length < 100;
   renderEvidence();
+  return reconciled;
 }
 function channelOptions() {
   const select = $('#channel'); const selected = select.value;
@@ -85,7 +91,7 @@ function channelOptions() {
 }
 function render() {
   if (!state) return;
-  const key = `${state.revision}:${filter}:${$('#channel').value}:${uncertain}:${mutationPending}:${nextCursor}`;
+  const key = `${state.revision}:${filter}:${$('#channel').value}:${uncertain()}:${mutationPending}:${lifecycle.cursor}`;
   if (key === renderedKey) return;
   renderedKey = key;
   channelOptions();
@@ -100,13 +106,20 @@ function render() {
     return task.status !== 'resolved';
   }).sort((a, b) => Number(attention(b)) - Number(attention(a)) || a.title.localeCompare(b.title, 'pt-BR'));
   const list = $('#task-list');
+  const focused = document.activeElement;
+  const focusedTask = focused?.matches('.response-form textarea') ? focused.closest('.task')?.dataset.taskId : undefined;
+  const selection = focusedTask ? [focused.selectionStart, focused.selectionEnd] : null;
   list.replaceChildren(...visible.map(card));
+  if (focusedTask) {
+    const replacement = [...list.children].find(node => node.dataset.taskId === focusedTask)?.querySelector('.response-form textarea');
+    if (replacement) { replacement.focus(); replacement.setSelectionRange(...selection); }
+  }
   if (!visible.length) {
     const empty = el('div', undefined, 'empty');
     empty.append(el('h2', filter === 'attention' ? 'Nenhuma decisão esperando.' : 'Nenhuma tarefa nesta vista.'), el('p', 'O estado mostrado vem deste perfil. Você pode mudar a vista ou colocar uma tarefa na fila.'));
     list.append(empty);
   }
-  $('#more').hidden = !nextCursor;
+  $('#more').hidden = !lifecycle.cursor;
   $('#more').disabled = syncing;
 }
 function card(task) {
@@ -121,7 +134,7 @@ function card(task) {
   if (task.status === 'ready_for_review') article.append(el('p', 'Aceitar muda o estado da tarefa; não autoriza um envio nem verifica um efeito externo.', 'hint'));
   const controls = el('div', undefined, 'task-actions');
   for (const [nextStatus, label] of actions[task.status] ?? []) {
-    const button = el('button', label); button.disabled = uncertain || mutationPending;
+    const button = el('button', label); button.disabled = uncertain() || mutationPending;
     button.addEventListener('click', () => mutate(`/web/api/tasks/${encodeURIComponent(task.taskId)}/transition`, { expectedRevision: task.revision, nextStatus }));
     controls.append(button);
   }
@@ -132,40 +145,44 @@ function card(task) {
 function responseForm(task) {
   const form = el('form', undefined, 'response-form');
   const id = `response-${crypto.randomUUID()}`;
-  const label = el('label', `Sua resposta · pedido ${task.inputRevision}`); label.htmlFor = id;
-  const input = el('textarea'); input.id = id; input.required = true; input.maxLength = 4000;
-  const button = el('button', 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = uncertain || mutationPending;
+  const draft = lifecycle.draft(task);
+  const label = el('label', `Sua resposta · pedido ${draft.inputRevision}`); label.htmlFor = id;
+  const input = el('textarea'); input.id = id; input.required = true; input.maxLength = 4000; input.value = draft.text;
+  input.addEventListener('input', () => lifecycle.saveDraft(task, input.value));
+  const button = el('button', 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = uncertain() || mutationPending;
   form.append(label, input, button);
   form.addEventListener('submit', event => {
     event.preventDefault();
     if (!input.value.trim()) return;
-    void mutate(`/web/api/tasks/${encodeURIComponent(task.taskId)}/respond`, { revision: task.revision, inputRevision: task.inputRevision, text: input.value });
+    void mutate(`/web/api/tasks/${encodeURIComponent(task.taskId)}/respond`, { revision: draft.revision, inputRevision: draft.inputRevision, text: input.value });
   });
   return form;
 }
 async function mutate(path, input) {
-  if (uncertain || mutationPending) return;
+  if (uncertain() || mutationPending) return;
   mutationPending = true;
   document.querySelectorAll('.task-actions button, .response-form button, #create-form button').forEach(button => { button.disabled = true; });
   try {
-    pendingRequest = crypto.randomUUID();
-    const task = await request(path, { requestId: pendingRequest, channelId, ...input });
-    state.upsert(task); pendingRequest = undefined;
-    notice('Estado salvo. Nenhum efeito externo foi autorizado.');
+    const requestId = crypto.randomUUID();
+    const match = /^\/web\/api\/tasks\/([^/]+)\/(transition|respond)$/.exec(path);
+    const marker = { requestId, action: match?.[2] ?? 'create', ...(match ? { taskId: decodeURIComponent(match[1]) } : {}) };
+    const result = await lifecycle.write(marker, () => request(path, { requestId, channelId, ...input }), events);
+    state.upsert(result.task);
+    if (marker.action === 'respond') lifecycle.clearDraft(marker.taskId);
+    notice(result.historyError ? 'Estado salvo, mas o histórico está indisponível. Atualize para consultá-lo.' : 'Estado salvo. Nenhum efeito externo foi autorizado.');
     if (path === '/web/api/tasks') { $('#title').value = ''; filter = 'active'; updateFilters(); }
-    await events();
   } catch (error) {
     if (error.status === 409) {
       if (error.body.task) state.upsert(error.body.task);
       notice('Esta decisão já mudou. Revise o estado atual antes de responder outra vez.');
     } else if (error.status === 401) { signedOut(); notice('Sessão encerrada. Entre novamente.'); }
     else {
-      uncertain = true;
-      notice('Resultado não confirmado. Não repita o clique: use Atualizar para procurar a ação no histórico. As ações ficam bloqueadas até a confirmação.');
+      notice(uncertain() ? 'Resultado não confirmado. Não repita o clique: use Atualizar para procurar a ação no histórico. As ações ficam bloqueadas até a confirmação.' : 'Não foi possível guardar o marcador de segurança. Nenhuma ação foi enviada.');
     }
   } finally {
     mutationPending = false;
-    $('#create-form button').disabled = uncertain;
+    $('#create-form button').disabled = uncertain();
+    renderedKey = undefined;
     render();
   }
 }
@@ -195,8 +212,8 @@ $('#channel').addEventListener('change', render);
 $('#refresh').addEventListener('click', () => sync(true));
 $('#more').addEventListener('click', async () => {
   try {
-    const page = await request(`/web/api/tasks?limit=100&cursor=${encodeURIComponent(nextCursor)}`);
-    page.tasks.forEach(task => state.upsert(task)); nextCursor = page.nextCursor; render();
+    const page = await request(`/web/api/tasks?limit=100&cursor=${encodeURIComponent(lifecycle.cursor)}`);
+    page.tasks.forEach(task => state.upsert(task)); lifecycle.nextPage(page.nextCursor); render();
   } catch { notice('Não foi possível carregar a próxima página. Use Atualizar.'); }
 });
 $('#more-events').addEventListener('click', async () => { try { await events(); render(); } catch { notice('Histórico indisponível. O cursor não avançou. Use Atualizar.'); } });
