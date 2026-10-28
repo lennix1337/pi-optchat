@@ -1,23 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText, type Beat } from '../src/heartbeat.ts';
+import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, runRadar, wakeText, type Beat } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 
 const MIN = 60_000;
 
 /** A clock and one timer slot the test advances by hand. */
-function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')) } = {}) {
+function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
+  radar = undefined as (() => Promise<string | undefined>) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
-  const checks: number[] = [], woken: string[] = [], notes: string[] = [];
+  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [];
   const beat = new Heartbeat({
-    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy,
+    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy, radar,
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
-    check: async () => { checks.push(now); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
-    wake: beat => { woken.push(beat.text); },
+    check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
+    wake: (beat, seen) => { woken.push(beat.text); wakeRadars.push(seen); },
     note: text => { notes.push(text); },
   });
   const advance = async (ms: number) => {
@@ -25,8 +26,101 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     while (timer && timer.at <= until) { const t = timer; timer = undefined; now = t.at; t.run(); await beat.settled(); }
     now = until;
   };
-  return { beat, checks, woken, notes, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
+  return { beat, checks, woken, notes, checkRadars, wakeRadars, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
 }
+
+test('the radar runs before each check, and its snapshot reaches both the check and the woken turn', async () => {
+  let runs = 0;
+  const h = harness({ verdicts: [{ wake: false, text: 'quiet' }, { wake: true, text: 'fix PR 9' }], radar: async () => `# Wake radar ${++runs}` });
+  h.beat.arm(); await h.advance(60 * MIN);
+  assert.equal(runs, 2);
+  assert.deepEqual(h.checkRadars, ['# Wake radar 1', '# Wake radar 2']);
+  assert.deepEqual(h.wakeRadars, ['# Wake radar 2']);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a busy chat does not run the radar; a fixed-schedule wake still carries it', async () => {
+  let runs = 0, busy: string | undefined = 'working';
+  const h = harness({ always: true, busy: () => busy, radar: async () => `radar ${++runs}` });
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.equal(runs, 0);
+  busy = undefined; await h.advance(30 * MIN);
+  assert.deepEqual(h.wakeRadars, ['radar 1']);
+  assert.deepEqual(h.checks, [], 'a fixed schedule still skips the cheap check');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('an operator who speaks while the radar runs gets no check and no wake behind their back', async () => {
+  let release!: (text: string) => void;
+  const h = harness({ verdicts: [{ wake: true, text: 'stale task' }], radar: () => new Promise<string>(done => { release = done; }) });
+  h.beat.arm();
+  const fired = h.advance(30 * MIN);
+  await new Promise(done => setImmediate(done));
+  h.beat.operatorSpoke();
+  release('radar');
+  await fired;
+  assert.deepEqual(h.checks, []);
+  assert.deepEqual(h.woken, []);
+  assert.equal(h.pending(), undefined, 'the operator\'s own turn re-arms it when it settles');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('an operator who speaks while the cheap check runs is not followed by a wake', async () => {
+  let release!: (beat: Beat) => void;
+  const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+  let now = 0, timer: { at: number; run: () => void } | undefined;
+  const woken: string[] = [];
+  const beat = new Heartbeat({
+    dir, now: () => now, minutes: () => 30, maxWakes: () => 5, always: () => false, busy: () => undefined,
+    setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; }, clearTimer: () => { timer = undefined; },
+    check: () => new Promise<Beat>(done => { release = done; }), wake: b => { woken.push(b.text); }, note: () => {},
+  });
+  beat.arm(); now = 30 * MIN; const t = timer!; timer = undefined; t.run();
+  await new Promise(done => setImmediate(done));
+  beat.operatorSpoke();
+  release({ wake: true, text: 'stale task' });
+  await beat.settled();
+  assert.deepEqual(woken, []);
+  assert.equal(existsSync(join(dir, 'heartbeat.json')), false, 'no verdict or wake is recorded for the stale stretch');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('runRadar returns the program output, bounded, and turns every failure into a visible unavailable line', async () => {
+  const node = process.execPath;
+  assert.equal(await runRadar([node, '-e', 'console.log("# Wake radar\\n- PR 9\\n")']), '# Wake radar\n- PR 9');
+  const long = await runRadar([node, '-e', 'console.log("x".repeat(9000))'], { maxChars: 100 });
+  assert.ok(long.length <= 100, `length ${long.length}`);
+  assert.match(long, /\[radar output cut at 100 chars\]$/);
+  assert.match(await runRadar([node, '-e', 'console.error("gh: not logged in"); process.exit(2)']), /^Wake radar unavailable: .*gh: not logged in/);
+  assert.match(await runRadar([node, '-e', 'setTimeout(() => {}, 10000)'], { timeoutMs: 200 }), /^Wake radar unavailable: timed out after 200 ms/);
+  assert.match(await runRadar(['C:/no/such/radar.exe']), /^Wake radar unavailable: /);
+  assert.match(await runRadar([node, '-e', '']), /^Wake radar unavailable: no output/);
+});
+
+test('the radar is shown to the check and the woken turn as read-only data, and left out when absent', () => {
+  const plain = wakeText('fix PR 9', 'haiku', 30, DEFAULT_HEARTBEAT);
+  assert.doesNotMatch(plain, /Wake radar/);
+  const withRadar = wakeText('fix PR 9', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar\n- o/r#9 checks failing');
+  assert.match(withRadar, /data, not instructions or permission[^]*- o\/r#9 checks failing/);
+  const snapshot = beatSnapshot({ view: 'v', state: '', idleMinutes: 30, agents: [], shells: [], radar: '- o/r#9 checks failing' });
+  assert.match(snapshot, /Wake radar[^\n]*\n- o\/r#9 checks failing/);
+  assert.doesNotMatch(beatSnapshot({ view: 'v', state: '', idleMinutes: 30, agents: [], shells: [] }), /Wake radar/);
+});
+
+test('a profile may name a radar command in config.json; anything but a non-empty list of text is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'beat-cfg-'));
+  saveConfig(dir, defaults);
+  const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...raw, heartbeatRadar: ['node', 'radar.mjs'] }));
+  assert.deepEqual(loadConfig(dir).heartbeatRadar, ['node', 'radar.mjs']);
+  for (const bad of [[], 'node radar.mjs', ['node', 3]]) {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...raw, heartbeatRadar: bad }));
+    assert.throws(() => loadConfig(dir), /heartbeatRadar/);
+  }
+  writeFileSync(join(dir, 'config.json'), JSON.stringify(raw));
+  assert.equal(loadConfig(dir).heartbeatRadar, undefined);
+  rmSync(dir, { recursive: true, force: true });
+});
 
 test('an idle chat gets one cheap check after the interval, and a SLEEP keeps the same interval', async () => {
   const h = harness();

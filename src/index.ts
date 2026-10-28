@@ -31,7 +31,7 @@ import { registerBashHints } from './bash-hints.ts';
 import { registerForegroundWaitGuard } from './foreground-wait.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
-import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, wakeText } from './heartbeat.ts';
+import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, runRadar, wakeText } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
@@ -184,7 +184,7 @@ export default function optchat(pi: ExtensionAPI) {
   let turn: AgentMessage[] = [];
   const idleMinutes = () => Math.round((Date.now() - settledAt) / 60_000);
   /** What the heartbeat's cheap model reads: why the chat stopped, what still runs, the state and the newest memory lines. */
-  const beatState = (ctx: ExtensionContext, a: Active) => {
+  const beatState = (ctx: ExtensionContext, a: Active, radar?: string) => {
     const now = Date.now(), age = (since: number) => { const m = Math.round((now - since) / 60_000); return m < 120 ? `${m} min` : `${Math.round(m / 60)} h`; };
     const last = ctx.sessionManager.getBranch().findLast(e => e.type === 'message' && e.message.role === 'assistant');
     const message = last?.type === 'message' && last.message.role === 'assistant' ? last.message : undefined;
@@ -192,7 +192,7 @@ export default function optchat(pi: ExtensionAPI) {
     const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
-      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir) });
+      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir), radar });
   };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
@@ -265,9 +265,17 @@ export default function optchat(pi: ExtensionAPI) {
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
       minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
-      check: () => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile),
+      // The radar's last snapshot stays in radar.md so a person can see what the wake saw.
+      radar: async () => {
+        const argv = own()?.config.heartbeatRadar;
+        if (!argv) return undefined;
+        const text = await runRadar(argv);
+        try { atomicWrite(join(profile.dir, 'radar.md'), `${text}\n`); } catch (error) { ctx.ui.notify(`Heartbeat could not save radar.md: ${errorText(error)}`, 'warning'); }
+        return text;
+      },
+      check: radar => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile, radar),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
-      wake: beat => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) })).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
+      wake: (beat, radar) => { deliverReport(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar)).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
