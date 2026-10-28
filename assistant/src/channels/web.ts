@@ -76,7 +76,7 @@ export class WebChannel {
       query(url, []); this.sessions.delete(id!);
       send(res, 200, { ok: true }, { ...securityHeaders, 'set-cookie': `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` }); return;
     }
-    await this.api(req, res, url, session);
+    await this.api(req, res, url, id!, session);
   }
 
   private allowedHost(req: IncomingMessage): string | null {
@@ -125,7 +125,7 @@ export class WebChannel {
     this.sessions.set(id, session);
     send(res, 200, { profileId: this.profileId, csrf: session.csrf }, { ...securityHeaders, 'set-cookie': `${cookieName}=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${absoluteMs / 1000}` });
   }
-  private async api(req: IncomingMessage, res: ServerResponse, url: URL, session: Session): Promise<void> {
+  private async api(req: IncomingMessage, res: ServerResponse, url: URL, sessionId: string, session: Session): Promise<void> {
     const match = /^\/web\/api\/tasks\/([^/]+)\/(transition|respond)$/.exec(url.pathname);
     if (req.method === 'GET' && url.pathname === '/web/api/tasks') {
       query(url, ['cursor', 'limit']); const cursor = url.searchParams.get('cursor');
@@ -139,6 +139,10 @@ export class WebChannel {
     if (req.method !== 'POST' || !(url.pathname === '/web/api/tasks' || match)) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
     query(url, []);
     const body = await readBody(req);
+    const [currentId, currentSession] = this.current(req);
+    if (currentId !== sessionId || currentSession !== session || req.headers['x-assistant-csrf'] !== session.csrf) {
+      send(res, 401, { error: 'Unauthorized' }, securityHeaders); return;
+    }
     if (url.pathname === '/web/api/tasks') {
       shape(body, { requestId, title: boundedText(200), channelId: channel });
       const input = body as { requestId: string; title: string; channelId: string };

@@ -12,6 +12,7 @@ const variants = [
   ['origin', "req.headers.origin === `http://${host}`", 'true', /200 !== 403/],
   ['csrf', "req.method === 'POST' && req.headers['x-assistant-csrf'] !== session.csrf", 'false', /200 !== 403/],
   ['web-is-not-terminal', "sourceKind: 'external'", "sourceKind: 'trusted-local-human'", /trusted-local-human/],
+  ['in-flight-revocation', "currentId !== sessionId || currentSession !== session || req.headers['x-assistant-csrf'] !== session.csrf", 'false', /200 !== 401/],
   ['rotate', 'if (oldId) this.sessions.delete(oldId);', '', /200 !== 401/],
   ['idle', ' || now - session.seen > idleMs', '', /200 !== 401/],
   ['absolute-age', ' || now - session.created > absoluteMs', '', /200 !== 401/],
@@ -26,7 +27,13 @@ try {
     for (const file of ['web.test.ts', 'web-session.test.ts']) cpSync(join(sourceRoot, 'test', file), join(dir, 'test', file));
     const file = join(dir, 'src', 'channels', 'web.ts');
     const source = readFileSync(file, 'utf8'); assert.equal(source.split(before).length, 2, `nonunique mutant ${name}`);
-    writeFileSync(file, source.replace(before, after));
+    let mutant = source.replace(before, after);
+    if (name === 'csrf') {
+      const recheck = " || req.headers['x-assistant-csrf'] !== session.csrf";
+      assert.equal(mutant.split(recheck).length, 2, 'nonunique CSRF recheck');
+      mutant = mutant.replace(recheck, '');
+    }
+    writeFileSync(file, mutant);
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
     const result = spawnSync(process.execPath, ['--test', join(dir, 'test', 'web.test.ts'), join(dir, 'test', 'web-session.test.ts')], { env, encoding: 'utf8', timeout: 15000 });
     assert.equal(result.status, 1, `${name}: ${result.error ?? result.stderr}`);
