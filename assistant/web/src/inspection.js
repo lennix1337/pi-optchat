@@ -5,8 +5,8 @@ const states = { proposed: 'Proposta', measured: 'Medida', rejected: 'Rejeitada'
 const noteStates = { pending: 'Pendente', suppressed: 'Sem consentimento', uncertain: 'Entrega incerta — não repetir', accepted: 'Transporte aceitou; leitura não confirmada', read: 'Lido', failed: 'Falhou' };
 function el(tag, text) { const n = document.createElement(tag); n.textContent = text; return n; }
 function render(value) {
-  const learning = $('#learning-content'), notices = $('#delivery-content');
-  learning.replaceChildren(); notices.replaceChildren();
+  const learning = $('#learning-content'), notices = $('#delivery-content'), restored = $('#restored-content');
+  learning.replaceChildren(); notices.replaceChildren(); restored.replaceChildren();
   $('#workspace-note').textContent = value.learning && value.learning.current.revision > 0 ? value.learning.current.text : '';
   if (!value.learning) learning.append(el('p', 'Aprendizado de apresentação não ativado neste serviço.'));
   else {
@@ -22,6 +22,11 @@ function render(value) {
       learning.append(item);
     }
   }
+  if (!value.restored.length) restored.append(el('p', 'Nenhuma tarefa retida por restauração.'));
+  else {
+    restored.append(el('p', 'Restauradas do backup: o executor não gera nem repete nada para elas. O original pode ter agido depois do backup. Confira e encerre com executor.mjs restored/reconcile; depois recoloque na fila.'));
+    for (const hold of value.restored) restored.append(el('p', `${hold.status === 'queued' ? 'Na fila' : 'Em andamento'} · ${hold.title} · revisão ${hold.revision} · ${hold.taskId}`));
+  }
   if (!value.notices) notices.append(el('p', 'Notificações não ativadas neste serviço.'));
   else if (!value.notices.length) notices.append(el('p', 'Nenhum aviso registrado.'));
   else for (const note of value.notices) notices.append(el('p', `${noteStates[note.state]} · ${note.category} · referência ${note.ref}${note.reason ? ` · ${note.reason}` : ''}`));
@@ -36,14 +41,14 @@ async function load() {
     render(value); $('#inspection-status').textContent = 'Consulta somente de leitura. Nenhuma proposta aprovada ou aviso reenviado.';
   } catch (error) {
     if (current !== generation) return;
-    $('#learning-content').replaceChildren(); $('#delivery-content').replaceChildren(); $('#workspace-note').textContent = '';
+    $('#learning-content').replaceChildren(); $('#delivery-content').replaceChildren(); $('#restored-content').replaceChildren(); $('#workspace-note').textContent = '';
     $('#inspection-status').textContent = error.status === 401 ? 'Sessão encerrada. Entre novamente.' : 'Estado indisponível. Nada foi alterado; tente consultar novamente.';
   } finally { if (current === generation) $('#inspection-load').disabled = false; }
 }
 export function startInspection(request) { stopInspection(); transport = request; void load(); }
 export function stopInspection() {
   generation++; transport = undefined;
-  $('#workspace-note').textContent = ''; $('#learning-content').replaceChildren(); $('#delivery-content').replaceChildren();
+  $('#workspace-note').textContent = ''; $('#learning-content').replaceChildren(); $('#delivery-content').replaceChildren(); $('#restored-content').replaceChildren();
   $('#inspection-status').textContent = ''; $('#inspection-load').disabled = false; $('#inspection').open = false;
 }
 $('#inspection-load').addEventListener('click', () => void load());
