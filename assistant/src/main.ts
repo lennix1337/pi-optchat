@@ -28,8 +28,9 @@ Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
 Activation is manual and requires operator permission; this installs no service.
 --web explicitly enables the browser panel on the same loopback endpoint; off by default.
-Optional "webOrigins":["https://<host>"] also accepts those exact HTTPS origins, for a proxy the operator
-runs (e.g. tailscale serve, to reach the panel from the phone); the listener stays on loopback.
+Optional "webOrigins":["https://<host>"] enables the panel (as --web does) and also accepts those exact HTTPS
+origins, for a proxy the operator runs (e.g. tailscale serve, to reach the panel from the phone); the listener
+stays on loopback. Listing an origin is the operator's consent.
 Web authentication is not native-terminal approval authority.
 The client uses its owner-profile assistant.json with version, profileId, endpoint and token.
 Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/scripts/<name>.mjs --help.
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
   try { store = new TaskStore(config.databasePath, config.profileId); }
   catch { console.error('Database could not be opened.'); process.exitCode = 1; return; }
   let server: ReturnType<typeof createAssistantServer>;
-  const web = args[2] === '--web';
+  const web = args[2] === '--web' || config.webOrigins !== undefined;
   const { defaultComponents } = await import('./setup.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
