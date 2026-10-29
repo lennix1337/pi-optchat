@@ -27,7 +27,7 @@ async function drain(runtime: ReturnType<typeof createRuntime>) { while (await r
 
 test('backup -> restore round trip: encrypted at rest, schema-checked, executed effects never replayed', () => privateDir('backup-roundtrip-', async root => {
   const data = join(root, 'data'), target = join(root, 'restored'), out = join(root, 'assistant.backup');
-  mkdirSync(data); mkdirSync(target, { mode: 0o700 });
+  mkdirSync(data, { mode: 0o700 }); mkdirSync(target, { mode: 0o700 });
   const { protector } = memoryProtector();
   const sink: string[] = [];
   seedTask(join(data, 'tasks.sqlite'), `title ${CANARY}`);
@@ -110,7 +110,7 @@ test('backup -> restore round trip: encrypted at rest, schema-checked, executed 
 }));
 
 async function sealed(root: string) {
-  const data = join(root, 'data'); mkdirSync(data);
+  const data = join(root, 'data'); mkdirSync(data, { mode: 0o700 });
   seedTask(join(data, 'tasks.sqlite'), 'title');
   const keys = memoryProtector();
   const out = join(root, 'assistant.backup');
@@ -149,7 +149,7 @@ test('a backup sealed by another key, profile or unsupported schema refuses with
   await assert.rejects(restoreBackup({ backup: out, into: emptyTarget(root, 'nonempty') + '-missing', profileId: PROFILE, protector }), /restore_target/);
   await assert.rejects(restoreBackup({ backup: out, into: t1, profileId: PROFILE, protector }), /restore_target_not_empty/);
 
-  const data2 = join(root, 'future'); mkdirSync(data2);
+  const data2 = join(root, 'future'); mkdirSync(data2, { mode: 0o700 });
   seedTask(join(data2, 'tasks.sqlite'), 'title');
   const db = new DatabaseSync(join(data2, 'tasks.sqlite')); db.exec('PRAGMA user_version = 2'); db.close();
   const future = join(root, 'future.backup');

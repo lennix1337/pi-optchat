@@ -11,6 +11,7 @@ const NEEDS_MACHINE = {
   'assistant-browser-egress-docker': 'Docker engine and the prebuilt egress image',
   'assistant-browser-egress-live': 'Docker and public network reads',
   'assistant-installed': 'an installed Pi SDK',
+  'assistant-executor-tools-journey': 'Docker engine and the prebuilt browser image',
 };
 const withMutations = process.argv.includes('--mutations');
 const { checks } = JSON.parse(readFileSync(new URL('../.pi/checks.json', import.meta.url), 'utf8'));
