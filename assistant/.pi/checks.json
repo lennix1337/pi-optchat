@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "checks": {
+    "contracts": {
+      "description": "Offline versioned contract and boundary guards",
+      "argv": ["node", "--test", "test/contracts.test.ts"],
+      "timeoutMs": 30000,
+      "onEdit": true,
+      "watch": ["src/contracts", "test/contracts.test.ts"]
+    }
+  }
+}

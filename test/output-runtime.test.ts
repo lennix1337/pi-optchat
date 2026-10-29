@@ -58,8 +58,9 @@ test('real Pi runtime sends preview, searches original, preserves canonical evid
   });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: join(root, 'agent'), settingsManager, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
-    extensionFactories: [optchat, pi => pi.registerTool({ name: 'bash', label: 'Synthetic log', description: 'Return synthetic log without executing commands.', parameters: Type.Object({ command: Type.String() }),
-      async execute() { return { content: [{ type: 'text', text: response() }], details: {} }; } })] });
+    // The synthetic bash comes first: Pi keeps the first registration of a name, and OptChat re-registers bash on Windows.
+    extensionFactories: [pi => pi.registerTool({ name: 'bash', label: 'Synthetic log', description: 'Return synthetic log without executing commands.', parameters: Type.Object({ command: Type.String() }),
+      async execute() { return { content: [{ type: 'text', text: response() }], details: {} }; } }), optchat] });
   await loader.reload();
   const manager = SessionManager.create(root, join(root, 'sessions'));
   const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager, sessionManager: manager,

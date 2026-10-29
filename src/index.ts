@@ -1,3 +1,9 @@
+import { registerAssistant } from './assistant-client.ts';
+import { registerAssistantMemory } from './assistant-memory.ts';
+import { registerSlackBridge } from './slack-bridge.ts';
+import { registerWorkTracker } from './work-tracker.ts';
+import { logSent, registerSlackReports } from './slack-reports.ts';
+import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -46,6 +52,7 @@ import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
 import { ShellJobs, adoptShells, handOffShells, registerShells, runningShells, shellReport } from './shells.ts';
+import { registerReapingBash } from './shell-reaper.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -92,6 +99,7 @@ export default function optchat(pi: ExtensionAPI) {
   const adopted = adoptShells();
   const shells = adopted?.jobs ?? new ShellJobs();
   let adoptedProfile = adopted?.profile;
+  registerReapingBash(pi);
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
   let active: Active | undefined;
   registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
@@ -120,7 +128,12 @@ export default function optchat(pi: ExtensionAPI) {
     } catch { /* an unreadable state file must not block the advisor; the operator still decides */ }
     return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },
       message => profile.usage.compression(message, 'advisor', profile.sessionId));
-  }, contractDir: () => active?.dir });
+  }, contractDir: () => active?.dir,
+  // A call that waits for the operator is also posted to their Slack DM, where its buttons or `aprovar`/`negar` in its
+  // thread decide it; decided anywhere else, the post is rewritten to say so.
+  onPending: (pending, session, gate) => void slack.askApproval({ token: pending.token, summary: pending.summary, label: pending.kind ?? pending.tool, expires: pending.expires,
+    decide: approve => gate.decideFromPhone(session, pending.token, approve) }),
+  onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
@@ -297,6 +310,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   const stop = async (reason?: string) => {
     heartbeat?.disarm(); heartbeat = undefined;
+    for (const unwatch of unwatchWork.splice(0)) unwatch();
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
@@ -377,6 +391,10 @@ export default function optchat(pi: ExtensionAPI) {
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
         status: () => config.syncStatus, optmem: () => config.syncOptMem, aimemory: () => config.syncAiMemory, warn: text => ctx.ui.notify(text, 'warning') });
       active = { name, dir, config, memory, focus: new Focus(), inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      for (const unwatch of unwatchWork.splice(0)) unwatch();
+      const shellSource = { subscribe: (l: () => void) => shells.subscribe(l), snapshot: () => shells.list() };
+      const agentSource = { subscribe: (l: () => void) => children.subscribe(l), snapshot: () => children.working };
+      unwatchWork.push(work.watchShells(shellSource), work.watchAgents(agentSource));
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
@@ -538,6 +556,23 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.on('session_before_switch', (event, ctx) => blockSwitch(event.reason === 'new' ? '/new' : '/resume', ctx));
   pi.on('session_before_fork', (event, ctx) => blockSwitch(event.position === 'at' ? '/clone' : '/fork', ctx));
+  registerAssistant(pi, () => {
+    const a = active;
+    return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
+  });
+  registerAssistantMemory(pi, () => {
+    const a = active;
+    return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir)
+      ? { identity: a, profileId: a.name, sessionId: a.sessionId, memory: a.memory, databasePath: join(a.dir, 'assistant-memory', 'corrections.sqlite'), ...(process.env.OPTCHAT_ABOUT_ME ? { aboutMePath: process.env.OPTCHAT_ABOUT_ME } : {}) }
+      : undefined;
+  });
+  const slackOwner = () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined;
+  const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } });
+  // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
+  registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
+  // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
+  const work = registerWorkTracker(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
+  const unwatchWork: (() => void)[] = [];
   const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
     ? catchupSource(active, flush, approvals, shells) : undefined);
   pi.on('input', async (event, ctx) => {
@@ -751,7 +786,8 @@ export default function optchat(pi: ExtensionAPI) {
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
     settledAt = Date.now();
-    heartbeat?.turnSettled(summarizeTurn(turn));
+    const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
+    heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
     if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;

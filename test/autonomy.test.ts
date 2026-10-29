@@ -218,6 +218,19 @@ test('an unreadable contract fails closed: every high-impact call waits for the 
   g.done();
 });
 
+test('unreadable policy diagnostics do not expose configuration contents', async () => {
+  const canary = 'KEY123';
+  const g = gate(canary);
+  try {
+    const refused = await g.call('git push -u origin feat/x');
+    assert.equal(refused.block, true);
+    assert.match(refused.reason, /autonomy\.json is unreadable/);
+    assert.equal(refused.reason.includes(canary), false);
+    assert.equal(g.notices.some(text => text.includes(canary)), false);
+    assert.deepEqual(g.asked, []);
+  } finally { g.done(); }
+});
+
 test('the agent cannot widen its own contract: touching autonomy.json waits for the operator, whatever the rules say', async () => {
   const g = gate(JSON.stringify({ version: 1, default: 'free', rules: [{ action: '*', scope: ['*'], level: 'free' }] }));
   const refused = await g.call(`echo '{"version":1,"default":"free","rules":[]}' > ${g.dir}/autonomy.json`);

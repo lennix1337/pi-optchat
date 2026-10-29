@@ -445,3 +445,43 @@ test('gate is opt-in and disabled registration has no hooks or prompt effects', 
   registerEffectApprovals({ on() { registered++; } } as unknown as ExtensionAPI, { enabled: false });
   assert.equal(registered, 0);
 });
+
+test('every way a waiting call stops waiting is reported once, so its Slack post can stop saying pendente', () => {
+  let now = 0;
+  const settled: [string, string][] = [];
+  const gate = new EffectApprovals({ now: () => now, onSettled: (t, outcome) => settled.push([t, outcome]) });
+  const older = token(gate, invocation('bash', { command: 'rm -rf a' }));
+  now = 1;
+  const newer = token(gate, invocation('bash', { command: 'rm -rf b' }));
+  assert.equal(gate.approveLatest('owner', 'interactive')?.token, newer);
+  assert.deepEqual(settled, [[newer, 'approved'], [older, 'superseded']]);
+  assert.equal(gate.admit(invocation('bash', { command: 'rm -rf b' })), undefined);
+  assert.equal(settled.length, 2, 'running the approved call is not another decision');
+
+  const typed = token(gate, invocation('bash', { command: 'npm publish' }));
+  assert.equal(gate.approve('owner', 'interactive', `approve-effect ${typed}`), 'approved');
+  const denied = token(gate, invocation('bash', { command: 'git push -f' }));
+  gate.deny('owner', 'interactive');
+  const phone = token(gate, invocation('bash', { command: 'git push' }));
+  gate.decideFromPhone('owner', phone, false);
+  const lapsed = token(gate, invocation('bash', { command: 'rm -rf c' }));
+  now += 31 * 60_000;
+  gate.pendingFor('owner');
+  const reset = token(gate, invocation('bash', { command: 'rm -rf d' }));
+  gate.clear();
+  assert.deepEqual(settled.slice(2), [[typed, 'approved'], [denied, 'denied'], [phone, 'denied'], [lapsed, 'expired'], [reset, 'expired']]);
+});
+
+test('a phone decision binds one exact pending token and session, once; deny drops only that call', () => {
+  const gate = new EffectApprovals();
+  const pushToken = token(gate);
+  assert.equal(gate.decideFromPhone('other', pushToken, true), false, 'another session cannot decide it');
+  assert.equal(gate.decideFromPhone('owner', 'f'.repeat(24), true), false, 'an unknown token decides nothing');
+  assert.equal(gate.decideFromPhone('owner', pushToken, true), true);
+  assert.equal(gate.decideFromPhone('owner', pushToken, true), false, 'decided once');
+  assert.equal(gate.admit(invocation()), undefined, 'the approved call runs once');
+  assert.equal(gate.admit(invocation())?.block, true, 'and only once');
+  const publish = token(gate, invocation('bash', { command: 'npm publish' }));
+  assert.equal(gate.decideFromPhone('owner', publish, false), true);
+  assert.equal(gate.pendingFor('owner').some(p => p.token === publish), false);
+});

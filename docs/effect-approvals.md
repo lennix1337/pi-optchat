@@ -95,6 +95,19 @@ The advisor is a cheap filter, not a boundary: a model can be talked into approv
    approves that exact token; a token inside a longer message is not an approval and
    the operator is told so. Approval lasts up to 30 minutes, in the same session and
    working directory.
+   With the assistant's Slack chat configured, the same pending call is also posted
+   to the operator's DM (`src/slack-bridge.ts` `askApproval`) with Aprovar/Negar
+   buttons. A tap, or a reply of `aprovar` or `negar` in that post's thread, decides
+   that one call (`decideFromPhone`: exact token, same session, once, before expiry),
+   like `/approve` or a `/deny` of that call. The service queues only human messages
+   and button taps from the configured operator in the DM, arriving on its Socket Mode
+   connection; a tap is queued as that same thread reply
+   (`assistant/src/channels/slack.ts` `approvalClick`) and the post loses its buttons.
+   The agent cannot produce either; the same word anywhere else is an ordinary
+   message. Delegated sessions never post approvals. However the call stops waiting
+   (`/approve`, `/deny`, a newer call approved, expiry, or Slack itself), the gate
+   reports it (`onSettled`) and the post is rewritten without buttons to say how it
+   ended (`POST /v1/slack/update`; a thread reply on a service without it).
 4. The next identical invocation consumes permission before dispatch. Another guard
    (including operation recovery) can still refuse it. Failures, retries, nested
    calls and modified arguments do not inherit or replenish approval.

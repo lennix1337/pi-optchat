@@ -1,22 +1,14 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
-import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval } from './authorization.ts';
+import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval, type Settled } from './authorization.ts';
 import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
-import { classifyEffects, decide, describeDecision, loadContract, logReported, type Decision, type Repo } from './autonomy.ts';
+import { classifyEffects, describeDecision, logReported, type Decision, type Repo } from './autonomy.ts';
+import { readProfileEffectPolicy } from './effect-policy.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
 export type Advisor = (request: AdvisorRequest, ctx: ExtensionContext) => Promise<AdvisorVerdict>;
 /** Where the operator's autonomy.json lives (the open profile), or undefined when no profile is open. */
 export type ContractDir = () => string | undefined;
-
-/** The contract's decision for a call; an unreadable contract fails closed to `ask`. Undefined without a contract. */
-function contractDecision(dir: string | undefined, call: { tool: string; input: unknown; cwd: string }, repo?: Repo): Decision & { problem?: string } | undefined {
-  if (!dir) return undefined;
-  try {
-    const contract = loadContract(dir);
-    return contract && decide(contract, classifyEffects(call, repo));
-  } catch (error) { return { level: 'ask', problem: error instanceof Error ? error.message : String(error) }; }
-}
 
 const textOf = (content: unknown) => typeof content === 'string' ? content
   : Array.isArray(content) ? content.flatMap(block => (block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n') : '';
@@ -104,7 +96,7 @@ function reportEffect(dir: string, decision: Decision, pending: PendingApproval,
 /** The contract's word on a refused call: `run`, a refusal note, or undefined when it has no rule (the advisor decides). */
 function contractVerdict({ dir: contractDir, repo }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
   if (touchesContract(call)) return { note: 'Only the operator changes autonomy.json: neither the contract nor the advisor can approve this. ' };
-  const dir = contractDir(), decision = contractDecision(dir, call, repo);
+  const dir = contractDir(), decision = readProfileEffectPolicy(dir, () => classifyEffects(call, repo));
   if (!decision || decision.level === 'advisor') return undefined;
   if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
     : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ` };
@@ -159,10 +151,14 @@ function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, gr
 
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined,
-  contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined } = {}) {
+  contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined,
+  /** Called once per call that waits for the operator (after the contract and the advisor), e.g. to ask on Slack. */
+  onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined,
+  /** Called when such a call stops waiting (approved, denied, superseded or expired), wherever it was decided. */
+  onSettled = undefined as ((token: string, outcome: Settled) => void) | undefined } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   if (!(enabled ?? (env === '1' || env === 'risk'))) return;
-  const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all') });
+  const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), onSettled: (token, outcome) => onSettled?.(token, outcome) });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
   const advised = advisedAdmission(gate, pi, { advisor, grant, contract: { dir: contractDir, repo } });
@@ -189,6 +185,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
       alerted.add(pending.token);
       ctx.ui.notify(`Approval needed \u2014 ${label(pending)}: ${pending.summary}. Type /approve to run it once, /deny to drop it.`, 'warning');
       bell();
+      onPending?.(pending, session, gate);
     }
     return { block: true, reason: note + refusal.reason };
   });

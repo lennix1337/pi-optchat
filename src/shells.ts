@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { createBashTool, createLocalBashOperations, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { createBashTool, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { reapingBashOperations } from './shell-reaper.ts';
 import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
@@ -116,7 +117,7 @@ export function adoptShells(): { jobs: ShellJobs; profile: string } | undefined 
 const ALERT_INTERVAL_MS = 10_000;
 /** The local shell, with each raw output chunk also given to the alerts. The bash tool's own updates are only snapshots of its tail. */
 function tapped(watch: OutputAlerts): BashOperations {
-  const local = createLocalBashOperations();
+  const local = reapingBashOperations();
   return { exec: (command, cwd, options) => local.exec(command, cwd, { ...options, onData: data => { watch.feed(data); options.onData(data); } }) };
 }
 const REPORT_LINES = 30, REPORT_CHARS = 3_000, REPORT_COMMAND_CHARS = 300;
@@ -164,7 +165,7 @@ interface ShellArgs { command: string; timeout?: number; notify?: ShellNotify; a
 /** The bash tool, run for one shell. Its raw output feeds the alerts, when there are any, and the last matches go out when the run ends. */
 async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSignal, update: (output: string, log?: string) => void, watch: OutputAlerts | undefined) {
   try {
-    const result = await createBashTool(cwd, watch ? { operations: tapped(watch) } : undefined)
+    const result = await createBashTool(cwd, { operations: watch ? tapped(watch) : reapingBashOperations() })
       .execute(id, { command: args.command, timeout: args.timeout }, abort, partial => update(textContent(partial.content, false), partial.details?.fullOutputPath));
     const exitCode = field(result.structuredContent, 'exit_code');
     return { output: textContent(result.content, false), failed: result.isError === true,

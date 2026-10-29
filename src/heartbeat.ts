@@ -6,6 +6,8 @@ import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ModelChoice } from './compactor.ts';
 import { askOneLine } from './one-line.ts';
 import { atomicWrite } from './store.ts';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { REPORT_TYPE, textContent } from './transcript.ts';
 
 export interface Beat { wake: boolean; text: string; model?: string }
 
@@ -110,6 +112,27 @@ export async function checkBeat(registry: ModelRegistry, choice: ModelChoice, sn
   return { wake: word === 'WAKE', text: reason, model };
 }
 
+const WAKE_INTRO = /^\[OptChat heartbeat\] You have been idle for \d+ min and the operator is away\./;
+/** On the intro's line, or on its own line after a backlog item; always before the radar. */
+const WAKE_TASK = /\bA cheap check \([^)]*\) woke you and suggests: ([^\n]*)/;
+
+/** Reads back a wakeText() prompt: the check's suggestion, '' for a fixed-schedule wake, undefined for any other message. */
+export function wakeTask(text: string): string | undefined {
+  if (!WAKE_INTRO.test(text)) return undefined;
+  return WAKE_TASK.exec(text)?.[1] ?? '';
+}
+
+/**
+ * The text of a message that opens or steers a run: a user message, or a wake prompt, which OptChat delivers as a report
+ * custom message once its prompt is ready. Other reports (shells, subagents) are not run openers.
+ */
+export function promptText(message: AgentMessage): string | undefined {
+  if (message.role === 'user') return textContent(message.content, false);
+  if (message.role !== 'custom' || message.customType !== REPORT_TYPE) return undefined;
+  const text = textContent(message.content, false);
+  return wakeTask(text) === undefined ? undefined : text;
+}
+
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
 export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string) {
   const opening = task
@@ -203,6 +226,8 @@ export class Heartbeat {
     if (this.open !== undefined) this.amend(log => log.map(wake => wake.at === this.open ? { ...wake, outcome: 'interrupted' } : wake));
   }
   /** The chat settled: if a wake's turn was running, record how it went (once; later settles are the operator's turns). */
+  /** True between a wake and the end of the run it started. */
+  get waking() { return this.open !== undefined; }
   turnSettled(summary: WakeSummary) {
     if (this.open === undefined) return;
     const reply = summary.reply.length > REPLY_MAX ? `${summary.reply.slice(0, REPLY_MAX - 1)}…` : summary.reply;

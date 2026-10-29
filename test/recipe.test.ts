@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { createAssistantMessageEventStream, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
+import type { Context } from '@earendil-works/pi-ai';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { createCompressor } from '../src/compactor.ts';
@@ -12,25 +12,14 @@ import { Memory, PAGE } from '../src/memory.ts';
 import { PROMPT } from '../src/recipe-prompt.ts';
 import { memoryTools } from '../src/tools.ts';
 import { buildContext, logMessage, pieces, stateless, textContent } from '../src/transcript.ts';
-import { emptyUsage } from '../src/usage.ts';
+import { registerFixtureModel } from './fixture-model.ts';
 
 /** One compaction against a fixture model; returns the context the model was sent. */
 async function compaction(shared?: Parameters<typeof createCompressor>[4]) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-recipe-'));
   let sent: Context | undefined;
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
-  runtime.registerProvider('fixture', {
-    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
-    models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
-    streamSimple(model, context) {
-      sent = context;
-      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'line' }], api: model.api, provider: model.provider, model: model.id,
-        timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
-      return stream;
-    },
-  });
+  registerFixtureModel(runtime, context => { sent = context; return 'line'; });
   try {
     const compress = createCompressor(new ModelRegistry(runtime), () => ({ provider: 'fixture', model: 'fixture', thinking: 'off' }), undefined, undefined, shared);
     await compress({ context: '<chat>\n</chat>', source: 'user: ' + 'x'.repeat(600), part: { l: 0, i: 0 } }, new AbortController().signal);

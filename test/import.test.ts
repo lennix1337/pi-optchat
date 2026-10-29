@@ -615,7 +615,9 @@ for (const jobs of [undefined, 3, 16]) test(`an import summarizes ${jobs ?? '8 (
   try {
     await old.close();
     assert.ok(prepareImport(dir, old, imported, 'append'));
-    await runImport(dir, compress, AbortSignal.timeout(20000), jobs);
+    // Hang guard only: the test checks concurrency and view width, not speed. Under the full suite a 2-core Windows
+    // runner took 20.8 s for this import (0.8 s alone), so the guard leaves room for a loaded machine.
+    await runImport(dir, compress, AbortSignal.timeout(90000), jobs);
     assert.equal(peak, jobs ?? 8);
     assert.ok(widest < 40_000, `compaction view reached ${widest} bytes`);
   } finally { removeDir(dir); }

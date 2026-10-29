@@ -38,6 +38,13 @@ export function withTempDir<T>(prefix: string, run: (dir: string) => T): T {
   return result.finally(close) as T;
 }
 
+/** A stand-in for Pi's extension API that records `pi.on` handlers; `fire` runs the one registered for an event. */
+export function hookedPi() {
+  const handlers = new Map<string, (event: unknown) => unknown>();
+  const pi = { on: (name: string, handler: (event: unknown) => unknown) => { handlers.set(name, handler); }, registerTool: () => {}, sendUserMessage: () => {} };
+  return { pi: pi as never, fire: (name: string, event: unknown = {}) => handlers.get(name)!(event) };
+}
+
 /** Whether a fixture model's call is a compaction: it has the same system prompt as a turn, so only its task marks it. */
 export const isCompaction = (context: { messages: readonly { role: string; content?: unknown }[] }) =>
   context.messages.some(message => message.role === 'user' && /Compaction: (?:compress message|merge lines)/.test(JSON.stringify(message.content)));

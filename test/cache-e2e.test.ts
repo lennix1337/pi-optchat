@@ -46,7 +46,13 @@ class SimulatedCache {
     const marks = blocks.flatMap((b, j) => b.mark ? [j] : []);
     const tools = createHash('sha256').update(JSON.stringify(body.tools ?? [])).digest('hex').slice(0, 8);
     const ttls = marks.map(j => blocks[j].mark!.ttl ?? '5m');
-    const fail = (error: string) => ({ read: 0, write: 0, input: 0, marks: marks.length, tools, status: 400, error });
+    // A rejected request is kept too, so `status !== 200` checks see it and the log says why.
+    const fail = (error: string) => {
+      const usage = { read: 0, write: 0, input: 0, marks: marks.length, tools, status: 400, error };
+      this.requests.push(usage);
+      console.error(`simulated Anthropic rejected request ${this.requests.length}: ${error} (marks ${marks.join(',')}, ttls ${ttls.join(',')})`);
+      return usage;
+    };
     if (marks.length > 4) return fail(`${marks.length} cache_control blocks, limit 4`);
     if (ttls.some((ttl, j) => ttl === '1h' && ttls.slice(0, j).includes('5m'))) return fail('a 1h mark after a 5m mark');
     const chain: string[] = [];
@@ -225,7 +231,8 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${JSON.stringify(reloaded)}`);
     assert.ok(reloaded.marks.some((block: number) => block <= Math.max(...busyView.marks)),
       `the first call after /reload marks an entry the busy turn left (${busyView.marks}): ${JSON.stringify(reloaded.marks)}`);
-    assert.ok(next.read > start.read + start.write / 2, `after /reload the next turn read ${next.read} and wrote ${next.write}; the busy turn had cached ${start.read} + ${start.write} at its start`);
+    assert.ok(next.read > start.read + start.write / 2, `after /reload the next turn read ${next.read} and wrote ${next.write}; the busy turn had cached ${start.read} + ${start.write} at its start ` +
+      `(diagnostics before /reload ${JSON.stringify(busyView)}, after ${JSON.stringify(reloaded)})`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
     assert.deepEqual(errors, []);
   } finally {
