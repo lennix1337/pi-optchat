@@ -38,8 +38,9 @@ export class SlackRelay {
     if (!result.changes) return 'duplicate';
     if (this.poster && this.now() - this.lastRead > READER_GRACE_MS) {
       const poster = this.poster;
+      const channel = message.channel.startsWith('D') ? undefined : poster.nameOf(message.channel);
       // Best effort and logged by the caller's socket line only; the message itself is already durable in the queue.
-      this.pending = this.pending.then(() => poster.send(OFFLINE_RECEIPT, message.thread ?? message.ts)).catch(() => undefined);
+      if (channel !== null) this.pending = this.pending.then(() => poster.send(OFFLINE_RECEIPT, message.thread ?? message.ts, channel)).catch(() => undefined);
     }
     return 'relayed';
   }
@@ -78,16 +79,24 @@ function parts(text: string): string[] {
   return out;
 }
 
-/** Posts to the operator's DM with the app's bot token. The destination is the configured operator, never an argument. */
+/**
+ * Posts with the app's bot token to the operator's DM or to one of the configured project channels, chosen by name.
+ * Destinations come from the operator's config, never from the caller as a raw id.
+ */
 export class SlackPoster {
-  private readonly options: { botToken: string; operator: string; fetch: typeof fetch };
-  constructor(options: { botToken: string; operator: string; fetch?: typeof fetch }) {
+  private readonly options: { botToken: string; operator: string; channels: Record<string, string>; fetch: typeof fetch };
+  constructor(options: { botToken: string; operator: string; channels?: Record<string, string>; fetch?: typeof fetch }) {
     if (!/^xoxb-[\x21-\x7e]+$/.test(options.botToken)) throw new Error('invalid_bot_token');
     if (!/^[UW][A-Z0-9]{2,20}$/.test(options.operator)) throw new Error('invalid_operator');
-    this.options = { fetch: globalThis.fetch, ...options };
+    this.options = { fetch: globalThis.fetch, channels: {}, ...options };
   }
 
-  async send(text: string, threadTs?: string): Promise<{ parts: number; ts: string }> {
+  /** The configured name of a project channel id, or null. */
+  nameOf(id: string): string | null { return Object.entries(this.options.channels).find(([, value]) => value === id)?.[0] ?? null; }
+
+  async send(text: string, threadTs?: string, channel?: string): Promise<{ parts: number; ts: string }> {
+    const destination = channel === undefined ? this.options.operator : Object.hasOwn(this.options.channels, channel) ? this.options.channels[channel] : undefined;
+    if (!destination) throw new Error('unknown_channel');
     const chunks = parts(slackText(text));
     if (!chunks.length) throw new Error('empty_message');
     let ts = '';
@@ -95,7 +104,7 @@ export class SlackPoster {
       const response = await this.options.fetch(POST_URL, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
         headers: { authorization: `Bearer ${this.options.botToken}`, 'content-type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({ channel: this.options.operator, text: chunk, ...(threadTs ? { thread_ts: threadTs } : {}), unfurl_links: false }),
+        body: JSON.stringify({ channel: destination, text: chunk, ...(threadTs ? { thread_ts: threadTs } : {}), unfurl_links: false }),
       });
       const body = await response.json() as { ok?: boolean; ts?: unknown; error?: unknown };
       if (!body.ok) throw new Error(`slack_${typeof body.error === 'string' ? body.error.replace(/[^\w.-]/g, '').slice(0, 60) : `http_${response.status}`}`);

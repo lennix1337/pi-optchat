@@ -8,11 +8,13 @@ import { channelFixture, PROFILE, slackEnvelope } from './channel-support.ts';
 
 const TEAM = 'T0TEST'; const APP = 'A0TEST'; const TOKEN = 'relay-test-token';
 
+const CHANNELS = { dentai: 'C0DENTAI', harness: 'C0HARNESS' };
+
 function relayFixture(now = () => 1_793_000_000_000) {
   const f = channelFixture();
   f.ledger.authorize('slack', TEAM, 'U0OWNER', 'operador', f.authority);
   const relay = new SlackRelay({ databasePath: join(f.dir, 'relay.sqlite'), profileId: PROFILE, now });
-  const channel = new SlackChannel({ store: f.store, ledger: f.ledger, profileId: PROFILE, team: TEAM, appId: APP, relay, reviewLink: id => `http://127.0.0.1:1/#tarefa=${id}` });
+  const channel = new SlackChannel({ store: f.store, ledger: f.ledger, profileId: PROFILE, team: TEAM, appId: APP, relay, relayChannels: new Set(Object.values(CHANNELS)), reviewLink: id => `http://127.0.0.1:1/#tarefa=${id}` });
   return { f, relay, channel, close() { relay.close(); f.close(); } };
 }
 
@@ -47,6 +49,42 @@ test('relay keeps the sender and human checks: strangers, bots and edits are not
     assert.equal(r.channel.accept(slackEnvelope('EvX3', 'oi', { subtype: 'message_changed' })).outcome, 'ignored_not_human');
     assert.equal(r.channel.accept(slackEnvelope('EvX4', 'oi', {}, { team_id: 'T0OTHER' })).outcome, 'foreign_workspace');
     assert.equal(r.relay.after(0, 10).length, 0);
+  } finally { r.close(); }
+});
+
+test('operator messages in a configured project channel join the chat; other channels and strangers do not', () => {
+  const r = relayFixture();
+  try {
+    assert.equal(r.channel.accept(slackEnvelope('EvCh1', 'e o deploy?', { channel: 'C0DENTAI' })).outcome, 'relayed');
+    assert.equal(r.channel.accept(slackEnvelope('EvCh2', 'oi', { channel: 'C0DENTAI', user: 'U0STRANGER' })).outcome, 'unauthorized_sender');
+    assert.equal(r.channel.accept(slackEnvelope('EvCh3', 'oi', { channel: 'C0DENTAI', bot_id: 'B1' })).outcome, 'ignored_not_human', 'the bot\'s own reports are not echoed back');
+    assert.notEqual(r.channel.accept(slackEnvelope('EvCh4', 'oi', { channel: 'C0RANDOM' })).outcome, 'relayed');
+    assert.deepEqual(r.relay.after(0, 10).map(m => [m.channel, m.text]), [['C0DENTAI', 'e o deploy?']]);
+  } finally { r.close(); }
+});
+
+test('the poster sends to a configured channel by name and refuses unknown names', async () => {
+  const slack = fakeSlack();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch });
+  await poster.send('PR #121 mergeada', undefined, 'dentai');
+  assert.equal(slack.calls[0].body.channel, 'C0DENTAI');
+  await assert.rejects(poster.send('x', undefined, 'C0DENTAI'), /unknown_channel/, 'a raw id is not a name');
+  await assert.rejects(poster.send('x', undefined, 'constructor'), /unknown_channel/);
+  assert.equal(slack.calls.length, 1);
+  assert.equal(poster.nameOf('C0HARNESS'), 'harness');
+  assert.equal(poster.nameOf('C0OTHER'), null);
+});
+
+test('the offline receipt answers a channel message in that channel, not in the DM', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  try {
+    r.relay.attach(new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch }));
+    r.channel.accept(slackEnvelope('EvOffCh', 'status?', { channel: 'C0HARNESS' }));
+    await r.relay.idle();
+    assert.equal(slack.calls.length, 1);
+    assert.equal(slack.calls[0].body.channel, 'C0HARNESS');
+    assert.equal(slack.calls[0].body.thread_ts, '1793000000.000100');
   } finally { r.close(); }
 });
 
@@ -92,9 +130,10 @@ test('when nobody polled recently, a new DM gets one automatic receipt', async (
 test('HTTP: authenticated inbox paging and send; absent relay is 404', async () => {
   const slack = fakeSlack();
   const r = relayFixture();
-  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch });
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch });
   r.channel.accept(slackEnvelope('EvHttp', 'status?'));
-  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster } });
+  r.channel.accept(slackEnvelope('EvHttpCh', 'e o CI?', { channel: 'C0DENTAI' }));
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster, channels: CHANNELS } });
   const bare = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE });
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   await new Promise<void>(done => bare.listen(0, '127.0.0.1', done));
@@ -102,8 +141,11 @@ test('HTTP: authenticated inbox paging and send; absent relay is 404', async () 
   const auth = { authorization: `Bearer ${TOKEN}` };
   try {
     assert.equal((await fetch(`${base(server)}/v1/slack/inbox?after=0`)).status, 401);
-    const inbox = await (await fetch(`${base(server)}/v1/slack/inbox?after=0`, { headers: auth })).json() as { messages: { seq: number; text: string }[] };
-    assert.deepEqual(inbox.messages.map(m => [m.seq, m.text]), [[1, 'status?']]);
+    const inbox = await (await fetch(`${base(server)}/v1/slack/inbox?after=0`, { headers: auth })).json() as { messages: { seq: number; text: string; channelName: string | null }[] };
+    assert.deepEqual(inbox.messages.map(m => [m.seq, m.text, m.channelName]), [[1, 'status?', null], [2, 'e o CI?', 'dentai']]);
+    const toChannel = await fetch(`${base(server)}/v1/slack/send`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ text: 'verde', threadTs: null, channel: 'dentai' }) });
+    assert.equal(toChannel.status, 200);
+    assert.equal(slack.calls.at(-1)!.body.channel, 'C0DENTAI');
     const sent = await fetch(`${base(server)}/v1/slack/send`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ text: 'tudo certo', threadTs: null }) });
     assert.equal(sent.status, 200);
     assert.equal(slack.calls.at(-1)!.body.text, 'tudo certo');

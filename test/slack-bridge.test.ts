@@ -7,7 +7,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
 import { SLACK_PREFIX, SlackBridge } from '../src/slack-bridge.ts';
 
-function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string }[] = []) {
+function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const owner = { dir, name: 'p' };
   const sent: { text: string; options: unknown }[] = [];
@@ -51,6 +51,17 @@ test('the final answer of a run that received a Slack message goes back to the D
     await f.bridge.runEnded(replies('rodando', 'Tudo verde.'));
     const reply = f.requests.find(r => r.path === '/v1/slack/send');
     assert.deepEqual(reply?.body, { text: 'Tudo verde.', threadTs: '4.0' });
+  } finally { f.close(); }
+});
+
+test('a project channel message is marked with its channel and the run answers in that channel', async () => {
+  const f = fixture([{ seq: 1, ts: '7.0', thread: null, text: 'como ta a release?', channelName: 'genexus18mcp' }]);
+  try {
+    await f.bridge.poll();
+    assert.equal(f.sent[0].text, '[Slack #genexus18mcp] como ta a release?');
+    f.bridge.sawUserMessage(f.sent[0].text);
+    await f.bridge.runEnded(replies('v4.0.5 publicada.'));
+    assert.deepEqual(f.requests.find(r => r.path === '/v1/slack/send')?.body, { text: 'v4.0.5 publicada.', threadTs: null, channel: 'genexus18mcp' });
   } finally { f.close(); }
 });
 

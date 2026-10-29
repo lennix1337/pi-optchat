@@ -23,6 +23,8 @@ export type SlackOptions = {
   signingSecret?: string;
   /** With a relay, operator DMs are a chat with the OptChat session instead of suggested tasks. */
   relay?: SlackRelay;
+  /** Project channels (ids) whose operator messages join the same chat as the DM. */
+  relayChannels?: ReadonlySet<string>;
   now?: () => number; reviewLink: (taskId: string) => string;
 };
 // Edits, joins, bot posts and shares are not a person writing to the assistant now.
@@ -58,7 +60,7 @@ export class SlackChannel {
     const event = body.event;
     if (typeof body.event_id !== 'string' || typeof event.channel !== 'string' || typeof event.ts !== 'string') return { outcome: 'ignored' };
     const human = !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string';
-    if (o.relay && event.channel.startsWith('D')) return this.relay(o.relay, body.event_id, event, human);
+    if (o.relay && (event.channel.startsWith('D') || o.relayChannels?.has(event.channel))) return this.relay(o.relay, body.event_id, event, human);
     return admit({
       platform: 'slack', account: o.team, delivery: body.event_id, sender: typeof event.user === 'string' ? event.user : '',
       human,

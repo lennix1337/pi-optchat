@@ -14,8 +14,12 @@ import { textContent } from './transcript.ts';
  * Pi marks these messages as extension input, so a Slack message can never approve a gated effect.
  */
 export const SLACK_PREFIX = '[Slack] ';
+/** `[Slack] ` for the DM, `[Slack #dentai] ` for a project channel. */
+const slackPrefix = (channel: string | null) => channel ? `[Slack #${channel}] ` : SLACK_PREFIX;
+export const FROM_SLACK = /^\[Slack(?: #([a-z0-9][a-z0-9_-]{0,79}))?\] /;
 export type SlackOwner = { dir: string; name: string };
-type Inbound = { seq: number; ts: string; thread: string | null; text: string };
+type Inbound = { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null };
+type Origin = { thread: string | null; channel: string | null };
 type Request = (owner: SlackOwner, path: string, body?: unknown) => Promise<unknown>;
 const CURSOR = 'slack-cursor.json';
 const OFF_FOR_MS = 5 * 60_000;
@@ -35,9 +39,9 @@ export class SlackBridge {
   private polling = false;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
-  private answering: { thread: string | null } | undefined;
+  private answering: Origin | undefined;
   private running = false;
-  private readonly threads = new Map<string, string | null>();
+  private readonly threads = new Map<string, Origin>();
   private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void };
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
@@ -73,8 +77,9 @@ export class SlackBridge {
       let delivered = 0;
       for (const m of messages) {
         if (!Number.isSafeInteger(m.seq) || m.seq <= seq || typeof m.text !== 'string') continue;
-        const text = `${SLACK_PREFIX}${m.text}${this.running ? MID_RUN : ''}`;
-        this.threads.set(text, typeof m.thread === 'string' ? m.thread : null);
+        const channel = typeof m.channelName === 'string' ? m.channelName : null;
+        const text = `${slackPrefix(channel)}${m.text}${this.running ? MID_RUN : ''}`;
+        this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
         delivered++;
@@ -83,10 +88,11 @@ export class SlackBridge {
     } finally { this.polling = false; }
   }
 
-  /** Called for every user message of a run; a `[Slack]` one makes this run answer in the DM. */
+  /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
   sawUserMessage(text: string): void {
-    if (!text.startsWith(SLACK_PREFIX)) return;
-    this.answering = { thread: this.threads.get(text) ?? null };
+    const match = FROM_SLACK.exec(text);
+    if (!match) return;
+    this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
   }
 
@@ -96,16 +102,17 @@ export class SlackBridge {
     this.answering = undefined;
     this.running = false;
     if (!answering) return;
-    try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread); }
+    try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread, answering.channel); }
     catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
-  async send(text: string, threadTs: string | null = null): Promise<{ parts: number; ts: string }> {
+  /** To the operator's DM, or with `channel` to that configured project channel. */
+  async send(text: string, threadTs: string | null = null, channel: string | null = null): Promise<{ parts: number; ts: string }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
-    try { return await this.options.request(owner, '/v1/slack/send', { text, threadTs }) as { parts: number; ts: string }; }
+    try { return await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}) }) as { parts: number; ts: string }; }
     catch (error) {
-      if (error instanceof HttpError) throw new Error(error.status === 404 ? 'The assistant service has no Slack chat (no bot token configured).' : error.status === 503 ? 'Slack bot token not configured.' : `Slack send failed (HTTP ${error.status}).`);
+      if (error instanceof HttpError) throw new Error(error.status === 404 ? 'The assistant service has no Slack chat (no bot token configured).' : error.status === 503 ? 'Slack bot token not configured.' : error.status === 400 && channel ? `Unknown Slack channel "${channel}": it is not in the service's slack.channels.` : `Slack send failed (HTTP ${error.status}).`);
       throw error;
     }
   }
@@ -127,11 +134,14 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator's Slack DM; they read it on the phone. Use it to report finished work, progress on long tasks, background results and blockers that need their decision, especially when they may be away. A [Slack] message that arrives while you are working: answer it here and keep working, since a text-only reply ends the run. When the run started from a [Slack] message, its final answer goes back automatically: don't repeat it here.",
-    parameters: Type.Object({ text: Type.String({ minLength: 1, maxLength: 20000 }) }, { additionalProperties: false }),
+    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks, background results and blockers that need their decision, especially when they may be away. `channel` posts to a project channel instead of the DM: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles); route reports by the repo the work is in, and keep the DM for general matters, urgent blockers and decisions. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here.",
+    parameters: Type.Object({
+      text: Type.String({ minLength: 1, maxLength: 20000 }),
+      channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #; omit for the DM.' })),
+    }, { additionalProperties: false }),
     async execute(_id, params) {
-      const result = await bridge.send(params.text);
-      return { content: [{ type: 'text', text: `Sent to the operator's Slack DM (${result.parts} part${result.parts === 1 ? '' : 's'}).` }], details: undefined };
+      const result = await bridge.send(params.text, null, params.channel ?? null);
+      return { content: [{ type: 'text', text: `Sent to ${params.channel ? `Slack #${params.channel}` : "the operator's Slack DM"} (${result.parts} part${result.parts === 1 ? '' : 's'}).` }], details: undefined };
     },
   });
   return bridge;

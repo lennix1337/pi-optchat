@@ -35,22 +35,26 @@ export function isAllowedRemote(address: string | undefined): boolean {
 }
 /** The Google briefing as the service keeps it; absent when the server config names no Google connection. */
 export type BriefingProvider = { latest(): Promise<unknown | null>; refresh(): Promise<unknown> };
-/** The operator's Slack DM as a chat: queued operator messages, and posting back to the operator only. */
-export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster };
+/** The operator's Slack DM and project channels (name -> id) as a chat: queued operator messages, posting back to them only. */
+export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster; channels?: Record<string, string> };
 const threadTs = (value: unknown) => value === null || typeof value === 'string' && /^\d{1,12}\.\d{1,8}$/.test(value);
 
 async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, slack: SlackBridge): Promise<void> {
   if (req.method === 'GET' && url.pathname === '/v1/slack/inbox') {
     query(url, ['after', 'limit']);
-    send(res, 200, { messages: slack.relay.after(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 20, 1, 100)) }); return;
+    const names = new Map(Object.entries(slack.channels ?? {}).map(([name, id]) => [id, name]));
+    const messages = slack.relay.after(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 20, 1, 100));
+    send(res, 200, { messages: messages.map(m => ({ ...m, channelName: names.get(m.channel) ?? null })) }); return;
   }
   if (req.method === 'POST' && url.pathname === '/v1/slack/send') {
     query(url, []);
     const body = await readBody(req);
-    shape(body, { text: boundedText(40_000), threadTs });
+    // `channel` names a configured project channel; without it the message goes to the operator's DM.
+    const known = (value: unknown) => typeof value === 'string' && Object.hasOwn(slack.channels ?? {}, value);
+    shape(body, { text: boundedText(40_000), threadTs, ...(body && typeof body === 'object' && Object.hasOwn(body, 'channel') ? { channel: known } : {}) });
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
-    const input = body as { text: string; threadTs: string | null };
-    try { send(res, 200, await slack.poster.send(input.text, input.threadTs ?? undefined)); }
+    const input = body as { text: string; threadTs: string | null; channel?: string };
+    try { send(res, 200, await slack.poster.send(input.text, input.threadTs ?? undefined, input.channel)); }
     catch (error) { send(res, 502, { error: error instanceof Error && /^[a-z][\w.-]{0,80}$/.test(error.message) ? error.message : 'slack_failed' }); }
     return;
   }

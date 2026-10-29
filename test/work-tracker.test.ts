@@ -121,4 +121,5 @@ test('classify names the door each run came through', () => {
   assert.equal(classify('[shell 1234] exited').channel, 'Shell');
   assert.equal(classify('[c6191f36] report').channel, 'Subagente');
   assert.equal(classify('oi').channel, 'OptChat');
+  assert.deepEqual(classify('[Slack #dentai] e o deploy?'), { channel: 'Slack #dentai', title: 'e o deploy?' });
 });

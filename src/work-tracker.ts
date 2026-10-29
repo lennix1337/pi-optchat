@@ -4,7 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
 import type { RunInfo } from './runs.ts';
 import type { ShellJob } from './shells.ts';
-import { SLACK_PREFIX } from './slack-bridge.ts';
+import { FROM_SLACK } from './slack-bridge.ts';
 import { textContent } from './transcript.ts';
 
 /**
@@ -29,7 +29,8 @@ const defaultRequest: Request = (owner, path, body) => assistantRequest(assistan
 
 /** Which door a run came through, and the card title. */
 export function classify(prompt: string): { channel: string; title: string } {
-  if (prompt.startsWith(SLACK_PREFIX)) return { channel: 'Slack', title: prompt.slice(SLACK_PREFIX.length) };
+  const slack = FROM_SLACK.exec(prompt);
+  if (slack) return { channel: slack[1] ? `Slack #${slack[1]}` : 'Slack', title: prompt.slice(slack[0].length) };
   const wake = /^A cheap check \([^)]*\) woke you and suggests: ([^\n]*)/.exec(prompt);
   if (wake) return { channel: 'Wake', title: `Wake: ${wake[1]}` };
   if (/^The operator's fixed \d+-min schedule woke you/.test(prompt)) return { channel: 'Wake', title: 'Wake agendado' };

@@ -36,7 +36,8 @@ The client uses its owner-profile assistant.json with version, profileId, endpoi
 Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/scripts/<name>.mjs --help.
 `;
 
-export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string };
+/** `channels` maps project names to channel ids; the bot reads the operator's messages there and posts reports by name. */
+export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
 export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[] };
@@ -68,13 +69,23 @@ const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: va
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const s = value as Record<string, unknown>;
-  const keys = Object.keys(s).sort().join(',');
-  return (keys === 'appId,appToken,operators,team' || keys === 'appId,appToken,botToken,operators,team' && typeof s.botToken === 'string' && /^xoxb-[\x21-\x7e]+$/.test(s.botToken)) &&
-    typeof s.appToken === 'string' && /^xapp-[\x21-\x7e]+$/.test(s.appToken) &&
+  const keys = Object.keys(s);
+  const allowed = ['appId', 'appToken', 'botToken', 'channels', 'operators', 'team'];
+  if (!keys.every(key => allowed.includes(key)) || !['appId', 'appToken', 'operators', 'team'].every(key => keys.includes(key))) return false;
+  if ('botToken' in s && !(typeof s.botToken === 'string' && /^xoxb-[\x21-\x7e]+$/.test(s.botToken))) return false;
+  if ('channels' in s && !('botToken' in s && validSlackChannels(s.channels))) return false;
+  return typeof s.appToken === 'string' && /^xapp-[\x21-\x7e]+$/.test(s.appToken) &&
     typeof s.team === 'string' && /^T[A-Z0-9]{2,20}$/.test(s.team) &&
     typeof s.appId === 'string' && /^A[A-Z0-9]{2,20}$/.test(s.appId) &&
     Array.isArray(s.operators) && s.operators.length >= 1 && s.operators.length <= 20 &&
     s.operators.every(user => typeof user === 'string' && /^[UW][A-Z0-9]{2,20}$/.test(user));
+}
+
+function validSlackChannels(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length >= 1 && entries.length <= 20 && new Set(entries.map(([, id]) => id)).size === entries.length &&
+    entries.every(([name, id]) => /^[a-z0-9][a-z0-9_-]{0,79}$/.test(name) && typeof id === 'string' && /^[CG][A-Z0-9]{2,20}$/.test(id));
 }
 
 export function readConfig(path: string): Config {
@@ -219,11 +230,12 @@ async function startSlack(config: Config, settings: SlackConfig, store: import('
     const relayPath = join(dirname(config.databasePath), 'slack-relay.sqlite');
     prepareDatabase(relayPath);
     const relay = new SlackRelay({ databasePath: relayPath, profileId: config.profileId });
-    const poster = new SlackPoster({ botToken: settings.botToken, operator: settings.operators[0] });
+    const poster = new SlackPoster({ botToken: settings.botToken, operator: settings.operators[0], ...(settings.channels ? { channels: settings.channels } : {}) });
     relay.attach(poster);
-    bridge = { relay, poster };
+    bridge = { relay, poster, ...(settings.channels ? { channels: settings.channels } : {}) };
   }
-  const channel = new SlackChannel({ store, ledger, profileId: config.profileId, team: settings.team, appId: settings.appId, ...(bridge ? { relay: bridge.relay } : {}), reviewLink: id => `${config.endpoint}/#tarefa=${encodeURIComponent(id)}` });
+  const relayChannels = new Set(Object.values(settings.channels ?? {}));
+  const channel = new SlackChannel({ store, ledger, profileId: config.profileId, team: settings.team, appId: settings.appId, ...(bridge ? { relay: bridge.relay, relayChannels } : {}), reviewLink: id => `${config.endpoint}/#tarefa=${encodeURIComponent(id)}` });
   const socket = new SlackSocket({ appToken: settings.appToken, accept: payload => channel.accept(payload), log: line => console.log(line) });
   socket.start();
   const closers = [socket, ledger, bridge?.relay];
