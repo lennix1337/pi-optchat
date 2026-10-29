@@ -26,6 +26,12 @@ test('stop drains the service: admission closes, the database closes, no forced 
   } finally { killRecordedService(svc.home); }
 }));
 
+test('a pid that has exited is reported as gone, not as an inspection failure', { timeout: 30_000 }, async () => {
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', windowsHide: true });
+  await new Promise(resolve => child.once('exit', resolve));
+  assert.equal(processInfo(child.pid!), null);
+});
+
 test('stop and health never kill or trust a process this tool did not start', { timeout: 60_000 }, () => privateDir('ops-ownership-', async root => {
   const svc = serviceHome(root, await freePort());
   // A process this test spawned but the ops scripts did not: a stand-in for a reused pid.
@@ -47,6 +53,25 @@ test('stop and health never kill or trust a process this tool did not start', { 
     assert.equal(runScript('stop', ['--config', svc.config]).json.result, 'stopped');
     assert.equal(alive(foreign.pid!), true);
   } finally { foreign.kill(); killRecordedService(svc.home); }
+}));
+
+test('a drained server exits even when a closed connection still waits for its peer', { timeout: 30_000 }, () => privateDir('ops-linger-', async root => {
+  const stopFile = join(root, 'stop'), port = await freePort();
+  // close() leaves a referenced handle behind, as Slack's WebSocket does while it waits ~10 s for the close frame.
+  const script = `import { createServer } from 'node:http';
+    import { serve } from ${JSON.stringify(new URL('../src/main.ts', import.meta.url).href)};
+    serve(createServer(), { close() { setInterval(() => {}, 1000); } }, { endpoint: 'http://127.0.0.1:${port}', token: 'linger-token', profileId: 'p' });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, OPTCHAT_ASSISTANT_STOP_FILE: stopFile } });
+  try {
+    let out = '';
+    await new Promise<void>(resolve => child.stdout!.on('data', chunk => { out += chunk; if (out.includes('Assistant listening')) resolve(); }));
+    writeFileSync(stopFile, '');
+    const started = Date.now();
+    const code = await Promise.race([new Promise(resolve => child.once('exit', resolve)), new Promise(resolve => setTimeout(() => resolve('lingering'), 8000))]);
+    assert.notEqual(code, 'lingering', 'the process outlived the stop script grace period');
+    assert.ok(Date.now() - started < 5000);
+    assert.match(out, /Assistant stopped: admission closed/);
+  } finally { child.kill(); }
 }));
 
 /** A disposable copy of this package, optionally with a source edit, standing in for another installed version. */

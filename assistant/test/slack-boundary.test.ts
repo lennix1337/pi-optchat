@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { SlackChannel, verifySlack } from '../src/channels/slack.ts';
-import { channelFixture, PROFILE } from './channel-support.ts';
+import { channelFixture, PROFILE, slackEnvelope } from './channel-support.ts';
 
 const SECRET = 'disposable-slack-signing-secret';
 const NOW = 1_793_000_000_000;
@@ -11,10 +11,8 @@ function signed(body: unknown, at = NOW, secret = SECRET) {
   const raw = JSON.stringify(body); const ts = String(Math.floor(at / 1000));
   return { raw, headers: { 'x-slack-request-timestamp': ts, 'x-slack-signature': `v0=${createHmac('sha256', secret).update(`v0:${ts}:${raw}`).digest('hex')}` } };
 }
-const message = (over: Record<string, unknown> = {}, eventId = `Ev${Math.random().toString(36).slice(2)}`) => ({
-  type: 'event_callback', team_id: TEAM, api_app_id: APP, event_id: eventId,
-  event: { type: 'message', channel: 'D0OWNER', user: 'U0OWNER', text: 'Revisar contrato do aluguel', ts: '1793000000.000100', ...over },
-});
+const message = (over: Record<string, unknown> = {}, eventId = `Ev${Math.random().toString(36).slice(2)}`) =>
+  slackEnvelope(eventId, 'Revisar contrato do aluguel', over);
 function slack(f: ReturnType<typeof channelFixture>) {
   return new SlackChannel({ store: f.store, ledger: f.ledger, profileId: PROFILE, team: TEAM, appId: APP, signingSecret: SECRET, now: () => NOW, reviewLink: taskId => `http://127.0.0.1:1/#tarefa=${encodeURIComponent(taskId)}` });
 }

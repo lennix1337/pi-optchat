@@ -13,6 +13,8 @@ Supply a user-controlled secret JSON file outside Git, maximum 8192 bytes:
 Optional Slack (Socket Mode, outbound connection only, no public endpoint):
 "slack":{"appToken":"xapp-...","team":"T...","appId":"A...","operators":["U..."]}
 only the listed Slack users can suggest tasks; listing them is the operator's authorization.
+Optional local notifications (Windows toast, fixed text per category, never task content):
+"notifications":{"local":true}   true is the operator's consent; false revokes it.
 No other fields are accepted. Keep the token out of arguments and logs.
 Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
@@ -24,8 +26,15 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 `;
 
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[] };
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig };
+export type NotificationsConfig = { local: boolean };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
+const OPTIONAL_KEYS = ['slack', 'notifications'];
+
+function validNotifications(value: unknown): value is NotificationsConfig {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).join(',') === 'local' &&
+    typeof (value as Record<string, unknown>).local === 'boolean';
+}
 
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -59,8 +68,8 @@ export function readConfig(path: string): Config {
   const value: unknown = JSON.parse(data.toString('utf8'));
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid configuration');
   const v = value as Record<string, unknown>;
-  const keys = Object.keys(v).filter(key => key !== 'slack').sort().join(',');
-  if (keys !== BASE_KEYS || ('slack' in v && !validSlack(v.slack)) || v.version !== 1 ||
+  const keys = Object.keys(v).filter(key => !OPTIONAL_KEYS.includes(key)).sort().join(',');
+  if (keys !== BASE_KEYS || ('slack' in v && !validSlack(v.slack)) || ('notifications' in v && !validNotifications(v.notifications)) || v.version !== 1 ||
       typeof v.profileId !== 'string' || !v.profileId.trim() || typeof v.databasePath !== 'string' ||
       !isAbsolute(v.databasePath) || v.databasePath.includes('\0') || v.databasePath === ':memory:' ||
       typeof v.token !== 'string' || !/^[\x21-\x7e]+$/.test(v.token) || typeof v.endpoint !== 'string' ||
@@ -94,12 +103,39 @@ async function main(): Promise<void> {
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
   try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}) }); }
   catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
+  const extras = await startExtras(config, store);
+  if (!extras) { server.close(); store.close(); process.exitCode = 1; return; }
+  serve(server, { close() { extras.stop(); store.close(); } }, config);
+}
+
+/** Optional Slack intake and local notices; null (after reporting which one failed) stops startup. */
+async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void } | null> {
   let slack: { stop(): void } | undefined;
   if (config.slack) {
     try { slack = await startSlack(config, config.slack, store); }
-    catch { server.close(); store.close(); console.error('Slack channel could not be initialized.'); process.exitCode = 1; return; }
+    catch { console.error('Slack channel could not be initialized.'); return null; }
   }
-  serve(server, { close() { slack?.stop(); store.close(); } }, config);
+  let notices: { stop(): void } | undefined;
+  if (config.notifications) {
+    try { notices = await startNotifications(config, config.notifications, store); }
+    catch { slack?.stop(); console.error('Notifications could not be initialized.'); return null; }
+  }
+  return { stop() { notices?.stop(); slack?.stop(); } };
+}
+
+/** Local toasts for suggested tasks, needed input, review, finish and failure. The config flag is the consent. */
+async function startNotifications(config: Config, settings: NotificationsConfig, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void }> {
+  const { createNotificationCenter } = await import('./notifications/center.ts');
+  const { TaskNotifier, windowsToast } = await import('./notifications/task-notifier.ts');
+  const path = join(dirname(config.databasePath), 'notifications.sqlite');
+  prepareDatabase(path);
+  const authority = {};
+  const center = createNotificationCenter({ databasePath: path, operatorAuthority: authority });
+  center.setConsent('local', settings.local, authority);
+  if (process.platform !== 'win32') console.error('Local notifications need Windows; notices stay listed but are not shown.');
+  const notifier = new TaskNotifier({ store, center, channel: 'local', transport: windowsToast() });
+  notifier.start(2000, () => console.error('Notification delivery failed.'));
+  return { stop() { notifier.stop(); center.close(); } };
 }
 
 /** Socket Mode intake: listed operators' messages become suggested tasks; nothing is posted back. */
@@ -119,7 +155,8 @@ async function startSlack(config: Config, settings: SlackConfig, store: import('
   return { stop() { socket.stop(); ledger.close(); } };
 }
 
-function serve(server: Server, store: { close(): void }, config: Config): void {
+/** Exported for the shutdown test; `main` is the only production caller. */
+export function serve(server: Server, store: { close(): void }, config: Config): void {
   let closing = false;
   let stopWatch: NodeJS.Timeout | undefined;
   const shutdown = () => {
@@ -128,7 +165,12 @@ function serve(server: Server, store: { close(): void }, config: Config): void {
     clearInterval(stopWatch);
     const deadline = setTimeout(() => server.closeAllConnections(), 2000);
     server.closeIdleConnections();
-    server.close(() => { clearTimeout(deadline); store.close(); console.log('Assistant stopped: admission closed, requests drained, database closed.'); });
+    server.close(() => {
+      clearTimeout(deadline); store.close(); console.log('Assistant stopped: admission closed, requests drained, database closed.');
+      // Everything durable is closed. A remote close handshake (Slack's WebSocket waits ~10 s for its peer) must not
+      // keep the process alive past the stop script's grace period; unref'd, this fires only if such a handle lingers.
+      setTimeout(() => process.exit(), 1500).unref();
+    });
   };
   // Set only by assistant/scripts/start.mjs: Windows has no graceful signal for a detached process, so stop.mjs
   // asks for a drain by creating this file in the private config directory.

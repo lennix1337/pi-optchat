@@ -81,6 +81,7 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     const slack = { appToken: 'xapp-1-disposable', team: 'T0TEST', appId: 'A0TEST', operators: ['U0OWNER'] };
     invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, null]
       .map(value => JSON.stringify({ ...base, slack: value })));
+    invalid.push(...[{ local: 'yes' }, { local: true, web: true }, {}, [], null].map(value => JSON.stringify({ ...base, notifications: value })));
     for (const data of invalid) {
       writeFileSync(config, data);
       const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
@@ -96,6 +97,8 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
     ['count > 8192', 'false'],
     ['keys !== BASE_KEYS', 'false'],
     ["('slack' in v && !validSlack(v.slack))", 'false'],
+    ["('notifications' in v && !validNotifications(v.notifications))", 'false'],
+    ["typeof (value as Record<string, unknown>).local === 'boolean'", 'true'],
     ["/^xapp-[\\x21-\\x7e]+$/.test(s.appToken) &&", ''],
     ['v.version !== 1', 'false'],
     ['!v.profileId.trim()', 'false'],

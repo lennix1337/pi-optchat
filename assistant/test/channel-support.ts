@@ -7,6 +7,13 @@ import { ChannelLedger } from '../src/channels/inbound.ts';
 import type { Event } from '../src/contracts/events.ts';
 
 export const PROFILE = 'channel-test';
+/** A Slack Events API envelope for team T0TEST / app A0TEST carrying one DM from U0OWNER. */
+export function slackEnvelope(eventId: string, text: string, eventOver: Record<string, unknown> = {}, envelopeOver: Record<string, unknown> = {}) {
+  return {
+    type: 'event_callback', team_id: 'T0TEST', api_app_id: 'A0TEST', event_id: eventId,
+    event: { type: 'message', channel: 'D0OWNER', user: 'U0OWNER', text, ts: '1793000000.000100', ...eventOver }, ...envelopeOver,
+  };
+}
 export function channelFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'assistant-channels-'));
   const authority = {};

@@ -37,14 +37,19 @@ export class ChannelLedger {
   }
   revoke(platform: Platform, account: string, sender: string, authority: object): void {
     if (authority !== this.authority) fail('unauthorized');
-    this.db.prepare('UPDATE channel_senders SET revoked = 1 WHERE profile = ? AND platform = ? AND account = ? AND sender = ?').run(this.profileId, platform, account, sender);
+    this.revokeAll(platform, account, sender);
+  }
+  /** Revokes one sender, or every sender of the account when `sender` is omitted. Callers check authority. */
+  private revokeAll(platform: Platform, account: string, sender?: string): void {
+    const one = sender === undefined ? '' : ' AND sender = ?';
+    this.db.prepare(`UPDATE channel_senders SET revoked = 1 WHERE profile = ? AND platform = ? AND account = ?${one}`).run(this.profileId, platform, account, ...(sender === undefined ? [] : [sender]));
   }
   /** Makes `senders` the exact authorized set for one account: anyone dropped from the operator's list is revoked. */
   replaceSenders(platform: Platform, account: string, senders: readonly string[], label: string, authority: object): void {
     if (authority !== this.authority) fail('unauthorized');
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('UPDATE channel_senders SET revoked = 1 WHERE profile = ? AND platform = ? AND account = ?').run(this.profileId, platform, account);
+      this.revokeAll(platform, account);
       for (const sender of senders) this.authorize(platform, account, sender, label, authority);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

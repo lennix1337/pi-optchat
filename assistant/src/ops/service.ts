@@ -48,7 +48,8 @@ const portOf = (endpoint: string) => Number(endpoint.slice(endpoint.lastIndexOf(
 export function processInfo(pid: number): { startTime: string; workingSetBytes: number } | null {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   if (process.platform === 'win32') {
-    const script = "$p=Get-Process -Id ([int]$env:OPS_PID) -ErrorAction SilentlyContinue; if($p){[Console]::Out.Write(\"$($p.StartTime.ToUniversalTime().Ticks) $($p.WorkingSet64)\")}";
+    const script = "$p=Get-Process -Id ([int]$env:OPS_PID) -ErrorAction SilentlyContinue; if($p){[Console]::Out.Write(\"$($p.StartTime.ToUniversalTime().Ticks) $($p.WorkingSet64)\")}; exit 0";
+    // Without `exit 0`, pwsh exits 1 after the silenced Get-Process error, so a gone pid looked like a broken inspector.
     const r = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, OPS_PID: String(pid) }, encoding: 'utf8', timeout: 30_000, windowsHide: true });
     if (r.error || r.status !== 0) throw new OpsError('process_inspection_failed');
     const match = /^(\d+) (\d+)$/.exec(r.stdout.trim());

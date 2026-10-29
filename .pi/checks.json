@@ -98,7 +98,7 @@
     },
     "assistant-ops": {
       "description": "T13 disposable ops: idempotent start/stop/health with pid+start-time ownership, dry-run autostart in a disposable APPDATA, encrypted backup/restore without replay, notification consent/quiet hours, update rollback; loopback only",
-      "argv": ["node", "--test", "--test-timeout=180000", "assistant/test/notifications.test.ts", "assistant/test/backup-restore.test.ts", "assistant/test/install.test.ts", "assistant/test/shutdown.test.ts", "assistant/test/ops-journey.test.ts"],
+      "argv": ["node", "--test", "--test-timeout=180000", "assistant/test/notifications.test.ts", "assistant/test/task-notifier.test.ts", "assistant/test/backup-restore.test.ts", "assistant/test/install.test.ts", "assistant/test/shutdown.test.ts", "assistant/test/ops-journey.test.ts"],
       "timeoutMs": 600000
     },
     "assistant-ops-mutations": {

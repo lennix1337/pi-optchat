@@ -3,13 +3,10 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { SlackChannel } from '../src/channels/slack.ts';
 import { SlackSocket, type SocketLike } from '../src/channels/slack-socket.ts';
-import { channelFixture, PROFILE } from './channel-support.ts';
+import { channelFixture, PROFILE, slackEnvelope } from './channel-support.ts';
 
 const TEAM = 'T0TEST'; const APP = 'A0TEST'; const TOKEN = 'xapp-1-disposable';
-const event = (eventId: string, over: Record<string, unknown> = {}) => ({
-  type: 'event_callback', team_id: TEAM, api_app_id: APP, event_id: eventId,
-  event: { type: 'message', channel: 'D0OWNER', user: 'U0OWNER', text: 'Pagar o boleto da luz', ts: '1793000000.000100' }, ...over,
-});
+const event = (eventId: string, over: Record<string, unknown> = {}) => slackEnvelope(eventId, 'Pagar o boleto da luz', {}, over);
 
 class FakeSocket implements SocketLike {
   sent: string[] = []; closed = false;

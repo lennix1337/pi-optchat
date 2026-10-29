@@ -26,6 +26,7 @@ type Row = { id: string; channel: NotificationChannel; category: NotificationCat
   attempts: number; created: number; accepted: number | null; read: number | null };
 
 const lockScreenText = {
+  task_suggested: 'A new task was suggested to the assistant.',
   task_needs_input: 'An assistant task needs your input.',
   task_ready_for_review: 'An assistant task is ready for review.',
   task_finished: 'An assistant task finished.',
@@ -98,6 +99,16 @@ export class NotificationCenter {
   setQuietHours(quiet: QuietHours | null, authority: object): void {
     this.authorize(authority);
     this.setting('quiet_hours', quiet === null ? null : parseQuietHours(quiet));
+  }
+
+  /** A producer's resume point (for example the last task event it turned into notifications); null before its first run. */
+  cursor(name: string): number | null {
+    const value = this.read<number>(`cursor:${name}`);
+    return typeof value === 'number' ? value : null;
+  }
+  setCursor(name: string, value: number): void {
+    if (typeof name !== 'string' || !OPAQUE_ID.test(name) || !Number.isSafeInteger(value) || value < 0) throw new Error('invalid_cursor');
+    this.setting(`cursor:${name}`, value);
   }
 
   /** Same id, channel, category and ref is a no-op; reusing an id for different content is `notification_conflict`. */
