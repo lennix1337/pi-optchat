@@ -5,17 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { projectOf, projectOfRun } from '../src/projects.ts';
-import type { RunInfo } from '../src/runs.ts';
-import type { ShellJob } from '../src/shells.ts';
-import { composeSummary, DailySummary, logSent, prChange, PrWatch, readDay, watchAgentEnds, watchShellEnds } from '../src/slack-reports.ts';
+import { composeSummary, DailySummary, logSent, prChange, PrWatch, readDay } from '../src/slack-reports.ts';
 
 const temp = () => mkdtempSync(join(tmpdir(), 'slack-reports-'));
 type Posted = { text: string; channel: string | null; topic?: string };
 const recorder = () => { const posts: Posted[] = []; return { posts, post: async (text: string, channel: string | null, topic?: string) => { posts.push({ text, channel, topic }); } }; };
-function source<T>(items: T[]) {
-  const listeners = new Set<() => void>();
-  return { items, subscribe: (l: () => void) => (listeners.add(l), () => listeners.delete(l)), snapshot: () => items, emit: () => listeners.forEach(l => l()) };
-}
 
 test('projects come from projetos/<repo> paths, most mentioned first', () => {
   assert.equal(projectOf('cd C:/projetos/dentai-mono && pnpm test'), 'dentai');
@@ -27,32 +21,6 @@ test('projects come from projetos/<repo> paths, most mentioned first', () => {
     { type: 'toolCall', name: 'read', arguments: { path: 'C:/projetos/dentai-mono/b.ts' } },
     { type: 'toolCall', name: 'edit', arguments: { path: 'C:/projetos/pi-optchat/src/x.ts' } }] }] as unknown as AgentMessage[];
   assert.equal(projectOfRun(run), 'harness', 'where it delivered wins over where it read');
-});
-
-test('a background shell that ends is posted once to its repo channel; notify none, foreground and unmapped are not', () => {
-  const jobs = source<ShellJob>([{ id: 'old', command: 'cd C:/projetos/pi-optchat && x', cwd: '', mode: 'background', state: 'completed', started: 0, ended: 1, output: '', notify: 'end' }]);
-  const r = recorder();
-  watchShellEnds(jobs, r.post);
-  const base = { cwd: 'C:/Users/swluc', mode: 'background' as const, state: 'running' as const, started: 0, output: 'line1\nBUILD=0\n', notify: 'end' as const };
-  jobs.items.push({ ...base, id: 'a', command: 'cd C:/projetos/Genexus18MCP && build' }, { ...base, id: 'b', command: 'cd C:/projetos/pi-optchat && t', notify: 'none' },
-    { ...base, id: 'c', command: 'cd C:/projetos/pi-optchat && t', mode: 'foreground' }, { ...base, id: 'd', command: 'echo hi' });
-  jobs.emit();
-  assert.equal(r.posts.length, 0, 'running shells post nothing');
-  for (const job of jobs.items) Object.assign(job, { state: 'failed', exitCode: 2, ended: 125_000 });
-  jobs.emit(); jobs.emit();
-  assert.equal(r.posts.length, 1, 'the job already ended at start, notify none, foreground and an unmapped repo stay silent; one post per job');
-  assert.equal(r.posts[0]!.channel, 'genexus18mcp');
-  assert.match(r.posts[0]!.text, /^❌ \*Shell\* failed · exit 2 · 2 min\n`cd C:\/projetos\/Genexus18MCP && build`\nBUILD=0$/);
-});
-
-test('a subagent leaving the running list is posted to its cwd project', () => {
-  const runs = source<RunInfo>([{ id: 'abcdef1234', task: 'corrigir #701', cwd: 'C:/projetos/Genexus18MCP', model: 'm', thinking: 't', parentSession: 's', started: Date.now() - 60_000, depth: 1, state: 'running' } as RunInfo]);
-  const r = recorder();
-  watchAgentEnds(runs, r.post);
-  runs.items.splice(0); runs.emit();
-  assert.equal(r.posts.length, 1);
-  assert.equal(r.posts[0]!.channel, 'genexus18mcp');
-  assert.match(r.posts[0]!.text, /Subagente\* `abcdef12` terminou após 60s · corrigir #701/);
 });
 
 test('PR changes: CI green/red, merged, closed, and only freshly opened PRs announce themselves', () => {

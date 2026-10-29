@@ -6,11 +6,12 @@ import { immediate } from '../store/transaction.ts';
  * Human-facing local/web notifications. A notification carries only a category and an opaque reference: the
  * transport (lock screen, toast, browser) receives fixed text per category, never task titles, content or secrets.
  * Pushing needs operator consent per channel and waits out quiet hours. Transport acceptance (`accepted`) is not
- * human reading (`read`); only `markRead` from a human surface records that. Delivery is at least once by stable id.
+ * human reading (`read`); only `markRead` from a human surface records that. Dispatch is claimed durably before
+ * transport; an uncertain outcome is never automatically replayed.
  */
 export type NotificationChannel = 'local' | 'web';
 export type NotificationCategory = keyof typeof lockScreenText;
-export type NotificationState = 'pending' | 'suppressed' | 'accepted' | 'read' | 'failed';
+export type NotificationState = 'pending' | 'suppressed' | 'accepted' | 'read' | 'failed' | 'uncertain';
 export type NotificationInput = { id: string; channel: NotificationChannel; category: NotificationCategory; ref: string };
 export type NotificationRecord = NotificationInput & {
   state: NotificationState; reason: string | null; attempts: number; createdAt: number; acceptedAt: number | null; readAt: number | null;
@@ -18,7 +19,7 @@ export type NotificationRecord = NotificationInput & {
 export type DeliveredNotification = { id: string; text: string; ref: string };
 export type QuietHours = { start: string; end: string; timeZone: string };
 export type NotificationCenterOptions = {
-  databasePath: string; operatorAuthority: object; now?: () => number; maxAttempts?: number;
+  databasePath: string; operatorAuthority: object; now?: () => number;
   /** Test seam: called after each durable boundary so a test can fail exactly there. */
   boundary?: (name: string, id: string) => void;
 };
@@ -68,12 +69,10 @@ export class NotificationCenter {
   private readonly db: DatabaseSync;
   private readonly options: NotificationCenterOptions;
   private readonly now: () => number;
-  private readonly maxAttempts: number;
   constructor(options: NotificationCenterOptions) {
     if (!options?.operatorAuthority || typeof options.operatorAuthority !== 'object') throw new Error('invalid_options');
     this.options = { ...options };
     this.now = options.now ?? Date.now;
-    this.maxAttempts = boundedInteger(options.maxAttempts, 3, 1, 100);
     this.db = new DatabaseSync(options.databasePath);
     this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS notification_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL, changed INTEGER NOT NULL);
@@ -123,30 +122,43 @@ export class NotificationCenter {
     });
   }
 
+  private claim(row: Row): 'skipped' | 'suppressed' | 'deferred' | 'claimed' {
+    const channel = row.channel;
+    return immediate(this.db, () => {
+      const current = this.db.prepare('SELECT state FROM notifications WHERE id = ? AND channel = ?').get(row.id, channel) as { state: NotificationState } | undefined;
+      if (current?.state !== 'pending') return 'skipped';
+      if (this.read<boolean>(`consent:${channel}`) !== true) {
+        this.db.prepare("UPDATE notifications SET state = 'suppressed', reason = 'no_consent' WHERE id = ? AND channel = ? AND state = 'pending'").run(row.id, channel);
+        return 'suppressed';
+      }
+      const quiet = this.read<QuietHours>('quiet_hours');
+      if (quiet && inQuietHours(quiet, this.now())) return 'deferred';
+      this.db.prepare("UPDATE notifications SET state = 'uncertain', reason = 'dispatch_in_flight', attempts = attempts + 1 WHERE id = ? AND channel = ? AND state = 'pending'").run(row.id, channel);
+      return 'claimed';
+    });
+  }
+
   /**
    * Pushes pending notifications of one channel. Without consent they become `suppressed` (still listed, never pushed);
-   * during quiet hours they stay pending. A transport failure keeps only a fixed diagnostic and fails after maxAttempts.
+   * during quiet hours they stay pending. A claimed dispatch or transport failure remains uncertain and is not retried.
    */
   async deliver(channel: NotificationChannel, transport: (note: DeliveredNotification) => void | Promise<void>, limit = 50): Promise<{ accepted: number; deferred: number; suppressed: number; failed: number }> {
     if (!channels.includes(channel)) throw new Error('invalid_channel');
     const rows = this.db.prepare("SELECT * FROM notifications WHERE channel = ? AND state = 'pending' ORDER BY seq LIMIT ?").all(channel, boundedInteger(limit, 50, 1, 500)) as Row[];
     const result = { accepted: 0, deferred: 0, suppressed: 0, failed: 0 };
     for (const row of rows) {
-      if (this.read<boolean>(`consent:${channel}`) !== true) {
-        this.db.prepare("UPDATE notifications SET state = 'suppressed', reason = 'no_consent' WHERE id = ? AND channel = ? AND state = 'pending'").run(row.id, channel);
-        result.suppressed++; continue;
-      }
-      const quiet = this.read<QuietHours>('quiet_hours');
-      if (quiet && inQuietHours(quiet, this.now())) { result.deferred++; continue; }
+      const decision = this.claim(row);
+      if (decision === 'suppressed') { result.suppressed++; continue; }
+      if (decision === 'deferred') { result.deferred++; continue; }
+      if (decision !== 'claimed') continue;
+      this.options.boundary?.('dispatch_claimed', row.id);
       try { await transport({ id: row.id, text: lockScreenText[row.category], ref: row.ref }); }
       catch {
-        const exhausted = row.attempts + 1 >= this.maxAttempts;
-        this.db.prepare('UPDATE notifications SET attempts = attempts + 1, state = ?, reason = ? WHERE id = ? AND channel = ?')
-          .run(exhausted ? 'failed' : 'pending', 'delivery_failed', row.id, channel);
+        this.db.prepare("UPDATE notifications SET reason = 'transport_uncertain' WHERE id = ? AND channel = ? AND state = 'uncertain'").run(row.id, channel);
         result.failed++; continue;
       }
       this.options.boundary?.('transport_accepted', row.id);
-      this.db.prepare("UPDATE notifications SET attempts = attempts + 1, state = 'accepted', reason = NULL, accepted = ? WHERE id = ? AND channel = ? AND state = 'pending'").run(this.now(), row.id, channel);
+      this.db.prepare("UPDATE notifications SET state = 'accepted', reason = NULL, accepted = ? WHERE id = ? AND channel = ? AND state = 'uncertain'").run(this.now(), row.id, channel);
       result.accepted++;
     }
     return result;
@@ -161,8 +173,11 @@ export class NotificationCenter {
     });
   }
 
-  list(): NotificationRecord[] {
-    return (this.db.prepare('SELECT * FROM notifications ORDER BY seq').all() as Row[]).map(r => ({
+  /** With a limit, bound the SQL work to recent rows, still returned chronologically. */
+  list(limit?: number): NotificationRecord[] {
+    const rows = limit === undefined ? this.db.prepare('SELECT * FROM notifications ORDER BY seq').all()
+      : this.db.prepare('SELECT * FROM notifications ORDER BY seq DESC LIMIT ?').all(boundedInteger(limit, 50, 1, 500)).reverse();
+    return (rows as Row[]).map(r => ({
       id: r.id, channel: r.channel, category: r.category, ref: r.ref, state: r.state, reason: r.reason, attempts: r.attempts,
       createdAt: r.created, acceptedAt: r.accepted, readAt: r.read,
     }));

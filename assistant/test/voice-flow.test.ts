@@ -114,6 +114,20 @@ test('cancel stops capture, drops audio and ignores a late transcript', async ()
   await assert.rejects(reviewed.draft.send(), /confirmation_required/);
 });
 
+test('cancellation while microphone permission is pending closes late streams without recording', async () => {
+  let grant!: (stream: object) => void;
+  let stopped = 0; let recorded = 0;
+  const draft = new VoiceDraft({ status: available, provider: {}, media: {
+    getUserMedia: () => new Promise(resolve => { grant = resolve; }),
+    record: () => { recorded++; return {}; },
+  }, onSend: async () => {} });
+  const pending = draft.start(click);
+  draft.cancel();
+  grant({ getTracks: () => [{ stop() { stopped++; } }] });
+  await pending;
+  assert.deepEqual([draft.state, stopped, recorded], ['cancelled', 1, 0]);
+});
+
 test('humanGesture accepts only trusted pointer or keyboard activation', () => {
   assert.equal(humanGesture(click), true);
   assert.equal(humanGesture({ isTrusted: true, type: 'keydown' }), true);

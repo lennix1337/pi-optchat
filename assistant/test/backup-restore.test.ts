@@ -27,7 +27,7 @@ async function drain(runtime: ReturnType<typeof createRuntime>) { while (await r
 
 test('backup -> restore round trip: encrypted at rest, schema-checked, executed effects never replayed', () => privateDir('backup-roundtrip-', async root => {
   const data = join(root, 'data'), target = join(root, 'restored'), out = join(root, 'assistant.backup');
-  mkdirSync(data); mkdirSync(target);
+  mkdirSync(data); mkdirSync(target, { mode: 0o700 });
   const { protector } = memoryProtector();
   const sink: string[] = [];
   seedTask(join(data, 'tasks.sqlite'), `title ${CANARY}`);
@@ -112,7 +112,7 @@ async function sealed(root: string) {
   await createBackup({ databasePath: join(data, 'tasks.sqlite'), profileId: PROFILE, out, protector: keys.protector });
   return { out, protector: keys.protector, bytes: readFileSync(out) };
 }
-function emptyTarget(root: string, name: string) { const dir = join(root, name); mkdirSync(dir); return dir; }
+function emptyTarget(root: string, name: string) { const dir = join(root, name); mkdirSync(dir, { mode: 0o700 }); return dir; }
 
 test('a tampered backup fails closed and writes nothing', () => privateDir('backup-tamper-', async root => {
   const { out, protector, bytes } = await sealed(root);

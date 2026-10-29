@@ -19,6 +19,18 @@ jobs:
       - run: npm test
       - run: npm run test:pi-compat
       - run: npm pack --dry-run
+  assistant:
+    # The assistant is a standalone Node 24 service with its own tsconfig and tests, which the root
+    # check and npm test do not cover. Same hermetic commands as .pi/checks.json.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/assistant-checks.mjs
   windows:
     runs-on: windows-latest
     steps:

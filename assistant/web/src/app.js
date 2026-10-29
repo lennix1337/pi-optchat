@@ -1,6 +1,8 @@
 import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, DeclinedSources, setupLabels, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels } from './state.js';
 import { startArtifacts, stopArtifacts } from './artifacts/artifacts.js';
 import { startVoice, stopVoice } from './voice/voice-ui.js';
+import { startBriefing, stopBriefing } from './briefing.js';
+import { startInspection, stopInspection } from './inspection.js';
 
 const $ = selector => document.querySelector(selector);
 let state;
@@ -15,6 +17,8 @@ let draining = false;
 let archive;
 let declined;
 const queue = new ResponseQueue();
+/** `taskId:revision` -> the executor's question for that card (null when none); a newer revision asks the service again. */
+const prompts = new Map();
 const uncertain = () => Boolean(lifecycle?.marker);
 let renderedKey;
 const channelId = `panel-${crypto.randomUUID()}`;
@@ -29,8 +33,9 @@ function notice(message) { $('#notice').textContent = message; }
 class RequestError extends Error {
   constructor(status, body) { super(`request_${status}`); this.status = status; this.body = body; }
 }
-async function request(path, body) {
-  const options = { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(8000) };
+async function request(path, body, { signal } = {}) {
+  const timeout = AbortSignal.timeout(path === '/web/api/voice/transcribe' ? 150_000 : 8000);
+  const options = { credentials: 'same-origin', cache: 'no-store', signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
   if (body !== undefined) {
     options.method = 'POST';
     options.headers = { 'content-type': 'application/json', 'x-assistant-csrf': csrf ?? '' };
@@ -43,7 +48,7 @@ async function request(path, body) {
 }
 function signedOut() {
   clearTimeout(timer); state = undefined; csrf = undefined;
-  stopArtifacts(); stopVoice();
+  stopArtifacts(); stopVoice(); stopBriefing(); stopInspection();
   $('#workspace').hidden = true; $('#logout').hidden = true; $('#login').hidden = false;
   $('#task-list').replaceChildren(); $('#evidence-list').replaceChildren();
   $('#setup').hidden = true; $('#task-list').hidden = false;
@@ -57,7 +62,7 @@ async function start(session) {
   $('#profile').textContent = `Perfil ${session.profileId} · serviço local`;
   selectedTask = undefined; renderedKey = undefined;
   $('#create-form button').disabled = uncertain();
-  startArtifacts(request);
+  startArtifacts(request); startBriefing(request); startInspection(request);
   // Voice text enters only through the same create path; a busy or uncertain panel refuses it.
   void startVoice(request, async ({ text }) => {
     if (uncertain() || mutationPending) throw new Error('panel busy');
@@ -174,8 +179,8 @@ function card(task, last) {
   const heading = el('h3'); const link = el('a', task.title); link.href = taskLink(task.taskId); heading.append(link);
   article.tabIndex = -1;
   article.append(meta, heading);
-  // Notes OptChat reports on its own work (src/work-tracker.ts): what it says, not verification.
-  if (last?.source.actorId === 'assistant-client' && last.evidence.reference !== '-') article.append(el('p', last.evidence.reference, 'task-note'));
+  // Notes OptChat (src/work-tracker.ts) or the draft executor report on their own work: what they say, not verification.
+  if (['assistant-client', 'draft-executor'].includes(last?.source.actorId) && last.evidence.reference !== '-') article.append(el('p', last.evidence.reference, 'task-note'));
   const verification = { verified: 'Verificado', not_verified: 'Resultado não verificado', blocked: 'Verificação bloqueada' };
   article.append(el('p', verification[task.verification], 'task-verification'));
   const details = el('details'); details.append(el('summary', 'Identidade da tarefa'), el('p', `${task.taskId} · origem ${task.sourceEventId}`)); article.append(details);
@@ -191,6 +196,29 @@ function card(task, last) {
   evidence.addEventListener('click', () => { selectedTask = task.taskId; renderEvidence(); $('#evidence-heading').scrollIntoView({ block: 'nearest', behavior: 'auto' }); });
   controls.append(evidence); article.append(controls); return article;
 }
+/** One button per option the current question offers; a click answers this revision and request only, like the typed answer. */
+function quickReplies(task) {
+  const key = `${task.taskId}:${task.revision}`;
+  if (!prompts.has(key)) { prompts.set(key, null); void loadPrompt(task, key); return []; }
+  const prompt = prompts.get(key);
+  if (!prompt?.options.length) return [];
+  const group = el('div', undefined, 'quick-replies');
+  group.setAttribute('role', 'group'); group.setAttribute('aria-label', `Respostas r\u00e1pidas ao pedido ${task.inputRevision}`);
+  for (const option of prompt.options) {
+    const button = el('button', option); button.type = 'button'; button.disabled = uncertain() || mutationPending;
+    button.addEventListener('click', () => mutate(`/web/api/tasks/${encodeURIComponent(task.taskId)}/respond`, { revision: task.revision, inputRevision: task.inputRevision, text: option }));
+    group.append(button);
+  }
+  return [group];
+}
+async function loadPrompt(task, key) {
+  try {
+    const value = await request(`/web/api/tasks/${encodeURIComponent(task.taskId)}/prompt`);
+    // An answer for another revision belongs to a newer card; this one keeps only the typed answer.
+    prompts.set(key, value.revision === task.revision && value.inputRevision === task.inputRevision ? value.prompt : null);
+    renderedKey = undefined; render();
+  } catch { prompts.delete(key); }
+}
 function responseForm(task) {
   const form = el('form', undefined, 'response-form');
   const id = `response-${crypto.randomUUID()}`;
@@ -200,7 +228,7 @@ function responseForm(task) {
   input.addEventListener('input', () => lifecycle.saveDraft(task, input.value));
   const stale = draft.revision !== task.revision || draft.inputRevision !== task.inputRevision;
   const button = el('button', mutationPending ? 'Enfileirar resposta' : 'Responder ao pedido atual', 'primary'); button.type = 'submit'; button.disabled = stale || uncertain();
-  form.append(label, input);
+  form.append(...quickReplies(task), label, input);
   const queued = queue.pending().filter(item => item.taskId === task.taskId);
   if (queued.length) {
     const list = el('ol', undefined, 'queued');
@@ -393,6 +421,7 @@ $('#login-form').addEventListener('submit', async event => {
   finally { button.disabled = false; }
 });
 $('#logout').addEventListener('click', async () => {
+  stopVoice();
   try { await request('/web/session/logout', {}); signedOut(); notice('Sessão encerrada neste navegador.'); }
   catch { notice('Saída não confirmada. Feche o navegador ou tente sair novamente; a sessão pode continuar ativa.'); }
 });

@@ -6,14 +6,15 @@ import { randomUUID } from 'node:crypto';
 import { TaskStore } from '../src/store/db.ts';
 import { createAssistantServer } from '../src/http/server.ts';
 
-async function clockFixture(fn: (f: { base: string; server: Server; store: TaskStore; advance: (ms: number) => void; login: (cookie?: string, token?: string) => Promise<Response> }) => Promise<void>) {
+async function clockFixture(fn: (f: { base: string; server: Server; store: TaskStore; advance: (ms: number) => void; login: (cookie?: string, token?: string) => Promise<Response>; session: (cookie: string) => Promise<Response> }) => Promise<void>) {
   const originalNow = Date.now; let now = originalNow(); Date.now = () => now;
   const store = new TaskStore(':memory:', 'session-test');
   const server = createAssistantServer({ store, token: 'TEST-ONLY', profileId: 'session-test', web: true });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const login = (cookie = '', token = 'TEST-ONLY') => fetch(`${base}/web/session`, { method: 'POST', headers: { origin: base, cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token }) });
-  try { await fn({ base, server, store, advance: ms => { now += ms; }, login }); }
+  const session = (cookie: string) => fetch(`${base}/web/session`, { headers: { cookie } });
+  try { await fn({ base, server, store, advance: ms => { now += ms; }, login, session }); }
   finally { Date.now = originalNow; await new Promise<void>(resolve => server.close(() => resolve())); store.close(); }
 }
 const cookieOf = (res: Response) => res.headers.get('set-cookie')!.split(';')[0];
@@ -23,12 +24,11 @@ test('web sessions expire by idle and absolute age, reauthentication rotates ins
   assert.match(first.headers.get('set-cookie')!, /HttpOnly; SameSite=Strict/);
   const second = await f.login(firstCookie); const cookie = cookieOf(second);
   assert.notEqual(firstCookie, cookie);
-  assert.equal((await fetch(`${f.base}/web/session`, { headers: { cookie: firstCookie } })).status, 401);
-  const get = () => fetch(`${f.base}/web/session`, { headers: { cookie } });
-  for (let hour = 0; hour < 12; hour++) { f.advance(3_600_000); assert.equal((await get()).status, 200); }
-  f.advance(1); assert.equal((await get()).status, 401);
+  assert.equal((await f.session(firstCookie)).status, 401);
+  for (let hour = 0; hour < 12; hour++) { f.advance(3_600_000); assert.equal((await f.session(cookie)).status, 200); }
+  f.advance(1); assert.equal((await f.session(cookie)).status, 401);
   const idle = cookieOf(await f.login()); f.advance(2 * 3_600_000 + 1);
-  assert.equal((await fetch(`${f.base}/web/session`, { headers: { cookie: idle } })).status, 401);
+  assert.equal((await f.session(idle)).status, 401);
 }));
 
 test('in-flight mutations cannot survive logout, rotation, or expiry', async () => {
@@ -52,7 +52,7 @@ test('in-flight mutations cannot survive logout, rotation, or expiry', async () 
         } else {
           for (let hour = 0; hour < 12; hour++) {
             f.advance(3_600_000);
-            assert.equal((await fetch(`${f.base}/web/session`, { headers: { cookie } })).status, 200);
+            assert.equal((await f.session(cookie)).status, 200);
           }
           f.advance(1);
         }

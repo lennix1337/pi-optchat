@@ -93,6 +93,21 @@ export function api(endpoint: string, path: string, body?: unknown): Promise<{ s
     req.end(data);
   });
 }
+/** Runs `main.ts --config <config> --web` from this checkout; `stop` sends SIGTERM, which on Windows ends it without a drain. */
+export function launchWeb(config: string) {
+  const child = spawn(process.execPath, ['assistant/src/main.ts', '--config', config, '--web'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let output = '';
+  const exited = once(child, 'exit');
+  const ready = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Server startup timed out: ' + output)), 20000);
+    const cleanup = () => clearTimeout(timeout);
+    child.stdout.on('data', data => { output += data; if (output.includes('Assistant listening:')) { cleanup(); resolve(); } });
+    child.stderr.on('data', data => { output += data; });
+    child.once('error', error => { cleanup(); reject(error); });
+    child.once('exit', () => { cleanup(); reject(new Error('Server exited before readiness: ' + output)); });
+  });
+  return { ready, output: () => output, async stop() { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await exited; } };
+}
 export function createTaskBody(taskId: string, title: string) {
   return { task: newTask(taskId, title), context: { sessionId: 'session', channelId: 'channel', runId: 'run', sourceEventId: `source-${taskId}`, evidenceReference: 'ops-test' } };
 }

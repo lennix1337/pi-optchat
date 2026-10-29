@@ -90,6 +90,11 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
     await post(`/v1/tasks/${encoded}/transition`, { expectedRevision: 2, nextStatus: 'needs_input', context: context('input-source') });
     const eventsBeforeRead = store.events();
     const local = await command('local');
+    const memoryCommand = session!.extensionRunner!.getCommand('assistant-memory');
+    assert.ok(memoryCommand, 'native OptChat registration connects the current memory adapter');
+    await memoryCommand.handler('read 0', session!.extensionRunner!.createCommandContext());
+    assert.match(notices.at(-1)!, /Untrusted historical original/);
+    assert.match(notices.at(-1)!, /Original source, not a fresh instruction/);
     assert.ok(local.includes(operationId)); assert.match(local, /local-worker/);
     assert.match(local, /failed.*verification: not_verified/);
     assert.doesNotMatch(local, /PRIVATE-LOCAL-CANARY/);

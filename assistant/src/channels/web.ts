@@ -5,11 +5,16 @@ import type { Event } from '../contracts/events.ts';
 import type { Task, TaskStatus } from '../contracts/tasks.ts';
 import { boundedText, oneOf, positive, text } from '../contracts/validation.ts';
 import type { TaskStore } from '../store/db.ts';
+import type { TaskPrompt } from '../runtime/task-executor.ts';
+import type { StoredBriefings } from '../briefing/view.ts';
+import { StoredPanel } from './stored-panel.ts';
+import type { InspectionSource } from './inspection.ts';
 import { capabilities, checkSetup, type SetupComponent } from '../setup.ts';
 import type { ArtifactRegistry } from '../artifacts/registry.ts';
 import { ArtifactRoutes } from '../artifacts/preview.ts';
 import { authenticate } from '../http/auth.ts';
 import { remoteOrigins } from './origins.ts';
+import { unavailableVoice, voiceBodyLimit, type VoiceProvider } from '../voice.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from '../http/io.ts';
 
 /** Transitions a human may take from the panel; workers own working/needs_input/ready_for_review. */
@@ -37,13 +42,14 @@ const assets: Record<string, { file: string; type: string }> = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app/app.js': { file: 'src/app.js', type: 'text/javascript; charset=utf-8' },
   '/app/state.js': { file: 'src/state.js', type: 'text/javascript; charset=utf-8' },
+  '/app/briefing.js': { file: 'src/briefing.js', type: 'text/javascript; charset=utf-8' },
+  '/app/inspection.js': { file: 'src/inspection.js', type: 'text/javascript; charset=utf-8' },
   '/app/app.css': { file: 'src/app.css', type: 'text/css; charset=utf-8' },
   '/app/artifacts/artifacts.js': { file: 'src/artifacts/artifacts.js', type: 'text/javascript; charset=utf-8' },
   '/app/voice/voice.js': { file: 'src/voice/voice.js', type: 'text/javascript; charset=utf-8' },
+  '/app/voice/media.js': { file: 'src/voice/media.js', type: 'text/javascript; charset=utf-8' },
   '/app/voice/voice-ui.js': { file: 'src/voice/voice-ui.js', type: 'text/javascript; charset=utf-8' },
 };
-/** No local transcription provider exists on this host (no Portuguese-capable recognizer), so voice fails closed. */
-const voiceStatus = { version: 1, state: 'blocked', reason: 'provider_unavailable', languages: [] };
 const webRoot = new URL('../../web/', import.meta.url);
 export const securityHeaders = {
   'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -55,8 +61,21 @@ export const securityHeaders = {
   'cache-control': 'no-store',
 };
 
+function serveAsset(res: ServerResponse, asset: { file: string; type: string }, voiceEnabled: boolean): void {
+  const body = readFileSync(new URL(asset.file, webRoot));
+  res.writeHead(200, { ...securityHeaders, ...(voiceEnabled ? { 'permissions-policy': 'camera=(), microphone=(self), geolocation=()' } : {}), 'content-type': asset.type });
+  res.end(body);
+}
+
 type Session = { csrf: string; label: string; created: number; seen: number };
-type Options = { store: TaskStore; token: string; profileId: string; artifacts?: ArtifactRegistry; now?: () => number; setup?: () => SetupComponent[]; origins?: readonly string[] };
+/** The draft executor's current question for a waiting task, shown in the panel with its quick answers. */
+export type PromptSource = (task: Task) => TaskPrompt | null;
+type Options = {
+  store: TaskStore; token: string; profileId: string;
+  artifacts?: ArtifactRegistry | undefined; voice?: VoiceProvider | undefined; now?: (() => number) | undefined;
+  setup?: (() => SetupComponent[]) | undefined; origins?: readonly string[] | undefined;
+  prompt?: PromptSource | undefined; briefings?: StoredBriefings | undefined; inspection?: InspectionSource | undefined;
+};
 const componentId = /^[a-z][a-z0-9-]{0,39}$/;
 
 /** Browser access is authenticated, but is never trusted-local-human approval authority. */
@@ -70,7 +89,11 @@ export class WebChannel {
   private readonly setup: (() => SetupComponent[]) | undefined;
   private readonly artifacts: ArtifactRoutes | null;
   private readonly origins: Map<string, string>;
-  constructor({ store, token, profileId, artifacts, now = Date.now, setup, origins = [] }: Options) {
+  private readonly voice: VoiceProvider | undefined;
+  private readonly prompt: PromptSource | undefined;
+  private readonly storedPanel: StoredPanel;
+  constructor({ store, token, profileId, artifacts, voice, now = Date.now, setup, origins = [], prompt, briefings, inspection }: Options) {
+    this.voice = voice; this.prompt = prompt; this.storedPanel = new StoredPanel(profileId, briefings, inspection);
     this.store = store; this.token = token; this.profileId = profileId; this.now = now; this.setup = setup;
     this.origins = remoteOrigins(origins);
     this.artifacts = artifacts ? new ArtifactRoutes(artifacts, now) : null;
@@ -78,9 +101,11 @@ export class WebChannel {
   owns(pathname: string): boolean { return Object.hasOwn(assets, pathname) || pathname === '/web' || pathname.startsWith('/web/') || pathname.startsWith('/app/'); }
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    // Microphone permission is confined to this panel; it never changes effect approval authority.
+    if (this.voice) res.setHeader('permissions-policy', 'camera=(), microphone=(self), geolocation=()');
     const host = this.allowedHost(req);
     if (!host) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
-    if (req.method === 'GET' && Object.hasOwn(assets, url.pathname)) { query(url, []); this.asset(res, assets[url.pathname]); return; }
+    if (req.method === 'GET' && Object.hasOwn(assets, url.pathname)) { query(url, []); serveAsset(res, assets[url.pathname], this.voice !== undefined); return; }
     if (!url.pathname.startsWith('/web/')) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
     if (req.method === 'POST' && !this.sameOrigin(req, host)) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
     if (url.pathname === '/web/session') { await this.session(req, res, url, host); return; }
@@ -99,8 +124,30 @@ export class WebChannel {
       if (!this.artifacts) { send(res, 503, { error: 'Artifacts not configured' }, securityHeaders); return; }
       await this.artifacts.handle(req, res, url, { sessionId: id!, origin: this.originOf(host), headers: securityHeaders, stillCurrent: () => this.stillCurrent(req, id!, session) }); return;
     }
-    if (req.method === 'GET' && url.pathname === '/web/api/voice/status') { query(url, []); send(res, 200, voiceStatus, securityHeaders); return; }
+    if (req.method === 'GET' && await this.storedPanel.handle(req, res, url, securityHeaders, () => this.stillCurrent(req, id!, session))) return;
+    if (url.pathname.startsWith('/web/api/voice/')) { await this.voiceRoute(req, res, url, id!, session); return; }
     await this.api(req, res, url, id!, session);
+  }
+
+  private async voiceRoute(req: IncomingMessage, res: ServerResponse, url: URL, id: string, session: Session): Promise<void> {
+    query(url, []);
+    const headers = { ...securityHeaders, ...(this.voice ? { 'permissions-policy': 'camera=(), microphone=(self), geolocation=()' } : {}) };
+    if (req.method === 'GET' && url.pathname === '/web/api/voice/status') { send(res, 200, this.voice?.status() ?? unavailableVoice, headers); return; }
+    if (req.method !== 'POST' || url.pathname !== '/web/api/voice/transcribe') { send(res, 404, { error: 'Not found' }, headers); return; }
+    if (!this.voice || this.voice.status().state !== 'available') { send(res, 503, { error: 'provider_unavailable' }, headers); return; }
+    const input = await readBody(req, voiceBodyLimit);
+    if (!this.stillCurrent(req, id, session)) { send(res, 401, { error: 'Unauthorized' }, headers); return; }
+    const controller = new AbortController();
+    const abortVoiceOnClose = () => controller.abort();
+    res.once('close', abortVoiceOnClose);
+    try {
+      const result = await this.voice.transcribe(input, controller.signal);
+      if (!this.stillCurrent(req, id, session)) { send(res, 401, { error: 'Unauthorized' }, headers); return; }
+      send(res, 200, result, headers);
+    } catch (error) {
+      const code = error instanceof Error && /^voice_[a-z_]+$/.test(error.message) ? error.message : 'transcription_failed';
+      send(res, code === 'voice_busy' ? 409 : 422, { error: code }, headers);
+    } finally { res.off('close', abortVoiceOnClose); }
   }
 
   private allowedHost(req: IncomingMessage): string | null {
@@ -119,11 +166,6 @@ export class WebChannel {
   private sameOrigin(req: IncomingMessage, host: string): boolean {
     const site = req.headers['sec-fetch-site'];
     return req.headers.origin === this.originOf(host) && (site === undefined || site === 'same-origin');
-  }
-  private asset(res: ServerResponse, asset: { file: string; type: string }): void {
-    const body = readFileSync(new URL(asset.file, webRoot));
-    res.writeHead(200, { ...securityHeaders, 'content-type': asset.type });
-    res.end(body);
   }
   private current(req: IncomingMessage): [string | null, Session | null] {
     const id = (req.headers.cookie ?? '').split(';').map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1) ?? null;
@@ -169,6 +211,8 @@ export class WebChannel {
       send(res, 200, this.store.events(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 100, 1, 100)), securityHeaders); return;
     }
     if (req.method === 'GET' && url.pathname === '/web/api/setup' && this.setup) { await this.setupStatus(res, url); return; }
+    const asking = /^\/web\/api\/tasks\/([^/]+)\/prompt$/.exec(url.pathname);
+    if (req.method === 'GET' && asking) { this.currentPrompt(res, url, taskIdParam(asking[1])); return; }
     if (req.method !== 'POST' || !(url.pathname === '/web/api/tasks' || match)) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
     query(url, []);
     const body = await readBody(req);
@@ -202,6 +246,13 @@ export class WebChannel {
     const response = { version: 1 as const, profileId: this.profileId, taskId: id, revision: input.revision, inputRevision: input.inputRevision, text: input.text };
     const result = this.conflictWithTask(res, id, () => this.store.respond(response, this.event(id, input, session)));
     if (result) send(res, 200, result, securityHeaders);
+  }
+  /** The question bound to the task's current revision and input request; a click answers only that one. */
+  private currentPrompt(res: ServerResponse, url: URL, id: string): void {
+    query(url, []);
+    const task = this.store.get(id);
+    if (!task) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
+    send(res, 200, { taskId: task.taskId, revision: task.revision, inputRevision: task.inputRevision, prompt: this.prompt?.(task) ?? null }, securityHeaders);
   }
   /** Read-only: probes are local and unpaid; declining a source ("Agora não") only changes labels. */
   private async setupStatus(res: ServerResponse, url: URL): Promise<void> {

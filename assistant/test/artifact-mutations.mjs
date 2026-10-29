@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'assistant-artifact-mutants-'));
-const tests = ['artifact-flow.test.ts', 'preview-isolation.test.ts', 'voice-flow.test.ts'];
+const tests = ['artifact-flow.test.ts', 'preview-isolation.test.ts', 'voice-flow.test.ts', 'voice-lifecycle.test.mjs'];
 // [name, file, exact source, replacement, expected failure]
 const variants = [
   ['managed-root-traversal', 'src/artifacts/registry.ts', "if (!inside(this.root, path) || (existsSync(path) && !inside(this.root, realpathSync(path)))) fail('artifact_location_invalid');", '', /expected: \/artifact_location_invalid\//],
@@ -22,7 +22,12 @@ const variants = [
   ['review-in-flight-revocation', 'src/channels/web.ts', 'stillCurrent: () => this.stillCurrent(req, id!, session)', 'stillCurrent: () => true', /200 !== 401/],
   ['confirmation-before-send', 'web/src/voice/voice.js', "if (this.state !== 'confirmed') throw new Error('confirmation_required');", '', /confirmation_required/],
   ['human-gesture', 'web/src/voice/voice.js', 'return event?.isTrusted === true && gestures.has(event.type);', 'return gestures.has(event?.type);', /human_gesture/],
-  ['audio-retention', 'web/src/voice/voice.js', 'finally { this.audio = null; }', '', /fixture-audio/],
+  ['audio-retention', 'web/src/voice/voice.js', 'finally { if (draft.captureGeneration === generation) draft.audio = null; }', '', /fixture-audio/],
+  ['cancelled-microphone', 'web/src/voice/voice.js', "if (draft.state !== 'requesting' || draft.captureGeneration !== generation) { stopTracks(stream); return; }", '', /cancellation while microphone/],
+  ['cancel-before-upload', 'web/src/voice/media.js', '    signal?.throwIfAborted();\n    return request', '    return request', /cancel or logout during conversion/],
+  ['cancel-signal-forwarding', 'web/src/voice/voice.js', 'draft.provider.transcribe(audio, draft.language, signal)', 'draft.provider.transcribe(audio, draft.language)' , /cancel or logout during conversion/],
+  ['late-voice-status', 'web/src/voice/voice-ui.js', '  if (lifecycle !== generation) return;', '', /late status responses/],
+  ['automatic-stop-state', 'web/src/voice/voice.js', "else draft.state = 'captured';", 'else {}', /automatic capture stop/],
 ];
 try {
   for (const [name, file, before, after, expected] of variants) {

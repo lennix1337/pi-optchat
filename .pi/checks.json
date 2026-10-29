@@ -31,10 +31,45 @@
       "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/timezone.test.ts", "assistant/test/routines.test.ts", "assistant/test/missed-runs.test.ts", "assistant/test/routine-journey.test.ts"],
       "timeoutMs": 120000
     },
+    "assistant-routine-service": {
+      "description": "Routines in the personal service: routine.mjs CLI, paused creates nothing, operator resume, one task per slot vouched to the draft executor, forged origin refused, pause/restart repeat nothing (main.ts --web with a loopback fake provider)",
+      "argv": ["node", "--test", "--test-timeout=160000", "assistant/test/routine-service.test.ts", "assistant/test/routine-service-journey.test.ts"],
+      "timeoutMs": 240000
+    },
     "assistant-computer": {
       "description": "T06 Docker computers (needs engine + node:22.23.4-alpine3.23, never pulls): isolation, gateway shell, navigation refusals, lifecycle, takeover",
-      "argv": ["node", "--test", "--test-timeout=120000", "assistant/test/computer-boundary.test.ts", "assistant/test/computer-lifecycle.test.ts", "assistant/test/takeover.test.ts"],
+      "argv": ["node", "--test", "--test-timeout=120000", "assistant/test/computer-boundary.test.ts", "assistant/test/computer-lifecycle.test.ts", "assistant/test/takeover.test.ts", "assistant/test/computer-browser.test.ts"],
       "timeoutMs": 300000
+    },
+    "assistant-browser-egress-mutations": {
+      "description": "Disposable hermetic source mutations require assertion failures for origin/method/header/DNS/TLS/pinning/response guards; no outbound traffic",
+      "argv": ["node", "assistant/test/computer-egress-mutations.mjs"],
+      "timeoutMs": 120000
+    },
+    "assistant-browser-egress-docker": {
+      "description": "Docker-only STDIO proxy, container-only CA lifecycle, direct TCP/DNS denial, CONNECT/Host/write refusal and gateway review; no external HTTP requests; needs prebuilt optchat-computer-browser-egress:1",
+      "argv": ["node", "--test", "--test-timeout=90000", "assistant/test/computer-egress-docker.test.ts", "assistant/test/computer-egress-fixture.test.ts"],
+      "timeoutMs": 120000
+    },
+    "assistant-browser-egress-live": {
+      "description": "Explicit public credential-free HTTPS reads to httpbingo.org via disposable Docker browser: gateway review, visible page, redirects/subresources and denied writes/internal/downgrade; never pulls image",
+      "argv": ["node", "--test", "--test-timeout=90000", "assistant/test/computer-egress-live.test.ts"],
+      "timeoutMs": 180000
+    },
+    "assistant-browser-egress": {
+      "description": "Hermetic public HTTPS broker admission, DNS rebinding/mixed-answer refusal and TLS socket pinning; no outbound traffic",
+      "argv": ["node", "--test", "assistant/test/computer-egress.test.ts", "assistant/test/computer-egress-response.test.ts", "assistant/test/computer-relay-policy.test.mjs", "assistant/test/computer-egress-target.test.ts"],
+      "timeoutMs": 30000
+    },
+    "assistant-computer-safety": {
+      "description": "Hermetic regressions for uncertain Docker cleanup/destroy, foreign-owner preservation and conservative public destination classification; no Docker or network needed",
+      "argv": ["node", "--test", "assistant/test/computer-cleanup.test.ts", "assistant/test/computer-network.test.ts"],
+      "timeoutMs": 30000
+    },
+    "assistant-computer-safety-mutations": {
+      "description": "Disposable source copies prove cleanup/owner/uncertain-record and destination guards; assertion failures required, crashes and timeouts are not killed mutants",
+      "argv": ["node", "assistant/test/computer-safety-mutations.mjs"],
+      "timeoutMs": 60000
     },
     "assistant-connectors": {
       "description": "T08 governed MCP connectors over a local stdio fixture server: grants, discovery paging, revocation, revalidation",
@@ -50,6 +85,46 @@
       "description": "Disposable-source proof that removing each T07 guard (state, redirect, PKCE, identity, scope, revocation, grant, injection isolation, Start authority, daily dedup) fails its test",
       "argv": ["node", "assistant/test/google-mutations.mjs"],
       "timeoutMs": 600000
+    },
+    "assistant-memory-client": {
+      "description": "Registered current-chat memory adapter through real FileStore and disposable private SQLite: original paging, provenance, corrections/reopen/staleness and profile-swap refusal",
+      "argv": ["node", "--experimental-transform-types", "--import", "./test/support.ts", "--test", "test/assistant-memory.test.ts"],
+      "timeoutMs": 120000
+    },
+    "assistant-voice": {
+      "description": "Authenticated local voice endpoint, bounded PCM/settings guards and browser review/cancel/confirmation; no model loading or actual microphone in this check",
+      "argv": ["node", "--test", "assistant/test/voice-provider.test.ts", "assistant/test/voice-flow.test.ts", "assistant/test/voice-lifecycle.test.mjs"],
+      "timeoutMs": 30000
+    },
+    "assistant-display-learning": {
+      "description": "SQLite-only reviewed display preferences, retained synthetic evaluation, version/profile/authority fences and CLI non-TTY refusal; no instruction/file mutation",
+      "argv": ["node", "--test", "assistant/test/display-learning.test.ts", "assistant/test/display-learning-guards.test.ts", "assistant/test/learning-retained.test.ts", "assistant/test/display-learning-cli.test.ts"],
+      "timeoutMs": 60000
+    },
+    "assistant-display-learning-mutations": {
+      "description": "Disposable managed-display learning guards killed by assertions, including exact profile binding",
+      "argv": ["node", "assistant/test/display-learning-mutations.mjs"],
+      "timeoutMs": 120000
+    },
+    "assistant-display-learning-cli-mutations": {
+      "description": "Disposable CLI input privacy/bounds/TTY guard controls; no actual operator approval",
+      "argv": ["node", "assistant/test/display-learning-cli-mutations.mjs"],
+      "timeoutMs": 120000
+    },
+    "assistant-inspection-journey": {
+      "description": "Real disposable main.ts web service: approved display state, read-only panel, restart persistence and rollback; no real model/accounts",
+      "argv": ["node", "--test", "assistant/test/inspection-journey.test.ts"],
+      "timeoutMs": 90000
+    },
+    "assistant-notification-delivery": {
+      "description": "Durable pre-transport notification claim, concurrent connections and crash/uncertain no replay; fake sink only",
+      "argv": ["node", "--test", "assistant/test/notifications.test.ts", "assistant/test/task-notifier.test.ts", "assistant/test/notification-delivery.test.ts"],
+      "timeoutMs": 60000
+    },
+    "assistant-notification-delivery-mutations": {
+      "description": "Disposable source proof for delivery claim and no retry of uncertain transport",
+      "argv": ["node", "assistant/test/notification-delivery-mutations.mjs"],
+      "timeoutMs": 90000
     },
     "assistant-memory": {
       "description": "T09 memory view (provenance, corrections, isolation) and learning proposals (measure, approve, apply, revert)",
@@ -96,6 +171,31 @@
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/assistant-client.test.ts", "test/assistant-pages.test.ts", "test/assistant-local-command.test.ts", "test/assistant-projection.test.ts"],
       "timeoutMs": 30000
     },
+    "assistant-executor": {
+      "description": "Opt-in tool-free draft executor: admission, persisted-answer consumption, crash recovery without regeneration, account rotation over saved defaults with cooldowns, Pi runner against in-process fixture providers; no network",
+      "argv": ["node", "--experimental-transform-types", "--no-warnings", "--test", "--test-timeout=60000", "assistant/test/task-executor.test.ts", "assistant/test/task-response-reader.test.ts", "assistant/test/pi-draft.test.ts", "assistant/test/account-routes.test.ts"],
+      "timeoutMs": 120000
+    },
+    "assistant-executor-mutations": {
+      "description": "Disposable source copies: removing each executor guard (channel/source admission, single attempt, no resend after stop, stale revision, answer consumption, output parsing, tool-free session, account wait/rotation/cooldown/bound) fails a named test",
+      "argv": ["node", "assistant/test/executor-mutations.mjs"],
+      "timeoutMs": 300000
+    },
+    "assistant-executor-journey": {
+      "description": "Real main.ts --web process with a loopback fake OpenAI-compatible provider: panel task -> question -> answer -> draft, hard kill mid-generation, lease expiry recovery without resend (~55 s)",
+      "argv": ["node", "--test", "assistant/test/executor-journey.test.ts"],
+      "timeoutMs": 240000
+    },
+    "assistant-backup-artifact-mutations": {
+      "description": "Disposable mutation checks of artifact backup and restored archive admission; no personal data",
+      "argv": ["node", "assistant/test/backup-artifact-mutations.mjs"],
+      "timeoutMs": 180000
+    },
+    "assistant-backup-artifacts": {
+      "description": "Encrypted archive recovery of artifact registry and immutable managed bytes; disposable private data only",
+      "argv": ["node", "--test", "assistant/test/backup-artifacts.test.ts", "assistant/test/backup-restore.test.ts"],
+      "timeoutMs": 180000
+    },
     "assistant-ops": {
       "description": "T13 disposable ops: idempotent start/stop/health with pid+start-time ownership, dry-run autostart in a disposable APPDATA, encrypted backup/restore without replay, notification consent/quiet hours, update rollback; loopback only",
       "argv": ["node", "--test", "--test-timeout=180000", "assistant/test/notifications.test.ts", "assistant/test/task-notifier.test.ts", "assistant/test/backup-restore.test.ts", "assistant/test/install.test.ts", "assistant/test/shutdown.test.ts", "assistant/test/ops-journey.test.ts"],
@@ -105,6 +205,11 @@
       "description": "Disposable-source negative controls for T13: process ownership, foreign port, graceful drain, autostart dry run, backup authentication, restore no-replay and approval fences, notification consent, quiet hours and free-text refusal",
       "argv": ["node", "assistant/test/ops-mutations.mjs"],
       "timeoutMs": 600000
+    },
+    "assistant-artifact-service": {
+      "description": "Trusted artifact CLI and production web startup: private durable registry, preview/review/download, restart and profile isolation",
+      "argv": ["node", "--test", "assistant/test/artifact-service.test.ts", "assistant/test/artifact-entry.test.ts"],
+      "timeoutMs": 90000
     },
     "assistant-artifacts": {
       "description": "T12 disposable artifact registry (versions, review, restart), sandboxed preview/download over the loopback web client, and the fail-closed voice review contract; no provider or microphone",
@@ -123,7 +228,7 @@
     },
     "assistant-setup": {
       "description": "T11 honest setup: only exercised recent probes are ready, invalid URL/credential/identity never ready, no paid model call, local mode labels, onboarding provenance and corrections, read-only web status",
-      "argv": ["node", "--test", "assistant/test/setup.test.ts", "assistant/test/onboarding.test.ts", "assistant/test/web-setup.test.ts"],
+      "argv": ["node", "--test", "assistant/test/setup.test.ts", "assistant/test/onboarding.test.ts", "assistant/test/web-setup.test.ts", "assistant/test/service-setup.test.ts"],
       "timeoutMs": 60000
     },
     "assistant-setup-mutations": {
@@ -140,6 +245,16 @@
       "description": "Disposable-source proof that each Slack/Teams boundary guard is load-bearing (18 mutants)",
       "argv": ["node", "assistant/test/channel-mutations.mjs"],
       "timeoutMs": 600000
+    },
+    "assistant-briefing-panel-mutations": {
+      "description": "Disposable controls for stored-briefing profile binding, in-flight session revocation and no implicit Google refresh",
+      "argv": ["node", "assistant/test/web-briefing-mutations.mjs"],
+      "timeoutMs": 90000
+    },
+    "assistant-briefing-panel": {
+      "description": "Stored briefing panel: profile/session boundaries, no implicit Google refresh, sources/uncertainty and terminal consumer",
+      "argv": ["node", "--import", "tsx", "--test", "assistant/test/web-briefing.test.ts", "test/assistant-client.test.ts"],
+      "timeoutMs": 60000
     },
     "assistant-web": {
       "description": "Disposable loopback web channel: cookie, origin/CSRF, stale decisions, events, assets and browser state; no personal service",
@@ -252,9 +367,14 @@
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/catchup.test.ts", "test/catchup-integration.test.ts", "test/catchup-runtime.test.ts"],
       "timeoutMs": 30000
     },
+    "slack-bridge": {
+      "description": "Offline bridge routing, thread-bound single-use approvals, expiry/replay and legacy-service fallback; no real Slack",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/slack-bridge.test.ts"],
+      "timeoutMs": 30000
+    },
     "shell-lifecycle": {
-      "description": "Offline managed shell dispatch/cancellation, child exit and SDK headless notification/cleanup regressions",
-      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/shells.test.ts", "test/headless.test.ts"],
+      "description": "Offline managed shell dispatch/cancellation, child exit, Windows pipeline reaping on timeout/abort and SDK headless notification/cleanup regressions",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/shells.test.ts", "test/shell-reaper.test.ts", "test/headless.test.ts"],
       "timeoutMs": 120000
     },
     "unit": {

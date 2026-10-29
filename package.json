@@ -42,6 +42,9 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "overrides": {
+    "undici": "^8.12.2"
+  },
   "description": "OptChat memory for Pi: persistent profiles, zoomable history, background agents, and conversation imports.",
   "keywords": [
     "pi-package",

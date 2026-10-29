@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
+import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
 import { atomicWrite } from './store.ts';
@@ -37,7 +38,13 @@ const defaultRequest: Request = (owner, path, body) => assistantRequest(assistan
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
-export type ApprovalRequest = { summary: string; label: string; expires: number; decide: (approve: boolean) => boolean };
+export type ApprovalRequest = { token: string; summary: string; label: string; expires: number; decide: (approve: boolean) => boolean };
+/** What an approval post says once the call stopped waiting, so it never stays "pendente" with live buttons. */
+const SETTLED_TEXT: Record<Settled | 'phone-approved' | 'phone-denied', string> = {
+  approved: '\u2705 *Aprovado no terminal*', denied: '\u{1f6ab} *Negado no terminal*', superseded: '\u21aa\ufe0f *Substitu\u00edda por uma chamada mais nova*',
+  expired: '\u231b *Expirou sem decis\u00e3o*', 'phone-approved': '\u2705 *Aprovado no Slack*', 'phone-denied': '\u{1f6ab} *Negado no Slack*',
+};
+type Post = { request: ApprovalRequest; channel: string | null };
 const TOPICS = 'slack-threads.json';
 const TOPIC_DAYS = 14;
 
@@ -70,12 +77,15 @@ export class SlackBridge {
   private running = false;
   private readonly threads = new Map<string, Origin>();
   /** Approval posts by their DM ts, until decided or expired. */
-  private readonly approvals = new Map<string, ApprovalRequest>();
-  private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void };
+  private readonly approvals = new Map<string, Post>();
+  /** Rewrites of decided approval posts, in order. */
+  private settling: Promise<unknown> = Promise.resolve();
+  private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void;
+    schedule: (run: () => void, ms: number) => void };
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, ...options };
+    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, ...options };
   }
 
   start(): void {
@@ -149,23 +159,59 @@ export class SlackBridge {
   }
 
   /**
-   * Posts a gated call to the operator's DM; their `aprovar`/`negar` reply in its thread decides it. Best effort: the
-   * terminal `/approve` keeps working when Slack is down.
+   * Posts a gated call to the operator's DM with Aprovar/Negar buttons; a tap (relayed by the service as that reply) or
+   * their `aprovar`/`negar` in its thread decides it. Best effort: the terminal `/approve` keeps working when Slack is down.
    */
   async askApproval(request: ApprovalRequest): Promise<void> {
     const now = this.options.now();
-    for (const [ts, pending] of this.approvals) if (pending.expires <= now) this.approvals.delete(ts);
+    for (const [ts, post] of this.approvals) if (post.request.expires <= now) this.approvals.delete(ts);
     const minutes = Math.max(1, Math.round((request.expires - now) / 60_000));
+    const head = `⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\n`, tail = `(vale ${minutes} min). Aprova só esta chamada, uma vez.`;
     try {
-      const { ts } = await this.send(`⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\nResponda *aprovar* ou *negar* nesta thread (vale ${minutes} min). Aprova só esta chamada, uma vez.`);
-      this.approvals.set(ts, request);
+      let ts: string, channel: string | undefined;
+      try { ({ ts, channel } = await this.send(`${head}Toque em *Aprovar* ou *Negar*, ou responda *aprovar*/*negar* nesta thread ${tail}`, null, null, { approval: true })); }
+      catch (error) {
+        // A service from before the buttons refuses the field: the thread reply still decides.
+        if (!(error instanceof Error && /HTTP 400/.test(error.message))) throw error;
+        ({ ts, channel } = await this.send(`${head}Responda *aprovar* ou *negar* nesta thread ${tail}`));
+      }
+      this.approvals.set(ts, { request, channel: typeof channel === 'string' ? channel : null });
+      this.options.schedule(() => void this.settled(request.token, 'expired'), Math.max(0, request.expires - now));
     } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
+  /** The call of an approval post stopped waiting outside Slack (terminal, a newer call, expiry): the post says so. */
+  settled(token: string, outcome: Settled): Promise<unknown> {
+    const found = [...this.approvals].find(([, post]) => post.request.token === token);
+    if (!found) return this.settling;
+    this.approvals.delete(found[0]);
+    return this.retire(found[0], found[1], outcome);
+  }
+
+  /** Settles pending post rewrites (tests). */
+  idle(): Promise<unknown> { return this.settling; }
+
+  /** Rewrites the post without its buttons; a service without `update` (or a post without its DM id) gets a thread reply. */
+  private retire(ts: string, { request, channel }: Post, outcome: keyof typeof SETTLED_TEXT): Promise<unknown> {
+    const text = `${SETTLED_TEXT[outcome]} \u00b7 ${request.label}: ${request.summary}`;
+    const owner = this.owner();
+    this.settling = this.settling.then(async () => {
+      try {
+        if (!owner || !channel) throw new Error('no DM id');
+        await this.options.request(owner, '/v1/slack/update', { channel, ts, text });
+      } catch {
+        try { await this.send(text, ts); }
+        catch (error) { this.options.warn(`Approval post not updated on Slack: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+    });
+    return this.settling;
+  }
+
   private async decided(ts: string, approve: boolean): Promise<void> {
-    const request = this.approvals.get(ts)!;
+    const post = this.approvals.get(ts)!, { request } = post;
     this.approvals.delete(ts);
     const done = request.expires > this.options.now() && request.decide(approve);
+    if (done) await this.retire(ts, post, approve ? 'phone-approved' : 'phone-denied');
     const reply = !done ? 'Essa aprovação já expirou ou foi decidida; nada rodou por ela.' : approve ? `Aprovado: ${request.summary}. Vou rodar agora.` : `Negado: ${request.summary}. Não vou rodar.`;
     try { await this.send(reply, ts); } catch { /* the decision stands; the reply is a courtesy */ }
     if (!done) return;
@@ -195,11 +241,11 @@ export class SlackBridge {
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
-  async send(text: string, threadTs: string | null = null, channel: string | null = null): Promise<{ parts: number; ts: string }> {
+  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
     try {
-      const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}) }) as { parts: number; ts: string };
+      const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}), ...options }) as { parts: number; ts: string; channel?: string };
       this.options.sent(channel, text);
       return result;
     }
@@ -227,7 +273,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks, background results and blockers that need their decision, especially when they may be away. `channel` posts to a project channel instead of the DM: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles); route reports by the repo the work is in, and keep the DM for general matters, urgent blockers and decisions. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here.",
+    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel instead of the DM: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles); route reports by the repo the work is in, and keep the DM for general matters, urgent blockers and decisions. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here.",
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #; omit for the DM.' })),

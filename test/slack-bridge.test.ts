@@ -17,6 +17,7 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
   const requests: { path: string; body?: unknown }[] = [];
   let now = 1_000_000;
   let fail: Error | undefined;
+  const timers: { run: () => void; ms: number }[] = [];
   const bridge = new SlackBridge({ sendUserMessage: ((text: string, options: unknown) => { sent.push({ text, options }); }) as never }, () => owner, {
     now: () => now,
     request: async (_owner, path, body) => {
@@ -26,10 +27,11 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
         const after = Number(new URLSearchParams(path.split('?')[1]).get('after'));
         return { messages: inbox.filter(m => m.seq > after) };
       }
-      return { parts: 1, ts: '1.1' };
+      return { parts: 1, ts: '1.1', channel: 'D1' };
     },
+    schedule: (run, ms) => { timers.push({ run, ms }); },
   });
-  return { dir, owner, bridge, sent, requests, inbox, advance: (ms: number) => { now += ms; }, fail: (error?: Error) => { fail = error; }, close: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, owner, bridge, timers, sent, requests, inbox, advance: (ms: number) => { now += ms; }, fail: (error?: Error) => { fail = error; }, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
 /** A run's messages: one assistant message per reply text. */
 const replies = (...texts: string[]) => texts.map(text => ({ role: 'assistant', content: [{ type: 'text', text }] }) as unknown as AgentMessage);
@@ -185,10 +187,11 @@ test('an approval post is decided only by aprovar/negar in its own DM thread, on
   try {
     const decisions: boolean[] = [];
     let live = true;
-    const ask = (expires: number) => f.bridge.askApproval({ summary: 'git push origin main', label: 'push', expires, decide: approve => { decisions.push(approve); const was = live; live = false; return was; } });
+    const ask = (expires: number) => f.bridge.askApproval({ token: '1'.repeat(24), summary: 'git push origin main', label: 'push', expires, decide: approve => { decisions.push(approve); const was = live; live = false; return was; } });
     await ask(1_000_000 + 600_000);
-    const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; threadTs: null };
+    const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; threadTs: null; approval?: boolean };
     assert.match(post.text, /Aprovação pendente.*push: git push origin main/s);
+    assert.equal(post.approval, true, 'the post carries the Aprovar/Negar buttons');
     // The ts the fixture returns for every send is 1.1: replies in that thread decide; elsewhere they are plain messages.
     f.inbox.push({ seq: 1, ts: '2.0', thread: null, text: 'aprovar' }, { seq: 2, ts: '3.0', thread: '9.9', text: 'aprovar' });
     assert.equal(await f.bridge.poll(), 2);
@@ -206,21 +209,103 @@ test('an approval post is decided only by aprovar/negar in its own DM thread, on
   } finally { f.close(); }
 });
 
+test('an approval still reaches Slack, without buttons, when the service predates them', async () => {
+  const f = fixture();
+  try {
+    let refused = 0;
+    const original = (f.bridge as unknown as { options: { request: (...args: unknown[]) => Promise<unknown> } }).options.request;
+    (f.bridge as unknown as { options: { request: (...args: unknown[]) => Promise<unknown> } }).options.request = async (owner, path, body) => {
+      if ((body as { approval?: boolean })?.approval) { refused++; throw new HttpError(400); }
+      return original(owner, path, body);
+    };
+    await f.bridge.askApproval({ token: '2'.repeat(24), summary: 'git push', label: 'push', expires: 1_000_000 + 600_000, decide: () => true });
+    assert.equal(refused, 1);
+    const plain = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; approval?: boolean };
+    assert.match(plain.text, /responda \*aprovar\* ou \*negar\*/i);
+    assert.equal(plain.approval, undefined);
+    f.inbox.push({ seq: 1, ts: '4.0', thread: '1.1', text: 'aprovar' });
+    await f.bridge.poll();
+    assert.match(f.sent.at(-1)!.text, /aprovou no celular/);
+  } finally { f.close(); }
+});
+
 test('negar drops the call, and an expired approval decides nothing', async () => {
   const f = fixture();
   try {
     const decisions: boolean[] = [];
-    await f.bridge.askApproval({ summary: 'npm publish', label: 'publish', expires: 1_000_000 + 60_000, decide: approve => (decisions.push(approve), true) });
+    await f.bridge.askApproval({ token: '3'.repeat(24), summary: 'npm publish', label: 'publish', expires: 1_000_000 + 60_000, decide: approve => (decisions.push(approve), true) });
     f.inbox.push({ seq: 1, ts: '2.0', thread: '1.1', text: 'negar' });
     await f.bridge.poll();
     assert.deepEqual(decisions, [false]);
     assert.match(f.sent.at(-1)!.text, /negou no celular: npm publish\. Não rode/);
-    await f.bridge.askApproval({ summary: 'deploy', label: 'deploy', expires: 1_000_000 + 60_000, decide: approve => (decisions.push(approve), true) });
+    await f.bridge.askApproval({ token: '4'.repeat(24), summary: 'deploy', label: 'deploy', expires: 1_000_000 + 60_000, decide: approve => (decisions.push(approve), true) });
     f.advance(120_000);
     f.inbox.push({ seq: 2, ts: '3.0', thread: '1.1', text: 'sim' });
     await f.bridge.poll();
     assert.deepEqual(decisions, [false], 'expired: decide is never called');
     assert.match((f.requests.at(-1)!.body as { text: string }).text, /expirou/);
+  } finally { f.close(); }
+});
+
+test('an approval decided at the terminal rewrites its Slack post without buttons, and its thread no longer decides', async () => {
+  // 2026-10-29: approved with /approve at the terminal, the DM post kept saying "Aprova\u00e7\u00e3o pendente".
+  const f = fixture();
+  try {
+    const decisions: boolean[] = [];
+    await f.bridge.askApproval({ token: 'a'.repeat(24), summary: 'git worktree remove x', label: 'discard', expires: 1_000_000 + 600_000, decide: approve => (decisions.push(approve), true) });
+    await f.bridge.settled('a'.repeat(24), 'approved');
+    assert.deepEqual(f.requests.at(-1), { path: '/v1/slack/update', body: { channel: 'D1', ts: '1.1', text: '\u2705 *Aprovado no terminal* \u00b7 discard: git worktree remove x' } });
+    f.inbox.push({ seq: 1, ts: '2.0', thread: '1.1', text: 'aprovar' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, [], 'a post already decided at the terminal decides nothing');
+    const count = f.requests.length;
+    await f.bridge.settled('a'.repeat(24), 'denied');
+    assert.equal(f.requests.length, count, 'settled once');
+
+    await f.bridge.askApproval({ token: 'b'.repeat(24), summary: 'npm publish', label: 'publish', expires: 1_000_000 + 600_000, decide: () => true });
+    await f.bridge.settled('b'.repeat(24), 'denied');
+    assert.match((f.requests.at(-1)!.body as { text: string }).text, /^\u{1f6ab} \*Negado no terminal\* \u00b7 publish: npm publish$/u);
+    await f.bridge.askApproval({ token: 'c'.repeat(24), summary: 'rm x', label: 'delete', expires: 1_000_000 + 600_000, decide: () => true });
+    await f.bridge.settled('c'.repeat(24), 'superseded');
+    assert.match((f.requests.at(-1)!.body as { text: string }).text, /Substitu\u00edda/);
+  } finally { f.close(); }
+});
+
+test('an approval post nobody decided says it expired when its time runs out', async () => {
+  const f = fixture();
+  try {
+    await f.bridge.askApproval({ token: 'd'.repeat(24), summary: 'deploy', label: 'deploy', expires: 1_000_000 + 60_000, decide: () => true });
+    assert.equal(f.timers.length, 1);
+    assert.equal(f.timers[0].ms, 60_000);
+    f.advance(60_000);
+    f.timers[0].run();
+    await f.bridge.idle();
+    assert.match((f.requests.at(-1)!.body as { text: string }).text, /^\u231b \*Expirou sem decis\u00e3o\* \u00b7 deploy: deploy$/u);
+  } finally { f.close(); }
+});
+
+test('a decision that cannot rewrite the post (a service without update) is said in its thread instead', async () => {
+  const f = fixture();
+  try {
+    await f.bridge.askApproval({ token: 'e'.repeat(24), summary: 'git push', label: 'push', expires: 1_000_000 + 600_000, decide: () => true });
+    const original = (f.bridge as unknown as { options: { request: (...args: unknown[]) => Promise<unknown> } }).options.request;
+    (f.bridge as unknown as { options: { request: (...args: unknown[]) => Promise<unknown> } }).options.request = async (owner, path, body) => {
+      if (path === '/v1/slack/update') throw new HttpError(404);
+      return original(owner, path, body);
+    };
+    await f.bridge.settled('e'.repeat(24), 'approved');
+    assert.deepEqual(f.requests.at(-1), { path: '/v1/slack/send', body: { text: '\u2705 *Aprovado no terminal* \u00b7 push: git push', threadTs: '1.1' } });
+  } finally { f.close(); }
+});
+
+test('aprovar in the thread also rewrites the post, so its buttons cannot be pressed afterwards', async () => {
+  const f = fixture();
+  try {
+    await f.bridge.askApproval({ token: 'f'.repeat(24), summary: 'git push', label: 'push', expires: 1_000_000 + 600_000, decide: () => true });
+    f.inbox.push({ seq: 1, ts: '2.0', thread: '1.1', text: 'aprovar' });
+    await f.bridge.poll();
+    const update = f.requests.find(r => r.path === '/v1/slack/update');
+    assert.deepEqual(update?.body, { channel: 'D1', ts: '1.1', text: '\u2705 *Aprovado no Slack* \u00b7 push: git push' });
   } finally { f.close(); }
 });
 

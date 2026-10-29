@@ -1,12 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection, createServer } from 'node:net';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { ACL_INSPECTION_TIMEOUT_MS } from '../src/store/privacy.ts';
+import { readConfig } from '../src/main.ts';
+import { createPrivateDirectory } from '../src/store/private-directory.ts';
 
 const main = fileURLToPath(new URL('../src/main.ts', import.meta.url));
 const secret = 'ENTRY-SECRET-987';
@@ -40,18 +44,8 @@ function removeFixture(path: string) {
   }
 }
 function privateTemp(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  if (process.platform === 'win32') {
-    const script = `$ErrorActionPreference='Stop'
-$a=[System.Security.AccessControl.DirectorySecurity]::new()
-$a.SetAccessRuleProtection($true,$false)
-foreach($sid in @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')) {
- $a.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
-}
-[System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($env:ENTRY_FIXTURE),$a)`;
-    const result = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, ENTRY_FIXTURE: dir }, timeout: 10000 });
-    if (result.status !== 0) { removeFixture(dir); throw new Error('Could not secure disposable entry fixture'); }
-  }
+  const dir = join(tmpdir(), prefix + randomUUID());
+  createPrivateDirectory(dir);
   return dir;
 }
 async function ready(c: ReturnType<typeof child>) {
@@ -87,11 +81,19 @@ test('help is side-effect free; invalid configs cannot open a database', async (
       { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null].map(value => JSON.stringify({ ...base, google: value })));
     invalid.push(...[[], ['http://desk.tail0000.ts.net'], ['https://desk.tail0000.ts.net/'], ['https://desk.tail0000.ts.net/web'], ['nope'], [1], 'https://desk.tail0000.ts.net']
       .map(value => JSON.stringify({ ...base, webOrigins: value })));
+    invalid.push(...[null, {}, { piVoicePath: 'relative', settingsPath: '/local/settings' },
+      { piVoicePath: '/local/voice', settingsPath: '/local/settings', download: true }].map(value => JSON.stringify({ ...base, voice: value })));
+    // Exercise every shape through the production parser; mutants must fail an assertion, not hang in a listening process.
     for (const data of invalid) {
       writeFileSync(config, data);
-      const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
-      assert.equal(result.status, 1); assert.match(result.stderr, /configuration/i); assert.doesNotMatch(result.stderr + result.stdout, new RegExp(secret)); assert.equal(existsSync(db), false);
+      assert.throws(() => readConfig(config));
+      assert.equal(existsSync(db), false);
     }
+    // One real process proves parser refusal is propagated before opening storage, without repeating native ACL checks per shape.
+    writeFileSync(config, invalid[1]);
+    const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 2 * ACL_INSPECTION_TIMEOUT_MS + 5000 });
+    assert.equal(result.status, 1, JSON.stringify({ error: result.error?.message, signal: result.signal, stderr: result.stderr }));
+    assert.match(result.stderr, /configuration/i); assert.doesNotMatch(result.stderr + result.stdout, new RegExp(secret)); assert.equal(existsSync(db), false);
   } finally { removeFixture(dir); }
 });
 
@@ -105,6 +107,7 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
     ['notifications: validNotifications', 'notifications: () => true'],
     ['google: validGoogle', 'google: () => true'],
     ['webOrigins: validWebOrigins', 'webOrigins: () => true'],
+    ['voice: validVoiceConfig', 'voice: () => true'],
     ["!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(g.dailyAt)", 'false'],
     ["typeof (value as Record<string, unknown>).local === 'boolean'", 'true'],
     ["/^xapp-[\\x21-\\x7e]+$/.test(s.appToken) &&", ''],

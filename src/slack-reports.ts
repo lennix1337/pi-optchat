@@ -3,26 +3,22 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
-import { projectOf, projectOfRepo } from './projects.ts';
-import type { RunInfo } from './runs.ts';
-import type { ShellJob } from './shells.ts';
+import { projectOfRepo } from './projects.ts';
 import { atomicWrite } from './store.ts';
 
 /**
- * What the operator hears on Slack without asking, each in its project's channel: background shells and subagents
- * that finish, his PRs changing (CI green or red, merged, closed; one thread per PR), and a 07:00 DM summing up the
- * previous day with what waits for him and his agenda. Best effort: a failed post is dropped, never retried in a loop.
+ * What the operator hears on Slack without asking, each in its project's channel: his PRs changing (CI green or red,
+ * merged, closed; one thread per PR) and a 07:00 DM summing up the previous day with what waits for him and his agenda.
+ * Shell and subagent completions are not posted: the operator asked for messages only, and the run's own report says
+ * what they proved. Best effort: a failed post is dropped, never retried in a loop.
  */
 export type Post = (text: string, channel: string | null, topic?: string) => Promise<unknown>;
 export type ReportOwner = { dir: string; name: string };
-type Watched<T> = { subscribe(listener: () => void): () => void; snapshot(): T[] };
 
 const one = (s: string, max: number) => {
   const t = s.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
-const duration = (ms: number) => ms < 90_000 ? `${Math.round(ms / 1000)}s` : ms < 5_400_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
-const lastLine = (output: string) => one(output.trim().split('\n').filter(l => l.trim()).at(-1) ?? '', 300);
 
 // ---- Day log: every channel post, so the morning summary can say what was done. ----
 const DAY = 'slack-day.jsonl';
@@ -37,40 +33,6 @@ export function readDay(dir: string, since: number): DayEntry[] {
   let raw = '';
   try { raw = readFileSync(join(dir, DAY), 'utf8'); } catch { return []; }
   return raw.split('\n').flatMap(line => { try { const e = JSON.parse(line) as DayEntry; return e.at >= since ? [e] : []; } catch { return []; } });
-}
-
-// ---- Background shells and subagents that finish. ----
-/** Background shells that end (except notify none), posted to the channel of the repository they ran in. */
-export function watchShellEnds(source: Watched<ShellJob>, post: Post): () => void {
-  const reported = new Set(source.snapshot().filter(job => job.ended !== undefined).map(job => job.id));
-  const check = () => {
-    for (const job of source.snapshot()) {
-      if (job.mode !== 'background' || job.ended === undefined || reported.has(job.id)) continue;
-      reported.add(job.id);
-      const channel = projectOf(job.command, job.cwd);
-      if (job.notify === 'none' || !channel) continue;
-      const ok = job.state === 'completed' && (job.exitCode ?? 0) === 0;
-      const tail = lastLine(job.output);
-      void post(`${ok ? '✅' : '❌'} *Shell* ${job.state}${job.exitCode === undefined ? '' : ` · exit ${job.exitCode}`} · ${duration(job.ended - job.started)}\n\`${one(job.command, 160)}\`${tail ? `\n${tail}` : ''}`, channel).catch(() => {});
-    }
-  };
-  return source.subscribe(check);
-}
-
-/** Subagents that leave the running list, posted to the channel of their working directory. */
-export function watchAgentEnds(source: Watched<RunInfo>, post: Post): () => void {
-  const running = new Map(source.snapshot().map(run => [run.id, run]));
-  const check = () => {
-    const now = new Map(source.snapshot().map(run => [run.id, run]));
-    for (const [id, run] of running) {
-      if (now.has(id)) continue;
-      const channel = projectOf(run.cwd);
-      if (channel) void post(`🤖 *Subagente* \`${id.slice(0, 8)}\` terminou após ${duration(Date.now() - run.started)} · ${one(run.task, 200)}\nO relatório foi pro OptChat revisar.`, channel).catch(() => {});
-    }
-    running.clear();
-    for (const [id, run] of now) running.set(id, run);
-  };
-  return source.subscribe(check);
 }
 
 // ---- The operator's PRs. ----

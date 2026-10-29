@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
-import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval } from './authorization.ts';
+import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval, type Settled } from './authorization.ts';
 import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
 import { classifyEffects, describeDecision, logReported, type Decision, type Repo } from './autonomy.ts';
 import { readProfileEffectPolicy } from './effect-policy.ts';
@@ -153,10 +153,12 @@ function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, gr
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined,
   contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined,
   /** Called once per call that waits for the operator (after the contract and the advisor), e.g. to ask on Slack. */
-  onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined } = {}) {
+  onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined,
+  /** Called when such a call stops waiting (approved, denied, superseded or expired), wherever it was decided. */
+  onSettled = undefined as ((token: string, outcome: Settled) => void) | undefined } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   if (!(enabled ?? (env === '1' || env === 'risk'))) return;
-  const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all') });
+  const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), onSettled: (token, outcome) => onSettled?.(token, outcome) });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
   const advised = advisedAdmission(gate, pi, { advisor, grant, contract: { dir: contractDir, repo } });

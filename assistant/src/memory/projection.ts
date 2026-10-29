@@ -18,7 +18,7 @@ export type Correction = { id: string; text: string; kind: MemoryKind; reason: s
 export type MemoryEntry = {
   profileId: string; sourceId: string; ref: string; original: Original; originalHash: string;
   current: { text: string; kind: MemoryKind; from: 'original' | 'correction' };
-  corrections: Correction[]; stale: Correction[];
+  corrections: Correction[]; stale: Correction[]; correctionCount: number; staleCount: number; nextCorrectionOffset?: number;
 };
 export type MemoryOptions = { databasePath: string; profileId: string; operatorAuthority: object; sources: MemorySource[]; now?: () => number };
 
@@ -29,7 +29,7 @@ const boundedText = bounded(MAX_TEXT);
 
 function validOriginal(o: Original | undefined, ref: string): Original | undefined {
   if (o === undefined) return undefined;
-  const ok = o.ref === ref && boundedText(o.text) && boundedText(o.author) && KINDS.includes(o.kind) && Number.isFinite(Date.parse(o.observedAt));
+  const ok = o.ref === ref && typeof o.text === 'string' && o.text.isWellFormed() && o.text.trim().length > 0 && boundedText(o.author) && KINDS.includes(o.kind) && Number.isFinite(Date.parse(o.observedAt));
   return ok ? Object.freeze({ ref: o.ref, text: o.text, observedAt: o.observedAt, author: o.author, kind: o.kind }) : fail('memory_source_invalid');
 }
 
@@ -56,20 +56,22 @@ export class MemoryView {
         original_hash TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL, reason TEXT NOT NULL, corrected_at TEXT NOT NULL);`);
   }
 
-  /** The original as its source holds it now, every correction bound to it, and corrections whose original has since changed. */
-  read(sourceId: string, ref: string): MemoryEntry {
+  /** Corrections are returned in bounded chronological pages; current always reflects the latest applicable correction. */
+  read(sourceId: string, ref: string, offset = 0, limit = 32): MemoryEntry {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 32) fail('invalid_page');
     const source = this.sources.get(sourceId) ?? fail('memory_not_found');
     const original = validOriginal(source.get(ref), ref) ?? fail('memory_not_found');
     // Binds corrections to what was said, by whom and as what; not to when, so touching an unrelated line of a file does not stale them.
     const originalHash = sha256(JSON.stringify([original.ref, original.text, original.author, original.kind]));
-    const rows = this.db.prepare('SELECT * FROM memory_corrections WHERE profile = ? AND source = ? AND ref = ? ORDER BY rowid')
-      .all(this.profileId, sourceId, ref) as Record<string, string>[];
+    const key = [this.profileId, sourceId, ref] as const;
+    const counts = this.db.prepare('SELECT COUNT(*) AS total, COUNT(CASE WHEN original_hash = ? THEN 1 END) AS matching FROM memory_corrections WHERE profile = ? AND source = ? AND ref = ?').get(originalHash, ...key) as { total: number; matching: number };
+    const rows = this.db.prepare('SELECT * FROM memory_corrections WHERE profile = ? AND source = ? AND ref = ? ORDER BY rowid LIMIT ? OFFSET ?').all(...key, limit, offset) as Record<string, string>[];
     const toCorrection = (r: Record<string, string>): Correction => ({ id: r.id, text: r.text, kind: r.kind as MemoryKind, reason: r.reason, author: 'operator', correctedAt: r.corrected_at });
     const corrections = rows.filter(r => r.original_hash === originalHash).map(toCorrection);
     const stale = rows.filter(r => r.original_hash !== originalHash).map(toCorrection);
-    const last = corrections.at(-1);
-    const current = last ? { text: last.text, kind: last.kind, from: 'correction' as const } : { text: original.text, kind: original.kind, from: 'original' as const };
-    return { profileId: this.profileId, sourceId, ref, original, originalHash, current, corrections, stale };
+    const last = this.db.prepare('SELECT * FROM memory_corrections WHERE profile = ? AND source = ? AND ref = ? AND original_hash = ? ORDER BY rowid DESC LIMIT 1').get(...key, originalHash) as Record<string, string> | undefined;
+    const current = last ? { text: last.text, kind: last.kind as MemoryKind, from: 'correction' as const } : { text: original.text, kind: original.kind, from: 'original' as const };
+    return { profileId: this.profileId, sourceId, ref, original, originalHash, current, corrections, stale, correctionCount: counts.matching, staleCount: counts.total - counts.matching, ...(offset + rows.length < counts.total ? { nextCorrectionOffset: offset + rows.length } : {}) };
   }
 
   /**

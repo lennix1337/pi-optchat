@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
-import type { SlackRelay } from './slack-relay.ts';
+import { APPROVAL_ACTIONS, type SlackRelay } from './slack-relay.ts';
 
 const WINDOW_SECONDS = 300;
 type Headers = Record<string, string | string[] | undefined>;
@@ -51,6 +51,8 @@ export class SlackChannel {
     const body = payload as Record<string, any>;
     if (body.type === 'block_actions') {
       if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
+      const answer = APPROVAL_ACTIONS[body.actions?.[0]?.action_id];
+      if (o.relay && answer) return this.approvalClick(o.relay, body, answer);
       // A button is a remote click, not the operator's authenticated review of the exact effect.
       const taskId = typeof body.actions?.[0]?.value === 'string' ? body.actions[0].value : '';
       return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };
@@ -67,6 +69,24 @@ export class SlackChannel {
       conversation: event.channel, messageId: event.ts, ...(typeof event.thread_ts === 'string' && event.thread_ts !== event.ts ? { thread: event.thread_ts } : {}),
       text: typeof event.text === 'string' ? event.text : '',
     }, o);
+  }
+
+  /**
+   * A tap on Aprovar/Negar under an OptChat approval post in the operator's DM: the same authority as typing
+   * `aprovar`/`negar` in that post's thread, so it is queued as exactly that reply. The OptChat session still checks
+   * that the thread is a pending approval it posted; the post loses its buttons so it cannot be tapped twice.
+   */
+  private approvalClick(relay: SlackRelay, body: Record<string, any>, answer: 'aprovar' | 'negar'): Received {
+    const user = body.user?.id, channel = body.channel?.id ?? body.container?.channel_id, post = body.container?.message_ts, at = body.actions[0].action_ts;
+    if (typeof user !== 'string' || typeof channel !== 'string' || typeof post !== 'string' || typeof at !== 'string') return { outcome: 'ignored' };
+    if (!channel.startsWith('D')) return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    const outcome = relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text: answer });
+    if (outcome === 'relayed') {
+      const original = typeof body.message?.text === 'string' ? body.message.text : 'Aprovação';
+      relay.retire(channel, post, `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : 'Negar'}*; o resultado vem nesta thread.`);
+    }
+    return { outcome };
   }
 
   /** An operator DM for the chat session: same sender and human checks as a task, queued instead of created. */

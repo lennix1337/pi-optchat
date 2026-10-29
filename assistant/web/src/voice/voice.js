@@ -21,9 +21,10 @@ const restartable = new Set(['idle', 'blocked', 'cancelled', 'failed', 'sent']);
  * confirms the exact reviewed text. Nothing a transcript says is consent or approval.
  */
 export class VoiceDraft {
-  constructor({ status, provider, media, onSend, language = 'pt-BR', maxLength = 200 }) {
+  constructor({ status, provider, media, onSend, onChange = () => {}, language = 'pt-BR', maxLength = 200 }) {
     this.status = status; this.provider = provider; this.media = media; this.onSend = onSend;
-    this.language = language; this.maxLength = maxLength;
+    this.language = language; this.maxLength = maxLength; this.onChange = onChange;
+    this.captureGeneration = 0;
     this.state = 'idle'; this.reason = null; this.transcript = ''; this.confirmed = null; this.audio = null; this.recording = null;
   }
   async start(gesture) {
@@ -33,32 +34,12 @@ export class VoiceDraft {
     if (this.status?.state !== 'available' || !this.provider) return this.end('blocked', 'provider_unavailable');
     if (!this.status.languages?.includes(this.language)) return this.end('blocked', 'language_unsupported');
     if (!this.media?.getUserMedia) return this.end('blocked', 'microphone_unavailable');
-    let stream;
-    try { stream = await this.media.getUserMedia({ audio: true }); }
-    catch (error) { return this.end('blocked', error?.name === 'NotAllowedError' ? 'microphone_denied' : 'microphone_unavailable'); }
-    this.recording = { stream, recorder: this.media.record(stream) };
-    this.state = 'recording';
+    return requestCapture(this);
   }
   async stop(gesture) {
-    if (this.state !== 'recording') throw new Error('not_recording');
+    if (this.state !== 'recording' && this.state !== 'captured') throw new Error('not_recording');
     if (!humanGesture(gesture)) throw new Error('stop_requires_human_gesture');
-    const { stream, recorder } = this.recording;
-    this.recording = null; this.state = 'transcribing';
-    try { this.audio = await recorder.stop(); }
-    catch { stopTracks(stream); return this.end('failed', 'capture_failed'); }
-    stopTracks(stream);
-    if (this.state !== 'transcribing') { this.audio = null; return; }
-    let result;
-    try { result = await this.provider.transcribe(this.audio, this.language); }
-    catch { result = null; }
-    finally { this.audio = null; }
-    if (this.state !== 'transcribing') return;
-    if (!result) return this.end('failed', 'transcription_failed');
-    if (result.language !== this.language) return this.end('failed', 'language_mismatch');
-    const text = typeof result.text === 'string' ? result.text.trim() : '';
-    if (!text) return this.end('failed', 'no_speech');
-    if (result.complete !== true) return this.end('failed', 'transcription_incomplete');
-    this.transcript = text; this.state = 'review';
+    return finishCapture(this);
   }
   edit(text) {
     if (this.state !== 'review' && this.state !== 'confirmed') throw new Error('not_reviewing');
@@ -82,11 +63,63 @@ export class VoiceDraft {
   }
   cancel() {
     if (this.state === 'sending') throw new Error('voice_sending');
-    if (this.recording) { stopTracks(this.recording.stream); this.recording = null; }
+    this.captureGeneration++;
+    this.controller?.abort();
+    if (this.recording) { this.recording.recorder.cancel?.(); stopTracks(this.recording.stream); this.recording = null; }
     this.end('cancelled', null);
   }
   end(state, reason) {
     this.state = state; this.reason = reason; this.transcript = ''; this.confirmed = null; this.audio = null;
   }
 }
+async function requestCapture(draft) {
+  let stream;
+  const generation = ++draft.captureGeneration;
+  draft.controller = new AbortController();
+  draft.state = 'requesting';
+  try { stream = await draft.media.getUserMedia({ audio: true }); }
+  catch (error) { if (draft.state === 'requesting' && draft.captureGeneration === generation) draft.end('blocked', error?.name === 'NotAllowedError' ? 'microphone_denied' : 'microphone_unavailable'); return; }
+  if (draft.state !== 'requesting' || draft.captureGeneration !== generation) { stopTracks(stream); return; }
+  try { draft.recording = { stream, recorder: draft.media.record(stream, error => {
+    if (draft.captureGeneration !== generation || draft.state !== 'recording') return;
+    if (error) { draft.recording = null; draft.end('failed', 'capture_failed'); }
+    else draft.state = 'captured';
+    draft.onChange();
+  }) }; }
+  catch { stopTracks(stream); return draft.end('failed', 'capture_failed'); }
+  draft.state = 'recording';
+}
+
+async function finishCapture(draft) {
+  const generation = draft.captureGeneration;
+  const signal = draft.controller.signal;
+  const { stream, recorder } = draft.recording;
+  draft.recording = null; draft.state = 'transcribing';
+  let audio;
+  try { audio = await recorder.stop(); }
+  catch { stopTracks(stream); if (draft.captureGeneration === generation) draft.end('failed', 'capture_failed'); return; }
+  stopTracks(stream);
+  if (draft.state !== 'transcribing' || draft.captureGeneration !== generation) return;
+  return transcribeCapture(draft, audio, generation, signal);
+}
+
+async function transcribeCapture(draft, audio, generation, signal) {
+  draft.audio = audio;
+  let result;
+  try { result = await draft.provider.transcribe(audio, draft.language, signal); }
+  catch { result = null; }
+  finally { if (draft.captureGeneration === generation) draft.audio = null; }
+  if (draft.state !== 'transcribing' || draft.captureGeneration !== generation) return;
+  return reviewTranscription(draft, result);
+}
+
+function reviewTranscription(draft, result) {
+  if (!result) return draft.end('failed', 'transcription_failed');
+  if (result.language !== draft.language) return draft.end('failed', 'language_mismatch');
+  const text = typeof result.text === 'string' ? result.text.trim() : '';
+  if (!text) return draft.end('failed', 'no_speech');
+  if (result.complete !== true) return draft.end('failed', 'transcription_incomplete');
+  draft.transcript = text; draft.state = 'review';
+}
+
 function stopTracks(stream) { for (const track of stream?.getTracks?.() ?? []) track.stop(); }

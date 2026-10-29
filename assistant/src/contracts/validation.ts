@@ -15,6 +15,10 @@ export const oneOf = (...values: string[]): Rule => value => typeof value === 's
 export const strings: Rule = value => Array.isArray(value) && value.every(text) && new Set(value).size === value.length;
 export const version: Rule = value => value === 1;
 
+export function optionalFields(value: unknown, rules: Record<string, Rule>): Record<string, Rule> {
+  return Object.fromEntries(Object.entries(rules).filter(([key]) => value != null && Object.hasOwn(Object(value), key)));
+}
+
 export function object(value: unknown, schema: Schema, path = 'contract'): void {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`Expected object at ${path}`);
   const input = value as Record<string, unknown>;

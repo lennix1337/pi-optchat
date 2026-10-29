@@ -52,9 +52,13 @@ export class TaskStore {
       return structuredClone(task);
     });
   }
-  get(taskId: string): Task | null {
+  /** One row of this profile's task; `sql` binds profile, task ID, then `params`. */
+  private taskRow(sql: string, taskId: string, ...params: number[]) {
     if (typeof taskId !== 'string' || !taskId.length) throw new TypeError('Invalid task ID');
-    const row = this.db.prepare('SELECT snapshot FROM tasks WHERE profile = ? AND id = ?').get(this.profileId, taskId);
+    return this.db.prepare(sql).get(this.profileId, taskId, ...params);
+  }
+  get(taskId: string): Task | null {
+    const row = this.taskRow('SELECT snapshot FROM tasks WHERE profile = ? AND id = ?', taskId);
     return row ? parseTask(JSON.parse(String(row.snapshot))) : null;
   }
   list(cursor: string | null = null, limit = 50): TaskPage {
@@ -92,6 +96,17 @@ export class TaskStore {
       this.db.prepare('INSERT INTO responses VALUES (?, ?, ?, ?)').run(this.profileId, task.taskId, response.inputRevision, response.text);
       return this.update(task, event, 'respond');
     });
+  }
+  /** Exact accepted answer, never a different input round or profile's text. */
+  getResponse(taskId: string, inputRevision: number): string | null {
+    if (!Number.isSafeInteger(inputRevision) || inputRevision < 1) throw new TypeError('Invalid response identity');
+    const row = this.taskRow('SELECT text FROM responses WHERE profile = ? AND task_id = ? AND input_revision = ?', taskId, inputRevision);
+    return row ? String(row.text) : null;
+  }
+  /** The event that created the task: its channel and source decide what may act on it. */
+  creation(taskId: string): StoredEvent | null {
+    const row = this.taskRow("SELECT payload FROM events WHERE profile = ? AND json_extract(payload, '$.event.taskId') = ? AND json_extract(payload, '$.operation') = 'create' LIMIT 1", taskId);
+    return row ? JSON.parse(String(row.payload)) as StoredEvent : null;
   }
   close(): void { this.db.close(); }
 }

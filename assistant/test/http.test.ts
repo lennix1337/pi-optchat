@@ -14,12 +14,14 @@ const token = 'test-secret';
 const context = (sourceEventId: string) => ({ sessionId: 'session', channelId: 'channel', runId: 'run', sourceEventId, evidenceReference: 'evidence' });
 const task = { version: 1, profileId: 'profile', taskId: "id/' OR 1=1", title: 'task', status: 'queued', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: 'source-1' };
 
-test('HTTP boundary, metadata journey and persisted events', async () => {
+test('HTTP boundary, metadata journey and persisted events', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'assistant-http-'));
   const path = join(dir, 'store.db');
   let store = new TaskStore(path, 'profile');
   assert.throws(() => createAssistantServer({ store, token, profileId: 'other' }));
-  let server = createAssistantServer({ store, token, profileId: 'profile' });
+  const calls: unknown[][] = [];
+  const poster = { send: async (...args: unknown[]) => { calls.push(args); return { ok: true }; } };
+  let server = createAssistantServer({ store, token, profileId: 'profile', slack: { relay: {} as any, poster: poster as any, channels: { project: 'C1' } } });
   const listen = async () => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as any).port}`; };
   let base = await listen();
   const request = async (route: string, options: RequestInit = {}) => {
@@ -29,6 +31,16 @@ test('HTTP boundary, metadata journey and persisted events', async () => {
   const post = (route: string, body: unknown) => request(route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const id = encodeURIComponent(task.taskId);
   try {
+    await t.test('Slack send admits only valid optional fields and refuses malformed shapes before posting', async () => {
+      for (const body of [null, [], { text: 'x', threadTs: null, extra: true }, { text: 'x', threadTs: null, approval: 'yes' }, { text: 'x', threadTs: null, channel: '__proto__' }, { text: 'x', threadTs: null, channel: null }, { text: 'x' }]) {
+        assert.equal((await post('/v1/slack/send', body)).status, 400, `reject ${JSON.stringify(body)}`);
+      }
+      assert.equal((await request('/v1/slack/send', { method: 'POST', headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' }, body: JSON.stringify({ text: 'x', threadTs: null }) })).status, 401);
+      assert.equal(calls.length, 0);
+      assert.equal((await post('/v1/slack/send', { text: 'x', threadTs: null })).status, 200);
+      assert.equal((await post('/v1/slack/send', { text: 'y', threadTs: '123.45', channel: 'project', approval: true })).status, 200, 'accept valid optional fields');
+      assert.deepEqual(calls, [['x', undefined, undefined, { approval: false }], ['y', '123.45', 'project', { approval: true }]]);
+    });
     assert.equal((await request('/v1/tasks', { headers: { authorization: '' } })).status, 401);
     assert.equal((await request('/v1/tasks', { headers: { authorization: 'Bearer wrong' } })).status, 401);
     assert.equal((await request('/v1/tasks', { headers: { origin: 'https://example.test' } })).status, 403);
@@ -69,6 +81,19 @@ test('HTTP boundary, metadata journey and persisted events', async () => {
     assert.equal(JSON.parse((await request(`/v1/tasks/${id}`)).body).status, 'succeeded');
     assert.equal(JSON.parse((await request('/v1/tasks?limit=1')).body).tasks.length, 1);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the draft executor status is an authenticated read, absent when the executor is off', async () => {
+  const store = new TaskStore(':memory:', 'profile');
+  const status = { state: 'running' as const, failing: true, lastError: 'database is locked', lastErrorAt: '2026-10-29T12:00:00.000Z' };
+  const servers = [createAssistantServer({ store, token, profileId: 'profile', executor: () => status }), createAssistantServer({ store, token, profileId: 'profile' })];
+  try {
+    const [on, off] = await Promise.all(servers.map(async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as any).port}`; }));
+    const read = (base: string, auth = `Bearer ${token}`) => fetch(`${base}/v1/executor`, { headers: { authorization: auth } });
+    assert.equal((await read(on!, 'Bearer wrong')).status, 401);
+    assert.deepEqual(await (await read(on!)).json(), status);
+    assert.equal((await read(off!)).status, 404);
+  } finally { for (const server of servers) await new Promise<void>(resolve => server.close(() => resolve())); store.close(); }
 });
 
 test('non-loopback address is refused by handler guard', async () => {
@@ -145,6 +170,39 @@ test('failed diagnostic observers cannot leak or cause unhandled rejections', as
     }
     assert.deepEqual(logs, ['assistant HTTP diagnostic observer failed', 'assistant HTTP diagnostic observer failed', 'assistant HTTP internal request failure']);
   } finally { console.error = original; }
+});
+
+test('Slack optional field admission resists disposable mutations', { skip: process.env.HTTP_MUTATION_CHILD === '1' }, () => {
+  const original = dirname(dirname(fileURLToPath(import.meta.url)));
+  const root = mkdtempSync(join(tmpdir(), 'http-slack-mutations-'));
+  const variants = [
+    ['channel validation', 'channel: known', 'channel: () => true', /reject .*"channel":"__proto__"/, /200 !== 400/],
+    ['approval validation', "approval: (v: unknown) => typeof v === 'boolean'", 'approval: () => true', /reject .*"approval":"yes"/, /200 !== 400/],
+    ['channel selection', 'channel: known, ', '', /accept valid optional fields/, /400 !== 200/],
+    ['approval selection', ", approval: (v: unknown) => typeof v === 'boolean'", '', /accept valid optional fields/, /400 !== 200/],
+  ] as const;
+  try {
+    const copy = join(root, 'assistant');
+    mkdirSync(join(copy, 'test'), { recursive: true });
+    cpSync(join(original, 'src'), join(copy, 'src'), { recursive: true });
+    cpSync(join(original, 'test', 'http.test.ts'), join(copy, 'test', 'http.test.ts'));
+    cpSync(join(original, 'package.json'), join(copy, 'package.json'));
+    const file = join(copy, 'src', 'http', 'server.ts');
+    const source = readFileSync(file, 'utf8');
+    const env = { ...process.env, HTTP_MUTATION_CHILD: '1' }; delete env.NODE_TEST_CONTEXT;
+    const run = () => spawnSync(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern=HTTP boundary|Slack send admits', join(copy, 'test', 'http.test.ts')], { env, encoding: 'utf8', timeout: 15000 });
+    const baseline = run();
+    assert.equal(baseline.error, undefined); assert.equal(baseline.signal, null); assert.equal(baseline.status, 0, baseline.stderr + baseline.stdout);
+    for (const [name, before, after, assertion, expected] of variants) {
+      assert.equal(source.split(before).length, 2, `${name}: mutation anchor must be unique`);
+      writeFileSync(file, source.replace(before, after));
+      const result = run();
+      assert.equal(result.error, undefined, name); assert.equal(result.signal, null, name);
+      assert.equal(result.status, 1, `${name}: ${result.stderr}${result.stdout}`);
+      assert.match(result.stdout, /    not ok 1 - Slack send admits only valid optional fields and refuses malformed shapes before posting/);
+      assert.match(result.stdout, assertion, name); assert.match(result.stdout, expected, name);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('auth and provenance guards resist disposable mutations', { skip: process.env.HTTP_MUTATION_CHILD === '1' }, () => {

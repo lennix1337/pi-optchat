@@ -1,6 +1,12 @@
 import { hash } from 'node:crypto';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import type { AssistantPolicy, AssistantReview } from './assistant-policy.ts';
+import type { AssistantReview } from './assistant-policy.ts';
+
+/** Host-owned exact reviews; implementations may reconstruct durable requests, never approve on read. */
+export interface AssistantReviewPolicy {
+  reviews(): readonly AssistantReview[];
+  decide(reviewId: string, decision: 'approve' | 'deny', authority: object): void;
+}
 
 /** Largest content a terminal reviewer can read whole; anything bigger can only be denied here. */
 const MAX_REVIEW_CHARS = 4000;
@@ -30,7 +36,7 @@ function describe(r: AssistantReview, withContent: boolean) {
  * The operator's review of assistant effects. Only a command typed in the interactive terminal reaches the host
  * authority; models, RPC clients, the HTTP API and task or message content have no path to it.
  */
-export function registerAssistantReview(pi: ExtensionAPI, source: () => AssistantPolicy | undefined, authority: object) {
+export function registerAssistantReview(pi: ExtensionAPI, source: () => AssistantReviewPolicy | undefined, authority: object) {
   pi.registerCommand('assistant-review', { description: 'Review exact assistant effects awaiting approval: list | approve <id> | deny <id>', handler: async (args: string, ctx: ExtensionCommandContext) => {
     const [action = 'list', id, ...extra] = args.trim().split(/\s+/).filter(Boolean);
     const policy = source();

@@ -1,7 +1,8 @@
 import { registerAssistant } from './assistant-client.ts';
+import { registerAssistantMemory } from './assistant-memory.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
 import { registerWorkTracker } from './work-tracker.ts';
-import { logSent, registerSlackReports, watchAgentEnds, watchShellEnds } from './slack-reports.ts';
+import { logSent, registerSlackReports } from './slack-reports.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
@@ -51,6 +52,7 @@ import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
 import { ShellJobs, adoptShells, handOffShells, registerShells, runningShells, shellReport } from './shells.ts';
+import { registerReapingBash } from './shell-reaper.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -97,6 +99,7 @@ export default function optchat(pi: ExtensionAPI) {
   const adopted = adoptShells();
   const shells = adopted?.jobs ?? new ShellJobs();
   let adoptedProfile = adopted?.profile;
+  registerReapingBash(pi);
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
   let active: Active | undefined;
   registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
@@ -126,9 +129,11 @@ export default function optchat(pi: ExtensionAPI) {
     return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },
       message => profile.usage.compression(message, 'advisor', profile.sessionId));
   }, contractDir: () => active?.dir,
-  // A call that waits for the operator is also posted to their Slack DM, where `aprovar`/`negar` in its thread decides it.
-  onPending: (pending, session, gate) => void slack.askApproval({ summary: pending.summary, label: pending.kind ?? pending.tool, expires: pending.expires,
-    decide: approve => gate.decideFromPhone(session, pending.token, approve) }) });
+  // A call that waits for the operator is also posted to their Slack DM, where its buttons or `aprovar`/`negar` in its
+  // thread decide it; decided anywhere else, the post is rewritten to say so.
+  onPending: (pending, session, gate) => void slack.askApproval({ token: pending.token, summary: pending.summary, label: pending.kind ?? pending.tool, expires: pending.expires,
+    decide: approve => gate.decideFromPhone(session, pending.token, approve) }),
+  onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
@@ -389,8 +394,7 @@ export default function optchat(pi: ExtensionAPI) {
       for (const unwatch of unwatchWork.splice(0)) unwatch();
       const shellSource = { subscribe: (l: () => void) => shells.subscribe(l), snapshot: () => shells.list() };
       const agentSource = { subscribe: (l: () => void) => children.subscribe(l), snapshot: () => children.working };
-      const report = (text: string, channel: string | null) => slack.post(text, channel);
-      unwatchWork.push(work.watchShells(shellSource), work.watchAgents(agentSource), watchShellEnds(shellSource, report), watchAgentEnds(agentSource, report));
+      unwatchWork.push(work.watchShells(shellSource), work.watchAgents(agentSource));
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
@@ -555,6 +559,12 @@ export default function optchat(pi: ExtensionAPI) {
   registerAssistant(pi, () => {
     const a = active;
     return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
+  });
+  registerAssistantMemory(pi, () => {
+    const a = active;
+    return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir)
+      ? { identity: a, profileId: a.name, sessionId: a.sessionId, memory: a.memory, databasePath: join(a.dir, 'assistant-memory', 'corrections.sqlite'), ...(process.env.OPTCHAT_ABOUT_ME ? { aboutMePath: process.env.OPTCHAT_ABOUT_ME } : {}) }
+      : undefined;
   });
   const slackOwner = () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined;
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } });

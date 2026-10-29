@@ -9,7 +9,9 @@ interface Pending { session: string; fingerprint: string; expires: number; appro
 export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; expires: number }
 /** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
 export type ApprovalMode = 'all' | 'risk';
-interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode }
+/** How a call that waited for the operator stopped waiting. */
+export type Settled = 'approved' | 'denied' | 'superseded' | 'expired';
+interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode; onSettled?: (token: string, outcome: Settled) => void }
 
 const reads = new Set(['read', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status', 'catchup_report']);
 const navigation = new Set(['map', 'task', 'search', 'symbol', 'callers', 'callees', 'impact', 'exemplar', 'edit_check', 'quality', 'test_gate']);
@@ -185,15 +187,22 @@ export class EffectApprovals {
   private readonly ttlMs: number;
   private readonly maxPending: number;
   private readonly mode: ApprovalMode;
+  private readonly onSettled: (token: string, outcome: Settled) => void;
   // Long enough for an operator who stepped away; the call stays visible on screen meanwhile.
-  constructor({ now = Date.now, ttlMs = 30 * 60_000, maxPending = 32, mode = 'all' }: Options = {}) {
+  constructor({ now = Date.now, ttlMs = 30 * 60_000, maxPending = 32, mode = 'all', onSettled = () => {} }: Options = {}) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 256) throw new Error('Invalid approval bounds');
-    this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode;
+    this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode; this.onSettled = onSettled;
+  }
+  /** Drops a call; one still waiting for the operator reports how it stopped waiting. */
+  private drop(token: string, outcome: Exclude<Settled, 'approved'>) {
+    const entry = this.pending.get(token);
+    this.pending.delete(token);
+    if (entry && !entry.approved) this.onSettled(token, outcome);
   }
   /** Session lifecycle reset: one-shot approvals and standing grants end together. */
-  clear() { for (const grants of [this.pending, this.standing]) grants.clear(); }
+  clear() { [...this.pending.keys()].forEach(token => this.drop(token, 'expired')); this.standing.clear(); }
   private expire() {
-    this.pending.forEach((entry, token) => { if (this.now() >= entry.expires) this.pending.delete(token); });
+    [...this.pending].forEach(([token, entry]) => { if (this.now() >= entry.expires) this.drop(token, 'expired'); });
   }
   admit(call: Invocation): Refusal | undefined {
     this.expire();
@@ -235,13 +244,15 @@ export class EffectApprovals {
   private grant(token: string) {
     const entry = this.pending.get(token)!;
     entry.approved = true;
-    this.pending.forEach((other, key) => { if (other.session === entry.session && !other.approved && other.created <= entry.created && key !== token) this.pending.delete(key); });
+    this.onSettled(token, 'approved');
+    [...this.pending].forEach(([key, other]) => { if (other.session === entry.session && !other.approved && other.created <= entry.created && key !== token) this.drop(key, 'superseded'); });
   }
   /** The advisor's approval of one pending call; unlike the operator's, it leaves the other pending calls waiting. */
   approveByAdvisor(session: string, token: string) {
     const entry = this.pending.get(token);
     if (!entry || entry.session !== session || entry.approved) return false;
     entry.approved = true;
+    this.onSettled(token, 'approved');
     return true;
   }
   /** Operator `/approve`: approves the newest pending call of this session once. */
@@ -259,14 +270,14 @@ export class EffectApprovals {
     this.expire();
     const entry = this.pending.get(token);
     if (!entry || entry.session !== session || entry.approved) return false;
-    if (approve) this.grant(token); else this.pending.delete(token);
+    if (approve) this.grant(token); else this.drop(token, 'denied');
     return true;
   }
   /** Operator `/deny`: drops every pending call of this session. */
   deny(session: string, source: string): PendingApproval[] {
     if (source !== 'interactive') return [];
     const dropped = this.pendingFor(session);
-    for (const { token } of dropped) this.pending.delete(token);
+    for (const { token } of dropped) this.drop(token, 'denied');
     return dropped;
   }
   /** `embedded`: a token inside other text, never an approval (it may be pasted transcript). */

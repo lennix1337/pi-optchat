@@ -22,7 +22,7 @@ export function send(res: ServerResponse, status: number, value: unknown, header
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(value));
 }
-export async function readBody(req: IncomingMessage): Promise<unknown> {
+export async function readBody(req: IncomingMessage, limit = maxBody): Promise<unknown> {
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) throw new BadRequest();
   const bytes = await new Promise<Buffer>((resolve, reject) => {
     let size = 0;
@@ -38,7 +38,7 @@ export async function readBody(req: IncomingMessage): Promise<unknown> {
     function resetIdle(): void { clearTimeout(idle); idle = setTimeout(refuse, bodyIdleMs); }
     function data(chunk: Buffer): void {
       size += chunk.length;
-      if (size > maxBody) { refuse(); return; }
+      if (size > limit) { refuse(); return; }
       chunks.push(chunk); resetIdle();
     }
     function end(): void { cleanup(); resolve(Buffer.concat(chunks)); }

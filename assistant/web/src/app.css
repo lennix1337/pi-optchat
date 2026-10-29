@@ -36,6 +36,10 @@ main { padding: 2.5rem 3vw 4rem; }
 .page-heading p { margin-top: .6rem; font-size: .875rem; }
 .connection { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem; font-size: .8125rem; color: var(--muted); padding-bottom: .75rem; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 #connection { color: var(--accent); }
+.briefing { padding: 1rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.briefing summary { min-height: 44px; padding: .6rem 0; font-weight: 600; }
+.briefing p, .briefing button { margin-top: .6rem; }
+.briefing li { margin-top: .75rem; }
 .workspace-grid { display: grid; grid-template-columns: 200px minmax(260px, 1fr) minmax(220px, 300px); }
 .sidebar { padding: 1.5rem 1.25rem 0 0; }
 .sidebar nav { display: grid; gap: .25rem; margin-bottom: 1.75rem; }
@@ -75,6 +79,8 @@ main { padding: 2.5rem 3vw 4rem; }
 .task-note { margin-top: .5rem; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
 .task-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .task-actions button { font-size: .875rem; }
+.quick-replies { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.quick-replies button { font-size: .875rem; min-height: 2.75rem; overflow-wrap: anywhere; }
 .response-form { margin-top: 1.25rem; }
 .response-form button { justify-self: start; }
 .task details { margin-top: .75rem; font-size: .8125rem; color: var(--muted); }

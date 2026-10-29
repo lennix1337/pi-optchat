@@ -4,6 +4,7 @@ import { createConnection } from 'node:net';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readConfig, type Config } from '../main.ts';
+import type { ExecutorStatus } from '../runtime/task-executor.ts';
 import { AclInspectionTimeout, checkConfigPrivacy } from '../store/privacy.ts';
 
 /**
@@ -20,6 +21,8 @@ export type StopResult = { result: 'stopped'; pid: number; mode: 'graceful' | 'f
 export type HealthReport = {
   state: 'healthy' | 'unhealthy' | 'stopped' | 'stale_record' | 'foreign_listener'; endpoint: string; pid?: number; api?: ApiProbe;
   workingSetBytes?: number; dataBytes: number; logBytes: number; detail: string;
+  /** Only when the config enables the draft executor. */
+  executor?: ExecutorStatus | 'unreadable';
 };
 
 const PWSH = 'C:/Program Files/PowerShell/7/pwsh.exe';
@@ -86,10 +89,23 @@ export function portInUse(port: number): Promise<boolean> {
 /** One authenticated metadata read; any HTTP answer other than 200 is a definite verdict, not "starting". */
 export async function probeApi(endpoint: string, token: string): Promise<ApiProbe> {
   try {
-    const response = await fetch(`${endpoint}/v1/tasks?limit=1`, { headers: { authorization: `Bearer ${token}` }, redirect: 'manual', signal: AbortSignal.timeout(3000) });
+    const response = await authenticatedGet(endpoint, '/v1/tasks?limit=1', token);
     await response.body?.cancel();
     return response.status === 200 ? 'ok' : response.status === 401 ? 'unauthorized' : 'error';
   } catch { return 'unreachable'; }
+}
+
+async function probeExecutor(endpoint: string, token: string): Promise<ExecutorStatus | 'unreadable'> {
+  try {
+    const response = await authenticatedGet(endpoint, '/v1/executor', token);
+    if (response.status !== 200) { await response.body?.cancel(); return 'unreadable'; }
+    const status = await response.json() as ExecutorStatus;
+    return status && typeof status.state === 'string' && typeof status.failing === 'boolean' ? status : 'unreadable';
+  } catch { return 'unreadable'; }
+}
+
+function authenticatedGet(endpoint: string, path: string, token: string): Promise<Response> {
+  return fetch(`${endpoint}${path}`, { headers: { authorization: `Bearer ${token}` }, redirect: 'manual', signal: AbortSignal.timeout(3000) });
 }
 
 function readRecord(path: string): OwnershipRecord | null {
@@ -220,6 +236,11 @@ export async function serviceHealth(options: { configPath: string }): Promise<He
   const info = processInfo(record.pid);
   if (info?.startTime !== record.processStartTime) return { ...base, state: 'stale_record', pid: record.pid, detail: 'the recorded process is gone or its pid was reused; stop removes the record without signalling' };
   const api = await probeApi(config.endpoint, config.token);
-  return { ...base, state: api === 'ok' ? 'healthy' : 'unhealthy', pid: record.pid, api, workingSetBytes: info.workingSetBytes,
+  const report: HealthReport = { ...base, state: api === 'ok' ? 'healthy' : 'unhealthy', pid: record.pid, api, workingSetBytes: info.workingSetBytes,
     detail: api === 'ok' ? 'authenticated loopback read succeeded' : `owned process is running but the API answered ${api}` };
+  if (api !== 'ok' || !config.executor) return report;
+  const executor = await probeExecutor(config.endpoint, config.token);
+  if (executor !== 'unreadable' && executor.state === 'running' && !executor.failing) return { ...report, executor };
+  return { ...report, executor, state: 'unhealthy', detail: executor === 'unreadable' ? 'the draft executor status could not be read'
+    : executor.failing ? `the draft executor keeps failing: ${executor.lastError ?? 'unknown error'}` : `the draft executor is ${executor.state}` };
 }

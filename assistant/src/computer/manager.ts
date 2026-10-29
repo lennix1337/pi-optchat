@@ -3,6 +3,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { boundedInteger } from '../limits.ts';
 import { allRows } from '../store/rows.ts';
 import { dockerCli, type DockerRunner } from './docker.ts';
+import { cleanupComputers, removeComputer } from './removal.ts';
 
 export type ComputerState = 'ready' | 'paused' | 'human';
 export type Computer = { id: string; profileId: string; agentId: string; container: string; state: ComputerState; expiresAt: number };
@@ -145,6 +146,17 @@ export class ComputerManager {
     return { code: result.code, stdout: stdout.text, stderr: stderr.text, truncated: stdout.truncated || stderr.truncated };
   }
 
+  /** Immutable network-none target for the trusted STDIO broker; never a generic network attachment. */
+  async isolatedTarget(id: string): Promise<string> {
+    const row = this.usable(id);
+    const result = await this.docker(['inspect', '--type', 'container', '--format', '{{json .}}', row.container]);
+    if (result.code !== 0) fail('computer_inspection_failed');
+    const info = JSON.parse(result.stdout);
+    if (info.Config?.Labels?.[OWNER_LABEL] !== this.options.owner || info.HostConfig?.NetworkMode !== 'none' || info.Mounts?.length !== 0 || info.HostConfig?.ReadonlyRootfs !== true || !/^[a-f0-9]{64}$/.test(info.Id ?? '')) fail('computer_isolation_mismatch');
+    this.usable(id, row.container);
+    return info.Id;
+  }
+
   /** Read-only view of the workspace listing, refused while a human holds control. */
   async capture(id: string): Promise<string> {
     const row = this.usable(id);
@@ -181,9 +193,9 @@ export class ComputerManager {
   /** Removes one own computer after confirming its container still carries this owner's label. */
   async destroy(id: string): Promise<void> {
     const row = this.row(id);
-    const existing = await this.inspect(row.container);
-    if (existing && existing.owner !== this.options.owner) fail('computer_conflict');
-    if (existing && (await this.docker(['rm', '--force', row.container])).code !== 0) fail('computer_remove_failed');
+    const result = await removeComputer(this.docker, this.options.owner, row.container, true);
+    if (result === 'foreign') fail('computer_conflict');
+    if (result === 'failed') fail('computer_remove_failed');
     this.db.prepare('DELETE FROM computers WHERE id = ? AND owner = ?').run(id, this.options.owner);
   }
 
@@ -196,15 +208,12 @@ export class ComputerManager {
 
   /** Removes every container labelled with this owner (including ones a crashed process left behind) and their rows. */
   async cleanup(): Promise<number> {
-    const listed = await this.docker(['ps', '--all', '--filter', `label=${OWNER_LABEL}=${this.options.owner}`, '--format', '{{.Names}}']);
-    if (listed.code !== 0) fail('computer_cleanup_failed');
-    let removed = 0;
-    for (const name of listed.stdout.split(/\r?\n/).filter(Boolean)) {
-      if ((await this.inspect(name))?.owner !== this.options.owner) continue;
-      if ((await this.docker(['rm', '--force', name])).code === 0) removed += 1;
-    }
-    this.db.prepare('DELETE FROM computers WHERE owner = ?').run(this.options.owner);
-    return removed;
+    const result = await cleanupComputers(this.docker, this.options.owner, this.list().map(row => row.container));
+    if (!result) fail('computer_cleanup_failed: listing');
+    const deleted = this.db.prepare('DELETE FROM computers WHERE owner = ? AND container = ?');
+    for (const name of result.cleared) deleted.run(this.options.owner, name);
+    if (result.failures) fail(`computer_cleanup_failed: ${result.failures} container(s) require retry or inspection`);
+    return result.removed;
   }
 
   close(): void { this.db.close(); }

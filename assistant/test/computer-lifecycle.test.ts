@@ -66,7 +66,8 @@ test('cleanup lists only this owner\'s containers and still re-checks each label
     };
     const cleaner = open({ docker });
     try { assert.equal(await cleaner.cleanup(), 1); } finally { cleaner.close(); }
-    assert.deepEqual(listings.map(args => args[args.indexOf('--filter') + 1]), [`label=optchat.computer.owner=${owner}`]);
+    assert.deepEqual(listings.map(args => args.includes('--filter') ? args[args.indexOf('--filter') + 1] : null),
+      [null, `label=optchat.computer.owner=${owner}`], 'absence census is separate from the owner-filtered orphan listing');
   });
   assert.equal((await inspectContainer(foreign.container))?.State.Running, true, 'a listed foreign container is not removed');
 }));

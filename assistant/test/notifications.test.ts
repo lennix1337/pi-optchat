@@ -107,19 +107,20 @@ test('transport acceptance is not human reading; only markRead records a read, a
     const accepted = c.list().find(n => n.id === 'n-1')!;
     assert.equal(accepted.state, 'accepted'); assert.equal(accepted.readAt, null); assert.equal(typeof accepted.acceptedAt, 'number');
     const failed = c.list().find(n => n.id === 'n-2')!;
-    assert.equal(failed.state, 'pending'); assert.equal(failed.reason, 'delivery_failed'); assert.equal(failed.attempts, 1);
+    assert.equal(failed.state, 'uncertain'); assert.equal(failed.reason, 'transport_uncertain'); assert.equal(failed.attempts, 1);
     assert.doesNotMatch(JSON.stringify(c.list()), /token=abc/);
     for (let i = 0; i < 3; i++) await c.deliver('web', note => { calls++; throw new Error(note.id); });
-    assert.equal(c.list().find(n => n.id === 'n-2')!.state, 'failed');
+    assert.equal(c.list().find(n => n.id === 'n-2')!.state, 'uncertain');
+    assert.equal(c.list().find(n => n.id === 'n-2')!.attempts, 1, 'an uncertain delivery is not retried');
     c.markRead('n-1', 'web');
     const read = c.list().find(n => n.id === 'n-1')!;
     assert.equal(read.state, 'read'); assert.equal(typeof read.readAt, 'number');
     c.markRead('n-1', 'web');
-    assert.ok(calls >= 4);
+    assert.equal(calls, 2, 'one accepted delivery and one uncertain delivery; neither is replayed');
   } finally { c.close(); }
 }));
 
-test('a crash between transport acceptance and recording resends the same id (at least once; channels deduplicate)', () => withDir('notify-crash-', async dir => {
+test('a crash between transport acceptance and recording stays uncertain without automatic replay', () => withDir('notify-crash-', async dir => {
   const c = center(dir, () => NOON_UTC, name => { if (name === 'transport_accepted') throw new Error('simulated crash'); });
   try {
     c.setConsent('local', true, operator);
@@ -130,7 +131,8 @@ test('a crash between transport acceptance and recording resends the same id (at
   try {
     const seen: string[] = [];
     await reopened.deliver('local', note => { seen.push(note.id); });
-    assert.deepEqual(seen, ['n-1']);
-    assert.equal(reopened.list()[0].state, 'accepted');
+    assert.deepEqual(seen, []);
+    assert.equal(reopened.list()[0].state, 'uncertain');
+    assert.equal(reopened.list()[0].reason, 'dispatch_in_flight');
   } finally { reopened.close(); }
 }));

@@ -1,9 +1,12 @@
 import { VoiceDraft, voiceMessages } from './voice.js';
+import { browserMedia, localVoiceProvider } from './media.js';
 
 const $ = selector => document.querySelector(selector);
 const stateMessages = {
-  idle: 'Pronto para gravar. O navegador pedirá o microfone.',
+  idle: 'Pronto para gravar até 30 segundos. O navegador pedirá o microfone.',
+  requesting: 'Aguardando permissão do microfone. Você pode cancelar.',
   recording: 'Gravando… Pare para transcrever ou cancele para descartar.',
+  captured: 'Gravação encerrada após 30 segundos. Transcreva ou descarte.',
   transcribing: 'Transcrevendo localmente…',
   review: 'Revise a transcrição. Nada foi enviado ainda.',
   confirmed: 'Enviando o texto revisado…',
@@ -12,19 +15,21 @@ const stateMessages = {
   cancelled: 'Gravação cancelada. O áudio e o texto foram descartados.',
 };
 let draft;
+let lifecycle = 0;
 
-/**
- * No transcription provider ships, so the draft is built without one and fails closed before any microphone
- * access. Capture and upload adapters belong with a real local provider; none is simulated here.
- */
+/** Reuse the configured Pi Voice model through the authenticated local service; no cloud upload. */
 export async function startVoice(request, send) {
+  stopVoice();
+  const generation = lifecycle;
   let status;
   try { status = await request('/web/api/voice/status'); }
   catch { status = { version: 1, state: 'blocked', reason: 'provider_unavailable', languages: [] }; }
-  draft = new VoiceDraft({ status, provider: null, media: null, onSend: send });
+  if (lifecycle !== generation) return;
+  draft = new VoiceDraft({ status, provider: status.state === 'available' ? localVoiceProvider(request) : null, media: browserMedia(), onSend: send, onChange: render });
   render();
 }
 export function stopVoice() {
+  lifecycle++;
   if (draft && draft.state !== 'sending') draft.cancel();
   draft = undefined;
   $('#voice-review').hidden = true; $('#voice-transcript').value = '';
@@ -34,14 +39,15 @@ function render() {
   const blocked = draft.status?.state !== 'available';
   $('#voice-status').textContent = (draft.reason && voiceMessages[draft.reason]) || (blocked ? voiceMessages.provider_unavailable : stateMessages[draft.state]);
   $('#voice-record').disabled = blocked || !['idle', 'blocked', 'cancelled', 'failed', 'sent'].includes(draft.state);
-  $('#voice-stop').hidden = draft.state !== 'recording';
-  $('#voice-cancel').hidden = !['recording', 'transcribing'].includes(draft.state);
+  $('#voice-stop').hidden = !['recording', 'captured'].includes(draft.state);
+  $('#voice-stop').textContent = draft.state === 'captured' ? 'Transcrever gravação' : 'Parar e transcrever';
+  $('#voice-cancel').hidden = !['requesting', 'recording', 'captured', 'transcribing'].includes(draft.state);
   $('#voice-review').hidden = !['review', 'confirmed', 'sending'].includes(draft.state);
   if (draft.state === 'review' && document.activeElement !== $('#voice-transcript')) $('#voice-transcript').value = draft.transcript;
 }
 async function act(operation) {
   if (!draft) return;
-  try { await operation(draft); }
+  try { const pending = operation(draft); render(); await pending; }
   catch (error) { $('#voice-status').textContent = `Ação de voz recusada (${error.message}). Nada foi enviado.`; return; }
   render();
 }

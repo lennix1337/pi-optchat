@@ -4,6 +4,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AclInspectionTimeout, checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
 import { remoteOrigins } from './channels/origins.ts';
+import { piVoiceProvider, validVoiceConfig, type VoiceConfig } from './voice.ts';
+import { openArtifactService } from './artifacts/service.ts';
+import { validExecutorConfig, type ExecutorConfig } from './runtime/executor-config.ts';
+import { DisplayLearning } from './memory/display-learning.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
 Usage: node assistant/src/main.ts --config <absolute-path> [--web]
@@ -16,13 +20,33 @@ Optional Slack (Socket Mode, outbound connection only, no public endpoint):
 only the listed Slack users can suggest tasks; listing them is the operator's authorization.
 With the optional botToken, the first operator's DMs become a chat with the OptChat session instead:
 GET /v1/slack/inbox?after=<seq> queues them for the session, POST /v1/slack/send {text,threadTs} answers
-in that operator's DM only.
+in that operator's DM only, and POST /v1/slack/update {channel,ts,text} rewrites one of the bot's DM posts
+(a decided approval loses its buttons).
 Optional local notifications (Windows toast, fixed text per category, never task content):
 "notifications":{"local":true}   true is the operator's consent; false revokes it.
 Optional Google briefing (read-only; connect accounts first with assistant/scripts/google.mjs):
 "google":{"connections":["<name>"],"timeZone":"<IANA>","dailyAt":"HH:MM"}
 reads the named accounts' mail and agenda once a day after dailyAt; clients read it at GET /v1/briefing
 and ask for a fresh one with POST /v1/briefing. Naming an account here is the operator's consent.
+Optional voice uses the existing Pi Voice/F5 local settings and model (no download or cloud call):
+"voice":{"piVoicePath":"<absolute installed @earendil-works/pi-voice directory>","settingsPath":"<absolute pi-voice.json>"}
+Portuguese must already be selected in /voice-settings. The panel records at most 30 seconds, then shows
+an editable transcript for confirmation; audio is never saved. This does not change terminal F5.
+Optional tool-free Pi draft executor (off when omitted; authorizes model usage for these channels only):
+"executor":{"agentDir":"<absolute Pi config/credential root>","channels":["Pessoal","Voz"]}
+Only human-created tasks (and tasks of routines the operator activated) in those exact channels run.
+Model usage may consume quota/cost. Without
+"provider"/"model" it rotates over every logged-in account's saved default, as pi-multi-account does;
+with both it uses only that route. An account limit/auth/transport error waits for the next usable
+account (at most 12 switches per task). No tools, sends or provider retries; an interrupted
+generation is never replayed automatically.
+Optional routines (off when omitted): "routines":true
+Runs the routines managed with assistant/scripts/routine.mjs. A routine starts paused; only an operator's
+resume activates it. Each due slot becomes one queued task in the routine's channel (missed slots are
+consolidated into one); the draft executor takes it when that channel is one of its channels.
+Optional reviewed display learning: "learning":true opens only a local read-only panel view.
+Propose/measure/review/apply/revert use assistant/scripts/display-learning.mjs and explicit terminal confirmation.
+The retained dataset is synthetic; its score is not personal-learning efficacy. It never changes instructions or permissions.
 No other fields are accepted. Keep the token out of arguments and logs.
 Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
@@ -40,9 +64,9 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[] };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; learning?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
-const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins'];
+const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'learning'];
 
 function validWebOrigins(value: unknown): value is string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4 || !value.every(origin => typeof origin === 'string')) return false;
@@ -64,7 +88,7 @@ function validNotifications(value: unknown): value is NotificationsConfig {
     typeof (value as Record<string, unknown>).local === 'boolean';
 }
 
-const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins };
+const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins, voice: validVoiceConfig, executor: validExecutorConfig, routines: value => value === true, learning: value => value === true };
 
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -144,21 +168,66 @@ async function main(): Promise<void> {
   catch { console.error('Database could not be opened.'); process.exitCode = 1; return; }
   let server: ReturnType<typeof createAssistantServer>;
   const web = args[2] === '--web' || config.webOrigins !== undefined;
-  const { defaultComponents } = await import('./setup.ts');
+  const { serviceSetup } = await import('./service-setup.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
-  const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
+  const setup = () => serviceSetup(config, osKeyProtector());
   const extras = await startExtras(config, store);
   if (!extras) { store.close(); process.exitCode = 1; return; }
-  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup, ...(config.webOrigins ? { webOrigins: config.webOrigins } : {}) } : {}), ...extras.server }); }
-  catch { extras.stop(); store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
-  serve(server, { close() { extras.stop(); store.close(); } }, config);
+  let artifacts: ReturnType<typeof openArtifactService> | undefined;
+  let workers: Workers | undefined;
+  let learning: DisplayLearning | undefined;
+  try {
+    if (config.learning) {
+      const path = join(dirname(config.databasePath), 'learning-display.sqlite');
+      prepareDatabase(path);
+      // Only read APIs are passed to the panel. Mutation authority stays in the separate trusted CLI.
+      learning = new DisplayLearning({ databasePath: path, profileId: config.profileId, operatorAuthority: {} });
+    }
+    workers = await openWorkers(config, store);
+    if (web) artifacts = openArtifactService({ databasePath: config.databasePath, profileId: config.profileId });
+    server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, inspection: () => ({ learning: learning ? { current: learning.current(), proposals: learning.list() } : null, notices: extras.notices?.() ?? null }), ...(web ? { setup, artifacts, ...(config.webOrigins ? { webOrigins: config.webOrigins } : {}) } : {}), ...(config.voice ? { voice: piVoiceProvider(config.voice) } : {}), ...workers.server, ...extras.server });
+  }
+  catch { await workers?.close(); artifacts?.close(); learning?.close(); extras.stop(); store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
+  const running = workers;
+  server.once('listening', () => running.start());
+  serve(server, { async close() { await running.close(); artifacts?.close(); learning?.close(); extras.stop(); store.close(); } }, config);
 }
 
-type Notices = { stop(): void; announce(id: string, ref: string): void };
+type Workers = { server: { executor?: () => import('./runtime/task-executor.ts').ExecutorStatus; prompt?: import('./channels/web.ts').PromptSource }; start(): void; close(): Promise<void> };
+
+/** The opt-in background workers: routines, and the draft executor, which also drafts tasks the routines vouch for. */
+async function openWorkers(config: Config, store: import('./store/db.ts').TaskStore): Promise<Workers> {
+  let routines: import('./routines/service.ts').RoutineService | undefined;
+  let executor: import('./runtime/task-executor.ts').TaskExecutor | undefined;
+  const close = async () => { await executor?.close(); await routines?.close(); };
+  try {
+    if (config.routines) {
+      const { RoutineService } = await import('./routines/service.ts');
+      routines = new RoutineService({ store, profileId: config.profileId, tasksDatabase: config.databasePath });
+    }
+    if (config.executor) {
+      const { openTaskExecutor } = await import('./runtime/open-executor.ts');
+      const vouching = routines;
+      executor = openTaskExecutor(config, store, vouching ? origin => vouching.created(origin) : undefined);
+    }
+  } catch (error) { await close(); throw error; }
+  const drafts = executor;
+  return {
+    server: drafts ? { executor: () => drafts.status(), prompt: task => drafts.prompt(task) } : {},
+    // Reported once per run of failures; each keeps retrying, and health.mjs shows the executor failing meanwhile.
+    start() {
+      routines?.start(() => console.error('Routine pass failed; it keeps retrying.'));
+      drafts?.start(() => console.error('Draft executor pass failed; it keeps retrying. See health.mjs for the current state.'));
+    },
+    close,
+  };
+}
+
+type Notices = { stop(): void; announce(id: string, ref: string): void; list(): import('./notifications/center.ts').NotificationRecord[] };
 type Briefings = { stop(): void; provider: import('./http/server.ts').BriefingProvider };
 
 /** Optional Slack intake, local notices and Google briefing; null (after reporting which one failed) stops startup. */
-async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; server: { briefings?: import('./http/server.ts').BriefingProvider; slack?: import('./http/server.ts').SlackBridge } } | null> {
+async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; notices?: () => import('./notifications/center.ts').NotificationRecord[]; server: { briefings?: import('./http/server.ts').BriefingProvider; slack?: import('./http/server.ts').SlackBridge } } | null> {
   let slack: Awaited<ReturnType<typeof startSlack>> | undefined;
   if (config.slack) {
     try { slack = await startSlack(config, config.slack, store); }
@@ -174,7 +243,7 @@ async function startExtras(config: Config, store: import('./store/db.ts').TaskSt
     try { google = await startGoogle(config, config.google, notices); }
     catch { notices?.stop(); slack?.stop(); console.error('Google briefing could not be initialized.'); return null; }
   }
-  return { stop() { google?.stop(); notices?.stop(); slack?.stop(); }, server: { ...(google ? { briefings: google.provider } : {}), ...(slack?.bridge ? { slack: slack.bridge } : {}) } };
+  return { stop() { google?.stop(); notices?.stop(); slack?.stop(); }, ...(notices ? { notices: () => notices!.list() } : {}), server: { ...(google ? { briefings: google.provider } : {}), ...(slack?.bridge ? { slack: slack.bridge } : {}) } };
 }
 
 /** Reads the named Google accounts' mail and agenda once a day after `dailyAt`; failures are logged by code only. */
@@ -210,6 +279,7 @@ async function startNotifications(config: Config, settings: NotificationsConfig,
   notifier.start(2000, () => console.error('Notification delivery failed.'));
   return {
     stop() { notifier.stop(); center.close(); },
+    list() { return center.list(50); },
     // Delivered by the notifier's next pass; the same id again is a no-op, so a restart does not repeat the toast.
     announce(id, ref) { try { center.notify({ id, channel: 'local', category: 'briefing_ready', ref }); } catch { console.error('Notification could not be recorded.'); } },
   };
@@ -248,7 +318,7 @@ async function startSlack(config: Config, settings: SlackConfig, store: import('
 }
 
 /** Exported for the shutdown test; `main` is the only production caller. */
-export function serve(server: Server, store: { close(): void }, config: Config): void {
+export function serve(server: Server, store: { close(): void | Promise<void> }, config: Config): void {
   let closing = false;
   let stopWatch: NodeJS.Timeout | undefined;
   const shutdown = () => {
@@ -257,8 +327,10 @@ export function serve(server: Server, store: { close(): void }, config: Config):
     clearInterval(stopWatch);
     const deadline = setTimeout(() => server.closeAllConnections(), 2000);
     server.closeIdleConnections();
-    server.close(() => {
-      clearTimeout(deadline); store.close(); console.log('Assistant stopped: admission closed, requests drained, database closed.');
+    server.close(async () => {
+      clearTimeout(deadline);
+      try { await store.close(); } catch { console.error('Assistant resource shutdown failed.'); process.exitCode = 1; }
+      console.log('Assistant stopped: admission closed, requests drained, database closed.');
       // Everything durable is closed. A remote close handshake (Slack's WebSocket waits ~10 s for its peer) must not
       // keep the process alive past the stop script's grace period; unref'd, this fires only if such a handle lingers.
       setTimeout(() => process.exit(), 1500).unref();
@@ -272,7 +344,7 @@ export function serve(server: Server, store: { close(): void }, config: Config):
   server.once('error', (error: NodeJS.ErrnoException) => {
     console.error(error.code === 'EADDRINUSE' ? 'Listen failed: address in use.' : 'Listen failed.');
     process.exitCode = 1;
-    if (!closing) { closing = true; store.close(); }
+    if (!closing) { closing = true; void Promise.resolve(store.close()).catch(() => { console.error('Assistant resource shutdown failed.'); process.exitCode = 1; }); }
   });
   server.listen(Number(config.endpoint.slice(config.endpoint.lastIndexOf(':') + 1)), '127.0.0.1', () => {
     if (stopFile && isAbsolute(stopFile)) stopWatch = setInterval(() => { if (existsSync(stopFile)) shutdown(); }, 200);

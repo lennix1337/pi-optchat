@@ -8,13 +8,17 @@ import { fileURLToPath } from 'node:url';
 
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'assistant-channel-mutants-'));
-const tests = ['slack-boundary.test.ts', 'teams-boundary.test.ts', 'channel-approval.test.ts'];
+const tests = ['slack-boundary.test.ts', 'teams-boundary.test.ts', 'channel-approval.test.ts', 'slack-relay.test.ts'];
 const variants = [
   ['slack-signature', 'channels/slack.ts', 'return given.length === expected.length && timingSafeEqual(given, expected);', 'return true;'],
   ['slack-window', 'channels/slack.ts', 'if (Math.abs(now / 1000 - Number(ts)) > WINDOW_SECONDS) return false;', ''],
   ['slack-workspace', 'channels/slack.ts', "if (body.team_id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };", ''],
-  ['slack-bot', 'channels/slack.ts', "human: !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string'", 'human: true'],
+  ['slack-bot', 'channels/slack.ts', "const human = !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string';", 'const human = true;'],
   ['slack-button-approves', 'channels/slack.ts', "return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };\n    }\n    if (body?.type !== 'event_callback'", "return { outcome: 'ignored' };\n    }\n    if (body?.type !== 'event_callback'"],
+  ['slack-click-workspace', 'channels/slack.ts', "if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };", ''],
+  ['slack-click-sender', 'channels/slack.ts', "if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };", ''],
+  ['slack-click-dm-only', 'channels/slack.ts', "if (!channel.startsWith('D')) return { outcome: 'ignored' };", ''],
+  ['slack-click-retires-buttons', 'channels/slack.ts', "relay.retire(channel, post,", "void (channel, post,"],
   ['teams-signature', 'channels/teams.ts', 'if (!ok) return false;', ''],
   ['teams-audience', 'channels/teams.ts', ' && claims.aud === options.appId', ''],
   ['teams-expiry', 'channels/teams.ts', ' && now <= claims.exp + SKEW_SECONDS', ''],

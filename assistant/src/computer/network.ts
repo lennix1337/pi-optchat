@@ -7,22 +7,37 @@ export type NavigationCheck = { ok: true; origin: string } | { ok: false; reason
 const internalNames = ['localhost', 'metadata', 'metadata.google.internal', 'host.docker.internal', 'gateway.docker.internal', 'kubernetes.default'];
 const internalSuffixes = ['.localhost', '.local', '.internal', '.lan', '.home.arpa', '.ts.net'];
 
+const blockedIpv4: readonly [number, number][] = [
+  [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8],
+  [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24],
+  [0xc0586300, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xc6336400, 24],
+  [0xcb007100, 24], [0xe0000000, 4], [0xf0000000, 4],
+];
+
 function ipv4Internal(address: string): boolean {
-  const [a, b] = address.split('.').map(Number);
-  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  const value = address.split('.').reduce((result, part) => (result * 256 + Number(part)) >>> 0, 0);
+  return blockedIpv4.some(([prefix, bits]) => (value >>> (32 - bits)) === (prefix >>> (32 - bits)));
 }
 
+// Admit only global unicast space, excluding special-purpose blocks within it.
+const blockedIpv6: readonly [bigint, number][] = [
+  [0x20010000000000000000000000000000n, 23], // IETF protocol assignments, including Teredo
+  [0x20010db8000000000000000000000000n, 32], // documentation
+  [0x20020000000000000000000000000000n, 16], // 6to4
+  [0x3fff0000000000000000000000000000n, 20], // documentation
+];
+
 function ipv6Internal(address: string): boolean {
-  const lower = address.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped) return ipv4Internal(mapped[1]);
-  const hexMapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower);
-  if (hexMapped) {
-    const high = parseInt(hexMapped[1], 16); const low = parseInt(hexMapped[2], 16);
-    return ipv4Internal(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
-  }
-  return lower === '::' || lower === '::1' || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower) || /^ff/.test(lower) || lower.startsWith('64:ff9b:') || lower.startsWith('2001:db8');
+  if (address.includes('%')) return true;
+  // WHATWG serialization expands embedded IPv4 into hex and compresses equivalent spellings.
+  const normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  const [left, right] = normalized.split('::');
+  const head = left ? left.split(':') : [];
+  const tail = right ? right.split(':') : [];
+  const words = right === undefined ? head : [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail];
+  const value = words.reduce((result, word) => (result << 16n) | BigInt(parseInt(word, 16)), 0n);
+  if ((value >> 125n) !== 1n) return true; // 2000::/3
+  return blockedIpv6.some(([prefix, bits]) => (value >> BigInt(128 - bits)) === (prefix >> BigInt(128 - bits)));
 }
 
 /** True for loopback, private, link-local (cloud metadata), CGNAT/Tailscale, multicast and reserved addresses or names. */
@@ -38,7 +53,7 @@ export function isInternalHost(hostname: string): boolean {
 /**
  * Admits a browser navigation only to an https/http origin that is public and explicitly granted.
  * WHATWG parsing normalizes numeric hosts (decimal, hex, octal IPv4), so they are judged as addresses.
- * Resolved addresses are checked too when the caller supplies them, which closes DNS rebinding to internal targets.
+ * Supplied resolved addresses are checked, but this predicate does not pin DNS or enforce network egress.
  */
 export function checkNavigation(target: string, grantedOrigins: readonly string[], resolved: readonly string[] = []): NavigationCheck {
   let url: URL;

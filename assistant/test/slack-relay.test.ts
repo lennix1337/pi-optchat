@@ -76,10 +76,12 @@ test('the poster sends to a configured channel by name and refuses unknown names
 });
 
 test('the offline receipt answers a channel message in that channel, not in the DM', async () => {
+  let now = 1_793_000_000_000;
   const slack = fakeSlack();
-  const r = relayFixture();
+  const r = relayFixture(() => now);
   try {
     r.relay.attach(new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch }));
+    now += 10 * 60_000;
     r.channel.accept(slackEnvelope('EvOffCh', 'status?', { channel: 'C0HARNESS' }));
     await r.relay.idle();
     assert.equal(slack.calls.length, 1);
@@ -127,6 +129,25 @@ test('when nobody polled recently, a new DM gets one automatic receipt', async (
   } finally { r.close(); }
 });
 
+test('right after a service restart the reader gets the grace period before a DM is called offline', async () => {
+  // 2026-10-29: the service restarted at 13:29:55, a DM arrived 30 s later while the Pi session was open (its poll was
+  // backing off from the restart) and got "OptChat is not open"; the session read it 3 s later.
+  let now = 1_793_000_000_000;
+  const slack = fakeSlack();
+  const r = relayFixture(() => now);
+  try {
+    r.relay.attach(new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch }));
+    now += 30_000;
+    r.channel.accept(slackEnvelope('EvAfterRestart', 'aprovar'));
+    await r.relay.idle();
+    assert.equal(slack.calls.length, 0, 'no reader has had the chance to poll yet');
+    now += 3 * 60_000;
+    r.channel.accept(slackEnvelope('EvNobody', 'tem alguém?'));
+    await r.relay.idle();
+    assert.equal(slack.calls.length, 1, 'with no reader for the whole grace period the receipt still goes out');
+  } finally { r.close(); }
+});
+
 test('HTTP: authenticated inbox paging and send; absent relay is 404', async () => {
   const slack = fakeSlack();
   const r = relayFixture();
@@ -156,4 +177,99 @@ test('HTTP: authenticated inbox paging and send; absent relay is 404', async () 
   } finally {
     await new Promise(done => server.close(done)); await new Promise(done => bare.close(done)); r.close();
   }
+});
+
+const POST_TS = '1793000000.000200';
+function click(action: 'optchat_approve' | 'optchat_deny', actionTs: string, over: Record<string, unknown> = {}) {
+  return {
+    type: 'block_actions', team: { id: TEAM }, api_app_id: APP, user: { id: 'U0OWNER' }, channel: { id: 'D0OWNER' },
+    container: { type: 'message', message_ts: POST_TS, channel_id: 'D0OWNER' },
+    message: { ts: POST_TS, text: '⏸ *Aprovação pendente* · bash: rm -rf x' },
+    actions: [{ action_id: action, value: action, action_ts: actionTs }], ...over,
+  };
+}
+
+test('an approval button click from the operator becomes their aprovar/negar in that post\'s thread', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  try {
+    r.relay.attach(new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch }));
+    r.relay.after(0, 0); // a reader is present: no offline receipt
+    assert.equal(r.channel.accept(click('optchat_approve', '1793000001.000300')).outcome, 'relayed');
+    assert.equal(r.channel.accept(click('optchat_approve', '1793000001.000300')).outcome, 'duplicate', 'a redelivered click stays one');
+    assert.equal(r.channel.accept(click('optchat_deny', '1793000002.000400')).outcome, 'relayed');
+    assert.equal(r.channel.accept(click('optchat_approve', '1793000003.000500', { user: { id: 'U0STRANGER' } })).outcome, 'unauthorized_sender');
+    assert.equal(r.channel.accept(click('optchat_approve', '1793000004.000600', { channel: { id: 'C0DENTAI' }, container: { type: 'message', message_ts: POST_TS, channel_id: 'C0DENTAI' } })).outcome, 'ignored', 'approval posts live in the DM');
+    assert.equal(r.channel.accept(click('optchat_approve', '1793000005.000700', { team: { id: 'T0OTHER' } })).outcome, 'foreign_workspace');
+    assert.deepEqual(r.relay.after(0, 10).map(m => [m.sender, m.thread, m.text]), [['U0OWNER', POST_TS, 'aprovar'], ['U0OWNER', POST_TS, 'negar']]);
+    await r.relay.idle();
+    const updates = slack.calls.filter(c => c.url === 'https://slack.com/api/chat.update');
+    assert.equal(updates.length, 2, 'each admitted click retires the buttons on that post');
+    assert.equal(updates[0].body.channel, 'D0OWNER');
+    assert.equal(updates[0].body.ts, POST_TS);
+    assert.deepEqual(updates[0].body.blocks, []);
+    assert.match(String(updates[0].body.text), /Aprovação pendente[\s\S]*Aprovar/);
+    assert.equal(slack.calls.length, 2, 'no other post');
+  } finally { r.close(); }
+});
+
+test('a task review button still points to the authenticated panel, even with the relay on', () => {
+  const r = relayFixture();
+  try {
+    const result = r.channel.accept({ type: 'block_actions', team: { id: TEAM }, api_app_id: APP, user: { id: 'U0OWNER' }, channel: { id: 'D0OWNER' }, container: { message_ts: POST_TS }, actions: [{ action_id: 'approve', value: 'review-1', action_ts: '1793000001.000300' }] });
+    assert.equal(result.outcome, 'review_required');
+    assert.equal(r.relay.after(0, 10).length, 0);
+  } finally { r.close(); }
+});
+
+test('an approval post carries Aprovar/Negar buttons under its text', async () => {
+  const slack = fakeSlack();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch });
+  await poster.send('⏸ *Aprovação pendente* · bash: rm', undefined, undefined, { approval: true });
+  const body = slack.calls[0].body as { text: string; blocks: { type: string; text?: { text: string }; elements?: { action_id: string; text: { text: string } }[] }[] };
+  assert.equal(body.text, '⏸ *Aprovação pendente* · bash: rm', 'the notification keeps the text');
+  assert.equal(body.blocks[0].type, 'section');
+  assert.equal(body.blocks[0].text!.text, '⏸ *Aprovação pendente* · bash: rm');
+  assert.deepEqual(body.blocks[1].elements!.map(e => [e.action_id, e.text.text]), [['optchat_approve', 'Aprovar'], ['optchat_deny', 'Negar']]);
+  await poster.send('normal');
+  assert.equal(slack.calls[1].body.blocks, undefined);
+});
+
+test('HTTP: send returns the DM id of the post, and update rewrites only a DM post, dropping its buttons', async () => {
+  // 2026-10-29: an approval decided at the terminal left its Slack post saying "Aprovação pendente" with live buttons.
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster, channels: CHANNELS } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  try {
+    const sent = await (await post('/v1/slack/send', { text: 'pendente', threadTs: null, approval: true })).json() as { ts: string; channel?: string };
+    assert.equal(sent.channel, 'D0OWNER');
+    assert.equal((await post('/v1/slack/update', { channel: 'D0OWNER', ts: sent.ts, text: '✅ Aprovado no terminal' })).status, 200);
+    const update = slack.calls.at(-1)!;
+    assert.equal(update.url, 'https://slack.com/api/chat.update');
+    assert.deepEqual([update.body.channel, update.body.ts, update.body.text, update.body.blocks], ['D0OWNER', sent.ts, '✅ Aprovado no terminal', []]);
+    const calls = slack.calls.length;
+    for (const body of [{ channel: 'C0DENTAI', ts: sent.ts, text: 'x' }, { channel: 'D0OWNER', ts: 'nope', text: 'x' }, { channel: 'D0OWNER', ts: sent.ts }, { channel: 'D0OWNER', ts: sent.ts, text: 'x', extra: 1 }])
+      assert.equal((await post('/v1/slack/update', body)).status, 400, `reject ${JSON.stringify(body)}`);
+    assert.equal(slack.calls.length, calls, 'a refused update reaches no Slack API');
+  } finally { await new Promise(done => server.close(done)); r.close(); }
+});
+
+test('HTTP: send accepts the approval flag and passes it to the poster', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/slack/send`;
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  try {
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'pendente', threadTs: null, approval: true }) })).status, 200);
+    assert.equal((slack.calls[0].body.blocks as unknown[]).length, 2);
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'x', threadTs: null, approval: 'yes' }) })).status, 400);
+  } finally { await new Promise(done => server.close(done)); r.close(); }
 });
