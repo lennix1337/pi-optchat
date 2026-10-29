@@ -194,7 +194,7 @@
     "assistant-executor-tools-mutations": {
       "description": "Disposable source copies: removing each restore-hold or tool-review guard (hold check, hold fence, revision scope, expiry/denial ends task, desk lists only pending reviews, terminal-only script, default off, opt-in preview, review policy) fails a named test",
       "argv": ["node", "-e", "for (const file of ['executor-restore-mutation.mjs', 'executor-tools-mutations.mjs']) { const r = require('node:child_process').spawnSync(process.execPath, ['assistant/test/' + file], { stdio: 'inherit' }); if (r.status !== 0) process.exit(r.status ?? 1); }"],
-      "timeoutMs": 900000
+      "timeoutMs": 600000
     },
     "assistant-executor-tools-journey": {
       "description": "Real main.ts --web with executor.tools, loopback fake provider and the local Docker image optchat-computer-browser:1 (never pulled): preview proposal waits for the operator desk, approval opens it once in the isolated browser (~15 s)",
