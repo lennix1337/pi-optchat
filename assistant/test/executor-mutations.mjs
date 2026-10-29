@@ -30,7 +30,7 @@ const mutations = [
   ['options-bounded', 'task-executor.ts', 'value.length >= 2 && value.length <= 4 && new Set(value).size === value.length', 'true'],
   ['prompt-of-current-revision', 'task-executor.ts', 'this.current({ ...task, revision: task.revision - 1 })', 'this.current({ ...task, revision: 2 })'],
   ['tool-free-session', 'pi-draft.ts', "tools: [], noTools: 'all', ", ''],
-  ['output-parsed', 'pi-draft.ts', "return parseDraftResult(JSON.parse(session.getLastAssistantText() ?? ''));", "return { kind: 'draft', text: session.getLastAssistantText() || 'x' };"],
+  ['output-parsed', 'pi-draft.ts', "return config.tools && (reply as { kind?: unknown } | null)?.kind === 'browser_text' ? parsePreview(reply) : parseDraftResult(reply);", "return { kind: 'draft', text: session.getLastAssistantText() || 'x' };"],
 ];
 try {
   cpSync(join(repo, 'assistant/src'), join(home, 'assistant/src'), { recursive: true });

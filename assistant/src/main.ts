@@ -38,8 +38,16 @@ Only human-created tasks (and tasks of routines the operator activated) in those
 Model usage may consume quota/cost. Without
 "provider"/"model" it rotates over every logged-in account's saved default, as pi-multi-account does;
 with both it uses only that route. An account limit/auth/transport error waits for the next usable
-account (at most 12 switches per task). No tools, sends or provider retries; an interrupted
+account (at most 12 switches per task). No sends or provider retries; an interrupted
 generation is never replayed automatically.
+Optional isolated previews (default off): "executor":{...,"tools":true} lets the model propose showing short text in a
+disposable, network-less browser container (Docker and the local image optchat-computer-browser:1 must exist; never pulled).
+Every preview needs the local operator's review: node assistant/scripts/executor.mjs <config> reviews | approve <id> | deny <id>,
+confirmed by typing in a real terminal. Model text, the panel and the HTTP API cannot decide a review; unanswered ones expire
+after an hour and fail the task. No other tool exists.
+After restoring a backup, queued/working task revisions are held (the original may have acted after the snapshot): the panel's
+inspection lists them, the executor starts nothing for them, and executor.mjs <config> restored | reconcile <taskId> <revision>
+ends one as failed so it can be requeued.
 Optional routines (off when omitted): "routines":true
 Runs the routines managed with assistant/scripts/routine.mjs. A routine starts paused; only an operator's
 resume activates it. Each due slot becomes one queued task in the routine's channel (missed slots are
@@ -199,7 +207,8 @@ type Workers = { server: { executor?: () => import('./runtime/task-executor.ts')
 async function openWorkers(config: Config, store: import('./store/db.ts').TaskStore): Promise<Workers> {
   let routines: import('./routines/service.ts').RoutineService | undefined;
   let executor: import('./runtime/task-executor.ts').TaskExecutor | undefined;
-  const close = async () => { await executor?.close(); await routines?.close(); };
+  let toolService: Awaited<ReturnType<typeof import('./runtime/tool-service.ts').openToolService>> | undefined;
+  const close = async () => { await executor?.close(); await toolService?.close(); await routines?.close(); };
   try {
     if (config.routines) {
       const { RoutineService } = await import('./routines/service.ts');
@@ -208,7 +217,11 @@ async function openWorkers(config: Config, store: import('./store/db.ts').TaskSt
     if (config.executor) {
       const { openTaskExecutor } = await import('./runtime/open-executor.ts');
       const vouching = routines;
-      executor = openTaskExecutor(config, store, vouching ? origin => vouching.created(origin) : undefined);
+      if (config.executor.tools) {
+        const { openToolService } = await import('./runtime/tool-service.ts');
+        toolService = await openToolService(config, store);
+      }
+      executor = openTaskExecutor(config, store, vouching ? origin => vouching.created(origin) : undefined, toolService?.tools);
     }
   } catch (error) { await close(); throw error; }
   const drafts = executor;

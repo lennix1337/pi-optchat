@@ -12,14 +12,14 @@ type Entry = { event: { taskId: string; channelId: string; source: { actorId: st
  * A loopback OpenAI-compatible provider: records every request; never reached over the network.
  * A task without an answer gets a question, unless `draftsOnly`; a body containing "travar" hangs.
  */
-export async function fakeProvider(options: { draftsOnly?: boolean; quickAnswers?: string[] } = {}) {
+export async function fakeProvider(options: { draftsOnly?: boolean; quickAnswers?: string[]; preview?: string } = {}) {
   const requests: string[] = [];
   const hanging: ServerResponse[] = [];
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     requests.push(body);
     if (body.includes('travar')) { hanging.push(res); return; }
-    const answer = !options.draftsOnly && /\\"response\\":null/.test(body) ? { kind: 'input', text: 'Qual é o tom da mensagem?', ...(options.quickAnswers ? { options: options.quickAnswers } : {}) } : { kind: 'draft', text: 'Olá equipe, reunião amanhã às 10h.' };
+    const answer = options.preview !== undefined ? { kind: 'browser_text', text: options.preview } : !options.draftsOnly && /\\"response\\":null/.test(body) ? { kind: 'input', text: 'Qual é o tom da mensagem?', ...(options.quickAnswers ? { options: options.quickAnswers } : {}) } : { kind: 'draft', text: 'Olá equipe, reunião amanhã às 10h.' };
     const chunk = (delta: object, finish: string | null) => `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'draft', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.end(chunk({ role: 'assistant', content: JSON.stringify(answer) }, null) + chunk({}, 'stop') +
