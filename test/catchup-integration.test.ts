@@ -42,7 +42,8 @@ test('registered input → frozen report → command/tool → restart preserves 
   assert.equal(report.details.covered, 29);
   assert.match(report.content[0].text, /1 pending mechanical approvals/);
   assert.match(report.content[0].text, /operation_state/);
-  assert.match(f.widgets.at(-1)![0], /14 wakes/);
+  // The receipt reaches the operator through Slack and /catchup; no widget stays pinned above the editor.
+  assert.deepEqual(f.widgets, []);
   const saved = readFileSync(join(dir, 'catchup.json'), 'utf8');
   f.add('talk', 'this belongs to the next interval');
   assert.deepEqual((await tool.execute('again', {})).details, report.details);

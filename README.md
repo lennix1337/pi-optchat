@@ -101,7 +101,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 
 ## Catch up after an absence
 
-The first interactive TUI message starts tracking; the next freezes the original-message range before that input. A small return widget links to `/catchup`. Commands, extension events, RPC inputs and report reads do not reset or acknowledge it. Intervals survive restart in the profile's `catchup.json`; the last 32 are retained with an explicit omitted count. Every original remains in memory and is reachable through paged `log` entries and `zoom`.
+The first interactive TUI message starts tracking; the next freezes the original-message range before that input. No widget stays pinned above the editor: the receipt reaches the operator through Slack and `/catchup`. Commands, extension events, RPC inputs and report reads do not reset or acknowledge it. Intervals survive restart in the profile's `catchup.json`; the last 32 are retained with an explicit omitted count. Every original remains in memory and is reachable through paged `log` entries and `zoom`.
 
 The TUI uses Pi's native Markdown renderer for section hierarchy, emphasis and inline source commands. `/catchup json` has JSON syntax colors. PR links are clickable in terminals with OSC 8 support (usually Ctrl+click); their visible URLs remain copyable elsewhere. `j/k`, PgUp/PgDn and `g/G` scroll rendered rows at the current terminal width; Esc closes. Browsing never executes source/continuation commands or grants approvals. Changed extension source needs an authorized reload before the active session uses it.
 

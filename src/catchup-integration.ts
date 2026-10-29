@@ -51,16 +51,13 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
   pi.on('input', (event, ctx) => {
     // SDK defaults do not prove human authorship; only this profile's actual TUI input is an operator boundary.
     if (event.source !== 'interactive' || ctx.mode !== 'tui' || event.text.trimStart().startsWith('/')) return;
+    // Only records the boundary: the receipt reaches the operator through Slack and /catchup, not a pinned widget.
     try {
-      const s = current(), span = s.windows.arrive(s.entries.length, new Date().toISOString());
-      const report = span && projection(s, span);
-      ctx.ui.setWidget('optchat-catchup', report && (report.wakes.length || report.tools) ? [
-        `Since your last message: ${report.wakes.length} wakes · ${report.tools} tool calls · ${report.prs.filter(pr => pr.state === 'OPEN').length} observed open PRs`,
-        '/catchup — deliveries, checks, your attention and complete event log',
-      ] : undefined);
+      const s = current();
+      s.windows.arrive(s.entries.length, new Date().toISOString());
     } catch (error) { ctx.ui.notify(`Catch-up tracking unavailable: ${error instanceof Error ? error.message : String(error)}`, 'warning'); }
   });
-  pi.on('session_shutdown', (_event, ctx) => { journals.clear(); cached = undefined; ctx.ui.setWidget('optchat-catchup', undefined); });
+  pi.on('session_shutdown', () => { journals.clear(); cached = undefined; });
 
   const command = async (args: string, ctx: ExtensionCommandContext) => {
     const s = current(), words = args.trim().split(/\s+/).filter(Boolean), action = words[0] ?? '';
