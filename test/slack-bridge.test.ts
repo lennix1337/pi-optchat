@@ -54,6 +54,28 @@ test('the final answer of a run that received a Slack message goes back to the D
   } finally { f.close(); }
 });
 
+test('a DM that arrives mid-run tells the agent to answer with slack_send and keep working, not end the run', async () => {
+  const f = fixture([{ seq: 1, ts: '1.0', thread: null, text: 'que horas são?' }, { seq: 2, ts: '2.0', thread: null, text: 'e agora?' }]);
+  try {
+    await f.bridge.poll();
+    assert.equal(f.sent[0].text, `${SLACK_PREFIX}que horas são?`, 'an idle session gets the plain message: the run exists to answer it');
+    f.bridge.runStarted();
+    await f.bridge.poll();
+    f.bridge.runStarted();
+    f.inbox.push({ seq: 3, ts: '3.0', thread: null, text: 'status?' });
+    await f.bridge.poll();
+    const busy = f.sent.at(-1)!.text;
+    assert.ok(busy.startsWith(`${SLACK_PREFIX}status?`));
+    assert.match(busy, /slack_send/);
+    assert.match(busy, /continue/i);
+    f.bridge.sawUserMessage(busy);
+    await f.bridge.runEnded(replies('feito'));
+    f.inbox.push({ seq: 4, ts: '4.0', thread: null, text: 'oi' });
+    await f.bridge.poll();
+    assert.equal(f.sent.at(-1)!.text, `${SLACK_PREFIX}oi`, 'after the run ends the session is idle again');
+  } finally { f.close(); }
+});
+
 test('a run without a Slack message posts nothing; an empty run still answers the DM', async () => {
   const f = fixture();
   try {

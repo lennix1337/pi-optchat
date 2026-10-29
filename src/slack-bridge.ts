@@ -20,6 +20,8 @@ type Request = (owner: SlackOwner, path: string, body?: unknown) => Promise<unkn
 const CURSOR = 'slack-cursor.json';
 const OFF_FOR_MS = 5 * 60_000;
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
+/** A DM steered into a working run: a text-only reply would end the run and stop the work. */
+const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 
 const defaultRequest: Request = (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
 
@@ -34,6 +36,7 @@ export class SlackBridge {
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: { thread: string | null } | undefined;
+  private running = false;
   private readonly threads = new Map<string, string | null>();
   private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void };
 
@@ -47,7 +50,8 @@ export class SlackBridge {
     this.timer = setInterval(() => void this.poll(), this.options.intervalMs);
     this.timer.unref?.();
   }
-  stop(): void { clearInterval(this.timer); this.answering = undefined; }
+  stop(): void { clearInterval(this.timer); this.answering = undefined; this.running = false; }
+  runStarted(): void { this.running = true; }
 
   /** One pass: new DMs become user messages in order; the cursor advances only past delivered ones. */
   async poll(): Promise<number> {
@@ -69,7 +73,7 @@ export class SlackBridge {
       let delivered = 0;
       for (const m of messages) {
         if (!Number.isSafeInteger(m.seq) || m.seq <= seq || typeof m.text !== 'string') continue;
-        const text = `${SLACK_PREFIX}${m.text}`;
+        const text = `${SLACK_PREFIX}${m.text}${this.running ? MID_RUN : ''}`;
         this.threads.set(text, typeof m.thread === 'string' ? m.thread : null);
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
@@ -90,6 +94,7 @@ export class SlackBridge {
   async runEnded(messages: readonly AgentMessage[]): Promise<void> {
     const answering = this.answering;
     this.answering = undefined;
+    this.running = false;
     if (!answering) return;
     try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread); }
     catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
@@ -118,10 +123,11 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); bridge.start(); });
   pi.on('session_shutdown', () => bridge.stop());
   pi.on('message_end', event => { if (event.message.role === 'user') bridge.sawUserMessage(textContent(event.message.content, false)); });
+  pi.on('agent_start', () => bridge.runStarted());
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator's Slack DM; they read it on the phone. Use it to report finished work, progress on long tasks, background results and blockers that need their decision, especially when they may be away. Answers to a [Slack] message go back automatically at the end of the run: don't repeat them here.",
+    description: "Send a message to the operator's Slack DM; they read it on the phone. Use it to report finished work, progress on long tasks, background results and blockers that need their decision, especially when they may be away. A [Slack] message that arrives while you are working: answer it here and keep working, since a text-only reply ends the run. When the run started from a [Slack] message, its final answer goes back automatically: don't repeat it here.",
     parameters: Type.Object({ text: Type.String({ minLength: 1, maxLength: 20000 }) }, { additionalProperties: false }),
     async execute(_id, params) {
       const result = await bridge.send(params.text);
