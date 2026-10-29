@@ -55,10 +55,18 @@ export class ComputerManager {
       CREATE TABLE IF NOT EXISTS computer_lifecycle (id TEXT PRIMARY KEY, token TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS computer_graphical (id TEXT PRIMARY KEY, generation TEXT NOT NULL, container TEXT NOT NULL, phase TEXT NOT NULL DEFAULT 'uncertain', target TEXT);
       CREATE TABLE IF NOT EXISTS computer_owner_cleanup (owner TEXT PRIMARY KEY, token TEXT NOT NULL);`);
+    this.addColumn('computer_lifecycle', 'target', 'TEXT');
+    this.addColumn('computer_lifecycle', 'phase', "TEXT NOT NULL DEFAULT 'active'");
+    this.addColumn('computer_owner_cleanup', 'phase', "TEXT NOT NULL DEFAULT 'active'");
     const columns = this.db.prepare('PRAGMA table_info(computer_graphical)').all() as { name: string }[];
     if (!columns.some(column => column.name === 'phase')) this.db.exec("ALTER TABLE computer_graphical ADD COLUMN phase TEXT NOT NULL DEFAULT 'uncertain'");
     if (!columns.some(column => column.name === 'target')) this.db.exec('ALTER TABLE computer_graphical ADD COLUMN target TEXT');
     this.update = this.db.prepare('UPDATE computers SET state = ?, expires = ? WHERE id = ? AND owner = ?');
+  }
+
+  private addColumn(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!columns.some(existing => existing.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   private row(id: string): Row {
@@ -78,6 +86,56 @@ export class ComputerManager {
   private releaseLifecycle(id: string, token: string): void {
     const result = this.db.prepare('DELETE FROM computer_lifecycle WHERE id = ? AND token = ?').run(id, token);
     if (Number(result.changes) !== 1) fail('computer_transition');
+  }
+  /** Records the immutable container ID a removal is about to act on, so a later retry can inspect exactly that ID. */
+  private recordTarget(id: string, token: string, target: string): void {
+    this.db.prepare('UPDATE computer_lifecycle SET target = ? WHERE id = ? AND token = ?').run(target, id, token);
+  }
+  /** Marks that the holder of this reservation saw its Docker calls finish with a failure (not a timeout). */
+  private markFailed(reservations: readonly { id: string; token: string }[], ownerToken?: string): void {
+    for (const { id, token } of reservations) this.db.prepare("UPDATE computer_lifecycle SET phase = 'failed' WHERE id = ? AND token = ?").run(id, token);
+    if (ownerToken) this.db.prepare("UPDATE computer_owner_cleanup SET phase = 'failed' WHERE owner = ? AND token = ?").run(this.options.owner, ownerToken);
+  }
+  /**
+   * Proof that the Docker operation behind a removal reservation has settled. With a recorded immutable ID the
+   * daemon decides: the ID is absent from a full census (removal finished) or present and not `removing` (nothing
+   * is removing it, so exactly that ID can be removed again). Without a recorded ID no `docker rm` was ever issued,
+   * so only a holder that reported its own failure counts. An unreadable daemon is never proof.
+   */
+  private async removalSettled(reservation: { target: string | null; phase: string }): Promise<boolean> {
+    const { target } = reservation;
+    if (!target) return reservation.phase === 'failed';
+    try {
+      const inspected = await this.docker(['inspect', '--type', 'container', '--format', '{{.Id}}|{{.State.Status}}', target]);
+      if (inspected.code === 0) {
+        const [id, status] = inspected.stdout.trim().split('|');
+        return !inspected.uncertain && id === target && !!status && status !== 'removing';
+      }
+      if (inspected.uncertain) return false;
+      const ids = await this.docker(['ps', '--all', '--no-trunc', '--format', '{{.ID}}']);
+      return ids.code === 0 && !ids.uncertain && !ids.stdout.split(/\r?\n/).includes(target);
+    } catch { return false; }
+  }
+  /**
+   * Takes over the reservations of removals that earlier failed or were interrupted, only when every one is
+   * provably settled. Each reservation is swapped for a fresh token by compare-and-set, so the earlier holder
+   * can no longer complete. Returns the new token per computer id.
+   */
+  private async resumeRemovals(ids: readonly string[]): Promise<Map<string, string>> {
+    const found = ids.map(id => ({ id, reservation: this.db.prepare('SELECT token, target, phase FROM computer_lifecycle WHERE id = ?').get(id) as { token: string; target: string | null; phase: string } | undefined }));
+    for (const { reservation } of found) if (!reservation || !(await this.removalSettled(reservation))) fail('computer_transition');
+    const tokens = new Map<string, string>();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const { id, reservation } of found) {
+        const token = randomUUID();
+        const swapped = this.db.prepare("UPDATE computer_lifecycle SET token = ?, phase = 'active' WHERE id = ? AND token = ? AND EXISTS (SELECT 1 FROM computers WHERE id = ? AND owner = ? AND state = 'removing')").run(token, id, reservation!.token, id, this.options.owner);
+        if (Number(swapped.changes) !== 1) fail('computer_transition');
+        tokens.set(id, token);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return tokens;
   }
   private save(row: Row, state: ComputerState, expires = row.expires): void { this.update.run(state, expires, row.id, this.options.owner); }
   /** Pauses (`paused`) or unpauses (`ready`) the container; a no-op when it is already on that side. */
@@ -364,19 +422,30 @@ export class ComputerManager {
     await this.endGraphical(id, generation, authority);
   }
 
-  /** Removes one own computer after confirming its container still carries this owner's label. */
+  /**
+   * Removes one own computer after confirming its container still carries this owner's label. A removal that
+   * failed earlier (state `removing`) is retried only after inspecting its recorded container ID proves the earlier
+   * Docker operation settled; an overlapping in-flight removal is refused.
+   */
   async destroy(id: string): Promise<void> {
-    this.db.exec('BEGIN IMMEDIATE');
+    const observed = this.row(id);
     let row: Row, token: string;
-    try {
-      row = this.row(id);
-      if (row.state === 'graphical' || row.state === 'transition' || row.state === 'removing') fail('computer_transition');
-      token = this.reserveLifecycle(id);
-      const reserved = this.db.prepare('UPDATE computers SET state = ? WHERE id = ? AND owner = ? AND state = ?').run('removing', id, this.options.owner, row.state);
-      if (Number(reserved.changes) !== 1) fail('computer_transition');
-      this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    const result = await removeComputer(this.docker, this.options.owner, row.container, true);
+    if (observed.state === 'removing') {
+      row = observed;
+      token = (await this.resumeRemovals([id])).get(id)!;
+    } else {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        row = this.row(id);
+        if (row.state === 'graphical' || row.state === 'transition' || row.state === 'removing') fail('computer_transition');
+        token = this.reserveLifecycle(id);
+        const reserved = this.db.prepare('UPDATE computers SET state = ? WHERE id = ? AND owner = ? AND state = ?').run('removing', id, this.options.owner, row.state);
+        if (Number(reserved.changes) !== 1) fail('computer_transition');
+        this.db.exec('COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    }
+    const result = await removeComputer(this.docker, this.options.owner, row.container, true, undefined, undefined, target => this.recordTarget(id, token, target));
+    if (result === 'foreign' || result === 'failed') this.markFailed([{ id, token }]);
     if (result === 'foreign') fail('computer_conflict');
     if (result === 'failed') fail('computer_remove_failed');
     this.db.exec('BEGIN IMMEDIATE');
@@ -396,23 +465,37 @@ export class ComputerManager {
     return expired.map(row => row.id);
   }
 
-  /** Removes every container labelled with this owner (including ones a crashed process left behind) and their rows. */
+  /**
+   * Removes every container labelled with this owner (including ones a crashed process left behind) and their rows.
+   * Removals or an owner cleanup that failed earlier are taken over only when inspecting their recorded container
+   * IDs proves the earlier Docker operations settled; an overlapping cleanup or destroy is refused.
+   */
   async cleanup(): Promise<number> {
+    const observedOwner = this.db.prepare('SELECT token, phase FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner) as { token: string; phase: string } | undefined;
+    const earlier = this.list().filter(row => row.state === 'removing');
+    if (observedOwner && observedOwner.phase !== 'failed') {
+      const targets = earlier.map(row => this.db.prepare('SELECT target FROM computer_lifecycle WHERE id = ?').get(row.id) as { target: string | null } | undefined);
+      if (!earlier.length || targets.some(entry => !entry?.target)) fail('computer_cleanup_active');
+    }
+    const resumed = earlier.length ? await this.resumeRemovals(earlier.map(row => row.id)) : new Map<string, string>();
     this.db.exec('BEGIN IMMEDIATE');
     let containers: string[], ownerToken: string;
     const reservations = new Map<string, { id: string; token: string }>();
     try {
-      if (this.db.prepare('SELECT token FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner)) fail('computer_cleanup_active');
+      const current = this.db.prepare('SELECT token FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner) as { token: string } | undefined;
+      if (current?.token !== observedOwner?.token) fail('computer_cleanup_active');
       const rows = this.list();
-      if (rows.some(row => row.state === 'graphical' || row.state === 'transition' || row.state === 'removing')) fail('computer_transition');
+      if (rows.some(row => row.state === 'graphical' || row.state === 'transition' || (row.state === 'removing' && !resumed.has(row.id)))) fail('computer_transition');
+      if (current) this.db.prepare('DELETE FROM computer_owner_cleanup WHERE owner = ? AND token = ?').run(this.options.owner, current.token);
       ownerToken = randomUUID();
       this.db.prepare('INSERT INTO computer_owner_cleanup (owner, token) VALUES (?, ?)').run(this.options.owner, ownerToken);
-      for (const row of rows) reservations.set(row.container, { id: row.id, token: this.reserveLifecycle(row.id) });
+      for (const row of rows) reservations.set(row.container, { id: row.id, token: resumed.get(row.id) ?? this.reserveLifecycle(row.id) });
       containers = rows.map(row => row.container);
       this.db.prepare("UPDATE computers SET state = 'removing' WHERE owner = ?").run(this.options.owner);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    const result = await cleanupComputers(this.docker, this.options.owner, containers);
+    const result = await cleanupComputers(this.docker, this.options.owner, containers, (name, target) => { const reservation = reservations.get(name); if (reservation) this.recordTarget(reservation.id, reservation.token, target); });
+    if (!result || result.failures) this.markFailed([...reservations.values()], ownerToken);
     if (!result) fail('computer_cleanup_failed: listing');
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -430,7 +513,7 @@ export class ComputerManager {
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    if (result.failures) fail(`computer_cleanup_failed: ${result.failures} container(s) require inspection`);
+    if (result.failures) fail(`computer_cleanup_failed: ${result.failures} container(s) require retry or inspection`);
     return result.removed;
   }
 
