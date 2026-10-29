@@ -155,6 +155,14 @@ test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake 
   assert.equal(wakeChannel(calling([['bash', { command: 'cd C:/projetos/dotfiles && gh pr create --fill' }]], 'x')), 'harness');
 });
 
+test('wakeChannel: an issue comment delivers to its repo, and an evidence draft in local-validation belongs to no project', () => {
+  // The 2026-10-29 wake: it drafted the reply under local-validation, then posted it on a Genexus18MCP issue.
+  const draft: [string, unknown] = ['write', { path: 'C:/projetos/local-validation/runs/gx-746/comment.md', content: 'x' }];
+  const comment: [string, unknown] = ['bash', { command: 'cd C:/projetos/Genexus18MCP && gh issue comment 746 --body-file C:/projetos/local-validation/runs/gx-746/comment.md' }];
+  assert.equal(wakeChannel(calling([draft, comment], 'x')), 'genexus18mcp');
+  assert.equal(wakeChannel(calling([draft], 'x')), null, 'evidence alone is not harness work');
+});
+
 test('without a Slack chat in the service (404) the bridge backs off instead of polling every tick', async () => {
   const f = fixture();
   try {
