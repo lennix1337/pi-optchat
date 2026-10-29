@@ -13,7 +13,7 @@ import { memoryProtector } from './vault-support.ts';
 
 test('the restored service shows held task revisions read-only in the panel inspection and requeues nothing', { timeout: 60000 }, async () => {
   const root = join(tmpdir(), 'executor-restore-panel-' + randomUUID()); createPrivateDirectory(root);
-  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data); mkdirSync(restored);
+  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data, { mode: 0o700 }); mkdirSync(restored, { mode: 0o700 });
   const profileId = 'restore-panel', token = randomUUID(), { protector } = memoryProtector();
   const store = new TaskStore(join(data, 'tasks.sqlite'), profileId);
   const event = (taskId: string, sourceEventId = randomUUID()) => storeEvent(profileId, taskId, store.nextSequence(), { eventId: randomUUID(), sourceEventId, correlationId: randomUUID(), actorId: 'operator', sourceKind: 'trusted-local-human', reference: 'test' });

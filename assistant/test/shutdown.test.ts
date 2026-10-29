@@ -95,7 +95,7 @@ test('safe update: drain, back up, migrate, health-check, then roll back to the 
     ['src/store/db.ts', "if (version > 1) throw new Error('Unsupported database version');", "if (version > 2) throw new Error('Unsupported database version'); if (version === 1) this.db.exec('ALTER TABLE tasks ADD COLUMN v2 TEXT; PRAGMA user_version = 2');"],
     ['src/http/server.ts', "send(res, 200, store.list(cursor, numberParam(url, 'limit', 50, 1, 100))); return;", "throw new Error('v2 regression');"],
   ]);
-  const restored = join(root, 'restored'); mkdirSync(restored);
+  const restored = join(root, 'restored'); mkdirSync(restored, { mode: 0o700 });
   const backup = join(root, 'pre-update.backup');
   try {
     assert.equal(runScript('start', ['--config', svc.config], { dir: v1 }).json.result, 'started');

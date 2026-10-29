@@ -62,6 +62,8 @@ jobs:
   assistant:
     # The assistant is a standalone Node 24 service with its own tsconfig and tests, which the root
     # check and npm test do not cover. Same hermetic commands as .pi/checks.json.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,7 +90,7 @@ jobs:
   # The one check branch protection requires: green when every job this change needed passed.
   ci-ok:
     if: always()
-    needs: [changes, test, windows]
+    needs: [changes, test, assistant, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

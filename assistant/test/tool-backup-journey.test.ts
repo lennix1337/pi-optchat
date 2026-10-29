@@ -15,7 +15,7 @@ import { createBackup, restoreBackup } from '../src/ops/backup.ts';
 import { memoryProtector, privateDir } from './vault-support.ts';
 
 test('restore before a real reviewed browser dispatch cannot replay it', () => privateDir('tool-backup-', async root => {
-  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data); mkdirSync(restored);
+  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data, { mode: 0o700 }); mkdirSync(restored, { mode: 0o700 });
   const db = join(data, 'tasks.sqlite'), authority = {}, profile = 'p'; const { protector } = memoryProtector(); let calls = 0;
   const store = new TaskStore(db, profile);
   const event = (id: string) => ({ version: 1 as const, eventId: id, correlationId: id, profileId: profile, taskId: 't', sessionId: 's', channelId: 'c', runId: 'r', source: { actorId: 'human', sourceKind: 'trusted-local-human' as const, sourceEventId: id }, observedAt: new Date().toISOString(), sequence: store.nextSequence(), evidence: { kind: 'observed' as const, reference: 'test' } });

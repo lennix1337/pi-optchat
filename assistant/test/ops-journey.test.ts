@@ -28,7 +28,7 @@ test('journey: disposable install -> task -> restart -> notification -> backup -
   skip: process.platform !== 'win32' && 'backups need the Windows DPAPI protector', timeout: 180_000,
 }, () => privateDir('ops-journey-', async root => {
   const svc = serviceHome(root, await freePort());
-  const restoredDir = join(root, 'restored'); mkdirSync(restoredDir);
+  const restoredDir = join(root, 'restored'); mkdirSync(restoredDir, { mode: 0o700 });
   const restoredHome = serviceHome(root, await freePort(), 'restored-home');
   const sink = join(root, 'external-sink.log'), toasts: DeliveredNotification[] = [];
   const backup = join(root, 'journey.backup');
