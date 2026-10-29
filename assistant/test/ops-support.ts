@@ -32,13 +32,13 @@ export async function freePort(): Promise<number> {
 /** A disposable service home: `<root>/home/config.json` and its database in `<root>/home/data/`. */
 export function serviceHome(root: string, port: number, name = 'home') {
   const home = join(root, name), data = join(home, 'data');
-  mkdirSync(data, { recursive: true });
+  mkdirSync(data, { recursive: true, mode: 0o700 });
   const config = join(home, 'config.json'), endpoint = `http://127.0.0.1:${port}`;
   writeConfig(config, join(data, 'tasks.sqlite'), endpoint);
   return { home, data, config, endpoint, database: join(data, 'tasks.sqlite') };
 }
 export function writeConfig(config: string, databasePath: string, endpoint: string): void {
-  writeFileSync(config, JSON.stringify({ version: 1, profileId: PROFILE, databasePath, endpoint, token: TOKEN }));
+  writeFileSync(config, JSON.stringify({ version: 1, profileId: PROFILE, databasePath, endpoint, token: TOKEN }), { mode: 0o600 });
 }
 
 export type ScriptResult = { status: number | null; stdout: string; stderr: string; json: Record<string, unknown> };

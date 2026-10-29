@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DisplayLearning, displayBinding } from '../src/memory/display-learning.ts';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
+import { prepareDatabase } from '../src/store/privacy.ts';
 import { freePort, launchWeb } from './ops-support.ts';
 
 test('real service shows reviewed display state across restart; browser has no learning mutation route', { timeout: 60000 }, async () => {
@@ -15,6 +16,7 @@ test('real service shows reviewed display state across restart; browser has no l
   const config = join(dir, 'config.json');
   writeFileSync(config, JSON.stringify({ version: 1, profileId, token, endpoint, databasePath: join(dir, 'tasks.sqlite'), learning: true }));
   const authority = {}, path = join(dir, 'learning-display.sqlite');
+  prepareDatabase(path); // as the trusted display-learning CLI does before opening it
   let owner: DisplayLearning | undefined = new DisplayLearning({ databasePath: path, profileId, operatorAuthority: authority });
   const proposal = owner.propose('dashboard status: task in progress; completed tasks'), binding = displayBinding(proposal);
   owner.measure(binding); owner.decide(binding, 'approve', authority, 'fixture operator only'); owner.apply(binding, authority); owner.close(); owner = undefined;

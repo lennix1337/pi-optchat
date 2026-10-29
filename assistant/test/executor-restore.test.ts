@@ -20,7 +20,7 @@ const create = (store: TaskStore, id: string) => store.create(queuedTask(PROFILE
 const open = (store: TaskStore, dir: string, run: DraftRunner) => new TaskExecutor({ store, profileId: PROFILE, databasePath: join(dir, 'executor.sqlite'), channels: [CHANNEL], run });
 
 test('restore holds queued, started-before-enqueue and completed-wait revisions: the restored executor generates nothing', () => privateDir('executor-restore-', async root => {
-  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data); mkdirSync(restored);
+  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data, { mode: 0o700 }); mkdirSync(restored, { mode: 0o700 });
   const { protector } = memoryProtector();
   const store = new TaskStore(join(data, 'tasks.sqlite'), PROFILE);
   let original = 0, replayed = 0;
@@ -53,7 +53,7 @@ test('restore holds queued, started-before-enqueue and completed-wait revisions:
 }));
 
 test('held revisions are listed read-only, reconciled only by the operator, and a requeue is a new unheld revision', () => privateDir('executor-reconcile-', async root => {
-  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data); mkdirSync(restored);
+  const data = join(root, 'data'), restored = join(root, 'restored'), out = join(root, 'snapshot.backup'); mkdirSync(data, { mode: 0o700 }); mkdirSync(restored, { mode: 0o700 });
   const { protector } = memoryProtector();
   const store = new TaskStore(join(data, 'tasks.sqlite'), PROFILE);
   try {

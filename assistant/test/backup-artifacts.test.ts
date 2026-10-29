@@ -16,7 +16,7 @@ import { PROFILE, seedTask } from './ops-support.ts';
 const content = Buffer.from('# private artifact content\n');
 function fixture(root: string) {
   const data = join(root, 'data'), target = join(root, 'target'), source = join(root, 'source');
-  mkdirSync(data); mkdirSync(target, { mode: 0o700 }); mkdirSync(source);
+  mkdirSync(data, { mode: 0o700 }); mkdirSync(target, { mode: 0o700 }); mkdirSync(source, { mode: 0o700 });
   const databasePath = join(data, 'tasks.sqlite'); seedTask(databasePath, 'task');
   const artifacts = join(data, 'artifacts'); mkdirSync(artifacts);
   const registryPath = join(artifacts, 'registry.sqlite');
