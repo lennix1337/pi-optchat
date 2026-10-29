@@ -203,6 +203,8 @@ export class Heartbeat {
     if (this.open !== undefined) this.amend(log => log.map(wake => wake.at === this.open ? { ...wake, outcome: 'interrupted' } : wake));
   }
   /** The chat settled: if a wake's turn was running, record how it went (once; later settles are the operator's turns). */
+  /** True between a wake and the end of the run it started. */
+  get waking() { return this.open !== undefined; }
   turnSettled(summary: WakeSummary) {
     if (this.open === undefined) return;
     const reply = summary.reply.length > REPLY_MAX ? `${summary.reply.slice(0, REPLY_MAX - 1)}…` : summary.reply;

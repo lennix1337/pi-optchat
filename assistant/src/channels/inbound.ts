@@ -13,7 +13,7 @@ import type { EffectMetadata, Gateway } from '../policy/gateway.ts';
  */
 export type Platform = 'slack' | 'teams';
 export type Outcome = 'unauthenticated' | 'foreign_workspace' | 'duplicate' | 'ignored_not_human' | 'unauthorized_sender'
-  | 'task_created' | 'responded' | 'stale' | 'review_required' | 'ignored';
+  | 'task_created' | 'responded' | 'stale' | 'review_required' | 'ignored' | 'relayed';
 export type Received = { outcome: Outcome; taskId?: string; reply?: string };
 export type ThreadBinding = { platform: Platform; account: string; conversation: string; thread: string; taskId: string; revision: number; inputRevision: number };
 

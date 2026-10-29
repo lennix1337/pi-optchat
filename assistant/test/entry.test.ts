@@ -79,7 +79,7 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     const base = { version: 1, profileId, databasePath: db, endpoint: `http://127.0.0.1:${await port()}`, token: secret };
     const invalid = ['{', JSON.stringify({ ...base, extra: true }), JSON.stringify({ ...base, version: 2 }), JSON.stringify({ ...base, endpoint: 'http://localhost:80' }), JSON.stringify({ ...base, endpoint: 'http://127.0.0.1:65536' }), JSON.stringify({ ...base, databasePath: ':memory:' }), JSON.stringify({ ...base, databasePath: 'relative.db' }), JSON.stringify({ ...base, profileId: ' ' }), JSON.stringify({ ...base, token: 'bad token' }), JSON.stringify(base) + ' '.repeat(8193)];
     const slack = { appToken: 'xapp-1-disposable', team: 'T0TEST', appId: 'A0TEST', operators: ['U0OWNER'] };
-    invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, null]
+    invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, { ...slack, botToken: 'xapp-not-bot' }, { ...slack, botToken: '' }, null]
       .map(value => JSON.stringify({ ...base, slack: value })));
     invalid.push(...[{ local: 'yes' }, { local: true, web: true }, {}, [], null].map(value => JSON.stringify({ ...base, notifications: value })));
     const google = { connections: ['pessoal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' };

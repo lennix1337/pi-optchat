@@ -19,6 +19,7 @@ const validInputs: Record<string, Record<string, unknown>> = {
   shell_start: { command: 'not executed', timeout: 1, notify: 'none' }, shell_status: {}, shell_stop: { id: 'fixture' },
   operation_state: {}, operational_state: {}, context_metrics: {}, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
   tell: { id: 'fixture', message: 'not sent' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
+  slack_send: { text: 'not sent' },
 };
 const tools = registeredTools();
 test('the registered tool set is completely covered by strict input cases', () => {

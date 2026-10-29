@@ -11,8 +11,11 @@ Usage: node assistant/src/main.ts --config <absolute-path> [--web]
 Supply a user-controlled secret JSON file outside Git, maximum 8192 bytes:
 {"version":1,"profileId":"<nonblank>","databasePath":"<absolute durable path>","endpoint":"http://127.0.0.1:<port 1..65535>","token":"<nonempty ASCII printable without whitespace>"}
 Optional Slack (Socket Mode, outbound connection only, no public endpoint):
-"slack":{"appToken":"xapp-...","team":"T...","appId":"A...","operators":["U..."]}
+"slack":{"appToken":"xapp-...","team":"T...","appId":"A...","operators":["U..."],"botToken":"xoxb-..."}
 only the listed Slack users can suggest tasks; listing them is the operator's authorization.
+With the optional botToken, the first operator's DMs become a chat with the OptChat session instead:
+GET /v1/slack/inbox?after=<seq> queues them for the session, POST /v1/slack/send {text,threadTs} answers
+in that operator's DM only.
 Optional local notifications (Windows toast, fixed text per category, never task content):
 "notifications":{"local":true}   true is the operator's consent; false revokes it.
 Optional Google briefing (read-only; connect accounts first with assistant/scripts/google.mjs):
@@ -29,7 +32,7 @@ The client uses its owner-profile assistant.json with version, profileId, endpoi
 Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/scripts/<name>.mjs --help.
 `;
 
-export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[] };
+export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string };
 export type NotificationsConfig = { local: boolean };
 export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
 export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig };
@@ -56,7 +59,8 @@ const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: va
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const s = value as Record<string, unknown>;
-  return Object.keys(s).sort().join(',') === 'appId,appToken,operators,team' &&
+  const keys = Object.keys(s).sort().join(',');
+  return (keys === 'appId,appToken,operators,team' || keys === 'appId,appToken,botToken,operators,team' && typeof s.botToken === 'string' && /^xoxb-[\x21-\x7e]+$/.test(s.botToken)) &&
     typeof s.appToken === 'string' && /^xapp-[\x21-\x7e]+$/.test(s.appToken) &&
     typeof s.team === 'string' && /^T[A-Z0-9]{2,20}$/.test(s.team) &&
     typeof s.appId === 'string' && /^A[A-Z0-9]{2,20}$/.test(s.appId) &&
@@ -120,7 +124,7 @@ async function main(): Promise<void> {
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
   const extras = await startExtras(config, store);
   if (!extras) { store.close(); process.exitCode = 1; return; }
-  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}), ...(extras.briefings ? { briefings: extras.briefings } : {}) }); }
+  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}), ...extras.server }); }
   catch { extras.stop(); store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   serve(server, { close() { extras.stop(); store.close(); } }, config);
 }
@@ -129,8 +133,8 @@ type Notices = { stop(): void; announce(id: string, ref: string): void };
 type Briefings = { stop(): void; provider: import('./http/server.ts').BriefingProvider };
 
 /** Optional Slack intake, local notices and Google briefing; null (after reporting which one failed) stops startup. */
-async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; briefings?: import('./http/server.ts').BriefingProvider } | null> {
-  let slack: { stop(): void } | undefined;
+async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; server: { briefings?: import('./http/server.ts').BriefingProvider; slack?: import('./http/server.ts').SlackBridge } } | null> {
+  let slack: Awaited<ReturnType<typeof startSlack>> | undefined;
   if (config.slack) {
     try { slack = await startSlack(config, config.slack, store); }
     catch { console.error('Slack channel could not be initialized.'); return null; }
@@ -145,7 +149,7 @@ async function startExtras(config: Config, store: import('./store/db.ts').TaskSt
     try { google = await startGoogle(config, config.google, notices); }
     catch { notices?.stop(); slack?.stop(); console.error('Google briefing could not be initialized.'); return null; }
   }
-  return { stop() { google?.stop(); notices?.stop(); slack?.stop(); }, ...(google ? { briefings: google.provider } : {}) };
+  return { stop() { google?.stop(); notices?.stop(); slack?.stop(); }, server: { ...(google ? { briefings: google.provider } : {}), ...(slack?.bridge ? { slack: slack.bridge } : {}) } };
 }
 
 /** Reads the named Google accounts' mail and agenda once a day after `dailyAt`; failures are logged by code only. */
@@ -186,8 +190,11 @@ async function startNotifications(config: Config, settings: NotificationsConfig,
   };
 }
 
-/** Socket Mode intake: listed operators' messages become suggested tasks; nothing is posted back. */
-async function startSlack(config: Config, settings: SlackConfig, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void }> {
+/**
+ * Socket Mode intake: listed operators' messages become suggested tasks. With a bot token, DMs are a chat instead:
+ * queued for the OptChat session and answered in the first operator's DM.
+ */
+async function startSlack(config: Config, settings: SlackConfig, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; bridge?: import('./http/server.ts').SlackBridge }> {
   const { ChannelLedger } = await import('./channels/inbound.ts');
   const { SlackChannel } = await import('./channels/slack.ts');
   const { SlackSocket } = await import('./channels/slack-socket.ts');
@@ -197,10 +204,21 @@ async function startSlack(config: Config, settings: SlackConfig, store: import('
   const authority = {};
   const ledger = new ChannelLedger({ databasePath: ledgerPath, profileId: config.profileId, operatorAuthority: authority });
   ledger.replaceSenders('slack', settings.team, settings.operators, 'operador', authority);
-  const channel = new SlackChannel({ store, ledger, profileId: config.profileId, team: settings.team, appId: settings.appId, reviewLink: id => `${config.endpoint}/#tarefa=${encodeURIComponent(id)}` });
+  let bridge: import('./http/server.ts').SlackBridge | undefined;
+  if (settings.botToken) {
+    const { SlackRelay, SlackPoster } = await import('./channels/slack-relay.ts');
+    const relayPath = join(dirname(config.databasePath), 'slack-relay.sqlite');
+    prepareDatabase(relayPath);
+    const relay = new SlackRelay({ databasePath: relayPath, profileId: config.profileId });
+    const poster = new SlackPoster({ botToken: settings.botToken, operator: settings.operators[0] });
+    relay.attach(poster);
+    bridge = { relay, poster };
+  }
+  const channel = new SlackChannel({ store, ledger, profileId: config.profileId, team: settings.team, appId: settings.appId, ...(bridge ? { relay: bridge.relay } : {}), reviewLink: id => `${config.endpoint}/#tarefa=${encodeURIComponent(id)}` });
   const socket = new SlackSocket({ appToken: settings.appToken, accept: payload => channel.accept(payload), log: line => console.log(line) });
   socket.start();
-  return { stop() { socket.stop(); ledger.close(); } };
+  const closers = [socket, ledger, bridge?.relay];
+  return { stop() { for (const c of closers) if (c) 'stop' in c ? c.stop() : c.close(); }, ...(bridge ? { bridge } : {}) };
 }
 
 /** Exported for the shutdown test; `main` is the only production caller. */

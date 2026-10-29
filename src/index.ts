@@ -1,4 +1,5 @@
 import { registerAssistant } from './assistant-client.ts';
+import { registerSlackBridge } from './slack-bridge.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
@@ -544,6 +545,7 @@ export default function optchat(pi: ExtensionAPI) {
     const a = active;
     return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
   });
+  const slack = registerSlackBridge(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined);
   const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
     ? catchupSource(active, flush, approvals, shells) : undefined);
   pi.on('input', async (event, ctx) => {
@@ -757,7 +759,10 @@ export default function optchat(pi: ExtensionAPI) {
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
     settledAt = Date.now();
-    heartbeat?.turnSettled(summarizeTurn(turn));
+    const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
+    heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
+    // What an autonomous wake did reaches the operator where they are, like an employee's report.
+    if (wake?.reply) slack.send(`*Wake autônomo*\n${wake.reply}`).catch(error => ctx.ui.notify(`Wake report not sent to Slack: ${errorText(error)}`, 'warning'));
     if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;

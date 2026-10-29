@@ -16,7 +16,7 @@ const safe = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 100
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const LIMIT = 50;
 
-function config(owner: AssistantOwner) {
+function config(owner: Pick<AssistantOwner, 'dir' | 'name'>) {
   let raw: string;
   try {
     const fd = openSync(join(owner.dir, 'assistant.json'), constants.O_RDONLY | constants.O_NONBLOCK);
@@ -41,7 +41,8 @@ function config(owner: AssistantOwner) {
   } catch { throw new Error('Invalid assistant.json for the active profile; expected version 1 and a literal loopback endpoint.'); }
 }
 
-class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
+export { config as assistantConfig, request as assistantRequest };
+export class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
 class ResponseTooLarge extends Error {}
 async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000): Promise<unknown> {
   const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),

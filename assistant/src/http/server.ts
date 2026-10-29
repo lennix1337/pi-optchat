@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { parseTask, type TaskResponse, type TaskStatus } from '../contracts/tasks.ts';
-import { oneOf, positive, text, version } from '../contracts/validation.ts';
+import { boundedText, oneOf, positive, text, version } from '../contracts/validation.ts';
+import type { SlackPoster, SlackRelay } from '../channels/slack-relay.ts';
 import type { Event } from '../contracts/events.ts';
 import { TaskStore } from '../store/db.ts';
 import type { ArtifactRegistry } from '../artifacts/registry.ts';
@@ -34,8 +35,29 @@ export function isAllowedRemote(address: string | undefined): boolean {
 }
 /** The Google briefing as the service keeps it; absent when the server config names no Google connection. */
 export type BriefingProvider = { latest(): Promise<unknown | null>; refresh(): Promise<unknown> };
+/** The operator's Slack DM as a chat: queued operator messages, and posting back to the operator only. */
+export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster };
+const threadTs = (value: unknown) => value === null || typeof value === 'string' && /^\d{1,12}\.\d{1,8}$/.test(value);
 
-async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, briefings: BriefingProvider | undefined): Promise<void> {
+async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, slack: SlackBridge): Promise<void> {
+  if (req.method === 'GET' && url.pathname === '/v1/slack/inbox') {
+    query(url, ['after', 'limit']);
+    send(res, 200, { messages: slack.relay.after(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 20, 1, 100)) }); return;
+  }
+  if (req.method === 'POST' && url.pathname === '/v1/slack/send') {
+    query(url, []);
+    const body = await readBody(req);
+    shape(body, { text: boundedText(40_000), threadTs });
+    if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
+    const input = body as { text: string; threadTs: string | null };
+    try { send(res, 200, await slack.poster.send(input.text, input.threadTs ?? undefined)); }
+    catch (error) { send(res, 502, { error: error instanceof Error && /^[a-z][\w.-]{0,80}$/.test(error.message) ? error.message : 'slack_failed' }); }
+    return;
+  }
+  send(res, 404, { error: 'Not found' });
+}
+
+async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, briefings: BriefingProvider | undefined, slack: SlackBridge | undefined): Promise<void> {
   try {
     if (!isAllowedRemote(req.socket.remoteAddress)) { send(res, 403, { error: 'Forbidden' }); return; }
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -51,6 +73,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
       const latest = await briefings.latest();
       send(res, latest ? 200 : 404, latest ?? { error: 'Not found' }); return;
     }
+    if (url.pathname.startsWith('/v1/slack/') && slack) { await slackRoute(req, res, url, slack); return; }
     const match = /^\/v1\/tasks\/([^/]+)(?:\/(transition|respond))?$/.exec(url.pathname);
     const id = match ? taskIdParam(match[1]) : undefined;
     if (req.method === 'GET' && url.pathname === '/v1/tasks') {
@@ -91,10 +114,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
   }
 }
-export function createAssistantServer({ store, token, profileId, web = false, setup, artifacts, briefings, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; briefings?: BriefingProvider; onError?: ErrorObserver }): Server {
+export function createAssistantServer({ store, token, profileId, web = false, setup, artifacts, briefings, slack, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; briefings?: BriefingProvider; slack?: SlackBridge; onError?: ErrorObserver }): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
   const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}), ...(artifacts ? { artifacts } : {}) }) : null;
-  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, briefings).catch(() => { reportError(onError); res.destroy(); }); });
+  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, briefings, slack).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
   return server;
