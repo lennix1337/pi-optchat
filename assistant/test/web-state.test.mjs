@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PanelState, splitChannel } from '../web/src/state.js';
+import { PanelState, splitChannel, subjectLabel } from '../web/src/state.js';
 
 test('event resume is contiguous, deduplicated and cannot roll back a newer snapshot', () => {
   const state = new PanelState('p');
@@ -34,4 +34,23 @@ test('the project suffix of a channel becomes the task project; the subject keep
   assert.equal(state.channels.get('t'), 'OptChat'); assert.equal(state.projects.get('t'), 'harness');
   assert.deepEqual(splitChannel('Shell \u00b7 dentai'), ['Shell', 'dentai']);
   assert.deepEqual(splitChannel('Pessoal \u00b7 outro'), ['Pessoal \u00b7 outro', undefined]);
+});
+
+test('a listed task knows its subject and project from the page, before its events are loaded', () => {
+  const state = new PanelState('p');
+  state.upsert({ taskId: 't', profileId: 'p', revision: 9, status: 'ready_for_review' });
+  state.seedChannels({ t: 'Pessoal', u: 'Wake \u00b7 harness', foreign: 42 });
+  assert.equal(state.channels.get('t'), 'Pessoal'); assert.equal(state.projects.get('t'), undefined);
+  assert.equal(state.channels.get('u'), 'Wake'); assert.equal(state.projects.get('u'), 'harness');
+  assert.equal(state.channels.has('foreign'), false);
+  state.seedChannels({ t: 'Outro' });
+  assert.equal(state.channels.get('t'), 'Pessoal', 'the first channel stays the subject');
+  state.seedChannels(undefined);
+});
+
+test('platform conversation ids read as names; other subjects are shown as written', () => {
+  assert.equal(subjectLabel('slack:D0CDWE0T540'), 'Slack · mensagem direta');
+  assert.equal(subjectLabel('slack:C0ABC123'), 'Slack · canal C0ABC123');
+  assert.equal(subjectLabel('Slack #harness'), 'Slack #harness');
+  assert.equal(subjectLabel('Pessoal'), 'Pessoal');
 });

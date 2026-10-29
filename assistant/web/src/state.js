@@ -3,6 +3,12 @@ export function splitChannel(channelId) {
   const match = /^(.*) \u00b7 (dentai|genexus18mcp|harness)$/.exec(channelId);
   return match ? [match[1], match[2]] : [channelId, undefined];
 }
+/** How a subject reads in the panel: a Slack conversation id becomes a name; the id stays the filter value. */
+export function subjectLabel(channel) {
+  const slack = /^slack:([A-Z0-9]+)$/.exec(channel);
+  if (!slack) return channel;
+  return slack[1].startsWith('D') ? 'Slack \u00b7 mensagem direta' : `Slack \u00b7 canal ${slack[1]}`;
+}
 export class PanelState {
   constructor(profileId) {
     this.profileId = profileId;
@@ -19,6 +25,16 @@ export class PanelState {
     const current = this.tasks.get(task.taskId);
     if (!current || task.revision > current.revision) {
       this.tasks.set(task.taskId, task); this.revision++;
+    }
+  }
+  /** taskId -> creation channel from a task page; the first channel known stays the subject, as with events. */
+  seedChannels(channels) {
+    if (!channels || typeof channels !== 'object') return;
+    for (const [taskId, channelId] of Object.entries(channels)) {
+      if (typeof channelId !== 'string' || this.channels.has(taskId)) continue;
+      const [channel, project] = splitChannel(channelId);
+      this.channels.set(taskId, channel); this.revision++;
+      if (project && !this.projects.has(taskId)) this.projects.set(taskId, project);
     }
   }
   apply(entries) {
