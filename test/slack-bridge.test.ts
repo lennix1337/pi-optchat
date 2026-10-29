@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
-import { SLACK_PREFIX, SlackBridge } from '../src/slack-bridge.ts';
+import { SLACK_PREFIX, SlackBridge, wakeChannel } from '../src/slack-bridge.ts';
 
 function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
@@ -97,6 +97,39 @@ test('a run without a Slack message posts nothing; an empty run still answers th
     await f.bridge.runEnded([]);
     assert.match(String((f.requests.at(-1)?.body as { text: string }).text), /sem resposta/);
   } finally { f.close(); }
+});
+
+/** An assistant message with these tool calls, then the final answer. */
+const calling = (calls: [string, unknown][], answer: string) => [
+  { role: 'assistant', content: calls.map(([name, args], i) => ({ type: 'toolCall', id: `c${i}`, name, arguments: args })) },
+  ...replies(answer),
+] as unknown as AgentMessage[];
+const WAKE = 'A cheap check (haiku) woke you and suggests: fix the flaky test';
+
+test('a wake that delivered something reports it in the channel of the repo it changed; an empty wake posts nothing', async () => {
+  const f = fixture();
+  const sends = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body);
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['read', { path: 'C:/projetos/dentai-mono/a.ts' }], ['bash', { command: 'git status' }]], 'Nada a fazer.'));
+    assert.deepEqual(sends(), [], 'reads and checks deliver nothing');
+
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['read', { path: 'C:/projetos/dentai-mono/a.ts' }], ['edit', { path: 'C:\\projetos\\Genexus18MCP\\src\\x.cs' }],
+      ['bash', { command: 'cd C:/projetos/Genexus18MCP && git commit -m fix && git push' }]], 'Corrigi o teste.'));
+    assert.deepEqual(sends().at(-1), { text: '*Wake* \u00b7 Corrigi o teste.', threadTs: null, channel: 'genexus18mcp' });
+
+    f.bridge.sawUserMessage('typed at the terminal');
+    await f.bridge.runEnded(calling([['edit', { path: 'C:/projetos/pi-optchat/x.ts' }]], 'ok'));
+    assert.equal(sends().length, 1, 'only wakes report themselves');
+  } finally { f.close(); }
+});
+
+test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake that already used slack_send is not repeated', () => {
+  assert.equal(wakeChannel(calling([['edit', { path: 'C:/projetos/pi-goal-x/a.ts' }], ['write', { path: 'C:/projetos/pi-optchat/b.ts' }], ['edit', { path: 'C:/projetos/dentai-mono/c.ts' }]], 'x')), 'harness');
+  assert.equal(wakeChannel(calling([['edit', { path: 'C:/Users/swluc/.optchat/profiles/p/AGENTS.md' }]], 'x')), null);
+  assert.equal(wakeChannel(calling([['edit', { path: 'C:/projetos/dentai-mono/c.ts' }], ['slack_send', { text: 'pronto', channel: 'dentai' }]], 'x')), undefined);
+  assert.equal(wakeChannel(calling([['bash', { command: 'cd C:/projetos/dotfiles && gh pr create --fill' }]], 'x')), 'harness');
 });
 
 test('without a Slack chat in the service (404) the bridge backs off instead of polling every tick', async () => {

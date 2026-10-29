@@ -11,6 +11,7 @@ import { textContent } from './transcript.ts';
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
  * bridge polls them over the loopback API, hands each to the agent as a user message marked `[Slack]`, and posts the
  * run's final answer back to the DM. `slack_send` lets the agent write first (progress, finished work, a blocker).
+ * A heartbeat wake that delivered something (an edit, commit, push or PR) posts its final answer to that repo's channel.
  * Pi marks these messages as extension input, so a Slack message can never approve a gated effect.
  */
 export const SLACK_PREFIX = '[Slack] ';
@@ -28,6 +29,36 @@ const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro
 const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 
 const defaultRequest: Request = (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
+/** The two prompts a heartbeat wake starts with (heartbeat.ts wakeText). */
+const WAKE = /^(?:A cheap check \([^)]*\) woke you|The operator's fixed \d+-min schedule woke you)/;
+/** Repository folder under C:/projetos -> its Slack channel. */
+const REPO_CHANNELS: [RegExp, string][] = [[/^dentai/i, 'dentai'], [/^genexus18mcp/i, 'genexus18mcp'], [/^(?:pi-|dotfiles$|ripwire$|local-validation$)/i, 'harness']];
+
+type ToolCall = { name: string; arguments: unknown };
+const toolCalls = (messages: readonly AgentMessage[]): ToolCall[] => messages.flatMap(m => m.role === 'assistant'
+  ? m.content.flatMap(part => part.type === 'toolCall' ? [{ name: part.name, arguments: part.arguments }] : []) : []);
+/** A call that changed something: a file edit, a commit, a push or a PR. Reads and checks deliver nothing. */
+const delivers = (call: ToolCall) => call.name === 'edit' || call.name === 'write'
+  || (call.name === 'bash' && /\bgit\s+(?:commit|push)\b|\bgh\s+pr\s+(?:create|merge)\b/.test(JSON.stringify(call.arguments)));
+
+/**
+ * Where a wake's result belongs: the channel of the repository its delivering calls touched most, or the DM when they
+ * touched none of the mapped repositories. `undefined` when the wake delivered nothing (or already reported itself with
+ * slack_send): an empty wake posts nothing.
+ */
+export function wakeChannel(messages: readonly AgentMessage[]): string | null | undefined {
+  const calls = toolCalls(messages);
+  if (calls.some(c => c.name === 'slack_send')) return undefined;
+  const delivering = calls.filter(delivers);
+  if (!delivering.length) return undefined;
+  const hits = new Map<string, number>();
+  for (const call of delivering)
+    for (const [, repo] of JSON.stringify(call.arguments).matchAll(/projetos[\\/]+([\w.-]+)/gi)) {
+      const channel = REPO_CHANNELS.find(([pattern]) => pattern.test(repo!))?.[1];
+      if (channel) hits.set(channel, (hits.get(channel) ?? 0) + 1);
+    }
+  return [...hits].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
 
 function finalText(messages: readonly AgentMessage[]): string {
   const last = [...messages].reverse().find(m => m.role === 'assistant');
@@ -40,6 +71,8 @@ export class SlackBridge {
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
+  /** Set when a heartbeat wake started the current run: what it delivered is reported to the repo's channel. */
+  private waking = false;
   private running = false;
   private readonly threads = new Map<string, Origin>();
   private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void };
@@ -54,7 +87,7 @@ export class SlackBridge {
     this.timer = setInterval(() => void this.poll(), this.options.intervalMs);
     this.timer.unref?.();
   }
-  stop(): void { clearInterval(this.timer); this.answering = undefined; this.running = false; }
+  stop(): void { clearInterval(this.timer); this.answering = undefined; this.waking = false; this.running = false; }
   runStarted(): void { this.running = true; }
 
   /** One pass: new DMs become user messages in order; the cursor advances only past delivered ones. */
@@ -90,6 +123,7 @@ export class SlackBridge {
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
   sawUserMessage(text: string): void {
+    if (WAKE.test(text)) { this.waking = true; return; }
     const match = FROM_SLACK.exec(text);
     if (!match) return;
     this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
@@ -98,12 +132,19 @@ export class SlackBridge {
 
   /** At the end of a run that received a Slack message, its final answer goes back to the DM. */
   async runEnded(messages: readonly AgentMessage[]): Promise<void> {
-    const answering = this.answering;
-    this.answering = undefined;
+    const answering = this.answering, waking = this.waking;
+    this.answering = undefined; this.waking = false;
     this.running = false;
-    if (!answering) return;
-    try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread, answering.channel); }
-    catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
+    if (answering) {
+      try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread, answering.channel); }
+      catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
+      return;
+    }
+    const text = waking && finalText(messages);
+    const channel = text ? wakeChannel(messages) : undefined;
+    if (!text || channel === undefined) return;
+    try { await this.send(`*Wake* · ${text}`, null, channel); }
+    catch (error) { this.options.warn(`Wake report not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
