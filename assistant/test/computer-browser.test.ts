@@ -40,34 +40,45 @@ test('offline browser obeys review, exact binding, and network isolation', () =>
   assert.equal(info?.HostConfig.ReadonlyRootfs, true);
 }, { image: 'optchat-computer-browser:1' }, () => 'review'));
 
-test('browser close failures and takeover races are reported without bypassing admission', async () => {
+test('a browser close failure is reported, and a takeover cannot race into a running browser session', async () => {
   const { dockerCli } = await import('../src/computer/docker.ts');
   let mode: 'failure' | 'takeover' = 'failure';
-  let hold: (() => Promise<void>) | undefined;
+  let race: (() => Promise<unknown>) | undefined;
+  let raced: Promise<unknown> | undefined;
   let closeCalls = 0;
   await withComputers(async ({ computers, gateway, authority }) => {
     const a = await computers.create('p', 'browser');
-    hold = () => computers.takeover(a.id, authority).then(() => undefined);
-    for (mode of ['failure', 'takeover'] as const) {
-      const request = browserTextRequest(base(), a, mode);
-      await assert.rejects(openBrowserText(gateway, computers, request), (error: any) => {
-        assert.equal(error.message, 'computer_browser_cleanup_failed');
-        assert.match(error.sessionId, /^artifact-/);
-        assert.equal(error.container, a.container);
-        assert.equal(error.cleanupReason, mode === 'failure' ? 'computer_browser_close_failed' : 'computer_human_control');
-        return true;
-      });
-      assert.equal(gateway.status(request.operationId), 'uncertain');
-      if (mode === 'takeover') computers.handBack(a.id, authority);
-    }
-    assert.equal(closeCalls, 1, 'takeover prevents close docker exec');
+    race = () => computers.takeover(a.id, authority);
+    const failed = browserTextRequest(base(), a, mode);
+    await assert.rejects(openBrowserText(gateway, computers, failed), (error: any) => {
+      assert.equal(error.message, 'computer_browser_cleanup_failed');
+      assert.match(error.sessionId, /^artifact-/);
+      assert.equal(error.container, a.container);
+      assert.equal(error.cleanupReason, 'computer_browser_close_failed');
+      return true;
+    });
+    assert.equal(gateway.status(failed.operationId), 'uncertain');
+    mode = 'takeover';
+    // The operator asks for the computer while the agent's browser session is open: the takeover is refused
+    // and the session still closes, so the operator never gets a computer with the agent's browser in it.
+    assert.match(await openBrowserText(gateway, computers, browserTextRequest(base(), a, mode)), /takeover/);
+    await assert.rejects(raced!, /computer_operations_active/);
+    assert.equal(closeCalls, 2, 'the raced session still ran its close');
+    await computers.takeover(a.id, authority);
+    const held = browserTextRequest(base(), a, 'held');
+    await assert.rejects(openBrowserText(gateway, computers, held), /computer_human_control/);
+    assert.equal(gateway.status(held.operationId), 'absent', 'refused before the gateway records an intent');
+    computers.handBack(a.id, authority);
   }, { image: 'optchat-computer-browser:1', docker: async (args, options) => {
     if (args.includes('agent-browser') && args.includes('close')) {
       closeCalls++;
       if (mode === 'failure') return { code: 1, stdout: '', stderr: 'close failure' };
     }
     const result = await dockerCli(args, options);
-    if (mode === 'takeover' && args.includes('agent-browser') && args.includes('snapshot')) await hold!();
+    if (mode === 'takeover' && args.includes('agent-browser') && args.includes('snapshot')) {
+      raced = race!();
+      raced.catch(() => undefined);
+    }
     return result;
   } });
 });

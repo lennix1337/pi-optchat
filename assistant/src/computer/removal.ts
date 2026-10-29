@@ -13,8 +13,12 @@ async function census(docker: DockerRunner, owner?: string): Promise<Set<string>
   } catch { return undefined; }
 }
 
-/** Inspect the current identity and remove by ID; a failed inspect is not evidence of absence. */
-export async function removeComputer(docker: DockerRunner, owner: string, name: string, confirmAbsence: boolean, expectedId?: string, expectedIdentity?: { profile: string; agent: string }): Promise<Removal> {
+/**
+ * Inspect the current identity and remove by ID; a failed inspect is not evidence of absence.
+ * `onTarget` receives the verified immutable ID before `docker rm` is issued, so a caller can persist
+ * which container an in-flight removal acts on.
+ */
+export async function removeComputer(docker: DockerRunner, owner: string, name: string, confirmAbsence: boolean, expectedId?: string, expectedIdentity?: { profile: string; agent: string }, onTarget?: (id: string) => void): Promise<Removal> {
   try {
     const target = expectedId ?? name;
     const format = expectedIdentity ? `{{.Id}}|{{index .Config.Labels "${OWNER_LABEL}"}}|{{index .Config.Labels "optchat.computer.profile"}}|{{index .Config.Labels "optchat.computer.agent"}}` : `{{.Id}}|{{index .Config.Labels "${OWNER_LABEL}"}}`;
@@ -31,12 +35,13 @@ export async function removeComputer(docker: DockerRunner, owner: string, name: 
     const [id, actualOwner, profile, agent] = inspected.stdout.trim().split('|');
     if (!id || !/^[a-f0-9]{64}$/.test(id) || !actualOwner) return 'failed';
     if (actualOwner !== owner || (expectedId !== undefined && id !== expectedId) || (expectedIdentity && (profile !== expectedIdentity.profile || agent !== expectedIdentity.agent))) return 'foreign';
+    onTarget?.(id);
     return (await docker(['rm', '--force', id])).code === 0 ? 'removed' : 'failed';
   } catch { return 'failed'; }
 }
 
 /** Collect independent outcomes so callers can persist successful transitions even on partial failure. */
-export async function cleanupComputers(docker: DockerRunner, owner: string, tracked: readonly string[]): Promise<{ cleared: string[]; removed: number; failures: number } | undefined> {
+export async function cleanupComputers(docker: DockerRunner, owner: string, tracked: readonly string[], onTarget?: (name: string, id: string) => void): Promise<{ cleared: string[]; removed: number; failures: number } | undefined> {
   const all = await census(docker);
   const owned = await census(docker, owner);
   if (!all || !owned) return undefined;
@@ -45,7 +50,7 @@ export async function cleanupComputers(docker: DockerRunner, owner: string, trac
   let removed = 0;
   let failures = 0;
   for (const name of new Set([...owned, ...trackedNames])) {
-    const result = !all.has(name) && !owned.has(name) ? 'absent' : await removeComputer(docker, owner, name, false);
+    const result = !all.has(name) && !owned.has(name) ? 'absent' : await removeComputer(docker, owner, name, false, undefined, undefined, id => onTarget?.(name, id));
     if (result === 'removed') removed += 1;
     if (result === 'removed' || result === 'absent') cleared.push(name);
     if (result === 'failed' || (result === 'foreign' && trackedNames.has(name))) failures += 1;

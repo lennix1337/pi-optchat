@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { dockerCli } from './docker.ts';
+import { SESSION_READY, START_SESSION } from './takeover-session.ts';
 import type { ComputerManager } from './manager.ts';
 
 export type GraphicalTakeoverOptions = {
@@ -12,17 +14,21 @@ export type GraphicalTakeoverOptions = {
   revocation: AbortSignal;
 };
 
-/** Trusted host supplies owner authentication; no cookie or URL itself grants authority. */
+/**
+ * Shows the agent's own computer (same container, browser process and cookies) to the operator over a loopback-only
+ * page. The agent is refused for the whole takeover; `handBack` stops the viewer and returns the unchanged computer.
+ * Trusted host supplies owner authentication; no cookie or URL itself grants authority.
+ */
 export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions): Promise<{ port: number; handBack: (authority: object) => Promise<void> }> {
   const { computers, id, authority, authorizeOwner, revocation } = options;
   if (revocation.aborted) throw new Error('takeover_revoked');
   const { generation, target } = await computers.beginGraphical(id, authority);
   try {
-    const start = await dockerCli(['exec', '--detach', '--user', '1000:1000', target, 'sh', '/opt/optchat/takeover-session.sh']);
+    const start = await dockerCli(['exec', '--detach', '--user', '1000:1000', target, 'sh', '-c', START_SESSION]);
     if (start.code !== 0) throw new Error('takeover_start_failed');
     let ready = false;
     for (let attempt = 0; attempt < 30 && !revocation.aborted; attempt++) {
-      const probe = await dockerCli(['exec', '--user', '1000:1000', target, 'sh', '-c', 'pgrep Xvfb >/dev/null && pgrep x11vnc >/dev/null && pgrep chromium >/dev/null && echo | socat - TCP:127.0.0.1:6088 >/dev/null']);
+      const probe = await dockerCli(['exec', '--user', '1000:1000', target, 'sh', '-c', SESSION_READY]);
       if (probe.code === 0) { ready = true; break; }
       await new Promise(resolve => setTimeout(resolve, 200));
     }
@@ -33,6 +39,7 @@ export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions):
     throw error;
   }
   const clients = new Set<Socket>();
+  let controller: Duplex | undefined;
   const children = new Set<ChildProcessWithoutNullStreams>();
   let closing = false;
   let closed: Promise<void> | undefined;
@@ -70,7 +77,9 @@ export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions):
   });
   server.on('upgrade', (request, socket, head) => {
     const origin = `http://127.0.0.1:${port}`;
-    if (closing || request.headers.host !== `127.0.0.1:${port}` || !authorizeOwner(request) || request.url !== '/websockify' || request.headers.origin !== origin) { socket.destroy(); return; }
+    if (closing || request.headers.host !== `127.0.0.1:${port}` || !authorizeOwner(request) || request.url !== '/websockify' || request.headers.origin !== origin || controller) { socket.destroy(); return; }
+    controller = socket; // one controller at a time; the viewer inside the computer refuses a second one as well
+    socket.once('close', () => { if (controller === socket) controller = undefined; });
     const child = spawn('docker', ['exec', '-i', target, 'socat', '-', 'TCP:127.0.0.1:6088'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     children.add(child); child.stderr.resume(); child.once('close', () => { children.delete(child); socket.destroy(); });
     child.on('error', () => socket.destroy());

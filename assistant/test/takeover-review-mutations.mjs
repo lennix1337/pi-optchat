@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const mutants = [
-  { file: 'manager.ts', test: 'takeover-owner-cleanup.test.ts', old: "if (this.db.prepare('SELECT token FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner)) fail('computer_cleanup_active');\n      const existing", replacement: "if (false) fail('computer_cleanup_active');\n      const existing" },
-  { file: 'manager.ts', test: 'takeover-uncertain-start.test.ts', old: "if (run.uncertain || (run.code === 0 && !/^[a-f0-9]{64}$/.test(run.stdout.trim())))", replacement: "if (run.code === 0 && !/^[a-f0-9]{64}$/.test(run.stdout.trim()))" },
+  { file: 'manager.ts', test: 'takeover-owner-cleanup.test.ts', old: "if (this.db.prepare('SELECT token FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner)) fail('computer_cleanup_active');\n      token = this.reserveLifecycle(row.id);\n      existing", replacement: "if (false) fail('computer_cleanup_active');\n      token = this.reserveLifecycle(row.id);\n      existing" },
+  { file: 'manager.ts', test: 'takeover-uncertain-start.test.ts', old: 'inspected.code !== 0 || inspected.uncertain || ', replacement: 'inspected.code !== 0 || ' },
   { file: 'graphical-takeover.ts', test: 'takeover-graphical.test.ts', old: 'catch (error) { teardown = undefined; throw error; }', replacement: 'catch (error) { throw error; }' },
 ];
 const root = mkdtempSync(join(tmpdir(), 'takeover-review-mutants-'));

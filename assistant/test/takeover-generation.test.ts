@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ComputerManager } from '../src/computer/manager.ts';
 
-test('human container is fresh and stale generation cannot hand back a replacement', async () => {
+test('takeover addresses the agent\'s own container and a stale generation cannot hand back a replacement', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'takeover-generation-'));
   const authority = {};
   const manager = new ComputerManager({ databasePath: join(dir, 'db'), owner: `generation-${Date.now()}`, image: 'optchat-computer-takeover:local', operatorAuthority: authority });
@@ -15,12 +15,12 @@ test('human container is fresh and stale generation cannot hand back a replaceme
     const computer = await manager.create('fixture', 'agent'); id = computer.id;
     const agentTarget = await manager.isolatedTarget(id);
     const first = await manager.beginGraphical(id, authority); active = first.generation;
-    assert.notEqual(first.target, agentTarget);
+    assert.equal(first.target, agentTarget, 'the operator is shown the agent\'s own container, not a fresh one');
     assert.throws(() => manager.handBack(id, authority), /computer_not_in_takeover/);
     await assert.rejects(manager.reconcileGraphical(id, first.generation, 'b'.repeat(64), authority), /computer_graphical_reconcile_refused/);
     await manager.reconcileGraphical(id, first.generation, first.target, authority); active = undefined;
     const second = await manager.beginGraphical(id, authority); active = second.generation;
-    assert.notEqual(second.target, first.target);
+    assert.equal(second.target, first.target);
     await assert.rejects(manager.endGraphical(id, first.generation, authority), /computer_graphical_stale/);
     assert.equal(manager.get(id).state, 'graphical');
     await manager.endGraphical(id, second.generation, authority); active = undefined;
