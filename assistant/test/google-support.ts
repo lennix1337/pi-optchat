@@ -60,6 +60,8 @@ export class FakeGoogle {
   readonly failures = new Map<string, number>();
   loopPageToken = false;
   readonly redirectUris = new Set<string>();
+  /** The registered client; a test of the real client-file parser sets a `.apps.googleusercontent.com` id. */
+  clientId = CLIENT_ID;
   private codes = new Map<string, Code>();
   private access = new Map<string, Grant & { expires: number }>();
   private refresh = new Map<string, Grant>();
@@ -81,7 +83,7 @@ export class FakeGoogle {
     const url = new URL(authorizationUrl);
     const p = url.searchParams;
     if (`${url.origin}${url.pathname}` !== this.endpoints.authorization) throw new Error('fake: wrong authorization endpoint');
-    if (p.get('client_id') !== CLIENT_ID || p.get('response_type') !== 'code' || !this.redirectUris.has(p.get('redirect_uri') ?? '')) throw new Error('fake: invalid_request');
+    if (p.get('client_id') !== this.clientId || p.get('response_type') !== 'code' || !this.redirectUris.has(p.get('redirect_uri') ?? '')) throw new Error('fake: invalid_request');
     if (p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(p.get('code_challenge') ?? '')) throw new Error('fake: PKCE S256 required');
     const code = `code-${randomBytes(12).toString('hex')}`;
     const scopes = this.grantedScopes ?? (p.get('scope') ?? '').split(' ');
@@ -119,14 +121,14 @@ export class FakeGoogle {
     if (failure) { send(failure, { error: 'fixture_failure' }); return; }
 
     if (req.method === 'POST' && url.pathname === '/token') {
-      if (params.client_id !== CLIENT_ID || params.client_secret !== CLIENT_SECRET) { send(401, { error: 'invalid_client' }); return; }
+      if (params.client_id !== this.clientId || params.client_secret !== CLIENT_SECRET) { send(401, { error: 'invalid_client' }); return; }
       if (params.grant_type === 'authorization_code') {
         const code = this.codes.get(params.code ?? '');
         const verifier = params.code_verifier ?? '';
         if (!code || code.used || code.redirectUri !== params.redirect_uri || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || b64url(createHash('sha256').update(verifier).digest()) !== code.challenge) { send(400, { error: 'invalid_grant' }); return; }
         code.used = true;
         const who = ACCOUNTS[code.account];
-        const claims = { iss: 'https://accounts.google.com', aud: CLIENT_ID, sub: who.sub, email: who.email, email_verified: true, nonce: code.nonce, iat: Math.floor(this.clock.now / 1000), exp: Math.floor(this.clock.now / 1000) + 3600, ...this.idTokenOverride };
+        const claims = { iss: 'https://accounts.google.com', aud: this.clientId, sub: who.sub, email: who.email, email_verified: true, nonce: code.nonce, iat: Math.floor(this.clock.now / 1000), exp: Math.floor(this.clock.now / 1000) + 3600, ...this.idTokenOverride };
         send(200, { ...this.issue(code, true), id_token: `${b64url(JSON.stringify({ alg: 'RS256', kid: 'fixture' }))}.${b64url(JSON.stringify(claims))}.fixture-signature` });
         return;
       }

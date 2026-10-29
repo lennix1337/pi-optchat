@@ -29,3 +29,5 @@ Starting, stopping, autostart and restore change the operator's machine: run the
 Optional server-config blocks, each the operator's consent and read only at start (restart to apply): `"notifications": {"local": true}` shows a Windows toast with fixed category text (never the task title) when a task is suggested, needs input, is ready for review, finishes or fails; `false` revokes. `"slack": {appToken, team, appId, operators}` takes DMs from the listed operators as suggested tasks over Socket Mode; nothing is posted back to Slack. Details: `assistant/README.md` → “Notifications” and “Slack intake”.
 
 Update: stop → backup → switch code → start (migrates, health-checked) → if it fails, restore the pre-update backup into a new directory, point the config there and start the previous version. See `assistant/README.md` → “Operation”.
+
+`node assistant/scripts/google.mjs client|connect|list|revoke|briefing|start --config <path>`: read-only Gmail/Calendar, nothing is sent. `connect` prints a consent URL that the operator opens and approves in their own browser; never sign in or click Allow for them. Setup: `assistant/README.md` → “Google, triage and briefing”.
