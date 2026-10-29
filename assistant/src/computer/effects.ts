@@ -73,7 +73,8 @@ export async function openBrowserText(gateway: Gateway, computers: ComputerManag
     if (bytes.length > 1000 || !Buffer.from(text).equals(Buffer.from(bytes))) throw new Error('invalid_request');
     const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     const html = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; sandbox"><pre>${escaped}</pre>`;
-    const url = `data:text/html;base64,${Buffer.from(html).toString('base64')}`;
+    // The page declares no charset, so without this the browser reads the UTF-8 bytes as Latin-1 and garbles accents.
+    const url = `data:text/html;charset=utf-8;base64,${Buffer.from(html).toString('base64')}`;
     const session = `artifact-${crypto.randomUUID()}`;
     const run = (args: string[]) => computers.exec(metadata.account, ['agent-browser', '--session', session, ...args], { destination: metadata.destination, timeoutMs: 60_000 });
     try {

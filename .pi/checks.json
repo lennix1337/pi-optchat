@@ -186,6 +186,21 @@
       "argv": ["node", "--test", "assistant/test/executor-journey.test.ts"],
       "timeoutMs": 240000
     },
+    "assistant-executor-tools": {
+      "description": "Executor tools and restore holds, offline: restored queued/working revisions held and reconciled, panel inspection of holds, review lifecycle (denied/revoked/expired end the task), executor.mjs desk with fake Docker, tools default off",
+      "argv": ["node", "--test", "--test-concurrency=1", "--test-timeout=60000", "assistant/test/executor-restore.test.ts", "assistant/test/executor-restore-panel.test.ts", "assistant/test/tool-review-lifecycle.test.ts", "assistant/test/executor-tools-service.test.ts", "assistant/test/executor-tools-default-off.test.ts"],
+      "timeoutMs": 240000
+    },
+    "assistant-executor-tools-mutations": {
+      "description": "Disposable source copies: removing each restore-hold or tool-review guard (hold check, hold fence, revision scope, expiry/denial ends task, desk lists only pending reviews, terminal-only script, default off, opt-in preview, review policy) fails a named test",
+      "argv": ["node", "-e", "for (const file of ['executor-restore-mutation.mjs', 'executor-tools-mutations.mjs']) { const r = require('node:child_process').spawnSync(process.execPath, ['assistant/test/' + file], { stdio: 'inherit' }); if (r.status !== 0) process.exit(r.status ?? 1); }"],
+      "timeoutMs": 600000
+    },
+    "assistant-executor-tools-journey": {
+      "description": "Real main.ts --web with executor.tools, loopback fake provider and the local Docker image optchat-computer-browser:1 (never pulled): preview proposal waits for the operator desk, approval opens it once in the isolated browser (~15 s)",
+      "argv": ["node", "--test", "--test-timeout=150000", "assistant/test/executor-tools-journey.test.ts"],
+      "timeoutMs": 200000
+    },
     "assistant-backup-artifact-mutations": {
       "description": "Disposable mutation checks of artifact backup and restored archive admission; no personal data",
       "argv": ["node", "assistant/test/backup-artifact-mutations.mjs"],

@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Disposable copy of the executor sources; each guard removed must fail an assertion of assistant-executor.
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const home = mkdtempSync(join(tmpdir(), 'assistant-executor-mutants-'));
+// A worktree has no node_modules of its own: link the one Node resolves from the repo, never a stray copy above %TEMP%.
+const modules = (dir => { for (; !existsSync(join(dir, 'node_modules')); dir = dirname(dir)) if (dirname(dir) === dir) throw new Error('node_modules not found'); return join(dir, 'node_modules'); })(repo);
 const tests = ['task-executor.test.ts', 'task-response-reader.test.ts', 'pi-draft.test.ts', 'account-routes.test.ts'];
 const mutations = [
   ['admitted-channel', 'task-executor.ts', '!this.options.channels.includes(origin.channelId)', 'false'],
-  ['wait-is-not-failure', 'task-executor.ts', "return result.kind === 'wait' ? WAIT : parseDraftResult(result);", 'return parseDraftResult(result);'],
+  ['wait-is-not-failure', 'task-executor.ts', "if (result.kind === 'wait') return WAIT;", ''],
   ['wait-for-usable-account', 'task-executor.ts', 'if (!await ready()) return null;', ''],
   ['bounded-account-switches', 'task-executor.ts', 'if (attempt >= MAX_ROUTE_ATTEMPTS)', 'if (false)'],
   ['account-error-waits', 'pi-draft.ts', "if (last?.role === 'assistant' && last.stopReason === 'error' && accountFailed(last.errorMessage ?? '')) return WAIT;", ''],
@@ -30,7 +32,7 @@ const mutations = [
   ['options-bounded', 'task-executor.ts', 'value.length >= 2 && value.length <= 4 && new Set(value).size === value.length', 'true'],
   ['prompt-of-current-revision', 'task-executor.ts', 'this.current({ ...task, revision: task.revision - 1 })', 'this.current({ ...task, revision: 2 })'],
   ['tool-free-session', 'pi-draft.ts', "tools: [], noTools: 'all', ", ''],
-  ['output-parsed', 'pi-draft.ts', "return parseDraftResult(JSON.parse(session.getLastAssistantText() ?? ''));", "return { kind: 'draft', text: session.getLastAssistantText() || 'x' };"],
+  ['output-parsed', 'pi-draft.ts', "return config.tools && (reply as { kind?: unknown } | null)?.kind === 'browser_text' ? parsePreview(reply) : parseDraftResult(reply);", "return { kind: 'draft', text: session.getLastAssistantText() || 'x' };"],
 ];
 try {
   cpSync(join(repo, 'assistant/src'), join(home, 'assistant/src'), { recursive: true });
@@ -40,7 +42,7 @@ try {
   mkdirSync(join(home, 'test'));
   cpSync(join(repo, 'test/fixture-model.ts'), join(home, 'test/fixture-model.ts'));
   writeFileSync(join(home, 'package.json'), '{"type":"module"}');
-  symlinkSync(join(repo, 'node_modules'), join(home, 'node_modules'), 'junction');
+  symlinkSync(modules, join(home, 'node_modules'), 'junction');
   const run = () => spawnSync(process.execPath, ['--experimental-transform-types', '--no-warnings', '--test', '--test-timeout=30000', ...tests.map(file => join(home, 'assistant/test', file))],
     { cwd: home, encoding: 'utf8', timeout: 120000, maxBuffer: 4000000, windowsHide: true });
   const baseline = run(); assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);

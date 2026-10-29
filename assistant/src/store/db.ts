@@ -8,6 +8,14 @@ import { assertTaskTransition, parseTask, parseTaskResponse, type Task, type Tas
 
 export type StoredEvent = { event: Event; operation: 'create' | 'transition' | 'respond'; task: Task };
 export type TaskPage = { tasks: Task[]; nextCursor: string | null };
+export type RestoreHold = { taskId: string; revision: number; title: string; status: 'queued' | 'working' };
+/**
+ * Task revisions that were queued or working in a restored backup. The original may have generated or dispatched them
+ * after the snapshot, so no worker starts new work for a held revision until the operator reconciles it.
+ */
+export const RESTORE_HOLDS_TABLE = 'CREATE TABLE IF NOT EXISTS restore_holds (profile TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(profile,task_id))';
+/** Restore runs this on the snapshot's task database: every task revision that was queued or working is held. */
+export const RESTORE_HOLDS_FENCE = "INSERT OR REPLACE INTO restore_holds (profile, task_id, revision) SELECT profile, id, json_extract(snapshot, '$.revision') FROM tasks WHERE json_extract(snapshot, '$.status') IN ('queued', 'working')";
 
 export class TaskStore {
   private readonly db: DatabaseSync;
@@ -30,6 +38,7 @@ export class TaskStore {
         }
         this.db.exec('CREATE TABLE IF NOT EXISTS task_store_identity (id TEXT PRIMARY KEY)');
         if (!this.db.prepare('SELECT id FROM task_store_identity LIMIT 1').get()) this.db.prepare('INSERT INTO task_store_identity VALUES (?)').run(randomUUID());
+        this.db.exec(RESTORE_HOLDS_TABLE);
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     } catch (error) { this.db.close(); throw error; }
@@ -133,6 +142,37 @@ export class TaskStore {
     if (!Number.isSafeInteger(inputRevision) || inputRevision < 1) throw new TypeError('Invalid response identity');
     const row = this.taskRow('SELECT text FROM responses WHERE profile = ? AND task_id = ? AND input_revision = ?', taskId, inputRevision);
     return row ? String(row.text) : null;
+  }
+  /** True while this exact revision is still held by a restore; a later revision is never held. */
+  restoreHeld(taskId: string, revision: number): boolean {
+    return !!this.taskRow('SELECT 1 FROM restore_holds WHERE profile = ? AND task_id = ? AND revision = ?', taskId, revision);
+  }
+  /** Read-only: held revisions that are still the task's current queued or working revision. */
+  restoreHolds(limit = 100): RestoreHold[] {
+    this.checkLimit(limit);
+    return this.db.prepare(`SELECT h.task_id AS taskId, h.revision AS revision, json_extract(t.snapshot, '$.title') AS title, json_extract(t.snapshot, '$.status') AS status
+      FROM restore_holds h JOIN tasks t ON t.profile = h.profile AND t.id = h.task_id
+      WHERE h.profile = ? AND json_extract(t.snapshot, '$.revision') = h.revision AND json_extract(t.snapshot, '$.status') IN ('queued', 'working') ORDER BY h.task_id LIMIT ?`)
+      .all(this.profileId, limit).map(row => ({ taskId: String(row.taskId), revision: Number(row.revision), title: String(row.title), status: row.status as RestoreHold['status'] }));
+  }
+  /**
+   * The operator's reconciliation of one held revision: it ends as failed without running again (a queued one passes
+   * through working, as the executor's own refusal does). Requeueing the failed task is a new, unheld revision.
+   */
+  reconcileRestored(taskId: string, revision: number, event: (sequence: number, note: string) => Event): Task {
+    return this.transaction(() => {
+      if (!this.restoreHeld(taskId, revision)) throw new TypeError('Task revision is not held by a restore');
+      let current = this.get(taskId);
+      if (current?.status === 'queued') {
+        assertTaskTransition(current, 'working', this.profileId, revision);
+        current = this.update(parseTask({ ...current, status: 'working', revision: current.revision + 1 }), event(this.nextSequence(), 'Restaurada do backup; conferida pelo operador.'), 'transition');
+      }
+      assertTaskTransition(current, 'failed', this.profileId, current?.revision ?? revision);
+      const task = this.update(parseTask({ ...current!, status: 'failed', revision: current!.revision + 1 }),
+        event(this.nextSequence(), 'Restaurada do backup e encerrada pelo operador sem repetir. Recoloque na fila para gerar de novo.'), 'transition');
+      this.db.prepare('DELETE FROM restore_holds WHERE profile = ? AND task_id = ?').run(this.profileId, taskId);
+      return task;
+    });
   }
   /** The event that created the task: its channel and source decide what may act on it. */
   creation(taskId: string): StoredEvent | null {

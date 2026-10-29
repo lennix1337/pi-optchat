@@ -15,7 +15,7 @@ export type TaskPrompt = { question: string; options: string[] };
 export const WAIT = { kind: 'wait' } as const;
 export type PreviewPlan = { kind: 'browser_text'; text: string };
 export type DraftRunner = (input: DraftInput, signal: AbortSignal) => Promise<DraftResult | PreviewPlan | typeof WAIT>;
-function parsePreview(value: unknown): PreviewPlan {
+export function parsePreview(value: unknown): PreviewPlan {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_preview');
   const v = value as Record<string, unknown>;
   if (Object.keys(v).sort().join(',') !== 'kind,text' || v.kind !== 'browser_text' || typeof v.text !== 'string' || !v.text.isWellFormed() || Buffer.byteLength(v.text) > 1000) throw new Error('invalid_preview');
@@ -144,6 +144,8 @@ export class TaskExecutor {
     let task = listed;
     let { attempt, job } = task.status === 'working' ? this.current(task) : { attempt: 0, job: undefined };
     if (!job) {
+      // Restored from a backup: the original may already have generated this revision, so nothing is rebuilt for it.
+      if (this.options.store.restoreHeld(task.taskId, task.revision)) return null;
       if (attempt >= MAX_ROUTE_ATTEMPTS) { this.stale(() => this.transition(task, 'failed', `Nenhuma conta conseguiu gerar após ${attempt} tentativas (limite, autenticação ou falha temporária). Tente novamente quando uma conta estiver disponível.`)); return null; }
       if (!await ready()) return null;
       if (task.status === 'queued') {
@@ -191,7 +193,9 @@ export class TaskExecutor {
       let effect = prior ?? this.options.tools.task.prepare(this.options.tools.request(task, plan.text, effectId), task.revision, effectId);
       if (effect.state === 'preparing') effect = this.options.tools.task.effects.reprepare(effectId);
       if (effect.state === 'waiting' || effect.state === 'done') effect = await this.options.tools.task.resume(effectId, this.runtime.leaseIdentity());
-      if (effect.state === 'uncertain' || effect.state === 'failed') {
+      if (effect.state === 'cancelled') {
+        this.stale(() => this.options.store.transitionWithLease(task.taskId, task.revision, 'failed', this.event(task, 'Prévia negada, revogada ou expirou sem revisão; nada foi executado. Recoloque na fila para tentar de novo.'), this.runtime.leaseIdentity()));
+      } else if (effect.state === 'uncertain' || effect.state === 'failed') {
         this.stale(() => this.options.store.transitionWithLease(task.taskId, task.revision, 'failed', this.event(task, 'Prévia bloqueada ou com resultado incerto; não será repetida automaticamente. Confira antes de tentar novamente.'), this.runtime.leaseIdentity()));
       }
       return;

@@ -7,6 +7,8 @@ export type ToolEffectPort = {
   prepare(request: EffectRequest): { decision: 'allow' } | { decision: 'review'; reviewId: string };
   status(operationId: string): 'absent' | 'uncertain' | 'response_recorded';
   ready(request: EffectRequest, reviewId: string): boolean;
+  /** True while the review still awaits a decision; false once it was denied, revoked, spent or expired. */
+  open?(request: EffectRequest, reviewId: string): boolean;
   dispatch(request: EffectRequest, reviewId: string): Promise<unknown>;
 };
 export type ToolEffectState = 'preparing' | 'waiting' | 'dispatching' | 'done' | 'cancelled' | 'uncertain' | 'failed';
@@ -65,6 +67,7 @@ export class ToolEffects {
   reprepare(id: string): PendingToolEffect {
     const item = this.get(id);
     if (!['preparing', 'waiting'].includes(item.state) || !this.current(item.taskId, item.revision) || this.port.status(item.request.operationId) !== 'absent') throw new Error('tool_stale');
+    if (item.request.expiresAt <= Date.now()) { this.cancel(id); return this.get(id); }
     const decision = this.port.prepare(item.request);
     if (decision.decision !== 'review') throw new Error('tool_review_required');
     this.db.prepare("UPDATE tool_effects SET state = 'waiting', review_id = ? WHERE id = ? AND state IN ('preparing','waiting')").run(decision.reviewId, id);
@@ -85,7 +88,13 @@ export class ToolEffects {
       const row = this.db.prepare('SELECT snapshot FROM tasks WHERE profile = ? AND id = ?').get(item.request.profileId, item.taskId) as { snapshot: string } | undefined;
       const task = row ? JSON.parse(row.snapshot) as { status?: unknown; revision?: unknown } : undefined;
       if (item.state !== 'waiting' || task?.status !== 'working' || task.revision !== item.revision || !this.current(item.taskId, item.revision) || this.port.status(item.request.operationId) !== 'absent') throw new Error('tool_stale');
-      if (!item.reviewId || !this.port.ready(item.request, item.reviewId)) { this.db.exec('COMMIT'); return item; }
+      if (!item.reviewId) { this.db.exec('COMMIT'); return item; }
+      // An expired window, a denied or a revoked review can never become ready: end the effect instead of waiting forever.
+      if (item.request.expiresAt <= Date.now() || !this.port.ready(item.request, item.reviewId) && this.port.open && !this.port.open(item.request, item.reviewId)) {
+        this.db.prepare("UPDATE tool_effects SET state = 'cancelled' WHERE id = ? AND state = 'waiting'").run(id);
+        this.db.exec('COMMIT'); return this.get(id);
+      }
+      if (!this.port.ready(item.request, item.reviewId)) { this.db.exec('COMMIT'); return item; }
       const claim = this.db.prepare("UPDATE tool_effects SET state = 'dispatching' WHERE id = ? AND state = 'waiting'").run(id);
       if (claim.changes !== 1) throw new Error('tool_stale');
       this.db.exec('COMMIT');

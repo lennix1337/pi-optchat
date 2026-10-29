@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
-import { parseDraftResult, WAIT, type DraftRunner } from './task-executor.ts';
+import { parseDraftResult, parsePreview, WAIT, type DraftRunner } from './task-executor.ts';
 import { AccountRoutes, type Route } from './account-routes.ts';
 import { validExecutorConfig, type ExecutorConfig } from './executor-config.ts';
 
@@ -10,6 +10,10 @@ Return exactly one JSON object, no markdown fences: {"kind":"input","text":"one 
 or {"kind":"draft","text":"the actual draft or answer"}. Text must be nonempty and at most 4000 characters.
 A question with a few likely answers may add "options": 2 to 4 distinct one-line answers of at most 80 characters each; the user may still type another.
 Do not claim an external action happened. User review of your draft is not authorization to send it.`;
+const previewPrompt = `
+When seeing short plain text rendered in an isolated, offline browser page would help the user, you may instead return
+{"kind":"browser_text","text":"at most 1000 bytes of plain text"}. This is only a proposal: the operator must approve this preview
+before anything opens, it has no network, cannot read files or send anything, and its result comes back to the user as a draft to review.`;
 
 export type DraftEngine = { run: DraftRunner; ready(): Promise<boolean> };
 const RUNTIME_REUSE_MS = 60_000;
@@ -41,7 +45,7 @@ export function piDraftEngine(config: ExecutorConfig, cwd: string, suppliedRunti
     if (!model) return WAIT;
     const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off' });
     const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: config.agentDir, settingsManager,
-      noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, systemPrompt });
+      noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, systemPrompt: config.tools ? systemPrompt + previewPrompt : systemPrompt });
     await resourceLoader.reload();
     signal.throwIfAborted();
     const { session } = await createAgentSession({ cwd, agentDir: config.agentDir, modelRuntime: runtime, model, settingsManager,
@@ -62,7 +66,8 @@ export function piDraftEngine(config: ExecutorConfig, cwd: string, suppliedRunti
       const last = session.messages.at(-1);
       if (last?.role === 'assistant' && last.stopReason === 'error' && accountFailed(last.errorMessage ?? '')) return WAIT;
       if (last?.role !== 'assistant' || last.stopReason !== 'stop') throw new Error('executor_incomplete');
-      return parseDraftResult(JSON.parse(session.getLastAssistantText() ?? ''));
+      const reply: unknown = JSON.parse(session.getLastAssistantText() ?? '');
+      return config.tools && (reply as { kind?: unknown } | null)?.kind === 'browser_text' ? parsePreview(reply) : parseDraftResult(reply);
     } finally { clearTimeout(timeout); signal.removeEventListener('abort', abort); session.dispose(); }
   };
   return { run, ready: async () => await next(await runtimeFor(false)) !== undefined };

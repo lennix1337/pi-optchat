@@ -12,7 +12,7 @@ import { registerFixtureModel } from '../../test/fixture-model.ts';
 
 type Reply = string | Error;
 /** Offline accounts `acct` and `acct-account-2`, both saved with default model `fixture`, rotated as pi-multi-account would. */
-async function fixture(replies: Record<string, Reply>, fn: (engine: DraftEngine, calls: { provider: string; context: Context }[]) => Promise<void>, pinned = false) {
+async function fixture(replies: Record<string, Reply>, fn: (engine: DraftEngine, calls: { provider: string; context: Context }[]) => Promise<void>, pinned = false, tools = false) {
   const dir = mkdtempSync(join(tmpdir(), 'oc-pi-draft-'));
   const calls: { provider: string; context: Context }[] = [];
   try {
@@ -22,7 +22,7 @@ async function fixture(replies: Record<string, Reply>, fn: (engine: DraftEngine,
     for (const [provider, reply] of Object.entries(replies)) {
       registerFixtureModel(runtime, context => { calls.push({ provider, context: structuredClone(context) }); return reply; }, 100000, provider);
     }
-    const config = { agentDir: dir, channels: ['Pessoal'], ...(pinned ? { provider: 'acct-account-2', model: 'fixture' } : {}) };
+    const config = { agentDir: dir, channels: ['Pessoal'], ...(pinned ? { provider: 'acct-account-2', model: 'fixture' } : {}), ...(tools ? { tools: true as const } : {}) };
     await fn(piDraftEngine(config, dir, runtime), calls);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -87,4 +87,22 @@ test('executor config requires exact fields and an absolute credential root', ()
   assert.equal(validExecutorConfig({ ...base, provider: 'p', model: 'm' }), true);
   for (const bad of [{ ...base, agentDir: 'relative' }, { ...base, channels: [] }, { ...base, channels: [' '] }, { ...base, channels: ['a', 'a'] },
     { ...base, extra: 1 }, { ...base, provider: 'p' }, { ...base, provider: 'p', model: 'a\nb' }, { ...base, channel: 'Pessoal' }]) assert.equal(validExecutorConfig(bad), false);
+});
+
+const preview = '{"kind":"browser_text","text":"Olá no navegador isolado"}';
+test('preview plans are refused unless the operator enabled executor tools; enabled, the prompt offers only an approval-gated preview', async () => {
+  await fixture({ acct: preview }, async engine => { await assert.rejects(run(engine), /invalid_draft/); });
+  await fixture({ acct: preview }, async (engine, calls) => {
+    assert.deepEqual(await run(engine), { kind: 'browser_text', text: 'Olá no navegador isolado' });
+    const system = JSON.stringify(calls[0].context.messages.filter(message => (message.role as string) === 'system'));
+    assert.match(system, /browser_text/); assert.match(system, /operator must approve/);
+    assert.ok(!(calls[0].context.messages.filter(message => (message.role as string) === 'system') as unknown as { toolsAdded?: unknown[] }[]).some(message => message.toolsAdded?.length), 'the model still has no tools');
+  }, false, true);
+  await fixture({ acct: '{"kind":"browser_text","text":"a","extra":1}' }, async engine => { await assert.rejects(run(engine), /invalid_preview/); }, false, true);
+});
+
+test('executor tools are an explicit opt-in that must be exactly true', () => {
+  const base = { agentDir: join(tmpdir(), 'agent'), channels: ['Pessoal'] };
+  assert.equal(validExecutorConfig({ ...base, tools: true }), true);
+  for (const bad of [{ ...base, tools: false }, { ...base, tools: 'true' }, { ...base, tools: 1 }, { ...base, tools: null }]) assert.equal(validExecutorConfig(bad), false);
 });
