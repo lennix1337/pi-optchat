@@ -174,6 +174,13 @@ export class TaskStore {
       return task;
     });
   }
+  /** taskId -> the channel the task was created in, for one listed page (at most 100 ids). */
+  creationChannels(taskIds: readonly string[]): Record<string, string> {
+    if (taskIds.length === 0) return {};
+    if (taskIds.length > 100) throw new TypeError('Invalid page limit');
+    const rows = this.db.prepare(`SELECT json_extract(payload, '$.event.taskId') AS task, json_extract(payload, '$.event.channelId') AS channel FROM events WHERE profile = ? AND json_extract(payload, '$.operation') = 'create' AND json_extract(payload, '$.event.taskId') IN (${taskIds.map(() => '?').join(', ')})`).all(this.profileId, ...taskIds);
+    return Object.fromEntries(rows.map(row => [String(row.task), String(row.channel)]));
+  }
   /** The newest event in which `actorId` itself put a task in a result state (a draft to review or a question). */
   latestResult(actorId: string): StoredEvent | null {
     const row = this.db.prepare("SELECT payload FROM events WHERE profile = ? AND json_extract(payload, '$.event.source.actorId') = ? AND json_extract(payload, '$.operation') = 'transition' AND json_extract(payload, '$.task.status') IN ('ready_for_review', 'needs_input') ORDER BY sequence DESC LIMIT 1").get(this.profileId, actorId);

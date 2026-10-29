@@ -63,6 +63,8 @@ test('cookie plus same-origin CSRF, not bearer, gates browser mutations and logo
   assert.equal(res.status, 200);
   const task = await res.json() as { taskId: string };
   assert.equal(f.store.get(task.taskId)?.title, 'Tarefa local');
+  const listed = await (await f.request('/web/api/tasks', { headers: { cookie: session.cookie } })).json() as { tasks: { taskId: string }[]; channels: Record<string, string> };
+  assert.deepEqual(listed.channels, { [task.taskId]: 'Pessoal' }, 'the page names the channel of each listed task');
   // A web credential proves channel access, not a locally typed approval.
   assert.equal(f.store.events()[0].event.source.sourceKind, 'external');
   assert.equal((await f.request('/web/session/logout', { method: 'POST', headers: { ...headers, cookie: session.cookie, 'x-assistant-csrf': session.csrf } })).status, 200);

@@ -205,7 +205,9 @@ export class WebChannel {
     if (req.method === 'GET' && url.pathname === '/web/api/tasks') {
       query(url, ['cursor', 'limit']); const cursor = url.searchParams.get('cursor');
       if (cursor !== null && !text(cursor)) throw new BadRequest();
-      send(res, 200, this.store.list(cursor, numberParam(url, 'limit', 100, 1, 100)), securityHeaders); return;
+      const page = this.store.list(cursor, numberParam(url, 'limit', 100, 1, 100));
+      // The subject of each listed task, so the panel does not depend on how much of the event stream it has paged.
+      send(res, 200, { ...page, channels: this.store.creationChannels(page.tasks.map(task => task.taskId)) }, securityHeaders); return;
     }
     if (req.method === 'GET' && url.pathname === '/web/api/events') {
       query(url, ['after', 'limit']);

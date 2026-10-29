@@ -1,4 +1,4 @@
-import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, DeclinedSources, setupLabels, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels } from './state.js';
+import { PanelState, PanelLifecycle, ResponseQueue, ChannelArchive, DeclinedSources, setupLabels, coordinatedWrite, coordinatedReconcile, channelMark, deepLinkTask, taskLink, originalAccess, actions, attention, labels, subjectLabel } from './state.js';
 import { startArtifacts, stopArtifacts } from './artifacts/artifacts.js';
 import { startVoice, stopVoice } from './voice/voice-ui.js';
 import { startBriefing, stopBriefing } from './briefing.js';
@@ -78,6 +78,7 @@ async function sync(manual = false) {
   try {
     const page = await request('/web/api/tasks?limit=100');
     for (const task of page.tasks) state.upsert(task);
+    state.seedChannels(page.channels);
     lifecycle.pollPage(page.nextCursor);
     const reconciled = await events();
     if (manual && !uncertain() && !reconciled) notice('');
@@ -110,10 +111,10 @@ function channelOptions() {
   const select = $('#channel'); const selected = select.value;
   const channels = [...new Set(state.channels.values())].sort();
   const archived = channels.filter(name => archive.has(name));
-  const options = [new Option('Todos os assuntos', ''), ...channels.filter(name => !archive.has(name)).map(name => new Option(name, name))];
+  const options = [new Option('Todos os assuntos', ''), ...channels.filter(name => !archive.has(name)).map(name => new Option(subjectLabel(name), name))];
   if (archived.length) {
     const group = document.createElement('optgroup'); group.label = 'Assuntos arquivados';
-    group.append(...archived.map(name => new Option(name, name))); options.push(group);
+    group.append(...archived.map(name => new Option(subjectLabel(name), name))); options.push(group);
   }
   select.replaceChildren(...options);
   if (channels.includes(selected)) select.value = selected;
@@ -169,7 +170,7 @@ function card(task, last) {
   if (channel) {
     const mark = channelMark(channel);
     const badge = el('span', mark.initial, 'channel-mark'); badge.setAttribute('aria-hidden', 'true'); badge.style.setProperty('--hue', String(mark.hue));
-    subject.append(badge, channel);
+    subject.append(badge, subjectLabel(channel));
   } else subject.textContent = 'Canal não carregado';
   meta.append(el('span', labels[task.status], 'task-status'), subject);
   const project = state.projects.get(task.taskId);
@@ -405,7 +406,7 @@ $('#refresh').addEventListener('click', () => sync(true));
 $('#more').addEventListener('click', async () => {
   try {
     const page = await request(`/web/api/tasks?limit=100&cursor=${encodeURIComponent(lifecycle.cursor)}`);
-    page.tasks.forEach(task => state.upsert(task)); lifecycle.nextPage(page.nextCursor); render();
+    page.tasks.forEach(task => state.upsert(task)); state.seedChannels(page.channels); lifecycle.nextPage(page.nextCursor); render();
   } catch { notice('Não foi possível carregar a próxima página. Use Atualizar.'); }
 });
 $('#more-events').addEventListener('click', async () => { try { await events(); render(); } catch { notice('Histórico indisponível. O cursor não avançou. Use Atualizar.'); } });
