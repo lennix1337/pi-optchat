@@ -1,6 +1,7 @@
 import { registerAssistant } from './assistant-client.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
 import { registerWorkTracker } from './work-tracker.ts';
+import { logSent, registerSlackReports, watchAgentEnds, watchShellEnds } from './slack-reports.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
@@ -124,7 +125,10 @@ export default function optchat(pi: ExtensionAPI) {
     } catch { /* an unreadable state file must not block the advisor; the operator still decides */ }
     return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },
       message => profile.usage.compression(message, 'advisor', profile.sessionId));
-  }, contractDir: () => active?.dir });
+  }, contractDir: () => active?.dir,
+  // A call that waits for the operator is also posted to their Slack DM, where `aprovar`/`negar` in its thread decides it.
+  onPending: (pending, session, gate) => void slack.askApproval({ summary: pending.summary, label: pending.kind ?? pending.tool, expires: pending.expires,
+    decide: approve => gate.decideFromPhone(session, pending.token, approve) }) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
@@ -383,7 +387,10 @@ export default function optchat(pi: ExtensionAPI) {
         status: () => config.syncStatus, optmem: () => config.syncOptMem, aimemory: () => config.syncAiMemory, warn: text => ctx.ui.notify(text, 'warning') });
       active = { name, dir, config, memory, focus: new Focus(), inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
       for (const unwatch of unwatchWork.splice(0)) unwatch();
-      unwatchWork.push(work.watchShells({ subscribe: l => shells.subscribe(l), snapshot: () => shells.list() }), work.watchAgents({ subscribe: l => children.subscribe(l), snapshot: () => children.working }));
+      const shellSource = { subscribe: (l: () => void) => shells.subscribe(l), snapshot: () => shells.list() };
+      const agentSource = { subscribe: (l: () => void) => children.subscribe(l), snapshot: () => children.working };
+      const report = (text: string, channel: string | null) => slack.post(text, channel);
+      unwatchWork.push(work.watchShells(shellSource), work.watchAgents(agentSource), watchShellEnds(shellSource, report), watchAgentEnds(agentSource, report));
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
@@ -549,7 +556,10 @@ export default function optchat(pi: ExtensionAPI) {
     const a = active;
     return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
   });
-  const slack = registerSlackBridge(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined);
+  const slackOwner = () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined;
+  const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } });
+  // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
+  registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
   // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
   const work = registerWorkTracker(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
   const unwatchWork: (() => void)[] = [];

@@ -51,6 +51,8 @@ main { padding: 2.5rem 3vw 4rem; }
 .task-meta { display: flex; flex-wrap: wrap; gap: .6rem; color: var(--muted); font-size: .8125rem; margin-bottom: .55rem; font-variant-numeric: tabular-nums; }
 .task-status { color: var(--accent); font-weight: 650; }
 .task-channel { display: inline-flex; align-items: center; gap: .35rem; }
+.task-project { padding: .05rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; background: oklch(93% .04 var(--project-hue, 250)); color: oklch(30% .08 var(--project-hue, 250)); }
+.project-dentai { --project-hue: 200; } .project-genexus18mcp { --project-hue: 30; } .project-harness { --project-hue: 290; }
 .channel-mark { display: inline-grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; font-size: .6875rem; font-weight: 700; color: oklch(28% .06 var(--hue)); background: oklch(90% .06 var(--hue)); }
 .task h3 a { color: inherit; text-decoration: none; }
 .task h3 a:hover, .task h3 a:focus-visible { text-decoration: underline; }

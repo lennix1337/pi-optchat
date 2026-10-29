@@ -151,7 +151,9 @@ function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, gr
 
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined,
-  contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined } = {}) {
+  contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined,
+  /** Called once per call that waits for the operator (after the contract and the advisor), e.g. to ask on Slack. */
+  onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   if (!(enabled ?? (env === '1' || env === 'risk'))) return;
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all') });
@@ -181,6 +183,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
       alerted.add(pending.token);
       ctx.ui.notify(`Approval needed \u2014 ${label(pending)}: ${pending.summary}. Type /approve to run it once, /deny to drop it.`, 'warning');
       bell();
+      onPending?.(pending, session, gate);
     }
     return { block: true, reason: note + refusal.reason };
   });

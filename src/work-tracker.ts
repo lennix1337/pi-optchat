@@ -4,6 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
 import type { RunInfo } from './runs.ts';
 import type { ShellJob } from './shells.ts';
+import { PROJECTS, projectOf, projectOfRun, type Project } from './projects.ts';
 import { FROM_SLACK } from './slack-bridge.ts';
 import { textContent } from './transcript.ts';
 
@@ -17,7 +18,8 @@ import { textContent } from './transcript.ts';
 export type WorkOwner = { dir: string; name: string; sessionId: string };
 type Status = 'working' | 'needs_input' | 'ready_for_review' | 'succeeded' | 'failed';
 type Request = (owner: WorkOwner, path: string, body?: unknown) => Promise<unknown>;
-type Open = { id: string; channel: string; revision: number; status: string };
+/** `project` (dentai, genexus18mcp, harness) rides on every event as `<channel> · <project>`; the panel filters by it. */
+type Open = { id: string; channel: string; revision: number; status: string; project?: Project };
 type Watched<T> = { subscribe(listener: () => void): () => void; snapshot(): T[] };
 
 const NOTE_MAX = 600;
@@ -74,6 +76,8 @@ export class WorkTracker {
       return;
     }
     const open = this.open(channel); this.run = open;
+    const slack = FROM_SLACK.exec(text)?.[1];
+    if (slack && (PROJECTS as readonly string[]).includes(slack)) open.project = slack as Project;
     this.enqueue(o => this.create(o, open, title, 'Em andamento'));
   }
 
@@ -82,23 +86,24 @@ export class WorkTracker {
     const run = this.run; this.run = undefined;
     if (!run) return;
     const { status, note } = outcome(messages);
+    run.project ??= projectOfRun(messages);
     if (status === 'needs_input' && run.channel !== 'Wake') this.waiting = run;
     this.enqueue(o => this.move(o, run, status, note));
   }
 
   /** Background shells: one task each, from start to exit. */
   watchShells(source: Watched<ShellJob>): () => void {
-    return this.watch(source, job => job.mode === 'background' ? job.id : undefined, job => ({ channel: 'Shell', title: job.command }),
+    return this.watch(source, job => job.mode === 'background' ? job.id : undefined, job => ({ channel: 'Shell', title: job.command, project: projectOf(job.command, job.cwd) }),
       job => job.ended === undefined ? undefined : { status: job.state === 'completed' ? 'succeeded' : 'failed', note: `${job.state}${job.exitCode === undefined ? '' : ` · exit ${job.exitCode}`} · ${clean(job.output.slice(-400), 400) || 'sem saída'}` });
   }
 
   /** Running subagents: one task each. A finished one leaves the running list; its report reaches the parent, who reviews it. */
   watchAgents(source: Watched<RunInfo>): () => void {
-    return this.watch(source, run => run.id, run => ({ channel: 'Subagente', title: `[${run.id.slice(0, 8)}] ${run.task}` }), () => undefined,
+    return this.watch(source, run => run.id, run => ({ channel: 'Subagente', title: `[${run.id.slice(0, 8)}] ${run.task}`, project: projectOf(run.cwd) }), () => undefined,
       { status: 'ready_for_review', note: 'Terminou; o relatório foi para o OptChat revisar.' });
   }
 
-  private watch<T>(source: Watched<T>, key: (item: T) => string | undefined, start: (item: T) => { channel: string; title: string },
+  private watch<T>(source: Watched<T>, key: (item: T) => string | undefined, start: (item: T) => { channel: string; title: string; project?: Project },
     end: (item: T) => { status: Status; note: string } | undefined, gone?: { status: Status; note: string }): () => void {
     const tracked = new Map<string, { open: Open; done: boolean }>();
     const finish = (entry: { open: Open; done: boolean }, result: { status: Status; note: string }) => {
@@ -115,8 +120,8 @@ export class WorkTracker {
         const finished = end(item);
         if (!entry) {
           if (finished) continue; // Ended before we saw it run (e.g. history after a reload): not new work.
-          const { channel, title } = start(item);
-          entry = { open: this.open(channel), done: false }; tracked.set(id, entry);
+          const { channel, title, project } = start(item);
+          entry = { open: { ...this.open(channel), project }, done: false }; tracked.set(id, entry);
           const open = entry.open;
           this.enqueue(o => this.create(o, open, title, 'Rodando'));
         }
@@ -148,7 +153,7 @@ export class WorkTracker {
 
   private context(owner: WorkOwner, open: Open, note: string) {
     const source = randomUUID();
-    return { sessionId: owner.sessionId, channelId: open.channel, runId: open.id, sourceEventId: source, evidenceReference: clean(note, NOTE_MAX) || '-' };
+    return { sessionId: owner.sessionId, channelId: open.project ? `${open.channel} · ${open.project}` : open.channel, runId: open.id, sourceEventId: source, evidenceReference: clean(note, NOTE_MAX) || '-' };
   }
 
   private async create(owner: WorkOwner, open: Open, title: string, note: string): Promise<void> {

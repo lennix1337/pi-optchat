@@ -251,6 +251,17 @@ export class EffectApprovals {
     if (latest) this.grant(latest.token);
     return latest;
   }
+  /**
+   * The operator's Slack reply to one approval post: approves (like `/approve`) or drops that exact pending call.
+   * Only the Slack bridge calls it, for a human reply from the configured operator in that post's DM thread.
+   */
+  decideFromPhone(session: string, token: string, approve: boolean): boolean {
+    this.expire();
+    const entry = this.pending.get(token);
+    if (!entry || entry.session !== session || entry.approved) return false;
+    if (approve) this.grant(token); else this.pending.delete(token);
+    return true;
+  }
   /** Operator `/deny`: drops every pending call of this session. */
   deny(session: string, source: string): PendingApproval[] {
     if (source !== 'interactive') return [];

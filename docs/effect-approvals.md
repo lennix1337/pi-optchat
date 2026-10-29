@@ -95,6 +95,13 @@ The advisor is a cheap filter, not a boundary: a model can be talked into approv
    approves that exact token; a token inside a longer message is not an approval and
    the operator is told so. Approval lasts up to 30 minutes, in the same session and
    working directory.
+   With the assistant's Slack chat configured, the same pending call is also posted
+   to the operator's DM (`src/slack-bridge.ts` `askApproval`). A reply of `aprovar`
+   or `negar` in that post's thread decides that one call (`decideFromPhone`: exact
+   token, same session, once, before expiry), like `/approve` or a `/deny` of that
+   call. The service queues only human messages from the configured operator, and
+   Slack signs them, so the agent cannot write such a reply; the same word anywhere
+   else is an ordinary message. Delegated sessions never post approvals.
 4. The next identical invocation consumes permission before dispatch. Another guard
    (including operation recovery) can still refuse it. Failures, retries, nested
    calls and modified arguments do not inherit or replenish approval.

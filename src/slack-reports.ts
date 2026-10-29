@@ -1,0 +1,220 @@
+import { execFile } from 'node:child_process';
+import { appendFileSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { assistantConfig, assistantRequest } from './assistant-client.ts';
+import { projectOf, projectOfRepo } from './projects.ts';
+import type { RunInfo } from './runs.ts';
+import type { ShellJob } from './shells.ts';
+import { atomicWrite } from './store.ts';
+
+/**
+ * What the operator hears on Slack without asking, each in its project's channel: background shells and subagents
+ * that finish, his PRs changing (CI green or red, merged, closed; one thread per PR), and a 07:00 DM summing up the
+ * previous day with what waits for him and his agenda. Best effort: a failed post is dropped, never retried in a loop.
+ */
+export type Post = (text: string, channel: string | null, topic?: string) => Promise<unknown>;
+export type ReportOwner = { dir: string; name: string };
+type Watched<T> = { subscribe(listener: () => void): () => void; snapshot(): T[] };
+
+const one = (s: string, max: number) => {
+  const t = s.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+const duration = (ms: number) => ms < 90_000 ? `${Math.round(ms / 1000)}s` : ms < 5_400_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
+const lastLine = (output: string) => one(output.trim().split('\n').filter(l => l.trim()).at(-1) ?? '', 300);
+
+// ---- Day log: every channel post, so the morning summary can say what was done. ----
+const DAY = 'slack-day.jsonl';
+type DayEntry = { at: number; channel: string | null; line: string };
+export function logSent(dir: string, channel: string | null, text: string, now = Date.now()): void {
+  if (/^(?:⏸|☀️)/u.test(text)) return; // Approval prompts and the summary itself are not work done.
+  const file = join(dir, DAY);
+  appendFileSync(file, `${JSON.stringify({ at: now, channel, line: one(text.replace(/^\*Wake\* · /, ''), 200) })}\n`);
+  try { if (statSync(file).size > 256 * 1024) atomicWrite(file, readDay(dir, now - 3 * 86_400_000).map(e => JSON.stringify(e)).join('\n') + '\n'); } catch { /* rotation is housekeeping */ }
+}
+export function readDay(dir: string, since: number): DayEntry[] {
+  let raw = '';
+  try { raw = readFileSync(join(dir, DAY), 'utf8'); } catch { return []; }
+  return raw.split('\n').flatMap(line => { try { const e = JSON.parse(line) as DayEntry; return e.at >= since ? [e] : []; } catch { return []; } });
+}
+
+// ---- Background shells and subagents that finish. ----
+/** Background shells that end (except notify none), posted to the channel of the repository they ran in. */
+export function watchShellEnds(source: Watched<ShellJob>, post: Post): () => void {
+  const reported = new Set(source.snapshot().filter(job => job.ended !== undefined).map(job => job.id));
+  const check = () => {
+    for (const job of source.snapshot()) {
+      if (job.mode !== 'background' || job.ended === undefined || reported.has(job.id)) continue;
+      reported.add(job.id);
+      const channel = projectOf(job.command, job.cwd);
+      if (job.notify === 'none' || !channel) continue;
+      const ok = job.state === 'completed' && (job.exitCode ?? 0) === 0;
+      const tail = lastLine(job.output);
+      void post(`${ok ? '✅' : '❌'} *Shell* ${job.state}${job.exitCode === undefined ? '' : ` · exit ${job.exitCode}`} · ${duration(job.ended - job.started)}\n\`${one(job.command, 160)}\`${tail ? `\n${tail}` : ''}`, channel).catch(() => {});
+    }
+  };
+  return source.subscribe(check);
+}
+
+/** Subagents that leave the running list, posted to the channel of their working directory. */
+export function watchAgentEnds(source: Watched<RunInfo>, post: Post): () => void {
+  const running = new Map(source.snapshot().map(run => [run.id, run]));
+  const check = () => {
+    const now = new Map(source.snapshot().map(run => [run.id, run]));
+    for (const [id, run] of running) {
+      if (now.has(id)) continue;
+      const channel = projectOf(run.cwd);
+      if (channel) void post(`🤖 *Subagente* \`${id.slice(0, 8)}\` terminou após ${duration(Date.now() - run.started)} · ${one(run.task, 200)}\nO relatório foi pro OptChat revisar.`, channel).catch(() => {});
+    }
+    running.clear();
+    for (const [id, run] of now) running.set(id, run);
+  };
+  return source.subscribe(check);
+}
+
+// ---- The operator's PRs. ----
+type Gh = (args: string[]) => Promise<string>;
+const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+const PR_QUERY = `query($q:String!){search(query:$q,type:ISSUE,first:50){nodes{... on PullRequest{number title url state isDraft createdAt repository{name nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}`;
+type PrNode = { number: number; title: string; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; isDraft: boolean; createdAt: string; repository: { name: string; nameWithOwner: string }; commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] } };
+export type PrSeen = { sig: string; seen: number; title: string; url: string; channel: string };
+const PRS = 'pr-watch.json';
+const PR_KEEP_MS = 14 * 86_400_000;
+
+/** What changed between two sightings of one PR, as a post; undefined when nothing worth saying. */
+export function prChange(before: string | undefined, pr: { state: string; ci: string; createdAt: number }, now: number): string | undefined {
+  const [state, ci] = before?.split(':') ?? [];
+  if (pr.state !== state && before !== undefined) {
+    if (pr.state === 'MERGED') return '🟣 Mergeado';
+    if (pr.state === 'CLOSED') return '⚪ Fechado sem merge';
+  }
+  if (before === undefined && pr.state === 'OPEN' && now - pr.createdAt < 6 * 3_600_000) return '🆕 PR aberto';
+  if (pr.state === 'OPEN' && pr.ci !== ci && before !== undefined) {
+    if (pr.ci === 'SUCCESS') return '✅ CI verde';
+    if (pr.ci === 'FAILURE' || pr.ci === 'ERROR') return '❌ CI vermelho';
+  }
+  return undefined;
+}
+
+export class PrWatch {
+  constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly gh: Gh = defaultGh, private readonly now: () => number = Date.now) {}
+
+  open(dir: string): PrSeen[] {
+    return Object.values(this.read(dir)).filter(p => p.sig.startsWith('OPEN:'));
+  }
+
+  /** One pass; the first ever only records what exists, so a fresh install posts nothing. */
+  async poll(): Promise<number> {
+    const owner = this.owner();
+    if (!owner) return 0;
+    const now = this.now();
+    const since = new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
+    const out = JSON.parse(await this.gh(['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=is:pr author:@me updated:>=${since}`])) as { data?: { search?: { nodes?: PrNode[] } } };
+    const nodes = (out.data?.search?.nodes ?? []).filter(n => typeof n?.number === 'number');
+    let known: Record<string, PrSeen> | undefined;
+    try { known = JSON.parse(readFileSync(join(owner.dir, PRS), 'utf8')); } catch { known = undefined; }
+    const next: Record<string, PrSeen> = Object.fromEntries(Object.entries(known ?? {}).filter(([, p]) => now - p.seen < PR_KEEP_MS));
+    let posted = 0;
+    for (const pr of nodes) {
+      const channel = projectOfRepo(pr.repository.name);
+      if (!channel) continue;
+      const key = `${pr.repository.nameWithOwner}#${pr.number}`;
+      const ci = pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? 'NONE';
+      const sig = `${pr.state}:${ci}`;
+      const change = known && prChange(known[key]?.sig, { state: pr.state, ci, createdAt: Date.parse(pr.createdAt) }, now);
+      next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel };
+      if (!change) continue;
+      try { await this.post(`${change} · <${pr.url}|${pr.repository.name}#${pr.number}> ${one(pr.title, 120)}${pr.isDraft && pr.state === 'OPEN' ? ' (draft)' : ''}`, channel, `pr:${key}`); posted++; }
+      catch { /* the next pass sees no change; a lost post is not resent */ }
+    }
+    atomicWrite(join(owner.dir, PRS), JSON.stringify(next));
+    return posted;
+  }
+
+  private read(dir: string): Record<string, PrSeen> {
+    try { return JSON.parse(readFileSync(join(dir, PRS), 'utf8')); } catch { return {}; }
+  }
+}
+
+// ---- Morning summary in the DM. ----
+type Briefing = { localDate: string; items: { section: string; title: string; urgency: string }[]; sources: { sourceId: string; state: string }[] };
+type Request = (owner: ReportOwner, path: string, body?: unknown, timeoutMs?: number) => Promise<unknown>;
+const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assistantRequest(assistantConfig(owner), path, body, timeoutMs);
+const DAILY = 'slack-daily.json';
+export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
+
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number };
+export function composeSummary({ day, waiting, prs, briefing, approvals }: SummaryInputs): string {
+  const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
+  const byChannel = new Map<string, string[]>();
+  for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
+  lines.push('', '*Feito*');
+  if (!byChannel.size) lines.push('• Nada reportado nos canais.');
+  for (const [channel, entries] of byChannel) {
+    lines.push(`• #${channel} (${entries.length}):`);
+    for (const line of entries.slice(-4)) lines.push(`   – ${one(line, 160)}`);
+  }
+  const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`)];
+  lines.push('', '*Esperando você*', ...(wait.length ? wait.map(w => `• ${w}`) : ['• Nada.']));
+  if (prs.length) {
+    lines.push('', `*PRs abertos (${prs.length})*`);
+    const ci: Record<string, string> = { SUCCESS: '✅', FAILURE: '❌', ERROR: '❌', PENDING: '⏳', EXPECTED: '⏳', NONE: '·' };
+    for (const pr of prs.slice(0, 10)) lines.push(`• ${ci[pr.sig.split(':')[1]!] ?? '·'} <${pr.url}|${pr.url.replace(/^https:\/\/github\.com\//, '').replace('/pull/', '#')}> ${pr.title}`);
+  }
+  if (briefing) {
+    const agenda = briefing.items.filter(i => i.section === 'agenda').slice(0, 8);
+    const mail = briefing.items.filter(i => i.section === 'messages' && (i.urgency === 'urgent' || i.urgency === 'high')).slice(0, 5);
+    lines.push('', '*Agenda de hoje*', ...(agenda.length ? agenda.map(i => `• ${one(i.title, 140)}`) : ['• Nada na agenda.']));
+    if (mail.length) lines.push('', '*E-mails que parecem urgentes*', ...mail.map(i => `• ${one(i.title, 140)}`));
+    const off = briefing.sources.filter(s => s.state !== 'ok').map(s => `${s.sourceId} ${s.state}`);
+    if (off.length) lines.push(`_Fontes incompletas: ${off.join(', ')}_`);
+  } else lines.push('', '_Briefing do Google indisponível agora._');
+  return lines.join('\n');
+}
+
+export class DailySummary {
+  constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly prs: PrWatch,
+    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request } = {}) {}
+
+  /** Posts once a day, the first check after `at` (07:00) and before `until` (noon): a late start skips the day. */
+  async maybePost(): Promise<boolean> {
+    const owner = this.owner();
+    const now = (this.options.now ?? Date.now)();
+    const [hh, mm] = (this.options.at ?? '07:00').split(':').map(Number);
+    const local = new Date(now);
+    const minutes = local.getHours() * 60 + local.getMinutes();
+    if (!owner || minutes < hh! * 60 + mm! || local.getHours() >= (this.options.until ?? 12)) return false;
+    const today = localDate(now), file = join(owner.dir, DAILY);
+    try { if ((JSON.parse(readFileSync(file, 'utf8')) as { date?: string }).date === today) return false; } catch { /* first day */ }
+    atomicWrite(file, JSON.stringify({ date: today })); // Before posting: a crash mid-post must not post twice.
+    const request = this.options.request ?? defaultRequest;
+    let briefing: Briefing | undefined;
+    try {
+      briefing = await request(owner, '/v1/briefing') as Briefing;
+      if (briefing.localDate !== today) briefing = await request(owner, '/v1/briefing', {}, 120_000) as Briefing;
+    } catch { briefing = undefined; }
+    let waiting: string[] = [];
+    try { waiting = ((await request(owner, '/v1/tasks?limit=50')) as { tasks: { status: string; title: string }[] }).tasks.filter(t => t.status === 'needs_input').map(t => t.title); }
+    catch { /* the panel is optional */ }
+    await this.post(composeSummary({ day: readDay(owner.dir, now - 86_400_000), waiting, prs: this.prs.open(owner.dir), briefing, approvals: this.approvals() }), null);
+    return true;
+  }
+}
+
+/** Timers for the PR watch (every 3 min) and the morning summary (checked every minute), per session. */
+export function registerSlackReports(pi: ExtensionAPI, owner: () => ReportOwner | undefined, post: Post, approvals: () => number) {
+  const prs = new PrWatch(owner, post);
+  const daily = new DailySummary(owner, post, prs, approvals);
+  let timers: ReturnType<typeof setInterval>[] = [];
+  let warned = false;
+  const prPass = () => prs.poll().catch(error => { if (!warned) { warned = true; console.error(`OptChat PR watch: ${error instanceof Error ? error.message : String(error)}`); } });
+  pi.on('session_start', () => {
+    for (const t of timers) clearInterval(t);
+    const first = setTimeout(prPass, 30_000); first.unref?.();
+    timers = [first, setInterval(prPass, 3 * 60_000), setInterval(() => void daily.maybePost().catch(() => {}), 60_000)];
+    for (const t of timers) t.unref?.();
+  });
+  pi.on('session_shutdown', () => { for (const t of timers) clearInterval(t); timers = []; });
+  return { prs, daily };
+}

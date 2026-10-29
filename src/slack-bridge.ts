@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
+import { delivers, projectOf, toolCalls } from './projects.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
 
@@ -12,7 +13,10 @@ import { textContent } from './transcript.ts';
  * bridge polls them over the loopback API, hands each to the agent as a user message marked `[Slack]`, and posts the
  * run's final answer back to the DM. `slack_send` lets the agent write first (progress, finished work, a blocker).
  * A heartbeat wake that delivered something (an edit, commit, push or PR) posts its final answer to that repo's channel.
- * Pi marks these messages as extension input, so a Slack message can never approve a gated effect.
+ * Pi marks these messages as extension input, so a Slack message never approves a gated effect by itself. The one
+ * exception is an approval post (`askApproval`): the operator's `aprovar` or `negar` in that post's DM thread decides
+ * that one pending call. The service queues only human messages from the configured operator, and Slack signs them, so
+ * the agent cannot write such a reply.
  */
 export const SLACK_PREFIX = '[Slack] ';
 /** `[Slack] ` for the DM, `[Slack #dentai] ` for a project channel. */
@@ -31,15 +35,12 @@ const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send,
 const defaultRequest: Request = (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
 /** The two prompts a heartbeat wake starts with (heartbeat.ts wakeText). */
 const WAKE = /^(?:A cheap check \([^)]*\) woke you|The operator's fixed \d+-min schedule woke you)/;
-/** Repository folder under C:/projetos -> its Slack channel. */
-const REPO_CHANNELS: [RegExp, string][] = [[/^dentai/i, 'dentai'], [/^genexus18mcp/i, 'genexus18mcp'], [/^(?:pi-|dotfiles$|ripwire$|local-validation$)/i, 'harness']];
-
-type ToolCall = { name: string; arguments: unknown };
-const toolCalls = (messages: readonly AgentMessage[]): ToolCall[] => messages.flatMap(m => m.role === 'assistant'
-  ? m.content.flatMap(part => part.type === 'toolCall' ? [{ name: part.name, arguments: part.arguments }] : []) : []);
-/** A call that changed something: a file edit, a commit, a push or a PR. Reads and checks deliver nothing. */
-const delivers = (call: ToolCall) => call.name === 'edit' || call.name === 'write'
-  || (call.name === 'bash' && /\bgit\s+(?:commit|push)\b|\bgh\s+pr\s+(?:create|merge)\b/.test(JSON.stringify(call.arguments)));
+const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
+const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
+/** A gated call waiting for the operator, and how to decide it. */
+export type ApprovalRequest = { summary: string; label: string; expires: number; decide: (approve: boolean) => boolean };
+const TOPICS = 'slack-threads.json';
+const TOPIC_DAYS = 14;
 
 /**
  * Where a wake's result belongs: the channel of the repository its delivering calls touched most, or the DM when they
@@ -51,13 +52,7 @@ export function wakeChannel(messages: readonly AgentMessage[]): string | null | 
   if (calls.some(c => c.name === 'slack_send')) return undefined;
   const delivering = calls.filter(delivers);
   if (!delivering.length) return undefined;
-  const hits = new Map<string, number>();
-  for (const call of delivering)
-    for (const [, repo] of JSON.stringify(call.arguments).matchAll(/projetos[\\/]+([\w.-]+)/gi)) {
-      const channel = REPO_CHANNELS.find(([pattern]) => pattern.test(repo!))?.[1];
-      if (channel) hits.set(channel, (hits.get(channel) ?? 0) + 1);
-    }
-  return [...hits].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  return projectOf(...delivering.map(call => JSON.stringify(call.arguments))) ?? null;
 }
 
 function finalText(messages: readonly AgentMessage[]): string {
@@ -75,11 +70,13 @@ export class SlackBridge {
   private waking = false;
   private running = false;
   private readonly threads = new Map<string, Origin>();
-  private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void };
+  /** Approval posts by their DM ts, until decided or expired. */
+  private readonly approvals = new Map<string, ApprovalRequest>();
+  private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void };
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, ...options };
+    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, ...options };
   }
 
   start(): void {
@@ -111,6 +108,11 @@ export class SlackBridge {
       for (const m of messages) {
         if (!Number.isSafeInteger(m.seq) || m.seq <= seq || typeof m.text !== 'string') continue;
         const channel = typeof m.channelName === 'string' ? m.channelName : null;
+        if (!channel && typeof m.thread === 'string' && this.approvals.has(m.thread) && (APPROVE.test(m.text.trim()) || DENY.test(m.text.trim()))) {
+          await this.decided(m.thread, APPROVE.test(m.text.trim()));
+          atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+          continue;
+        }
         const text = `${slackPrefix(channel)}${m.text}${this.running ? MID_RUN : ''}`;
         this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
@@ -147,11 +149,61 @@ export class SlackBridge {
     catch (error) { this.options.warn(`Wake report not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
+  /**
+   * Posts a gated call to the operator's DM; their `aprovar`/`negar` reply in its thread decides it. Best effort: the
+   * terminal `/approve` keeps working when Slack is down.
+   */
+  async askApproval(request: ApprovalRequest): Promise<void> {
+    const now = this.options.now();
+    for (const [ts, pending] of this.approvals) if (pending.expires <= now) this.approvals.delete(ts);
+    const minutes = Math.max(1, Math.round((request.expires - now) / 60_000));
+    try {
+      const { ts } = await this.send(`⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\nResponda *aprovar* ou *negar* nesta thread (vale ${minutes} min). Aprova só esta chamada, uma vez.`);
+      this.approvals.set(ts, request);
+    } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  private async decided(ts: string, approve: boolean): Promise<void> {
+    const request = this.approvals.get(ts)!;
+    this.approvals.delete(ts);
+    const done = request.expires > this.options.now() && request.decide(approve);
+    const reply = !done ? 'Essa aprovação já expirou ou foi decidida; nada rodou por ela.' : approve ? `Aprovado: ${request.summary}. Vou rodar agora.` : `Negado: ${request.summary}. Não vou rodar.`;
+    try { await this.send(reply, ts); } catch { /* the decision stands; the reply is a courtesy */ }
+    if (!done) return;
+    const note = approve ? `aprovou no celular: ${request.summary}. Rode de novo exatamente a mesma chamada, uma vez.` : `negou no celular: ${request.summary}. Não rode nem tente de novo.`;
+    this.pi.sendUserMessage(`${SLACK_PREFIX}(aprovação) O operador ${note}`, { deliverAs: 'steer' });
+  }
+
+  /**
+   * Posts under a topic: the first post of a `topic` opens a message in the channel, later ones reply in its thread,
+   * so one subject (a PR, a long task) keeps its history together. Topics last two weeks.
+   */
+  async post(text: string, channel: string | null, topic?: string): Promise<{ parts: number; ts: string }> {
+    const owner = this.owner();
+    if (!topic || !owner) return this.send(text, null, channel);
+    const file = join(owner.dir, TOPICS), now = this.options.now();
+    let topics: Record<string, { channel: string | null; ts: string; at: number }> = {};
+    try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none yet */ }
+    const known = topics[topic];
+    const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
+    const result = await this.send(text, open?.ts ?? null, channel);
+    if (!open) {
+      topics[topic] = { channel, ts: result.ts, at: now };
+      const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
+      atomicWrite(file, JSON.stringify(Object.fromEntries(fresh)));
+    }
+    return result;
+  }
+
   /** To the operator's DM, or with `channel` to that configured project channel. */
   async send(text: string, threadTs: string | null = null, channel: string | null = null): Promise<{ parts: number; ts: string }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
-    try { return await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}) }) as { parts: number; ts: string }; }
+    try {
+      const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}) }) as { parts: number; ts: string };
+      this.options.sent(channel, text);
+      return result;
+    }
     catch (error) {
       if (error instanceof HttpError) throw new Error(error.status === 404 ? 'The assistant service has no Slack chat (no bot token configured).' : error.status === 503 ? 'Slack bot token not configured.' : error.status === 400 && channel ? `Unknown Slack channel "${channel}": it is not in the service's slack.channels.` : `Slack send failed (HTTP ${error.status}).`);
       throw error;
@@ -165,9 +217,9 @@ export class SlackBridge {
 }
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
-export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined): SlackBridge {
+export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {}): SlackBridge {
   let warn: (text: string) => void = () => {};
-  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text) });
+  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent });
   pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); bridge.start(); });
   pi.on('session_shutdown', () => bridge.stop());
   pi.on('message_end', event => { if (event.message.role === 'user') bridge.sawUserMessage(textContent(event.message.content, false)); });
@@ -179,9 +231,10 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #; omit for the DM.' })),
+      topic: Type.Optional(Type.String({ pattern: '^[\\w.#:/-]{1,80}$', description: 'Short key of the task this post belongs to (e.g. denta-106, gx-issue-701). The first post with a topic opens it; later posts with the same topic reply in its thread.' })),
     }, { additionalProperties: false }),
     async execute(_id, params) {
-      const result = await bridge.send(params.text, null, params.channel ?? null);
+      const result = await bridge.post(params.text, params.channel ?? null, params.topic);
       return { content: [{ type: 'text', text: `Sent to ${params.channel ? `Slack #${params.channel}` : "the operator's Slack DM"} (${result.parts} part${result.parts === 1 ? '' : 's'}).` }], details: undefined };
     },
   });

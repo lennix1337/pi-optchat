@@ -445,3 +445,17 @@ test('gate is opt-in and disabled registration has no hooks or prompt effects', 
   registerEffectApprovals({ on() { registered++; } } as unknown as ExtensionAPI, { enabled: false });
   assert.equal(registered, 0);
 });
+
+test('a phone decision binds one exact pending token and session, once; deny drops only that call', () => {
+  const gate = new EffectApprovals();
+  const pushToken = token(gate);
+  assert.equal(gate.decideFromPhone('other', pushToken, true), false, 'another session cannot decide it');
+  assert.equal(gate.decideFromPhone('owner', 'f'.repeat(24), true), false, 'an unknown token decides nothing');
+  assert.equal(gate.decideFromPhone('owner', pushToken, true), true);
+  assert.equal(gate.decideFromPhone('owner', pushToken, true), false, 'decided once');
+  assert.equal(gate.admit(invocation()), undefined, 'the approved call runs once');
+  assert.equal(gate.admit(invocation())?.block, true, 'and only once');
+  const publish = token(gate, invocation('bash', { command: 'npm publish' }));
+  assert.equal(gate.decideFromPhone('owner', publish, false), true);
+  assert.equal(gate.pendingFor('owner').some(p => p.token === publish), false);
+});

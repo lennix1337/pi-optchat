@@ -118,7 +118,7 @@ function channelOptions() {
 }
 function render() {
   if (!state) return;
-  const key = `${state.revision}:${filter}:${$('#channel').value}:${uncertain()}:${mutationPending}:${lifecycle.cursor}:${queue.pending().map(item => item.id).join()}:${[...archive.names].join()}`;
+  const key = `${state.revision}:${filter}:${$('#channel').value}:${$('#project').value}:${uncertain()}:${mutationPending}:${lifecycle.cursor}:${queue.pending().map(item => item.id).join()}:${[...archive.names].join()}`;
   if (key === renderedKey) return;
   renderedKey = key;
   channelOptions();
@@ -128,8 +128,9 @@ function render() {
   for (const entry of state.events) latest.set(entry.event.taskId, entry.event);
   const updated = task => latest.get(task.taskId)?.sequence ?? 0;
   $('#attention-count').textContent = String(tasks.filter(attention).length);
-  const selected = $('#channel').value;
+  const selected = $('#channel').value, project = $('#project').value;
   const visible = tasks.filter(task => {
+    if (project && state.projects.get(task.taskId) !== project) return false;
     if (selected && state.channels.get(task.taskId) !== selected) return false;
     if (!selected && archive.has(state.channels.get(task.taskId))) return false;
     if (filter === 'attention') return attention(task);
@@ -154,6 +155,7 @@ function render() {
   $('#more').hidden = !lifecycle.cursor;
   $('#more').disabled = syncing;
 }
+const PROJECT_NAMES = { dentai: 'DentAI', genexus18mcp: 'GeneXus18MCP', harness: 'Harness' };
 function card(task, last) {
   const article = el('article', undefined, 'task'); article.dataset.taskId = task.taskId;
   const meta = el('div', undefined, 'task-meta');
@@ -164,7 +166,10 @@ function card(task, last) {
     const badge = el('span', mark.initial, 'channel-mark'); badge.setAttribute('aria-hidden', 'true'); badge.style.setProperty('--hue', String(mark.hue));
     subject.append(badge, channel);
   } else subject.textContent = 'Canal não carregado';
-  meta.append(el('span', labels[task.status], 'task-status'), subject, el('span', `rev. ${task.revision}`));
+  meta.append(el('span', labels[task.status], 'task-status'), subject);
+  const project = state.projects.get(task.taskId);
+  if (project) meta.append(el('span', PROJECT_NAMES[project] ?? project, `task-project project-${project}`));
+  meta.append(el('span', `rev. ${task.revision}`));
   if (last) meta.append(el('span', `atualizado ${new Date(last.observedAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`));
   const heading = el('h3'); const link = el('a', task.title); link.href = taskLink(task.taskId); heading.append(link);
   article.tabIndex = -1;
@@ -367,6 +372,7 @@ $('#archive-channel').addEventListener('click', () => {
   renderedKey = undefined; render();
 });
 $('#channel').addEventListener('change', () => { renderedKey = undefined; render(); });
+$('#project').addEventListener('change', () => { renderedKey = undefined; render(); });
 $('#refresh').addEventListener('click', () => sync(true));
 $('#more').addEventListener('click', async () => {
   try {

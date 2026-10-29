@@ -1,3 +1,8 @@
+/** `Wake \u00b7 harness` -> ['Wake', 'harness']; a channel without the suffix has no project. */
+export function splitChannel(channelId) {
+  const match = /^(.*) \u00b7 (dentai|genexus18mcp|harness)$/.exec(channelId);
+  return match ? [match[1], match[2]] : [channelId, undefined];
+}
 export class PanelState {
   constructor(profileId) {
     this.profileId = profileId;
@@ -6,6 +11,8 @@ export class PanelState {
     this.after = 0;
     this.revision = 0;
     this.channels = new Map();
+    /** taskId -> project (dentai, genexus18mcp, harness): the latest event's `<channel> \u00b7 <project>` suffix. */
+    this.projects = new Map();
   }
   upsert(task) {
     if (task.profileId !== this.profileId) throw new Error('profile mismatch');
@@ -23,9 +30,11 @@ export class PanelState {
     }
     for (const entry of fresh) {
       this.upsert(entry.task);
+      const [channel, project] = splitChannel(entry.event.channelId);
       if (!this.channels.has(entry.task.taskId)) {
-        this.channels.set(entry.task.taskId, entry.event.channelId); this.revision++;
+        this.channels.set(entry.task.taskId, channel); this.revision++;
       }
+      if (project && this.projects.get(entry.task.taskId) !== project) { this.projects.set(entry.task.taskId, project); this.revision++; }
       this.events.push(entry);
     }
     this.after = after;

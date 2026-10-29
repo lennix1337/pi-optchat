@@ -148,3 +148,68 @@ test('without a Slack chat in the service (404) the bridge backs off instead of 
     await assert.rejects(() => (f.fail(new HttpError(503)), f.bridge.send('x')), /bot token/);
   } finally { f.close(); }
 });
+
+test('an approval post is decided only by aprovar/negar in its own DM thread, once, before expiry', async () => {
+  const f = fixture();
+  try {
+    const decisions: boolean[] = [];
+    let live = true;
+    const ask = (expires: number) => f.bridge.askApproval({ summary: 'git push origin main', label: 'push', expires, decide: approve => { decisions.push(approve); const was = live; live = false; return was; } });
+    await ask(1_000_000 + 600_000);
+    const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; threadTs: null };
+    assert.match(post.text, /Aprovação pendente.*push: git push origin main/s);
+    // The ts the fixture returns for every send is 1.1: replies in that thread decide; elsewhere they are plain messages.
+    f.inbox.push({ seq: 1, ts: '2.0', thread: null, text: 'aprovar' }, { seq: 2, ts: '3.0', thread: '9.9', text: 'aprovar' });
+    assert.equal(await f.bridge.poll(), 2);
+    assert.deepEqual(decisions, [], 'a bare "aprovar" outside the approval thread approves nothing');
+    f.inbox.push({ seq: 3, ts: '4.0', thread: '1.1', text: 'Aprovar' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, [true]);
+    assert.match(f.sent.at(-1)!.text, /^\[Slack\] \(aprovação\) O operador aprovou no celular: git push origin main/);
+    assert.deepEqual(f.requests.at(-1)!.body, { text: 'Aprovado: git push origin main. Vou rodar agora.', threadTs: '1.1' });
+    f.inbox.push({ seq: 4, ts: '5.0', thread: '1.1', text: 'aprovar' });
+    const before = f.sent.length;
+    await f.bridge.poll();
+    assert.deepEqual(decisions, [true], 'a decided post is forgotten: a second reply is an ordinary message');
+    assert.equal(f.sent.length, before + 1);
+  } finally { f.close(); }
+});
+
+test('negar drops the call, and an expired approval decides nothing', async () => {
+  const f = fixture();
+  try {
+    const decisions: boolean[] = [];
+    await f.bridge.askApproval({ summary: 'npm publish', label: 'publish', expires: 1_000_000 + 60_000, decide: approve => (decisions.push(approve), true) });
+    f.inbox.push({ seq: 1, ts: '2.0', thread: '1.1', text: 'negar' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, [false]);
+    assert.match(f.sent.at(-1)!.text, /negou no celular: npm publish\. Não rode/);
+    await f.bridge.askApproval({ summary: 'deploy', label: 'deploy', expires: 1_000_000 + 60_000, decide: approve => (decisions.push(approve), true) });
+    f.advance(120_000);
+    f.inbox.push({ seq: 2, ts: '3.0', thread: '1.1', text: 'sim' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, [false], 'expired: decide is never called');
+    assert.match((f.requests.at(-1)!.body as { text: string }).text, /expirou/);
+  } finally { f.close(); }
+});
+
+test('posts with a topic open a message once, then reply in its thread; the sent hook sees every post', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-topic-'));
+  const bodies: unknown[] = [], logged: [string | null, string][] = [];
+  let ts = 0;
+  const bridge = new SlackBridge({ sendUserMessage: () => {} }, () => ({ dir, name: 'p' }), {
+    request: async (_o, _path, body) => { bodies.push(body); return { parts: 1, ts: `${++ts}.0` }; }, sent: (channel, text) => logged.push([channel, text]) });
+  try {
+    await bridge.post('PR aberto', 'harness', 'pr:x#1');
+    await bridge.post('CI verde', 'harness', 'pr:x#1');
+    await bridge.post('outro', 'harness', 'pr:x#2');
+    await bridge.post('sem tópico', 'dentai');
+    assert.deepEqual(bodies, [
+      { text: 'PR aberto', threadTs: null, channel: 'harness' },
+      { text: 'CI verde', threadTs: '1.0', channel: 'harness' },
+      { text: 'outro', threadTs: null, channel: 'harness' },
+      { text: 'sem tópico', threadTs: null, channel: 'dentai' },
+    ]);
+    assert.deepEqual(logged.map(l => l[0]), ['harness', 'harness', 'harness', 'dentai']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

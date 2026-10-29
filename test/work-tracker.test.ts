@@ -45,6 +45,20 @@ test('a run becomes a working task and ends in review with its final answer as t
   } finally { await f.close(); }
 });
 
+test('the project rides on the channel: a project Slack channel at once, a run at its end by where it worked', async () => {
+  const f = await fixture();
+  try {
+    f.tracker.userMessage('[Slack #dentai] e o deploy?');
+    f.tracker.runEnded(answer('Feito.'));
+    f.tracker.userMessage('arruma o teste');
+    await f.tracker.idle();
+    f.tracker.runEnded([{ role: 'assistant', content: [{ type: 'toolCall', name: 'edit', arguments: { path: 'C:/projetos/pi-optchat/src/x.ts' } }] }, ...answer('Arrumei.')] as unknown as AgentMessage[]);
+    await f.tracker.idle();
+    const channels = f.store.events(0, 100).map(e => e.event.channelId);
+    assert.deepEqual(channels, ['Slack #dentai \u00b7 dentai', 'Slack #dentai \u00b7 dentai', 'Slack #dentai \u00b7 dentai', 'OptChat', 'OptChat', 'OptChat \u00b7 harness']);
+  } finally { await f.close(); }
+});
+
 test('a run that ends asking the operator waits as needs_input, and the next message continues the same task', async () => {
   const f = await fixture();
   try {
