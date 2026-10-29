@@ -14,16 +14,23 @@ async function census(docker: DockerRunner, owner?: string): Promise<Set<string>
 }
 
 /** Inspect the current identity and remove by ID; a failed inspect is not evidence of absence. */
-export async function removeComputer(docker: DockerRunner, owner: string, name: string, confirmAbsence: boolean): Promise<Removal> {
+export async function removeComputer(docker: DockerRunner, owner: string, name: string, confirmAbsence: boolean, expectedId?: string, expectedIdentity?: { profile: string; agent: string }): Promise<Removal> {
   try {
-    const inspected = await docker(['inspect', '--type', 'container', '--format', `{{.Id}}|{{index .Config.Labels "${OWNER_LABEL}"}}`, name]);
+    const target = expectedId ?? name;
+    const format = expectedIdentity ? `{{.Id}}|{{index .Config.Labels "${OWNER_LABEL}"}}|{{index .Config.Labels "optchat.computer.profile"}}|{{index .Config.Labels "optchat.computer.agent"}}` : `{{.Id}}|{{index .Config.Labels "${OWNER_LABEL}"}}`;
+    const inspected = await docker(['inspect', '--type', 'container', '--format', format, target]);
     if (inspected.code !== 0) {
-      const names = confirmAbsence ? await census(docker) : undefined;
+      if (!confirmAbsence) return 'failed';
+      if (expectedId) {
+        const ids = await docker(['ps', '--all', '--no-trunc', '--format', '{{.ID}}']);
+        return ids.code === 0 && !ids.stdout.split(/\r?\n/).includes(expectedId) ? 'absent' : 'failed';
+      }
+      const names = await census(docker);
       return names && !names.has(name) ? 'absent' : 'failed';
     }
-    const [id, actualOwner] = inspected.stdout.trim().split('|');
+    const [id, actualOwner, profile, agent] = inspected.stdout.trim().split('|');
     if (!id || !/^[a-f0-9]{64}$/.test(id) || !actualOwner) return 'failed';
-    if (actualOwner !== owner) return 'foreign';
+    if (actualOwner !== owner || (expectedId !== undefined && id !== expectedId) || (expectedIdentity && (profile !== expectedIdentity.profile || agent !== expectedIdentity.agent))) return 'foreign';
     return (await docker(['rm', '--force', id])).code === 0 ? 'removed' : 'failed';
   } catch { return 'failed'; }
 }

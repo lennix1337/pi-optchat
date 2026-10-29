@@ -11,9 +11,16 @@ export type Relay = { port: number; fingerprint: string; close: () => Promise<vo
 export async function startBrowserRelay(computers: ComputerManager, id: string, origins: readonly string[], expiresAt: number, io: BrokerIO = {}): Promise<Relay> {
   const grants = normalizeOrigins(origins);
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw new Error('egress_expired');
-  const computer = computers.get(id);
-  const target = await computers.isolatedTarget(id);
-  computers.admit(id, computer.container);
+  const lease = computers.beginOperation(id);
+  const computer = lease.computer;
+  let target: string;
+  try {
+    target = await computers.isolatedTarget(id);
+    computers.admit(id, computer.container);
+  } catch (error) {
+    lease.finish();
+    throw error;
+  }
   const child = spawn('docker', ['exec', '--interactive', '--user', '1000:1000', '--workdir', '/work', target, 'timeout', '-s', 'KILL', '150', 'node', '/opt/optchat/https-relay.mjs'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const controller = new AbortController();
   const seen = new Set<number>();
@@ -24,7 +31,7 @@ export async function startBrowserRelay(computers: ComputerManager, id: string, 
     if (computers.get(id).profileId !== computer.profileId) throw new Error('computer_profile_mismatch');
   };
   let exitCode: number | null | undefined;
-  const exited = new Promise<void>(resolve => child.once('close', code => { exitCode = code; controller.abort(); resolve(); }));
+  const exited = new Promise<void>(resolve => child.once('close', code => { exitCode = code; controller.abort(); if (code === 0) lease.finish(); resolve(); }));
   const stop = (reason: string) => { controller.abort(new Error(reason)); child.stdin.end(); };
   child.on('error', () => stop('egress_transport_failed'));
   child.stdin.on('error', () => stop('egress_transport_failed'));

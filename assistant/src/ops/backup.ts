@@ -19,7 +19,7 @@ import { artifactName, collectArtifacts, MAX_BACKUP_BYTES, REGISTRY, validateArt
 export type BackupEntry = { name: string; bytes: number; sha256: string; tables: string[]; kind?: 'artifact' };
 export type BackupManifest = { format: 1; profileId: string; createdAt: string; tasksDatabase: string; entries: BackupEntry[] };
 export type BackupSummary = { out: string; entries: BackupEntry[]; excluded: { name: string; reason: 'vault' | 'not_sqlite' }[] };
-export type RestoreFences = { jobs: number; leases: number; grants: number; reviews: number; routines: number; connectorGrants: number };
+export type RestoreFences = { jobs: number; leases: number; grants: number; reviews: number; routines: number; connectorGrants: number; toolEffects: number };
 export type RestoreReport = { profileId: string; createdAt: string; files: string[]; tasksDatabase: string; fenced: RestoreFences };
 
 const MAGIC = Buffer.from('OPTCHAT-ASSISTANT-BACKUP\n');
@@ -36,11 +36,14 @@ const SUPPORTED_TASKS_VERSION = 1;
  */
 const restoreFences: readonly { key: keyof RestoreFences; table: string; sql: string }[] = [
   { key: 'jobs', table: 'jobs', sql: "UPDATE jobs SET state = CASE kind WHEN 'effect' THEN 'effect_uncertain' ELSE 'blocked' END, error = 'restored_unreconciled' WHERE state IN ('queued', 'running', 'dispatching')" },
+  // A completed preview plan may have dispatched after the snapshot, before its effect row existed in the archive.
+  { key: 'jobs', table: 'jobs', sql: "UPDATE jobs SET state = 'blocked', error = 'restored_unreconciled' WHERE kind = 'draft' AND state = 'done' AND CASE WHEN json_valid(result) THEN json_extract(result, '$.kind') = 'browser_text' ELSE 0 END" },
   { key: 'leases', table: 'lease', sql: 'UPDATE lease SET expires = 0 WHERE expires != 0' },
   { key: 'grants', table: 'grants', sql: 'UPDATE grants SET revoked = 1 WHERE revoked = 0' },
   { key: 'reviews', table: 'reviews', sql: "UPDATE reviews SET state = 'revoked' WHERE state = 'pending'" },
   { key: 'routines', table: 'routines', sql: "UPDATE routines SET state = 'paused', paused_reason = 'restored', next_run = NULL WHERE state = 'active'" },
   { key: 'connectorGrants', table: 'connector_grants', sql: 'UPDATE connector_grants SET revoked = 1 WHERE revoked = 0' },
+  { key: 'toolEffects', table: 'tool_effects', sql: "UPDATE tool_effects SET state = 'uncertain' WHERE state IN ('preparing', 'waiting', 'dispatching')" },
 ];
 
 function fail(code: string): never { throw new Error(code); }
@@ -247,7 +250,7 @@ export async function restoreBackup(options: { backup: string; into: string; pro
   const { manifest, images, kinds } = await open(backup, protector);
   if (manifest.profileId !== profileId) fail('backup_profile_mismatch');
   validateArtifactImages(images, kinds, profileId);
-  const fenced: RestoreFences = { jobs: 0, leases: 0, grants: 0, reviews: 0, routines: 0, connectorGrants: 0 };
+  const fenced: RestoreFences = { jobs: 0, leases: 0, grants: 0, reviews: 0, routines: 0, connectorGrants: 0, toolEffects: 0 };
   const checked = new Map<string, Buffer>();
   for (const [name, image] of images) checked.set(name, kinds.get(name) === 'artifact' ? image : checkAndFence(image, name === manifest.tasksDatabase, profileId, fenced));
   writeRestored(into, checked, manifest.tasksDatabase, profileId);

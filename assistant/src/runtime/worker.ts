@@ -111,6 +111,11 @@ export class WorkerRuntime {
     await this.recover();
     return true;
   }
+  /** Identity only; consumers must check it in their own transaction. */
+  leaseIdentity(): { owner: string; token: number } {
+    if (!this.token || this.stopped) throw new Error('lease_lost');
+    return { owner: this.options.owner, token: this.token };
+  }
   private renew(): void {
     this.fenced(() => { this.db.prepare("UPDATE lease SET expires = ? WHERE name = 'worker'").run(this.now() + this.leaseMs); });
   }

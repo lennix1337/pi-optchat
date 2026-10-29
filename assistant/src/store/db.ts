@@ -1,5 +1,7 @@
 /// <reference types="node" />
 import { DatabaseSync } from 'node:sqlite';
+import { realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { immediate } from './transaction.ts';
 import { parseEvent, type Event } from '../contracts/events.ts';
 import { assertTaskTransition, parseTask, parseTaskResponse, type Task, type TaskResponse, type TaskStatus } from '../contracts/tasks.ts';
@@ -26,11 +28,29 @@ export class TaskStore {
             CREATE TABLE responses (profile TEXT NOT NULL, task_id TEXT NOT NULL, input_revision INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(profile,task_id,input_revision));
             PRAGMA user_version = 1`);
         }
+        this.db.exec('CREATE TABLE IF NOT EXISTS task_store_identity (id TEXT PRIMARY KEY)');
+        if (!this.db.prepare('SELECT id FROM task_store_identity LIMIT 1').get()) this.db.prepare('INSERT INTO task_store_identity VALUES (?)').run(randomUUID());
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     } catch (error) { this.db.close(); throw error; }
   }
   matchesProfile(profileId: string): boolean { return this.profileId === profileId; }
+  /** Compare the open SQLite file, not its contents: copied databases are distinct. */
+  matchesDatabase(path: string): boolean {
+    const row = this.db.prepare('PRAGMA database_list').all().find(entry => entry.name === 'main');
+    if (!row || typeof row.file !== 'string' || !row.file || !path || path === ':memory:') return false;
+    try {
+      const a = realpathSync(row.file), b = realpathSync(path);
+      const x = statSync(a), y = statSync(b);
+      if (a !== b || x.dev !== y.dev || x.ino !== y.ino) return false;
+      const other = new DatabaseSync(b, { readOnly: true });
+      try {
+        const own = this.db.prepare('SELECT id FROM task_store_identity LIMIT 1').get();
+        const candidate = other.prepare('SELECT id FROM task_store_identity LIMIT 1').get();
+        return typeof own?.id === 'string' && own.id === candidate?.id;
+      } finally { other.close(); }
+    } catch { return false; }
+  }
   nextSequence(): number {
     const row = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events WHERE profile = ?').get(this.profileId)!;
     return Number(row.sequence) + 1;
@@ -81,6 +101,17 @@ export class TaskStore {
   }
   transition(taskId: string, expectedRevision: number, nextStatus: TaskStatus, event: Event): Task {
     return this.transaction(() => {
+      const current = this.get(taskId);
+      assertTaskTransition(current, nextStatus, this.profileId, expectedRevision);
+      const task = parseTask({ ...current!, status: nextStatus, revision: current!.revision + 1, inputRevision: current!.inputRevision + (nextStatus === 'needs_input' ? 1 : 0) });
+      return this.update(task, event, 'transition');
+    });
+  }
+  /** Projection and the executor lease check commit in the same task database transaction. */
+  transitionWithLease(taskId: string, expectedRevision: number, nextStatus: TaskStatus, event: Event, lease: { owner: string; token: number }): Task {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT owner, token FROM lease WHERE name = 'worker'").get() as { owner: string; token: number } | undefined;
+      if (!lease.token || row?.owner !== lease.owner || row.token !== lease.token) throw new Error('lease_lost');
       const current = this.get(taskId);
       assertTaskTransition(current, nextStatus, this.profileId, expectedRevision);
       const task = parseTask({ ...current!, status: nextStatus, revision: current!.revision + 1, inputRevision: current!.inputRevision + (nextStatus === 'needs_input' ? 1 : 0) });

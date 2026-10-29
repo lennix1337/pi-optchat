@@ -31,6 +31,8 @@ test('backup -> restore round trip: encrypted at rest, schema-checked, executed 
   const { protector } = memoryProtector();
   const sink: string[] = [];
   seedTask(join(data, 'tasks.sqlite'), `title ${CANARY}`);
+  const toolDb = new DatabaseSync(join(data, 'tasks.sqlite'));
+  toolDb.exec("CREATE TABLE tool_effects (id TEXT PRIMARY KEY, state TEXT NOT NULL); INSERT INTO tool_effects VALUES ('a','preparing'),('b','waiting'),('c','dispatching'),('d','done')");
   const live = stack(data, sink, 'worker-a');
   await live.runtime.acquire();
   live.runtime.enqueue('send-a', 'effect', effect('op-a', 'mail A'));
@@ -65,7 +67,8 @@ test('backup -> restore round trip: encrypted at rest, schema-checked, executed 
   assert.equal(contains(archive, 'mail A'), false);
   await assert.rejects(createBackup({ databasePath: join(data, 'tasks.sqlite'), profileId: PROFILE, out, protector }), /backup_exists/);
 
-  // After the backup, the queued effect B is sent. Restoring the older snapshot must not send it again.
+  // Both the worker effect and a waiting tool complete after the snapshot.
+  toolDb.exec("UPDATE tool_effects SET state = 'done' WHERE id = 'b'"); toolDb.close();
   await drain(live.runtime);
   assert.deepEqual(sink, ['mail A', 'mail B']);
   await live.close();
@@ -73,10 +76,12 @@ test('backup -> restore round trip: encrypted at rest, schema-checked, executed 
   const report = await restoreBackup({ backup: out, into: target, profileId: PROFILE, protector });
   assert.deepEqual(readdirSync(target).filter(n => !/-(wal|shm|journal)$/.test(n)).sort(), ['gateway.sqlite', 'notifications.sqlite', 'runtime.sqlite', 'tasks.sqlite']);
   assert.equal(report.tasksDatabase, join(target, 'tasks.sqlite'));
-  assert.deepEqual(report.fenced, { jobs: 2, leases: 1, grants: 1, reviews: 0, routines: 1, connectorGrants: 0 });
+  assert.deepEqual(report.fenced, { jobs: 2, leases: 1, grants: 1, reviews: 0, routines: 1, connectorGrants: 0, toolEffects: 3 });
 
   const store = new TaskStore(join(target, 'tasks.sqlite'), PROFILE);
   try { assert.match(store.get('task-1')!.title, /title/); } finally { store.close(); }
+  const restoredTools = new DatabaseSync(join(target, 'tasks.sqlite'));
+  try { assert.deepEqual(restoredTools.prepare('SELECT state FROM tool_effects ORDER BY id').all().map(row => row.state), ['uncertain', 'uncertain', 'uncertain', 'done']); } finally { restoredTools.close(); }
 
   const restored = stack(target, sink, 'worker-restored');
   try {

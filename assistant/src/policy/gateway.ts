@@ -42,6 +42,14 @@ export class Gateway {
     this.db.prepare('INSERT INTO reviews VALUES (?, ?, ?, ?, ?)').run(id, item.binding, item.operation, item.metadata.expiresAt, 'pending');
     return { decision: 'review', reviewId: id, metadata: Object.freeze({ ...item.metadata }), payload: Buffer.from(item.payload) };
   }
+  /** Read-only reconstruction of one exact pending review; no decision or preparation occurs. */
+  pendingReview(reviewId: string, request: EffectRequest): { metadata: Readonly<EffectMetadata>; payload: Uint8Array } | undefined {
+    let item: ReturnType<typeof snapshot>;
+    try { item = snapshot(request, this.options.profileId, this.now()); }
+    catch (error) { if (error instanceof Error && error.message === 'invalid_request') return undefined; throw error; }
+    const row = this.db.prepare("SELECT 1 FROM reviews WHERE id = ? AND binding = ? AND operation = ? AND expires > ? AND state = 'pending'").get(reviewId, item.binding, item.operation, this.now());
+    return row ? { metadata: Object.freeze({ ...item.metadata }), payload: Buffer.from(item.payload) } : undefined;
+  }
   decide(reviewId: string, decision: 'approve' | 'deny', authority: object, rule?: BoundedRule): void {
     if (authority !== this.options.operatorAuthority) throw new Error('unauthorized');
     if (decision !== 'approve' && decision !== 'deny') throw new Error('invalid_decision');
@@ -56,15 +64,29 @@ export class Gateway {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  /** Checks the exact one-use review without consuming it; dispatch revalidates atomically. */
+  reviewReady(request: EffectRequest, reviewId: string): boolean {
+    const item = this.evaluate(request);
+    return !!this.db.prepare('SELECT 1 FROM grants WHERE id = ? AND binding = ? AND operation = ? AND revoked = 0 AND remaining > 0 AND expires > ?').get(reviewId, item.binding, item.operation, this.now());
+  }
+  /** Forces consumption of this exact operation-bound review even if policy now allows it. */
+  dispatchReviewed<T>(request: EffectRequest, reviewId: string, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>): Promise<T> {
+    return this.dispatchInternal(request, invoke, reviewId);
+  }
   // Adapters must use both callback arguments as the authoritative effect, not the caller's request.
   async dispatch<T>(request: EffectRequest, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>): Promise<T> {
+    return this.dispatchInternal(request, invoke);
+  }
+  private async dispatchInternal<T>(request: EffectRequest, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>, reviewId?: string): Promise<T> {
     const item = this.evaluate(request);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const admission = this.evaluateSnapshot(item);
       if (this.db.prepare('SELECT 1 FROM intents WHERE operation = ?').get(item.operation)) throw new Error('operation_already_dispatched');
-      if (admission.review) {
-        const grant = this.db.prepare('SELECT id FROM grants WHERE binding = ? AND (operation = ? OR operation IS NULL) AND revoked = 0 AND remaining > 0 AND expires > ? ORDER BY operation IS NULL, expires LIMIT 1').get(item.binding, item.operation, this.now()) as { id: string } | undefined;
+      if (admission.review || reviewId !== undefined) {
+        const grant = reviewId !== undefined
+          ? this.db.prepare('SELECT id FROM grants WHERE id = ? AND binding = ? AND operation = ? AND revoked = 0 AND remaining > 0 AND expires > ?').get(reviewId, item.binding, item.operation, this.now()) as { id: string } | undefined
+          : this.db.prepare('SELECT id FROM grants WHERE binding = ? AND (operation = ? OR operation IS NULL) AND revoked = 0 AND remaining > 0 AND expires > ? ORDER BY operation IS NULL, expires LIMIT 1').get(item.binding, item.operation, this.now()) as { id: string } | undefined;
         if (!grant) throw new Error('approval_required');
         const result = this.db.prepare('UPDATE grants SET remaining = remaining - 1 WHERE id = ? AND revoked = 0 AND remaining > 0 AND expires > ?').run(grant.id, this.now());
         if (result.changes !== 1) throw new Error('approval_required');
