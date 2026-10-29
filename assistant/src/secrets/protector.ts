@@ -17,12 +17,15 @@ $s=[Security.Cryptography.DataProtectionScope]::CurrentUser
 $o=if($i[0] -eq 'protect'){[Security.Cryptography.ProtectedData]::Protect($d,$null,$s)}else{[Security.Cryptography.ProtectedData]::Unprotect($d,$null,$s)}
 [Console]::Out.Write([Convert]::ToBase64String($o))`;
 const encoded = Buffer.from(dpapiScript, 'utf16le').toString('base64');
+// One call takes ~0.2 s idle but 7-8 s on a loaded Windows runner and over 15 s at its tail; it runs once per vault open, at
+// service startup, so a stuck PowerShell is cut off only well past a slow start.
+const DPAPI_TIMEOUT_MS = 60_000;
 
 function dpapi(op: 'protect' | 'unprotect', data: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
     const chunks: Buffer[] = [];
-    const timer = setTimeout(() => child.kill(), 15000);
+    const timer = setTimeout(() => child.kill(), DPAPI_TIMEOUT_MS);
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.on('error', () => { clearTimeout(timer); reject(new VaultError('vault_unavailable')); });
     child.on('close', code => {
