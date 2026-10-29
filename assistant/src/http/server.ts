@@ -114,9 +114,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
   }
 }
-export function createAssistantServer({ store, token, profileId, web = false, setup, artifacts, briefings, slack, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; briefings?: BriefingProvider; slack?: SlackBridge; onError?: ErrorObserver }): Server {
+export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, briefings, slack, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; webOrigins?: readonly string[]; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; briefings?: BriefingProvider; slack?: SlackBridge; onError?: ErrorObserver }): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
-  const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}), ...(artifacts ? { artifacts } : {}) }) : null;
+  const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}), ...(webOrigins ? { origins: webOrigins } : {}), ...(artifacts ? { artifacts } : {}) }) : null;
   const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, briefings, slack).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;

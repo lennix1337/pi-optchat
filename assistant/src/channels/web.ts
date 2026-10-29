@@ -9,6 +9,7 @@ import { capabilities, checkSetup, type SetupComponent } from '../setup.ts';
 import type { ArtifactRegistry } from '../artifacts/registry.ts';
 import { ArtifactRoutes } from '../artifacts/preview.ts';
 import { authenticate } from '../http/auth.ts';
+import { remoteOrigins } from './origins.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from '../http/io.ts';
 
 /** Transitions a human may take from the panel; workers own working/needs_input/ready_for_review. */
@@ -55,7 +56,7 @@ export const securityHeaders = {
 };
 
 type Session = { csrf: string; label: string; created: number; seen: number };
-type Options = { store: TaskStore; token: string; profileId: string; artifacts?: ArtifactRegistry; now?: () => number; setup?: () => SetupComponent[] };
+type Options = { store: TaskStore; token: string; profileId: string; artifacts?: ArtifactRegistry; now?: () => number; setup?: () => SetupComponent[]; origins?: readonly string[] };
 const componentId = /^[a-z][a-z0-9-]{0,39}$/;
 
 /** Browser access is authenticated, but is never trusted-local-human approval authority. */
@@ -68,8 +69,10 @@ export class WebChannel {
   private readonly now: () => number;
   private readonly setup: (() => SetupComponent[]) | undefined;
   private readonly artifacts: ArtifactRoutes | null;
-  constructor({ store, token, profileId, artifacts, now = Date.now, setup }: Options) {
+  private readonly origins: Map<string, string>;
+  constructor({ store, token, profileId, artifacts, now = Date.now, setup, origins = [] }: Options) {
     this.store = store; this.token = token; this.profileId = profileId; this.now = now; this.setup = setup;
+    this.origins = remoteOrigins(origins);
     this.artifacts = artifacts ? new ArtifactRoutes(artifacts, now) : null;
   }
   owns(pathname: string): boolean { return Object.hasOwn(assets, pathname) || pathname === '/web' || pathname.startsWith('/web/') || pathname.startsWith('/app/'); }
@@ -80,7 +83,7 @@ export class WebChannel {
     if (req.method === 'GET' && Object.hasOwn(assets, url.pathname)) { query(url, []); this.asset(res, assets[url.pathname]); return; }
     if (!url.pathname.startsWith('/web/')) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
     if (req.method === 'POST' && !this.sameOrigin(req, host)) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
-    if (url.pathname === '/web/session') { await this.session(req, res, url); return; }
+    if (url.pathname === '/web/session') { await this.session(req, res, url, host); return; }
     await this.authenticated(req, res, url, host);
   }
 
@@ -90,11 +93,11 @@ export class WebChannel {
     if (req.method === 'POST' && req.headers['x-assistant-csrf'] !== session.csrf) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
     if (url.pathname === '/web/session/logout' && req.method === 'POST') {
       query(url, []); this.sessions.delete(id!);
-      send(res, 200, { ok: true }, { ...securityHeaders, 'set-cookie': `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` }); return;
+      send(res, 200, { ok: true }, { ...securityHeaders, 'set-cookie': `${cookieName}=; ${this.cookieFlags(host)}Max-Age=0` }); return;
     }
     if (ArtifactRoutes.owns(url.pathname)) {
       if (!this.artifacts) { send(res, 503, { error: 'Artifacts not configured' }, securityHeaders); return; }
-      await this.artifacts.handle(req, res, url, { sessionId: id!, host, headers: securityHeaders, stillCurrent: () => this.stillCurrent(req, id!, session) }); return;
+      await this.artifacts.handle(req, res, url, { sessionId: id!, origin: this.originOf(host), headers: securityHeaders, stillCurrent: () => this.stillCurrent(req, id!, session) }); return;
     }
     if (req.method === 'GET' && url.pathname === '/web/api/voice/status') { query(url, []); send(res, 200, voiceStatus, securityHeaders); return; }
     await this.api(req, res, url, id!, session);
@@ -103,9 +106,11 @@ export class WebChannel {
   private allowedHost(req: IncomingMessage): string | null {
     const port = req.socket.localPort;
     const host = req.headers.host ?? '';
-    // Web Locks and pending-write storage share only this canonical browser origin.
-    return host === `127.0.0.1:${port}` ? host : null;
+    // Web Locks and pending-write storage share only this canonical browser origin, plus configured HTTPS ones.
+    return host === `127.0.0.1:${port}` || this.origins.has(host) ? host : null;
   }
+  private originOf(host: string): string { return this.origins.get(host) ?? `http://${host}`; }
+  private cookieFlags(host: string): string { return `HttpOnly; SameSite=Strict; ${this.origins.has(host) ? 'Secure; ' : ''}Path=/; `; }
   /** Revocation (logout, rotation, expiry) during a slow body read must stop the mutation. */
   private stillCurrent(req: IncomingMessage, sessionId: string, session: Session): boolean {
     const [currentId, currentSession] = this.current(req);
@@ -113,7 +118,7 @@ export class WebChannel {
   }
   private sameOrigin(req: IncomingMessage, host: string): boolean {
     const site = req.headers['sec-fetch-site'];
-    return req.headers.origin === `http://${host}` && (site === undefined || site === 'same-origin');
+    return req.headers.origin === this.originOf(host) && (site === undefined || site === 'same-origin');
   }
   private asset(res: ServerResponse, asset: { file: string; type: string }): void {
     const body = readFileSync(new URL(asset.file, webRoot));
@@ -128,7 +133,7 @@ export class WebChannel {
     session.seen = now;
     return [id, session];
   }
-  private async session(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  private async session(req: IncomingMessage, res: ServerResponse, url: URL, host: string): Promise<void> {
     query(url, []);
     if (req.method === 'GET') {
       const [, session] = this.current(req);
@@ -150,7 +155,7 @@ export class WebChannel {
     const id = randomBytes(32).toString('base64url');
     const session: Session = { csrf: randomBytes(32).toString('base64url'), label: randomUUID(), created: now, seen: now };
     this.sessions.set(id, session);
-    send(res, 200, { profileId: this.profileId, csrf: session.csrf }, { ...securityHeaders, 'set-cookie': `${cookieName}=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${absoluteMs / 1000}` });
+    send(res, 200, { profileId: this.profileId, csrf: session.csrf }, { ...securityHeaders, 'set-cookie': `${cookieName}=${id}; ${this.cookieFlags(host)}Max-Age=${absoluteMs / 1000}` });
   }
   private async api(req: IncomingMessage, res: ServerResponse, url: URL, sessionId: string, session: Session): Promise<void> {
     const match = /^\/web\/api\/tasks\/([^/]+)\/(transition|respond)$/.exec(url.pathname);

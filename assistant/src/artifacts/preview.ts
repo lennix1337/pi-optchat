@@ -31,7 +31,7 @@ export function contentDisposition(fileName: string): string {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
-export type PanelAccess = { sessionId: string; host: string; headers: Record<string, string>; stillCurrent: () => boolean };
+export type PanelAccess = { sessionId: string; origin: string; headers: Record<string, string>; stillCurrent: () => boolean };
 type Preview = { sessionId: string; artifactId: string; artifactVersion: number; expires: number };
 
 /** Authenticated panel routes for listing, reviewing, previewing and downloading registered artifacts. */
@@ -103,7 +103,7 @@ export class ArtifactRoutes {
   private serve(res: ServerResponse, access: PanelAccess, record: ArtifactRecord, bytes: Buffer, mode: 'preview' | 'download'): void {
     const type = mediaTypes.get(extname(record.fileName).toLowerCase());
     if (!type) throw new Error('artifact_location_invalid');
-    const headers: Record<string, string> = { ...access.headers, 'content-security-policy': previewPolicy(`http://${access.host}`), 'content-type': type[mode], 'content-length': String(bytes.length) };
+    const headers: Record<string, string> = { ...access.headers, 'content-security-policy': previewPolicy(access.origin), 'content-type': type[mode], 'content-length': String(bytes.length) };
     if (mode === 'download') headers['content-disposition'] = contentDisposition(record.fileName);
     res.writeHead(200, headers);
     res.end(bytes);

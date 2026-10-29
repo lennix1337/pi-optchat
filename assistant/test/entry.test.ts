@@ -85,6 +85,8 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     const google = { connections: ['pessoal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' };
     invalid.push(...[{ ...google, connections: [] }, { ...google, connections: ['Pessoal'] }, { ...google, connections: ['a', 'a'] }, { ...google, timeZone: 'Mars/Base' },
       { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null].map(value => JSON.stringify({ ...base, google: value })));
+    invalid.push(...[[], ['http://desk.tail0000.ts.net'], ['https://desk.tail0000.ts.net/'], ['https://desk.tail0000.ts.net/web'], ['nope'], [1], 'https://desk.tail0000.ts.net']
+      .map(value => JSON.stringify({ ...base, webOrigins: value })));
     for (const data of invalid) {
       writeFileSync(config, data);
       const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
@@ -102,6 +104,7 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
     ['slack: validSlack', 'slack: () => true'],
     ['notifications: validNotifications', 'notifications: () => true'],
     ['google: validGoogle', 'google: () => true'],
+    ['webOrigins: validWebOrigins', 'webOrigins: () => true'],
     ["!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(g.dailyAt)", 'false'],
     ["typeof (value as Record<string, unknown>).local === 'boolean'", 'true'],
     ["/^xapp-[\\x21-\\x7e]+$/.test(s.appToken) &&", ''],

@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
+import { remoteOrigins } from './channels/origins.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
 Usage: node assistant/src/main.ts --config <absolute-path> [--web]
@@ -27,7 +28,9 @@ Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
 Activation is manual and requires operator permission; this installs no service.
 --web explicitly enables the browser panel on the same loopback endpoint; off by default.
-Web authentication is not native-terminal approval authority. No remote/mobile exposure.
+Optional "webOrigins":["https://<host>"] also accepts those exact HTTPS origins, for a proxy the operator
+runs (e.g. tailscale serve, to reach the panel from the phone); the listener stays on loopback.
+Web authentication is not native-terminal approval authority.
 The client uses its owner-profile assistant.json with version, profileId, endpoint and token.
 Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/scripts/<name>.mjs --help.
 `;
@@ -35,9 +38,14 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string };
 export type NotificationsConfig = { local: boolean };
 export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[] };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
-const OPTIONAL_KEYS = ['slack', 'notifications', 'google'];
+const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins'];
+
+function validWebOrigins(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4 || !value.every(origin => typeof origin === 'string')) return false;
+  try { return remoteOrigins(value).size === value.length; } catch { return false; }
+}
 
 function validGoogle(value: unknown): value is GoogleConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -54,7 +62,7 @@ function validNotifications(value: unknown): value is NotificationsConfig {
     typeof (value as Record<string, unknown>).local === 'boolean';
 }
 
-const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle };
+const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins };
 
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -124,7 +132,7 @@ async function main(): Promise<void> {
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
   const extras = await startExtras(config, store);
   if (!extras) { store.close(); process.exitCode = 1; return; }
-  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}), ...extras.server }); }
+  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup, ...(config.webOrigins ? { webOrigins: config.webOrigins } : {}) } : {}), ...extras.server }); }
   catch { extras.stop(); store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   serve(server, { close() { extras.stop(); store.close(); } }, config);
 }
