@@ -144,6 +144,8 @@ export class TaskExecutor {
     let task = listed;
     let { attempt, job } = task.status === 'working' ? this.current(task) : { attempt: 0, job: undefined };
     if (!job) {
+      // Restored from a backup: the original may already have generated this revision, so nothing is rebuilt for it.
+      if (this.options.store.restoreHeld(task.taskId, task.revision)) return null;
       if (attempt >= MAX_ROUTE_ATTEMPTS) { this.stale(() => this.transition(task, 'failed', `Nenhuma conta conseguiu gerar após ${attempt} tentativas (limite, autenticação ou falha temporária). Tente novamente quando uma conta estiver disponível.`)); return null; }
       if (!await ready()) return null;
       if (task.status === 'queued') {

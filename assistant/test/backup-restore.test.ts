@@ -76,7 +76,7 @@ test('backup -> restore round trip: encrypted at rest, schema-checked, executed 
   const report = await restoreBackup({ backup: out, into: target, profileId: PROFILE, protector });
   assert.deepEqual(readdirSync(target).filter(n => !/-(wal|shm|journal)$/.test(n)).sort(), ['gateway.sqlite', 'notifications.sqlite', 'runtime.sqlite', 'tasks.sqlite']);
   assert.equal(report.tasksDatabase, join(target, 'tasks.sqlite'));
-  assert.deepEqual(report.fenced, { jobs: 2, leases: 1, grants: 1, reviews: 0, routines: 1, connectorGrants: 0, toolEffects: 3 });
+  assert.deepEqual(report.fenced, { tasks: 1, jobs: 2, leases: 1, grants: 1, reviews: 0, routines: 1, connectorGrants: 0, toolEffects: 3 });
 
   const store = new TaskStore(join(target, 'tasks.sqlite'), PROFILE);
   try { assert.match(store.get('task-1')!.title, /title/); } finally { store.close(); }

@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { sha256 } from '../hash.ts';
 import type { KeyProtector } from '../secrets/protector.ts';
-import { TaskStore } from '../store/db.ts';
+import { RESTORE_HOLDS_FENCE, RESTORE_HOLDS_TABLE, TaskStore } from '../store/db.ts';
 import { checkDirectoryPrivacy, prepareDatabase } from '../store/privacy.ts';
 import { createPrivateDirectory } from '../store/private-directory.ts';
 import { artifactName, collectArtifacts, MAX_BACKUP_BYTES, REGISTRY, validateArtifactImages, type BackupImage } from './artifact-backup.ts';
@@ -19,7 +19,7 @@ import { artifactName, collectArtifacts, MAX_BACKUP_BYTES, REGISTRY, validateArt
 export type BackupEntry = { name: string; bytes: number; sha256: string; tables: string[]; kind?: 'artifact' };
 export type BackupManifest = { format: 1; profileId: string; createdAt: string; tasksDatabase: string; entries: BackupEntry[] };
 export type BackupSummary = { out: string; entries: BackupEntry[]; excluded: { name: string; reason: 'vault' | 'not_sqlite' }[] };
-export type RestoreFences = { jobs: number; leases: number; grants: number; reviews: number; routines: number; connectorGrants: number; toolEffects: number };
+export type RestoreFences = { tasks: number; jobs: number; leases: number; grants: number; reviews: number; routines: number; connectorGrants: number; toolEffects: number };
 export type RestoreReport = { profileId: string; createdAt: string; files: string[]; tasksDatabase: string; fenced: RestoreFences };
 
 const MAGIC = Buffer.from('OPTCHAT-ASSISTANT-BACKUP\n');
@@ -208,6 +208,10 @@ function checkAndFence(image: Buffer, isTasks: boolean, profileId: string, fence
       if (version > SUPPORTED_TASKS_VERSION || !['events', 'responses', 'tasks'].every(t => tables.includes(t))) fail('backup_schema_unsupported');
       const foreign = db.prepare('SELECT 1 FROM tasks WHERE profile != ? UNION ALL SELECT 1 FROM events WHERE profile != ? LIMIT 1').get(profileId, profileId);
       if (foreign) fail('backup_profile_mismatch');
+      // A snapshot may predate a job the original enqueued later (or the attempt after a completed account wait), so an
+      // absent job proves nothing: held revisions never get generation or tool work until the operator reconciles them.
+      db.exec(RESTORE_HOLDS_TABLE);
+      fenced.tasks += Number(db.prepare(RESTORE_HOLDS_FENCE).run().changes);
     }
     for (const fence of restoreFences) {
       if (tables.includes(fence.table)) fenced[fence.key] += Number(db.prepare(fence.sql).run().changes);
@@ -250,7 +254,7 @@ export async function restoreBackup(options: { backup: string; into: string; pro
   const { manifest, images, kinds } = await open(backup, protector);
   if (manifest.profileId !== profileId) fail('backup_profile_mismatch');
   validateArtifactImages(images, kinds, profileId);
-  const fenced: RestoreFences = { jobs: 0, leases: 0, grants: 0, reviews: 0, routines: 0, connectorGrants: 0, toolEffects: 0 };
+  const fenced: RestoreFences = { tasks: 0, jobs: 0, leases: 0, grants: 0, reviews: 0, routines: 0, connectorGrants: 0, toolEffects: 0 };
   const checked = new Map<string, Buffer>();
   for (const [name, image] of images) checked.set(name, kinds.get(name) === 'artifact' ? image : checkAndFence(image, name === manifest.tasksDatabase, profileId, fenced));
   writeRestored(into, checked, manifest.tasksDatabase, profileId);
