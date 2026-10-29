@@ -146,7 +146,8 @@ export class GoogleLocal {
     }));
   }
 
-  private async withComposer<T>(names: string[], timeZone: string, use: (composer: BriefingComposer) => Promise<T>): Promise<T> {
+  /** Runs `use` with a composer over the named connections and the service's task store, closing both after. */
+  async withComposer<T>(names: string[], timeZone: string, use: (composer: BriefingComposer) => T | Promise<T>): Promise<T> {
     const google = this.connections();
     const store = new TaskStore(this.options.databasePath, this.options.profileId);
     try {

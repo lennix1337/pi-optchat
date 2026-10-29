@@ -82,6 +82,9 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, null]
       .map(value => JSON.stringify({ ...base, slack: value })));
     invalid.push(...[{ local: 'yes' }, { local: true, web: true }, {}, [], null].map(value => JSON.stringify({ ...base, notifications: value })));
+    const google = { connections: ['pessoal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' };
+    invalid.push(...[{ ...google, connections: [] }, { ...google, connections: ['Pessoal'] }, { ...google, connections: ['a', 'a'] }, { ...google, timeZone: 'Mars/Base' },
+      { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null].map(value => JSON.stringify({ ...base, google: value })));
     for (const data of invalid) {
       writeFileSync(config, data);
       const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
@@ -96,8 +99,10 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
   const variants: [string, string][] = [
     ['count > 8192', 'false'],
     ['keys !== BASE_KEYS', 'false'],
-    ["('slack' in v && !validSlack(v.slack))", 'false'],
-    ["('notifications' in v && !validNotifications(v.notifications))", 'false'],
+    ['slack: validSlack', 'slack: () => true'],
+    ['notifications: validNotifications', 'notifications: () => true'],
+    ['google: validGoogle', 'google: () => true'],
+    ["!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(g.dailyAt)", 'false'],
     ["typeof (value as Record<string, unknown>).local === 'boolean'", 'true'],
     ["/^xapp-[\\x21-\\x7e]+$/.test(s.appToken) &&", ''],
     ['v.version !== 1', 'false'],

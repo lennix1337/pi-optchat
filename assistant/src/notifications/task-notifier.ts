@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { StoredEvent, TaskStore } from '../store/db.ts';
 import type { DeliveredNotification, NotificationCategory, NotificationCenter, NotificationChannel } from './center.ts';
+import { singleFlight } from '../single-flight.ts';
 
 /**
  * Turns task events into notifications and pushes them. It reads the task log from a stored cursor, so a restart
@@ -30,15 +31,11 @@ function categoryFor({ operation, task }: StoredEvent): NotificationCategory | n
 
 export class TaskNotifier {
   private readonly options: TaskNotifierOptions;
-  private polling: Promise<void> | null = null;
   private timer: NodeJS.Timeout | undefined;
   constructor(options: TaskNotifierOptions) { this.options = { ...options }; }
 
   /** One pass: record notices for new task events, then push pending ones. Concurrent calls share the running pass. */
-  poll(): Promise<void> {
-    this.polling ??= this.pass().finally(() => { this.polling = null; });
-    return this.polling;
-  }
+  readonly poll: () => Promise<void> = singleFlight(() => this.pass());
   private async pass(): Promise<void> {
     const { store, center, channel, transport } = this.options;
     const name = `tasks:${channel}`;

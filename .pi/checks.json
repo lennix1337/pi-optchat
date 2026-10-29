@@ -43,7 +43,7 @@
     },
     "assistant-google": {
       "description": "T07 read-only Google against a loopback fake: OAuth state/PKCE/identity/revocation, mail+calendar bounds, triage eval, briefing dedup and Start, gateway-only send; no real account",
-      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/google-oauth.test.ts", "assistant/test/google-boundaries.test.ts", "assistant/test/triage.test.ts", "assistant/test/briefing.test.ts", "assistant/test/google-local.test.ts"],
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/google-oauth.test.ts", "assistant/test/google-boundaries.test.ts", "assistant/test/triage.test.ts", "assistant/test/briefing.test.ts", "assistant/test/google-local.test.ts", "assistant/test/briefing-service.test.ts"],
       "timeoutMs": 180000
     },
     "assistant-google-mutations": {
@@ -69,7 +69,7 @@
     "assistant-entry": {
       "description": "Manual Node 24 process config, permissions, bind collision, restart persistence and disposable config-guard mutations",
       "argv": ["node", "--test", "assistant/test/entry.test.ts"],
-      "timeoutMs": 120000
+      "timeoutMs": 240000
     },
     "assistant-pack": {
       "description": "Package dry-run manifest for optional assistant source, manual entry point and discovery skill; no publish",

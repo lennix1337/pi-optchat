@@ -34,6 +34,7 @@ The experimental `/assistant` command shows read-only local journal metadata, pl
 
 - `/assistant local [cursor]` pages current-session approvals, operations and agents, plus profile-scoped external agents, without copying grants or raw source content.
 - `/assistant list [cursor]` includes the local projection plus optional service snapshots; `show <id>` and `evidence <id> [afterSequence]` are read-only.
+- `/assistant briefing [now]` shows the service's newest Google briefing (mail and agenda, titles as untrusted data); `now` asks the service to read Google again.
 - `/assistant respond <id>` prompts in the owning interactive session; stale replies refuse and uncertain writes are never retried automatically.
 - `/assistant original <id> <eventSequence> [offset]` pages a validated local OptChat original. IDs/cursors in commands are URL-encoded; foreign references are displayed, not opened.
 

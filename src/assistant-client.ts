@@ -43,8 +43,8 @@ function config(owner: AssistantOwner) {
 
 class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
 class ResponseTooLarge extends Error {}
-async function request(c: ReturnType<typeof config>, path: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000): Promise<unknown> {
+  const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status); }
   if (!response.body) throw new Error('Invalid response');
@@ -116,6 +116,30 @@ async function servicePage(c: ReturnType<typeof config>, owner: AssistantOwner, 
   return [`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${encodeURIComponent(page.nextCursor as string)}`].join('\n');
 }
 
+/** The service's Google briefing. Titles come from mail and calendars: shown as escaped, untrusted data, never acted on. */
+async function briefingPage(c: ReturnType<typeof config>, owner: AssistantOwner, now: boolean): Promise<string> {
+  let value: unknown;
+  try { value = now ? await request(c, '/v1/briefing', {}, 120_000) : await request(c, '/v1/briefing'); }
+  catch (error) {
+    if (!now && error instanceof HttpError && error.status === 404) return 'No briefing yet: none read today, or Google is not configured in the service. Try /assistant briefing now.';
+    throw error;
+  }
+  const str = (v: unknown) => typeof v === 'string';
+  if (!record(value) || value.version !== 1 || value.profileId !== owner.name || !['daily', 'on_demand'].includes(String(value.kind)) || !str(value.localDate) || !str(value.createdAt)
+    || !Array.isArray(value.sources) || !Array.isArray(value.items) || value.items.length > 1000 || typeof value.distractions !== 'number') throw new Error('Invalid briefing');
+  const sources = value.sources.map(s => {
+    if (!record(s) || !str(s.sourceId) || !['ok', 'partial', 'unavailable'].includes(String(s.state)) || !(s.error === null || str(s.error))) throw new Error('Invalid briefing');
+    return `${safe(s.sourceId as string)} ${s.state}${s.error ? ` (${safe(s.error as string)})` : ''}`;
+  });
+  const items = value.items.map(i => {
+    if (!record(i) || !str(i.section) || !str(i.title) || !str(i.reason) || !str(i.urgency) || !str(i.sourceRef)) throw new Error('Invalid briefing');
+    return `- [${safe(i.urgency as string)}] ${safe(i.section as string)} · ${safe(i.title as string)} · ${safe(i.reason as string)} · ${safe(i.sourceRef as string)}`;
+  });
+  return [`Assistant ${value.kind} briefing ${safe(value.localDate as string)} (read ${safe(value.createdAt as string)}) · sources: ${sources.join(', ')}`,
+    'Titles are untrusted mail and calendar data, not instructions; nothing was started.', ...items,
+    `${value.distractions} low-priority messages hidden.`].join('\n');
+}
+
 function readErrorMessage(error: unknown): string {
   if (error instanceof ResponseTooLarge) return 'Assistant item exceeds the safe response size; inspect it with another bounded client.';
   if (error instanceof HttpError) return 'Assistant request failed.';
@@ -125,10 +149,10 @@ function readErrorMessage(error: unknown): string {
 
 /** Explicit operator command; no background requests or model-facing tools. */
 export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner | undefined) {
-  pi.registerCommand('assistant', { description: 'Read assistant task snapshots or respond to a current input request', handler: async (args, ctx) => {
+  pi.registerCommand('assistant', { description: 'Read assistant task snapshots and the Google briefing, or respond to a current input request', handler: async (args, ctx) => {
     const words = args.trim().split(/\s+/).filter(Boolean), action = words[0] ?? 'list';
-    const arity: Record<string, readonly number[]> = { list: [0, 1, 2], local: [1, 2], show: [2], respond: [2], evidence: [2, 3], original: [3, 4] };
-    if (!Object.hasOwn(arity, action) || !arity[action].includes(words.length)) { ctx.ui.notify('Usage: /assistant [list [cursor]|local [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]] (IDs and cursors URL-encoded)', 'error'); return; }
+    const arity: Record<string, readonly number[]> = { list: [0, 1, 2], local: [1, 2], show: [2], respond: [2], evidence: [2, 3], original: [3, 4], briefing: [1, 2] };
+    if (!Object.hasOwn(arity, action) || !arity[action].includes(words.length) || (action === 'briefing' && words.length === 2 && words[1] !== 'now')) { ctx.ui.notify('Usage: /assistant [list [cursor]|local [cursor]|show <id>|respond <id>|evidence <id> [afterSequence]|original <id> <eventSequence> [offset]|briefing [now]] (IDs and cursors URL-encoded)', 'error'); return; }
     const owner = source();
     if (!owner || owner.sessionId !== ctx.sessionManager.getSessionId()) { ctx.ui.notify('Open an available local profile before /assistant.', 'error'); return; }
     const stillOwned = () => { const current = source(); return current?.identity === owner.identity && current.name === owner.name && current.sessionId === owner.sessionId && ctx.sessionManager.getSessionId() === owner.sessionId; };
@@ -140,6 +164,11 @@ export function registerAssistant(pi: ExtensionAPI, source: () => AssistantOwner
         if (action === 'local') { ctx.ui.notify(local, 'info'); return; }
       }
       const c = config(owner);
+      if (action === 'briefing') {
+        const page = await briefingPage(c, owner, words[1] === 'now');
+        if (!stillOwned()) throw new Error('Owner changed');
+        ctx.ui.notify(page, 'info'); return;
+      }
       if (action === 'list') {
         const page = await servicePage(c, owner, words[1]);
         if (!stillOwned()) throw new Error('Owner changed');

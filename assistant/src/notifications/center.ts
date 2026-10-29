@@ -31,6 +31,7 @@ const lockScreenText = {
   task_ready_for_review: 'An assistant task is ready for review.',
   task_finished: 'An assistant task finished.',
   task_failed: 'An assistant task failed.',
+  briefing_ready: 'Your daily briefing is ready.',
   approval_pending: 'An assistant action is waiting for your review.',
   effect_uncertain: 'An assistant action needs reconciliation.',
   routine_paused: 'An assistant routine was paused.',

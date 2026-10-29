@@ -15,6 +15,10 @@ Optional Slack (Socket Mode, outbound connection only, no public endpoint):
 only the listed Slack users can suggest tasks; listing them is the operator's authorization.
 Optional local notifications (Windows toast, fixed text per category, never task content):
 "notifications":{"local":true}   true is the operator's consent; false revokes it.
+Optional Google briefing (read-only; connect accounts first with assistant/scripts/google.mjs):
+"google":{"connections":["<name>"],"timeZone":"<IANA>","dailyAt":"HH:MM"}
+reads the named accounts' mail and agenda once a day after dailyAt; clients read it at GET /v1/briefing
+and ask for a fresh one with POST /v1/briefing. Naming an account here is the operator's consent.
 No other fields are accepted. Keep the token out of arguments and logs.
 Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
@@ -27,14 +31,27 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[] };
 export type NotificationsConfig = { local: boolean };
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig };
+export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
-const OPTIONAL_KEYS = ['slack', 'notifications'];
+const OPTIONAL_KEYS = ['slack', 'notifications', 'google'];
+
+function validGoogle(value: unknown): value is GoogleConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const g = value as Record<string, unknown>;
+  if (Object.keys(g).sort().join(',') !== 'connections,dailyAt,timeZone' || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
+  if (!Array.isArray(g.connections) || g.connections.length < 1 || g.connections.length > 10 || new Set(g.connections).size !== g.connections.length ||
+      !g.connections.every(name => typeof name === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name))) return false;
+  if (typeof g.timeZone !== 'string' || g.timeZone.length > 64) return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: g.timeZone }); return true; } catch { return false; }
+}
 
 function validNotifications(value: unknown): value is NotificationsConfig {
   return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).join(',') === 'local' &&
     typeof (value as Record<string, unknown>).local === 'boolean';
 }
+
+const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle };
 
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -69,7 +86,7 @@ export function readConfig(path: string): Config {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid configuration');
   const v = value as Record<string, unknown>;
   const keys = Object.keys(v).filter(key => !OPTIONAL_KEYS.includes(key)).sort().join(',');
-  if (keys !== BASE_KEYS || ('slack' in v && !validSlack(v.slack)) || ('notifications' in v && !validNotifications(v.notifications)) || v.version !== 1 ||
+  if (keys !== BASE_KEYS || OPTIONAL_KEYS.some(key => key in v && !OPTIONAL_CHECKS[key](v[key])) || v.version !== 1 ||
       typeof v.profileId !== 'string' || !v.profileId.trim() || typeof v.databasePath !== 'string' ||
       !isAbsolute(v.databasePath) || v.databasePath.includes('\0') || v.databasePath === ':memory:' ||
       typeof v.token !== 'string' || !/^[\x21-\x7e]+$/.test(v.token) || typeof v.endpoint !== 'string' ||
@@ -101,30 +118,57 @@ async function main(): Promise<void> {
   const { defaultComponents } = await import('./setup.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
-  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}) }); }
-  catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   const extras = await startExtras(config, store);
-  if (!extras) { server.close(); store.close(); process.exitCode = 1; return; }
+  if (!extras) { store.close(); process.exitCode = 1; return; }
+  try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}), ...(extras.briefings ? { briefings: extras.briefings } : {}) }); }
+  catch { extras.stop(); store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
   serve(server, { close() { extras.stop(); store.close(); } }, config);
 }
 
-/** Optional Slack intake and local notices; null (after reporting which one failed) stops startup. */
-async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void } | null> {
+type Notices = { stop(): void; announce(id: string, ref: string): void };
+type Briefings = { stop(): void; provider: import('./http/server.ts').BriefingProvider };
+
+/** Optional Slack intake, local notices and Google briefing; null (after reporting which one failed) stops startup. */
+async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; briefings?: import('./http/server.ts').BriefingProvider } | null> {
   let slack: { stop(): void } | undefined;
   if (config.slack) {
     try { slack = await startSlack(config, config.slack, store); }
     catch { console.error('Slack channel could not be initialized.'); return null; }
   }
-  let notices: { stop(): void } | undefined;
+  let notices: Notices | undefined;
   if (config.notifications) {
     try { notices = await startNotifications(config, config.notifications, store); }
     catch { slack?.stop(); console.error('Notifications could not be initialized.'); return null; }
   }
-  return { stop() { notices?.stop(); slack?.stop(); } };
+  let google: Briefings | undefined;
+  if (config.google) {
+    try { google = await startGoogle(config, config.google, notices); }
+    catch { notices?.stop(); slack?.stop(); console.error('Google briefing could not be initialized.'); return null; }
+  }
+  return { stop() { google?.stop(); notices?.stop(); slack?.stop(); }, ...(google ? { briefings: google.provider } : {}) };
+}
+
+/** Reads the named Google accounts' mail and agenda once a day after `dailyAt`; failures are logged by code only. */
+async function startGoogle(config: Config, settings: GoogleConfig, notices: Notices | undefined): Promise<Briefings> {
+  const { GoogleLocal } = await import('./connectors/google-local.ts');
+  const { BriefingService } = await import('./briefing/service.ts');
+  const { osKeyProtector } = await import('./secrets/protector.ts');
+  const dir = dirname(config.databasePath);
+  for (const name of ['vault.sqlite', 'google.sqlite', 'google-gateway.sqlite', 'briefings.sqlite']) prepareDatabase(join(dir, name));
+  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector() });
+  const service = new BriefingService({
+    local, connections: settings.connections, timeZone: settings.timeZone, dailyAt: settings.dailyAt,
+    onReady: briefing => {
+      console.log(`Google briefing ${briefing.localDate}: ${briefing.items.length} items; sources ${briefing.sources.map(s => `${s.sourceId} ${s.state}`).join(', ')}.`);
+      notices?.announce(`briefing-${briefing.localDate}`, `briefing-${briefing.briefingId}`);
+    },
+  });
+  service.start(60_000, error => console.error(`Google briefing failed: ${error instanceof Error && /^[a-z][a-z_]{0,63}$/.test(error.message) ? error.message : 'error'}.`));
+  return { stop() { service.stop(); local.close(); }, provider: service };
 }
 
 /** Local toasts for suggested tasks, needed input, review, finish and failure. The config flag is the consent. */
-async function startNotifications(config: Config, settings: NotificationsConfig, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void }> {
+async function startNotifications(config: Config, settings: NotificationsConfig, store: import('./store/db.ts').TaskStore): Promise<Notices> {
   const { createNotificationCenter } = await import('./notifications/center.ts');
   const { TaskNotifier, windowsToast } = await import('./notifications/task-notifier.ts');
   const path = join(dirname(config.databasePath), 'notifications.sqlite');
@@ -135,7 +179,11 @@ async function startNotifications(config: Config, settings: NotificationsConfig,
   if (process.platform !== 'win32') console.error('Local notifications need Windows; notices stay listed but are not shown.');
   const notifier = new TaskNotifier({ store, center, channel: 'local', transport: windowsToast() });
   notifier.start(2000, () => console.error('Notification delivery failed.'));
-  return { stop() { notifier.stop(); center.close(); } };
+  return {
+    stop() { notifier.stop(); center.close(); },
+    // Delivered by the notifier's next pass; the same id again is a no-op, so a restart does not repeat the toast.
+    announce(id, ref) { try { center.notify({ id, channel: 'local', category: 'briefing_ready', ref }); } catch { console.error('Notification could not be recorded.'); } },
+  };
 }
 
 /** Socket Mode intake: listed operators' messages become suggested tasks; nothing is posted back. */

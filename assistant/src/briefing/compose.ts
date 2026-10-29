@@ -79,10 +79,10 @@ export class BriefingComposer {
     return briefing;
   }
 
-  get(briefingId: string): Briefing | null {
-    const row = this.db.prepare('SELECT body FROM briefings WHERE profile = ? AND briefing_id = ?').get(this.options.profileId, briefingId) as { body: string } | undefined;
-    return row ? JSON.parse(row.body) as Briefing : null;
-  }
+  /** The newest stored briefing of either kind, or null when none is kept. */
+  latest(): Briefing | null { return this.one('ORDER BY created DESC LIMIT 1'); }
+
+  get(briefingId: string): Briefing | null { return this.one('AND briefing_id = ?', briefingId); }
 
   /** Start turns one briefing item into a queued task in the store. Only the operator authority can call it; repeating it returns the same task. */
   start(briefingId: string, itemId: string, authority: object, request: StartRequest): Task {
@@ -111,16 +111,18 @@ export class BriefingComposer {
 
   close(): void { this.db.close(); }
 
-  private dailyFor(localDate: string): Briefing | null {
-    const row = this.db.prepare("SELECT body FROM briefings WHERE profile = ? AND local_date = ? AND kind = 'daily'").get(this.options.profileId, localDate) as { body: string } | undefined;
+  private dailyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'daily'", localDate); }
+
+  /** One of this profile's briefings; `rest` is a fixed SQL suffix with placeholders for `args`, never input text. */
+  private one(rest: string, ...args: string[]): Briefing | null {
+    const row = this.db.prepare(`SELECT body FROM briefings WHERE profile = ? ${rest}`).get(this.options.profileId, ...args) as { body: string } | undefined;
     return row ? JSON.parse(row.body) as Briefing : null;
   }
 
   private async compose(kind: BriefingKind, localDate: string): Promise<Briefing> {
     const now = this.now();
     this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, now - this.retentionDays * DAY_MS);
-    const previous = this.db.prepare('SELECT body FROM briefings WHERE profile = ? ORDER BY created DESC LIMIT 1').get(this.options.profileId) as { body: string } | undefined;
-    const since = previous ? JSON.parse(previous.body) as Briefing : null;
+    const since = this.latest();
     const sources: SourceState[] = [];
     const items: Omit<BriefingItem, 'itemId'>[] = [];
     let distractions = 0;

@@ -32,7 +32,10 @@ const responseSchema = { version, profileId: text, taskId: text, revision: posit
 export function isAllowedRemote(address: string | undefined): boolean {
   return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address ?? '');
 }
-async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null): Promise<void> {
+/** The Google briefing as the service keeps it; absent when the server config names no Google connection. */
+export type BriefingProvider = { latest(): Promise<unknown | null>; refresh(): Promise<unknown> };
+
+async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, briefings: BriefingProvider | undefined): Promise<void> {
   try {
     if (!isAllowedRemote(req.socket.remoteAddress)) { send(res, 403, { error: 'Forbidden' }); return; }
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -42,6 +45,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     }
     if (req.headers.origin !== undefined) { send(res, 403, { error: 'Forbidden' }); return; }
     if (!authenticate(req.headers.authorization, token)) { send(res, 401, { error: 'Unauthorized' }); return; }
+    if (url.pathname === '/v1/briefing' && briefings && (req.method === 'GET' || req.method === 'POST')) {
+      query(url, []);
+      if (req.method === 'POST') { shape(await readBody(req), {}); send(res, 200, await briefings.refresh()); return; }
+      const latest = await briefings.latest();
+      send(res, latest ? 200 : 404, latest ?? { error: 'Not found' }); return;
+    }
     const match = /^\/v1\/tasks\/([^/]+)(?:\/(transition|respond))?$/.exec(url.pathname);
     const id = match ? taskIdParam(match[1]) : undefined;
     if (req.method === 'GET' && url.pathname === '/v1/tasks') {
@@ -82,10 +91,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
   }
 }
-export function createAssistantServer({ store, token, profileId, web = false, setup, artifacts, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; onError?: ErrorObserver }): Server {
+export function createAssistantServer({ store, token, profileId, web = false, setup, artifacts, briefings, onError = () => safeLog('assistant HTTP internal request failure') }: { store: TaskStore; token: string; profileId: string; web?: boolean; setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; briefings?: BriefingProvider; onError?: ErrorObserver }): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
   const channel = web ? new WebChannel({ store, token, profileId, ...(setup ? { setup } : {}), ...(artifacts ? { artifacts } : {}) }) : null;
-  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel).catch(() => { reportError(onError); res.destroy(); }); });
+  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, briefings).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
   return server;
