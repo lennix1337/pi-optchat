@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { TaskStore } from '../assistant/src/store/db.ts';
 import { createAssistantServer } from '../assistant/src/http/server.ts';
-import { classify, WorkTracker } from '../src/work-tracker.ts';
+import { classify, registerWorkTracker, WorkTracker } from '../src/work-tracker.ts';
+import { REPORT_TYPE } from '../src/transcript.ts';
+import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 import type { ShellJob } from '../src/shells.ts';
 import type { RunInfo } from '../src/runs.ts';
@@ -73,6 +75,20 @@ test('a run that ends asking the operator waits as needs_input, and the next mes
     await f.tracker.idle();
     assert.equal(f.tasks().length, 1);
     assert.deepEqual(f.notes(task.taskId).slice(2), ['needs_input: Posso fazer o deploy agora?', 'working: Resposta recebida: sim', 'ready_for_review: Deploy feito.']);
+  } finally { await f.close(); }
+});
+
+test('a wake delivered as a report custom message becomes a task through the hooks; other reports do not', async () => {
+  const f = await fixture();
+  const { pi, fire } = hookedPi();
+  const tracker = registerWorkTracker(pi, () => ({ dir: f.dir, name: 'p', sessionId: 's' }));
+  try {
+    for (const [content, reply] of [['[shell 07c6b5b8] exit 0', 'Visto.'], [wakeText('fix GX #739', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar'), 'Corrigi.']]) {
+      fire('message_end', { message: { role: 'custom', customType: REPORT_TYPE, content, display: true } });
+      fire('agent_end', { messages: answer(reply) });
+    }
+    await tracker.idle();
+    assert.deepEqual(f.tasks().map(t => [t.title, t.status]), [['Wake: fix GX #739', 'ready_for_review']]);
   } finally { await f.close(); }
 });
 

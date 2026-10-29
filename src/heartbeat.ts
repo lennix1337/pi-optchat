@@ -6,6 +6,8 @@ import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ModelChoice } from './compactor.ts';
 import { askOneLine } from './one-line.ts';
 import { atomicWrite } from './store.ts';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { REPORT_TYPE, textContent } from './transcript.ts';
 
 export interface Beat { wake: boolean; text: string; model?: string }
 
@@ -118,6 +120,17 @@ const WAKE_TASK = /\bA cheap check \([^)]*\) woke you and suggests: ([^\n]*)/;
 export function wakeTask(text: string): string | undefined {
   if (!WAKE_INTRO.test(text)) return undefined;
   return WAKE_TASK.exec(text)?.[1] ?? '';
+}
+
+/**
+ * The text of a message that opens or steers a run: a user message, or a wake prompt, which OptChat delivers as a report
+ * custom message once its prompt is ready. Other reports (shells, subagents) are not run openers.
+ */
+export function promptText(message: AgentMessage): string | undefined {
+  if (message.role === 'user') return textContent(message.content, false);
+  if (message.role !== 'custom' || message.customType !== REPORT_TYPE) return undefined;
+  const text = textContent(message.content, false);
+  return wakeTask(text) === undefined ? undefined : text;
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */

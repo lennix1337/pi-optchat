@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
-import { wakeTask } from './heartbeat.ts';
+import { promptText, wakeTask } from './heartbeat.ts';
 import type { RunInfo } from './runs.ts';
 import type { ShellJob } from './shells.ts';
 import { PROJECTS, projectOf, projectOfRun, type Project } from './projects.ts';
@@ -175,7 +175,7 @@ export function registerWorkTracker(pi: ExtensionAPI, owner: () => WorkOwner | u
   let warn: (text: string) => void = () => {};
   const tracker = new WorkTracker(owner, defaultRequest, text => warn(text));
   pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); });
-  pi.on('message_end', event => { if (event.message.role === 'user') tracker.userMessage(textContent(event.message.content, false)); });
+  pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) tracker.userMessage(text); });
   pi.on('agent_end', event => tracker.runEnded(event.messages));
   return tracker;
 }

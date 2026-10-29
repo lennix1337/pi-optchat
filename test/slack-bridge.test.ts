@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
-import { SLACK_PREFIX, SlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { SLACK_PREFIX, SlackBridge, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { REPORT_TYPE } from '../src/transcript.ts';
+import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 
 function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = []) {
@@ -130,6 +132,20 @@ test('a wake that delivered something reports it in the channel of the repo it c
     await f.bridge.runEnded(calling([['edit', { path: 'C:/projetos/pi-optchat/x.ts' }]], 'ok'));
     assert.equal(sends().length, 2, 'only wakes report themselves');
   } finally { f.close(); }
+});
+
+test('a wake delivered the way OptChat really sends it, as a report custom message, still reports through the session hooks', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-hooks-'));
+  const { pi, fire } = hookedPi();
+  const bodies: unknown[] = [];
+  registerSlackBridge(pi, () => ({ dir, name: 'p' }), undefined, { request: async (_o, _path, body) => { bodies.push(body); return { parts: 1, ts: '1.0' }; } });
+  try {
+    // index.ts sendReport: once the OptChat prompt is ready, a report (the wake prompt too) is a custom message, not a user one.
+    fire('message_end', { message: { role: 'custom', customType: REPORT_TYPE, content: WAKE, display: true } });
+    fire('agent_start');
+    await fire('agent_end', { messages: calling([['bash', { command: 'cd C:/projetos/pi-optchat && git commit -qm x && git push' }]], 'Corrigi.') });
+    assert.deepEqual(bodies, [{ text: '*Wake* \u00b7 Corrigi.', threadTs: null, channel: 'harness' }]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake that already used slack_send is not repeated', () => {

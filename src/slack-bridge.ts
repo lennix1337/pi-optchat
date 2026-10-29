@@ -4,7 +4,7 @@ import { Type } from 'typebox';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
-import { wakeTask } from './heartbeat.ts';
+import { promptText, wakeTask } from './heartbeat.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
@@ -216,12 +216,13 @@ export class SlackBridge {
 }
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
-export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {}): SlackBridge {
+export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
+  options: { request?: Request } = {}): SlackBridge {
   let warn: (text: string) => void = () => {};
-  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent });
+  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent, ...options });
   pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); bridge.start(); });
   pi.on('session_shutdown', () => bridge.stop());
-  pi.on('message_end', event => { if (event.message.role === 'user') bridge.sawUserMessage(textContent(event.message.content, false)); });
+  pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); });
   pi.on('agent_start', () => bridge.runStarted());
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
