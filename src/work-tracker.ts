@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
+import { wakeTask } from './heartbeat.ts';
 import type { RunInfo } from './runs.ts';
 import type { ShellJob } from './shells.ts';
 import { PROJECTS, projectOf, projectOfRun, type Project } from './projects.ts';
@@ -33,9 +34,8 @@ const defaultRequest: Request = (owner, path, body) => assistantRequest(assistan
 export function classify(prompt: string): { channel: string; title: string } {
   const slack = FROM_SLACK.exec(prompt);
   if (slack) return { channel: slack[1] ? `Slack #${slack[1]}` : 'Slack', title: prompt.slice(slack[0].length) };
-  const wake = /^A cheap check \([^)]*\) woke you and suggests: ([^\n]*)/.exec(prompt);
-  if (wake) return { channel: 'Wake', title: `Wake: ${wake[1]}` };
-  if (/^The operator's fixed \d+-min schedule woke you/.test(prompt)) return { channel: 'Wake', title: 'Wake agendado' };
+  const wake = wakeTask(prompt);
+  if (wake !== undefined) return { channel: 'Wake', title: wake ? `Wake: ${wake}` : 'Wake agendado' };
   if (/^\[shell [^\]]+\]/.test(prompt)) return { channel: 'Shell', title: prompt };
   if (/^\[[\w-]+\] /.test(prompt)) return { channel: 'Subagente', title: prompt };
   return { channel: 'OptChat', title: prompt };

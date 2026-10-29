@@ -7,6 +7,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { TaskStore } from '../assistant/src/store/db.ts';
 import { createAssistantServer } from '../assistant/src/http/server.ts';
 import { classify, WorkTracker } from '../src/work-tracker.ts';
+import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 import type { ShellJob } from '../src/shells.ts';
 import type { RunInfo } from '../src/runs.ts';
 
@@ -78,7 +79,7 @@ test('a run that ends asking the operator waits as needs_input, and the next mes
 test('an aborted run fails; wakes are labelled and never wait for an answer', async () => {
   const f = await fixture();
   try {
-    f.tracker.userMessage('A cheap check (haiku) woke you and suggests: fix GX #739\nmore text');
+    f.tracker.userMessage(wakeText('fix GX #739', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar'));
     f.tracker.runEnded(answer('Devo seguir?'));
     f.tracker.userMessage('outra coisa');
     f.tracker.runEnded(answer('', 'aborted'));
@@ -131,7 +132,9 @@ test('a stopped service costs one warning; a profile without an assistant stays 
 });
 
 test('classify names the door each run came through', () => {
-  assert.deepEqual(classify("The operator's fixed 30-min schedule woke you; no check ran."), { channel: 'Wake', title: 'Wake agendado' });
+  assert.deepEqual(classify(wakeText('', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar')), { channel: 'Wake', title: 'Wake agendado' });
+  assert.deepEqual(classify(wakeText('fix GX #739', 'haiku', 30, DEFAULT_HEARTBEAT, { path: '/p/q.md', item: '- [ ] x' })), { channel: 'Wake', title: 'Wake: fix GX #739' });
+  assert.equal(classify("The operator's fixed 30-min schedule woke you").channel, 'OptChat', 'only a real wake prompt counts');
   assert.equal(classify('[shell 1234] exited').channel, 'Shell');
   assert.equal(classify('[c6191f36] report').channel, 'Subagente');
   assert.equal(classify('oi').channel, 'OptChat');

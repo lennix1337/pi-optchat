@@ -110,6 +110,16 @@ export async function checkBeat(registry: ModelRegistry, choice: ModelChoice, sn
   return { wake: word === 'WAKE', text: reason, model };
 }
 
+const WAKE_INTRO = /^\[OptChat heartbeat\] You have been idle for \d+ min and the operator is away\./;
+/** On the intro's line, or on its own line after a backlog item; always before the radar. */
+const WAKE_TASK = /\bA cheap check \([^)]*\) woke you and suggests: ([^\n]*)/;
+
+/** Reads back a wakeText() prompt: the check's suggestion, '' for a fixed-schedule wake, undefined for any other message. */
+export function wakeTask(text: string): string | undefined {
+  if (!WAKE_INTRO.test(text)) return undefined;
+  return WAKE_TASK.exec(text)?.[1] ?? '';
+}
+
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
 export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string) {
   const opening = task

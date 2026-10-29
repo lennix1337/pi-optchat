@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
+import { wakeTask } from './heartbeat.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
@@ -33,8 +34,6 @@ const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro
 const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 
 const defaultRequest: Request = (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
-/** The two prompts a heartbeat wake starts with (heartbeat.ts wakeText). */
-const WAKE = /^(?:A cheap check \([^)]*\) woke you|The operator's fixed \d+-min schedule woke you)/;
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
@@ -125,7 +124,7 @@ export class SlackBridge {
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
   sawUserMessage(text: string): void {
-    if (WAKE.test(text)) { this.waking = true; return; }
+    if (wakeTask(text) !== undefined) { this.waking = true; return; }
     const match = FROM_SLACK.exec(text);
     if (!match) return;
     this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };

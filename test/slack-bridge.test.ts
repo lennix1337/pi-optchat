@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
 import { SLACK_PREFIX, SlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 
 function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
@@ -104,7 +105,9 @@ const calling = (calls: [string, unknown][], answer: string) => [
   { role: 'assistant', content: calls.map(([name, args], i) => ({ type: 'toolCall', id: `c${i}`, name, arguments: args })) },
   ...replies(answer),
 ] as unknown as AgentMessage[];
-const WAKE = 'A cheap check (haiku) woke you and suggests: fix the flaky test';
+/** The prompt a wake really starts with, as heartbeat.ts builds it: an intro line comes before the suggestion. */
+const WAKE = wakeText('fix the flaky test', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar');
+const SCHEDULED = wakeText('', 'haiku', 30, DEFAULT_HEARTBEAT, { path: '/p/q.md', item: '- [ ] x' });
 
 test('a wake that delivered something reports it in the channel of the repo it changed; an empty wake posts nothing', async () => {
   const f = fixture();
@@ -119,9 +122,13 @@ test('a wake that delivered something reports it in the channel of the repo it c
       ['bash', { command: 'cd C:/projetos/Genexus18MCP && git commit -m fix && git push' }]], 'Corrigi o teste.'));
     assert.deepEqual(sends().at(-1), { text: '*Wake* \u00b7 Corrigi o teste.', threadTs: null, channel: 'genexus18mcp' });
 
+    f.bridge.sawUserMessage(SCHEDULED);
+    await f.bridge.runEnded(calling([['bash', { command: 'cd C:/projetos/dotfiles && git commit -qm x && git push origin main' }]], 'Publiquei.'));
+    assert.deepEqual(sends().at(-1), { text: '*Wake* \u00b7 Publiquei.', threadTs: null, channel: 'harness' }, 'a scheduled wake routes too');
+
     f.bridge.sawUserMessage('typed at the terminal');
     await f.bridge.runEnded(calling([['edit', { path: 'C:/projetos/pi-optchat/x.ts' }]], 'ok'));
-    assert.equal(sends().length, 1, 'only wakes report themselves');
+    assert.equal(sends().length, 2, 'only wakes report themselves');
   } finally { f.close(); }
 });
 

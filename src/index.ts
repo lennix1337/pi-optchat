@@ -778,8 +778,6 @@ export default function optchat(pi: ExtensionAPI) {
     settledAt = Date.now();
     const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
     heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
-    // What an autonomous wake did reaches the operator where they are, like an employee's report.
-    if (wake?.reply) slack.send(`*Wake autônomo*\n${wake.reply}`).catch(error => ctx.ui.notify(`Wake report not sent to Slack: ${errorText(error)}`, 'warning'));
     if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;
