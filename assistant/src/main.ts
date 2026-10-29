@@ -178,9 +178,10 @@ async function main(): Promise<void> {
   const web = args[2] === '--web' || config.webOrigins !== undefined;
   const { serviceSetup } = await import('./service-setup.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
-  const setup = () => serviceSetup(config, osKeyProtector());
   const extras = await startExtras(config, store);
   if (!extras) { store.close(); process.exitCode = 1; return; }
+  const briefings = extras.server.briefings;
+  const setup = () => serviceSetup(config, osKeyProtector(), { executor: () => store.latestResult('draft-executor'), ...(briefings ? { briefing: () => briefings.latest() } : {}) });
   let artifacts: ReturnType<typeof openArtifactService> | undefined;
   let workers: Workers | undefined;
   let learning: DisplayLearning | undefined;

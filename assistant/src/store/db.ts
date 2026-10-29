@@ -174,6 +174,11 @@ export class TaskStore {
       return task;
     });
   }
+  /** The newest event in which `actorId` itself put a task in a result state (a draft to review or a question). */
+  latestResult(actorId: string): StoredEvent | null {
+    const row = this.db.prepare("SELECT payload FROM events WHERE profile = ? AND json_extract(payload, '$.event.source.actorId') = ? AND json_extract(payload, '$.operation') = 'transition' AND json_extract(payload, '$.task.status') IN ('ready_for_review', 'needs_input') ORDER BY sequence DESC LIMIT 1").get(this.profileId, actorId);
+    return row ? JSON.parse(String(row.payload)) as StoredEvent : null;
+  }
   /** The event that created the task: its channel and source decide what may act on it. */
   creation(taskId: string): StoredEvent | null {
     const row = this.taskRow("SELECT payload FROM events WHERE profile = ? AND json_extract(payload, '$.event.taskId') = ? AND json_extract(payload, '$.operation') = 'create' LIMIT 1", taskId);
