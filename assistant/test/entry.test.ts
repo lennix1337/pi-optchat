@@ -78,6 +78,9 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     const db = join(dir, 'never.db'), config = join(dir, 'config.json');
     const base = { version: 1, profileId, databasePath: db, endpoint: `http://127.0.0.1:${await port()}`, token: secret };
     const invalid = ['{', JSON.stringify({ ...base, extra: true }), JSON.stringify({ ...base, version: 2 }), JSON.stringify({ ...base, endpoint: 'http://localhost:80' }), JSON.stringify({ ...base, endpoint: 'http://127.0.0.1:65536' }), JSON.stringify({ ...base, databasePath: ':memory:' }), JSON.stringify({ ...base, databasePath: 'relative.db' }), JSON.stringify({ ...base, profileId: ' ' }), JSON.stringify({ ...base, token: 'bad token' }), JSON.stringify(base) + ' '.repeat(8193)];
+    const slack = { appToken: 'xapp-1-disposable', team: 'T0TEST', appId: 'A0TEST', operators: ['U0OWNER'] };
+    invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, null]
+      .map(value => JSON.stringify({ ...base, slack: value })));
     for (const data of invalid) {
       writeFileSync(config, data);
       const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 5000 });
@@ -91,7 +94,9 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
   const assistant = fileURLToPath(new URL('../', import.meta.url));
   const variants: [string, string][] = [
     ['count > 8192', 'false'],
-    ["Object.keys(v).sort().join(',') !== 'databasePath,endpoint,profileId,token,version'", 'false'],
+    ['keys !== BASE_KEYS', 'false'],
+    ["('slack' in v && !validSlack(v.slack))", 'false'],
+    ["/^xapp-[\\x21-\\x7e]+$/.test(s.appToken) &&", ''],
     ['v.version !== 1', 'false'],
     ['!v.profileId.trim()', 'false'],
     ['!isAbsolute(v.databasePath)', 'false'],

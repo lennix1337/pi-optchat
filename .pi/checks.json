@@ -132,8 +132,8 @@
       "timeoutMs": 300000
     },
     "assistant-channels": {
-      "description": "T14 Slack/Teams boundaries offline: request signing, bot framework JWT, workspace/tenant, sender authorization/revocation, redelivery, thread-bound answers, remote approvals refused, outbound through gateway+egress",
-      "argv": ["node", "--test", "assistant/test/slack-boundary.test.ts", "assistant/test/teams-boundary.test.ts", "assistant/test/channel-approval.test.ts"],
+      "description": "T14 Slack/Teams boundaries offline: request signing, bot framework JWT, workspace/tenant, sender authorization/revocation, redelivery, thread-bound answers, remote approvals refused, outbound through gateway+egress, Socket Mode ack/redelivery/reconnect (fake socket)",
+      "argv": ["node", "--test", "assistant/test/slack-boundary.test.ts", "assistant/test/slack-socket.test.ts", "assistant/test/teams-boundary.test.ts", "assistant/test/channel-approval.test.ts"],
       "timeoutMs": 60000
     },
     "assistant-channel-mutations": {

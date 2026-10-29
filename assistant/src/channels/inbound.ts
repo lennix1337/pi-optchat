@@ -39,6 +39,16 @@ export class ChannelLedger {
     if (authority !== this.authority) fail('unauthorized');
     this.db.prepare('UPDATE channel_senders SET revoked = 1 WHERE profile = ? AND platform = ? AND account = ? AND sender = ?').run(this.profileId, platform, account, sender);
   }
+  /** Makes `senders` the exact authorized set for one account: anyone dropped from the operator's list is revoked. */
+  replaceSenders(platform: Platform, account: string, senders: readonly string[], label: string, authority: object): void {
+    if (authority !== this.authority) fail('unauthorized');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('UPDATE channel_senders SET revoked = 1 WHERE profile = ? AND platform = ? AND account = ?').run(this.profileId, platform, account);
+      for (const sender of senders) this.authorize(platform, account, sender, label, authority);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   authorized(platform: Platform, account: string, sender: string): boolean {
     return Boolean(this.db.prepare('SELECT 1 FROM channel_senders WHERE profile = ? AND platform = ? AND account = ? AND sender = ? AND revoked = 0').get(this.profileId, platform, account, sender));
   }

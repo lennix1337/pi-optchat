@@ -1,6 +1,6 @@
 import { constants, existsSync, fstatSync, openSync, readSync, closeSync } from 'node:fs';
 import type { Server } from 'node:http';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
 
@@ -10,6 +10,9 @@ Usage: node assistant/src/main.ts --config <absolute-path> [--web]
 
 Supply a user-controlled secret JSON file outside Git, maximum 8192 bytes:
 {"version":1,"profileId":"<nonblank>","databasePath":"<absolute durable path>","endpoint":"http://127.0.0.1:<port 1..65535>","token":"<nonempty ASCII printable without whitespace>"}
+Optional Slack (Socket Mode, outbound connection only, no public endpoint):
+"slack":{"appToken":"xapp-...","team":"T...","appId":"A...","operators":["U..."]}
+only the listed Slack users can suggest tasks; listing them is the operator's authorization.
 No other fields are accepted. Keep the token out of arguments and logs.
 Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
@@ -20,7 +23,21 @@ The client uses its owner-profile assistant.json with version, profileId, endpoi
 Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/scripts/<name>.mjs --help.
 `;
 
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string };
+export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[] };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig };
+const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
+
+function validSlack(value: unknown): value is SlackConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const s = value as Record<string, unknown>;
+  return Object.keys(s).sort().join(',') === 'appId,appToken,operators,team' &&
+    typeof s.appToken === 'string' && /^xapp-[\x21-\x7e]+$/.test(s.appToken) &&
+    typeof s.team === 'string' && /^T[A-Z0-9]{2,20}$/.test(s.team) &&
+    typeof s.appId === 'string' && /^A[A-Z0-9]{2,20}$/.test(s.appId) &&
+    Array.isArray(s.operators) && s.operators.length >= 1 && s.operators.length <= 20 &&
+    s.operators.every(user => typeof user === 'string' && /^[UW][A-Z0-9]{2,20}$/.test(user));
+}
+
 export function readConfig(path: string): Config {
   if (!isAbsolute(path)) throw new Error('Invalid configuration path');
   // The privacy precheck assumes a quiescent, user-controlled directory.
@@ -42,7 +59,8 @@ export function readConfig(path: string): Config {
   const value: unknown = JSON.parse(data.toString('utf8'));
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid configuration');
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).sort().join(',') !== 'databasePath,endpoint,profileId,token,version' || v.version !== 1 ||
+  const keys = Object.keys(v).filter(key => key !== 'slack').sort().join(',');
+  if (keys !== BASE_KEYS || ('slack' in v && !validSlack(v.slack)) || v.version !== 1 ||
       typeof v.profileId !== 'string' || !v.profileId.trim() || typeof v.databasePath !== 'string' ||
       !isAbsolute(v.databasePath) || v.databasePath.includes('\0') || v.databasePath === ':memory:' ||
       typeof v.token !== 'string' || !/^[\x21-\x7e]+$/.test(v.token) || typeof v.endpoint !== 'string' ||
@@ -76,7 +94,29 @@ async function main(): Promise<void> {
   const setup = () => defaultComponents({ databasePath: config.databasePath, protector: osKeyProtector() });
   try { server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, ...(web ? { setup } : {}) }); }
   catch { store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
-  serve(server, store, config);
+  let slack: { stop(): void } | undefined;
+  if (config.slack) {
+    try { slack = await startSlack(config, config.slack, store); }
+    catch { server.close(); store.close(); console.error('Slack channel could not be initialized.'); process.exitCode = 1; return; }
+  }
+  serve(server, { close() { slack?.stop(); store.close(); } }, config);
+}
+
+/** Socket Mode intake: listed operators' messages become suggested tasks; nothing is posted back. */
+async function startSlack(config: Config, settings: SlackConfig, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void }> {
+  const { ChannelLedger } = await import('./channels/inbound.ts');
+  const { SlackChannel } = await import('./channels/slack.ts');
+  const { SlackSocket } = await import('./channels/slack-socket.ts');
+  const ledgerPath = join(dirname(config.databasePath), 'channels.sqlite');
+  prepareDatabase(ledgerPath);
+  // The operator's own configuration file is the authority that lists who may write to the assistant.
+  const authority = {};
+  const ledger = new ChannelLedger({ databasePath: ledgerPath, profileId: config.profileId, operatorAuthority: authority });
+  ledger.replaceSenders('slack', settings.team, settings.operators, 'operador', authority);
+  const channel = new SlackChannel({ store, ledger, profileId: config.profileId, team: settings.team, appId: settings.appId, reviewLink: id => `${config.endpoint}/#tarefa=${encodeURIComponent(id)}` });
+  const socket = new SlackSocket({ appToken: settings.appToken, accept: payload => channel.accept(payload), log: line => console.log(line) });
+  socket.start();
+  return { stop() { socket.stop(); ledger.close(); } };
 }
 
 function serve(server: Server, store: { close(): void }, config: Config): void {

@@ -17,7 +17,9 @@ export function verifySlack(headers: Headers, rawBody: string, signingSecret: st
 }
 
 export type SlackOptions = {
-  store: TaskStore; ledger: ChannelLedger; profileId: string; team: string; appId: string; signingSecret: string;
+  store: TaskStore; ledger: ChannelLedger; profileId: string; team: string; appId: string;
+  /** Events API only; without it `receive` refuses every request and only `accept` (Socket Mode) admits. */
+  signingSecret?: string;
   now?: () => number; reviewLink: (taskId: string) => string;
 };
 // Edits, joins, bot posts and shares are not a person writing to the assistant now.
@@ -26,12 +28,23 @@ const NON_HUMAN_SUBTYPES = new Set(['bot_message', 'message_changed', 'message_d
 export class SlackChannel {
   private readonly options: SlackOptions & { now: () => number };
   constructor(options: SlackOptions) { this.options = { now: Date.now, ...options }; }
+  /** Events API over HTTPS: the v0 signature authenticates the request. */
   receive(headers: Headers, rawBody: string): Received {
-    const o = this.options;
-    if (!verifySlack(headers, rawBody, o.signingSecret, o.now())) return { outcome: 'unauthenticated' };
-    let body: Record<string, any>;
+    if (!verifySlack(headers, rawBody, this.options.signingSecret ?? '', this.options.now())) return { outcome: 'unauthenticated' };
+    let body: unknown;
     try { body = JSON.parse(rawBody); } catch { return { outcome: 'ignored' }; }
-    if (body?.type === 'block_actions') {
+    return this.accept(body);
+  }
+
+  /**
+   * A payload whose origin the transport already authenticated: a signed HTTPS request, or a Socket Mode envelope
+   * received on the connection opened with this app's token. Workspace and app are still checked.
+   */
+  accept(payload: unknown): Received {
+    const o = this.options;
+    if (!payload || typeof payload !== 'object') return { outcome: 'ignored' };
+    const body = payload as Record<string, any>;
+    if (body.type === 'block_actions') {
       if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
       // A button is a remote click, not the operator's authenticated review of the exact effect.
       const taskId = typeof body.actions?.[0]?.value === 'string' ? body.actions[0].value : '';
