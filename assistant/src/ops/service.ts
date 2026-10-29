@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readConfig, type Config } from '../main.ts';
-import { checkConfigPrivacy } from '../store/privacy.ts';
+import { AclInspectionTimeout, checkConfigPrivacy } from '../store/privacy.ts';
 
 /**
  * Local operation of the manual assistant server: start, stop and health for one config file. The scripts keep an
@@ -39,7 +39,10 @@ export function servicePaths(configPath: string): ServicePaths {
 }
 /** Same privacy precheck and parser as the server itself; the token stays in memory and is never printed. */
 export function loadConfig(configPath: string): Config {
-  try { checkConfigPrivacy(configPath); } catch { throw new OpsError('config_not_private', 'use a private directory and file; permissions are not repaired'); }
+  try { checkConfigPrivacy(configPath); } catch (error) {
+    if (error instanceof AclInspectionTimeout) throw new OpsError('privacy_check_timed_out', 'the machine was too busy to inspect the ACL; retry');
+    throw new OpsError('config_not_private', 'use a private directory and file; permissions are not repaired');
+  }
   try { return readConfig(configPath); } catch { throw new OpsError('config_invalid', 'see node assistant/src/main.ts --help'); }
 }
 const portOf = (endpoint: string) => Number(endpoint.slice(endpoint.lastIndexOf(':') + 1));

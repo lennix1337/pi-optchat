@@ -1,6 +1,6 @@
 import { closeSync, lstatSync, openSync, type Stats } from 'node:fs';
 import { dirname, parse, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 
 // This checks a quiescent, user-controlled directory, not concurrent path replacement.
 const windowsAclCheck = `$ErrorActionPreference='Stop'
@@ -31,11 +31,26 @@ function rejectLinkedComponents(path: string): void {
   }
 }
 
+// One inspection takes ~0.3 s idle but up to 9.5 s with the CPU saturated, and a vault open runs two to four of them at
+// service startup, so a stuck PowerShell is cut off only well past a busy logon.
+export const ACL_INSPECTION_TIMEOUT_MS = 60_000;
+
+/** The ACL was never judged: the machine was too busy, so retrying is the remedy, not changing permissions. */
+export class AclInspectionTimeout extends Error {}
+
+export function aclInspectionFailure(result: Pick<SpawnSyncReturns<string>, 'status' | 'error'>): Error | null {
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+    return new AclInspectionTimeout(`Privacy ACL inspection timed out after ${ACL_INSPECTION_TIMEOUT_MS / 1000} s; permissions were not judged`);
+  }
+  return result.error || result.status !== 0 ? new Error('Privacy ACL inspection failed or found an untrusted grant') : null;
+}
+
 function checkAcl(path: string): void {
   const result = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsAclCheck], {
-    env: { ...process.env, ASSISTANT_PRIVACY_PATH: path }, encoding: 'utf8', timeout: 10000, maxBuffer: 16384, windowsHide: true,
+    env: { ...process.env, ASSISTANT_PRIVACY_PATH: path }, encoding: 'utf8', timeout: ACL_INSPECTION_TIMEOUT_MS, maxBuffer: 16384, windowsHide: true,
   });
-  if (result.error || result.status !== 0) throw new Error('Privacy ACL inspection failed or found an untrusted grant');
+  const failure = aclInspectionFailure(result);
+  if (failure) throw failure;
 }
 
 function checkDirectory(path: string): void {

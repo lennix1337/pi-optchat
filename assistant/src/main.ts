@@ -2,7 +2,7 @@ import { constants, existsSync, fstatSync, openSync, readSync, closeSync } from 
 import type { Server } from 'node:http';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
+import { AclInspectionTimeout, checkConfigPrivacy, prepareDatabase } from './store/privacy.ts';
 import { remoteOrigins } from './channels/origins.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
@@ -120,18 +120,23 @@ export function readConfig(path: string): Config {
   return v as Config;
 }
 
+function privacyFailure(subject: string, error: unknown, files: string): string {
+  if (error instanceof AclInspectionTimeout) return `${subject} privacy check timed out: the machine was too busy to inspect the ACL; retry.`;
+  return `${subject} privacy check failed: use a private directory and ${files}; verify permissions and ACL inspection.`;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') { process.stdout.write(help); return; }
   if (!(args.length === 2 || (args.length === 3 && args[2] === '--web')) || args[0] !== '--config' || !isAbsolute(args[1])) { console.error('Usage: node assistant/src/main.ts --config <absolute-path> [--web] (or --help)'); process.exitCode = 1; return; }
   if (Number(process.versions.node.split('.')[0]) < 24) { console.error('Assistant server requires Node.js >=24.'); process.exitCode = 1; return; }
   try { checkConfigPrivacy(args[1]); }
-  catch { console.error('Configuration privacy check failed: use a private directory and file; verify permissions and ACL inspection.'); process.exitCode = 1; return; }
+  catch (error) { console.error(privacyFailure('Configuration', error, 'file')); process.exitCode = 1; return; }
   let config: Config;
   try { config = readConfig(args[1]); }
   catch { console.error('Configuration unavailable or invalid (see --help).'); process.exitCode = 1; return; }
   try { prepareDatabase(config.databasePath); }
-  catch { console.error('Database privacy check failed: use a private directory and files; verify permissions and ACL inspection.'); process.exitCode = 1; return; }
+  catch (error) { console.error(privacyFailure('Database', error, 'files')); process.exitCode = 1; return; }
   const { TaskStore } = await import('./store/db.ts');
   const { createAssistantServer } = await import('./http/server.ts');
   let store: InstanceType<typeof TaskStore>;

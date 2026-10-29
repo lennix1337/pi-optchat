@@ -108,3 +108,15 @@ test('POSIX boundary rejects symlink config and unsafe database mode', { skip: p
     assert.throws(() => prepareDatabase(db)); assert.equal(readFileSync(db, 'utf8'), 'existing');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// One ACL inspection took 0.3 s idle but 5.6-9.5 s with the CPU saturated by 48 busy processes (2026-10-29), and opening the
+// vault runs two to four of them in a row at service startup; the old 10 s kill failed a full unit run as an "untrusted grant".
+test('a slow ACL inspection on a busy machine gets time and, if it still times out, is not reported as an untrusted grant', async () => {
+  const { ACL_INSPECTION_TIMEOUT_MS, AclInspectionTimeout, aclInspectionFailure } = await import('../src/store/privacy.ts');
+  assert.ok(ACL_INSPECTION_TIMEOUT_MS >= 30_000, `a 9.5 s inspection needs headroom, got ${ACL_INSPECTION_TIMEOUT_MS} ms`);
+  const timedOut = aclInspectionFailure({ status: null, error: Object.assign(new Error('spawnSync pwsh.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }) });
+  assert.ok(timedOut instanceof AclInspectionTimeout, String(timedOut));
+  assert.doesNotMatch(timedOut.message, /untrusted/i);
+  assert.match(aclInspectionFailure({ status: 1, error: undefined })?.message ?? '', /untrusted/i);
+  assert.equal(aclInspectionFailure({ status: 0, error: undefined }), null);
+});
