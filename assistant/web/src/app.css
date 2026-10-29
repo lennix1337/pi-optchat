@@ -70,6 +70,7 @@ main { padding: 2.5rem 3vw 4rem; }
 .queued button { margin-left: .5rem; font-size: .8125rem; }
 .evidence li button { margin-top: .5rem; font-size: .8125rem; }
 .task-verification { margin-top: .5rem; font-size: .8125rem; color: var(--muted); }
+.task-note { margin-top: .5rem; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
 .task-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .task-actions button { font-size: .875rem; }
 .response-form { margin-top: 1.25rem; }

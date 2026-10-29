@@ -123,6 +123,10 @@ function render() {
   renderedKey = key;
   channelOptions();
   const tasks = [...state.tasks.values()];
+  // Each task's latest event: when it last moved and, for work OptChat mirrors, what it reported.
+  const latest = new Map();
+  for (const entry of state.events) latest.set(entry.event.taskId, entry.event);
+  const updated = task => latest.get(task.taskId)?.sequence ?? 0;
   $('#attention-count').textContent = String(tasks.filter(attention).length);
   const selected = $('#channel').value;
   const visible = tasks.filter(task => {
@@ -132,12 +136,12 @@ function render() {
     if (filter === 'active') return ['queued', 'working'].includes(task.status);
     if (filter === 'archive') return task.status === 'resolved';
     return task.status !== 'resolved';
-  }).sort((a, b) => Number(attention(b)) - Number(attention(a)) || a.title.localeCompare(b.title, 'pt-BR'));
+  }).sort((a, b) => Number(attention(b)) - Number(attention(a)) || updated(b) - updated(a) || a.title.localeCompare(b.title, 'pt-BR'));
   const list = $('#task-list');
   const focused = document.activeElement;
   const focusedTask = focused?.matches('.response-form textarea') ? focused.closest('.task')?.dataset.taskId : undefined;
   const selection = focusedTask ? [focused.selectionStart, focused.selectionEnd] : null;
-  list.replaceChildren(...visible.map(card));
+  list.replaceChildren(...visible.map(task => card(task, latest.get(task.taskId))));
   if (focusedTask) {
     const replacement = [...list.children].find(node => node.dataset.taskId === focusedTask)?.querySelector('.response-form textarea');
     if (replacement) { replacement.focus(); replacement.setSelectionRange(...selection); }
@@ -150,7 +154,7 @@ function render() {
   $('#more').hidden = !lifecycle.cursor;
   $('#more').disabled = syncing;
 }
-function card(task) {
+function card(task, last) {
   const article = el('article', undefined, 'task'); article.dataset.taskId = task.taskId;
   const meta = el('div', undefined, 'task-meta');
   const channel = state.channels.get(task.taskId);
@@ -161,9 +165,12 @@ function card(task) {
     subject.append(badge, channel);
   } else subject.textContent = 'Canal não carregado';
   meta.append(el('span', labels[task.status], 'task-status'), subject, el('span', `rev. ${task.revision}`));
+  if (last) meta.append(el('span', `atualizado ${new Date(last.observedAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`));
   const heading = el('h3'); const link = el('a', task.title); link.href = taskLink(task.taskId); heading.append(link);
   article.tabIndex = -1;
   article.append(meta, heading);
+  // Notes OptChat reports on its own work (src/work-tracker.ts): what it says, not verification.
+  if (last?.source.actorId === 'assistant-client' && last.evidence.reference !== '-') article.append(el('p', last.evidence.reference, 'task-note'));
   const verification = { verified: 'Verificado', not_verified: 'Resultado não verificado', blocked: 'Verificação bloqueada' };
   article.append(el('p', verification[task.verification], 'task-verification'));
   const details = el('details'); details.append(el('summary', 'Identidade da tarefa'), el('p', `${task.taskId} · origem ${task.sourceEventId}`)); article.append(details);

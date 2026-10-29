@@ -1,0 +1,124 @@
+import { test } from 'node:test';
+import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { TaskStore } from '../assistant/src/store/db.ts';
+import { createAssistantServer } from '../assistant/src/http/server.ts';
+import { classify, WorkTracker } from '../src/work-tracker.ts';
+import type { ShellJob } from '../src/shells.ts';
+import type { RunInfo } from '../src/runs.ts';
+
+const answer = (text: string, stopReason = 'stop') => [{ role: 'assistant', content: [{ type: 'text', text }], stopReason }] as unknown as AgentMessage[];
+
+/** Tracker -> real loopback HTTP API -> SQLite store, as the panel reads it. */
+async function fixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'work-tracker-'));
+  const store = new TaskStore(join(dir, 'db'), 'p');
+  const server = createAssistantServer({ store, token: 'secret', profileId: 'p' });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert(address && typeof address !== 'string');
+  writeFileSync(join(dir, 'assistant.json'), JSON.stringify({ version: 1, profileId: 'p', endpoint: `http://127.0.0.1:${address.port}`, token: 'secret' }));
+  const warnings: string[] = [];
+  const tracker = new WorkTracker(() => ({ dir, name: 'p', sessionId: 's' }), undefined, text => warnings.push(text));
+  const tasks = () => store.list(null, 100).tasks;
+  const notes = (id: string) => store.events(0, 100).filter(e => e.event.taskId === id).map(e => `${e.task.status}: ${e.event.evidence.reference}`);
+  const stop = async () => { await new Promise<void>(resolve => server.close(() => resolve())); store.close(); };
+  const close = async () => { if (server.listening) await stop(); rmSync(dir, { recursive: true, force: true }); };
+  return { tracker, tasks, notes, warnings, close, stop, store, dir };
+}
+
+test('a run becomes a working task and ends in review with its final answer as the note', async () => {
+  const f = await fixture();
+  try {
+    f.tracker.userMessage('[Slack] quantas issues abertas?');
+    await f.tracker.idle();
+    const [task] = f.tasks();
+    assert.equal(task.status, 'working'); assert.equal(task.title, 'quantas issues abertas?'); assert.equal(task.verification, 'not_verified');
+    f.tracker.userMessage('steer mid-run'); // Not a new task.
+    f.tracker.runEnded(answer('São 12 abertas.'));
+    await f.tracker.idle();
+    assert.equal(f.tasks().length, 1);
+    assert.deepEqual(f.notes(task.taskId), ['queued: Em andamento', 'working: Em andamento', 'ready_for_review: São 12 abertas.']);
+    assert.equal(f.store.events(0, 100)[0].event.channelId, 'Slack');
+  } finally { await f.close(); }
+});
+
+test('a run that ends asking the operator waits as needs_input, and the next message continues the same task', async () => {
+  const f = await fixture();
+  try {
+    f.tracker.userMessage('faz o deploy');
+    f.tracker.runEnded(answer('Posso fazer o deploy agora?'));
+    await f.tracker.idle();
+    const [task] = f.tasks();
+    assert.equal(task.status, 'needs_input');
+    f.tracker.userMessage('sim');
+    f.tracker.runEnded(answer('Deploy feito.'));
+    await f.tracker.idle();
+    assert.equal(f.tasks().length, 1);
+    assert.deepEqual(f.notes(task.taskId).slice(2), ['needs_input: Posso fazer o deploy agora?', 'working: Resposta recebida: sim', 'ready_for_review: Deploy feito.']);
+  } finally { await f.close(); }
+});
+
+test('an aborted run fails; wakes are labelled and never wait for an answer', async () => {
+  const f = await fixture();
+  try {
+    f.tracker.userMessage('A cheap check (haiku) woke you and suggests: fix GX #739\nmore text');
+    f.tracker.runEnded(answer('Devo seguir?'));
+    f.tracker.userMessage('outra coisa');
+    f.tracker.runEnded(answer('', 'aborted'));
+    await f.tracker.idle();
+    const byTitle = new Map(f.tasks().map(t => [t.title, t]));
+    assert.equal(byTitle.get('Wake: fix GX #739')?.status, 'needs_input');
+    assert.equal(byTitle.get('outra coisa')?.status, 'failed'); // Not a continuation of the wake.
+  } finally { await f.close(); }
+});
+
+test('background shells and subagents each get a task from start to end', async () => {
+  const f = await fixture();
+  try {
+    const listeners = new Set<() => void>();
+    const shells: ShellJob[] = [{ id: 'fg', command: 'ls', cwd: '.', mode: 'foreground', state: 'running', started: 1, output: '', notify: 'end' }];
+    const agents: RunInfo[] = [];
+    const source = <T>(items: () => T[]) => ({ subscribe: (l: () => void) => { listeners.add(l); return () => listeners.delete(l); }, snapshot: items });
+    f.tracker.watchShells(source(() => shells));
+    f.tracker.watchAgents(source(() => agents));
+    const changed = () => { for (const l of listeners) l(); };
+    shells.push({ id: 'bg', command: 'npm test', cwd: '.', mode: 'background', state: 'running', started: 2, output: '', notify: 'end' });
+    agents.push({ id: 'abcdef123456', task: 'review PR', state: 'running' } as RunInfo);
+    changed(); changed();
+    await f.tracker.idle();
+    assert.deepEqual(f.tasks().map(t => [t.title, t.status]).sort(), [['[abcdef12] review PR', 'working'], ['npm test', 'working']]);
+    Object.assign(shells[1], { state: 'failed', ended: 3, exitCode: 1, output: '2 failing' });
+    agents.pop();
+    changed();
+    await f.tracker.idle();
+    const byTitle = new Map(f.tasks().map(t => [t.title, t]));
+    assert.equal(byTitle.get('npm test')?.status, 'failed');
+    assert.match(f.notes(byTitle.get('npm test')!.taskId).at(-1)!, /exit 1 · 2 failing/);
+    assert.equal(byTitle.get('[abcdef12] review PR')?.status, 'ready_for_review');
+  } finally { await f.close(); }
+});
+
+test('a stopped service costs one warning; a profile without an assistant stays silent', async () => {
+  const f = await fixture();
+  try {
+    await f.stop();
+    f.tracker.userMessage('a'); f.tracker.runEnded(answer('b'));
+    f.tracker.userMessage('c'); f.tracker.runEnded(answer('d'));
+    await f.tracker.idle();
+    assert.equal(f.warnings.length, 1);
+  } finally { await f.close(); }
+  const silent = new WorkTracker(() => ({ dir: f.dir, name: 'p', sessionId: 's' }), undefined, text => f.warnings.push(text));
+  silent.userMessage('a'); silent.runEnded(answer('b'));
+  await silent.idle();
+  assert.equal(f.warnings.length, 1);
+});
+
+test('classify names the door each run came through', () => {
+  assert.deepEqual(classify("The operator's fixed 30-min schedule woke you; no check ran."), { channel: 'Wake', title: 'Wake agendado' });
+  assert.equal(classify('[shell 1234] exited').channel, 'Shell');
+  assert.equal(classify('[c6191f36] report').channel, 'Subagente');
+  assert.equal(classify('oi').channel, 'OptChat');
+});

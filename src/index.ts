@@ -1,5 +1,6 @@
 import { registerAssistant } from './assistant-client.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
+import { registerWorkTracker } from './work-tracker.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
@@ -300,6 +301,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   const stop = async (reason?: string) => {
     heartbeat?.disarm(); heartbeat = undefined;
+    for (const unwatch of unwatchWork.splice(0)) unwatch();
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
@@ -380,6 +382,8 @@ export default function optchat(pi: ExtensionAPI) {
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
         status: () => config.syncStatus, optmem: () => config.syncOptMem, aimemory: () => config.syncAiMemory, warn: text => ctx.ui.notify(text, 'warning') });
       active = { name, dir, config, memory, focus: new Focus(), inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      for (const unwatch of unwatchWork.splice(0)) unwatch();
+      unwatchWork.push(work.watchShells({ subscribe: l => shells.subscribe(l), snapshot: () => shells.list() }), work.watchAgents({ subscribe: l => children.subscribe(l), snapshot: () => children.working }));
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
@@ -546,6 +550,9 @@ export default function optchat(pi: ExtensionAPI) {
     return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
   });
   const slack = registerSlackBridge(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined);
+  // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
+  const work = registerWorkTracker(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
+  const unwatchWork: (() => void)[] = [];
   const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
     ? catchupSource(active, flush, approvals, shells) : undefined);
   pi.on('input', async (event, ctx) => {
