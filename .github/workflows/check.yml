@@ -1,12 +1,52 @@
 name: Check
 on:
+  # Branches are checked through their pull request; a push trigger on every branch ran each PR twice.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+# A new push to a PR branch supersedes its running checks; main runs each keep their own group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
+  # A change to Markdown no test or source reads runs nothing else; any other change runs everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          READERS: test src scripts package.json
+        run: |
+          files=""
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD) || files=""
+          elif [ "$EVENT" = push ] && [ -n "$BEFORE" ] && ! [[ "$BEFORE" =~ ^0+$ ]] && git fetch --no-tags --depth=1 origin "$BEFORE"; then
+            files=$(git diff --name-only "$BEFORE" HEAD) || files=""
+          fi
+          printf 'Changed files:\n%s\n' "${files:-(unknown)}"
+          code=false
+          [ -z "$files" ] && code=true
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in *.md|LICENSE) ;; *) code=true; break ;; esac
+            if git grep -q -F "$(basename "$f")" -- $READERS; then code=true; break; fi
+          done <<<"$files"
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +60,8 @@ jobs:
       - run: npm run test:pi-compat
       - run: npm pack --dry-run
   windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +73,16 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run test:pi-compat
+  # The one check branch protection requires: green when every job this change needed passed.
+  ci-ok:
+    if: always()
+    needs: [changes, test, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every needed job passed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          node -e 'const bad = JSON.parse(process.env.RESULTS).filter((r) => r !== "success" && r !== "skipped"); if (bad.length) { console.error(`failed or cancelled: ${bad.join(", ")}`); process.exit(1); }'
