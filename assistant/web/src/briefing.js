@@ -1,3 +1,5 @@
+import { readAt } from './time.js';
+
 const $ = selector => document.querySelector(selector);
 let generation = 0;
 let request;
@@ -8,7 +10,7 @@ function node(tag, text) { const n = document.createElement(tag); n.textContent 
 /** Sources stay text, not executable links or commands. Reading a stored summary starts no work. */
 export function renderBriefing(root, value) {
   root.replaceChildren();
-  root.append(node('p', `${value.kind === 'daily' ? 'Diário' : 'Sob demanda'} · ${value.localDate} · ${value.timeZone} · leitura em ${value.createdAt}`));
+  root.append(node('p', `${value.kind === 'daily' ? 'Diário' : 'Sob demanda'} · ${value.localDate} · ${value.timeZone} · leitura em ${readAt(value.createdAt, value.timeZone)}`));
   const sources = node('ul', '');
   for (const source of value.sources) sources.append(node('li', `${source.sourceId}: ${sourceState[source.state]}${source.error ? ` (${source.error})` : ''}`));
   root.append(sources);

@@ -43,6 +43,7 @@ const assets: Record<string, { file: string; type: string }> = {
   '/app/app.js': { file: 'src/app.js', type: 'text/javascript; charset=utf-8' },
   '/app/state.js': { file: 'src/state.js', type: 'text/javascript; charset=utf-8' },
   '/app/briefing.js': { file: 'src/briefing.js', type: 'text/javascript; charset=utf-8' },
+  '/app/time.js': { file: 'src/time.js', type: 'text/javascript; charset=utf-8' },
   '/app/inspection.js': { file: 'src/inspection.js', type: 'text/javascript; charset=utf-8' },
   '/app/app.css': { file: 'src/app.css', type: 'text/css; charset=utf-8' },
   '/app/artifacts/artifacts.js': { file: 'src/artifacts/artifacts.js', type: 'text/javascript; charset=utf-8' },
