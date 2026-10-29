@@ -6,6 +6,7 @@ import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-age
 import optchat from '../src/index.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { childToolSchemas } from '../src/child-resources.ts';
+import { createBashToolDefinition } from '@earendil-works/pi-coding-agent';
 
 // Register the actual extension without opening a profile or invoking a lifecycle hook.
 function registeredTools() {
@@ -21,9 +22,14 @@ const validInputs: Record<string, Record<string, unknown>> = {
   tell: { id: 'fixture', message: 'not sent' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
   slack_send: { text: 'not sent' },
 };
+// Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
+const nativeOverrides = process.platform === 'win32' ? ['bash'] : [];
 const tools = registeredTools();
 test('the registered tool set is completely covered by strict input cases', () => {
-  assert.deepEqual([...tools.keys()].sort(), Object.keys(validInputs).sort());
+  assert.deepEqual([...tools.keys()].sort(), [...Object.keys(validInputs), ...nativeOverrides].sort());
+});
+test('a re-registered native tool keeps Pi\'s own input schema', () => {
+  for (const name of nativeOverrides) assert.deepEqual(tools.get(name)!.parameters, createBashToolDefinition(process.cwd()).parameters);
 });
 const validate = (tool: Pick<ToolDefinition, 'name' | 'parameters'>, args: Record<string, unknown>) => validateToolArguments(tool as never,
   { type: 'toolCall', id: 'fixture', name: tool.name, arguments: args as never });

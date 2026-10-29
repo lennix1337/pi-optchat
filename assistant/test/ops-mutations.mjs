@@ -27,7 +27,7 @@ const mutations = [
     'backup-restore.test.ts', 'round trip', assertion],
   ['notification consent', 'src/notifications/center.ts', 'if (this.read<boolean>(`consent:${channel}`) !== true) {', 'if (false) {',
     'notifications.test.ts', 'without operator consent', assertion],
-  ['notification quiet hours', 'src/notifications/center.ts', 'if (quiet && inQuietHours(quiet, this.now())) { result.deferred++; continue; }', '',
+  ['notification quiet hours', 'src/notifications/center.ts', "if (quiet && inQuietHours(quiet, this.now())) return 'deferred';", '',
     'notifications.test.ts', 'quiet hours defer', assertion],
   ['notification free-text refusal', 'src/notifications/center.ts', "Object.keys(v).sort().join(',') !== 'category,channel,id,ref' || ", '',
     'notifications.test.ts', 'stable ids deduplicate', /Missing expected exception/],

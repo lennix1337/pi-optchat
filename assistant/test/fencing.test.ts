@@ -53,12 +53,12 @@ test('a stale owner cannot write after takeover', () => withDir('runtime-fence-'
 
 test('disposable mutant without the fencing check lets the stale owner overwrite the result', () => withDir('runtime-fence-mutant-', async dir => {
   const source = readFileSync(fileURLToPath(new URL('../src/runtime/worker.ts', import.meta.url)), 'utf8');
-  const anchor = "throw new Error('lease_lost');";
+  const anchor = "lease.token !== this.token) throw new Error('lease_lost');";
   assert.equal(source.split(anchor).length, 2);
   // Copy the whole source tree so the mutant keeps every import the real worker has.
   cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
-  writeFileSync(join(dir, 'src', 'runtime', 'worker.ts'), source.replace(anchor, 'void 0;'));
+  writeFileSync(join(dir, 'src', 'runtime', 'worker.ts'), source.replace(anchor, 'lease.token !== this.token) void 0;'));
   const mutant = await import(pathToFileURL(join(dir, 'src', 'runtime', 'worker.ts')).href) as { createRuntime: Create };
   const { job } = await staleOwnerScenario(join(dir, 'src'), mutant.createRuntime);
   assert.notDeepEqual(job.result, { by: 'b' }, 'the mutant must let the stale write land, proving the test detects it');
