@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFileSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
@@ -107,7 +107,8 @@ export class PrWatch {
   /** One pass; the first ever only records what exists, so a fresh install posts nothing. */
   async poll(): Promise<number> {
     const owner = this.owner();
-    if (!owner) return 0;
+    // Posts go through the assistant service; a profile without it would spend a GitHub call every pass for nothing.
+    if (!owner || !existsSync(join(owner.dir, 'assistant.json'))) return 0;
     const now = this.now();
     const since = new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
     const out = JSON.parse(await this.gh(['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=is:pr author:@me updated:>=${since}`])) as { data?: { search?: { nodes?: PrNode[] } } };

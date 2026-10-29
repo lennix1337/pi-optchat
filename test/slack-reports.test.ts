@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -67,8 +67,19 @@ test('PR changes: CI green/red, merged, closed, and only freshly opened PRs anno
   assert.equal(prChange('OPEN:SUCCESS', { state: 'OPEN', ci: 'SUCCESS', createdAt: 0 }, now), undefined);
 });
 
+test('a profile without the assistant never asks GitHub: nothing could be posted', async () => {
+  const dir = temp();
+  try {
+    const calls: string[][] = [];
+    const watch = new PrWatch(() => ({ dir, name: 'p' }), recorder().post, async args => { calls.push(args); return '{}'; });
+    assert.equal(await watch.poll(), 0);
+    assert.deepEqual(calls, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('the PR watch records silently on its first pass, then posts changes in each PR thread', async () => {
   const dir = temp();
+  writeFileSync(join(dir, 'assistant.json'), '{}');
   try {
     const node = (state: string, ci: string, repo = 'pi-optchat') => ({ number: 13, title: 'Inbox', url: `https://github.com/lennix1337/${repo}/pull/13`, state, isDraft: false, createdAt: '2020-01-01T00:00:00Z',
       repository: { name: repo, nameWithOwner: `lennix1337/${repo}` }, commits: { nodes: [{ commit: { statusCheckRollup: { state: ci } } }] } });
