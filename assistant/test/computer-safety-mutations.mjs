@@ -9,7 +9,7 @@ const assistant = fileURLToPath(new URL('../', import.meta.url));
 const cases = [
   ['removal-failure', 'removal.ts', "? 'removed' : 'failed'", "? 'removed' : 'removed'"],
   ['inspection-is-absence', 'removal.ts', "return names && !names.has(name) ? 'absent' : 'failed';", "return 'absent';"],
-  ['foreign-owner', 'removal.ts', "if (actualOwner !== owner) return 'foreign';", ''],
+  ['foreign-owner', 'removal.ts', "if (actualOwner !== owner || (expectedId", "if (false || (expectedId"],
   ['erase-failed-record', 'removal.ts', "if (result === 'removed' || result === 'absent') cleared.push(name);", "if (result !== 'foreign') cleared.push(name);"],
   ['destroy-uncertain-record', 'manager.ts', "if (result === 'failed') fail('computer_remove_failed');", ''],
   ['reserved-ipv4', 'network.ts', 'return blockedIpv4.some(([prefix, bits]) => (value >>> (32 - bits)) === (prefix >>> (32 - bits)));', 'return false;'],

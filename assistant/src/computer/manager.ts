@@ -4,6 +4,7 @@ import { boundedInteger } from '../limits.ts';
 import { allRows } from '../store/rows.ts';
 import { dockerCli, type DockerRunner } from './docker.ts';
 import { cleanupComputers, removeComputer } from './removal.ts';
+import { STOP_SESSION } from './takeover-session.ts';
 
 export type ComputerState = 'ready' | 'paused' | 'human' | 'graphical' | 'transition' | 'removing';
 export type Computer = { id: string; profileId: string; agentId: string; container: string; state: ComputerState; expiresAt: number };
@@ -14,6 +15,7 @@ export type ComputerOptions = {
 };
 
 const OWNER_LABEL = 'optchat.computer.owner';
+const OWNER_ID_FORMAT = `{{.Id}}|{{index .Config.Labels "${OWNER_LABEL}"}}`;
 const NAME = /^[A-Za-z0-9._-]{1,64}$/;
 const MAX_OUTPUT = 64 * 1024;
 type Row = { id: string; profile: string; agent: string; container: string; state: ComputerState; expires: number };
@@ -187,11 +189,11 @@ export class ComputerManager {
     const hash = createHash('sha256').update(JSON.stringify([this.options.owner, profileId, agentId])).digest('hex').slice(0, 20);
     const row: Row = { id: `cmp_${hash}`, profile: profileId, agent: agentId, container: `optchat-computer-${hash}`, state: 'transition', expires: this.now() + this.options.ttlMs };
     this.db.exec('BEGIN IMMEDIATE');
-    let token: string;
+    let token: string, existing: { state: ComputerState } | undefined;
     try {
       if (this.db.prepare('SELECT token FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner)) fail('computer_cleanup_active');
       token = this.reserveLifecycle(row.id);
-      const existing = this.db.prepare('SELECT state FROM computers WHERE id = ? AND owner = ?').get(row.id, this.options.owner) as { state: ComputerState } | undefined;
+      existing = this.db.prepare('SELECT state FROM computers WHERE id = ? AND owner = ?').get(row.id, this.options.owner) as { state: ComputerState } | undefined;
       if (existing && existing.state !== 'ready') fail('computer_transition');
       if (existing) {
         this.db.prepare('UPDATE computers SET state = ?, expires = ? WHERE id = ? AND owner = ?').run('transition', row.expires, row.id, this.options.owner);
@@ -200,7 +202,13 @@ export class ComputerManager {
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    await this.ensureContainer(row);
+    try { await this.ensureContainer(row); }
+    catch (error) {
+      // Only failures that prove Docker created nothing (no image, a foreign container holds the name) give the row back;
+      // any other failure keeps it fenced because a container may still appear.
+      if (error instanceof Error && ['computer_image_missing', 'computer_conflict'].includes(error.message)) this.abandonCreate(row.id, token, !existing);
+      throw error;
+    }
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const completed = this.db.prepare('UPDATE computers SET state = ? WHERE id = ? AND owner = ? AND state = ? AND EXISTS (SELECT 1 FROM computer_lifecycle WHERE id = ? AND token = ?)').run('ready', row.id, this.options.owner, 'transition', row.id, token);
@@ -209,6 +217,18 @@ export class ComputerManager {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.view(this.row(row.id));
+  }
+
+  /** Undoes a create that provably started nothing: removes the row it inserted, or restores the one it found. */
+  private abandonCreate(id: string, token: string, inserted: boolean): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const guard = 'EXISTS (SELECT 1 FROM computer_lifecycle WHERE id = ? AND token = ?)';
+      if (inserted) this.db.prepare(`DELETE FROM computers WHERE id = ? AND owner = ? AND state = 'transition' AND ${guard}`).run(id, this.options.owner, id, token);
+      else this.db.prepare(`UPDATE computers SET state = 'ready' WHERE id = ? AND owner = ? AND state = 'transition' AND ${guard}`).run(id, this.options.owner, id, token);
+      this.releaseLifecycle(id, token);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   /** Starts the row's container, or reuses and restarts one this owner already has under that name. */
@@ -342,33 +362,52 @@ export class ComputerManager {
     this.save(row, 'ready', this.now() + this.options.ttlMs);
   }
 
-  /** Reserves ownership before starting a fresh, human-only container. */
+  /**
+   * Fences the agent out of its own computer so the operator can use the very same container (and therefore the
+   * same browser process, cookies and profile) through the takeover viewer. Nothing is created, copied or removed:
+   * the container is identified by its immutable ID and every later step addresses exactly that ID.
+   */
   async beginGraphical(id: string, authority: object): Promise<{ generation: string; target: string }> {
     this.authorize(authority);
     const generation = randomUUID();
-    const name = `optchat-human-${generation}`;
     this.db.exec('BEGIN IMMEDIATE');
     let row: Row;
     try {
       row = this.row(id);
       if (row.state !== 'ready') fail('computer_not_ready');
       if (this.db.prepare('SELECT token FROM computer_operations WHERE id = ? LIMIT 1').get(id)) fail('computer_operations_active');
-      this.db.prepare('INSERT INTO computer_graphical (id, generation, container, phase) VALUES (?, ?, ?, ?)').run(id, generation, name, 'uncertain');
+      this.db.prepare('INSERT INTO computer_graphical (id, generation, container, phase) VALUES (?, ?, ?, ?)').run(id, generation, row.container, 'uncertain');
       this.save(row, 'graphical');
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    const run = await this.docker(this.runArgs({ ...row, container: name }), { timeoutMs: 60_000 });
-    if (run.uncertain || (run.code === 0 && !/^[a-f0-9]{64}$/.test(run.stdout.trim()))) fail('computer_graphical_start_uncertain');
-    this.db.prepare('UPDATE computer_graphical SET phase = ?, target = ? WHERE id = ? AND generation = ?').run('settled', run.code === 0 ? run.stdout.trim() : null, id, generation);
-    if (run.code !== 0) {
-      try { await this.endGraphical(id, generation, authority); }
-      catch (cleanup) { throw new Error('computer_graphical_cleanup_uncertain', { cause: cleanup }); }
+    const inspected = await this.docker(['inspect', '--type', 'container', '--format', OWNER_ID_FORMAT, row.container]);
+    const [target, owner] = inspected.stdout.trim().split('|');
+    if (inspected.code !== 0 || inspected.uncertain || !/^[a-f0-9]{64}$/.test(target ?? '') || owner !== this.options.owner) {
+      // Only a read-only inspection ran; the container was never touched, so the agent can be given it back.
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.prepare('DELETE FROM computer_graphical WHERE id = ? AND generation = ?').run(id, generation);
+        this.db.prepare('UPDATE computers SET state = ? WHERE id = ? AND owner = ? AND state = ?').run('ready', id, this.options.owner, 'graphical');
+        this.db.exec('COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       fail('computer_graphical_start_failed');
     }
-    return { generation, target: run.stdout.trim() };
+    this.db.prepare('UPDATE computer_graphical SET phase = ?, target = ? WHERE id = ? AND generation = ?').run('settled', target!, id, generation);
+    return { generation, target: target! };
   }
 
-  /** Removes only the generation's unique human container before restoring agent access. */
+  /** Stops only the takeover viewer in the computer; true once it is provably not running (or the container is gone). */
+  private async stopViewer(target: string): Promise<boolean> {
+    const stop = await this.docker(['exec', '--user', '1000:1000', target, 'sh', '-c', STOP_SESSION]);
+    if (stop.code === 0 && !stop.uncertain) return true;
+    const state = await this.docker(['inspect', '--type', 'container', '--format', '{{.State.Running}}', target]);
+    if (state.uncertain) return false;
+    if (state.code === 0) return state.stdout.trim() === 'false';
+    const ids = await this.docker(['ps', '--all', '--no-trunc', '--format', '{{.ID}}']);
+    return ids.code === 0 && !ids.uncertain && !ids.stdout.split(/\r?\n/).includes(target);
+  }
+
+  /** Stops the viewer and hands the same, still-running computer back to the agent. Safe to retry after a failure. */
   async endGraphical(id: string, generation: string, authority: object): Promise<void> {
     this.authorize(authority);
     this.db.exec('BEGIN IMMEDIATE');
@@ -376,14 +415,15 @@ export class ComputerManager {
     try {
       const found = this.db.prepare('SELECT generation, container, phase, target FROM computer_graphical WHERE id = ?').get(id) as typeof entry | undefined;
       if (!found || found.generation !== generation || this.row(id).state !== 'graphical') fail('computer_graphical_stale');
-      if (found.phase !== 'settled') fail('computer_graphical_start_uncertain');
       entry = found;
       token = this.reserveLifecycle(id);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    const ownerRow = this.row(id);
-    const result = await removeComputer(this.docker, this.options.owner, entry.container, true, entry.target ?? undefined, entry.target ? { profile: ownerRow.profile, agent: ownerRow.agent } : undefined);
-    if (result === 'foreign' || result === 'failed') fail('computer_graphical_cleanup_uncertain');
+    // Without a recorded target the viewer was never started, so there is nothing to stop.
+    if (entry.target && !(await this.stopViewer(entry.target))) {
+      this.releaseLifecycle(id, token); // stopping is idempotent: a later call may try again, and the agent stays fenced meanwhile
+      fail('computer_graphical_cleanup_uncertain');
+    }
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const removed = this.db.prepare('DELETE FROM computer_graphical WHERE id = ? AND generation = ? AND EXISTS (SELECT 1 FROM computer_lifecycle WHERE id = ? AND token = ?)').run(id, generation, id, token);

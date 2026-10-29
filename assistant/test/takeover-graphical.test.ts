@@ -8,7 +8,7 @@ import { connect } from 'node:net';
 import { ComputerManager } from '../src/computer/manager.ts';
 import { beginGraphicalTakeover } from '../src/computer/graphical-takeover.ts';
 
-test('isolated graphical fixture serves owner and destroys the computer on handback', async () => {
+test('isolated graphical fixture serves owner and returns the same computer on handback', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'graphical-takeover-'));
   const authority = {};
   const manager = new ComputerManager({ databasePath: join(dir, 'state.sqlite'), owner: `demo-${Date.now()}`, image: 'optchat-computer-takeover:local', operatorAuthority: authority });

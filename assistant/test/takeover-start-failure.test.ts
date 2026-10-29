@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { ComputerManager } from '../src/computer/manager.ts';
 import { beginGraphicalTakeover } from '../src/computer/graphical-takeover.ts';
 
-test('failed graphical startup cleans human container before restoring agent state', async () => {
+test('failed graphical startup restores agent access and leaves the agent container untouched', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'takeover-start-'));
   const authority = {};
   const manager = new ComputerManager({ databasePath: join(dir, 'db'), owner: `start-${Date.now()}`, image: 'optchat-computer-browser:1', operatorAuthority: authority });

@@ -13,7 +13,7 @@ function fixture() {
   const containers = new Map<string, Entry>();
   const failures = new Set<string>();
   const calls: string[][] = [];
-  const hold: { rm?: Promise<'completed'>; entered?: () => void } = {};
+  const hold: { rm?: Promise<'completed'>; entered?: () => void; inspect?: Promise<void> } = {};
   const find = (ref: string) => [...containers].find(([name, entry]) => name === ref || entry.id === ref);
   const docker: DockerRunner = async args => {
     calls.push([...args]);
@@ -35,7 +35,11 @@ function fixture() {
       if (!found) return failure;
       const [, c] = found;
       const format = args[args.indexOf('--format') + 1];
-      if (format === OWNER_ID_FORMAT) return ok(`${c.id}|${c.owner}`);
+      if (format === OWNER_ID_FORMAT) {
+        const wait = hold.inspect; hold.inspect = undefined; hold.entered?.();
+        if (wait) await wait;
+        return ok(`${c.id}|${c.owner}`);
+      }
       if (format === '{{.Id}}|{{.State.Status}}') return ok(`${c.id}|${c.status}`);
       return ok(`${c.owner}|${c.status}`);
     }
@@ -50,7 +54,7 @@ function fixture() {
     throw new Error(`unexpected ${args[0]}`);
   };
   const manager = new ComputerManager({ databasePath: ':memory:', owner: 'owner', image: 'image', operatorAuthority: {}, docker });
-  return { manager, containers, failures, calls, hold };
+  return { manager, containers, failures, calls, hold, docker };
 }
 
 test('a failed destroy can be retried once inspecting its immutable ID shows the container is not being removed', async () => {
@@ -107,6 +111,22 @@ test('an overlapping destroy is refused while the first still holds its reservat
   } finally { f.manager.close(); }
 });
 
+test('a destroy that has not yet learned the container ID still holds its reservation', async () => {
+  const f = fixture();
+  try {
+    const a = await f.manager.create('p', 'a');
+    let release!: () => void, entered!: () => void;
+    const reached = new Promise<void>(resolve => { entered = resolve; });
+    f.hold.inspect = new Promise<void>(resolve => { release = resolve; }); f.hold.entered = entered;
+    const first = f.manager.destroy(a.id); await reached; f.hold.entered = undefined;
+    await assert.rejects(f.manager.destroy(a.id), /computer_transition/);
+    await assert.rejects(f.manager.cleanup(), /computer_transition/);
+    release();
+    await first;
+    assert.deepEqual(f.manager.list(), []);
+  } finally { f.manager.close(); }
+});
+
 test('a failed owner cleanup can be retried, but not while another cleanup is in flight', async () => {
   const f = fixture();
   try {
@@ -147,4 +167,17 @@ test('a second cleanup is refused while the first holds the owner reservation wi
     assert.equal(await first, 0);
     assert.equal(await b.cleanup(), 0);
   } finally { a.close(); b.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a create that provably started nothing gives its row back so the next create can succeed', async () => {
+  const f = fixture();
+  let imagePresent = false;
+  const manager = new ComputerManager({ databasePath: ':memory:', owner: 'owner', image: 'image', operatorAuthority: {},
+    docker: (args, options) => args[0] === 'run' && !imagePresent ? Promise.resolve({ code: 125, stdout: '', stderr: 'Unable to find image: No such image' }) : f.docker(args, options) });
+  try {
+    await assert.rejects(manager.create('p', 'a'), /computer_image_missing/);
+    assert.deepEqual(manager.list(), []);
+    imagePresent = true;
+    assert.equal((await manager.create('p', 'a')).state, 'ready');
+  } finally { manager.close(); f.manager.close(); }
 });
