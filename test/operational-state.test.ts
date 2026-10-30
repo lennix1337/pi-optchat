@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describeGrant, grantTargets, latestGrant, orderGrantFor, readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { describeGrant, grantTargets, latestGrant, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -195,4 +195,44 @@ test("the operator's typed order lifts an ask rule only for the action it names,
   assert.equal(lift('deploy'), undefined, 'a scope over every project is too broad to lift an ask');
   updateOperationalState(file, order(said['4'], '4', 'deploy', 'C:/projetos/dentai-mono'));
   assert.match(lift('deploy')!, /record op_/);
+}));
+
+test('scope matching ignores separator style, drive case and the Git Bash spelling of a path', () => {
+  const scope = 'c:/projetos/dentai-mono';
+  for (const target of ['C:\\projetos\\dentai-mono', 'C:\\\\projetos\\\\dentai-mono', '/c/projetos/dentai-mono', 'C:/Projetos/Dentai-Mono/', 'c:/projetos//dentai-mono', 'c:/projetos/dentai-mono/worktrees/x'])
+    assert.equal(scopeCovers(scope, target), true, target);
+  for (const target of ['c:/projetos/dentai-monox', 'c:/projetos/dentai', 'c:/projetos'])
+    assert.equal(scopeCovers(scope, target), false, target);
+  assert.equal(scopeCovers('C:\\projetos\\dentai-mono', 'c:/projetos/dentai-mono'), true, 'a backslash scope');
+  assert.equal(scopeCovers('/c/projetos/dentai-mono', 'c:/projetos/dentai-mono/x'), true, 'a Git Bash scope');
+});
+
+test('one typed order that names both the merge and the deploy lifts both; a later sentence that negates the deploy overrides it', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  const said: Record<string, string> = { '86853': 'pode fazer o merge e deploy', '86901': 'faz o merge mas não o deploy' };
+  const checkout = ['c:/projetos/dentai-mono', 'tecnologia-ai/dentai'];
+  const slugs = (folder: string) => folder === 'c:/projetos/dentai-mono' ? 'tecnologia-ai/dentai' : undefined;
+  const lift = (action: string, targets: string[] = checkout, at = Date.now()) =>
+    orderGrantFor(readOperationalState(file), { action, targets }, id => said[id], at, slugs);
+  // Recorded as the 2026-10-30 order was: one merge grant, quoting the message that also names the deploy.
+  updateOperationalState(file, { kind: 'authorization', text: said['86853'], sourceMessageId: '86853', grant: { action: 'merge', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
+  assert.match(lift('merge')!, /86853/);
+  assert.match(lift('deploy')!, /86853/, 'the deploy that same sentence names');
+  assert.equal(lift('publish'), undefined, 'an action the sentence never names');
+  assert.equal(lift('deploy', ['c:/projetos/pi-optchat', 'lennix1337/pi-optchat']), undefined, 'another repository');
+  updateOperationalState(file, { kind: 'authorization', text: said['86901'], sourceMessageId: '86901', grant: { action: 'merge', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
+  assert.match(lift('merge')!, /86901/);
+  assert.equal(lift('deploy'), undefined, '"não o deploy" in the latest order lifts no deploy');
+}));
+
+test('a folder grant lifts an order for the GitHub repo its checkout points at, from any working folder', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  const said: Record<string, string> = { '86853': 'pode fazer o merge e deploy' };
+  const slugs = (folder: string) => folder === 'c:/projetos/dentai-mono' ? 'tecnologia-ai/dentai' : undefined;
+  updateOperationalState(file, { kind: 'authorization', text: said['86853'], sourceMessageId: '86853', grant: { action: 'merge', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
+  const state = readOperationalState(file);
+  const lift = (targets: string[]) => orderGrantFor(state, { action: 'merge', targets }, id => said[id], Date.now(), slugs);
+  assert.match(lift(['c:/users/swluc', 'tecnologia-ai/dentai'])!, /86853/, 'gh pr merge --repo from another folder');
+  assert.equal(lift(['c:/users/swluc', 'lennix1337/dentai']), undefined, 'a same-named repository under another owner');
+  assert.equal(orderGrantFor(state, { action: 'merge', targets: ['c:/users/swluc', 'tecnologia-ai/dentai'] }, id => said[id], Date.now(), () => undefined), undefined, 'no checkout, no slug to match');
 }));

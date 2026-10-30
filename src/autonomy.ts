@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { record } from './cache.ts';
 import { ACTIONS, classifyEffects as classify, type Action, type Effect, type Repo } from './effect-classifier.ts';
+import { parseWhenChanged } from './mtime-cache.ts';
 
 export { ACTIONS, productionWriteHost, segments, normalPath, type Action, type Effect, type Repo } from './effect-classifier.ts';
 
@@ -39,16 +40,10 @@ export function parseContract(value: unknown): Contract {
   return { version: 1, default: fallback, rules };
 }
 
-const cache = new Map<string, { mtime: number; contract: Contract }>();
+const cache = new Map<string, { mtime: number; value: Contract }>();
 /** The profile's contract, re-read when the file changes; undefined when there is none. Throws on an invalid file. */
 export function loadContract(dir: string): Contract | undefined {
-  const file = join(dir, 'autonomy.json');
-  if (!existsSync(file)) return undefined;
-  const mtime = statSync(file).mtimeMs, hit = cache.get(file);
-  if (hit?.mtime === mtime) return hit.contract;
-  const contract = parseContract(JSON.parse(readFileSync(file, 'utf8')));
-  cache.set(file, { mtime, contract });
-  return contract;
+  return parseWhenChanged(cache, join(dir, 'autonomy.json'), text => parseContract(JSON.parse(text)));
 }
 
 const glob = (pattern: string) => new RegExp(`^${pattern.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*')}$`);
