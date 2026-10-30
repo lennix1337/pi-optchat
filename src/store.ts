@@ -53,6 +53,10 @@ export const storeFor = (directory: string, warn: (s: string) => void = console.
 export function localDay(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
+/** A small JSON state file, or `fallback` when it is missing or unreadable (state that a later round rebuilds). */
+export function readJsonOr<T>(file: string, fallback: T): T {
+  try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as T : fallback; } catch { return fallback; }
+}
 export function atomicWrite(file: string, text: string | Uint8Array) {
   mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;

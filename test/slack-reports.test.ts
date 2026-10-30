@@ -88,13 +88,14 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
     const daily = new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 1, { now: () => now, request });
     assert.equal(await daily.maybePost(), false, 'before 07:00');
     writeFileSync(join(dir, 'pr-watch.json'), JSON.stringify({ 'o/pi-optchat#9': { sig: 'OPEN:FAILURE', seen: now, since: now - 5 * 3_600_000, title: 'Quebrado', url: 'https://github.com/o/pi-optchat/pull/9', channel: 'harness' } }));
+    writeFileSync(join(dir, 'pc-health.json'), JSON.stringify({ 'PC: disco C:': { failures: 0, down: false, since: now, ms: 0, detail: '122 GB livres de 1023 GB' } }));
     now += 2 * 60_000;
     assert.equal(await daily.maybePost(), true);
     assert.equal(await daily.maybePost(), false, 'once a day');
     assert.deepEqual(paths, ['/v1/briefing', '/v1/briefing POST', '/v1/tasks?limit=50'], "yesterday's briefing is refreshed first");
     const text = r.posts[0]!.text;
     assert.equal(r.posts[0]!.channel, null);
-    for (const part of ['#harness (1)', 'Corrigi o EPERM do teste', '1 aprovação(ões) pendente(s)', 'Pergunta minha: Qual conta usar?', 'Reunião 10h', 'VISITA 30/10', 'pessoal:mail partial', '*Pode dar problema hoje*', '❌ CI vermelha há 5 h: <https://github.com/o/pi-optchat/pull/9|pi-optchat#9> Quebrado'])
+    for (const part of ['#harness (1)', 'Corrigi o EPERM do teste', '1 aprovação(ões) pendente(s)', 'Pergunta minha: Qual conta usar?', 'Reunião 10h', 'VISITA 30/10', 'pessoal:mail partial', '*Pode dar problema hoje*', '*Este PC*\n\u2022 \u2705 PC: disco C: \u00b7 122 GB livres de 1023 GB', '❌ CI vermelha há 5 h: <https://github.com/o/pi-optchat/pull/9|pi-optchat#9> Quebrado'])
       assert.ok(text.includes(part), `missing ${part}`);
     assert.ok(!text.includes('newsletter') && !text.includes('Aprovação pendente'));
     now = new Date(2026, 9, 30, 12, 30).getTime();

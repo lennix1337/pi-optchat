@@ -27,9 +27,9 @@ function prRisk(p: PrOutlook, now: number): string | undefined {
 
 /**
  * What tends to go wrong today, from data already on disk (no model, no network): commitments due in the next 24 h,
- * PRs with red, hung, flaky or stalled CI, and production that is down. Overdue commitments are listed elsewhere.
+ * PRs with red, hung, flaky or stalled CI, production that is down and this PC's disk, memory or maintenance in trouble. Overdue commitments are listed elsewhere.
  */
-export function forecast({ commitments, prs, health, now }: { commitments: readonly Commitment[]; prs: readonly PrOutlook[]; health: HealthState; now: number }): string[] {
+export function forecast({ commitments, prs, health, pc = {}, now }: { commitments: readonly Commitment[]; prs: readonly PrOutlook[]; health: HealthState; pc?: HealthState; now: number }): string[] {
   const due = commitments
     .filter(c => !closed(c.status) && c.due && Date.parse(c.due) > now && Date.parse(c.due) - now <= 24 * HOUR)
     .sort((a, b) => a.due!.localeCompare(b.due!))
@@ -37,5 +37,6 @@ export function forecast({ commitments, prs, health, now }: { commitments: reado
   const pr = prs.map(p => prRisk(p, now)).filter((l): l is string => !!l);
   const down = Object.entries(health).filter(([, s]) => s.down)
     .map(([name, s]) => `🔴 ${name} fora desde ${brasiliaTime(s.since)} (${s.problem ?? 'sem resposta'}): investigar antes de qualquer deploy`);
-  return [...down, ...due, ...pr];
+  const machine = Object.entries(pc).filter(([, s]) => s.down).map(([name, s]) => `💾 ${name}: ${s.problem ?? 'com problema'} (desde ${brasiliaTime(s.since)})`);
+  return [...down, ...machine, ...due, ...pr];
 }
