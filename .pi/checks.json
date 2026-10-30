@@ -339,8 +339,8 @@
       "timeoutMs": 30000
     },
     "operation-safety": {
-      "description": "Hermetic recovery classifier, operation journal and native bash-hint regressions; no model calls",
-      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/operations.test.ts", "test/operation-diagnostics.test.ts", "test/bash-hints.test.ts", "test/summary-ab-guard.test.ts"],
+      "description": "Hermetic recovery classifier, operation journal, native bash-hint and pre-dispatch commit-hook regressions; no model calls",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/operations.test.ts", "test/operation-diagnostics.test.ts", "test/bash-hints.test.ts", "test/summary-ab-guard.test.ts", "test/commit-hook-guard.test.ts"],
       "timeoutMs": 120000,
       "onEdit": true,
       "watch": ["src", "test"]

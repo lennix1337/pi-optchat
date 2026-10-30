@@ -35,6 +35,7 @@ import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerForegroundWaitGuard } from './foreground-wait.ts';
+import { registerCommitHookGuard } from './commit-hook-guard.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadar, wakeText, wakeTurn } from './heartbeat.ts';
@@ -117,6 +118,8 @@ export default function optchat(pi: ExtensionAPI) {
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
   // First: a refused wait never ran, so it needs no approval and leaves no operation to journal.
   registerForegroundWaitGuard(pi);
+  // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
+  registerCommitHookGuard(pi);
   // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
   const approvals = registerEffectApprovals(pi, { advisor: (request, ctx) => {
     const profile = active;
