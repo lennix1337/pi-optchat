@@ -44,7 +44,7 @@ const MAX_TEXT = 400;
 const CLOSED_KEEP_MS = 14 * 86_400_000;
 export const STALE_MS = 24 * 3_600_000;
 const CONTEXT_MAX = 2_000;
-const closed = (s: CommitmentStatus) => s === 'done' || s === 'dropped';
+export const closed = (s: CommitmentStatus) => s === 'done' || s === 'dropped';
 const clip = (s: string, max = MAX_TEXT) => clean(s, max);
 
 export function readCommitments(dir: string): Commitment[] {

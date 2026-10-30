@@ -3,7 +3,8 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
-import { readCommitments, summaryLines } from './commitments.ts';
+import { readCommitments, summaryLines, type Commitment } from './commitments.ts';
+import { forecast, type PrOutlook } from './forecast.ts';
 import { healthLines, readHealth } from './prod-health.ts';
 import { projectOfRepo } from './projects.ts';
 import { atomicWrite } from './store.ts';
@@ -42,7 +43,20 @@ type Gh = (args: string[]) => Promise<string>;
 const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
 const PR_QUERY = `query($q:String!){search(query:$q,type:ISSUE,first:50){nodes{... on PullRequest{number title url state isDraft createdAt repository{name nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}`;
 type PrNode = { number: number; title: string; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; isDraft: boolean; createdAt: string; repository: { name: string; nameWithOwner: string }; commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] } };
-export type PrSeen = { sig: string; seen: number; title: string; url: string; channel: string };
+/** `since`: when `sig` was first seen; `flips`: how often CI went from green to red or back; `verdict`: the last green/red seen. */
+export type PrSeen = { sig: string; seen: number; title: string; url: string; channel: string; since?: number; flips?: number; verdict?: 'green' | 'red' };
+
+const VERDICT = new Set(['SUCCESS', 'FAILURE', 'ERROR']);
+/**
+ * The next record of a PR: `since` survives while its state and CI hold; `flips` counts changes of CI verdict, so
+ * green, pending, red is one flip (the pending run in between does not hide it).
+ */
+export function nextSeen(before: PrSeen | undefined, sig: string, now: number): Pick<PrSeen, 'since' | 'flips' | 'verdict'> {
+  const ci = sig.split(':')[1] ?? '';
+  const verdict = VERDICT.has(ci) ? (ci === 'SUCCESS' ? 'green' : 'red') : before?.verdict;
+  const flips = (before?.flips ?? 0) + (before?.verdict && verdict !== before.verdict ? 1 : 0);
+  return { since: before?.sig === sig ? before.since ?? now : now, flips, ...verdict ? { verdict } : {} };
+}
 const PRS = 'pr-watch.json';
 const PR_KEEP_MS = 14 * 86_400_000;
 
@@ -60,6 +74,9 @@ export function prChange(before: string | undefined, pr: { state: string; ci: st
   }
   return undefined;
 }
+
+/** The forecast's view of a recorded PR. */
+export const outlook = (p: PrSeen): PrOutlook => ({ title: p.title, url: p.url, ci: p.sig.split(':')[1] ?? 'NONE', since: p.since ?? p.seen, flips: p.flips ?? 0 });
 
 export class PrWatch {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly gh: Gh = defaultGh, private readonly now: () => number = Date.now) {}
@@ -88,7 +105,7 @@ export class PrWatch {
       const ci = pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? 'NONE';
       const sig = `${pr.state}:${ci}`;
       const change = known && prChange(known[key]?.sig, { state: pr.state, ci, createdAt: Date.parse(pr.createdAt) }, now);
-      next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel };
+      next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel, ...nextSeen(known?.[key], sig, now) };
       if (!change) continue;
       try { await this.post(`${change} · <${pr.url}|${pr.repository.name}#${pr.number}> ${one(pr.title, 120)}${pr.isDraft && pr.state === 'OPEN' ? ' (draft)' : ''}`, channel, `pr:${key}`); posted++; }
       catch { /* the next pass sees no change; a lost post is not resent */ }
@@ -109,8 +126,8 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[] };
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health }: SummaryInputs): string {
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; risks?: string[] };
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, risks }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const byChannel = new Map<string, string[]>();
   for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
@@ -123,6 +140,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
   const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
     ...(commitments?.waiting ?? []).map(t => `Pendência: ${one(t, 160)}`)];
   lines.push('', '*Esperando você*', ...(wait.length ? wait.map(w => `• ${w}`) : ['• Nada.']));
+  if (risks) lines.push('', '*Pode dar problema hoje*', ...(risks.length ? risks.slice(0, 10).map(r => `• ${one(r, 220)}`) : ['• Nada previsto.']));
   if (health?.length) lines.push('', '*Produção agora*', ...health.map(h => `\u2022 ${h}`));
   if (commitments?.attention.length) lines.push('', `*Compromissos meus atrasados ou parados (${commitments.attention.length})*`, ...commitments.attention.slice(0, 8).map(t => `• ${one(t, 160)}`));
   if (prs.length) {
@@ -156,20 +174,36 @@ export class DailySummary {
     const today = localDate(now), file = join(owner.dir, DAILY);
     try { if ((JSON.parse(readFileSync(file, 'utf8')) as { date?: string }).date === today) return false; } catch { /* first day */ }
     atomicWrite(file, JSON.stringify({ date: today })); // Before posting: a crash mid-post must not post twice.
-    const request = this.options.request ?? defaultRequest;
-    let briefing: Briefing | undefined;
-    try {
-      briefing = await request(owner, '/v1/briefing') as Briefing;
-      if (briefing.localDate !== today) briefing = await request(owner, '/v1/briefing', {}, 120_000) as Briefing;
-    } catch { briefing = undefined; }
-    let waiting: string[] = [];
-    try { waiting = ((await request(owner, '/v1/tasks?limit=50')) as { tasks: { status: string; title: string }[] }).tasks.filter(t => t.status === 'needs_input').map(t => t.title); }
-    catch { /* the panel is optional */ }
-    let commitments: SummaryInputs['commitments'];
-    try { commitments = summaryLines(readCommitments(owner.dir), now); } catch { commitments = undefined; }
-    await this.post(composeSummary({ day: readDay(owner.dir, now - 86_400_000), waiting, prs: this.prs.open(owner.dir), briefing, approvals: this.approvals(), commitments, health: healthLines(readHealth(owner.dir)) }), null);
+    const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
+    await this.post(composeSummary({ ...remote, ...localInputs(owner.dir, now, this.prs.open(owner.dir)), approvals: this.approvals() }), null);
     return true;
   }
+}
+
+/** What the assistant service knows: today's Google briefing and the panel's questions. Both are optional. */
+async function assistantInputs(owner: ReportOwner, today: string, request: Request): Promise<Pick<SummaryInputs, 'briefing' | 'waiting'>> {
+  let briefing: Briefing | undefined;
+  try {
+    briefing = await request(owner, '/v1/briefing') as Briefing;
+    if (briefing.localDate !== today) briefing = await request(owner, '/v1/briefing', {}, 120_000) as Briefing;
+  } catch { briefing = undefined; }
+  let waiting: string[] = [];
+  try { waiting = ((await request(owner, '/v1/tasks?limit=50')) as { tasks: { status: string; title: string }[] }).tasks.filter(t => t.status === 'needs_input').map(t => t.title); }
+  catch { /* the panel is optional */ }
+  return { briefing, waiting };
+}
+
+/**
+ * What this profile recorded on disk (the day's reports, commitments, production health, PRs) and the forecast drawn
+ * from it. A new sense adds its section here.
+ */
+export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<SummaryInputs, 'briefing' | 'waiting' | 'approvals'> {
+  let items: Commitment[] = [];
+  let commitments: SummaryInputs['commitments'];
+  try { items = readCommitments(dir); commitments = summaryLines(items, now); } catch { commitments = undefined; }
+  const health = readHealth(dir);
+  const risks = forecast({ commitments: items, prs: prs.map(outlook), health, now });
+  return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), risks };
 }
 
 /** Timers for the PR watch (every 3 min) and the morning summary (checked every minute), per session. */
