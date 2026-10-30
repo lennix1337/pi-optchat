@@ -5,7 +5,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
 import { readCommitments, summaryLines, type Commitment } from './commitments.ts';
 import { forecast, type PrOutlook } from './forecast.ts';
-import { healthLines, readHealth } from './prod-health.ts';
+import { healthLines, PC_FILE, readHealth } from './prod-health.ts';
 import { projectOfRepo } from './projects.ts';
 import { atomicWrite } from './store.ts';
 
@@ -126,8 +126,8 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; risks?: string[] };
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, risks }: SummaryInputs): string {
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; risks?: string[] };
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, risks }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const byChannel = new Map<string, string[]>();
   for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
@@ -142,6 +142,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
   lines.push('', '*Esperando você*', ...(wait.length ? wait.map(w => `• ${w}`) : ['• Nada.']));
   if (risks) lines.push('', '*Pode dar problema hoje*', ...(risks.length ? risks.slice(0, 10).map(r => `• ${one(r, 220)}`) : ['• Nada previsto.']));
   if (health?.length) lines.push('', '*Produção agora*', ...health.map(h => `\u2022 ${h}`));
+  if (pc?.length) lines.push('', '*Este PC*', ...pc.map(h => `\u2022 ${h}`));
   if (commitments?.attention.length) lines.push('', `*Compromissos meus atrasados ou parados (${commitments.attention.length})*`, ...commitments.attention.slice(0, 8).map(t => `• ${one(t, 160)}`));
   if (prs.length) {
     lines.push('', `*PRs abertos (${prs.length})*`);
@@ -201,9 +202,9 @@ export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<Summa
   let items: Commitment[] = [];
   let commitments: SummaryInputs['commitments'];
   try { items = readCommitments(dir); commitments = summaryLines(items, now); } catch { commitments = undefined; }
-  const health = readHealth(dir);
-  const risks = forecast({ commitments: items, prs: prs.map(outlook), health, now });
-  return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), risks };
+  const health = readHealth(dir), pc = readHealth(dir, PC_FILE);
+  const risks = forecast({ commitments: items, prs: prs.map(outlook), health, pc, now });
+  return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks };
 }
 
 /** Timers for the PR watch (every 3 min) and the morning summary (checked every minute), per session. */
