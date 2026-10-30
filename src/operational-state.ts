@@ -305,7 +305,9 @@ const REPO_SLUG = /^[\w.-]+\/[\w.-]+$/;
 export function grantCovers(scope: string, target: string, slugOf: FolderSlug = checkoutSlug) {
   if (scopeCovers(scope, target)) return true;
   const folder = matchPath(scope);
-  return REPO_SLUG.test(target) && FOLDER_SCOPE.test(folder) && !folder.includes('*') && slugOf(folder) === target.toLowerCase();
+  // The checkout is read at the scope's own spelling: Linux paths are case-sensitive.
+  const checkout = (scope.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/\/+$/, '') || '/').replace(/^\/([a-z])(?=\/|$)/i, '$1:');
+  return REPO_SLUG.test(target) && FOLDER_SCOPE.test(folder) && !folder.includes('*') && slugOf(checkout) === target.toLowerCase();
 }
 
 const scopesOverlap = (a: string, b: string) => scopeCovers(a, b) || scopeCovers(b, a);

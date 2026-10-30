@@ -6,7 +6,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { checkoutSlug } from '../src/checkout-slug.ts';
 import type { Repo } from '../src/autonomy.ts';
-import { orderGrantFor, readOperationalState, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { grantCovers, orderGrantFor, readOperationalState, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 /** The live profile's autonomy.json as it stood on 2026-10-30, copied here; the operator's own file is never read or written. */
@@ -115,6 +115,13 @@ test('an order lifts nothing for another repository, a quote that differs from t
   writeFileSync(s.file, '{ "version": 1, "entries": [');
   waitsForOperator(await s.run('bash', MERGE));
 }));
+
+test('a folder scope is read with its own case (Linux paths are case-sensitive)', () => {
+  const seen: string[] = [];
+  const slugOf = (folder: string) => { seen.push(folder); return folder === 'C:/Repos/DentAI-Mono' ? 'tecnologia-ai/dentai' : undefined; };
+  assert.equal(grantCovers('C:\\Repos\\DentAI-Mono\\', 'tecnologia-ai/dentai', slugOf), true, seen.join(', '));
+  assert.equal(grantCovers('/Tmp/Repo-AbC', 'Tecnologia-AI/DentAI', folder => folder === '/Tmp/Repo-AbC' ? 'tecnologia-ai/dentai' : undefined), true);
+});
 
 test("a checkout whose origin is the repository lifts its order for that repository from any folder, read from the checkout's own .git/config", () => withTempDir('optchat-order-lift-', async directory => {
   const checkout = join(directory, 'dentai-mono');
