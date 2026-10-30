@@ -227,6 +227,10 @@ test('another extension\'s shown custom message becomes a user message tagged wi
   assert.deepEqual(custom('screenshot', [{ type: 'text', text: 'Screenshot attached.' }, image]), { role: 'user', content: [{ type: 'text', text: '[screenshot] Screenshot attached.' }, image], timestamp: 1 });
   assert.deepEqual(custom('screenshot', [image]), { role: 'user', content: [{ type: 'text', text: '[screenshot]' }, image], timestamp: 1 });
   assert.deepEqual(custom(REPORT_TYPE, '[8964a512] Done.'), { role: 'user', content: '[8964a512] Done.', timestamp: 1 });
+  // A message that already names its type ("[gitwatch] owner/repo \u00b7 14:23") is not tagged twice.
+  assert.deepEqual(custom('gitwatch', '[gitwatch] o/r \u00b7 14:23\n#28 merged'), { role: 'user', content: '[gitwatch] o/r \u00b7 14:23\n#28 merged', timestamp: 1 });
+  assert.deepEqual(custom('gitwatch', [{ type: 'text', text: '[gitwatch] o/r' }]), { role: 'user', content: [{ type: 'text', text: '[gitwatch] o/r' }], timestamp: 1 });
+  assert.deepEqual(custom('gitwatch', '[gitwatchers] x'), { role: 'user', content: '[gitwatch] [gitwatchers] x', timestamp: 1 }, 'only the exact tag counts');
   assert.deepEqual(custom('plan-mode-context', '[PLAN MODE ACTIVE]', false), { role: 'custom', customType: 'plan-mode-context', content: '[PLAN MODE ACTIVE]', display: false, timestamp: 1 });
 });
 
