@@ -4,6 +4,7 @@ import { registerSlackBridge } from './slack-bridge.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { logSent, registerSlackReports } from './slack-reports.ts';
+import { registerProdHealth } from './prod-health.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
@@ -593,6 +594,8 @@ export default function optchat(pi: ExtensionAPI) {
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } });
   // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
   registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
+  // Production health probes every 5 min, read-only: an outage posts to #dentai and wakes the agent once (src/prod-health.ts).
+  registerProdHealth(pi, slackOwner, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
   // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
   const work = registerWorkTracker(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
   const unwatchWork: (() => void)[] = [];
