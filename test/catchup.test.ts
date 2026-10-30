@@ -4,12 +4,18 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { withTempDir } from './support.ts';
 import type { Entry } from '../src/memory.ts';
-import { CatchupWindows, buildCatchup, catchupPage, renderCatchup } from '../src/catchup.ts';
+import { CatchupWindows, buildCatchup, catchupPage, catchupTime, renderCatchup } from '../src/catchup.ts';
 
 const entry = (i: number, kind: Entry['kind'], text: string): Entry => ({ i, kind, text, size: text.length, date: new Date(Date.UTC(2026, 9, 27, 0, i)).toISOString() });
 const span = { id: '0-8', from: 0, to: 8, start: '2026-10-26T23:00:00.000Z', end: '2026-10-27T09:00:00.000Z', provenance: 'interactive' as const };
 const pr = (state: string) => JSON.stringify({ url: 'https://github.com/example/repo/pull/3', state, headRefOid: 'abcdef0123456', statusCheckRollup: [] });
 const entries = [entry(0, 'user', 'work while away'), entry(1, 'work', '[OptChat heartbeat] wake'), entry(2, 'tool', 'bash {"command":"gh pr view 3"}'), entry(3, 'echo', `bash: ${pr('OPEN')}`), entry(4, 'talk', 'Fixed fixture, not deployed.'), entry(5, 'work', '[OptChat heartbeat] next wake'), entry(6, 'echo', `codemode: Script completed\n==> text 1/1 <==\n${JSON.stringify({ output: pr('OPEN'), exit_code: 0 })}`), entry(7, 'talk', 'More tests; same PR.')];
+
+test('receipt dates use Brasília rather than host timezone, including midnight and unavailable source dates', () => {
+  assert.equal(catchupTime('2026-10-30T03:00:00.000Z'), '30/10/2026, 00:00:00 (Brasília, UTC-3)');
+  assert.equal(catchupTime('2027-01-01T01:00:00.000Z'), '31/12/2026, 22:00:00 (Brasília, UTC-3)');
+  assert.equal(catchupTime('unknown'), 'Horário indisponível');
+});
 
 test('two human arrivals freeze the whole cross-midnight window; reads/restart do not advance it', () => withTempDir('catchup-', dir => {
   const windows = new CatchupWindows(dir);

@@ -38,10 +38,13 @@ test('installed Pi SDK dispatches human/extension input, command and tool to the
     await runner.emitInput('return', undefined, 'interactive');
     const tool = runner.getToolDefinition('catchup_report')!;
     const receipt = await tool.execute('receipt', {}, undefined, undefined, runner.createToolContext('receipt', undefined));
-    assert.match(receipt.content[0].type === 'text' ? receipt.content[0].text : '', /1 wakes/);
+    const receiptText = receipt.content[0].type === 'text' ? receipt.content[0].text : '';
+    assert.match(receiptText, /1 wakes/);
+    assert.match(receiptText, /Brasília, UTC-3/);
     runner.setUIContext({ ...runner.getUIContext(), notify: text => notices.push(text) }, 'rpc');
     await runner.getCommand('catchup')!.handler('', runner.createCommandContext());
     assert.match(notices.at(-1)!, /1 wakes/);
+    assert.match(notices.at(-1)!, /Brasília, UTC-3/);
     const repeated = await tool.execute('again', {}, undefined, undefined, runner.createToolContext('again', undefined));
     assert.deepEqual(receipt.details, repeated.details);
     assert.equal(inference, 0);

@@ -108,6 +108,15 @@ export const preview = (text: string, max = 180) => {
 };
 export const catchupLiteral = (text: string) => text.replace(/[\\`*_{}\[\]<>!#|~]/g, '\\$&');
 const ref = (source: number) => `\`zoom(${source}, 1)\``;
+const receiptTime = new Intl.DateTimeFormat('pt-BR', {
+  timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'medium', hourCycle: 'h23',
+});
+
+/** Display only: source timestamps and machine-readable evidence remain in UTC. */
+export function catchupTime(at: string) {
+  const date = new Date(at);
+  return Number.isFinite(date.getTime()) ? `${receiptTime.format(date)} (Brasília, UTC-3)` : 'Horário indisponível';
+}
 
 /** A small decision-first summary. Every cut names its extent and exact follow-up. */
 export function renderCatchup(report: CatchupReport) {
@@ -116,7 +125,7 @@ export function renderCatchup(report: CatchupReport) {
   const allEvents = `/catchup range ${span.from} ${span.to} 0`;
   const lines = [
     `# Since your last message · ${span.id}`,
-    `${span.start} → ${span.end} (UTC) · ${span.provenance === 'interactive' ? 'recorded operator boundary' : 'explicit historical range; human provenance not recorded'}`,
+    `${catchupTime(span.start)} → ${catchupTime(span.end)} · ${span.provenance === 'interactive' ? 'recorded operator boundary' : 'explicit historical range; human provenance not recorded'}`,
     `${wakes.length} wakes · ${report.tools} tool calls · ${report.results} results · ${report.covered} original messages`, '',
     '## Your attention — observations, not permission',
     ...open.slice(0, 12).map(pr => `- **Review:** <${pr.url}> · checks **${pr.checks}** · ${ref(pr.source)}`),
@@ -130,7 +139,7 @@ export function renderCatchup(report: CatchupReport) {
     ...replies.length > 24 ? [`${replies.length - 24} older reports not shown; ${allEvents} for every source.`] : [],
     ...!replies.length ? ['- No completed text report recorded.'] : [], '',
     '## Wake timeline — every recorded wake in this interval',
-    ...wakes.slice(0, 24).map(wake => `- ${wake.at} · ${ref(wake.source)} · ${wake.reply === undefined ? 'no reply recorded' : `report ${ref(wake.reply)}`}`),
+    ...wakes.slice(0, 24).map(wake => `- ${catchupTime(wake.at)} · ${ref(wake.source)} · ${wake.reply === undefined ? 'no reply recorded' : `report ${ref(wake.reply)}`}`),
     ...wakes.length > 24 ? [`${wakes.length - 24} more wakes; ${allEvents} for all events.`] : [],
     ...!report.covered ? ['No activity recorded in this interval.'] : [],
     '', 'Scope: this OptChat profile only. Nested Code Mode calls are not individually counted. Unstructured/unfinished/background work may have no extracted outcome.',

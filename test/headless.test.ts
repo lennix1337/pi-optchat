@@ -103,7 +103,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
   };
   const bindings = () => manager.getEntries().flatMap(e => e.type === 'custom' && e.customType === 'optchat.profile' ? [e.data] : []);
   const close = async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); };
-  return { ask, bindings, close, errors, notes, sent, turns, dir, activeTools: () => session.getActiveToolNames(), compact: () => session.compact() };
+  return { ask, bindings, close, errors, notes, sent, turns, dir, messages: () => session.state.messages, activeTools: () => session.getActiveToolNames(), compact: () => session.compact() };
 }
 
 test('optchat-perf exposes actual SDK tool failures without another model request or error text', async () => {
@@ -364,6 +364,8 @@ function shellScript(kind: 'idle' | 'mid' | 'stop', ids: string[]) {
   const quick = `node -e "setTimeout(() => console.log('${kind}-done'), 500)"`;
   return (messages: Context['messages']): ScriptedCall | undefined => {
     const last = messages.at(-1), text = last ? textContent(last.content) : '';
+    if (kind === 'stop' && last?.role === 'user' && text.endsWith('shell stop diagnostic'))
+      return { name: 'shell_status', arguments: { id: ids[0] ?? '' } };
     if (last?.role === 'user' && text.endsWith(`shell probe ${kind}`))
       return { name: 'shell_start', arguments: { command: kind === 'stop' ? `node -e "setInterval(() => {}, 1000)"` : quick } };
     if (last?.role === 'toolResult' && last.toolName === 'shell_start') {
@@ -408,10 +410,24 @@ test('a shell stopped with shell_stop reports the stop once, not as a failure', 
   const ids: string[] = [], pi = await headless('rpc', { flag: 'work', connect: 'off', realTools: true, script: shellScript('stop', ids) });
   try {
     await pi.ask('shell probe stop');
+    assert.equal(ids.length, 1, 'shell_start returns one ID');
+    assert.match(ids[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, 'shell_start returned a valid ID');
+    const stopResult = pi.messages().find(message => message.role === 'toolResult' && message.toolName === 'shell_stop');
+    assert.ok(stopResult && stopResult.role === 'toolResult', 'shell_stop returned a tool result');
+    assert.equal(stopResult.isError, false, `shell_stop failed: ${textContent(stopResult.content).slice(0, 500)}`);
+    assert.match(textContent(stopResult.content), /Stop requested/);
     const marker = `[shell ${ids[0]}] `;
     await until(() => pi.turns.some(turn => turn.includes(marker)));
     const reported = pi.turns.filter(turn => turn.includes(marker));
-    assert.equal(reported.length, 1, 'the stop is reported in one model request');
+    let diagnostic = '';
+    if (reported.length !== 1) {
+      await pi.ask('shell stop diagnostic');
+      const status = pi.messages().findLast(message => message.role === 'toolResult' && message.toolName === 'shell_status');
+      const pendingPath = join(profilePath('work'), 'pending-reports.json');
+      const pending = existsSync(pendingPath) ? readFileSync(pendingPath, 'utf8').slice(0, 1000) : 'missing';
+      diagnostic = `; shell_status=${status?.role === 'toolResult' ? textContent(status.content).slice(0, 500) : 'missing'}; pending reports=${pending}; notes=${JSON.stringify(pi.notes.slice(-5)).slice(0, 1000)}; errors=${JSON.stringify(pi.errors).slice(0, 1000)}; marker requests after diagnostic=${pi.turns.filter(turn => turn.includes(marker)).length}`;
+    }
+    assert.equal(reported.length, 1, `the stop is reported in one model request${diagnostic}`);
     assert.equal(reported[0].split(marker).length - 1, 1, 'once');
     assert.match(reported[0], /\[shell [^\]]+\] stopped · ran /);
     assert.deepEqual(pi.errors, []);

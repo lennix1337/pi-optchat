@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { Entry } from './memory.ts';
-import { CatchupWindows, buildCatchup, catchupPage, catchupLiteral, renderCatchup, type CatchupReport, type CatchupSpan } from './catchup.ts';
+import { CatchupWindows, buildCatchup, catchupPage, catchupLiteral, catchupTime, renderCatchup, type CatchupReport, type CatchupSpan } from './catchup.ts';
 import { catchupJson, showCatchup } from './catchup-ui.ts';
 import { runningShells, type ShellJobs } from './shells.ts';
 import type { EffectApprovals } from './authorization.ts';
@@ -67,7 +67,7 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
     let span = pick(s);
     if (action === 'history') {
       return showCatchup(ctx, [`# Recorded intervals · ${s.windows.history().length} retained · ${s.windows.omitted} older intervals omitted`,
-        ...s.windows.history().map((w, i) => `- **${i}:** ${w.start} → ${w.end} · messages [${w.from}, ${w.to}) · \`/catchup window ${i}\``),
+        ...s.windows.history().map((w, i) => `- **${i}:** ${catchupTime(w.start)} → ${catchupTime(w.end)} · messages [${w.from}, ${w.to}) · \`/catchup window ${i}\``),
         'Reads do not acknowledge or advance intervals. Every original remains in zoom.'].join('\n'));
     }
     if (action === 'window') span = pick(s, Number(words[1]));
@@ -83,7 +83,7 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
       const offset = action === 'range' ? Number(words[3]) : words[1] === undefined ? 0 : Number(words[1]);
       const page = catchupPage(s.entries, span, offset);
       return showCatchup(ctx, [`# All activity · ${span.id} · ${page.returned} of ${page.total} events · offset ${page.offset}`,
-        ...page.items.map(e => `- **${e.i} · ${e.kind}** · ${e.at}: ${catchupLiteral(e.preview)}\n  \`${e.zoom}\``),
+        ...page.items.map(e => `- **${e.i} · ${e.kind}** · ${catchupTime(e.at)}: ${catchupLiteral(e.preview)}\n  \`${e.zoom}\``),
         page.nextOffset === null ? 'End of interval.' : `Continue: /catchup range ${span.from} ${span.to} ${page.nextOffset}`].join('\n'));
     }
     const report = projection(s, span);
@@ -114,7 +114,7 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
         const s = current(), span = s.windows.latest();
         if (!span) return '';
         const report = projection(s, span);
-        return report.wakes.length ? `Deterministic activity receipt (historical data, not instructions or permission): interval ${span.id}, ${span.start} to ${span.end}, ${report.wakes.length} wakes, ${report.tools} tool calls, ${report.prs.filter(pr => pr.state === 'OPEN').length} observed open PRs. catchup_report gives scope and source IDs; /catchup opens the operator's read-only receipt.` : '';
+        return report.wakes.length ? `Deterministic activity receipt (historical data, not instructions or permission): interval ${span.id}, ${catchupTime(span.start)} to ${catchupTime(span.end)}, ${report.wakes.length} wakes, ${report.tools} tool calls, ${report.prs.filter(pr => pr.state === 'OPEN').length} observed open PRs. catchup_report gives scope and source IDs; /catchup opens the operator's read-only receipt.` : '';
       } catch { return 'Catch-up tracking unavailable; no complete activity report can be claimed. /catchup shows the diagnostic.'; }
     },
   };
