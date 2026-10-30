@@ -6,6 +6,9 @@ export const RELOAD_ENTRY = 'optchat.self-reload';
 const COMMAND = 'optchat-self-reload';
 const CHECK = 'optchat:reload-check';
 const RESUME = 'optchat-reload-resume';
+/** pi-goal-x asks this before each goal checkpoint; a pending reload takes the next turn first (bounded by HOLD_MAX_MS). */
+export const GOAL_HOLD = 'pi-goal:continuation-hold';
+export const HOLD_MAX_MS = 60_000;
 // A disk checkpoint is not permission to resume after a crash or a later manual reload.
 const LEASES = Symbol.for('pi-optchat.self-reload-leases.v1');
 interface ReloadLease { completed: boolean; claimed?: boolean; resume?: () => void }
@@ -37,7 +40,16 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
   let commandSent = false;
   let live = true;
   let continuationStarted = false;
-  pi.on('session_shutdown', () => { live = false; });
+  let holding: { key: string; since: number } | undefined;
+  const unhold = pi.events.on(GOAL_HOLD, data => {
+    const t = pending;
+    if (!live || !t || !(t.state === 'requested' || t.state === 'reloading' || (t.state === 'resuming' && !continuationStarted))) return;
+    const key = `${t.id}:${t.state}`, now = Date.now();
+    if (holding?.key !== key) holding = { key, since: now };
+    // A step that never comes (a lost command or continuation) must not stall the goal for good.
+    if (now - holding.since <= HOLD_MAX_MS) (data as { hold(reason: string): void }).hold('OptChat self-reload pending');
+  });
+  pi.on('session_shutdown', () => { live = false; unhold(); });
   const write = (t: Ticket, state: Ticket['state']) => { const next = { ...t, state }; pi.appendEntry(RELOAD_ENTRY, next); pending = next; return next; };
   const sameOwner = (t: Ticket, ctx: ExtensionContext) => {
     if (t.profile !== owner()?.profile) return false;
@@ -80,7 +92,9 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     handler: async (token, ctx) => {
       const t = pending;
       if (!t || t.state !== 'requested' || token !== t.id || !sameOwner(t, ctx) || !commandSent) throw new Error('No matching live self-reload token. Use the self_reload tool.');
-      const reason = !ctx.isIdle() ? 'Agent is not idle.' : blocked(ctx);
+      // An automatic turn (a wake, a notice) got here first: retry when it settles. Operator input cancels through 'input'.
+      if (!ctx.isIdle()) { commandSent = false; return; }
+      const reason = blocked(ctx);
       if (reason) { cancel(t, ctx, reason); return; }
       try { await prepare(); }
       catch (error) { write(t, 'failed'); ctx.ui.notify(`Self reload checkpoint failed: ${String(error)}`, 'error'); return; }
