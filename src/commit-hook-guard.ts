@@ -45,7 +45,7 @@ function hookedCommitDir(words: string[], dir: string): string | undefined {
   if (!words.length || unquote(words[0]).split(/[/\\]/).at(-1)!.replace(/\.exe$/i, '').toLowerCase() !== 'git') return undefined;
   let at = 1, path = dir;
   while (at < words.length && words[at].startsWith('-')) {
-    if (words[at] === '-C' && words[at + 1] !== undefined) path = normalPath(words[++at], dir);
+    if (words[at] === '-C' && words[at + 1] !== undefined) path = normalPath(words[++at], dir, true);
     else if (words[at] === '-c') at++;
     at++;
   }
@@ -54,7 +54,8 @@ function hookedCommitDir(words: string[], dir: string): string | undefined {
 
 /** The active pre-commit hook a `git commit` in `command` would run from `cwd`, or undefined. */
 export function hookedCommit(command: string, cwd: string): string | undefined {
-  for (const { command: segment, dir } of segments(command, cwd)) {
+  // Case kept: the directory is opened, and Linux paths are case-sensitive.
+  for (const { command: segment, dir } of segments(command, cwd, true)) {
     const path = hookedCommitDir(commandWords(segment), dir);
     const hook = path === undefined ? undefined : activePreCommitHook(path);
     if (hook) return hook;

@@ -18,8 +18,11 @@ const modelClient = /\b(?:ModelRuntime|createAgentSession|completeSimple|streamS
 
 const unquote = (word: string) => word.replace(/^(['"])([^]*)\1$/, '$2');
 const home = () => (process.env.HOME ?? process.env.USERPROFILE ?? '~').replaceAll('\\', '/');
-/** Lowercase forward-slash path; Git Bash `/c/...` becomes `c:/...`; a relative path is resolved against `base`. */
-export function normalPath(path: string, base?: string) {
+/**
+ * Lowercase forward-slash path; Git Bash `/c/...` becomes `c:/...`; a relative path is resolved against `base`. With
+ * `keepCase` the case is kept, for callers that open the path on a case-sensitive filesystem.
+ */
+export function normalPath(path: string, base?: string, keepCase = false) {
   let p = unquote(path).replaceAll('\\', '/').replace(/^~(?=\/|$)/, home()).replace(/^\/([a-z])(?=\/|$)/i, '$1:');
   if (base !== undefined && !/^(?:[a-z]:|\/|\$|%)/i.test(p)) p = `${base.replace(/\/+$/, '')}/${p}`;
   const parts: string[] = [];
@@ -27,7 +30,8 @@ export function normalPath(path: string, base?: string) {
     if (part === '.' || (part === '' && parts.length)) continue;
     if (part === '..' && parts.length > 1) parts.pop(); else parts.push(part);
   }
-  return parts.join('/').toLowerCase().replace(/\/+$/, '');
+  const joined = parts.join('/');
+  return (keepCase ? joined : joined.toLowerCase()).replace(/\/+$/, '');
 }
 const tempDir = /^(?:[a-z]:\/(?:tmp|temp)(?:\/|$)|\/tmp(?:\/|$)|[a-z]:\/users\/[^/]+\/appdata\/local\/temp(?:\/|$)|\$\{?(?:tmp|temp|tmpdir)\b|%temp%)/;
 
@@ -40,16 +44,16 @@ function words(text: string) {
  * Command segments of shell text: split on `;`, `&&`, `||`, `|`, `&` and newlines outside quotes, with heredoc bodies
  * dropped (they are data). Each segment carries the directory the last `cd` moved to.
  */
-export function segments(text: string, cwd: string) {
+export function segments(text: string, cwd: string, keepCase = false) {
   const out: { command: string; dir: string }[] = [];
-  let dir = normalPath(cwd), current = '', quote = '', heredoc: string | undefined;
+  let dir = normalPath(cwd, undefined, keepCase), current = '', quote = '', heredoc: string | undefined;
   const lines = text.split('\n');
   const flush = () => {
     const command = current.trim();
     current = '';
     if (!command) return;
     const move = /^(?:cd|pushd|Set-Location)\s+("[^"]+"|'[^']+'|\S+)$/i.exec(command)?.[1];
-    if (move) dir = normalPath(move, dir); else out.push({ command, dir });
+    if (move) dir = normalPath(move, dir, keepCase); else out.push({ command, dir });
   };
   for (const line of lines) {
     if (heredoc !== undefined && !quote) { if (line.trim() === heredoc) heredoc = undefined; continue; }

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { MIN_COMMIT_HOOK_TIMEOUT_SECONDS, activePreCommitHook, hookedCommit, registerCommitHookGuard } from '../src/commit-hook-guard.ts';
+import { normalPath, segments } from '../src/effect-classifier.ts';
 import { removeDir } from './support.ts';
 
 // Session 2026-10-30: husky's pre-commit in dentai-mono runs the full api and web suites (minutes). A foreground
@@ -71,6 +72,14 @@ test('a commit in a repo with a hook is found, wherever the directory comes from
     assert.equal(hookedCommit(`git -C ${slash(f.plain)} commit -m x`, f.husky), undefined);
     assert.equal(hookedCommit('git commit -m x', join(f.root, 'not-a-repo')), undefined);
   } finally { removeDir(f.root); }
+});
+
+test('the commit directory keeps its case, so the hook is found on a case-sensitive filesystem', () => {
+  // CI on Linux: mkdtemp names like /tmp/commit-hook-AbC123 stop existing once lowercased.
+  assert.deepEqual(segments('cd /Tmp/Repo-AbC && git commit -m x', '/Base/Dir', true).map(s => s.dir), ['/Tmp/Repo-AbC']);
+  assert.deepEqual(segments('git commit -m x', '/Base/Dir', true).map(s => s.dir), ['/Base/Dir']);
+  assert.equal(normalPath('Sub/Dir', '/Base', true), '/Base/Sub/Dir');
+  assert.equal(normalPath('Sub/Dir', '/Base'), '/base/sub/dir', 'the classifier still compares lowercase');
 });
 
 test('the exemptions and non-commit commands do not count', () => {
