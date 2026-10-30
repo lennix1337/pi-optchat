@@ -313,6 +313,8 @@ test('reads and prose that name the contract file never wait for the operator', 
     `node -p "require('fs').appendFileSync('${f}','x')"`, `node scripts/edit.mjs ~/.optchat/${f}`,
   ]) assert.equal(bash(command), true, command);
   for (const tool of ['spawn', 'subagent', 'tell']) assert.equal(touchesContract({ tool, input: { tasks: [{ task: `generate the policy from ${f}` }] } }), false, tool);
+  assert.equal(touchesContract({ tool: 'slack_send', input: { channel: 'harness', text: `Efeitos irreversíveis esperam você mesmo sem regra no ${f}` } }), false, 'a report about the file');
+  assert.equal(touchesContract({ tool: 'commitments', input: { action: 'add', text: `propor mudança no ${f}`, source: '1' } }), false);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `const s = await tools.zoom({ id: 87018, n: 1, findText: '${f}' }); text(s);` } }), false);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.edit({ path: '~/.optchat/${f}', edits: [] })` } }), true);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cat ~/.optchat/${f}' })` } }), true, 'a nested shell call stays fail-closed');

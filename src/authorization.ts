@@ -74,7 +74,9 @@ const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerC
  * Tools whose arguments are prose: naming a file there cannot change it. A delegated agent's task text is prose too:
  * the child runs this same gate and can never approve its own contract change.
  */
-const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor', 'spawn', 'subagent', 'tell']);
+const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor', 'spawn', 'subagent', 'tell',
+  // Messages and records: a Slack report or a commitment that names the file only tells about it (false positive 2026-10-30).
+  'slack_send', 'commitments', 'update_goal']);
 const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
 /** Shell control words in front of a segment's command: `for f in a b` only lists words, `do`/`then` precede the real command. */
 const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
