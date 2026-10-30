@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { Type } from 'typebox';
 import { record as isRecord } from './cache.ts';
+import { checkoutSlug, type FolderSlug } from './checkout-slug.ts';
 import { normalPath, segments } from './effect-classifier.ts';
 import { atomicWrite } from './store.ts';
 import { stringEnum } from './string-enum.ts';
@@ -134,7 +135,8 @@ function validateGrant(value: unknown, where: string): Grant {
   assertKeys(value, ['action', 'scope', 'allow', 'until'], where);
   if (!GRANT_ACTIONS.includes(value.action as GrantAction)) fail(`${where}.action must be one of ${GRANT_ACTIONS.join(', ')}`);
   if (typeof value.allow !== 'boolean') fail(`${where}.allow must be a boolean`);
-  const scope = normalizeScope(boundedString(value.scope, `${where}.scope`, MAX_SCOPE_CHARS));
+  // Stored as written (slashes aside): a Linux checkout is case-sensitive, and matching lowercases on its own.
+  const scope = boundedString(value.scope, `${where}.scope`, MAX_SCOPE_CHARS).trim().replaceAll('\\', '/').replace(/\/+$/, '') || '/';
   const until = boundedString(value.until, `${where}.until`, 32);
   if (until !== 'done' && (!Number.isFinite(Date.parse(until)) || new Date(until).toISOString() !== until)) fail(`${where}.until must be 'done' or an ISO timestamp`);
   return { action: value.action as GrantAction, scope, allow: value.allow, until };
@@ -287,9 +289,26 @@ function scopeRegex(scope: string) {
   return new RegExp(`^${source}(?:/.*)?$`);
 }
 
+/** The spelling scopes and targets are matched in: repeated separators collapse and a Git Bash `/c/` drive reads as `c:/`. */
+function matchPath(path: string) {
+  return normalizeScope(path).replace(/\/{2,}/g, '/').replace(/^\/([a-z])(?=\/|$)/, '$1:');
+}
+
 /** True when `scope` (path or glob) covers `target`: the target is the scope's path or lies under it. */
 export function scopeCovers(scope: string, target: string) {
-  return scopeRegex(normalizeScope(scope)).test(normalizeScope(target));
+  return scopeRegex(matchPath(scope)).test(matchPath(target));
+}
+
+const FOLDER_SCOPE = /^(?:[a-z]:)?\//;
+const REPO_SLUG = /^[\w.-]+\/[\w.-]+$/;
+
+/** Whether a grant's scope covers a target: by path (`scopeCovers`), or, for a wildcard-free folder scope, by the GitHub repository that checkout's origin names, for effects that target a repository by slug (`gh pr merge --repo`). */
+export function grantCovers(scope: string, target: string, slugOf: FolderSlug = checkoutSlug) {
+  if (scopeCovers(scope, target)) return true;
+  const folder = matchPath(scope);
+  // The checkout is read at the scope's own spelling: Linux paths are case-sensitive.
+  const checkout = (scope.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/\/+$/, '') || '/').replace(/^\/([a-z])(?=\/|$)/i, '$1:');
+  return REPO_SLUG.test(target) && FOLDER_SCOPE.test(folder) && !folder.includes('*') && slugOf(checkout) === target.toLowerCase();
 }
 
 const scopesOverlap = (a: string, b: string) => scopeCovers(a, b) || scopeCovers(b, a);
@@ -306,7 +325,7 @@ export function activeGrants(state: OperationalState, now = Date.now()) {
 
 /** The latest active grant of `action` whose scope covers `target`; its `allow` says whether the action is permitted. Undefined when no record applies. */
 export function latestGrant(state: OperationalState, action: GrantAction, target: string, now = Date.now()) {
-  return activeGrants(state, now).filter(({ grant }) => grant.action === action && scopeCovers(grant.scope, target)).at(-1);
+  return activeGrants(state, now).filter(({ grant }) => grant.action === action && grantCovers(grant.scope, target)).at(-1);
 }
 
 /** Grant action a risk-class call needs, or undefined when no grant action applies. */
@@ -350,15 +369,20 @@ function namesAction(text: string, action: GrantAction) {
 const specificScope = (scope: string) => !scope.includes('*') && (/^[^/:]+\/[^/]+$/.test(scope) || scope.split('/').filter(Boolean).length >= 3);
 
 /**
- * The operator's typed order that lifts an `ask` rule for this effect, as a line for the log, or undefined. It needs the
- * latest active grant for the action covering a target, recorded within ORDER_GRANT_TTL_MS, on a specific scope, whose
- * text is still exactly the operator's message (`sourceText` reads the original) and names the action without negating
- * it, so a misread "sim" or a model-widened scope lifts nothing.
+ * The operator's typed order that lifts an `ask` rule for this effect, as a line for the log, or undefined. The latest live
+ * record that covers a target must be an allow on a specific scope, recorded within ORDER_GRANT_TTL_MS, whose text is still
+ * exactly the operator's message (`sourceText` reads the original) and names this action without negating it. The record
+ * either grants this action or is a merge/deploy/publish order that names it, so one typed sentence ("pode fazer o merge
+ * e deploy") covers each action it names. A misread "sim", a model-widened scope, or a later "não o deploy" lifts nothing.
+ * A folder scope covers the GitHub repository its checkout's origin names (`slugOf`, read locally).
  */
-export function orderGrantFor(state: OperationalState, effect: { action: string; targets: string[] }, sourceText: (id: string) => string | undefined, now = Date.now()) {
-  const action = effect.action as GrantAction;
-  if (!ORDER_WORDS[action]) return undefined;
-  const found = activeGrants(state, now).filter(({ grant }) => grant.action === action && effect.targets.some(t => scopeCovers(grant.scope, t))).at(-1);
+export function orderGrantFor(state: OperationalState, effect: { action: string; targets: string[] }, sourceText: (id: string) => string | undefined, now = Date.now(), slugOf: FolderSlug = checkoutSlug) {
+  const action = effect.action as GrantAction, word = ORDER_WORDS[action];
+  if (!word) return undefined;
+  const found = activeGrants(state, now)
+    .filter(({ entry, grant }) => (grant.action === action || (Object.hasOwn(ORDER_WORDS, grant.action) && word.test(entry.text)))
+      && effect.targets.some(t => grantCovers(grant.scope, t, slugOf)))
+    .at(-1);
   if (!found?.grant.allow || !specificScope(found.grant.scope)) return undefined;
   const { entry } = found, age = now - Date.parse(entry.createdAt);
   if (!(age >= 0 && age <= ORDER_GRANT_TTL_MS) || sourceText(entry.sourceMessageId) !== entry.text || !namesAction(entry.text, action)) return undefined;
@@ -368,7 +392,7 @@ export function orderGrantFor(state: OperationalState, effect: { action: string;
 /** One advisor-facing line about the latest grant matching any of the call's targets, or undefined when there is none. */
 export function describeGrant(state: OperationalState, kind: string | undefined, input: unknown, target: string | string[], now = Date.now()) {
   const action = grantActionFor(kind, input), targets = [target].flat();
-  const found = action && activeGrants(state, now).filter(({ grant }) => grant.action === action && targets.some(t => scopeCovers(grant.scope, t))).at(-1);
+  const found = action && activeGrants(state, now).filter(({ grant }) => grant.action === action && targets.some(t => grantCovers(grant.scope, t))).at(-1);
   return found ? `${found.grant.allow ? 'ALLOWED' : 'PROHIBITED'} ${found.grant.action} in ${found.grant.scope} until ${found.grant.until} (record ${found.entry.id}, source message ${found.entry.sourceMessageId}): ${found.entry.text}` : undefined;
 }
 

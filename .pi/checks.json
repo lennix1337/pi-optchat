@@ -334,8 +334,8 @@
     "effect-approvals": {
       "description": "Offline exact-invocation approvals, autonomy contract, user provenance, one-shot dispatch and native hook lifecycle; no provider calls",
     "onEdit": true,
-    "watch": ["src/authorization.ts", "src/authorization-hooks.ts", "src/autonomy.ts", "src/effect-classifier.ts", "src/effect-advisor.ts", "src/effect-policy.ts", "src/one-line.ts", "src/heartbeat.ts", "test/authorization.test.ts", "test/autonomy.test.ts", "test/effect-advisor.test.ts", "test/effect-policy.test.ts", "test/heartbeat.test.ts"],
-      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts", "test/autonomy.test.ts", "test/effect-advisor.test.ts", "test/effect-policy.test.ts", "test/heartbeat.test.ts"],
+    "watch": ["src/authorization.ts", "src/authorization-hooks.ts", "src/autonomy.ts", "src/effect-classifier.ts", "src/effect-advisor.ts", "src/effect-policy.ts", "src/one-line.ts", "src/heartbeat.ts", "src/operational-state.ts", "src/checkout-slug.ts", "test/authorization.test.ts", "test/autonomy.test.ts", "test/effect-advisor.test.ts", "test/effect-policy.test.ts", "test/heartbeat.test.ts", "test/operational-state.test.ts", "test/operational-tool.test.ts", "test/order-lift.test.ts", "test/checkout-slug.test.ts"],
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/authorization.test.ts", "test/autonomy.test.ts", "test/effect-advisor.test.ts", "test/effect-policy.test.ts", "test/heartbeat.test.ts", "test/operational-state.test.ts", "test/operational-tool.test.ts", "test/order-lift.test.ts", "test/checkout-slug.test.ts"],
       "timeoutMs": 30000
     },
     "operation-safety": {
