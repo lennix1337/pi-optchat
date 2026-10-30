@@ -1,8 +1,14 @@
 import { record } from './cache.ts';
+import { browserConsentEffect, commandExternalEffects } from './external-effects.ts';
 
 /** High-impact effects the autonomy contract decides on. */
 export const ACTIONS = ['push', 'push-main', 'force-push', 'merge', 'publish', 'deploy', 'production-write', 'paid',
-  'discard', 'recursive-delete', 'global-install'] as const;
+  'discard', 'recursive-delete', 'global-install', 'message', 'consent', 'merge-bypass'] as const;
+/**
+ * Effects that cannot be taken back once they reach the world: without a rule of the operator's own in autonomy.json
+ * they always wait for him; the advisor never decides them.
+ */
+export const IRREVERSIBLE: readonly Action[] = ['force-push', 'publish', 'deploy', 'production-write', 'message', 'consent', 'merge-bypass'];
 export type Action = typeof ACTIONS[number];
 /** One effect a call would have, with what it touches: lowercase paths, `owner/repo` slugs, `ssh:<host>` or a kind. */
 export interface Effect { action: Action; targets: string[] }
@@ -197,7 +203,8 @@ function gitEffects(w: string[], dir: string, repo: Repo): Effect[] {
 /** `gh`: merges, releases and repository creation/deletion, deploy workflows. */
 function ghEffects(w: string[], dir: string, repo: Repo): Effect[] {
   const [group, verb] = w.slice(1), targets = () => repoTargets(dir, repo, w);
-  if (group === 'pr' && verb === 'merge') return [{ action: 'merge', targets: targets() }];
+  // `--admin` merges past failing or missing required checks: that is not merging, it is bypassing the CI.
+  if (group === 'pr' && verb === 'merge') return [{ action: w.includes('--admin') ? 'merge-bypass' : 'merge', targets: targets() }];
   if ((group === 'release' && /^(?:create|upload|edit)$/.test(verb ?? '')) || (group === 'repo' && /^(?:create|delete)$/.test(verb ?? '')))
     return [{ action: 'publish', targets: targets() }];
   if (group === 'workflow' && verb === 'run' && w.slice(3).some(arg => /deploy|release|publish|prod/i.test(arg) && !arg.startsWith('-')))
@@ -242,7 +249,8 @@ function segmentEffects(command: string, dir: string, repo: Repo, depth: number)
   if (named.length) return named;
   if (lower === 'git') return gitEffects(w, dir, repo);
   if (lower === 'gh') return ghEffects(w, dir, repo);
-  return toolEffects(w, lower, dir, repo);
+  const external = commandExternalEffects(w);
+  return external.length ? external : toolEffects(w, lower, dir, repo);
 }
 
 /**
@@ -262,15 +270,19 @@ const noRepo: Repo = { slug: () => undefined, branch: () => undefined };
 /** Whether shell text runs a deploy (a deploy script, `wrangler deploy`, a deploy workflow, `docker push`...). */
 export const runsDeploy = (text: string) => segments(text, '').some(({ command, dir }) => segmentEffects(command, dir, noRepo, 0).some(e => e.action === 'deploy'));
 
+/** Messages to third parties and production HTTP writes in shell text (see external-effects.ts). */
+export const externalEffectsOf = (text: string) => segments(text, '').flatMap(({ command }) => commandExternalEffects(commandWords(command)));
+
 const paidTools = new Set(['subagent', 'spawn', 'tell']);
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
 /** Commands a codemode script hands to shell tools: the `command: "..."` string literals. */
-const scriptCommands = (code: string) => [...code.matchAll(/\bcommand\s*:\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(m => m[2].replace(/\\n/g, '\n').replace(/\\(["'`\\])/g, '$1'));
+export const scriptCommands = (code: string) => [...code.matchAll(/\bcommand\s*:\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(m => m[2].replace(/\\n/g, '\n').replace(/\\(["'`\\])/g, '$1'));
 
 /** Every high-impact effect of a call, read from its arguments alone. Not a sandbox: obfuscated commands pass. */
 export function classifyEffects({ tool, input, cwd }: { tool: string; input: unknown; cwd: string }, repo: Repo): Effect[] {
   // Targets name the kind of spend: delegated agents on the operator's plan, or a direct model run (bench, pi -p, models.*).
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? [] : [{ action: 'paid', targets: ['subagent'] }];
+  if (tool === 'browser_harness') { const consent = browserConsentEffect(input); return consent ? [consent] : []; }
   const shell = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? [input.command] : undefined;
   const code = record(input) && typeof input.code === 'string' && tool === 'codemode' ? input.code : undefined;
   const texts = shell ?? (code !== undefined ? scriptCommands(code) : []);

@@ -2,10 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { record } from './cache.ts';
-import { ACTIONS, classifyEffects as classify, type Action, type Effect, type Repo } from './effect-classifier.ts';
+import { ACTIONS, classifyEffects as classify, IRREVERSIBLE, type Action, type Effect, type Repo } from './effect-classifier.ts';
 import { parseWhenChanged } from './mtime-cache.ts';
 
-export { ACTIONS, productionWriteHost, segments, normalPath, type Action, type Effect, type Repo } from './effect-classifier.ts';
+export { ACTIONS, IRREVERSIBLE, productionWriteHost, segments, normalPath, type Action, type Effect, type Repo } from './effect-classifier.ts';
 
 /**
  * The operator's autonomy contract (`autonomy.json` in the profile folder): which high-impact effects the agent may run
@@ -49,11 +49,13 @@ export function loadContract(dir: string): Contract | undefined {
 const glob = (pattern: string) => new RegExp(`^${pattern.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*')}$`);
 const strictness: Record<Level, number> = { free: 0, report: 1, ask: 2 };
 
-/** First live rule matching the effect wins; a `*` scope matches any target. */
+/** First live rule matching the effect wins; a `*` scope matches any target; without one, an irreversible effect asks. */
 export function decideEffect(contract: Contract, effect: Effect, now = Date.now()): Decision {
   const rule = contract.rules.find(r => (r.action === '*' || r.action === effect.action) && (!r.until || Date.parse(r.until) > now)
     && r.scope.some(pattern => pattern === '*' || effect.targets.some(target => glob(pattern).test(target))));
-  return rule ? { level: rule.level, effect, rule } : { level: contract.default, effect };
+  if (rule) return { level: rule.level, effect, rule };
+  // An irreversible effect the operator wrote no rule for waits for him, whatever the default says.
+  return { level: IRREVERSIBLE.includes(effect.action) ? 'ask' : contract.default, effect };
 }
 
 /** The strictest decision over every effect of a call; `advisor` when nothing asks and an effect has no rule, or the call has no recognised effect. */

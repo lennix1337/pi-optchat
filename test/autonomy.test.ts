@@ -326,11 +326,14 @@ test('a search through the gate still runs without asking anyone', async () => {
   g.done();
 });
 
-test('risk mode now stops deploys and production writes, which used to pass it unseen', async () => {
+test('risk mode stops deploys and production writes, and without a rule of the operator the advisor never decides them', async () => {
   const g = gate(undefined);
-  await g.call('ssh hetzner-dentai "psql -c \\"delete from leads where id=1\\""');
-  await g.call('pwsh -File scripts/release/deploy-changed.ps1');
-  assert.equal(g.asked.length, 2, 'both reached the gate (and its advisor)');
+  const write = await g.call('ssh hetzner-dentai "psql -c \\"delete from leads where id=1\\""');
+  const deploy = await g.call('pwsh -File scripts/release/deploy-changed.ps1');
+  assert.equal(write?.block, true);
+  assert.equal(deploy?.block, true);
+  assert.match(write.reason, /production-write on ssh:hetzner-dentai: ask \(no matching rule\)/);
+  assert.deepEqual(g.asked, [], 'an approving advisor cannot let an irreversible effect through');
   g.done();
 });
 

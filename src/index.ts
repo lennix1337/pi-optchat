@@ -37,6 +37,8 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerForegroundWaitGuard } from './foreground-wait.ts';
 import { registerCommitHookGuard } from './commit-hook-guard.ts';
+import { registerMergeCiGuard } from './merge-ci-guard.ts';
+import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadar, wakeText, wakeTurn } from './heartbeat.ts';
@@ -122,6 +124,10 @@ export default function optchat(pi: ExtensionAPI) {
   registerForegroundWaitGuard(pi);
   // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
   registerCommitHookGuard(pi);
+  // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts).
+  registerMergeCiGuard(pi);
+  // Each owned browser tab's last page, so input on a consent, account or billing page waits for the operator.
+  registerBrowserPages(pi);
   // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
   const approvals = registerEffectApprovals(pi, { advisor: (request, ctx) => {
     const profile = active;
