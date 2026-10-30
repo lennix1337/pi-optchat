@@ -293,6 +293,35 @@ test('only a call that can change the contract file is a contract change; search
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.write({ path: '${f}', content: '{}' })` } }), true);
   const g = gate(undefined);
   assert.equal(await g.call(`grep -rn "${f}" src/*.ts | head`), undefined, 'a search runs without asking anyone');
+  g.done();
+});
+
+// Session 2026-10-30: four of seven operator approvals that day were reads or prose naming the contract file: a spawn whose
+// task text mentioned it (87018), a `for ... do cmp` mirror check (87188), a `node -e` that only parsed it (87222) and a
+// codemode script that only searched memory for the name. Only a call that can write the file needs the operator.
+test('reads and prose that name the contract file never wait for the operator', () => {
+  const f = contractFile;
+  const bash = (command: string) => touchesContract({ tool: 'bash', input: { command } });
+  for (const command of [
+    `for f in ~/.codex-shared/AGENTS.md ~/.optchat/${f}; do cmp -s $f payload/x && echo "$f = x"; done`,
+    `cd ~/.optchat && node -e "const a=JSON.parse(require('fs').readFileSync('${f}','utf8'));console.log(a.rules.length)"`,
+    `sha256sum ~/.optchat/${f}`, `if test -f ~/.optchat/${f}; then cat ~/.optchat/${f}; fi`,
+  ]) assert.equal(bash(command), false, command);
+  for (const command of [
+    `for f in ~/.optchat/${f}; do cp new.json $f; done`,
+    `node -e "require('fs').writeFileSync('${f}','{}')"`, `node -e "fs.renameSync('x','${f}')"`,
+    `node -p "require('fs').appendFileSync('${f}','x')"`, `node scripts/edit.mjs ~/.optchat/${f}`,
+  ]) assert.equal(bash(command), true, command);
+  for (const tool of ['spawn', 'subagent', 'tell']) assert.equal(touchesContract({ tool, input: { tasks: [{ task: `generate the policy from ${f}` }] } }), false, tool);
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `const s = await tools.zoom({ id: 87018, n: 1, findText: '${f}' }); text(s);` } }), false);
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.edit({ path: '~/.optchat/${f}', edits: [] })` } }), true);
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cat ~/.optchat/${f}' })` } }), true, 'a nested shell call stays fail-closed');
+  assert.equal(touchesContract({ tool: 'some_mcp_tool', input: { path: `~/.optchat/${f}` } }), true, 'an unknown tool naming it still asks');
+});
+
+test('a search through the gate still runs without asking anyone', async () => {
+  const g = gate(undefined);
+  assert.equal(await g.call(`grep -rn "${contractFile}" src/*.ts | head`), undefined);
   assert.deepEqual(g.asked, []);
   g.done();
 });
