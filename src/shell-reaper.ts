@@ -117,6 +117,7 @@ export function reapingBashOperations(shellPath?: string): BashOperations {
       if (signal?.aborted) throw new Error('aborted');
       const config = getShellConfig(shellPath);
       try { await access(cwd, constants.F_OK); } catch { throw new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`); }
+      if (signal?.aborted) throw new Error('aborted');
       const stdin = config.commandTransport === 'stdin';
       const child = spawn(config.shell, stdin ? config.args : [...config.args, command], {
         cwd, env: env ?? process.env, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true,
