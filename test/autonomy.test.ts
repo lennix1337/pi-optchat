@@ -280,3 +280,34 @@ test('risk mode now stops deploys and production writes, which used to pass it u
   assert.equal(g.asked.length, 2, 'both reached the gate (and its advisor)');
   g.done();
 });
+
+test('a command run under timeout is still classified: the 2026-10-29 Worker deploy passed the gate unseen', () => {
+  assert.deepEqual(effects('cd C:/projetos/dentai-mono && timeout 300 npx wrangler deploy --config wrangler.jsonc --var LANDING_MODE:marketing'), ['deploy c:/projetos/dentai-mono,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('timeout -k 5 60s git push origin main', 'C:/projetos/dotfiles'), ['push-main c:/projetos/dotfiles,lennix1337/dotfiles']);
+  assert.deepEqual(effects('timeout --signal=KILL 2m gh pr merge 1 --repo tecnologia-ai/dentai'), ['merge c:/users/swluc,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('timeout 90 agent-browser --session x get url'), []);
+});
+
+test("an ask rule runs when the operator's typed order covers it, and says so; without one it still waits", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'autonomy-'));
+  writeFileSync(join(dir, 'autonomy.json'), JSON.stringify({ version: 1, rules: [
+    { action: 'merge', scope: ['tecnologia-ai/*'], level: 'ask' }, { action: 'deploy', scope: ['*'], level: 'ask' }, { action: 'force-push', scope: ['*'], level: 'ask' }] }));
+  const hooks = new Map<string, (...args: any[]) => any>();
+  const notices: string[] = [];
+  const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir,
+    orderGrant: effect => effect.action === 'merge' || effect.action === 'deploy' ? 'operator order 86455' : undefined,
+    advisor: async () => ({ approve: false, reason: 'never asked', model: 'm' }) });
+  const ctx = { cwd: 'C:/projetos/dentai-mono', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] },
+    ui: { notify: (message: string) => notices.push(message), setWidget: () => {} } };
+  const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', toolCallId: command, input: { command } }, ctx);
+  try {
+    assert.equal(await call('gh pr merge 125 --squash && gh pr merge 126 --squash'), undefined);
+    assert.equal(await call('pwsh -NoProfile -File scripts/release/deploy-changed.ps1 -Commit 5f8d2ce8'), undefined);
+    assert.equal(await call('pwsh -NoProfile -File scripts/release/deploy-changed.ps1 -Commit 5f8d2ce8 -EvidenceDirectory x'), undefined, 'the rerun after a failed gate');
+    assert.equal((await call('git push --force origin feat/x')).block, true, 'what the order does not name still waits');
+    const log = readFileSync(join(dir, 'autonomy-log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(log.map(entry => [entry.action, entry.rule]), [['merge', 'operator order 86455'], ['merge', 'operator order 86455'], ['deploy', 'operator order 86455'], ['deploy', 'operator order 86455']], 'one line per merge and per deploy run');
+    assert.ok(notices.some(text => /operator order 86455/.test(text)));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

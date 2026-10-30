@@ -73,8 +73,20 @@ export function segments(text: string, cwd: string) {
 function commandWords(command: string) {
   const all = words(command.replace(/^[({!\s]+/, '')).filter((word, i, list) => !/^\d*[<>]/.test(word) && !/^\d*[<>]+$/.test(list[i - 1] ?? ''));
   let at = 0;
-  while (at < all.length && (/^[A-Za-z_]\w*=/.test(all[at]) || /^(?:then|do|else|if|elif|while|until|sudo|time|command|exec|nohup|env|&)$/.test(all[at]))) at++;
+  for (let last = -1; last !== at;) {
+    last = at;
+    while (at < all.length && (/^[A-Za-z_]\w*=/.test(all[at]) || /^(?:then|do|else|if|elif|while|until|sudo|time|command|exec|nohup|env|&)$/.test(all[at]))) at++;
+    at = afterTimeout(all, at);
+  }
   return all.slice(at);
+}
+
+/** `timeout [-k N] [--signal=S] DURATION command...` runs the command: where it starts, else `at` unchanged. */
+function afterTimeout(words: string[], at: number) {
+  if (words[at] !== 'timeout') return at;
+  let next = at + 1;
+  while (next < words.length && words[next].startsWith('-')) next += /^-(?:k|s)$|^--(?:kill-after|signal)$/.test(words[next]) ? 2 : 1;
+  return /^\d+(?:\.\d+)?[smhd]?$/.test(words[next] ?? '') ? next + 1 : at;
 }
 
 const isDeployScript = (word: string) => /(?:^|[/\\])deploy[-\w]*\.(?:ps1|sh|mjs|js|ts|cmd|bat)$/i.test(unquote(word));

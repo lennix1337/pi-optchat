@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describeGrant, grantTargets, latestGrant, readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { describeGrant, grantTargets, latestGrant, orderGrantFor, readOperationalState, renderOperationalContext, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -161,4 +161,38 @@ test('free-text authorizations still load and render; malformed grants are rejec
   assert.throws(() => updateOperationalState(file, scopedGrant('x', '4', { action: 'push', scope: 'c:/a', allow: true, until: 'tomorrow' })), /until/);
   assert.throws(() => updateOperationalState(file, scopedGrant('x', '4', { action: 'fly' as 'push', scope: 'c:/a', allow: true, until: 'done' })), /action/);
   assert.throws(() => updateOperationalState(file, { kind: 'decision', text: 'x', sourceMessageId: '5', grant: { action: 'push', scope: 'c:/a', allow: true, until: 'done' } } as OperationalUpdate), /grant|authorization/);
+}));
+
+test("the operator's typed order lifts an ask rule only for the action it names, in a specific scope, while it is fresh", () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  const said: Record<string, string> = {
+    '86455': 'pode fazer o merge dos dois que tem la e fazer o deploy',
+    '2': 'faz o merge mas não o deploy',
+    '3': 'sim',
+    '4': 'pode fazer o deploy',
+  };
+  const order = (text: string, source: string, action: 'merge' | 'deploy', scope = 'C:/projetos/dentai-mono'): OperationalUpdate =>
+    ({ kind: 'authorization', text, sourceMessageId: source, grant: { action, scope, allow: true, until: 'done' } });
+  const dentai = ['c:/projetos/dentai-mono', 'tecnologia-ai/dentai'];
+  const lift = (action: string, targets = dentai, at = Date.now()) => orderGrantFor(readOperationalState(file), { action, targets }, id => said[id], at);
+  // 2026-10-29: this one sentence took four approval prompts (two merges, a deploy, and its rerun after a failed gate).
+  updateOperationalState(file, order(said['86455'], '86455', 'merge'));
+  updateOperationalState(file, order(said['86455'], '86455', 'deploy'));
+  assert.match(lift('merge')!, /86455/);
+  assert.match(lift('deploy')!, /86455/, 'a rerun of the same deploy is covered too');
+  assert.equal(lift('deploy', ['c:/projetos/pi-optchat', 'lennix1337/pi-optchat']), undefined, 'another repository is not covered');
+  assert.equal(lift('force-push'), undefined, 'actions an order cannot lift stay with the operator');
+  assert.equal(lift('deploy', dentai, Date.now() + 13 * 3600_000), undefined, 'an old order does not keep deploying');
+  // A quote that does not name the action, or negates it, lifts nothing.
+  updateOperationalState(file, order(said['2'], '2', 'deploy'));
+  assert.equal(lift('deploy'), undefined, '"não o deploy" is a refusal');
+  updateOperationalState(file, order(said['3'], '3', 'deploy'));
+  assert.equal(lift('deploy'), undefined, 'a bare "sim" names no deploy');
+  // The record must still match what the operator typed, and the scope must name one place.
+  updateOperationalState(file, order('pode fazer o deploy', '9', 'deploy'));
+  assert.equal(lift('deploy'), undefined, 'source 9 is not an operator message with that text');
+  updateOperationalState(file, order(said['4'], '4', 'deploy', 'C:/projetos'));
+  assert.equal(lift('deploy'), undefined, 'a scope over every project is too broad to lift an ask');
+  updateOperationalState(file, order(said['4'], '4', 'deploy', 'C:/projetos/dentai-mono'));
+  assert.match(lift('deploy')!, /record op_/);
 }));
