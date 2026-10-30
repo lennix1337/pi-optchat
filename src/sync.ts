@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { bytes, end, flat, start, type Memory, type Part } from './memory.ts';
 import { readOperationalState, renderOperationalContext } from './operational-state.ts';
-import { atomicWrite } from './store.ts';
+import { atomicWrite, envDir } from './store.ts';
 import { aiMemoryWriter, writeFinishedBlocks, type PageWriter } from './ai-memory.ts';
 
 /** Sync lets agents outside OptChat see this chat. It runs as code from memory the chat already has, and calls no model:
@@ -88,7 +88,7 @@ export function noteParts(first: number, last: number, text: string, limit = NOT
 export type NoteSender = (text: string) => Promise<void>;
 export const memoPath = () =>
   process.env.OPTCHAT_MEMO ?? join(homedir(), '.optmem', process.platform === 'win32' ? 'memo.exe' : 'memo');
-const optmemLog = () => join(process.env.MEMORY_DIR ?? join(homedir(), '.optmem', 'memory'), 'LOG.txt');
+const optmemLog = () => join(envDir('MEMORY_DIR', '.optmem', 'memory'), 'LOG.txt');
 
 /** Sends a note through OptMem's own binary, so its lock, size check and tree stay its business. */
 export const memoNote: NoteSender = text => new Promise((resolve, reject) => {

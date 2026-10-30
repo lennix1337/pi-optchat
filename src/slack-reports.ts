@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
@@ -8,12 +8,14 @@ import { forecast, type PrOutlook } from './forecast.ts';
 import { healthLines, PC_FILE, readHealth } from './prod-health.ts';
 import { fixLines, readFixes } from './self-fix.ts';
 import { projectOfRepo } from './projects.ts';
-import { atomicWrite, readJsonOr } from './store.ts';
+import { appendJsonl, atomicWrite, readJsonl, readJsonOr } from './store.ts';
 import { QUOTA_FILE, QUOTA_HEALTH_FILE, quotaRisks } from './quota-health.ts';
+import { WeeklyScoreboard } from './scoreboard.ts';
 
 /**
  * What the operator hears on Slack without asking, each in its project's channel: his PRs changing (CI green or red,
- * merged, closed; one thread per PR) and a 07:00 DM summing up the previous day with what waits for him and his agenda.
+ * merged, closed; one thread per PR), a 07:00 DM summing up the previous day with what waits for him and his agenda, and the
+ * Monday scoreboard in #harness (scoreboard.ts).
  * Shell and subagent completions are not posted: the operator asked for messages only, and the run's own report says
  * what they proved. Best effort: a failed post is dropped, never retried in a loop.
  */
@@ -30,15 +32,9 @@ const DAY = 'slack-day.jsonl';
 type DayEntry = { at: number; channel: string | null; line: string };
 export function logSent(dir: string, channel: string | null, text: string, now = Date.now()): void {
   if (/^(?:⏸|☀️)/u.test(text)) return; // Approval prompts and the summary itself are not work done.
-  const file = join(dir, DAY);
-  appendFileSync(file, `${JSON.stringify({ at: now, channel, line: one(text.replace(/^\*Wake\* · /, ''), 200) })}\n`);
-  try { if (statSync(file).size > 256 * 1024) atomicWrite(file, readDay(dir, now - 3 * 86_400_000).map(e => JSON.stringify(e)).join('\n') + '\n'); } catch { /* rotation is housekeeping */ }
+  appendJsonl<DayEntry>(join(dir, DAY), { at: now, channel, line: one(text.replace(/^\*Wake\* · /, ''), 200) }, 256 * 1024, e => e.at >= now - 3 * 86_400_000);
 }
-export function readDay(dir: string, since: number): DayEntry[] {
-  let raw = '';
-  try { raw = readFileSync(join(dir, DAY), 'utf8'); } catch { return []; }
-  return raw.split('\n').flatMap(line => { try { const e = JSON.parse(line) as DayEntry; return e.at >= since ? [e] : []; } catch { return []; } });
-}
+export const readDay = (dir: string, since: number): DayEntry[] => readJsonl<DayEntry>(join(dir, DAY), e => e.at >= since);
 
 // ---- The operator's PRs. ----
 type Gh = (args: string[]) => Promise<string>;
@@ -59,7 +55,7 @@ export function nextSeen(before: PrSeen | undefined, sig: string, now: number): 
   const flips = (before?.flips ?? 0) + (before?.verdict && verdict !== before.verdict ? 1 : 0);
   return { since: before?.sig === sig ? before.since ?? now : now, flips, ...verdict ? { verdict } : {} };
 }
-const PRS = 'pr-watch.json';
+export const PRS = 'pr-watch.json';
 const PR_KEEP_MS = 14 * 86_400_000;
 
 /** What changed between two sightings of one PR, as a post; undefined when nothing worth saying. */
@@ -219,15 +215,23 @@ function withQuota<T extends { risks?: string[] }>(inputs: T, dir: string, now: 
 export function registerSlackReports(pi: ExtensionAPI, owner: () => ReportOwner | undefined, post: Post, approvals: () => number) {
   const prs = new PrWatch(owner, post);
   const daily = new DailySummary(owner, post, prs, approvals);
+  const weekly = new WeeklyScoreboard(owner, post);
   let timers: ReturnType<typeof setInterval>[] = [];
-  let warned = false;
-  const prPass = () => prs.poll().catch(error => { if (!warned) { warned = true; console.error(`OptChat PR watch: ${error instanceof Error ? error.message : String(error)}`); } });
+  const warned = new Set<string>();
+  /** A report that keeps failing says so once per session, not every pass. */
+  const pass = (label: string, run: () => Promise<unknown>) => () => void run().catch(error => {
+    if (warned.has(label)) return;
+    warned.add(label);
+    console.error(`OptChat ${label}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  const prPass = pass('PR watch', () => prs.poll());
   pi.on('session_start', () => {
     for (const t of timers) clearInterval(t);
     const first = setTimeout(prPass, 30_000); first.unref?.();
-    timers = [first, setInterval(prPass, 3 * 60_000), setInterval(() => void daily.maybePost().catch(() => {}), 60_000)];
+    timers = [first, setInterval(prPass, 3 * 60_000), setInterval(pass('morning summary', () => daily.maybePost()), 60_000),
+      setInterval(pass('weekly scoreboard', () => weekly.maybePost()), 5 * 60_000)];
     for (const t of timers) t.unref?.();
   });
   pi.on('session_shutdown', () => { for (const t of timers) clearInterval(t); timers = []; });
-  return { prs, daily };
+  return { prs, daily, weekly };
 }

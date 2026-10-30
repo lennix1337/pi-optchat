@@ -1,4 +1,5 @@
-import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Entry, Summary } from './memory.ts';
 
@@ -57,6 +58,21 @@ export function localDay(date = new Date()) {
 export function readJsonOr<T>(file: string, fallback: T): T {
   try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as T : fallback; } catch { return fallback; }
 }
+/** `$env` when set, else `~/<home...>`: a directory chosen by the environment, so tests and other setups can move it. */
+export const envDir = (env: string, ...home: string[]) => process.env[env] ?? join(homedir(), ...home);
+
+/** The records of a JSON-lines log that `keep` accepts; a torn or unreadable line is skipped, a missing file is empty. */
+export function readJsonl<T>(file: string, keep: (value: T) => boolean): T[] {
+  let raw = '';
+  try { raw = readFileSync(file, 'utf8'); } catch { return []; }
+  return raw.split('\n').flatMap(line => { try { const value = JSON.parse(line) as T; return keep(value) ? [value] : []; } catch { return []; } });
+}
+/** Appends one record; once the log passes `maxBytes` it is rewritten with only the records `keep` accepts. */
+export function appendJsonl<T>(file: string, value: T, maxBytes: number, keep: (value: T) => boolean): void {
+  appendFileSync(file, `${JSON.stringify(value)}\n`);
+  if (statSync(file).size > maxBytes) atomicWrite(file, readJsonl(file, keep).map(v => JSON.stringify(v)).join('\n') + '\n');
+}
+
 export function atomicWrite(file: string, text: string | Uint8Array) {
   mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
