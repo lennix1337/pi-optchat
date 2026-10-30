@@ -15,6 +15,12 @@ export const DISK_MIN_GB = 30;
 export const MEMORY_MIN_FRACTION = 0.05;
 export const REPORT_MAX_AGE_MS = 36 * 3_600_000;
 
+/** `dd/mm HH:MM` in Brasília (UTC-3). */
+export function brasiliaDayTime(at: number): string {
+  const iso = new Date(at - 3 * 3_600_000).toISOString();
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)} ${iso.slice(11, 16)}`;
+}
+
 const GB = 1e9;
 const gb = (bytes: number) => `${(bytes / GB).toFixed(bytes < 10 * GB ? 1 : 0)} GB`;
 
@@ -56,8 +62,7 @@ export function maintenanceProbe(dir: string, now: () => number = Date.now, repo
     check(): ProbeResult {
       const latest = Math.max(0, ...reports(dir).map(r => r.mtimeMs));
       if (!latest) return { ok: false, ms: 0, problem: `nenhum relatório em ${dir}` };
-      const at = new Date(latest - 3 * 3_600_000).toISOString(); // Brasília, UTC-3
-      const when = `${at.slice(8, 10)}/${at.slice(5, 7)} ${at.slice(11, 16)}`;
+      const when = brasiliaDayTime(latest);
       return now() - latest > REPORT_MAX_AGE_MS ? { ok: false, ms: 0, detail: `último relatório ${when}`, problem: `não roda desde ${when}` } : { ok: true, ms: 0, detail: `último relatório ${when}` };
     },
   };
