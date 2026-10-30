@@ -135,7 +135,8 @@ function validateGrant(value: unknown, where: string): Grant {
   assertKeys(value, ['action', 'scope', 'allow', 'until'], where);
   if (!GRANT_ACTIONS.includes(value.action as GrantAction)) fail(`${where}.action must be one of ${GRANT_ACTIONS.join(', ')}`);
   if (typeof value.allow !== 'boolean') fail(`${where}.allow must be a boolean`);
-  const scope = normalizeScope(boundedString(value.scope, `${where}.scope`, MAX_SCOPE_CHARS));
+  // Stored as written (slashes aside): a Linux checkout is case-sensitive, and matching lowercases on its own.
+  const scope = boundedString(value.scope, `${where}.scope`, MAX_SCOPE_CHARS).trim().replaceAll('\\', '/').replace(/\/+$/, '') || '/';
   const until = boundedString(value.until, `${where}.until`, 32);
   if (until !== 'done' && (!Number.isFinite(Date.parse(until)) || new Date(until).toISOString() !== until)) fail(`${where}.until must be 'done' or an ISO timestamp`);
   return { action: value.action as GrantAction, scope, allow: value.allow, until };

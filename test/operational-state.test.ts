@@ -129,11 +129,18 @@ test('a newer grant with overlapping scope supersedes the older one in queries a
   assert.equal(describeGrant(state, 'discard', {}, 'C:/projetos/x'), undefined);
 }));
 
+test('a grant keeps the spelling of its scope, so a Linux checkout can still be read, and still matches in any case', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  const state = updateOperationalState(file, scopedGrant('pode pushar', '1', { action: 'push', scope: '/Tmp/Repo-AbC\\', allow: true, until: 'done' }));
+  assert.equal(readOperationalState(file).entries[0]!.grant!.scope, '/Tmp/Repo-AbC');
+  assert.equal(latestGrant(state, 'push', '/tmp/repo-abc/src')?.grant.allow, true);
+}));
+
 test('a grant covers the folder a command acts in, not only the session folder', () => withDirectory(directory => {
   const file = join(directory, 'operational-state.json');
   const state = updateOperationalState(file, scopedGrant('sim pode remover sempre se ja foi mergeada', '1', { action: 'delete', scope: 'C:/projetos', allow: true, until: 'done' }));
   const grantFor = (command: string) => describeGrant(state, 'discard', { command }, grantTargets({ command }, 'C:/Users/swluc'));
-  assert.match(grantFor('cd C:/projetos/Genexus18MCP && git worktree remove worktrees/pr708 && git branch -D pr708-sync')!, /^ALLOWED delete in c:\/projetos /);
+  assert.match(grantFor('cd C:/projetos/Genexus18MCP && git worktree remove worktrees/pr708 && git branch -D pr708-sync')!, /^ALLOWED delete in C:\/projetos /);
   assert.match(grantFor('git -C C:/projetos/pi-optchat branch -D feat/x')!, /^ALLOWED delete/);
   assert.equal(grantFor('git branch -D feat/x'), undefined, 'the home folder is outside the scope');
   // A prose scope never covers a path, so the advisor would never see the grant it describes.
@@ -228,7 +235,7 @@ test('one typed order that names both the merge and the deploy lifts both; a lat
 test('a folder grant lifts an order for the GitHub repo its checkout points at, from any working folder', () => withDirectory(directory => {
   const file = join(directory, 'operational-state.json');
   const said: Record<string, string> = { '86853': 'pode fazer o merge e deploy' };
-  const slugs = (folder: string) => folder === 'c:/projetos/dentai-mono' ? 'tecnologia-ai/dentai' : undefined;
+  const slugs = (folder: string) => folder === 'C:/projetos/dentai-mono' ? 'tecnologia-ai/dentai' : undefined;
   updateOperationalState(file, { kind: 'authorization', text: said['86853'], sourceMessageId: '86853', grant: { action: 'merge', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
   const state = readOperationalState(file);
   const lift = (targets: string[]) => orderGrantFor(state, { action: 'merge', targets }, id => said[id], Date.now(), slugs);
