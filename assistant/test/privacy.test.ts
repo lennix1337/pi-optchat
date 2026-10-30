@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -168,4 +168,20 @@ test('a slow ACL inspection on a busy machine gets time and, if it still times o
   assert.doesNotMatch(timedOut.message, /untrusted/i);
   assert.match(aclInspectionFailure({ status: 1, error: undefined })?.message ?? '', /untrusted/i);
   assert.equal(aclInspectionFailure({ status: 0, error: undefined }), null);
+});
+
+test('a new private directory gets the protected owner, SYSTEM and Administrators DACL the privacy check accepts', { timeout: 60000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'privacy-create-'));
+  try {
+    const { createPrivateDirectory } = await import('../src/store/private-directory.ts');
+    const { checkDirectoryPrivacy } = await import('../src/store/privacy.ts');
+    const created = join(root, 'created'), fixture = join(root, 'fixture');
+    createPrivateDirectory(created);
+    checkDirectoryPrivacy(created);
+    if (process.platform !== 'win32') return;
+    mkdirSync(fixture); acl(fixture);
+    const sddl = (path: string) => spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Acl -LiteralPath $env:PRIVACY_FIXTURE).GetSecurityDescriptorSddlForm('Access')`], { env: { ...process.env, PRIVACY_FIXTURE: path }, encoding: 'utf8', windowsHide: true }).stdout.trim();
+    assert.match(sddl(created), /^D:PAI(\(A;OICI;FA;;;[^)]+\)){3}$/);
+    assert.equal(sddl(created), sddl(fixture));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

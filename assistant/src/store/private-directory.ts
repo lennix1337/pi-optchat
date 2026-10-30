@@ -1,6 +1,20 @@
 import { mkdirSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+
+const failure = 'Could not initialize the new private directory. Existing permissions were not changed.';
+// Native System32 tools start in milliseconds; PowerShell 7 took 40 s once under a parallel test load and blocked the event loop.
+const system32 = (tool: string) => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', tool);
+const run = (tool: string, args: string[]) => spawnSync(system32(tool), args, { timeout: 60_000, encoding: 'utf8', windowsHide: true });
+
+let currentUserSid: string | undefined;
+function currentSid(): string {
+  if (currentUserSid) return currentUserSid;
+  const result = run('whoami.exe', ['/user', '/fo', 'csv', '/nh']);
+  const sid = result.status === 0 ? /"(S-1-\d+(?:-\d+)+)"\s*$/.exec(result.stdout.trim())?.[1] : undefined;
+  if (!sid) throw new Error(failure);
+  return currentUserSid = sid;
+}
 
 /** Protect only a directory this call created; existing paths are left for the privacy precheck. */
 export function createPrivateDirectory(path: string): void {
@@ -8,7 +22,8 @@ export function createPrivateDirectory(path: string): void {
   try { mkdirSync(path, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return; throw error; }
   if (process.platform !== 'win32') return;
-  const script = `$ErrorActionPreference='Stop'; $acl=[System.Security.AccessControl.DirectorySecurity]::new(); $acl.SetAccessRuleProtection($true,$false); foreach($sid in @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')) { $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow')) }; [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($env:OPTCHAT_MEMORY_DIRECTORY),$acl)`;
-  const result = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, OPTCHAT_MEMORY_DIRECTORY: path }, timeout: 60_000, encoding: 'utf8', windowsHide: true });
-  if (result.error || result.status !== 0) throw new Error('Could not initialize the new private directory. Existing permissions were not changed.');
+  // Protected DACL with full control for the current user, SYSTEM and Administrators only, inherited by children.
+  const grants = [currentSid(), 'S-1-5-18', 'S-1-5-32-544'].map(sid => `*${sid}:(OI)(CI)F`);
+  const result = run('icacls.exe', [path, '/inheritance:r', '/grant:r', ...grants]);
+  if (result.error || result.status !== 0) throw new Error(failure);
 }
