@@ -103,6 +103,7 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/optchat shells` | Inspect shell calls, managed background jobs and bounded output. |
 | `/optchat agents model` | Subagent model and effort for this profile, picked the same way. |
 | `/optchat usage` | Token usage and cost estimates. |
+| `/optchat-health` | Production, PC and cached model quota; requires a configured assistant profile. [Boundaries and validation](docs/health.md). |
 | `/optchat retry-summary <start>+<size>` | Explicitly retry one policy-blocked summary with the current compactor; never retries the main request or changes providers. |
 | `/optchat activity` | Memory gauge: view size, summaries catching up, running agents. |
 | `/optchat instructions` | Edit this profile's `AGENTS.md`. |

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { brasiliaTime } from './heartbeat.ts';
 import { pcProbes } from './pc-health.ts';
+import { quotaProbe, QUOTA_HEALTH_FILE } from './quota-health.ts';
 import { applyRemedies, type Remedy } from './self-fix.ts';
 import { atomicWrite, readJsonOr } from './store.ts';
 
@@ -143,6 +144,7 @@ export interface Monitor extends Route { health: ProdHealth }
 export const defaultMonitors = (): Monitor[] => [
   { health: new ProdHealth(), ...PRODUCTION },
   { health: new ProdHealth({ probes: pcProbes(), file: PC_FILE }), channel: null, wakes: false },
+  { health: new ProdHealth({ probes: [quotaProbe()], file: QUOTA_HEALTH_FILE }), channel: null, wakes: false },
 ];
 
 /** Every transition is posted on the route's channel; only an outage on a waking route wakes the agent (a recovery needs no decision). */

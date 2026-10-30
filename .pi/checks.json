@@ -1,6 +1,16 @@
 {
   "version": 1,
   "checks": {
+    "quota-health-mutations": {
+      "description": "Disposable quota/monitor/summary mutants must fail assertions; original source is never edited",
+      "argv": ["node", "test/quota-health-mutations.mjs"],
+      "timeoutMs": 60000
+    },
+    "quota-health": {
+      "description": "Cached model usage, malformed/expired windows, monitor routing and morning summary; disposable files only, no provider calls",
+      "argv": ["node", "--experimental-transform-types", "--no-warnings", "--import", "./test/support.ts", "--test", "test/quota-health.test.ts", "test/pc-health.test.ts", "test/prod-health.test.ts", "test/slack-reports.test.ts", "test/forecast.test.ts", "test/self-fix.test.ts"],
+      "timeoutMs": 60000
+    },
     "assistant-contracts": {
       "description": "Standalone Node 24 assistant versioned contracts; offline, no profile changes",
       "argv": ["node", "--test", "assistant/test/contracts.test.ts", "assistant/test/task-ids.test.ts", "assistant/test/unicode.test.ts"],
