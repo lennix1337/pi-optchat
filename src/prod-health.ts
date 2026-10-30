@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { brasiliaTime } from './heartbeat.ts';
 import { pcProbes } from './pc-health.ts';
-import { atomicWrite } from './store.ts';
+import { applyRemedies, type Remedy } from './self-fix.ts';
+import { atomicWrite, readJsonOr } from './store.ts';
 
 /**
  * Production health as a sense, read-only and without personal data: every few minutes each probe asks a public URL and
@@ -15,7 +16,8 @@ import { atomicWrite } from './store.ts';
 export interface ProbeResult { ok: boolean; problem?: string; ms: number; build?: string; detail?: string }
 export interface Probe { name: string; url: string; slowMs: number; judge(status: number, body: string): { problem?: string; build?: string } }
 /** A probe of this machine rather than a URL. */
-export interface LocalProbe { name: string; check(): ProbeResult | Promise<ProbeResult> }
+/** `remedy` runs once when the probe goes down (see self-fix.ts). */
+export interface LocalProbe { name: string; check(): ProbeResult | Promise<ProbeResult>; remedy?: Remedy }
 export type Fetcher = (url: string, timeoutMs: number) => Promise<{ status: number; body: string }>;
 
 const api: Probe = {
@@ -110,12 +112,16 @@ export function healthLines(state: HealthState): string[] {
 const FILE = 'prod-health.json';
 export const PC_FILE = 'pc-health.json';
 export function readHealth(dir: string, file = FILE): HealthState {
-  try { return existsSync(join(dir, file)) ? JSON.parse(readFileSync(join(dir, file), 'utf8')) as HealthState : {}; } catch { return {}; }
+  return readJsonOr<HealthState>(join(dir, file), {});
 }
 
 export class ProdHealth {
   constructor(private readonly options: { probes?: (Probe | LocalProbe)[]; fetcher?: Fetcher; now?: () => number; file?: string } = {}) {}
   get file() { return this.options.file ?? FILE; }
+  now(): number { return (this.options.now ?? Date.now)(); }
+  get remedies(): Map<string, Remedy> {
+    return new Map((this.options.probes ?? []).flatMap(p => 'remedy' in p && p.remedy ? [[p.name, p.remedy] as const] : []));
+  }
 
   /** One round: probes all, saves the state in `dir`, returns the transitions. */
   async round(dir: string): Promise<Transition[]> {
@@ -197,7 +203,7 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
 async function roundAll(monitors: readonly Monitor[], dir: string, tell: (t: Transition[], test: boolean, route: Route) => Promise<void>): Promise<string | undefined> {
   const errors: string[] = [];
   for (const m of monitors) {
-    try { await tell(await m.health.round(dir), false, m); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    try { await tell(await applyRemedies(await m.health.round(dir), m.health.remedies, dir, m.health.now()), false, m); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
   return errors.length ? errors.join('; ') : undefined;
 }

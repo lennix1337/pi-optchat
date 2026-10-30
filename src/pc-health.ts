@@ -2,12 +2,15 @@ import { readdirSync, statfsSync, statSync } from 'node:fs';
 import { freemem, totalmem } from 'node:os';
 import { join } from 'node:path';
 import type { LocalProbe, ProbeResult } from './prod-health.ts';
+import { type Remedy, scheduledTask } from './self-fix.ts';
 
 /**
  * This PC as a sense: free disk on the system drive, available memory and whether the daily maintenance task
- * (pc-maintenance skill, report-*.json in %LOCALAPPDATA%\pc-maintenance) still runs. Reads only; cleaning stays with
- * the maintenance task and the operator.
+ * (pc-maintenance skill, report-*.json in %LOCALAPPDATA%\pc-maintenance) still runs. The probes read only; when the
+ * disk runs low or the maintenance stops reporting, the remedy starts that same scheduled task ahead of time, the
+ * cleaning the operator already runs every night.
  */
+export const MAINTENANCE_TASK = 'dotfiles-pc-maintenance';
 export const DISK_MIN_GB = 30;
 export const MEMORY_MIN_FRACTION = 0.05;
 export const REPORT_MAX_AGE_MS = 36 * 3_600_000;
@@ -22,6 +25,8 @@ export interface PcSources {
   disk?: (drive: string) => { free: number; total: number };
   memory?: () => { free: number; total: number };
   reports?: (dir: string) => { name: string; mtimeMs: number }[];
+  /** Run when the disk or the maintenance probe goes down; null for none. Default on Windows: the maintenance task. */
+  maintenance?: Remedy | null;
 }
 
 const realDisk = (drive: string) => { const s = statfsSync(drive); return { free: s.bavail * s.bsize, total: s.blocks * s.bsize }; };
@@ -62,7 +67,9 @@ export function maintenanceProbe(dir: string, now: () => number = Date.now, repo
 export function pcProbes(sources: PcSources = {}): LocalProbe[] {
   const drive = sources.drive ?? (process.platform === 'win32' ? `${process.env.SystemDrive ?? 'C:'}\\` : '/');
   const reportDir = sources.reportDir ?? (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'pc-maintenance') : undefined);
-  const probes = [diskProbe(drive, sources.disk), memoryProbe(sources.memory)];
-  if (reportDir) probes.push(maintenanceProbe(reportDir, sources.now, sources.reports));
+  const remedy = sources.maintenance !== undefined ? sources.maintenance ?? undefined
+    : process.platform === 'win32' ? scheduledTask(MAINTENANCE_TASK, 'a manutenção do PC') : undefined;
+  const probes = [{ ...diskProbe(drive, sources.disk), remedy }, memoryProbe(sources.memory)];
+  if (reportDir) probes.push({ ...maintenanceProbe(reportDir, sources.now, sources.reports), remedy });
   return probes;
 }

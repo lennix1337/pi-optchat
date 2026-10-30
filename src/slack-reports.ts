@@ -6,6 +6,7 @@ import { assistantConfig, assistantRequest } from './assistant-client.ts';
 import { readCommitments, summaryLines, type Commitment } from './commitments.ts';
 import { forecast, type PrOutlook } from './forecast.ts';
 import { healthLines, PC_FILE, readHealth } from './prod-health.ts';
+import { fixLines, readFixes } from './self-fix.ts';
 import { projectOfRepo } from './projects.ts';
 import { atomicWrite } from './store.ts';
 
@@ -126,9 +127,10 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; risks?: string[] };
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, risks }: SummaryInputs): string {
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; risks?: string[]; fixes?: string[] };
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, risks, fixes }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
+  if (fixes?.length) lines.push('', '*Resolvi sozinho*', ...fixes.slice(-8).map(f => `• ${one(f, 200)}`));
   const byChannel = new Map<string, string[]>();
   for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
   lines.push('', '*Feito*');
@@ -204,7 +206,7 @@ export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<Summa
   try { items = readCommitments(dir); commitments = summaryLines(items, now); } catch { commitments = undefined; }
   const health = readHealth(dir), pc = readHealth(dir, PC_FILE);
   const risks = forecast({ commitments: items, prs: prs.map(outlook), health, pc, now });
-  return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks };
+  return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now) };
 }
 
 /** Timers for the PR watch (every 3 min) and the morning summary (checked every minute), per session. */
