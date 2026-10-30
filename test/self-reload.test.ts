@@ -1,19 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { registerSelfReload, RELOAD_ENTRY } from '../src/self-reload.ts';
+import { GOAL_HOLD, HOLD_MAX_MS, registerSelfReload, RELOAD_ENTRY } from '../src/self-reload.ts';
 
 function fixture() {
   const entries: any[] = [], notices: string[] = [], sent: any[] = [], commands = new Map<string, any>(), hooks = new Map<string, any[]>();
   let busy: string | undefined, reloads = 0, prepares = 0;
   let tools: any[] = [], responder: ((data: any) => void) | undefined;
+  const listeners = new Map<string, ((data: unknown) => void)[]>();
   let replacement: string | undefined;
   const ctx = { cwd: 'fixture-cwd', mode: 'tui', isIdle: () => true, hasPendingMessages: () => false,
     sessionManager: { getSessionId: () => 'session-1', getBranch: () => entries },
     ui: { notify: (message: string) => notices.push(message) }, reload: async () => { reloads++; } } as unknown as ExtensionContext;
   const pi = { on: (name: string, hook: any) => { hooks.set(name, [...hooks.get(name) ?? [], hook]); return () => {}; },
     registerCommand: (name: string, command: any) => commands.set(name, command), registerTool: (tool: any) => { toolDef = tool; },
-    getAllTools: () => tools, events: { emit(_name: string, data: any) { responder?.(data); } },
+    getAllTools: () => tools,
+    events: {
+      emit(name: string, data: any) { if (name === 'optchat:reload-check') responder?.(data); for (const fn of listeners.get(name) ?? []) fn(data); },
+      on(name: string, fn: (data: unknown) => void) { listeners.set(name, [...listeners.get(name) ?? [], fn]); return () => listeners.set(name, (listeners.get(name) ?? []).filter(f => f !== fn)); },
+    },
     appendEntry: (customType: string, data: unknown) => entries.push({ type: 'custom', customType, data: structuredClone(data) }),
     sendUserMessage: (...args: any[]) => sent.push(['command', ...args]), sendMessage: (...args: any[]) => sent.push(['message', ...args]) } as unknown as ExtensionAPI;
   let toolDef: any;
@@ -26,7 +31,8 @@ function fixture() {
     if (replacement === 'session') (ctx.sessionManager as any).getSessionId = () => 'session-2';
     await emit('session_start', { reason: replacement === 'restart' ? 'startup' : 'reload' });
   };
-  return { ctx, pi, entries, notices, sent, commands, emit, attach, tool: () => toolDef,
+  const goalHeld = () => { let reason: string | undefined; pi.events.emit(GOAL_HOLD, { hold: (why: string) => { reason ??= why; } }); return reason; };
+  return { ctx, pi, entries, notices, sent, commands, emit, attach, goalHeld, tool: () => toolDef,
     request: () => toolDef.execute('call-1', { checkpoint: 'Verified A. Next inspect B; do not repeat A.' }, new AbortController().signal, undefined, ctx),
     busy: (reason?: string) => { busy = reason; }, reloads: () => reloads, prepares: () => prepares,
     latest: () => entries.filter(e => e.customType === RELOAD_ENTRY).at(-1)?.data,
@@ -117,6 +123,42 @@ test('fresh runtime waits for reload completion, and late reload failure never d
   assert.equal(f.sent.length, 1, 'session_start alone is not proof that resource reload succeeded');
   fail(); await command;
   await new Promise(resolve => setImmediate(resolve)); assert.equal(f.sent.length, 1);
+});
+
+test('a pending reload holds the goal checkpoint until its own continuation starts, then lets it go', async () => {
+  const f = fixture();
+  assert.equal(f.goalHeld(), undefined, 'no reload, no hold');
+  await f.request(); assert.match(f.goalHeld() ?? '', /self-reload/);
+  await f.emit('agent_settled', { aborted: false }); assert.ok(f.goalHeld(), 'still held while the reload command is queued');
+  const [name, token] = f.sent[0][1].slice(1).split(' ');
+  await f.commands.get(name).handler(token, f.ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.latest().state, 'resuming'); assert.ok(f.goalHeld(), 'the fresh runtime holds the goal until the continuation runs');
+  await f.emit('before_agent_start', { messageType: 'custom', message: { customType: 'optchat-reload-resume' } });
+  assert.equal(f.goalHeld(), undefined, 'the continuation started: the goal may follow it');
+});
+
+test('a cancelled reload releases the goal, and a stuck one stops holding after HOLD_MAX_MS', async t => {
+  const f = fixture(); await f.request();
+  await f.emit('input', { source: 'interactive', text: 'new task' });
+  assert.equal(f.latest().state, 'cancelled'); assert.equal(f.goalHeld(), undefined);
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+  const g = fixture(); await g.request(); assert.ok(g.goalHeld());
+  t.mock.timers.tick(HOLD_MAX_MS + 1); assert.equal(g.goalHeld(), undefined);
+});
+
+test('an automatic turn that takes the slot first defers the reload to the next settlement instead of cancelling it', async () => {
+  const f = fixture(); await f.request(); await f.emit('agent_settled', { aborted: false });
+  const [name, token] = f.sent[0][1].slice(1).split(' ');
+  (f.ctx as any).isIdle = () => false;
+  await f.commands.get(name).handler(token, f.ctx);
+  assert.equal(f.latest().state, 'requested'); assert.equal(f.reloads(), 0);
+  (f.ctx as any).isIdle = () => true;
+  await f.emit('agent_settled', { aborted: false });
+  assert.equal(f.sent.length, 2, 'the command is sent again');
+  await f.commands.get(name).handler(token, f.ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.reloads(), 1); assert.equal(f.latest().state, 'resuming');
 });
 
 test('failed reload is recorded, not resumed or retried', async () => {
