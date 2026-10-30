@@ -131,11 +131,16 @@ function viewChain(payload: Record<string, unknown>, messages: unknown[], index:
   for (const piece of pieces) chain.push(digest = createHash('sha256').update(digest).update(piece).digest('hex'));
   return { base, chain };
 }
-/** Anthropic's own API takes the 1-hour TTL; other endpoints speaking its protocol may not, so they keep the 5-minute one. */
-export const prefixRetention = (model?: { provider?: string; compat?: unknown }): 'short' | 'long' =>
-  model?.provider === 'anthropic' && !(record(model.compat) && model.compat.supportsLongCacheRetention === false) ? 'long' : 'short';
+type CacheModel = { provider?: string; baseUrl?: string; compat?: unknown };
+const onAnthropicApi = (baseUrl?: string) => {
+  try { return baseUrl !== undefined && new URL(baseUrl).hostname === 'api.anthropic.com'; } catch { return false; }
+};
+/** Anthropic's own API takes the 1-hour TTL, under its `anthropic` provider or another one pointed at it (pi-multi-account's
+ * `anthropic-account-2`); other endpoints speaking its protocol may not, so they keep the 5-minute one. */
+export const prefixRetention = (model?: CacheModel): 'short' | 'long' =>
+  (model?.provider === 'anthropic' || onAnthropicApi(model?.baseUrl)) && !(record(model?.compat) && model.compat.supportsLongCacheRetention === false) ? 'long' : 'short';
 /** How long a merge of the chat view waits after the last request: the 1-hour entry lasts that long, the 5-minute one does not. */
-export const coldAfter = (model?: { provider?: string; compat?: unknown }) => prefixRetention(model) === 'long' ? COLD_LONG_MS : COLD_MS;
+export const coldAfter = (model?: CacheModel) => prefixRetention(model) === 'long' ? COLD_LONG_MS : COLD_MS;
 
 /** OptChat's status line (agents and background shells at work), in Pi's context and in Anthropic's payload alike. */
 export const isAtWork = (message: unknown) => record(message) && message.role === 'user' && Array.isArray(message.content) && message.content.length === 1

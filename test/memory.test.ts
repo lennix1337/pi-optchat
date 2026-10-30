@@ -410,6 +410,12 @@ test('with a prefix mark, the system prompt keeps its own entry, for an hour on 
   assert.equal(prefixRetention({ provider: 'anthropic' }), 'long');
   assert.equal(prefixRetention({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy' }), 'short', 'other endpoints speaking Anthropic\'s protocol keep 5 minutes');
+  // pi-multi-account registers each extra account as its own provider on Anthropic's API (2026-10-29: every main call on
+  // `anthropic-account-2` wrote no 1-hour entry, and turns after a 5-60 minute gap rewrote the whole ~90K-token prompt).
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com' }), 'long');
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com/', compat: { supportsLongCacheRetention: false } }), 'short');
+  assert.equal(prefixRetention({ provider: 'some-proxy', baseUrl: 'https://proxy.example.com' }), 'short');
+  assert.equal(prefixRetention({ provider: 'some-proxy', baseUrl: 'https://api.anthropic.com.example.com' }), 'short', 'the host itself, not a prefix of it');
 });
 
 test('under long retention the view\'s older mark takes the 1-hour entry too, after the system prompt and before the 5-minute marks, and a merge waits as long', () => {
@@ -428,6 +434,7 @@ test('under long retention the view\'s older mark takes the 1-hour entry too, af
   assert.equal(coldAfter({ provider: 'anthropic' }), COLD_LONG_MS, 'the chat view merges once the 1-hour entry has had its time');
   assert.equal(coldAfter({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), COLD_MS);
   assert.equal(coldAfter({ provider: 'some-proxy' }), COLD_MS, 'other endpoints keep the 4.5-minute merge');
+  assert.equal(coldAfter({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com' }), COLD_LONG_MS, 'another account on Anthropic\'s API too');
 });
 
 /** Whether some mark of the next call is at most 20 blocks after one of the last call's, so Anthropic finds that entry. */
