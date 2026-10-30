@@ -30,6 +30,7 @@ function fixture(dir: string) {
 
 test('registered input → frozen report → command/tool → restart preserves the same interval and excludes extension/RPC/commands', async () => withTempDir('catchup-hooks-', async dir => {
   const f = fixture(dir), tool = f.tools.get('catchup_report');
+  assert.equal(tool.exposure, 'deferred', 'declared on demand; the skill and the on-demand index name it');
   for (const [source, mode] of [['extension', 'tui'], ['rpc', 'rpc'], ['interactive', 'rpc']]) f.input(source, 'not a human boundary', mode);
   assert.match((await tool.execute('untracked', {})).content[0].text, /No completed recorded human interval/);
   f.input('interactive');

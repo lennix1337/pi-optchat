@@ -55,6 +55,15 @@ export function inventory(tools: readonly ToolInfo[], active: readonly string[],
 /** Declared tools the instructions never name; builtins are described by Pi itself. */
 export const unnamed = (rows: readonly ToolRow[]) => rows.filter(r => r.declared && !r.named && r.source !== 'builtin').map(r => r.name);
 
+/** Deferred extension tools stay out of the declarations; one line each keeps them known by name.
+ * MCP tools are excluded: their servers are already listed, and they can number in the dozens. */
+export function onDemandIndex(rows: readonly ToolRow[]): string {
+  const own = rows.filter(r => !r.declared && r.exposure === 'deferred' && r.source !== 'builtin' && !r.name.startsWith('mcp__'));
+  if (!own.length) return '';
+  return ['Declared on demand to save tokens. Call them from `codemode` as `tools.<name>(args)`; `describeTool("<name>")` gives the arguments.',
+    ...own.map(r => `- ${r.name} (${r.source}): ${r.summary}`)].join('\n');
+}
+
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
 
 export function renderTools(rows: readonly ToolRow[]): string {
@@ -88,6 +97,13 @@ export function registerToolInventory(pi: ExtensionAPI) {
       const list = rows(ctx);
       return { content: [{ type: 'text' as const, text: JSON.stringify({ tools: list, unnamed: unnamed(list) }) }], details: {} };
     },
+  });
+  // Its own section, so other handlers that rewrite the instructions leave it alone; the text only
+  // changes when the tool set does, so the cached prompt prefix survives ordinary turns.
+  pi.on('before_agent_start', event => {
+    const index = onDemandIndex(inventory(pi.getAllTools(), pi.getActiveTools(), ''));
+    if (index) event.systemPromptOptions.sections.on_demand_tools = index;
+    else delete event.systemPromptOptions.sections.on_demand_tools;
   });
   // Once per distinct set, so a new package without a routing line is noticed the first time it loads.
   let noticed = '';

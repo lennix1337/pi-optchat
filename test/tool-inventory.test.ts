@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from '@earendil-works/pi-coding-agent';
-import { instructionText, inventory, names, registerToolInventory, renderTools, sourceOf, unnamed } from '../src/tool-inventory.ts';
+import { instructionText, inventory, names, onDemandIndex, registerToolInventory, renderTools, sourceOf, unnamed } from '../src/tool-inventory.ts';
 
 const info = (path: string, source: string, baseDir?: string) => ({ path, source, scope: 'user', origin: 'package', ...(baseDir ? { baseDir } : {}) }) as ToolInfo['sourceInfo'];
 const tool = (name: string, sourceInfo: ToolInfo['sourceInfo'], exposure: ToolInfo['exposure'] = 'direct', description = `${name} does one thing. More detail.`) =>
@@ -42,6 +42,19 @@ test('inventory reports declared tools, on-demand tools and unnamed declared too
   assert.match(renderTools(inventory(tools, ['gitwatch'], 'gitwatch')), /Every declared tool is named/);
 });
 
+test('the on-demand index names deferred extension tools only, one line each', () => {
+  const mcp = tool('mcp__plane__workitem', info('builtin:mcp', 'builtin'), 'deferred');
+  const search = tool('list_mcp_resources', info('builtin:mcp', 'builtin'), 'deferred');
+  const rows = inventory([...tools, mcp, search], ['read', 'gitwatch'], '');
+  const index = onDemandIndex(rows);
+  assert.equal(index.split('\n').length, 2);
+  assert.match(index, /tools\.<name>\(args\)/);
+  assert.match(index, /^- context_metrics \(pi-optchat\): context_metrics does one thing\.$/m);
+  assert.doesNotMatch(index, /repl|mcp__|list_mcp_resources|old/, 'direct, MCP, builtin and hidden tools stay out');
+  assert.equal(onDemandIndex(inventory(tools, tools.map(t => t.name), '')), '', 'nothing deferred and inactive, no section');
+  assert.equal(onDemandIndex(inventory(tools, ['context_metrics'], '')), '', 'a deferred tool already declared is not indexed');
+});
+
 test('the command, the deferred tool and the one-time notice share the live inventory', async () => {
   const handlers = new Map<string, Function>(), commands = new Map<string, any>(), registered = new Map<string, any>(), notices: string[] = [];
   let active = ['gitwatch', 'repl'], prompt = 'gitwatch only';
@@ -54,6 +67,11 @@ test('the command, the deferred tool and the one-time notice share the live inve
   const ctx = { getSystemPrompt: () => prompt, ui: { notify: (text: string) => notices.push(text) } } as unknown as ExtensionContext;
   registerToolInventory(pi);
   assert.equal(registered.get('tool_inventory').exposure, 'deferred', 'costs no declaration until searched or scripted');
+  const event = { systemPromptOptions: { sections: { on_demand_tools: 'stale' } as Record<string, string> } };
+  handlers.get('before_agent_start')!(event, ctx);
+  assert.match(event.systemPromptOptions.sections.on_demand_tools!, /- context_metrics \(pi-optchat\)/);
+  active = [...active, 'context_metrics']; handlers.get('before_agent_start')!(event, ctx); active = ['gitwatch', 'repl'];
+  assert.equal('on_demand_tools' in event.systemPromptOptions.sections, false, 'an emptied index removes its section');
   const json = JSON.parse((await registered.get('tool_inventory').execute('id', {}, undefined, undefined, ctx)).content[0].text);
   assert.deepEqual(json.unnamed, ['repl']);
   await commands.get('tools').handler('', ctx);

@@ -92,7 +92,7 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
   pi.registerCommand('catchup', { description: 'Deterministic receipt since your previous human message: wakes, observed PRs/checks, reports and complete paged log; no model/network',
     getArgumentCompletions: prefix => ['live', 'history', 'window', 'log', 'json', 'range'].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => { try { await command(args, ctx); } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error'); } } });
-  pi.registerTool({ name: 'catchup_report', label: 'Deterministic activity receipt',
+  pi.registerTool({ name: 'catchup_report', label: 'Deterministic activity receipt', exposure: 'deferred',
     description: 'Read original-transcript activity between recorded human inputs, no inference/network. Read-only; repeated reads never acknowledge/advance it. window=0 is latest frozen interval; view=log pages every event via offset; history lists retained intervals; live includes work after current input. PR/check states are sourced observations, assistant reports are self-reported, never permission or E2E proof.',
     parameters: Type.Object({ view: Type.Optional(Type.Union([Type.Literal('summary'), Type.Literal('log'), Type.Literal('history'), Type.Literal('live')])), window: Type.Optional(Type.Integer({ minimum: 0 })), offset: Type.Optional(Type.Integer({ minimum: 0 })) }, { additionalProperties: false }),
     async execute(_id, args): Promise<{ content: { type: 'text'; text: string }[]; details: unknown }> {
