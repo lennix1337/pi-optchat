@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { initTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Entry } from '../src/memory.ts';
 import { registerCatchup } from '../src/catchup-integration.ts';
+import { CatchupWindows } from '../src/catchup.ts';
 import { CatchupView, catchupJson, showCatchup } from '../src/catchup-ui.ts';
 import { getCapabilities, setCapabilities, visibleWidth } from '@earendil-works/pi-tui';
 import { withTempDir } from './support.ts';
@@ -71,6 +72,39 @@ test('history is navigable after follow-up messages and raw event pages have exa
   await assert.rejects(tool.execute('bad-window', { window: 99 }), /No such/);
   await f.commands.get('catchup').handler('range 0 2', { ...f.context, mode: 'rpc' });
   assert.match(f.notifications.at(-1)!, /explicit historical range/);
+}));
+
+test('receipt, history and event commands show Brasília dates without changing UTC evidence or journals', async () => withTempDir('catchup-time-', async dir => {
+  const start = '2026-10-30T01:30:00.000Z', end = '2026-10-30T03:15:00.000Z';
+  const windows = new CatchupWindows(dir);
+  windows.arrive(0, start); windows.arrive(1, end);
+  const f = fixture(dir);
+  f.entries.push({ i: 0, kind: 'work', text: '[OptChat heartbeat] wake', size: 1, date: start });
+  const saved = readFileSync(join(dir, 'catchup.json'), 'utf8');
+  const receipt = await f.tools.get('catchup_report').execute('time', {});
+  assert.match(receipt.content[0].text, /29\/10\/2026, 22:30:00/);
+  assert.match(receipt.content[0].text, /30\/10\/2026, 00:15:00/);
+  assert.match(receipt.content[0].text, /Brasília, UTC-3/);
+  assert.doesNotMatch(receipt.content[0].text, /2026-10-30T/);
+  assert.equal(receipt.details.span.start, start);
+  for (const args of ['history', 'log 0', 'range 0 1 0']) {
+    await f.commands.get('catchup').handler(args, { ...f.context, mode: 'rpc' });
+    const text = f.notifications.at(-1)!;
+    assert.match(text, /29\/10\/2026, 22:30:00/);
+    assert.match(text, /Brasília, UTC-3/);
+    assert.doesNotMatch(text, /2026-10-30T/);
+  }
+  const raw = await f.tools.get('catchup_report').execute('events', { view: 'log' });
+  assert.equal(raw.details.items[0].at, start);
+  assert.equal(JSON.parse(raw.content[0].text).items[0].at, start);
+  let rendered = '';
+  await f.commands.get('catchup').handler('range 0 1', { ...f.context, ui: { custom: async (factory: Function) => {
+    const view = factory({ terminal: { rows: 80 }, requestRender() {} }, undefined, undefined, () => {});
+    rendered = view.render(120).join('\n');
+  } } } as unknown as ExtensionCommandContext);
+  assert.match(rendered, /29\/10\/2026, 22:30:00/);
+  assert.match(rendered, /Brasília, UTC-3/);
+  assert.equal(readFileSync(join(dir, 'catchup.json'), 'utf8'), saved);
 }));
 
 test('native catchup command renders Markdown, code colors and terminal hyperlinks with a visible URL fallback', async () => withTempDir('catchup-ui-', async dir => {
