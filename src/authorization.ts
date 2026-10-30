@@ -69,14 +69,32 @@ const paidTools = new Set(['subagent', 'spawn', 'tell']);
 export const CONTRACT_CHANGE = 'autonomy contract change';
 /** Whether a call's arguments name autonomy.json, the operator's contract file. */
 const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
-/** Tools whose arguments are prose for the operator or the ledger: naming a file there cannot change it. */
-const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor']);
-const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|jq|echo|printf|test|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
+/**
+ * Tools whose arguments are prose: naming a file there cannot change it. A delegated agent's task text is prose too:
+ * the child runs this same gate and can never approve its own contract change.
+ */
+const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor', 'spawn', 'subagent', 'tell']);
+const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
+/** Shell control words in front of a segment's command: `for f in a b` only lists words, `do`/`then` precede the real command. */
+const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
+const loopHeader = /^for\s+\w+\s+in\b/;
+/** `node -e|-p` whose inline script uses no file-writing API only reads. */
+const nodeInline = /^node\s+(?:-e|-p|--eval|--print)\s/;
+const fsWrite = /\b(?:writeFile|appendFile|rename|copyFile|cp|rm|unlink|truncate|createWriteStream|open|symlink|link)(?:Sync)?\s*\(/;
+/** Codemode tools that can write a file; a script without one only reads or reports. */
+const codemodeWriter = /\btools\.(?:edit|write|bash|shell_start)\s*\(/;
 
 /** Shell text without here-document bodies: a body is content for the file its command line names, like a write's content. */
 const withoutHeredocBodies = (command: string) =>
   command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, match => match.slice(0, match.indexOf('\n')));
 const redirect = /\d*>>?\s*("[^"]*"|'[^']*'|[^\s;&|]+)/g;
+/** `for f in ... autonomy.json ...` makes `$f` name the contract: the loop body is read with the file name in its place. */
+function loopVariablesResolved(text: string) {
+  for (const [, name, words] of text.matchAll(/\bfor\s+(\w+)\s+in\s+([^;\n]*)/g)) {
+    if (namesContract(words)) text = text.replace(new RegExp(`\\$\\{?${name}\\b\\}?`, 'g'), 'autonomy.json');
+  }
+  return text;
+}
 /** A copy writes only its last argument; its sources are read. */
 const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
 
@@ -85,13 +103,14 @@ const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
  * and is not a read-only command. Command substitution naming it counts, since its segments cannot be told apart.
  */
 function shellWritesContract(command: string) {
-  const text = withoutHeredocBodies(command).replace(/\d*>&\d/g, '');
+  const text = loopVariablesResolved(withoutHeredocBodies(command).replace(/\d*>&\d/g, ''));
   if (!namesContract(text)) return false;
   if (/`|\$\(/.test(text)) return true;
   return segments(text, '.').some(({ command: segment }) => {
     if ([...segment.matchAll(redirect)].some(match => namesContract(match[1]))) return true;
-    const rest = segment.replace(redirect, '').replace(/^(?:\w+=\S*\s+)*/, '').trim();
+    const rest = segment.replace(redirect, '').replace(/^(?:\w+=\S*\s+)*/, '').trim().replace(controlPrefix, '');
     if (copyCommand.test(rest)) return namesContract(rest.split(/\s+/).filter(arg => !arg.startsWith('-')).at(-1));
+    if (loopHeader.test(rest) || (nodeInline.test(rest) && !fsWrite.test(rest))) return false;
     return namesContract(rest) && !readOnlyCommand.test(rest);
   });
 }
@@ -104,6 +123,7 @@ export function touchesContract({ tool, input }: { tool: string; input: unknown 
   if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
   if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && namesContract(input.path);
   if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command);
+  if (tool === 'codemode' && record(input) && typeof input.code === 'string') return namesContract(input.code) && codemodeWriter.test(input.code);
   return namesContract(input);
 }
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
