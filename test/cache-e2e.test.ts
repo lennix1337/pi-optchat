@@ -2,7 +2,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
@@ -27,7 +27,7 @@ after(() => {
 });
 
 type Block = Record<string, unknown>;
-interface Usage { read: number; write: number; input: number; marks: number; tools: string; status: number; error?: string; body?: string }
+interface Usage { read: number; write: number; input: number; prefix: number; marks: number; tools: string; status: number; error?: string; body?: string }
 const tokens = (block: Block) => Math.ceil(JSON.stringify(block).length / 4);
 /** Anthropic's prompt cache as documented: tools, then system, then messages, block by block. */
 class SimulatedCache {
@@ -41,6 +41,7 @@ class SimulatedCache {
     };
     for (const tool of (body.tools ?? []) as Block[]) add(tool);
     for (const block of (body.system ?? []) as Block[]) add(block);
+    const prefix = blocks.reduce((sum, b) => sum + tokens(b.block), 0);
     for (const message of body.messages as { role: string; content: string | Block[] }[])
       for (const block of typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content) add({ role: message.role, ...block });
     if (body.cache_control) blocks.at(-1)!.mark = body.cache_control as { ttl?: string };
@@ -49,7 +50,7 @@ class SimulatedCache {
     const ttls = marks.map(j => blocks[j].mark!.ttl ?? '5m');
     // A rejected request is kept too, so `status !== 200` checks see it and the log says why.
     const fail = (error: string) => {
-      const usage = { read: 0, write: 0, input: 0, marks: marks.length, tools, status: 400, error };
+      const usage = { read: 0, write: 0, input: 0, prefix, marks: marks.length, tools, status: 400, error };
       this.requests.push(usage);
       console.error(`simulated Anthropic rejected request ${this.requests.length}: ${error} (marks ${marks.join(',')}, ttls ${ttls.join(',')})`);
       return usage;
@@ -64,7 +65,7 @@ class SimulatedCache {
     for (const mark of marks) this.entries.add(chain[mark]);
     const size = (from: number, to: number) => { let sum = 0; for (const b of blocks.slice(from, to)) sum += tokens(b.block); return sum; };
     const end = marks.length ? marks.at(-1)! + 1 : 0;
-    const usage = { read: size(0, found + 1), write: size(found + 1, end), input: size(Math.max(end, found + 1), blocks.length), marks: marks.length, tools, status: 200,
+    const usage = { read: size(0, found + 1), write: size(found + 1, end), input: size(Math.max(end, found + 1), blocks.length), prefix, marks: marks.length, tools, status: 200,
       body: JSON.stringify(body.messages) };
     this.requests.push(usage);
     return usage;
@@ -232,18 +233,67 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     // The view entries the busy turn's start left live for minutes. /reload used to forget them with the rest of OptChat's
     // state, so the next call marked only its last 20 blocks, out of reach of those entries, read tools + system alone and wrote
     // the whole view again (session 01a1704e, 2026-10-26 12:17: read 33022, wrote 78664, marks [91, 111] with the last at 69).
-    // Here a side call happens to cache the longer view, so the read alone would not show it: the marks do.
+    // Compaction can change the view between calls. Compare persisted digests, not an old mark's position: a lower index
+    // alone does not prove that the marked content is still the same. The controlled-view test below isolates restoration.
     const liveBefore = beforeReload.entries.filter(([, entry]) => entry.until > Date.parse(reloaded.date));
     const matchingAfter = liveBefore.filter(([digest, entry]) => afterReload.previous?.chain[entry.at] === digest);
     const evidence = JSON.stringify({ busyView, reloaded, capturedAt, beforeReload, afterReload, liveBefore, matchingAfter,
       start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write } });
     assert.ok(matchingAfter.length > 0, `a live persisted digest must match the post-reload view: ${evidence}`);
     assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${evidence}`);
-    assert.ok(reloaded.marks.some((block: number) => block <= Math.max(...busyView.marks)),
-      `the first call after /reload marks an entry the busy turn left: ${evidence}`);
+    assert.ok(reloaded.marks.some((block: number) => matchingAfter.some(([, entry]) => block >= entry.at && block - entry.at <= 20)),
+      `the first call after /reload reaches a live matching persisted entry: ${evidence}`);
     assert.ok(next.read > start.read + start.write / 2, `after /reload the next turn read ${next.read} and wrote ${next.write}; the busy turn had cached ${start.read} + ${start.write} at its start ` +
       `(evidence ${evidence})`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
+    assert.deepEqual(errors, []);
+  } finally {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+    await anthropic.close();
+  }
+});
+
+for (const restore of [true, false]) test(`real Pi + OptChat: controlled view growth after reload ${restore ? 'requires the restored entries' : 'misses without the saved entries'}`, { timeout: 120_000 }, async () => {
+  const anthropic = await simulatedAnthropic();
+  let lines = 400;
+  // Keep view growth independent of background summaries, but retain Pi's transport and OptChat's real payload/cache hooks.
+  const fixedView = (pi: ExtensionAPI) => pi.on('context_with_system', event => {
+    let replaced = 0;
+    for (const message of event.messages) if (message.role === 'user' && Array.isArray(message.content))
+      for (const block of message.content) if (block.type === 'text' && block.text.startsWith('<chat>\n')) {
+        block.text = '<chat>\n' + Array.from({ length: lines }, (_, i) => `${i}+1|note: fixed history line ${i}\n`).join('') + '</chat>';
+        replaced++;
+      }
+    assert.equal(replaced, 1, 'the fixture replaces exactly one history view');
+    return { messages: event.messages };
+  });
+  const name = `cache-controlled-reload-${restore}`;
+  const { session, errors } = await piSession(anthropic, name, fixedView);
+  try {
+    await session.prompt('first question');
+    const start = anthropic.cache.requests.at(-1)!;
+    const entriesFile = join(profilePath(name), 'cache-entries.json');
+    const saved = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
+    assert.ok(saved.entries.length > 0, 'the real request persisted cache entries');
+    // Negative control: lose only the saved cache state, not the provider cache, session or stable head.
+    if (!restore) unlinkSync(entriesFile);
+    lines = 1040;
+    await session.reload();
+    await session.prompt('next question');
+    const next = anthropic.cache.requests.at(-1)!;
+    const state = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
+    const reports = readFileSync(join(profilePath(name), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const report = reports.at(-1)!;
+    const matching = saved.entries.filter(([digest, entry]) => entry.until > Date.parse(report.date) && state.previous?.chain[entry.at] === digest);
+    assert.ok(matching.length > 0, 'the grown view preserves live provider entries');
+    const defaults = [report.blocks - 2, report.blocks - 22];
+    const reaches = (marks: number[]) => marks.some(block => matching.some(([, entry]) => block >= entry.at && block - entry.at <= 20));
+    assert.equal(reaches(defaults), false, 'the default marks cannot reach the old entries');
+    assert.equal(reaches(report.marks), restore, 'only restoration reaches the persisted view entry');
+    const halfView = start.prefix + (start.read + start.write - start.prefix) / 2;
+    assert.equal(next.read > halfView, restore, `read ${next.read}, wrote ${next.write}; prefix ${start.prefix}, half-view threshold ${halfView}`);
+    assert.equal(anthropic.cache.requests.length, 2, 'no extra request can warm a competing entry');
+    assert.deepEqual(anthropic.cache.requests.filter(r => r.status !== 200), []);
     assert.deepEqual(errors, []);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();

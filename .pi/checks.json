@@ -387,6 +387,11 @@
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/slack-bridge.test.ts"],
       "timeoutMs": 30000
     },
+    "cache-reload": {
+      "description": "Offline real Pi reload and simulated Anthropic wire, digest reachability and restoration-disabled negative control",
+      "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/cache-e2e.test.ts"],
+      "timeoutMs": 180000
+    },
     "shell-lifecycle": {
       "description": "Offline managed shell dispatch/cancellation, child exit, Windows pipeline reaping on timeout/abort and SDK headless notification/cleanup regressions",
       "argv": ["node", "--import", "tsx", "--import", "./test/support.ts", "--test", "test/shells.test.ts", "test/shell-reaper.test.ts", "test/headless.test.ts"],
