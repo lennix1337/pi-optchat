@@ -94,14 +94,24 @@ const isReleaseScript = (word: string) => /(?:^|[/\\])(?:release|publish)\.(?:ps
 /** Flags that make a deploy script only plan or print what it would do. */
 const isDryRun = (word: string) => /^-{1,2}(?:PlanOnly|WhatIf|DryRun|dry-run|plan|help|h)$/i.test(word);
 const interpreters = /^(?:pwsh|powershell|bash|sh|node|tsx|bun|deno|python3?|cmd)(?:\.exe)?$/i;
-const sqlWrite = /\b(?:update\s+[\w."]+\s+set|insert\s+into|delete\s+from|drop\s+(?:table|database|schema|index)|truncate\s+(?:table\s+)?[\w."]+|alter\s+table)\b/i;
+const sqlWrite = /\b(?:update\s+[\w."]+(?:\s+(?:as\s+)?\w+)?\s+set|insert\s+into|delete\s+from|drop\s+(?:table|database|schema|index)|truncate\s+(?:table\s+)?[\w."]+|alter\s+table)\b/i;
 const remoteMutation = /\b(?:docker\s+(?:compose\b[^\n;&|]*\b(?:up|down|restart|rm|stop)\b|restart|rm|stop|kill|exec\b[^\n;&|]*\b(?:rm|kill)\b)|systemctl\s+(?:restart|stop|start|disable)|rm\s+-[a-z]*r|kubectl\s+(?:apply|delete|scale|rollout))\b/i;
 
-/** The ssh host of a command that also writes SQL or changes remote containers/services, else undefined. Reads pass. */
+/** A database client as a command word (not a path or a longer name such as `psql-backups`). */
+const databaseClient = /(?:^|[\s;&|('"])(?:psql|mysql|mariadb|sqlite3|mongosh|redis-cli)(?=$|[\s;&|)'"])/i;
+/** Read-only forced by the command itself: `default_transaction_read_only=on` (PGOPTIONS, -c, SQL) or a read-only transaction. */
+const readOnlyForced = /\bdefault_transaction_read_only\s*(?:=|to\b)\s*'?on'?\b|\b(?:set\s+(?:session\s+characteristics\s+as\s+)?transaction|begin|start\s+transaction)\s+read\s+only\b/i;
+const readWriteAsked = /\bdefault_transaction_read_only\s*(?:=|to\b)\s*'?off'?\b|\bread\s+write\b/i;
+
+/**
+ * The ssh host of a command that also writes SQL, changes remote containers/services or runs a database client that
+ * the command does not force read-only (its SQL may sit in a file this text does not show). Else undefined.
+ */
 export function productionWriteHost(text: string) {
   // Flags that take a value (-i key, -p 22, -o Opt=x ...) consume it; the first other word is the host.
   const ssh = /(?:^|[\s;&|(])ssh(?:\s+(?:-[ipoFJLRDElbcmSWweOQ]\s*\S+|-[A-Za-z0-9]+))*\s+(?:[\w.-]+@)?(\w[\w.-]*)/.exec(text)?.[1];
-  return ssh && (sqlWrite.test(text) || remoteMutation.test(text)) ? ssh.toLowerCase() : undefined;
+  const unprovenClient = databaseClient.test(text) && !(readOnlyForced.test(text) && !readWriteAsked.test(text));
+  return ssh && (sqlWrite.test(text) || remoteMutation.test(text) || unprovenClient) ? ssh.toLowerCase() : undefined;
 }
 
 /** A recursive delete (rm -r, Remove-Item -Recurse, rd /s) whose targets are not all inside a temp folder. */
