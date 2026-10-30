@@ -6,8 +6,8 @@ export type ProfileEffectDecision = Decision & { problem?: string };
 export function readProfileEffectPolicy(dir: string | undefined, effects: () => Effect[]): ProfileEffectDecision | undefined {
   if (!dir) return undefined;
   try {
-    const contract = loadContract(dir);
-    return contract && decide(contract, effects());
+    // No contract yet: no rule widens anything, so irreversible effects still ask and the rest go to the advisor.
+    return decide(loadContract(dir) ?? { version: 1, default: 'advisor', rules: [] }, effects());
   } catch {
     // Parser and filesystem errors can include private configuration bytes or paths.
     return { level: 'ask', problem: 'invalid or unavailable policy; inspect the active profile configuration privately' };

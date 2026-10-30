@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
-import { productionWriteHost, runsDeploy, segments } from './effect-classifier.ts';
+import { externalEffectsOf, productionWriteHost, scriptCommands, runsDeploy, segments } from './effect-classifier.ts';
+import { browserConsentEffect } from './external-effects.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
@@ -149,11 +150,20 @@ function riskClass({ tool, input }: Invocation) {
   // The agent never widens its own contract: any call that can write autonomy.json waits for the operator.
   if (touchesContract({ tool, input })) return CONTRACT_CHANGE;
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
+  if (tool === 'browser_harness') return browserConsentEffect(input) ? 'consent click' : undefined;
   const text = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? input.command
     : record(input) && typeof input.code === 'string' && tool === 'codemode' ? input.code : undefined;
-  if (text === undefined) return;
+  return text === undefined ? undefined : shellRisk(text, tool === 'codemode');
+}
+
+/** The high-impact class of shell text (a codemode script is judged by the commands it hands to shell tools). */
+function shellRisk(text: string, script: boolean) {
   if (recursiveDelete(text)) return 'recursive delete';
   if (productionWriteHost(text)) return 'production write';
+  const external = (script ? scriptCommands(text) : [text]).flatMap(externalEffectsOf);
+  if (external.some(e => e.action === 'message')) return 'third-party message';
+  if (external.length) return 'production write';
+  if (/\bgh\s+pr\s+merge\b[^;&|\n]*\s--admin\b/.test(text)) return 'merge bypassing CI';
   if (runsDeploy(text)) return 'deploy';
   return riskClasses.find(([, pattern]) => pattern.test(text))?.[0];
 }

@@ -23,7 +23,12 @@ test('shared policy preserves contract precedence over trusted adapter effects',
 test('missing policy does not fabricate approval; failures ask without private diagnostics', () => withTempDir('policy-', dir => {
   const unavailable = () => { throw new Error('PRIVATE-CANARY'); };
   assert.equal(readProfileEffectPolicy(undefined, unavailable), undefined);
-  assert.equal(readProfileEffectPolicy(dir, unavailable), undefined);
+  // No contract file: effects are still judged, and a failure to read them asks instead of fabricating approval.
+  const noContract = readProfileEffectPolicy(dir, unavailable);
+  assert.equal(noContract?.level, 'ask');
+  assert.equal(JSON.stringify(noContract).includes('PRIVATE-CANARY'), false);
+  assert.equal(readProfileEffectPolicy(dir, () => [{ action: 'deploy', targets: ['x'] }])?.level, 'ask', 'irreversible: the operator decides');
+  assert.equal(readProfileEffectPolicy(dir, () => [{ action: 'push', targets: ['x'] }])?.level, 'advisor', 'the rest is as before');
   writeFileSync(join(dir, 'autonomy.json'), 'PRIVATE-CANARY');
   const invalid = readProfileEffectPolicy(dir, unavailable);
   assert.equal(invalid?.level, 'ask');
