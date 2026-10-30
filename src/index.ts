@@ -37,7 +37,7 @@ import { registerBashHints } from './bash-hints.ts';
 import { registerForegroundWaitGuard } from './foreground-wait.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
-import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, runRadar, wakeText } from './heartbeat.ts';
+import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadar, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
@@ -300,6 +300,7 @@ export default function optchat(pi: ExtensionAPI) {
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
       minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
+      queued: () => nextQueueItem(profile.dir) !== undefined,
       // The radar's last snapshot stays in radar.md so a person can see what the wake saw.
       radar: async () => {
         const argv = own()?.config.heartbeatRadar;
@@ -312,7 +313,7 @@ export default function optchat(pi: ExtensionAPI) {
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
       wake: (beat, radar) => {
         const dream = briefDream(ctx);
-        const text = wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar);
+        const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar), previousWake(profile.dir));
         deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
