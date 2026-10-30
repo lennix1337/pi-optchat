@@ -20,15 +20,23 @@ const msys = [
   { pid: 781, ppid: 779, pgid: 779, winpid: 37616 },
 ];
 
+// The fixture pids are real-looking, so the test runner itself may hold one of them (a run failed when node got 17256):
+// pass a `self` outside the fixture so the result does not depend on the runner's pid.
+const outside = 1;
+
 test('a killed shell owns the pipeline stages whose Windows parents are gone', () => {
-  assert.deepEqual([...ownedWindowsPids(24100, windows, msys)].sort((a, b) => a - b), [2712, 16788, 17256, 24100, 32472]);
+  assert.deepEqual([...ownedWindowsPids(24100, windows, msys, outside)].sort((a, b) => a - b), [2712, 16788, 17256, 24100, 32472]);
+});
+
+test('the reaper never kills its own process, even when it sits in the shell tree', () => {
+  assert.deepEqual([...ownedWindowsPids(24100, windows, msys, 17256)].sort((a, b) => a - b), [2712, 16788, 24100, 32472]);
 });
 
 test('a shell that joined an outer MSYS group does not take that whole group with it', () => {
   // Started from an MSYS parent (500, not ours): bash 783 keeps group 500. Its own children still go; 501 stays.
   const nested = [{ pid: 500, ppid: 1, pgid: 500, winpid: 9000 }, { pid: 501, ppid: 500, pgid: 500, winpid: 9001 },
     { pid: 783, ppid: 500, pgid: 500, winpid: 32472 }, { pid: 784, ppid: 783, pgid: 500, winpid: 17256 }];
-  assert.deepEqual([...ownedWindowsPids(24100, windows, nested)].sort((a, b) => a - b), [17256, 24100, 32472]);
+  assert.deepEqual([...ownedWindowsPids(24100, windows, nested, outside)].sort((a, b) => a - b), [17256, 24100, 32472]);
 });
 
 test('abort during the cwd check never starts a Windows shell', { skip: process.platform !== 'win32', timeout: 60_000 }, async t => {

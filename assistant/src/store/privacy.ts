@@ -1,5 +1,5 @@
 import { closeSync, lstatSync, openSync, type Stats } from 'node:fs';
-import { dirname, parse, resolve } from 'node:path';
+import { dirname, join, parse, resolve } from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 
 // This checks a quiescent, user-controlled directory, not concurrent path replacement.
@@ -48,10 +48,20 @@ export function aclInspectionFailure(result: Pick<SpawnSyncReturns<string>, 'sta
   return result.error || result.status !== 0 ? new Error('Privacy ACL inspection failed or found an untrusted grant') : null;
 }
 
+// Windows PowerShell 5.1 ships with Windows. PowerShell 7 finished this script in ~0.1 s but under a parallel load its
+// process sometimes stayed alive for 40 s or more after the script ended, so spawnSync blocked until the timeout.
+const windowsPowerShell = () => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+/** The environment without PSModulePath: one inherited from PowerShell 7 makes 5.1 load 7's modules and fail Get-Acl. */
+export function aclInspectionEnv(paths: string[], base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(Object.entries(base).filter(([key]) => key.toUpperCase() !== 'PSMODULEPATH'));
+  return { ...env, ASSISTANT_PRIVACY_PATHS: paths.join('\n') };
+}
+
 /** One PowerShell for all `paths`: each costs ~0.3 s idle (seconds when busy), and startup prepares about ten databases. */
 function checkAcl(paths: string[]): void {
-  const result = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsAclCheck], {
-    env: { ...process.env, ASSISTANT_PRIVACY_PATHS: paths.join('\n') }, encoding: 'utf8', timeout: ACL_INSPECTION_TIMEOUT_MS, maxBuffer: 16384, windowsHide: true,
+  const result = spawnSync(windowsPowerShell(), ['-NoProfile', '-NonInteractive', '-Command', windowsAclCheck], {
+    env: aclInspectionEnv(paths), encoding: 'utf8', timeout: ACL_INSPECTION_TIMEOUT_MS, maxBuffer: 16384, windowsHide: true,
   });
   const failure = aclInspectionFailure(result);
   if (failure) throw failure;
