@@ -6,22 +6,25 @@ import type { KeyProtector } from '../src/secrets/protector.ts';
 import { withDir } from './runtime-support.ts';
 
 // The vault refuses a directory others can read, so fixtures get an owner-only ACL (current user, SYSTEM, Administrators).
-const ownerOnly = `$ErrorActionPreference='Stop'
-$acl=[System.Security.AccessControl.DirectorySecurity]::new()
-$acl.SetAccessRuleProtection($true,$false)
-foreach($sid in @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544')) {
- $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+const system32 = (tool: string) => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', tool);
+let currentSid: string | undefined;
+function ownerOnly(dir: string): void {
+  if (!currentSid) {
+    const who = spawnSync(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', timeout: 60000, windowsHide: true });
+    currentSid = /"(S-1-\d+(?:-\d+)+)"\s*$/.exec(String(who.stdout ?? '').trim())?.[1];
+    if (!currentSid) throw new Error(`could not read the current user SID: ${who.error?.message ?? `status ${who.status}`}`);
+  }
+  const grants = [currentSid, 'S-1-5-18', 'S-1-5-32-544'].map(sid => `*${sid}:(OI)(CI)F`);
+  const r = spawnSync(system32('icacls.exe'), [dir, '/inheritance:r', '/grant:r', ...grants], { encoding: 'utf8', timeout: 60000, windowsHide: true });
+  if (r.status !== 0) throw new Error(`could not make the disposable fixture owner-only: ${r.error?.message ?? `status ${r.status} signal ${r.signal}`} ${String(r.stdout ?? '').trim().slice(0, 300)}`);
 }
-[System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($env:VAULT_FIXTURE),$acl)`;
 
 /** A disposable owner-only directory, removed afterwards. */
 export function privateDir(prefix: string, fn: (dir: string) => void | Promise<void>): Promise<void> {
   return withDir(prefix, dir => {
     if (process.platform !== 'win32') chmodSync(dir, 0o700);
     else {
-      const r = spawnSync('C:/Program Files/PowerShell/7/pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', ownerOnly], { env: { ...process.env, VAULT_FIXTURE: dir }, timeout: 60000, windowsHide: true });
-      // pwsh startup alone can pass 15 s while the whole unit suite runs in parallel.
-      if (r.status !== 0) throw new Error(`could not make the disposable fixture owner-only: ${r.error?.message ?? `status ${r.status} signal ${r.signal}`} ${String(r.stderr ?? '').trim().slice(0, 300)}`);
+      ownerOnly(dir);
     }
     return fn(dir);
   });

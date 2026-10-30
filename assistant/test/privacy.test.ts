@@ -170,6 +170,38 @@ test('a slow ACL inspection on a busy machine gets time and, if it still times o
   assert.equal(aclInspectionFailure({ status: 0, error: undefined }), null);
 });
 
+// PowerShell 7 ended the inspection script in ~0.1 s, yet under the parallel unit suite its process lingered 40-60 s before
+// exiting, failing vault tests by timeout (2026-10-30); the inspection now runs on the Windows PowerShell 5.1 Windows ships.
+// A PSModulePath inherited from a PowerShell 7 session makes 5.1 load 7's modules and fail Get-Acl, so it is dropped.
+test('the ACL inspection runs on Windows PowerShell and judges correctly from a PowerShell 7 environment', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'privacy-ps51-'));
+  const childProcess = (await import('node:child_process')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const original = childProcess.spawnSync;
+  const saved = process.env.PSModulePath;
+  try {
+    acl(root);
+    const { aclInspectionEnv, checkDirectoryPrivacy } = await import('../src/store/privacy.ts');
+    assert.deepEqual(aclInspectionEnv(['a', 'b'], { PSMODULEPATH: 'x', psmodulepath: 'y', KEEP: '1' }), { KEEP: '1', ASSISTANT_PRIVACY_PATHS: 'a\nb' });
+    process.env.PSModulePath = 'C:\\Program Files\\PowerShell\\7\\Modules';
+    const commands: string[] = [];
+    childProcess.spawnSync = ((command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      if (options.env?.ASSISTANT_PRIVACY_PATHS !== undefined) commands.push(command);
+      return original(command, args, options as never);
+    }) as typeof original;
+    syncBuiltinESMExports();
+    checkDirectoryPrivacy(root);
+    acl(root, true);
+    assert.throws(() => checkDirectoryPrivacy(root), /untrusted grant/);
+    assert.equal(commands.length, 2);
+    for (const command of commands) assert.match(command, /System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i);
+  } finally {
+    childProcess.spawnSync = original; syncBuiltinESMExports();
+    if (saved === undefined) delete process.env.PSModulePath; else process.env.PSModulePath = saved;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a new private directory gets the protected owner, SYSTEM and Administrators DACL the privacy check accepts', { timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'privacy-create-'));
   try {
