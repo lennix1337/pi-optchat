@@ -70,7 +70,7 @@ export function segments(text: string, cwd: string) {
 
 /** The words of a segment from its command word on: leading env assignments, `then`, `do`, `sudo`, `time`, `(`... and
  * redirections (`> file`, `2>`, `<in`) dropped. */
-function commandWords(command: string) {
+export function commandWords(command: string) {
   const all = words(command.replace(/^[({!\s]+/, '')).filter((word, i, list) => !/^\d*[<>]/.test(word) && !/^\d*[<>]+$/.test(list[i - 1] ?? ''));
   let at = 0;
   for (let last = -1; last !== at;) {
