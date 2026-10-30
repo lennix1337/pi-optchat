@@ -42,9 +42,11 @@ export function asUser(message: AgentMessage): AgentMessage {
   const { content, customType, timestamp } = message;
   if (customType === REPORT_TYPE) return { role: 'user', content, timestamp };
   const tag = `[${customType}] `;
-  if (typeof content === 'string') return { role: 'user', content: tag + content, timestamp };
+  // A message that already opens with its own tag (gitwatch notices do) keeps it once.
+  const tagged = (text: string) => text.startsWith(tag) ? text : tag + text;
+  if (typeof content === 'string') return { role: 'user', content: tagged(content), timestamp };
   const [first, ...rest] = content;
-  if (first?.type === 'text') return { role: 'user', content: [{ ...first, text: tag + first.text }, ...rest], timestamp };
+  if (first?.type === 'text') return { role: 'user', content: [{ ...first, text: tagged(first.text) }, ...rest], timestamp };
   return { role: 'user', content: [{ type: 'text', text: tag.trimEnd() }, ...content], timestamp };
 }
 /** A long text is never cut: it is logged as several messages in a row (recipe §1), each as long as one zoom page. */
