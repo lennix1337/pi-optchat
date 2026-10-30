@@ -255,9 +255,10 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => { dir: string
   };
   pi.registerTool(commitmentsTool(required, () => presence.progressed(now())));
   pi.on('agent_start', () => presence.start(now()));
-  pi.on('tool_call', event => { if (event.toolName === 'slack_send') presence.reported(now()); });
   pi.on('tool_result', event => {
     if (!owner()) return;
+    // Only a delivered post told the operator anything; a refused or failed send keeps the reminder due.
+    if (event.toolName === 'slack_send' && !event.isError) presence.reported(now());
     const notice = presence.check(now());
     if (!notice) return;
     return { content: [...event.content, { type: 'text' as const, text: `\n${notice}` }] };

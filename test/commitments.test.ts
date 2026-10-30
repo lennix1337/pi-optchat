@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, STALE_MS, summaryLines, updateCommitment } from '../src/commitments.ts';
+import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment } from '../src/commitments.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 
 const temp = () => mkdtempSync(join(tmpdir(), 'commitments-'));
@@ -84,6 +84,31 @@ test('presence: 10 min without a word to the operator, then 30 min without recor
   assert.match(p.check(T0 + 61 * 60_000)!, /30m without recorded progress/, 'and the stall nudge comes back after another 30 min');
   p.start(T0 + 50 * 60_000);
   assert.equal(p.check(T0 + 55 * 60_000), undefined, 'a new turn starts both clocks');
+});
+
+test('presence counts the operator as told only when slack_send succeeds, through the registered hooks', () => {
+  const dir = temp();
+  type Handler = (event: Record<string, unknown>) => unknown;
+  const handlers = new Map<string, Handler>();
+  const pi = { registerTool: () => {}, on: (name: string, handler: Handler) => { handlers.set(name, handler); } };
+  let now = T0;
+  registerCommitments(pi as never, () => ({ dir, sourceExists: () => true }), () => now);
+  const fire = (name: string, event: Record<string, unknown>) => handlers.get(name)?.(event);
+  const send = (isError: boolean) => {
+    fire('tool_call', { toolName: 'slack_send', toolCallId: 's', input: {} });
+    return fire('tool_result', { toolName: 'slack_send', toolCallId: 's', input: {}, isError, content: [{ type: 'text', text: isError ? 'refused' : 'Sent' }] });
+  };
+  const otherTool = () => fire('tool_result', { toolName: 'read', toolCallId: 'r', input: {}, isError: false, content: [{ type: 'text', text: 'x' }] }) as { content: { text: string }[] } | undefined;
+  try {
+    fire('agent_start', {});
+    now = T0 + PRESENCE_REPORT_MS + 60_000;
+    const failed = send(true) as { content: { text: string }[] } | undefined;
+    assert.match(failed?.content.at(-1)?.text ?? '', /without a word to the operator/, 'a refused or failed send told the operator nothing');
+    fire('agent_start', {});
+    now += PRESENCE_REPORT_MS + 60_000;
+    send(false);
+    assert.equal(otherTool(), undefined, 'a delivered send resets the report clock');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the tool requires a real source message and reports progress', async () => {
