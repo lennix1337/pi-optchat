@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -13,8 +13,9 @@ import { removeDir } from './support.ts';
 // `git add && git commit && git push && gh pr create` with timeout 180 outlived its bash call; the commit's outcome was
 // left uncertain and every later bash call was refused until reconciled by hand. The guard refuses that call before it runs.
 
+// Compared as the file itself: git spells the top level in long form, while Windows' temp folder may be an 8.3 short name (RUNNER~1).
 const slash = (path: string) => path.replaceAll('\\', '/');
-const same = (a: string | undefined, b: string) => a !== undefined && slash(a).toLowerCase() === slash(b).toLowerCase();
+const real = (path: string | undefined) => path === undefined ? path : realpathSync.native(path);
 
 function git(dir: string, ...args: string[]) {
   execFileSync('git', ['-C', dir, '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', ...args], { stdio: 'ignore' });
@@ -51,10 +52,10 @@ function fixtures() {
 test('a pre-commit hook is found where git runs one, and a sample hook is not', () => {
   const f = fixtures();
   try {
-    assert.ok(same(activePreCommitHook(f.gitHook), join(f.gitHook, '.git', 'hooks', 'pre-commit')));
-    assert.ok(same(activePreCommitHook(f.husky), join(f.husky, '.husky', 'pre-commit')));
-    assert.ok(same(activePreCommitHook(f.hooksPath), join(f.hooksPath, '.husky', '_', 'pre-commit')));
-    assert.ok(same(activePreCommitHook(f.worktree), join(f.gitHook, '.git', 'hooks', 'pre-commit')), 'a linked worktree shares its repository hooks');
+    assert.equal(real(activePreCommitHook(f.gitHook)), real(join(f.gitHook, '.git', 'hooks', 'pre-commit')));
+    assert.equal(real(activePreCommitHook(f.husky)), real(join(f.husky, '.husky', 'pre-commit')));
+    assert.equal(real(activePreCommitHook(f.hooksPath)), real(join(f.hooksPath, '.husky', '_', 'pre-commit')));
+    assert.equal(real(activePreCommitHook(f.worktree)), real(join(f.gitHook, '.git', 'hooks', 'pre-commit')), 'a linked worktree shares its repository hooks');
     assert.equal(activePreCommitHook(f.plain), undefined, 'git init leaves only pre-commit.sample');
     assert.equal(activePreCommitHook(join(f.root, 'not-a-repo')), undefined);
   } finally { removeDir(f.root); }
