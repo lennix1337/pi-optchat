@@ -13,6 +13,7 @@ import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
+import type { ViewEntriesState } from '../src/cache.ts';
 
 // End to end: a real Pi session with OptChat, Pi's own Anthropic transport, and a local server that keeps Anthropic's prompt
 // cache rules (entries at marked blocks, a 20-block lookback, at most 4 marks, 1-hour marks before 5-minute ones).
@@ -216,9 +217,13 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const from = requests.length;
     await session.prompt('again get busy 160');
     const start = requests[from];
+    const entriesFile = join(profilePath('cache-reload-view'), 'cache-entries.json');
+    const beforeReload = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
+    const capturedAt = Date.now();
     await session.reload();
     const after = requests.length;
     await session.prompt('next question');
+    const afterReload = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
     const next = requests[after];
     const diagnostics = readFileSync(join(profilePath('cache-reload-view'), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     // Side calls (compaction) leave no line: the last two are the busy turn's last call and the one after /reload.
@@ -228,11 +233,16 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     // state, so the next call marked only its last 20 blocks, out of reach of those entries, read tools + system alone and wrote
     // the whole view again (session 01a1704e, 2026-10-26 12:17: read 33022, wrote 78664, marks [91, 111] with the last at 69).
     // Here a side call happens to cache the longer view, so the read alone would not show it: the marks do.
-    assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${JSON.stringify(reloaded)}`);
+    const liveBefore = beforeReload.entries.filter(([, entry]) => entry.until > Date.parse(reloaded.date));
+    const matchingAfter = liveBefore.filter(([digest, entry]) => afterReload.previous?.chain[entry.at] === digest);
+    const evidence = JSON.stringify({ busyView, reloaded, capturedAt, beforeReload, afterReload, liveBefore, matchingAfter,
+      start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write } });
+    assert.ok(matchingAfter.length > 0, `a live persisted digest must match the post-reload view: ${evidence}`);
+    assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${evidence}`);
     assert.ok(reloaded.marks.some((block: number) => block <= Math.max(...busyView.marks)),
-      `the first call after /reload marks an entry the busy turn left (${busyView.marks}): ${JSON.stringify(reloaded.marks)}`);
+      `the first call after /reload marks an entry the busy turn left: ${evidence}`);
     assert.ok(next.read > start.read + start.write / 2, `after /reload the next turn read ${next.read} and wrote ${next.write}; the busy turn had cached ${start.read} + ${start.write} at its start ` +
-      `(diagnostics before /reload ${JSON.stringify(busyView)}, after ${JSON.stringify(reloaded)})`);
+      `(evidence ${evidence})`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
     assert.deepEqual(errors, []);
   } finally {
