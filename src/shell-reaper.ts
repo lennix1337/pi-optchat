@@ -19,7 +19,7 @@ export interface MsysProcess { pid: number; ppid: number; pgid: number; winpid: 
  * running in them, and everything MSYS lists under those (by parent, or by a process group one of them leads).
  * A group led by a process outside the tree is not ours, so it is never taken whole.
  */
-export function ownedWindowsPids(root: number, windowsParents: Map<number, number>, msys: MsysProcess[]): Set<number> {
+export function ownedWindowsPids(root: number, windowsParents: Map<number, number>, msys: MsysProcess[], self = process.pid): Set<number> {
   const owned = new Set([root]);
   for (let grew = true; grew;) {
     grew = false;
@@ -32,7 +32,7 @@ export function ownedWindowsPids(root: number, windowsParents: Map<number, numbe
     for (const p of msys) if (!mine.has(p.pid) && (mine.has(p.ppid) || groups.has(p.pgid))) { mine.add(p.pid); grew = true; }
   }
   for (const p of msys) if (mine.has(p.pid)) owned.add(p.winpid);
-  owned.delete(process.pid);
+  owned.delete(self);
   return owned;
 }
 
