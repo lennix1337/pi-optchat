@@ -46,6 +46,7 @@ import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
+import { registerCommitments } from './commitments.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
@@ -591,6 +592,11 @@ export default function optchat(pi: ExtensionAPI) {
   const unwatchWork: (() => void)[] = [];
   const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
     ? catchupSource(active, flush, approvals, shells) : undefined);
+  // What OptChat promised and what waits on the operator, in every turn, plus the 10/30-min presence nudges (src/commitments.ts).
+  const commitments = registerCommitments(pi, () => {
+    const a = active;
+    return a && !remote && !joined && !importing ? { dir: a.dir, sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; } } : undefined;
+  });
   pi.on('input', async (event, ctx) => {
     if (joined) {
       try {
@@ -719,7 +725,7 @@ export default function optchat(pi: ExtensionAPI) {
       const system = stateless(promptFor(prompt, a.config));
       if (records?.epoch !== viewEpoch) {
         const operational = readOperationalState(join(a.dir, 'operational-state.json'));
-        records = { epoch: viewEpoch, text: [operational.entries.length ? renderOperationalContext(operational) : '', catchup.context()].filter(Boolean).join('\n\n') };
+        records = { epoch: viewEpoch, text: [operational.entries.length ? renderOperationalContext(operational) : '', commitments.context(a.dir), catchup.context()].filter(Boolean).join('\n\n') };
       }
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;

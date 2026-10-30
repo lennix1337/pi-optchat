@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
+import { readCommitments, summaryLines } from './commitments.ts';
 import { projectOfRepo } from './projects.ts';
 import { atomicWrite } from './store.ts';
 
@@ -107,8 +108,8 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number };
-export function composeSummary({ day, waiting, prs, briefing, approvals }: SummaryInputs): string {
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] } };
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const byChannel = new Map<string, string[]>();
   for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
@@ -118,8 +119,10 @@ export function composeSummary({ day, waiting, prs, briefing, approvals }: Summa
     lines.push(`• #${channel} (${entries.length}):`);
     for (const line of entries.slice(-4)) lines.push(`   – ${one(line, 160)}`);
   }
-  const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`)];
+  const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
+    ...(commitments?.waiting ?? []).map(t => `Pendência: ${one(t, 160)}`)];
   lines.push('', '*Esperando você*', ...(wait.length ? wait.map(w => `• ${w}`) : ['• Nada.']));
+  if (commitments?.attention.length) lines.push('', `*Compromissos meus atrasados ou parados (${commitments.attention.length})*`, ...commitments.attention.slice(0, 8).map(t => `• ${one(t, 160)}`));
   if (prs.length) {
     lines.push('', `*PRs abertos (${prs.length})*`);
     const ci: Record<string, string> = { SUCCESS: '✅', FAILURE: '❌', ERROR: '❌', PENDING: '⏳', EXPECTED: '⏳', NONE: '·' };
@@ -160,7 +163,9 @@ export class DailySummary {
     let waiting: string[] = [];
     try { waiting = ((await request(owner, '/v1/tasks?limit=50')) as { tasks: { status: string; title: string }[] }).tasks.filter(t => t.status === 'needs_input').map(t => t.title); }
     catch { /* the panel is optional */ }
-    await this.post(composeSummary({ day: readDay(owner.dir, now - 86_400_000), waiting, prs: this.prs.open(owner.dir), briefing, approvals: this.approvals() }), null);
+    let commitments: SummaryInputs['commitments'];
+    try { commitments = summaryLines(readCommitments(owner.dir), now); } catch { commitments = undefined; }
+    await this.post(composeSummary({ day: readDay(owner.dir, now - 86_400_000), waiting, prs: this.prs.open(owner.dir), briefing, approvals: this.approvals(), commitments }), null);
     return true;
   }
 }
