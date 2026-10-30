@@ -21,7 +21,7 @@ export type OperationalKind = 'objective' | 'decision' | 'constraint' | 'authori
 export type EvidenceKind = 'self-reported' | 'test' | 'log' | 'tool-result' | 'external';
 export type CheckStatus = 'verified' | 'not_verified' | 'blocked';
 
-export const GRANT_ACTIONS = ['push', 'merge', 'commit', 'paid', 'delete', 'publish'] as const;
+export const GRANT_ACTIONS = ['push', 'merge', 'commit', 'paid', 'delete', 'publish', 'deploy'] as const;
 export type GrantAction = typeof GRANT_ACTIONS[number];
 const MAX_SCOPE_CHARS = 256;
 
@@ -327,6 +327,42 @@ export function grantTargets(input: unknown, cwd: string) {
   const dirs = segments(command, cwd).flatMap(({ command: segment, dir }) =>
     [dir, ...[...segment.matchAll(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/g)].map(match => normalPath(match[1], dir))]);
   return [...new Set([cwd, ...dirs])];
+}
+
+/** Actions an operator's typed order may lift past an `ask` rule, and the words that must name them in the quote. */
+const ORDER_WORDS: Partial<Record<GrantAction, RegExp>> = { merge: /merg|mescl/i, deploy: /deplo/i, publish: /publi|release|lan[cç]/i };
+const NEGATION = /(?:^|[^\p{L}])(?:sem|n[ãa]o|nunca|nem|jamais|not|never|without|don'?t)(?![\p{L}])/iu;
+/** How long a typed order keeps lifting `ask` rules: a work session, not a standing permission. */
+export const ORDER_GRANT_TTL_MS = 12 * 3_600_000;
+
+/** True when some clause names the action with no negation before it, and no clause negates it. */
+function namesAction(text: string, action: GrantAction) {
+  const word = ORDER_WORDS[action];
+  if (!word) return false;
+  const verdicts = text.split(/[.;,!?\n]/).flatMap(clause => {
+    const found = word.exec(clause);
+    return found ? [!NEGATION.test(clause.slice(0, found.index))] : [];
+  });
+  return verdicts.length > 0 && verdicts.every(Boolean);
+}
+
+/** One place, not a family: an owner/repo slug or a path at least three levels deep, without wildcards. */
+const specificScope = (scope: string) => !scope.includes('*') && (/^[^/:]+\/[^/]+$/.test(scope) || scope.split('/').filter(Boolean).length >= 3);
+
+/**
+ * The operator's typed order that lifts an `ask` rule for this effect, as a line for the log, or undefined. It needs the
+ * latest active grant for the action covering a target, recorded within ORDER_GRANT_TTL_MS, on a specific scope, whose
+ * text is still exactly the operator's message (`sourceText` reads the original) and names the action without negating
+ * it, so a misread "sim" or a model-widened scope lifts nothing.
+ */
+export function orderGrantFor(state: OperationalState, effect: { action: string; targets: string[] }, sourceText: (id: string) => string | undefined, now = Date.now()) {
+  const action = effect.action as GrantAction;
+  if (!ORDER_WORDS[action]) return undefined;
+  const found = activeGrants(state, now).filter(({ grant }) => grant.action === action && effect.targets.some(t => scopeCovers(grant.scope, t))).at(-1);
+  if (!found?.grant.allow || !specificScope(found.grant.scope)) return undefined;
+  const { entry } = found, age = now - Date.parse(entry.createdAt);
+  if (!(age >= 0 && age <= ORDER_GRANT_TTL_MS) || sourceText(entry.sourceMessageId) !== entry.text || !namesAction(entry.text, action)) return undefined;
+  return `operator order ${entry.sourceMessageId} (record ${entry.id}): "${entry.text.length > 160 ? `${entry.text.slice(0, 159)}\u2026` : entry.text}"`;
 }
 
 /** One advisor-facing line about the latest grant matching any of the call's targets, or undefined when there is none. */

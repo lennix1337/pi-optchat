@@ -42,7 +42,7 @@ import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
-import { describeGrant, grantTargets, readOperationalState, renderOperationalContext } from './operational-state.ts';
+import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
@@ -129,6 +129,17 @@ export default function optchat(pi: ExtensionAPI) {
     return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },
       message => profile.usage.compression(message, 'advisor', profile.sessionId));
   }, contractDir: () => active?.dir,
+  // "pode fazer o merge e o deploy", recorded as grants quoting it, covers the calls it names instead of one prompt each.
+  orderGrant: effect => {
+    const profile = active;
+    if (!profile) return undefined;
+    const said = (id: string) => {
+      const source = /^(0|[1-9]\d*)$/.test(id) ? profile.memory.root[Number(id)] : undefined;
+      return source?.kind === 'user' && !source.origin ? source.text : undefined;
+    };
+    try { return orderGrantFor(readOperationalState(join(profile.dir, 'operational-state.json')), effect, said); }
+    catch { return undefined; /* an unreadable state file lifts nothing: the call waits for the operator */ }
+  },
   // A call that waits for the operator is also posted to their Slack DM, where its buttons or `aprovar`/`negar` in its
   // thread decide it; decided anywhere else, the post is rewritten to say so.
   onPending: (pending, session, gate) => void slack.askApproval({ token: pending.token, summary: pending.summary, label: pending.kind ?? pending.tool, expires: pending.expires,

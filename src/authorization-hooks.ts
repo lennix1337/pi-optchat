@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
 import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval, type Settled } from './authorization.ts';
 import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
-import { classifyEffects, describeDecision, logReported, type Decision, type Repo } from './autonomy.ts';
+import { classifyEffects, describeDecision, logReported, type Decision, type Effect, type Repo } from './autonomy.ts';
 import { readProfileEffectPolicy } from './effect-policy.ts';
 
 const WIDGET = 'optchat-approval';
@@ -83,8 +83,10 @@ const RESULTS = { embedded: undefined, invalid: { action: 'handled' }, standing:
   // Keep the exact interactive token as input; do not manufacture a broader user request.
   approved: { action: 'continue' } } as const satisfies Record<keyof typeof NOTICES, InputEventResult | undefined>;
 
-/** Where the contract lives and how its targets are read. */
-interface ContractSource { dir: ContractDir; repo?: Repo }
+/** The operator's typed order covering an effect (a line for the log), or undefined; see `orderGrantFor`. */
+export type OrderGrant = (effect: Effect) => string | undefined;
+/** Where the contract lives, how its targets are read, and which typed orders can lift its `ask` rules. */
+interface ContractSource { dir: ContractDir; repo?: Repo; orderGrant?: OrderGrant }
 
 function reportEffect(dir: string, decision: Decision, pending: PendingApproval, ctx: ExtensionContext) {
   const effect = decision.effect!;
@@ -93,10 +95,30 @@ function reportEffect(dir: string, decision: Decision, pending: PendingApproval,
   ctx.ui.notify(`Ran under autonomy.json (report) \u2014 ${describeDecision(decision)}: ${pending.summary}`, 'info');
 }
 
+/**
+ * What the operator's typed order names runs and is logged; the rest of the call is judged as if alone. `run` when the
+ * order covers every effect, the rest's decision when it no longer asks, else undefined (nothing lifted, nothing logged).
+ */
+function liftOrdered(dir: string, effects: Effect[], orderGrant: OrderGrant, pending: PendingApproval, ctx: ExtensionContext): 'run' | Decision | undefined {
+  const orders = effects.map(effect => [effect, orderGrant(effect)] as const);
+  const rest = orders.filter(([, line]) => !line).map(([effect]) => effect);
+  if (rest.length === effects.length) return undefined;
+  const remaining = rest.length ? readProfileEffectPolicy(dir, () => rest) : undefined;
+  if (remaining?.level === 'ask') return undefined;
+  for (const [effect, line] of orders) if (line) reportEffect(dir, { level: 'report', effect, rule: { action: effect.action, scope: ['*'], level: 'report', note: line } }, pending, ctx);
+  return remaining ?? 'run';
+}
+
 /** The contract's word on a refused call: `run`, a refusal note, or undefined when it has no rule (the advisor decides). */
-function contractVerdict({ dir: contractDir, repo }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
+function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
   if (touchesContract(call)) return { note: 'Only the operator changes autonomy.json: neither the contract nor the advisor can approve this. ' };
-  const dir = contractDir(), decision = readProfileEffectPolicy(dir, () => classifyEffects(call, repo));
+  const dir = contractDir(), effects = classifyEffects(call, repo);
+  let decision = readProfileEffectPolicy(dir, () => effects);
+  if (decision?.level === 'ask' && !decision.problem && orderGrant && dir) {
+    const lifted = liftOrdered(dir, effects, orderGrant, pending, ctx);
+    if (lifted === 'run') return 'run';
+    decision = lifted ?? decision;
+  }
   if (!decision || decision.level === 'advisor') return undefined;
   if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
     : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ` };
@@ -152,6 +174,8 @@ function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, gr
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined,
   contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined,
+  /** The operator's typed order that lifts an `ask` rule for one effect (see `orderGrantFor`). */
+  orderGrant = undefined as OrderGrant | undefined,
   /** Called once per call that waits for the operator (after the contract and the advisor), e.g. to ask on Slack. */
   onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined,
   /** Called when such a call stops waiting (approved, denied, superseded or expired), wherever it was decided. */
@@ -161,7 +185,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), onSettled: (token, outcome) => onSettled?.(token, outcome) });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
-  const advised = advisedAdmission(gate, pi, { advisor, grant, contract: { dir: contractDir, repo } });
+  const advised = advisedAdmission(gate, pi, { advisor, grant, contract: { dir: contractDir, repo, orderGrant } });
   // Child SDK prompt/steer calls default to interactive even when manager-authored.
   if (grant) pi.on('input', (event, ctx) => {
     const command = operatorCommand(gate, event.text, event.source, ctx);

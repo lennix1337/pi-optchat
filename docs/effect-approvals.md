@@ -51,6 +51,15 @@ itself, never from the conversation, so a misread "sim" cannot widen it.
 - **Order**: the first live rule (unexpired `until`) whose action and scope match decides; a call with several
   effects takes the strictest (`ask` > no rule > `report` > `free`). An effect with no rule uses `default`
   (`advisor`, the default, keeps the advisor below; or a level).
+- **Typed orders**: an `ask` on `merge`, `deploy` or `publish` runs (and is logged to `autonomy-log.jsonl` as
+  `operator order <message id>`) when the operator's own message ordered it: an `operational_state` authorization
+  quoting that message whole, with a grant for that action whose scope covers a target. All of these must hold
+  (`orderGrantFor` in `src/operational-state.ts`): the record is under 12 hours old and is the latest grant for the
+  action there; its scope is one place (an `owner/repo` slug or a path three levels deep, no wildcards); the quote
+  is still exactly the operator's typed, non-imported message; and it names the action (`merg`/`mescl`,
+  `deplo`, `publi`/`release`/`lanç`) with no negation before it in any clause (`sem`, `não`, `nunca`, `nem`,
+  `not`...). So "pode fazer o merge dos dois e fazer o deploy" covers both merges and the deploy and its reruns, in
+  that repository; "sim", "faz o merge mas não o deploy" (for the deploy) and any other action still wait.
 - An unreadable or invalid file fails closed: every gated call waits for the operator, with the parse error.
 - The agent cannot change it: any non-read call naming `autonomy.json` needs the operator, whatever the rules
   say. Edit it yourself, or approve the exact call.
