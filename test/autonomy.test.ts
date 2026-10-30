@@ -46,14 +46,38 @@ test('merges, publishing and deploys name the repository they touch', () => {
   assert.deepEqual(effects('git push origin :fix/old', 'C:/projetos/dentai-mono'), ['discard c:/projetos/dentai-mono,tecnologia-ai/dentai']);
 });
 
-test('the production SQL reset that sent a real WhatsApp message is a production write; a read over ssh is not', () => {
+test('the production SQL reset that sent a real WhatsApp message is a production write; a container listing over ssh is not', () => {
   // Shape of the 2026-10-18 incident: a heredoc with an UPDATE piped into psql on the production host.
   const reset = `cat > /tmp/q10.sql <<'EOF'\nupdate retention_simulation_deliveries set status='PENDING' where id='x' and status='FAILED' returning id;\nEOF\nssh -q hetzner-dentai "docker exec -i dentai-postgresdb sh -c 'psql -At'" < /tmp/q10.sql`;
   assert.deepEqual(effects(reset), ['production-write ssh:hetzner-dentai']);
-  const read = `cat > /tmp/q7.sql <<'EOF'\nselect id from projects where id='x';\nEOF\nssh -q hetzner-dentai "docker exec -i dentai-postgresdb psql -At" < /tmp/q7.sql`;
-  assert.deepEqual(effects(read), []);
   assert.deepEqual(effects('ssh hetzner-dentai "docker compose -f /srv/app.yml up -d api"'), ['production-write ssh:hetzner-dentai']);
   assert.deepEqual(effects('ssh hetzner-dentai "docker ps --format {{.Names}}"'), []);
+});
+
+test('a database client over ssh is a production write unless the command visibly forces read-only', () => {
+  // 2026-10-30: the UPDATE was written to /tmp/fix.sql by an earlier call, so this call showed no SQL at all.
+  const fromFile = String.raw`ssh -o BatchMode=yes hetzner-dentai 'docker exec -i dentai-postgresdb sh -c "psql -v ON_ERROR_STOP=1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -At -F \"|\""' < /tmp/fix.sql 2>&1`;
+  assert.deepEqual(effects(fromFile), ['production-write ssh:hetzner-dentai']);
+  // A SELECT piped from a file is held too: the file is not visible, so nothing proves it read-only.
+  const read = `cat > /tmp/q7.sql <<'EOF'\nselect id from projects where id='x';\nEOF\nssh -q hetzner-dentai "docker exec -i dentai-postgresdb psql -At" < /tmp/q7.sql`;
+  assert.deepEqual(effects(read), ['production-write ssh:hetzner-dentai']);
+  // The alias form (`update subscriptions s set`) was missed by the sqlWrite pattern.
+  assert.deepEqual(effects("ssh hetzner-dentai \"cat\" <<'EOF'\nupdate subscriptions s\n   set amount = 9990 where id = 'x';\nEOF"), ['production-write ssh:hetzner-dentai']);
+  assert.deepEqual(effects("ssh hetzner-dentai \"sqlite3 /srv/app.db 'select 1'\""), ['production-write ssh:hetzner-dentai']);
+  assert.deepEqual(effects('ssh hetzner-dentai "mongosh --eval \'db.users.find()\'"'), ['production-write ssh:hetzner-dentai']);
+  assert.deepEqual(effects('ssh hetzner-dentai "redis-cli get session:1"'), ['production-write ssh:hetzner-dentai']);
+  // A read-only probe passes: default_transaction_read_only through PGOPTIONS, or a read-only transaction in the SQL.
+  const probe = String.raw`ssh -q hetzner-dentai "docker exec dentai-postgresdb sh -c 'PGOPTIONS=\"-c default_transaction_read_only=on\" psql -At -c \"select count(*) from plans\"'"`;
+  assert.deepEqual(effects(probe), []);
+  assert.deepEqual(effects("ssh hetzner-dentai \"docker exec dentai-postgresdb psql -At -c 'begin read only; select count(*) from plans; commit;'\""), []);
+  assert.deepEqual(effects("ssh hetzner-dentai \"docker exec dentai-postgresdb psql -At -c 'set transaction read only; select 1'\""), []);
+  // Turning the probe back off, or asking for read-write, is not a probe.
+  assert.deepEqual(effects("ssh hetzner-dentai \"PGOPTIONS='-c default_transaction_read_only=on' psql -c 'set default_transaction_read_only = off; select 1'\""), ['production-write ssh:hetzner-dentai']);
+  assert.deepEqual(effects("ssh hetzner-dentai \"docker exec dentai-postgresdb psql -c 'begin read write; select 1'\""), ['production-write ssh:hetzner-dentai']);
+  // Non-database reads over ssh stay free, and a path that names a client is not a client.
+  assert.deepEqual(effects('ssh hetzner-dentai "docker logs --tail 50 dentai-back"'), []);
+  assert.deepEqual(effects('ssh hetzner-dentai "cat /etc/hostname"'), []);
+  assert.deepEqual(effects('ssh hetzner-dentai "ls /srv/psql-backups"'), []);
 });
 
 test('paid model calls, discards, deletes and global installs are recognised; inspection is not', () => {
