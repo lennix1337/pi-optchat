@@ -416,6 +416,16 @@ test('with a prefix mark, the system prompt keeps its own entry, for an hour on 
   assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com/', compat: { supportsLongCacheRetention: false } }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy', baseUrl: 'https://proxy.example.com' }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy', baseUrl: 'https://api.anthropic.com.example.com' }), 'short', 'the host itself, not a prefix of it');
+  // Since 2026-10-28 pi-multi-account serves each extra account through its loopback slot proxy, which forwards the body to
+  // api.anthropic.com unchanged: usage.jsonl then held no 1-hour write on `anthropic-account-2`, and 37 turn starts in two days
+  // 20-30 minutes after the last call read nothing and rewrote ~83K tokens each.
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://127.0.0.1:41977/anthropic-account-2' }), 'long');
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://localhost:41977/anthropic-account-2/' }), 'long');
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://127.0.0.1:41977/anthropic-account-2', compat: { supportsLongCacheRetention: false } }), 'short');
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://127.0.0.1:41977/openai-codex' }), 'short', 'a route for another provider');
+  assert.equal(prefixRetention({ provider: 'cursor-1', baseUrl: 'http://127.0.0.1:41977/cursor-1' }), 'short', 'another family behind the proxy');
+  assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://10.0.0.5:41977/anthropic-account-2' }), 'short', 'loopback only');
+  assert.equal(prefixRetention({ provider: 'some-proxy', compat: { supportsLongCacheRetention: true } }), 'long', 'a model may declare it');
 });
 
 test('under long retention the view\'s older mark takes the 1-hour entry too, after the system prompt and before the 5-minute marks, and a merge waits as long', () => {

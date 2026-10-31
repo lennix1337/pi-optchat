@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { TURN_REFRESHED } from '../src/prompts.ts';
-import { buildContext, lastStep, refreshedRun, refreshPoint, textContent } from '../src/transcript.ts';
+import { buildContext, coldBudget, COLD_REFRESH_CHARS, lastStep, refreshedRun, refreshPoint, textContent, TURN_ENTRY_MS } from '../src/transcript.ts';
 import { customMessage, toolCallMessage, toolResultMessage, userMessage } from './messages.ts';
 
 // A background wake can start a run whose only input is a hidden custom message (no user message). The refresh helpers
@@ -94,4 +94,16 @@ test('a run with no user or custom message has no task: nothing to cut or refres
   assert.deepEqual(refreshedRun(run, 2, TURN_REFRESHED), run);
   assert.equal(lastStep([]), 0);
   assert.throws(() => buildContext([], run, '<chat>\n</chat>', 'p'), /no current input message/);
+});
+
+test('after a pause that expired the turn\'s cache entry, a turn under the usual budget moves into memory', () => {
+  const run: AgentMessage[] = [userMessage('Do the work.'), ...pair('old', 'x'.repeat(COLD_REFRESH_CHARS)), ...pair('new', 'small')];
+  const usual = 400_000;
+  assert.equal(refreshPoint(run, 0, coldBudget(usual, TURN_ENTRY_MS - 1)), undefined, 'warm: the usual budget is not reached');
+  assert.equal(refreshPoint(run, 0, coldBudget(usual, TURN_ENTRY_MS))?.cut, 3, 'cold: the old step moves into memory');
+  assert.equal(coldBudget(usual, undefined), usual, 'the first call of a session has no pause to measure');
+  assert.equal(coldBudget(undefined, TURN_ENTRY_MS * 10), undefined, 'refresh turned off stays off');
+  assert.equal(coldBudget(1_000, TURN_ENTRY_MS), 1_000, 'a smaller budget is kept');
+  const small: AgentMessage[] = [userMessage('Do the work.'), ...pair('old', 'x'.repeat(1_000)), ...pair('new', 'small')];
+  assert.equal(refreshPoint(small, 0, coldBudget(usual, TURN_ENTRY_MS)), undefined, 'a small turn stays verbatim: its summaries would cost more than they save');
 });

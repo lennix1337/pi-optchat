@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
-import { getCurrentSystemMessage, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
+import { getCurrentSystemMessage, getSupportedThinkingLevels, type Api, type Model } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -19,13 +19,14 @@ import { Focus } from './focus.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
-import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
+import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, wakeModelFor, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, coldAfter, prefixRetention, record, ViewEntries } from './cache.ts';
 import { nativeHead, StableHead, type SavedHead } from './stable-head.ts';
 import { saveImages } from './images.ts';
-import { asUser, boundedMessage, atWork, budgetContext, buildContext, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
+import { wakeOff, wakeOn, type WakeHost } from './wake-model.ts';
+import { asUser, boundedMessage, atWork, budgetContext, buildContext, coldBudget, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
@@ -308,6 +309,10 @@ export default function optchat(pi: ExtensionAPI) {
     try { return morningSummary(); }
     catch (error) { ctx.ui.notify(`Could not read the nightly dream summary: ${errorText(error)}`, 'warning'); return undefined; }
   };
+  /** A wake runs on the profile's wakeModel (a routine idle turn needs no main-model price); the main model comes back when it settles. */
+  const wakeHost = (ctx: ExtensionContext): WakeHost<Model<Api>> => ({
+    current: () => ctx.model, find: (provider, model) => ctx.modelRegistry.find(provider, model), setModel: model => pi.setModel(model),
+    thinking: () => pi.getThinkingLevel(), setThinking: level => pi.setThinkingLevel(level), notify: (text, level) => ctx.ui.notify(text, level) });
   const startHeartbeat = (ctx: ExtensionContext, profile: Active) => {
     const own = () => active === profile ? profile : undefined;
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
@@ -327,7 +332,9 @@ export default function optchat(pi: ExtensionAPI) {
       wake: (beat, radar) => {
         const dream = briefDream(ctx);
         const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar), previousWake(profile.dir));
-        deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text).catch(error => ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error')); },
+        wakeOn(profile.dir, wakeModelFor(profile.config, main), wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
+          .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
+          .catch(error => { void wakeOff(profile.dir, wakeHost(ctx)).catch(() => undefined); ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error'); }); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
@@ -450,6 +457,8 @@ export default function optchat(pi: ExtensionAPI) {
         recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents')] : []]).then(() => {});
       }
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r); });
+      // A reload or crash in the middle of a wake left the wake model on: put the main one back.
+      await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (ctx.mode === 'tui') startHeartbeat(ctx, active);
     } catch (error) {
       await closeWindows?.(); closeWindows = undefined;
@@ -746,7 +755,9 @@ export default function optchat(pi: ExtensionAPI) {
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);
-      const refresh = refreshPoint(projectedRun, keep, refreshBudget(window, refreshFraction(a.config.refreshAt), refreshTokens(a.config.refreshTokensK)));
+      // After a pause that expired the turn's cache entry, moving the turn into memory costs nothing extra.
+      const refresh = refreshPoint(projectedRun, keep, coldBudget(refreshBudget(window, refreshFraction(a.config.refreshAt), refreshTokens(a.config.refreshTokensK)),
+        lastRequestAt === undefined ? undefined : Date.now() - lastRequestAt));
       let budgeted = inputBudget === undefined ? undefined
         : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine, focusView);
       if (refresh || budgeted && !budgeted.fits) {
@@ -822,6 +833,7 @@ export default function optchat(pi: ExtensionAPI) {
     settledAt = Date.now();
     const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
     heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
+    if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
     if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;

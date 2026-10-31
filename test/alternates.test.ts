@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { resolveModel } from '../src/compactor.ts';
-import { accountGroup, defaults, loadConfig, modelFor, removeAlternate, roleModel, saveConfig, setAlternate } from '../src/profiles.ts';
+import { accountGroup, defaults, loadConfig, modelFor, removeAlternate, roleModel, saveConfig, setAlternate, wakeModelFor } from '../src/profiles.ts';
 
 const haiku = { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'high' } as const;
 const luna = { provider: 'openai-codex', model: 'gpt-6-luna', thinking: 'high' } as const;
@@ -66,4 +66,31 @@ test('alternates survive a save and load, and a bad alternate is refused', () =>
   const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...raw, alternates: { subagent: [{ provider: 'x', model: 'y', thinking: 'huge' }] } }));
   assert.throws(() => loadConfig(dir), /Invalid profile config/);
+});
+
+test('a wake runs on the profile\'s wakeModel, on the account the main model is serving, and only within its family', () => {
+  const sonnet = { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'high' } as const;
+  const withWake = { ...config, wakeModel: sonnet };
+  assert.deepEqual(wakeModelFor(withWake, { provider: 'anthropic-account-2', model: 'claude-opus-5-5' }), { ...sonnet, provider: 'anthropic-account-2' });
+  assert.deepEqual(wakeModelFor(withWake, { provider: 'anthropic', model: 'claude-opus-5-5' }), sonnet);
+  assert.equal(wakeModelFor(withWake, { provider: 'openai-codex', model: 'gpt-6.1-sol' }), undefined, 'another family keeps the main model');
+  assert.equal(wakeModelFor(withWake, { provider: 'anthropic', model: 'claude-sonnet-5-5' }), undefined, 'already on it');
+  assert.equal(wakeModelFor(config, { provider: 'anthropic', model: 'claude-opus-5-5' }), undefined, 'unset: no switch');
+  assert.equal(wakeModelFor(withWake, undefined), undefined);
+  const terra = { provider: 'openai-codex', model: 'gpt-6.1-terra', thinking: 'medium' } as const;
+  const perFamily = { ...config, wakeModel: [sonnet, terra] };
+  assert.deepEqual(wakeModelFor(perFamily, { provider: 'openai-codex-account-2', model: 'gpt-6.1-sol' }), { ...terra, provider: 'openai-codex-account-2' }, 'one per family: Codex gets its own');
+  assert.deepEqual(wakeModelFor(perFamily, { provider: 'anthropic', model: 'claude-opus-5-5' }), sonnet);
+  assert.equal(wakeModelFor(perFamily, { provider: 'cursor', model: 'composer-2' }), undefined, 'a family without one keeps the main model');
+  const exact = { ...config, wakeModel: [{ ...terra, model: 'gpt-6-luna' }, { ...terra, provider: 'openai-codex-account-2' }] };
+  assert.equal(wakeModelFor(exact, { provider: 'openai-codex-account-2', model: 'gpt-6.1-sol' })?.model, 'gpt-6.1-terra', 'an entry for the exact account wins over its family');
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-wake-'));
+  saveConfig(dir, withWake);
+  assert.deepEqual(loadConfig(dir).wakeModel, sonnet, 'saved and read back');
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...withWake, wakeModel: { provider: 'anthropic', model: 'x', thinking: 'loud' } }));
+  assert.throws(() => loadConfig(dir), /Invalid profile config/, 'a malformed wakeModel is refused');
+  saveConfig(dir, perFamily);
+  assert.deepEqual(loadConfig(dir).wakeModel, [sonnet, terra], 'a per-family list is saved and read back');
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...withWake, wakeModel: [] }));
+  assert.throws(() => loadConfig(dir), /Invalid profile config/, 'an empty list is refused');
 });
