@@ -72,6 +72,9 @@ export function appendJsonl<T>(file: string, value: T, maxBytes: number, keep: (
   appendFileSync(file, `${JSON.stringify(value)}\n`);
   if (statSync(file).size > maxBytes) atomicWrite(file, readJsonl(file, keep).map(v => JSON.stringify(v)).join('\n') + '\n');
 }
+/** A timed log: past `maxBytes` it keeps only the records younger than `keepMs` at the time of the newest one. */
+export const appendRecent = <T extends { at: number }>(file: string, value: T, maxBytes: number, keepMs: number) =>
+  appendJsonl<T>(file, value, maxBytes, e => e.at >= value.at - keepMs);
 
 export function atomicWrite(file: string, text: string | Uint8Array) {
   mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });

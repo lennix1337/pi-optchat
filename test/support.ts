@@ -45,6 +45,10 @@ export function hookedPi() {
   return { pi: pi as never, fire: (name: string, event: unknown = {}) => handlers.get(name)!(event) };
 }
 
+/** Fires an ordinary successful `read` result and returns what the hooks appended to it, if anything. */
+export const plainToolResult = (fire: (name: string, event: Record<string, unknown>) => unknown) =>
+  fire('tool_result', { toolName: 'read', toolCallId: 'r', input: {}, isError: false, content: [{ type: 'text', text: 'x' }] }) as { content: { text: string }[] } | undefined;
+
 /** Whether a fixture model's call is a compaction: it has the same system prompt as a turn, so only its task marks it. */
 export const isCompaction = (context: { messages: readonly { role: string; content?: unknown }[] }) =>
   context.messages.some(message => message.role === 'user' && /Compaction: (?:compress message|merge lines)/.test(JSON.stringify(message.content)));

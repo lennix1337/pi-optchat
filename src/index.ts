@@ -50,6 +50,7 @@ import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { registerCommitments } from './commitments.ts';
+import { registerCorrections } from './corrections.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
@@ -606,6 +607,8 @@ export default function optchat(pi: ExtensionAPI) {
     const a = active;
     return a && !remote && !joined && !importing ? { dir: a.dir, sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; } } : undefined;
   });
+  // An operator correction gets one reminder to become a test or rule, and counts on the weekly scoreboard (src/corrections.ts).
+  registerCorrections(pi, () => active && !remote && !joined && !importing ? { dir: active.dir } : undefined);
   pi.on('input', async (event, ctx) => {
     if (joined) {
       try {

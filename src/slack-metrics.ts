@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { appendJsonl, readJsonl } from './store.ts';
+import { appendRecent, readJsonl } from './store.ts';
 
 /**
  * What the operator's Slack conversation shows about Jarvis: how long his messages wait for a first answer, and how
@@ -15,7 +15,7 @@ type Entry = { at: number; kind: 'in' | 'out'; channel: string | null; nudge?: t
 const NUDGE = /^(?:e\s+a[ií]|cad[eê]|como\s+(?:t[aá]|est[aá]|anda|ficou)|(?:alguma\s+)?novidades?|status|e\s+ent[aã]o)(?![\p{L}\p{N}])/iu;
 export const isNudge = (text: string) => { const t = text.trim(); return t.length <= 60 && NUDGE.test(t); };
 
-const append = (dir: string, entry: Entry) => appendJsonl<Entry>(join(dir, SLACK_METRICS), entry, 256 * 1024, e => e.at >= entry.at - KEEP_MS);
+const append = (dir: string, entry: Entry) => appendRecent(join(dir, SLACK_METRICS), entry, 256 * 1024, KEEP_MS);
 export const recordInbound = (dir: string, channel: string | null, text: string, now = Date.now()) =>
   append(dir, { at: now, kind: 'in', channel, ...isNudge(text) ? { nudge: true as const } : {} });
 export const recordAnswer = (dir: string, channel: string | null, now = Date.now()) => append(dir, { at: now, kind: 'out', channel });

@@ -5,9 +5,9 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Memory, type Entry, type Summary } from '../src/memory.ts';
-import { FileStore, localDay, type Lease, type Saved, type Store } from '../src/store.ts';
+import { appendRecent, FileStore, localDay, readJsonl, type Lease, type Saved, type Store } from '../src/store.ts';
 import { holdProfile, HEARTBEAT_MS, isWindows, ProfileBusyError, profileSocket } from '../src/profiles.ts';
-import { removeDir } from './support.ts';
+import { removeDir, withTempDir } from './support.ts';
 
 const entry = (i: number, text: string): Entry => ({ i, kind: 'user', text, size: 0, date: '2026-10-09T12:00:00.000Z' });
 const node = (i: number, text: string): Summary => ({ l: 0, i, text, size: 0 });
@@ -161,3 +161,12 @@ test('once a write-behind append fails, nothing more is written, summary nodes i
   assert.throws(() => memory.append('user', 'more'), /Memory could not be saved: offline/);
   await memory.close();
 });
+
+test('a timed log past its size keeps only the records younger than the window, measured from the newest one', () => withTempDir('jsonl-', dir => {
+  const file = join(dir, 'log.jsonl');
+  for (const at of [0, 50, 90]) appendRecent(file, { at }, 1_000_000, 40);
+  assert.deepEqual(readJsonl<{ at: number }>(file, () => true).map(e => e.at), [0, 50, 90], 'under the size cap nothing is dropped');
+  appendFileSync(file, 'torn{\n');
+  appendRecent(file, { at: 100 }, 10, 40);
+  assert.deepEqual(readJsonl<{ at: number }>(file, () => true).map(e => e.at), [90, 100], 'past the cap: old records and the torn line go');
+}));
