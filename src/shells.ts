@@ -29,6 +29,10 @@ export interface ShellReporter {
 }
 export interface ShellOptions { notify?: ShellNotify; alert?: string }
 const outputLimit = 32_000;
+/** `build_exit=1`, `rc=2`: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
+export function innerExitFailures(output: string): string[] {
+  return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))=([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
+}
 const field = (value: unknown, key: string): unknown => typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 /** Session-local execution inventory. Only explicitly managed jobs can be stopped individually. */
 export class ShellJobs {
@@ -62,7 +66,7 @@ export class ShellJobs {
   end(id: string, output: string, failed: boolean, outcome: { exitCode?: number; log?: string } = {}) {
     const job = this.jobs.get(id); if (!job || job.ended !== undefined) return;
     this.update(id, output, outcome.log);
-    job.state = job.state === 'stopping' ? 'stopped' : failed ? 'failed' : 'completed';
+    job.state = job.state === 'stopping' ? 'stopped' : failed || (job.mode === 'background' && innerExitFailures(output).length > 0) ? 'failed' : 'completed';
     job.ended = Date.now();
     if (outcome.exitCode !== undefined) job.exitCode = outcome.exitCode;
     // Never evict an active execution, even when many jobs finish together.
@@ -144,8 +148,10 @@ export function shellReport(job: ShellJob): string {
   const omitted = lines.length - kept.length;
   const output = tail.trim() ? `Last output${omitted > 0 ? ` (${omitted} earlier lines not shown)` : ''}:\n${tail}` : 'Output: (no output)';
   const closing = job.state === 'stopped' ? 'It was stopped and will not run again.' : 'It has finished.';
+  const inner = innerExitFailures(job.output);
+  const innerLine = inner.length ? [`Inner exit codes: ${inner.join(', ')} (the shell itself exited ${job.exitCode ?? 'normally'})`] : [];
   const alertLine = job.alert === undefined ? [] : [`Alert ${alertLabel(job.alert)}: ${job.matches ?? 0} ${job.matches === 1 ? 'match' : 'matches'} in total.`];
-  return [`[shell ${job.id}] ${outcome}`, `Command: ${shortCommand}`, ...alertLine, output,
+  return [`[shell ${job.id}] ${outcome}`, `Command: ${shortCommand}`, ...innerLine, ...alertLine, output,
     `Full output: ${job.log ?? `not kept; shell_status shows the last ${outputLimit / 1000} KB`}`,
     `${closing} Do not poll it; use shell_status only to read more of its output.`].join('\n');
 }

@@ -485,3 +485,23 @@ test('a literal alert is named as written in its messages, and a plain one in sl
     exitCode: 0, notify: 'end', alert: '/merged|fail/i', matches: 1 };
   assert.match(shellReport(job), /^Alert \/merged\|fail\/i: 1 match in total\.$/m);
 });
+
+test('a shell whose own exit is 0 but whose output reports a non-zero inner exit is failed and says so', () => {
+  const jobs = new ShellJobs();
+  const id = jobs.start('build; echo build_exit=$?', '/project', async () => ({ output: 'compiling\nbuild_exit=1\ngates_exit=0', failed: false, exitCode: 0 }), { notify: 'failure' });
+  return new Promise<void>(resolve => setImmediate(() => setImmediate(() => {
+    const job = jobs.list().find(j => j.id === id)!;
+    assert.equal(job.state, 'failed');
+    assert.match(shellReport(job), /^Inner exit codes: build_exit=1 \(the shell itself exited 0\)$/m);
+    resolve();
+  })));
+});
+
+test('inner exit markers of zero or unrelated names do not fail a shell', () => {
+  const jobs = new ShellJobs();
+  jobs.begin('ok', 'x', '/p', 'background');
+  jobs.end('ok', 'build_exit=0\nretries=2\nexit code was 1', false, { exitCode: 0 });
+  const job = jobs.list()[0];
+  assert.equal(job.state, 'completed');
+  assert.doesNotMatch(shellReport(job), /Inner exit codes/);
+});
