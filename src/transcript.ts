@@ -186,7 +186,7 @@ export function atWork(runs: readonly { id: string; task: string }[], shells: re
 
 /** Label wake-only inputs independently of the message that carries the historical view. */
 function labelWakeEvents(run: AgentMessage[]): AgentMessage[] {
-  if (run.some(message => message.role === 'user')) return run;
+  if (currentTask(run)?.role !== 'custom') return run;
   return run.map(message => {
     if (message.role !== 'custom') return message;
     const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
@@ -208,7 +208,7 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
     throw new Error('OptChat has no current input message; refusing to send historical context.');
   const inputs = labelWakeEvents(run);
   const history = [...previous, ...inputs].filter(m => m.role !== 'system');
-  const anchor = history.find(m => m.role === 'user') ?? inputs.find(m => m.role === 'custom');
+  const anchor = history.find(m => m.role === 'user' && previous.includes(m)) ?? currentTask(inputs);
   const messages = history.map(message => {
     if (message !== anchor || message.role !== 'user' && message.role !== 'custom') return message;
     // OpenAI joins text blocks with nothing between them, so the user's words start their own paragraph after the view.
@@ -308,8 +308,14 @@ export function refreshBudget(contextWindow: number | undefined, fraction: numbe
   return Math.floor((capTokens > 0 ? Math.min(tokens, capTokens) : tokens) * 4);
 }
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
-/** The run's current input: its first user message, or when a hidden extension message (a background wake) started it, its first custom one. */
-const currentTask = (run: readonly AgentMessage[]) => run.find(m => m.role === 'user') ?? run.find(m => m.role === 'custom');
+/** The run's current input: its first user message before the model's first reply, or when a hidden extension message (a
+ * background wake) started it, its first custom one. A message shown after the model began (a report, a gitwatch notice)
+ * never takes the input's place: the view would move and the wake lose its label, rewriting the whole cached request. */
+const currentTask = (run: readonly AgentMessage[]) => {
+  const replied = run.findIndex(m => m.role === 'assistant');
+  return run.slice(0, replied < 0 ? run.length : replied).find(m => m.role === 'user') ?? run.find(m => m.role === 'custom')
+    ?? run.find(m => m.role === 'user');
+};
 /** Where a refresh would cut the run: the last model reply, so its tool calls and their results stay whole. 0 when there is none after the task. */
 export function lastStep(run: readonly AgentMessage[]) {
   const current = currentTask(run), task = current ? run.indexOf(current) : -1, step = run.findLastIndex(m => m.role === 'assistant');

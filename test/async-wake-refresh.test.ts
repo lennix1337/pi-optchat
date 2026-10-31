@@ -43,15 +43,15 @@ test('the refreshed custom-only run is a valid request that still holds the view
   assert.deepEqual(rest.map(m => m.role), ['assistant', 'toolResult']);
 });
 
-test('a user correction in a wake run stays exact, and the note goes on the user message as before', () => {
+test('a user correction in a wake run stays exact; the wake stays the task, so the note goes on it', () => {
   const notice = hidden('Background job 7 finished.'), correction = userMessage('Correction: do not publish.');
   const run: AgentMessage[] = [notice, ...pair('old', OLD), correction, ...pair('new', 'small')];
   const point = refreshPoint(run, 0, BUDGET);
   assert.equal(point?.cut, 4);
   const refreshed = refreshedRun(run, point!.cut, TURN_REFRESHED);
   assert.ok(!JSON.stringify(refreshed).includes('OLD-OUTPUT'));
-  assert.equal(refreshed[0], notice, 'the hidden notice is kept untouched');
-  assert.ok(refreshed[1].role === 'user' && JSON.stringify(refreshed[1].content).includes('Correction: do not publish.') && JSON.stringify(refreshed[1].content).includes(TURN_REFRESHED));
+  assert.ok(refreshed[0].role === 'custom' && JSON.stringify(refreshed[0].content).includes('Background job 7 finished.') && JSON.stringify(refreshed[0].content).includes(TURN_REFRESHED));
+  assert.equal(refreshed[1], correction, 'the correction is kept word for word');
   assert.deepEqual(refreshed.slice(2), run.slice(4));
 });
 

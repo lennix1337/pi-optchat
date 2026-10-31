@@ -51,6 +51,20 @@ test('a hidden completion keeps its provenance when the previous exchange holds 
   assert.equal(messages.filter(message => message.role === 'user').length, 1, 'only the existing user message remains');
 });
 
+test('a shown message arriving mid-run keeps the wake run\'s request prefix, so the prompt cache still holds', () => {
+  // Session 01a1878b, 2026-10-30 18:50: a goal continuation (hidden) ran tool calls, a shell report arrived, and the next
+  // request rewrote 173,795 cached tokens because the view moved from the wake to the report and the wake lost its label.
+  const call: AgentMessage = { role: 'assistant', content: [{ type: 'toolCall', id: 'inspect', name: 'read', arguments: {} }],
+    api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'toolUse', usage: emptyUsage(), timestamp: 3 };
+  const result: AgentMessage = { role: 'toolResult', toolCallId: 'inspect', toolName: 'read',
+    content: [{ type: 'text', text: 'Saved report.' }], isError: false, timestamp: 4 };
+  const report = asUser({ role: 'custom', customType: 'optchat-report', display: true, content: '[shell 1] completed', timestamp: 5 });
+  const before = buildContext([], [notice, call, result], view, 'system');
+  const after = buildContext([], [notice, call, result, report], view, 'system');
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.deepEqual(after.at(-1), report);
+});
+
 test('no current input still refuses historical-only replay', () => {
   const old: AgentMessage = { role: 'user', content: 'Old task is not a current wake.', timestamp: 1 };
   assert.throws(() => buildContext([old], [], view, 'system', [old]), /no current .*message/);

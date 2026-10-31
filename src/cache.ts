@@ -5,6 +5,8 @@ import { STATUS_NOTE } from './prompts.ts';
 export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+/** A list of strings (digests, patterns, argv) read back from JSON. */
+export const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
 /** The view in blocks of 4 lines counted from its start (recipe §3.3), byte for byte. While the view only grows at its end,
  * every block but the last is the same in the next call. */
@@ -42,22 +44,26 @@ const TTL_MARGIN_MS = 15_000;
 const ENTRIES = 64;
 /** A call's view against the last call's, so a cache miss in usage.jsonl can be told apart: the view rewritten from `changedAt`
  * (a batch merge near the top), a changed head (system, tools, model, thinking), or a view that only grew (null: lookback or expiry). */
-export interface ViewReport { date: string; model?: string; gapMs?: number; blocks: number; changedAt?: number | null; headChanged?: boolean; marks: number[] }
+export interface ViewReport { date: string; model?: string; gapMs?: number; blocks: number; changedAt?: number | null; headChanged?: boolean;
+  /** With a changed head, which of its parts changed (HEAD_PARTS), so a rewrite of the whole request can be traced to its cause. */
+  headParts?: string[]; marks: number[] }
+/** The parts of a request before the view, in Anthropic's order. `earlier`: messages before the view's own; `lead`: blocks before it in its message. */
+const HEAD_PARTS = ['model', 'thinking', 'output', 'tools', 'system', 'earlier', 'lead'] as const;
 /** The view blocks earlier calls marked, by a digest of the whole request up to and including the block. When a view grows by
  * more than its marks can look back (a turn moved into memory, a long turn folded in at the next one), the next call puts one
  * mark back on the newest of those blocks still unchanged and alive, and reads that entry instead of writing the view again. */
 export interface ViewEntriesState {
   entries: [string, { at: number; until: number; ttl: keyof typeof TTL_MS }][];
-  previous?: { base: string; chain: readonly string[]; time: number };
+  previous?: { base: string; chain: readonly string[]; time: number; parts?: readonly string[] };
 }
 export class ViewEntries {
   private readonly entries = new Map<string, { at: number; until: number; ttl: keyof typeof TTL_MS }>();
-  private previous?: { base: string; chain: readonly string[]; time: number };
+  private previous?: { base: string; chain: readonly string[]; time: number; parts?: readonly string[] };
   last?: ViewReport;
   constructor(private readonly now = () => Date.now(), private readonly report?: (report: ViewReport) => void) {}
   /** Compare this call's view with the last call's: `changedAt` is the first block that differs (null: it only grew). The last
    * piece is not a whole block (it ends with the view's close), so growth changes it. */
-  observe(base: string, chain: readonly string[], marks: Iterable<number>, model?: unknown) {
+  observe(base: string, chain: readonly string[], marks: Iterable<number>, model?: unknown, parts?: readonly string[]) {
     const before = this.previous, time = this.now();
     let changedAt: number | null | undefined;
     if (before) {
@@ -65,9 +71,12 @@ export class ViewEntries {
       const index = chain.findIndex((digest, block) => block < whole && digest !== before.chain[block]);
       changedAt = index >= 0 ? index : chain.length < before.chain.length ? whole : null;
     }
-    this.previous = { base, chain, time };
+    this.previous = { base, chain, time, ...(parts ? { parts } : {}) };
+    const headChanged = before && before.base !== base;
+    const headParts = headChanged && parts && before.parts?.length === parts.length
+      ? HEAD_PARTS.filter((_, k) => parts[k] !== before.parts![k]) : undefined;
     this.last = { date: new Date(time).toISOString(), ...(typeof model === 'string' ? { model } : {}), gapMs: before && time - before.time,
-      blocks: chain.length, changedAt, headChanged: before && before.base !== base, marks: [...marks].sort((a, b) => a - b) };
+      blocks: chain.length, changedAt, headChanged, ...(headParts ? { headParts } : {}), marks: [...marks].sort((a, b) => a - b) };
     this.report?.(this.last);
   }
   /** The entries and the last call's view, to carry across a /reload: the prompt cache outlives OptChat's own state, and a
@@ -84,9 +93,7 @@ export class ViewEntries {
       if (typeof at === 'number' && typeof until === 'number' && until > time && (ttl === '5m' || ttl === '1h')) this.entries.set(item[0], { at, until, ttl });
     }
     while (this.entries.size > ENTRIES) this.entries.delete(this.entries.keys().next().value!);
-    const previous = state.previous;
-    if (record(previous) && typeof previous.base === 'string' && typeof previous.time === 'number' && Array.isArray(previous.chain)
-      && previous.chain.every(digest => typeof digest === 'string')) this.previous = { base: previous.base, chain: previous.chain as string[], time: previous.time };
+    this.previous = restoredView(state.previous) ?? this.previous;
   }
   /** The newest block of `chain` (digests by block) an earlier call marked, whose entry still lives. */
   latest(chain: readonly string[]): number | undefined {
@@ -119,17 +126,23 @@ export class ViewEntries {
     while (this.entries.size > ENTRIES) this.entries.delete(this.entries.keys().next().value!);
   }
 }
+/** The last call's view read back from a snapshot; none if it is not one. Snapshots from before `parts` existed restore without them. */
+function restoredView(value: unknown): ViewEntriesState['previous'] {
+  if (!record(value) || typeof value.base !== 'string' || typeof value.time !== 'number') return undefined;
+  const chain = isStrings(value.chain) ? value.chain : undefined, parts = isStrings(value.parts) ? value.parts : undefined;
+  return chain && { base: value.base, chain, time: value.time, ...(parts ? { parts } : {}) };
+}
 /** Digest of everything Anthropic caches before the view's first block (model, thinking, tools, system, earlier messages and
- * blocks), then one per block, each over the one before: equal digests mean an equal request prefix. */
+ * blocks), then one per block, each over the one before: equal digests mean an equal request prefix. `parts`: one per HEAD_PARTS. */
 function viewChain(payload: Record<string, unknown>, messages: unknown[], index: number, at: number, pieces: readonly string[]) {
   const message = messages[index] as { content: unknown[] };
-  const before = JSON.stringify([payload.model, payload.thinking, payload.output_config, payload.tools, payload.system, messages.slice(0, index),
-    message.content.slice(0, at)], (key, value) => key === 'cache_control' ? undefined : value);
+  const head = [payload.model, payload.thinking, payload.output_config, payload.tools, payload.system, messages.slice(0, index), message.content.slice(0, at)];
+  const [base, ...parts] = [head, ...head].map(value =>
+    createHash('sha256').update(JSON.stringify(value, (key, item) => key === 'cache_control' ? undefined : item) ?? '').digest('hex'));
   const chain: string[] = [];
-  const base = createHash('sha256').update(before).digest('hex');
   let digest = base;
   for (const piece of pieces) chain.push(digest = createHash('sha256').update(digest).update(piece).digest('hex'));
-  return { base, chain };
+  return { base, chain, parts };
 }
 type CacheModel = { provider?: string; baseUrl?: string; compat?: unknown };
 const onAnthropicApi = (baseUrl?: string) => {
@@ -185,7 +198,7 @@ export function cachePayload(payload: unknown, options: CacheOptions = {}): unkn
     const marks = viewMarks(pieces, offsets, options.entries, chain);
     if (digests) {
       options.entries!.record(digests.chain, new Map([...marks].map(([block, back]) => [block, viewMark(back, options).ttl ?? '5m'])));
-      options.entries!.observe(digests.base, digests.chain, marks.keys(), payload.model);
+      options.entries!.observe(digests.base, digests.chain, marks.keys(), payload.model, digests.parts);
     }
     const blocks = pieces.map((text, j) => {
       const back = marks.get(j);
