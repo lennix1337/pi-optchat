@@ -71,7 +71,40 @@ test('a failed switch back keeps the record so the next settle retries', async (
   const d = dir(), first = host([opus, sonnet]);
   await wakeOn(d, wake, first.h);
   const stuck = host([opus, sonnet], true);
+  stuck.state.model = sonnet;
   await wakeOff(d, stuck.h);
   assert.ok(existsSync(join(d, WAKE_RESTORE_FILE)));
   assert.match(stuck.state.notes[0]!, /Could not switch back/);
+});
+
+// pi-multi-account fails over to another provider when an account runs out of quota, possibly in the middle of a wake.
+test('a failover to another provider during the wake stands: no switch back to the exhausted one, and the record goes', async () => {
+  const sol: M = { provider: 'openai-codex', id: 'gpt-6.1-sol' };
+  const d = dir(), { h, state } = host([opus, sonnet, sol]);
+  await wakeOn(d, wake, h);
+  state.model = sol; state.thinking = 'xhigh';
+  await wakeOff(d, h);
+  assert.deepEqual([state.model, state.thinking, state.notes], [sol, 'xhigh', []]);
+  assert.equal(existsSync(join(d, WAKE_RESTORE_FILE)), false);
+});
+
+test('a rotation to another account of the family during the wake brings the main model back on that account', async () => {
+  const opus1: M = { provider: 'anthropic', id: 'claude-opus-5-5' };
+  const d = dir(), { h, state } = host([opus1, opus, sonnet, { provider: 'anthropic', id: 'claude-sonnet-5-5' }]);
+  state.model = opus1;
+  await wakeOn(d, { ...wake, provider: 'anthropic' }, h);
+  state.model = sonnet;
+  await wakeOff(d, h);
+  assert.deepEqual([state.model, state.thinking], [opus, 'high']);
+});
+
+test('a Codex wake goes to the lighter model and back to the main one on the same account', async () => {
+  const sol: M = { provider: 'openai-codex-account-2', id: 'gpt-6.1-sol' };
+  const terra: M = { provider: 'openai-codex-account-2', id: 'gpt-6.1-terra' };
+  const d = dir(), { h, state } = host([sol, terra]);
+  state.model = sol; state.thinking = 'xhigh';
+  await wakeOn(d, { provider: 'openai-codex-account-2', model: 'gpt-6.1-terra', thinking: 'medium' }, h);
+  assert.deepEqual([state.model, state.thinking], [terra, 'medium']);
+  await wakeOff(d, h);
+  assert.deepEqual([state.model, state.thinking], [sol, 'xhigh']);
 });
