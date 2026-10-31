@@ -5,6 +5,7 @@ import { brasiliaTime } from './heartbeat.ts';
 import { pcProbes } from './pc-health.ts';
 import { quotaProbe, QUOTA_HEALTH_FILE } from './quota-health.ts';
 import { applyRemedies, type Remedy } from './self-fix.ts';
+import { appendSignals } from './journal-spool.ts';
 import { atomicWrite, readJsonOr } from './store.ts';
 
 /**
@@ -76,7 +77,7 @@ async function runRemote(probe: Probe, fetcher: Fetcher, now: () => number): Pro
 
 type ProbeState = { failures: number; down: boolean; since: number; problem?: string; lastOk?: number; build?: string; ms?: number; detail?: string };
 export type HealthState = Record<string, ProbeState>;
-export type Transition = { probe: string; kind: 'down' | 'recovered'; text: string };
+export type Transition = { probe: string; kind: 'down' | 'recovered'; text: string; at?: number };
 /** Consecutive failures before a probe is called down: one blip is not an outage. */
 export const FAILURES_BEFORE_ALERT = 2;
 
@@ -89,7 +90,7 @@ export function advance(state: HealthState, results: Map<string, ProbeResult>, n
     if (r.build) s.build = r.build;
     if (r.detail) s.detail = r.detail;
     if (r.ok) {
-      if (s.down) out.push({ probe: name, kind: 'recovered', text: `✅ ${name} voltou às ${brasiliaTime(now)} (fora desde ${brasiliaTime(s.since)}; ${r.ms} ms)` });
+      if (s.down) out.push({ probe: name, kind: 'recovered', text: `✅ ${name} voltou às ${brasiliaTime(now)} (fora desde ${brasiliaTime(s.since)}; ${r.ms} ms)`, at: now });
       Object.assign(s, { failures: 0, down: false, since: now, lastOk: now });
       delete s.problem;
       continue;
@@ -98,7 +99,7 @@ export function advance(state: HealthState, results: Map<string, ProbeResult>, n
     s.problem = r.problem;
     if (!s.down && s.failures >= FAILURES_BEFORE_ALERT) {
       s.down = true; s.since = now;
-      out.push({ probe: name, kind: 'down', text: `🔴 ${name} com problema às ${brasiliaTime(now)}: ${r.problem} (${s.failures} checagens seguidas)` });
+      out.push({ probe: name, kind: 'down', text: `🔴 ${name} com problema às ${brasiliaTime(now)}: ${r.problem} (${s.failures} checagens seguidas)`, at: now });
     }
   }
   return out;
@@ -159,9 +160,27 @@ export async function tellTransitions(transitions: Transition[], post: (text: st
   }
 }
 
+/** The journal view of one monitor's transitions. The notification path is unchanged, so `attention` never claims a suppressed wake. */
+export function healthSignals(file: string, transitions: readonly Transition[], now = Date.now()): import('./journal-spool.ts').SignalPublish[] {
+  const source = file === PC_FILE ? 'pc' : file === QUOTA_HEALTH_FILE ? 'quota' : 'health';
+  const kind = (t: Transition) => {
+    if (t.kind === 'recovered') return source === 'pc' ? 'pc.recovered' as const : source === 'quota' ? 'quota.recovered' as const : 'health.recovered' as const;
+    if (source === 'pc') return t.probe.includes('disco') ? 'pc.disk_low' as const : t.probe.includes('mem') ? 'pc.memory_low' as const : 'pc.maintenance_stale' as const;
+    return source === 'quota' ? 'quota.exhausted' as const : 'health.down' as const;
+  };
+  return transitions.map(t => ({
+    source, kind: kind(t),
+    severity: t.kind === 'down' ? source === 'health' ? 'critical' : 'warning' : 'info',
+    subject: `health:${file}:${t.probe}`,
+    summary: t.text,
+    dedupeKey: `health:${file}:${t.probe}:${t.kind}:${t.at ?? now}`,
+    evidence: `health:${file}`,
+    observedAt: t.at ?? now,
+  }));
+}
+
 export type HealthOwner = { dir: string };
-/**
- * Every 5 minutes while a profile with the assistant is open: a down transition posts to #dentai and wakes the agent
+/** * Every 5 minutes while a profile with the assistant is open: a down transition posts to #dentai and wakes the agent
  * once; a recovery only posts. `/optchat-health` shows the state; `/optchat-health test` runs the alert path on a
  * synthetic probe, marked as a test, to prove the wiring end to end.
  */
@@ -174,7 +193,9 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
     if (busy || !o || !existsSync(join(o.dir, 'assistant.json'))) return;
     busy = true;
     // A failed round is retried next interval; /optchat-health shows why it failed.
-    lastError = await roundAll(monitors, o.dir, tell);
+    lastError = await roundAll(monitors, o.dir, tell, (transitions, monitor) => {
+      appendSignals(o.dir, healthSignals(monitor.health.file, transitions, monitor.health.now()));
+    });
     busy = false;
   };
   pi.on('session_start', () => {
@@ -202,10 +223,14 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
 }
 
 /** Runs every monitor and tells its transitions; one monitor's failure does not skip the others. Returns the failures, if any. */
-async function roundAll(monitors: readonly Monitor[], dir: string, tell: (t: Transition[], test: boolean, route: Route) => Promise<void>): Promise<string | undefined> {
+async function roundAll(monitors: readonly Monitor[], dir: string, tell: (t: Transition[], test: boolean, route: Route) => Promise<void>, observe?: (t: Transition[], monitor: Monitor) => void): Promise<string | undefined> {
   const errors: string[] = [];
   for (const m of monitors) {
-    try { await tell(await applyRemedies(await m.health.round(dir), m.health.remedies, dir, m.health.now()), false, m); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    try {
+      const transitions = await applyRemedies(await m.health.round(dir), m.health.remedies, dir, m.health.now());
+      observe?.(transitions, m);
+      await tell(transitions, false, m);
+    } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
   return errors.length ? errors.join('; ') : undefined;
 }

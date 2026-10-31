@@ -243,6 +243,21 @@ test('the end notice follows the notify mode: every end, failures only, or none'
   assert.deepEqual(ended, ['bad:failed'], 'a completed or silenced shell sends nothing');
 });
 
+test('the end observer sees every managed end once, even a silenced one, and never fails the job', () => {
+  const jobs = new ShellJobs(), seen: string[] = [];
+  jobs.setEndObserver(job => { seen.push(`${job.id}:${job.state}:${job.exitCode}`); throw new Error('an observer must not break the job'); });
+  jobs.begin('quiet', 'echo', '.', 'background', 'main', { notify: 'none' });
+  jobs.begin('call', 'echo', '.', 'foreground');
+  jobs.end('quiet', '', false, { exitCode: 0 });
+  jobs.end('quiet', '', true, { exitCode: 1 });
+  jobs.end('call', '', false, { exitCode: 0 });
+  assert.deepEqual(seen, ['quiet:completed:0'], 'one observation per background end, whatever its notify mode or a repeat');
+  jobs.setEndObserver(undefined);
+  jobs.begin('later', 'echo', '.', 'background');
+  jobs.end('later', '', false, { exitCode: 0 });
+  assert.deepEqual(seen, ['quiet:completed:0']);
+});
+
 test('shell_start takes notify and alert, uses the profile default when notify is omitted, and refuses a bad pattern before starting', async () => {
   const jobs = new ShellJobs(), tools = new Map<string, any>();
   registerShells(fakePi(tools), jobs, () => {}, { notifyDefault: () => 'failure' });

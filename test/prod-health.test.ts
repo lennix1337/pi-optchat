@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { advance, DEFAULT_PROBES, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState } from '../src/prod-health.ts';
+import { advance, DEFAULT_PROBES, healthSignals, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState } from '../src/prod-health.ts';
+import { QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 
 const [api, web, us] = DEFAULT_PROBES as [typeof DEFAULT_PROBES[0], typeof DEFAULT_PROBES[0], typeof DEFAULT_PROBES[0]];
@@ -83,4 +84,22 @@ test('an outage whose wake fails is said in #dentai, so it is never silent', asy
   const posts: string[] = [];
   await tellTransitions([{ probe: 'API DentAI', kind: 'down', text: '🔴 API DentAI com problema' }], async (text: string) => { posts.push(text); }, async () => { throw new Error('session closed'); });
   assert.deepEqual(posts, ['🔴 API DentAI com problema', '🔴 API DentAI com problema (não consegui acordar o agente: veja no terminal)']);
+});
+
+test('each monitor transition maps to its own signal kind, severity and occurrence key', () => {
+  const at = Date.parse('2026-10-30T22:00:00Z');
+  assert.deepEqual(healthSignals('prod-health.json', [{ probe: 'API DentAI', kind: 'down', text: 'API fora', at }]), [{
+    source: 'health', kind: 'health.down', severity: 'critical', subject: 'health:prod-health.json:API DentAI',
+    summary: 'API fora', dedupeKey: `health:prod-health.json:API DentAI:down:${at}`,
+    evidence: 'health:prod-health.json', observedAt: at,
+  }]);
+  const recovered = healthSignals('prod-health.json', [{ probe: 'API DentAI', kind: 'recovered', text: 'voltou', at }])[0];
+  assert.deepEqual([recovered.kind, recovered.severity], ['health.recovered', 'info']);
+  const kinds = (file: string, probes: string[]) => probes.map(probe => healthSignals(file, [{ probe, kind: 'down', text: 'x', at }])[0].kind);
+  assert.deepEqual(kinds(PC_FILE, ['PC: disco C:', 'PC: memória', 'PC: manutenção diária']), ['pc.disk_low', 'pc.memory_low', 'pc.maintenance_stale']);
+  assert.deepEqual(kinds(QUOTA_HEALTH_FILE, ['Cota dos modelos']), ['quota.exhausted']);
+  assert.deepEqual([healthSignals(PC_FILE, [{ probe: 'PC: disco C:', kind: 'recovered', text: 'x', at }])[0].kind,
+    healthSignals(QUOTA_HEALTH_FILE, [{ probe: 'Cota dos modelos', kind: 'recovered', text: 'x', at }])[0].kind], ['pc.recovered', 'quota.recovered']);
+  assert.notEqual(healthSignals('prod-health.json', [{ probe: 'API', kind: 'down', text: 'x', at }])[0].dedupeKey,
+    healthSignals('prod-health.json', [{ probe: 'API', kind: 'down', text: 'x', at: at + 1 }])[0].dedupeKey, 'a later outage is a new event');
 });

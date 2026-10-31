@@ -291,6 +291,11 @@
       "argv": ["node", "--test", "assistant/test/http.test.ts"],
       "timeoutMs": 60000
     },
+    "assistant-journal": {
+      "description": "Deterministic signal bus, dedupe, rules, cooldown, spool replay, outcomes, weekly review, digest and HTTP routes; no model calls",
+      "argv": ["node", "--test", "--test-timeout=60000", "assistant/test/journal.test.ts"],
+      "timeoutMs": 90000
+    },
     "assistant-store": {
       "description": "Disposable native SQLite persistence, profile isolation, rollback, reopen and replay",
       "argv": ["node", "--test", "assistant/test/tasks.test.ts", "assistant/test/ownership.test.ts"],

@@ -60,6 +60,7 @@ import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
 import { ShellJobs, adoptShells, handOffShells, registerShells, runningShells, shellReport } from './shells.ts';
+import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
@@ -110,6 +111,9 @@ export default function optchat(pi: ExtensionAPI) {
   registerReapingBash(pi);
   registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
   let active: Active | undefined;
+  // A background shell's end becomes an outcome even when its notify mode hides it from the model: exit code, latency and
+  // zero model calls, never the command's text in a notification. Foreground bash is Pi's own result, not a managed job.
+  shells.setEndObserver(job => { const current = active; if (!current || stopping) return; recordShellOutcome(current.dir, current.sessionId, job); });
   registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
   const recoveryIncidents = new Map<string, string>();
   const recoveryEvent = (event: unknown) => {

@@ -36,6 +36,8 @@ const lockScreenText = {
   approval_pending: 'An assistant action is waiting for your review.',
   effect_uncertain: 'An assistant action needs reconciliation.',
   routine_paused: 'An assistant routine was paused.',
+  signal_attention: 'A monitored signal needs your attention.',
+  signal_cleared: 'A monitored signal recovered.',
 } as const;
 const channels: readonly string[] = ['local', 'web'];
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
