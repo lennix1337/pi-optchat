@@ -18,12 +18,13 @@ Validation: inspect `.pi/checks.json`, then run the `quota-health` recipe. It us
 On Monday between 09:00 and noon (local time) the first five-minute check posts the Jarvis scoreboard to `#harness`, once per week (`slack-scoreboard.json` is written before the post, so a crash cannot post twice). It covers the seven days before the post:
 
 - **"E aí?" count** and **first Slack response**: the bridge records each operator message as it arrives and each answer Slack accepted (the run's final answer or a `slack_send`) in `slack-metrics.jsonl`. It stores times, channel and a nudge flag only, never message text. A message pairs with the first later answer in its channel. Automatic posts (PR watch, morning summary, approvals, wake reports) are not answers.
+- **Possible operator corrections**: an operator message (TUI or `[Slack]`) matching a correction cue ("já falei", "não era isso", "para de…", "sem eu pedir", "I told you") is logged in `corrections.jsonl` (time and origin, never text), and the next tool result of that run carries one `[OptChat correction]` reminder to turn it into a regression test or a rule, or say why it does not generalize. Cue matching counts possible corrections, not verified ones; a correction worded without a cue is missed. Code: `src/corrections.ts`.
 - **Stuck commitments**: OptChat-owned items that are overdue, or have had no progress or next step for 24h, at posting time.
 - **Gitwatch events without the model**: the change in Gitwatch's routing counters (`state.json` stats) since the previous post. The first post only records the baseline, and a counter reset shows as unmeasured, never as a negative week. These are routing decisions, not measured model turns.
 - **Merged PRs**: PRs from `pr-watch.json` that merged during the week, split by whether their last CI was green. Green CI does not prove the real flow.
 - **Actions without authorization** are reported as unmeasured: approval requests are logged, but executed effects are not audited.
 
-A metric without a record says so instead of showing zero. Validation: `test/scoreboard.test.ts` (part of `unit`); activation needs a reload, and live posting is unverified until the first Monday.
+A metric without a record says so instead of showing zero. Validation: `test/scoreboard.test.ts` and `test/corrections.test.ts` (part of `unit`); activation needs a reload, and live posting is unverified until the first Monday.
 
 ## Quota review trade-off
 

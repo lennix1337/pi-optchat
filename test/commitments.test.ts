@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment } from '../src/commitments.ts';
 import { composeSummary } from '../src/slack-reports.ts';
+import { plainToolResult } from './support.ts';
 
 const temp = () => mkdtempSync(join(tmpdir(), 'commitments-'));
 const T0 = Date.parse('2026-10-30T21:00:00Z'); // 18:00 in Brasília
@@ -98,7 +99,7 @@ test('presence counts the operator as told only when slack_send succeeds, throug
     fire('tool_call', { toolName: 'slack_send', toolCallId: 's', input: {} });
     return fire('tool_result', { toolName: 'slack_send', toolCallId: 's', input: {}, isError, content: [{ type: 'text', text: isError ? 'refused' : 'Sent' }] });
   };
-  const otherTool = () => fire('tool_result', { toolName: 'read', toolCallId: 'r', input: {}, isError: false, content: [{ type: 'text', text: 'x' }] }) as { content: { text: string }[] } | undefined;
+  const otherTool = () => plainToolResult(fire);
   try {
     fire('agent_start', {});
     now = T0 + PRESENCE_REPORT_MS + 60_000;

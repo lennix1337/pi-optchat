@@ -8,7 +8,7 @@ import { forecast, type PrOutlook } from './forecast.ts';
 import { healthLines, PC_FILE, readHealth } from './prod-health.ts';
 import { fixLines, readFixes } from './self-fix.ts';
 import { projectOfRepo } from './projects.ts';
-import { appendJsonl, atomicWrite, readJsonl, readJsonOr } from './store.ts';
+import { appendRecent, atomicWrite, readJsonl, readJsonOr } from './store.ts';
 import { QUOTA_FILE, QUOTA_HEALTH_FILE, quotaRisks } from './quota-health.ts';
 import { WeeklyScoreboard } from './scoreboard.ts';
 
@@ -32,7 +32,7 @@ const DAY = 'slack-day.jsonl';
 type DayEntry = { at: number; channel: string | null; line: string };
 export function logSent(dir: string, channel: string | null, text: string, now = Date.now()): void {
   if (/^(?:⏸|☀️)/u.test(text)) return; // Approval prompts and the summary itself are not work done.
-  appendJsonl<DayEntry>(join(dir, DAY), { at: now, channel, line: one(text.replace(/^\*Wake\* · /, ''), 200) }, 256 * 1024, e => e.at >= now - 3 * 86_400_000);
+  appendRecent<DayEntry>(join(dir, DAY), { at: now, channel, line: one(text.replace(/^\*Wake\* · /, ''), 200) }, 256 * 1024, 3 * 86_400_000);
 }
 export const readDay = (dir: string, since: number): DayEntry[] => readJsonl<DayEntry>(join(dir, DAY), e => e.at >= since);
 

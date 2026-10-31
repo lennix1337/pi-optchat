@@ -6,6 +6,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { registerSlackBridge, SlackBridge } from '../src/slack-bridge.ts';
 import { isNudge, recordAnswer, recordInbound, SLACK_METRICS, slackWeek } from '../src/slack-metrics.ts';
 import { composeScoreboard, WeeklyScoreboard, weekInputs } from '../src/scoreboard.ts';
+import { recordCorrection } from '../src/corrections.ts';
 import { withTempDir } from './support.ts';
 
 const MIN = 60_000, DAY = 86_400_000;
@@ -68,17 +69,20 @@ test('a slack_send the operator received answers his message in that channel; a 
 }));
 
 test('the scoreboard says what is unmeasured instead of showing zero', () => {
-  const empty = { received: 0, answered: 0, waiting: 0, nudges: 0 };
-  assert.match(composeScoreboard({ from: 0, to: DAY, slack: empty, merged: { green: 0, other: 0 } }), /"E a\u00ed\?" e primeira resposta no Slack: n\u00e3o medidos ainda/);
-  assert.doesNotMatch(composeScoreboard({ from: 0, to: DAY, slack: empty, merged: { green: 0, other: 0 } }), /\*0\* \(meta 0\)/, 'no record is not a zero');
-  const text = composeScoreboard({ from: monday - 7 * DAY, to: monday, slack: { received: 2, answered: 0, waiting: 2, nudges: 0, recordingSince: monday - 2 * DAY }, merged: { green: 0, other: 0 } });
+  const empty = { received: 0, answered: 0, waiting: 0, nudges: 0 }, none = { count: 0 };
+  const blank = composeScoreboard({ from: 0, to: DAY, slack: empty, corrections: none, merged: { green: 0, other: 0 } });
+  assert.match(blank, /"E a\u00ed\?" e primeira resposta no Slack: n\u00e3o medidos ainda/);
+  assert.match(blank, /Correções do operador: não medidas ainda/);
+  assert.doesNotMatch(blank, /\*0\* \(meta 0\)|corre\u00e7\u00f5es do operador: \*0\*/, 'no record is not a zero');
+  const text = composeScoreboard({ from: monday - 7 * DAY, to: monday, slack: { received: 2, answered: 0, waiting: 2, nudges: 0, recordingSince: monday - 2 * DAY }, corrections: { count: 0, recordingSince: monday - DAY }, merged: { green: 0, other: 0 } });
   assert.match(text, /registro s\u00f3 desde/);
+  assert.match(text, /Possíveis correções do operador: \*0\*[^\n]*registro só desde/, 'a recorded quiet week is a measured zero');
   assert.match(text, /sem pares mensagem→resposta registrados \(2 recebidas\)/);
   assert.match(text, /compromissos ilegíveis, não medido/);
   assert.match(text, /sem linha de base ainda/);
   assert.match(text, /Ações sem autorização: não medido/);
-  assert.match(composeScoreboard({ from: 0, to: 1, slack: { received: 1, answered: 1, waiting: 0, nudges: 1, medianMs: 75 * MIN, worstMs: 75 * MIN, recordingSince: 0 }, commitments: { stuck: 1, overdue: 0 }, routing: { woke: 3, quiet: 1 }, merged: { green: 2, other: 1 } }),
-    /"E aí\?" do operador no Slack: \*1\*[\s\S]*mediana \*1h15\*[\s\S]*\*1\* sem progresso[\s\S]*\*1 de 4\* \(25%\)[\s\S]*\*2\* com CI verde, 1 sem CI verde/);
+  assert.match(composeScoreboard({ from: 0, to: 1, slack: { received: 1, answered: 1, waiting: 0, nudges: 1, medianMs: 75 * MIN, worstMs: 75 * MIN, recordingSince: 0 }, corrections: { count: 2, recordingSince: 0 }, commitments: { stuck: 1, overdue: 0 }, routing: { woke: 3, quiet: 1 }, merged: { green: 2, other: 1 } }),
+    /"E aí\?" do operador no Slack: \*1\*[\s\S]*mediana \*1h15\*[\s\S]*correções do operador: \*2\* \(cada[\s\S]*\*1\* sem progresso[\s\S]*\*1 de 4\* \(25%\)[\s\S]*\*2\* com CI verde, 1 sem CI verde/);
 });
 
 test('weekly inputs: merged PRs of the week, Gitwatch routing as a delta from the saved baseline, reset counters unmeasured', withDir(dir => {
@@ -90,7 +94,10 @@ test('weekly inputs: merged PRs of the week, Gitwatch routing as a delta from th
     'a#4': { sig: 'OPEN:SUCCESS', seen: monday, since: monday - DAY, title: 't', url: 'u', channel: 'harness' },
   }));
   writeFileSync(gitwatch, JSON.stringify({ stats: { since: 1, woke: 10, quiet: 6 } }));
+  recordCorrection(dir, 'slack', monday - 9 * DAY);
+  recordCorrection(dir, 'tui', monday - DAY);
   const first = weekInputs(dir, monday, {}, gitwatch);
+  assert.deepEqual(first.inputs.corrections, { count: 1, recordingSince: monday - 9 * DAY });
   assert.deepEqual(first.inputs.merged, { green: 1, other: 1 });
   assert.equal(first.inputs.routing, undefined, 'no baseline yet');
   assert.deepEqual(first.routing, { since: 1, woke: 10, quiet: 6 });
