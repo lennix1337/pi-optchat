@@ -40,6 +40,17 @@ export function isAllowedRemote(address: string | undefined): boolean {
 export type BriefingProvider = { latest(): Promise<unknown | null>; refresh(): Promise<unknown> };
 /** The operator's Slack DM and project channels (name -> id) as a chat: queued operator messages, posting back to them only. */
 export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster; channels?: Record<string, string> };
+/** The deterministic signal/outcome journal when `"signals":true`; every method validates its own input. */
+export type JournalApi = {
+  ingest(value: unknown): unknown;
+  signals(after: number, limit: number): unknown;
+  metrics(from: number, to: number): unknown;
+  recordOutcome(value: unknown): unknown;
+  outcomes(after: number, limit: number): unknown;
+  review(now?: number): unknown;
+  latestReview(): unknown;
+  digest(day?: string): unknown;
+};
 const threadTs = (value: unknown) => value === null || typeof value === 'string' && /^\d{1,12}\.\d{1,8}$/.test(value);
 
 async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, slack: SlackBridge): Promise<void> {
@@ -75,8 +86,8 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
   send(res, 404, { error: 'Not found' });
 }
 
-type OptionalRoutes = { briefings?: BriefingProvider | undefined; slack?: SlackBridge | undefined; executor?: (() => ExecutorStatus) | undefined };
-async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, { briefings, slack, executor }: OptionalRoutes): Promise<void> {
+type OptionalRoutes = { briefings?: BriefingProvider | undefined; slack?: SlackBridge | undefined; executor?: (() => ExecutorStatus) | undefined; journal?: JournalApi | undefined };
+async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, { briefings, slack, executor, journal }: OptionalRoutes): Promise<void> {
   try {
     if (!isAllowedRemote(req.socket.remoteAddress)) { send(res, 403, { error: 'Forbidden' }); return; }
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -94,6 +105,36 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     }
     if (url.pathname.startsWith('/v1/slack/') && slack) { await slackRoute(req, res, url, slack); return; }
     if (req.method === 'GET' && url.pathname === '/v1/executor' && executor) { query(url, []); send(res, 200, executor()); return; }
+    if (journal && url.pathname === '/v1/signals' && (req.method === 'GET' || req.method === 'POST')) {
+      query(url, req.method === 'GET' ? ['after', 'limit'] : []);
+      if (req.method === 'GET') { send(res, 200, journal.signals(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 50, 1, 100))); return; }
+      try { send(res, 200, journal.ingest(await readBody(req))); } catch (error) { if (error instanceof TypeError) throw new BadRequest(); throw error; }
+      return;
+    }
+    if (journal && req.method === 'GET' && url.pathname === '/v1/signals/metrics') {
+      query(url, ['from', 'to']);
+      send(res, 200, journal.metrics(numberParam(url, 'from', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'to', Number.MAX_SAFE_INTEGER, 0, Number.MAX_SAFE_INTEGER)));
+      return;
+    }
+    if (journal && url.pathname === '/v1/outcomes' && (req.method === 'GET' || req.method === 'POST')) {
+      query(url, req.method === 'GET' ? ['after', 'limit'] : []);
+      if (req.method === 'GET') { send(res, 200, journal.outcomes(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 50, 1, 100))); return; }
+      try { send(res, 200, journal.recordOutcome(await readBody(req))); } catch (error) { if (error instanceof TypeError) throw new BadRequest(); throw error; }
+      return;
+    }
+    if (journal && url.pathname === '/v1/review' && (req.method === 'GET' || req.method === 'POST')) {
+      query(url, []);
+      if (req.method === 'POST') { shape(await readBody(req), {}); send(res, 200, journal.review()); return; }
+      const review = journal.latestReview();
+      send(res, review ? 200 : 404, review ?? { error: 'Not found' }); return;
+    }
+    if (journal && req.method === 'GET' && url.pathname === '/v1/journal/digest') {
+      query(url, ['day']);
+      const day = url.searchParams.get('day') ?? undefined;
+      if (day !== undefined && !/^\d{4}-\d\d-\d\d$/.test(day)) throw new BadRequest();
+      try { send(res, 200, journal.digest(day)); } catch (error) { if (error instanceof TypeError) throw new BadRequest(); throw error; }
+      return;
+    }
     const match = /^\/v1\/tasks\/([^/]+)(?:\/(transition|respond))?$/.exec(url.pathname);
     const id = match ? taskIdParam(match[1]) : undefined;
     if (req.method === 'GET' && url.pathname === '/v1/tasks') {
@@ -137,13 +178,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
 /** Optional surfaces are fields here, so adding one does not change the server's signature. */
 export type AssistantServerOptions = OptionalRoutes & {
   store: TaskStore; token: string; profileId: string; web?: boolean; webOrigins?: readonly string[];
-  setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; voice?: VoiceProvider; prompt?: PromptSource; inspection?: InspectionSource; onError?: ErrorObserver;
+  setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; voice?: VoiceProvider; prompt?: PromptSource; inspection?: InspectionSource; journal?: JournalApi; onError?: ErrorObserver;
 };
 
-export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, voice, prompt, inspection, briefings, slack, executor, onError = () => safeLog('assistant HTTP internal request failure') }: AssistantServerOptions): Server {
+export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, voice, prompt, inspection, journal, briefings, slack, executor, onError = () => safeLog('assistant HTTP internal request failure') }: AssistantServerOptions): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
   const channel = web ? new WebChannel({ store, token, profileId, setup, origins: webOrigins, artifacts, voice, prompt, briefings, inspection }) : null;
-  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor }).catch(() => { reportError(onError); res.destroy(); }); });
+  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal }).catch(() => { reportError(onError); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
   return server;

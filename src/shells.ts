@@ -37,6 +37,8 @@ export class ShellJobs {
   private readonly tasks = new Set<Promise<void>>();
   private readonly listeners = new Set<() => void>();
   private reporter?: ShellReporter;
+  /** Called once per background job that ends, whatever its notify mode; a journal observation must never fail the job. */
+  private endObserver?: (job: ShellJob) => void;
   /** End notices that came while no profile listened (between a /reload's shutdown and the reloaded profile), delivered by the next setReporter. */
   private unreported: ShellJob[] = [];
   list() { return [...this.jobs.values()].reverse().sort((a, b) => Number(b.state === 'running' || b.state === 'stopping') - Number(a.state === 'running' || a.state === 'stopping') || b.started - a.started); }
@@ -44,6 +46,8 @@ export class ShellJobs {
   /** The open profile's reporter for managed background shells: each one's end (when its notify mode wants it) and its alerts. Foreground bash
    * calls are not reported: Pi shows their results. It must not throw: it runs inside the job's own completion, as `subscribe` listeners do. */
   setReporter(reporter: ShellReporter | undefined) { this.reporter = reporter; if (reporter) for (const job of this.unreported.splice(0)) reporter.finished(job); }
+  /** Every ended background job reaches the observer, even when its notify mode hides the end from the model. */
+  setEndObserver(observer: ((job: ShellJob) => void) | undefined) { this.endObserver = observer; }
   private changed() { for (const listener of this.listeners) listener(); }
   begin(id: string, command: string, cwd: string, mode: ShellJob['mode'], owner = 'main', options: ShellOptions = {}) {
     this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert });
@@ -64,6 +68,9 @@ export class ShellJobs {
     // Never evict an active execution, even when many jobs finish together.
     for (const finished of this.list().filter(j => j.ended !== undefined).slice(50)) this.jobs.delete(finished.id);
     this.changed();
+    if (job.mode === 'background') {
+      try { this.endObserver?.(job); } catch { /* the journal is an observer, never the owner of the job's result */ }
+    }
     if (job.mode === 'background' && endNoticeWanted(job.notify, job.state)) void (this.reporter ? this.reporter.finished(job) : this.unreported.push(job));
   }
   stop(id: string) {

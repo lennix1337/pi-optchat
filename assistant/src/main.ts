@@ -8,6 +8,7 @@ import { piVoiceProvider, validVoiceConfig, type VoiceConfig } from './voice.ts'
 import { openArtifactService } from './artifacts/service.ts';
 import { validExecutorConfig, type ExecutorConfig } from './runtime/executor-config.ts';
 import { DisplayLearning } from './memory/display-learning.ts';
+import type { NotificationChannel } from './notifications/center.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
 Usage: node assistant/src/main.ts --config <absolute-path> [--web]
@@ -55,6 +56,11 @@ consolidated into one); the draft executor takes it when that channel is one of 
 Optional reviewed display learning: "learning":true opens only a local read-only panel view.
 Propose/measure/review/apply/revert use assistant/scripts/display-learning.mjs and explicit terminal confirmation.
 The retained dataset is synthetic; its score is not personal-learning efficacy. It never changes instructions or permissions.
+Optional deterministic signal journal (off when omitted): "signals":true
+Reads the profile's spool (<OPTCHAT_HOME>/profiles/<id>/signals/inbox.jsonl), stores each signal once, applies fixed
+rules and enqueues fixed-text notices on channels that already have consent. It also keeps an outcome journal and a
+weekly review of unverified work. No model call, task dispatch or tool use. Publish with
+node assistant/scripts/signal.mjs --profile <id> --source <s> --kind <k> --subject <s> --summary <s>.
 No other fields are accepted. Keep the token out of arguments and logs.
 Config and database must be in private, owner-controlled directories; existing
 files and SQLite sidecars must be private. No permissions are changed.
@@ -72,9 +78,9 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; learning?: true };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; learning?: true; signals?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
-const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'learning'];
+const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'learning', 'signals'];
 
 function validWebOrigins(value: unknown): value is string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4 || !value.every(origin => typeof origin === 'string')) return false;
@@ -96,7 +102,7 @@ function validNotifications(value: unknown): value is NotificationsConfig {
     typeof (value as Record<string, unknown>).local === 'boolean';
 }
 
-const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins, voice: validVoiceConfig, executor: validExecutorConfig, routines: value => value === true, learning: value => value === true };
+const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins, voice: validVoiceConfig, executor: validExecutorConfig, routines: value => value === true, learning: value => value === true, signals: value => value === true };
 
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -178,7 +184,7 @@ async function main(): Promise<void> {
   const web = args[2] === '--web' || config.webOrigins !== undefined;
   const { serviceSetup } = await import('./service-setup.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
-  const extras = await startExtras(config, store);
+  const extras = await startExtras(config, store, web);
   if (!extras) { store.close(); process.exitCode = 1; return; }
   const briefings = extras.server.briefings;
   const setup = () => serviceSetup(config, osKeyProtector(), { executor: () => store.latestResult('draft-executor'), ...(briefings ? { briefing: () => briefings.latest() } : {}) });
@@ -237,11 +243,16 @@ async function openWorkers(config: Config, store: import('./store/db.ts').TaskSt
   };
 }
 
-type Notices = { stop(): void; announce(id: string, ref: string): void; list(): import('./notifications/center.ts').NotificationRecord[] };
+type Notices = {
+  stop(): void; announce(id: string, ref: string): void;
+  notify(input: import('./notifications/center.ts').NotificationInput): void;
+  list(): import('./notifications/center.ts').NotificationRecord[];
+};
+type Journal = { stop(): void; api: import('./http/server.ts').JournalApi };
 type Briefings = { stop(): void; provider: import('./http/server.ts').BriefingProvider };
 
 /** Optional Slack intake, local notices and Google briefing; null (after reporting which one failed) stops startup. */
-async function startExtras(config: Config, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; notices?: () => import('./notifications/center.ts').NotificationRecord[]; server: { briefings?: import('./http/server.ts').BriefingProvider; slack?: import('./http/server.ts').SlackBridge } } | null> {
+async function startExtras(config: Config, store: import('./store/db.ts').TaskStore, web = false): Promise<{ stop(): void; notices?: () => import('./notifications/center.ts').NotificationRecord[]; server: { briefings?: import('./http/server.ts').BriefingProvider; slack?: import('./http/server.ts').SlackBridge; journal?: import('./http/server.ts').JournalApi } } | null> {
   let slack: Awaited<ReturnType<typeof startSlack>> | undefined;
   if (config.slack) {
     try { slack = await startSlack(config, config.slack, store); }
@@ -257,7 +268,32 @@ async function startExtras(config: Config, store: import('./store/db.ts').TaskSt
     try { google = await startGoogle(config, config.google, notices); }
     catch { notices?.stop(); slack?.stop(); console.error('Google briefing could not be initialized.'); return null; }
   }
-  return { stop() { google?.stop(); notices?.stop(); slack?.stop(); }, ...(notices ? { notices: () => notices!.list() } : {}), server: { ...(google ? { briefings: google.provider } : {}), ...(slack?.bridge ? { slack: slack.bridge } : {}) } };
+  let journal: Journal | undefined;
+  if (config.signals) {
+    try { journal = await startJournal(config, notices, web ? ['local', 'web'] : ['local']); }
+    catch { google?.stop(); notices?.stop(); slack?.stop(); console.error('Signal journal could not be initialized.'); return null; }
+  }
+  return {
+    stop() { journal?.stop(); google?.stop(); notices?.stop(); slack?.stop(); },
+    ...(notices ? { notices: () => notices!.list() } : {}),
+    server: { ...(google ? { briefings: google.provider } : {}), ...(slack?.bridge ? { slack: slack.bridge } : {}), ...(journal ? { journal: journal.api } : {}) },
+  };
+}
+
+/** The deterministic journal and its spool poller; it never calls a model or dispatches work. */
+async function startJournal(config: Config, notices: Notices | undefined, channels: readonly NotificationChannel[]): Promise<Journal> {
+  const { SignalStore } = await import('./journal/store.ts');
+  const { SignalService } = await import('./journal/service.ts');
+  const { SpoolPoller, spoolPath, outcomeSpoolPath } = await import('./journal/spool.ts');
+  const path = join(dirname(config.databasePath), 'journal.sqlite');
+  prepareDatabase(path);
+  const store = new SignalStore(path, config.profileId);
+  const service = new SignalService({ store, channels, ...(notices ? { notify: input => notices.notify(input) } : {}) });
+  const poller = new SpoolPoller({ path: spoolPath(config.profileId), service });
+  const outcomes = new SpoolPoller({ path: outcomeSpoolPath(config.profileId), service: { ingest: value => { service.recordOutcome(value); return {}; } } });
+  poller.start(5000, () => console.error('Signal spool pass failed; it keeps retrying.'));
+  outcomes.start(5000, () => console.error('Outcome spool pass failed; it keeps retrying.'));
+  return { stop() { poller.stop(); outcomes.stop(); store.close(); }, api: service };
 }
 
 /** Reads the named Google accounts' mail and agenda once a day after `dailyAt`; failures are logged by code only. */
@@ -294,6 +330,7 @@ async function startNotifications(config: Config, settings: NotificationsConfig,
   return {
     stop() { notifier.stop(); center.close(); },
     list() { return center.list(50); },
+    notify(input) { center.notify(input); },
     // Delivered by the notifier's next pass; the same id again is a no-op, so a restart does not repeat the toast.
     announce(id, ref) { try { center.notify({ id, channel: 'local', category: 'briefing_ready', ref }); } catch { console.error('Notification could not be recorded.'); } },
   };

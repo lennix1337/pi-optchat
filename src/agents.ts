@@ -18,6 +18,7 @@ import { UsageLedger } from './usage.ts';
 import { fullChat, refreshFraction, textContent } from './transcript.ts';
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
+import { recordSubagentSignal } from './journal-spool.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { inputTokenBudget, priceTierBudget } from './run-context.ts';
 import type { ShellJobs } from './shells.ts';
@@ -601,6 +602,7 @@ export class Children {
       return;
     }
     // Said plainly, so the parent does not take the user's choice for a failure and delegate the task again.
+    if (!info.parentId) recordSubagentSignal(this.profileDirectory, info);
     if (this.deleting.has(info.id)) info.report = 'Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.';
     // A metadata failure must not suppress delivery of the actual result.
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
