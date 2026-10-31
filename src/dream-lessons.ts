@@ -1,14 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { atomicWrite } from './store.ts';
+import { atomicWrite, envDir } from './store.ts';
 
 /**
  * What the nightly dream (dotfiles payload/tools/dream) leaves for the day: `active-lessons.md`, shown in
  * the system prompt and frozen for the local day so the prompt cache survives, and a short summary of the
  * last dream shown once, at the first turn after the morning hour.
  */
-export const dreamsDir = () => join(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'), 'dreams');
+export const dreamsDir = () => join(envDir('OPTCHAT_HOME', '.optchat'), 'dreams');
 const MAX_BYTES = 2048;
 
 export const localDay = (now: number) => {

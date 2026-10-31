@@ -6,6 +6,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
 import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
+import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
@@ -126,6 +127,7 @@ export class SlackBridge {
         this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+        this.measure(dir => recordInbound(dir, channel, m.text, this.options.now()));
         delivered++;
       }
       return delivered;
@@ -147,7 +149,7 @@ export class SlackBridge {
     this.answering = undefined; this.waking = false;
     this.running = false;
     if (answering) {
-      try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread, answering.channel); }
+      try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread, answering.channel); this.answered(answering.channel); }
       catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
       return;
     }
@@ -255,6 +257,15 @@ export class SlackBridge {
     }
   }
 
+  /** An answer the operator received in `channel` (a run's final answer, or a slack_send), for the scoreboard. */
+  answered(channel: string | null): void { this.measure(dir => recordAnswer(dir, channel, this.options.now())); }
+
+  /** The scoreboard's log never gets in the way of a message. */
+  private measure(write: (dir: string) => void): void {
+    const owner = this.owner();
+    try { if (owner) write(owner.dir); } catch (error) { this.options.warn(`Slack metrics not recorded: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
   private cursor(owner: SlackOwner): number {
     try { const seq = (JSON.parse(readFileSync(join(owner.dir, CURSOR), 'utf8')) as { seq?: unknown }).seq; return Number.isSafeInteger(seq) ? seq as number : 0; }
     catch { return 0; }
@@ -281,6 +292,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
     }, { additionalProperties: false }),
     async execute(_id, params) {
       const result = await bridge.post(params.text, params.channel ?? null, params.topic);
+      bridge.answered(params.channel ?? null);
       return { content: [{ type: 'text', text: `Sent to ${params.channel ? `Slack #${params.channel}` : "the operator's Slack DM"} (${result.parts} part${result.parts === 1 ? '' : 's'}).` }], details: undefined };
     },
   });
