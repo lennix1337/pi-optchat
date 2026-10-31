@@ -307,6 +307,17 @@ export function refreshBudget(contextWindow: number | undefined, fraction: numbe
   const tokens = contextWindow * fraction;
   return Math.floor((capTokens > 0 ? Math.min(tokens, capTokens) : tokens) * 4);
 }
+/** The end-of-request entry holding this turn's messages lives 5 minutes (cachePayload); a call after a longer pause
+ * writes them all again whatever it does. */
+export const TURN_ENTRY_MS = 300_000;
+/** After such a pause the turn moves into memory from this size on (16K tokens): its summaries go after the view's cached
+ * blocks, so the call writes them and the last step instead of the whole turn, and every later call of the run reads less. */
+export const COLD_REFRESH_CHARS = 64_000;
+/** The refresh budget for a call `idleMs` after the run's previous one: lowered to COLD_REFRESH_CHARS once the turn's entry
+ * has expired. Off stays off. */
+export function coldBudget(budget: number | undefined, idleMs: number | undefined) {
+  return budget !== undefined && idleMs !== undefined && idleMs >= TURN_ENTRY_MS ? Math.min(budget, COLD_REFRESH_CHARS) : budget;
+}
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
 /** The run's current input: its first user message before the model's first reply, or when a hidden extension message (a
  * background wake) started it, its first custom one. A message shown after the model began (a report, a gitwatch notice)

@@ -15,7 +15,8 @@ const PIPE_PREFIX = '\\\\.\\pipe\\';
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
 export type Role = 'compactor' | 'subagent';
 /** alternates: per-provider models a role uses while the main model is on that provider, e.g. a Codex model on a Codex account. */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[] }
+/** wakeModel: the model a heartbeat wake runs on instead of the main one, the main model coming back when the wake settles. */
+export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice }
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
@@ -70,6 +71,13 @@ export function modelFor(config: ProfileConfig, role: Role, main: MainModel | un
   // No choice for this provider: the main model, at the lowest effort it takes (clamped by the caller).
   return { provider: main.provider, model: main.model, thinking: 'off' };
 }
+/** The model a heartbeat wake switches to: the profile's wakeModel on the account the main model is serving, when both are
+ * of the same provider family; none (the wake stays on the main model) on another family, or when it is the main model already. */
+export function wakeModelFor(config: ProfileConfig, main: MainModel | undefined): ModelChoice | undefined {
+  const wake = config.wakeModel;
+  if (!wake || !main || accountGroup(wake.provider) !== accountGroup(main.provider)) return undefined;
+  return wake.model === main.model ? undefined : { ...wake, provider: main.provider };
+}
 /** What a role will use right now: its configured model, and the effective one when the main model changes it. */
 export function roleModel(config: ProfileConfig, role: Role, main: MainModel | undefined) {
   const show = (choice: ModelChoice) => `${choice.provider}/${choice.model} (${choice.thinking})`;
@@ -89,13 +97,15 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
 }
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
-  if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)) throw new Error(`Invalid profile config: ${dir}/config.json`);
+  if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
+    || value.wakeModel !== undefined && !modelChoice(value.wakeModel)) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar);
     if (problem) throw new Error(problem);
     return { compactor: value.compactor, subagent: value.subagent, ...(value.alternates ? { alternates: value.alternates } : {}),
       ...(value.heartbeat ? { heartbeat: value.heartbeat as HeartbeatPlan } : {}),
-      ...(value.heartbeatRadar ? { heartbeatRadar: value.heartbeatRadar as string[] } : {}), ...readSettings(value) };
+      ...(value.heartbeatRadar ? { heartbeatRadar: value.heartbeatRadar as string[] } : {}),
+      ...(value.wakeModel ? { wakeModel: value.wakeModel as ModelChoice } : {}), ...readSettings(value) };
   }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
