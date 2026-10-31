@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { record } from './cache.ts';
+import { isStrings, record } from './cache.ts';
 import { ACTIONS, classifyEffects as classify, IRREVERSIBLE, type Action, type Effect, type Repo } from './effect-classifier.ts';
 import { parseWhenChanged } from './mtime-cache.ts';
 
@@ -18,7 +18,6 @@ export interface Rule { action: Action | '*'; scope: string[]; level: Level; unt
 export interface Contract { version: 1; default: Level | 'advisor'; rules: Rule[] }
 export interface Decision { level: Level | 'advisor'; effect?: Effect; rule?: Rule }
 
-const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => list.some(item => item === value);
 
 /** A validated contract, or an error naming the first problem. */

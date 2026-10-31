@@ -528,7 +528,15 @@ test('each call reports where its view first differs from the last call\'s, so a
   const marks = call(480).marks;
   assert.equal(marks.length, 2, 'the view\'s two marks are reported');
   assert.equal(call(400, { top: '0+1024|merged summary\n' }).changedAt, 0, 'a batch merge near the top rewrites from its first block');
-  assert.equal(call(400, { top: '0+1024|merged summary\n', system: 'new system' }).headChanged, true, 'a changed system prompt is told apart');
+  const changed = call(400, { top: '0+1024|merged summary\n', system: 'new system' });
+  assert.equal(changed.headChanged, true, 'a changed system prompt is told apart');
+  assert.deepEqual(changed.headParts, ['system'], 'and named as the part that changed');
+  assert.equal(call(400, { top: '0+1024|merged summary\n', system: 'new system' }).headParts, undefined, 'an unchanged head names nothing');
+  const reloaded = new ViewEntries(() => clock);
+  reloaded.restore(JSON.parse(JSON.stringify(entries.snapshot())));
+  cachePayload({ model: 'claude-opus-5-5', system: 'new system', tools: [{ name: 'zoom' }, { name: 'web_search' }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n0+1024|merged summary\n' + line.repeat(400) + '</chat>' }] }] }, { prefix: 'long', entries: reloaded });
+  assert.deepEqual(reloaded.last!.headParts, ['tools'], 'the parts survive a /reload, so its first call still names a tool-set change');
   const lines = line.repeat(200) + '0+2|a later merge\n' + line.repeat(199);
   call(400);
   const payload = { model: 'claude-opus-5-5', system: 'system', tools: [{ name: 'zoom' }],
@@ -539,7 +547,7 @@ test('each call reports where its view first differs from the last call\'s, so a
   assert.equal(entries.last!.model, 'claude-opus-5-5');
   assert.equal(entries.last!.gapMs, 0, 'time since the last call');
   assert.equal(first.gapMs, undefined);
-  assert.equal(reports.length, 7, 'every call is reported to the sink (cache-diagnostics.jsonl)');
+  assert.equal(reports.length, 8, 'every call is reported to the sink (cache-diagnostics.jsonl)');
 });
 
 test('the most due pair is the one that ended longest ago in its own line size, so the view merges as Taelin\'s rollback push', () => {

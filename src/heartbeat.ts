@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ModelChoice } from './compactor.ts';
+import { isStrings } from './cache.ts';
 import { askOneLine } from './one-line.ts';
 import { atomicWrite } from './store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -46,7 +47,6 @@ export const DEFAULT_HEARTBEAT: HeartbeatPlan = {
     'Spend on paid generation.', 'Change accounts or credentials.'],
 };
 
-const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 /** Why a config.json `heartbeat` entry can't be used, or undefined if it can (absent uses the default). */
 export function invalidPlan(value: unknown) {
   if (value === undefined) return undefined;
