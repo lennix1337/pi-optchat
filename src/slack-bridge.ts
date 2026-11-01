@@ -26,8 +26,14 @@ export const SLACK_PREFIX = '[Slack] ';
 const slackPrefix = (channel: string | null) => channel ? `[Slack #${channel}] ` : SLACK_PREFIX;
 export const FROM_SLACK = /^\[Slack(?: #([a-z0-9][a-z0-9_-]{0,79}))?\] /;
 export type SlackOwner = { dir: string; name: string };
-type Inbound = { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null };
-type Origin = { thread: string | null; channel: string | null };
+type SlackFile = { id: string; name: string; mimetype: string; url: string };
+type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[] };
+/** Where a Slack message came from: `channel` is the configured name (null = DM), `id`/`ts` the message itself for reactions. */
+type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean };
+const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
+/** A Slack message link pasted in a message: https://x.slack.com/archives/C123/p1793000000123456 */
+const SLACK_LINK = /https:\/\/[\w-]+\.slack\.com\/archives\/([CDG][A-Z0-9]{2,20})\/p(\d{10})(\d{6})(?:\?[^\s>|]*thread_ts=(\d{10}\.\d{6}))?/g;
+const SEEN = 'eyes', DONE = 'white_check_mark';
 type Request = (owner: SlackOwner, path: string, body?: unknown) => Promise<unknown>;
 const CURSOR = 'slack-cursor.json';
 const OFF_FOR_MS = 5 * 60_000;
@@ -54,6 +60,8 @@ const TOPIC_DAYS = 14;
  * touched none of the mapped repositories. `undefined` when the wake delivered nothing (or already reported itself with
  * slack_send): an empty wake posts nothing.
  */
+const clock = (ms: number) => new Date(ms).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+
 export function wakeChannel(messages: readonly AgentMessage[]): string | null | undefined {
   const calls = toolCalls(messages);
   if (calls.some(c => c.name === 'slack_send')) return undefined;
@@ -133,8 +141,11 @@ export class SlackBridge {
           atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
           continue;
         }
-        const text = `${slackPrefix(channel)}${m.text}${this.running ? MID_RUN : ''}`;
-        this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel });
+        const id = typeof m.channel === 'string' && REAL_CHANNEL.test(m.channel) ? m.channel : undefined;
+        if (id) this.react(owner, id, m.ts, SEEN);
+        const extras = await this.enrich(owner, m);
+        const text = `${slackPrefix(channel)}${m.text}${extras}${this.running ? MID_RUN : ''}`;
+        this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel, ...(id ? { id, ts: m.ts } : {}) });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
         this.measure(dir => recordInbound(dir, channel, m.text, this.options.now()));
@@ -144,13 +155,64 @@ export class SlackBridge {
     } finally { this.polling = false; }
   }
 
+  /**
+   * What a message carries besides its text: the files the operator sent (saved locally, so the agent can look at an
+   * image or transcribe an audio) and the Slack messages he linked (read by the bot). Each part is best effort and says
+   * why when it fails, so the agent never answers as if it had seen something it did not.
+   */
+  private async enrich(owner: SlackOwner, m: Inbound): Promise<string> {
+    const lines: string[] = [];
+    for (const file of Array.isArray(m.files) ? m.files : []) {
+      try {
+        const { path } = await this.options.request(owner, '/v1/slack/download', { url: file.url, name: file.name }) as { path: string };
+        const hint = file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') ? ' (transcreva com transcribe_file)' : file.mimetype.startsWith('image/') ? ' (veja com read)' : '';
+        lines.push(`- ${file.name} [${file.mimetype}]: ${path}${hint}`);
+      } catch (error) { lines.push(`- ${file.name} [${file.mimetype}]: não baixou (${error instanceof Error ? error.message : String(error)})`); }
+    }
+    const files = lines.length ? `\n\nAnexos:\n${lines.join('\n')}` : '';
+    const quotes: string[] = [];
+    for (const [, channel, sec, frac, thread] of [...m.text.matchAll(SLACK_LINK)].slice(0, 3)) {
+      const ts = `${sec}.${frac}`;
+      try {
+        const found = await this.options.request(owner, '/v1/slack/fetch', { channel, ts, thread: thread ?? ts }) as { user: string; text: string };
+        quotes.push(`Mensagem linkada (<@${found.user}> em <#${channel}>):\n${found.text.split('\n').map(line => `> ${line}`).join('\n')}`);
+      } catch (error) { quotes.push(`Mensagem linkada em <#${channel}>: não consegui ler (${error instanceof Error ? error.message : String(error)}; o bot precisa estar no canal).`); }
+    }
+    return files + (quotes.length ? `\n\n${quotes.join('\n\n')}` : '');
+  }
+
+  /** An emoji on the operator's message: 👀 when it reached the chat, ✅ when the answer went out. Never blocks. */
+  private react(owner: SlackOwner, channel: string, ts: string, name: string, remove = false): void {
+    void this.options.request(owner, '/v1/slack/react', { channel, ts, name, remove }).catch(() => undefined);
+  }
+
+  /** The operator's App Home in Slack shows what the assistant is doing right now. Never blocks. */
+  private home(text: string): void {
+    const owner = this.owner();
+    if (owner) void this.options.request(owner, '/v1/slack/home', { text: text.slice(0, 2900) }).catch(() => undefined);
+  }
+
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
   sawUserMessage(text: string): void {
-    if (wakeTask(text) !== undefined) { this.waking = true; return; }
+    if (wakeTask(text) !== undefined) { this.waking = true; this.home(`\u{1f504} *Trabalhando* (turno automático) desde ${clock(this.options.now())}`); return; }
     const match = FROM_SLACK.exec(text);
+    const about = text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
+    if (!this.running || match) this.home(`\u{1f504} *Trabalhando* desde ${clock(this.options.now())}\n> ${about}`);
     if (!match) return;
     this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
+  }
+
+  /**
+   * A progress post of the run that answers a Slack message, to that same place and without a topic, goes in the thread
+   * of the operator's message, so a long task keeps its history together; the final answer then closes that thread.
+   */
+  progressThread(channel: string | null): string | null {
+    const origin = this.answering;
+    if (!origin || origin.channel !== channel) return null;
+    const thread = origin.thread ?? (origin.channel === null || origin.id ? origin.ts ?? null : null);
+    if (thread) origin.threaded = true;
+    return thread;
   }
 
   /** At the end of a run that received a Slack message, its final answer goes back to the DM. */
@@ -158,8 +220,17 @@ export class SlackBridge {
     const answering = this.answering, waking = this.waking;
     this.answering = undefined; this.waking = false;
     this.running = false;
+    const last = finalText(messages);
+    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${last ? `\n\u00daltima resposta:\n${last.slice(0, 1500)}` : ''}`);
     if (answering) {
-      try { await this.send(finalText(messages) || EMPTY_RUN, answering.thread, answering.channel); this.answered(answering.channel); }
+      // After progress in the thread, the answer closes it and also shows in the conversation.
+      const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
+      try {
+        await this.send(last || EMPTY_RUN, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
+        this.answered(answering.channel);
+        const owner = this.owner();
+        if (owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
+      }
       catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
       return;
     }
@@ -237,7 +308,7 @@ export class SlackBridge {
    */
   async post(text: string, channel: string | null, topic?: string): Promise<{ parts: number; ts: string }> {
     const owner = this.owner();
-    if (!topic || !owner) return this.send(text, null, channel);
+    if (!topic || !owner) return this.send(text, this.progressThread(channel), channel);
     const file = join(owner.dir, TOPICS), now = this.options.now();
     let topics: Record<string, { channel: string | null; ts: string; at: number }> = {};
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none yet */ }
@@ -253,7 +324,7 @@ export class SlackBridge {
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
-  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
+  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true; broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
     try {

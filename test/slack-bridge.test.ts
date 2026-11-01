@@ -140,7 +140,7 @@ test('a wake delivered the way OptChat really sends it, as a report custom messa
   const dir = mkdtempSync(join(tmpdir(), 'slack-hooks-'));
   const { pi, fire } = hookedPi();
   const bodies: unknown[] = [];
-  registerSlackBridge(pi, () => ({ dir, name: 'p' }), undefined, { request: async (_o, _path, body) => { bodies.push(body); return { parts: 1, ts: '1.0' }; } });
+  registerSlackBridge(pi, () => ({ dir, name: 'p' }), undefined, { request: async (_o, path, body) => { if (path === '/v1/slack/send') bodies.push(body); return { parts: 1, ts: '1.0' }; } });
   try {
     // index.ts sendReport: once the OptChat prompt is ready, a report (the wake prompt too) is a custom message, not a user one.
     fire('message_end', { message: { role: 'custom', customType: REPORT_TYPE, content: WAKE, display: true } });
@@ -367,3 +367,61 @@ test('a poll pass that throws is retried and said once, not left as an unhandled
   } finally { bridge.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+
+test('a DM gets 👀 when it reaches the chat and ✅ when the answer goes out; the App Home shows working, then free', async () => {
+  const f = fixture([{ seq: 1, ts: '1793000000.000100', thread: null, text: 'faz o deploy', channel: 'D0OWNER' } as never]);
+  try {
+    await f.bridge.poll();
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    await f.bridge.runEnded(replies('Feito.'));
+    await new Promise(done => setImmediate(done));
+    const reacts = f.requests.filter(r => r.path === '/v1/slack/react').map(r => r.body);
+    assert.deepEqual(reacts, [
+      { channel: 'D0OWNER', ts: '1793000000.000100', name: 'eyes', remove: false },
+      { channel: 'D0OWNER', ts: '1793000000.000100', name: 'eyes', remove: true },
+      { channel: 'D0OWNER', ts: '1793000000.000100', name: 'white_check_mark', remove: false },
+    ]);
+    const homes = f.requests.filter(r => r.path === '/v1/slack/home').map(r => (r.body as { text: string }).text);
+    assert.match(homes[0]!, /Trabalhando[\s\S]*faz o deploy/);
+    assert.match(homes.at(-1)!, /Livre[\s\S]*Feito\./);
+  } finally { f.close(); }
+});
+
+test('progress posted with slack_send during a Slack-started run goes in the thread of his message; the answer closes it, broadcast', async () => {
+  const f = fixture([{ seq: 1, ts: '1793000000.000100', thread: null, text: 'migra o banco', channel: 'D0OWNER' } as never]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    await f.bridge.post('Etapa 1 de 3 feita.', null);
+    await f.bridge.runEnded(replies('Migração concluída.'));
+    const sends = f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body);
+    assert.deepEqual(sends, [
+      { text: 'Etapa 1 de 3 feita.', threadTs: '1793000000.000100' },
+      { text: 'Migração concluída.', threadTs: '1793000000.000100', broadcast: true },
+    ]);
+  } finally { f.close(); }
+});
+
+test('files he sends are saved and pointed to; Slack links he pastes are read and quoted; failures are said, not hidden', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const sent: string[] = [];
+  const inbox = [{ seq: 1, ts: '1793000000.000100', thread: null, channel: 'D0OWNER', text: 've isso https://lennix.slack.com/archives/C0GERAL/p1793000000123456 e https://lennix.slack.com/archives/C0PRIV/p1793000000999999',
+    files: [{ id: 'F1', name: 'audio.m4a', mimetype: 'audio/mp4', url: 'https://files.slack.com/a' }, { id: 'F2', name: 'tela.png', mimetype: 'image/png', url: 'https://files.slack.com/b' }] }];
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    request: async (_o, path, body: any) => {
+      if (path.startsWith('/v1/slack/inbox')) return { messages: inbox };
+      if (path === '/v1/slack/download') { if (body.name === 'tela.png') throw new Error('slack_file_forbidden'); return { path: `C:/x/${body.name}` }; }
+      if (path === '/v1/slack/fetch') { if (body.channel === 'C0PRIV') throw new Error('not_in_channel'); return { user: 'U0ALICE', text: 'o servidor caiu' }; }
+      return { ok: true };
+    },
+  });
+  try {
+    await bridge.poll();
+    const text = sent[0]!;
+    assert.match(text, /audio\.m4a \[audio\/mp4\]: C:\/x\/audio\.m4a \(transcreva com transcribe_file\)/);
+    assert.match(text, /tela\.png \[image\/png\]: não baixou \(slack_file_forbidden\)/);
+    assert.match(text, /Mensagem linkada \(<@U0ALICE> em <#C0GERAL>\):\n> o servidor caiu/);
+    assert.match(text, /<#C0PRIV>: não consegui ler \(not_in_channel/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
