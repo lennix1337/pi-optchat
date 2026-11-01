@@ -8,7 +8,8 @@ import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
 import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
-import { failoverReader, homeStatus, remoteCommand, type CommandState } from './remote-commands.ts';
+import { failoverReader, homeStatus, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
+import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
@@ -39,6 +40,8 @@ const SEEN = 'eyes', DONE = 'white_check_mark';
 type Request = (owner: SlackOwner, path: string, body?: unknown) => Promise<unknown>;
 const CURSOR = 'slack-cursor.json';
 const OFF_FOR_MS = 5 * 60_000;
+/** How long a remote command that needs approval (an account switch) waits for the tap. */
+const COMMAND_APPROVAL_MS = 10 * 60_000;
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 /** A DM steered into a working run: a text-only reply would end the run and stop the work. */
 const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
@@ -47,7 +50,9 @@ const defaultRequest: Request = async (owner, path, body) => assistantRequest(as
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
-export type ApprovalRequest = { token: string; summary: string; label: string; expires: number; decide: (approve: boolean) => boolean };
+export type ApprovalRequest = { token: string; summary: string; label: string; expires: number; decide: (approve: boolean) => boolean;
+  /** An effect the bridge itself runs on the phone's decision (a remote command); its answer replaces the note to the agent. */
+  onPhone?: (approve: boolean) => Promise<string> };
 /** What an approval post says once the call stopped waiting, so it never stays "pendente" with live buttons. */
 const SETTLED_TEXT: Record<Settled | 'phone-approved' | 'phone-denied', string> = {
   approved: '\u2705 *Aprovado no terminal*', denied: '\u{1f6ab} *Negado no terminal*', superseded: '\u21aa\ufe0f *Substitu\u00edda por uma chamada mais nova*',
@@ -97,13 +102,15 @@ export class SlackBridge {
     /** Whether the chat can take a DM now. While not, the inbox is left alone: a message handed to a chat that drops it would still move the cursor. */
     accepting: () => boolean;
     /** The selected model (`provider/id`) and pi-multi-account's state, for the commands answered without a turn and the App Home. */
-    model: () => string | undefined; failover: () => unknown };
+    model: () => string | undefined; failover: () => unknown;
+    models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean> };
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE), ...options };
+    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
+      models: () => [], select: async () => false, ...options };
   }
 
   start(): void {
@@ -150,8 +157,8 @@ export class SlackBridge {
         const command = channel ? undefined : remoteCommand(m.text);
         if (command) {
           // Answered here, at no model cost and even mid-run; the agent never sees it.
-          try { await this.send(command.run(this.commandState())); this.answered(null); }
-          catch (error) { this.options.warn(`Slack command "${command.name}" not answered: ${error instanceof Error ? error.message : String(error)}`); }
+          try { await this.command(command); }
+          catch (error) { this.options.warn(`Slack command "${command.command.name}" not answered: ${error instanceof Error ? error.message : String(error)}`); }
           atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
           continue;
         }
@@ -211,7 +218,21 @@ export class SlackBridge {
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
-    return { model: this.options.model, activity: () => this.activity, failover: this.options.failover, now: this.options.now };
+    const { model, failover, now, models, select } = this.options;
+    return { model, activity: () => this.activity, failover, now, models, select };
+  }
+
+  /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
+  private async command({ command, arg }: NonNullable<ReturnType<typeof remoteCommand>>): Promise<void> {
+    const result = await command.run(this.commandState(), arg);
+    if (!result.confirm) { await this.send(result.text); this.answered(null); return; }
+    const { summary, apply } = result.confirm;
+    let ran = false;
+    await this.askApproval({
+      token: `cmd-${randomUUID()}`, label: `Comando *${command.name}*`, summary: `${result.text} ${summary}`.slice(0, 500), expires: this.options.now() + COMMAND_APPROVAL_MS,
+      decide: () => !ran && (ran = true),
+      onPhone: async approve => approve ? apply() : `Negado: continuo em ${this.options.model() ?? 'nenhum modelo'}.`,
+    });
   }
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
@@ -317,6 +338,12 @@ export class SlackBridge {
     this.approvals.delete(ts);
     const done = request.expires > this.options.now() && request.decide(approve);
     if (done) await this.retire(ts, post, approve ? 'phone-approved' : 'phone-denied');
+    if (done && request.onPhone) {
+      let reply: string;
+      try { reply = await request.onPhone(approve); } catch (error) { reply = `Falhou: ${error instanceof Error ? error.message : String(error)}`; }
+      try { await this.send(reply, ts); } catch { /* the effect stands; the reply is a courtesy */ }
+      return;
+    }
     const reply = !done ? 'Essa aprovação já expirou ou foi decidida; nada rodou por ela.' : approve ? `Aprovado: ${request.summary}. Vou rodar agora.` : `Negado: ${request.summary}. Não vou rodar.`;
     try { await this.send(reply, ts); } catch { /* the decision stands; the reply is a courtesy */ }
     if (!done) return;
@@ -381,8 +408,15 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
   const named = (m: { provider: string; id: string } | undefined) => m ? `${m.provider}/${m.id}` : undefined;
-  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent, model: () => model, ...options });
-  pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); bridge.start(); });
+  let registry: { getAvailable(): readonly ModelRef[]; find(provider: string, id: string): unknown } | undefined;
+  const bridge = new SlackBridge(pi, owner, {
+    warn: text => warn(text), sent, model: () => model,
+    models: () => registry?.getAvailable().map(m => ({ provider: m.provider, id: m.id })) ?? [],
+    // Through Pi, like `/model`: pi-multi-account sees an ordinary user switch.
+    select: async ({ provider, id }) => { const found = registry?.find(provider, id); return found ? pi.setModel(found as never) : false; },
+    ...options,
+  });
+  pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); registry = ctx.modelRegistry; bridge.start(); });
   // pi-multi-account switches by selecting the other account's model, so this follows its failovers too.
   pi.on('model_select', event => { model = named(event.model); });
   pi.on('session_shutdown', () => bridge.stop());
