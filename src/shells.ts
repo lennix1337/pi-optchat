@@ -29,6 +29,9 @@ export interface ShellReporter {
 }
 export interface ShellOptions { notify?: ShellNotify; alert?: string }
 const outputLimit = 32_000;
+/** CSI, OSC (hyperlinks, titles) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
+const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-_]/g;
+export const plainText = (text: string) => text.replace(TERMINAL_ESCAPES, '');
 /** `build_exit=1`, `rc=2`: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
 export function innerExitFailures(output: string): string[] {
   return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))=([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
@@ -142,7 +145,7 @@ export function shellReport(job: ShellJob): string {
   const ran = seconds < 60 ? `${seconds.toFixed(1)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   const outcome = [job.state, job.exitCode === undefined ? undefined : `exit ${job.exitCode}`, `ran ${ran}`].filter(Boolean).join(' · ');
   const command = job.command.replace(/\s+/g, ' ').trim(), shortCommand = [...command].slice(0, REPORT_COMMAND_CHARS).join('') + ([...command].length > REPORT_COMMAND_CHARS ? '…' : '');
-  const lines = job.output.replace(/\r\n?/g, '\n').trimEnd().split('\n'), kept = lines.slice(-REPORT_LINES);
+  const lines = plainText(job.output).replace(/\r\n?/g, '\n').trimEnd().split('\n'), kept = lines.slice(-REPORT_LINES);
   let tail = kept.join('\n');
   if ([...tail].length > REPORT_CHARS) tail = `…${[...tail].slice(-REPORT_CHARS).join('')}`;
   const omitted = lines.length - kept.length;
@@ -160,7 +163,7 @@ export function shellReport(job: ShellJob): string {
 export function alertReport(id: string, pattern: string, alert: ShellAlert): string {
   const span = alert.firstLine === alert.lastLine ? `on line ${alert.firstLine}` : `on lines ${alert.firstLine}–${alert.lastLine}`;
   const hidden = alert.hidden > 0 ? ` (${alert.hidden} not shown)` : '';
-  const clean = (text: string) => text.replace(/\r/g, '');
+  const clean = (text: string) => plainText(text).replace(/\r/g, '');
   const head = `[shell ${id}] alert: ${alertLabel(pattern)} · ${alert.matches} new ${alert.matches === 1 ? 'match' : 'matches'} ${span}${hidden} · ${alert.total} so far`;
   const blocks = alert.shown.map(match => [...match.before.map(line => `  ${line.line} | ${clean(line.text)}`), `> ${match.line} | ${clean(match.text)}`].join('\n'));
   return [head, ...blocks].join('\n');
@@ -219,7 +222,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
     async execute(_id, args) {
       const list = jobs.list(), job = args.id ? list.find(j => j.id === args.id) : undefined;
       if (args.id && !job) throw new Error('Unknown shell ID');
-      return { content: [{ type: 'text', text: job ? `${job.state} · ${job.mode}\n${job.command}\n${job.output || '(No output yet)'}` : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
+      return { content: [{ type: 'text', text: job ? `${job.state} · ${job.mode}\n${job.command}\n${plainText(job.output) || '(No output yet)'}` : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
     },
   });
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',
