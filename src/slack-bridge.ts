@@ -92,6 +92,9 @@ export class SlackBridge {
   /** Set when a heartbeat wake started the current run: what it delivered is reported to the repo's channel. */
   private waking = false;
   private running = false;
+  /** The latest finished assistant reply of a run answering Slack, and the reply already delivered early. */
+  private replied = '';
+  private delivered = '';
   private readonly threads = new Map<string, Origin>();
   /** Approval posts by their DM ts, until decided or expired. */
   private readonly approvals = new Map<string, Post>();
@@ -228,11 +231,14 @@ export class SlackBridge {
     if (!result.confirm) { await this.send(result.text); this.answered(null); return; }
     const { summary, apply } = result.confirm;
     let ran = false;
-    await this.askApproval({
+    const posted = await this.askApproval({
       token: `cmd-${randomUUID()}`, label: `Comando *${command.name}*`, summary: `${result.text} ${summary}`.slice(0, 500), expires: this.options.now() + COMMAND_APPROVAL_MS,
       decide: () => !ran && (ran = true),
       onPhone: async approve => approve ? apply() : `Negado: continuo em ${this.options.model() ?? 'nenhum modelo'}.`,
     });
+    // An approval nobody can see would leave the operator waiting on silence.
+    if (!posted) await this.send(`Não consegui postar o Aprovar no Slack; nada mudou, continuo em ${this.options.model() ?? 'nenhum modelo'}. Tente de novo ou use /approve no terminal.`).catch(() => {});
+    this.answered(null);
   }
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
@@ -241,7 +247,11 @@ export class SlackBridge {
     const match = FROM_SLACK.exec(text);
     const about = text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
     if (!this.running || match) this.home(`\u{1f504} *Trabalhando* desde ${clock(this.options.now())}\n> ${about}`);
-    if (!match) return;
+    if (!match) {
+      // Another message (a gitwatch notice, a wake) steering this run would otherwise replace the answer the operator is waiting for.
+      if (this.answering && this.replied && this.replied !== this.delivered) { this.delivered = this.replied; void this.answer(this.answering, this.replied, false); }
+      return;
+    }
     this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
   }
@@ -259,22 +269,36 @@ export class SlackBridge {
   }
 
   /** At the end of a run that received a Slack message, its final answer goes back to the DM. */
+  /** Every finished assistant message: a text-only one is the reply so far to the Slack message of this run. */
+  assistantSaid(message: AgentMessage): void {
+    if (message.role !== 'assistant' || !this.answering) return;
+    const content = (message as { content?: unknown }).content;
+    if (Array.isArray(content) && content.some(part => (part as { type?: string })?.type === 'toolCall')) return;
+    const text = textContent(message.content, false).trim();
+    if (text) this.replied = text;
+  }
+
+  private async answer(answering: Origin, text: string, closing: boolean): Promise<void> {
+    const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
+    try {
+      await this.send(text, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
+      this.answered(answering.channel);
+      const owner = this.owner();
+      if (closing && owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
+    }
+    catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
   async runEnded(messages: readonly AgentMessage[]): Promise<void> {
-    const answering = this.answering, waking = this.waking;
-    this.answering = undefined; this.waking = false;
+    const answering = this.answering, waking = this.waking, delivered = this.delivered;
+    this.answering = undefined; this.waking = false; this.replied = ''; this.delivered = '';
     this.running = false;
     const last = finalText(messages);
     this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${last ? `\n\u00daltima resposta:\n${last.slice(0, 1500)}` : ''}`);
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.
-      const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
-      try {
-        await this.send(last || EMPTY_RUN, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
-        this.answered(answering.channel);
-        const owner = this.owner();
-        if (owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
-      }
-      catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
+      if (last && last === delivered) return;
+      await this.answer(answering, last || EMPTY_RUN, true);
       return;
     }
     const text = waking && finalText(messages);
@@ -288,7 +312,7 @@ export class SlackBridge {
    * Posts a gated call to the operator's DM with Aprovar/Negar buttons; a tap (relayed by the service as that reply) or
    * their `aprovar`/`negar` in its thread decides it. Best effort: the terminal `/approve` keeps working when Slack is down.
    */
-  async askApproval(request: ApprovalRequest): Promise<void> {
+  async askApproval(request: ApprovalRequest): Promise<boolean> {
     const now = this.options.now();
     for (const [ts, post] of this.approvals) if (post.request.expires <= now) this.approvals.delete(ts);
     const minutes = Math.max(1, Math.round((request.expires - now) / 60_000));
@@ -303,7 +327,8 @@ export class SlackBridge {
       }
       this.approvals.set(ts, { request, channel: typeof channel === 'string' ? channel : null });
       this.options.schedule(() => void this.settled(request.token, 'expired'), Math.max(0, request.expires - now));
-    } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); }
+      return true;
+    } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); return false; }
   }
 
   /** The call of an approval post stopped waiting outside Slack (terminal, a newer call, expiry): the post says so. */
@@ -420,7 +445,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   // pi-multi-account switches by selecting the other account's model, so this follows its failovers too.
   pi.on('model_select', event => { model = named(event.model); });
   pi.on('session_shutdown', () => bridge.stop());
-  pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); });
+  pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); else bridge.assistantSaid(message); });
   pi.on('agent_start', () => bridge.runStarted());
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({

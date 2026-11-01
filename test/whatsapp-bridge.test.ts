@@ -92,3 +92,23 @@ test('config: missing or malformed file keeps the bridge off', () => {
     assert.deepEqual(readWhatsAppConfig(join(dir, 'ok.json')), { wacli: 'w', chat: ME, operator: 'self', account: 'pessoal' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a command reply whose send failed is never sent again on the next pass', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wa-bridge-'));
+  const sends: string[][] = [];
+  let messages: object[] = [];
+  const bridge = new WhatsAppBridge({ sendUserMessage: (() => {}) as never }, { wacli: 'wacli.exe', chat: ME, operator: 'self' }, () => dir, () => STATE, {
+    now: () => NOW, warn: () => {},
+    run: async (_file, args) => {
+      if (args.includes('list')) { const after = args[args.indexOf('--after') + 1]!; return JSON.stringify({ success: true, data: { messages: messages.filter((m: any) => m.Timestamp > after) } }); }
+      sends.push([...args]); throw new Error('send timed out');
+    },
+  });
+  try {
+    await bridge.poll();
+    messages = [{ MsgID: 'c1', ChatJID: ME, FromMe: true, Text: 'status', Timestamp: at(5) }];
+    await bridge.poll().catch(() => {});
+    await bridge.poll().catch(() => {});
+    assert.equal(sends.length, 1, 'WhatsApp may already have the first send');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
