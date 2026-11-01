@@ -44,7 +44,7 @@ export function openToolGateway(config: Pick<Config, 'profileId' | 'databasePath
 async function createResumingCleanup(computers: ReturnType<typeof createComputers>, profileId: string) {
   try { return await computers.create(profileId, 'executor'); }
   catch (error) {
-    if (!(error instanceof Error) || error.message !== 'computer_cleanup_active') throw error;
+    if (!(error instanceof Error) || !['computer_cleanup_active', 'computer_transition'].includes(error.message)) throw error;
     await computers.cleanup();
     return computers.create(profileId, 'executor');
   }
