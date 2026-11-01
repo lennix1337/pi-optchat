@@ -79,15 +79,36 @@ export class ComputerManager {
     return { id: row.id, profileId: row.profile, agentId: row.agent, container: row.container, state: row.state, expiresAt: row.expires };
   }
   private authorize(authority: object): void { if (authority !== this.options.authority) fail('unauthorized'); }
+  /** Lifecycle tokens reserved by this process. The owner runs as one process, so any other token belongs to a dead one. */
+  private readonly held = new Set<string>();
   private reserveLifecycle(id: string): string {
     const token = randomUUID();
     const result = this.db.prepare('INSERT OR IGNORE INTO computer_lifecycle (id, token) VALUES (?, ?)').run(id, token);
     if (Number(result.changes) !== 1) fail('computer_transition');
+    this.held.add(token);
     return token;
   }
   private releaseLifecycle(id: string, token: string): void {
     const result = this.db.prepare('DELETE FROM computer_lifecycle WHERE id = ? AND token = ?').run(id, token);
     if (Number(result.changes) !== 1) fail('computer_transition');
+    this.held.delete(token);
+  }
+  /**
+   * A create interrupted by a process that died (crash, restart, Docker down at startup) leaves its row in
+   * `transition` with a reservation nobody will finish. Such rows become failed removals: the owner cleanup that
+   * follows removes every container labelled with this owner, so a container the dead create may have started goes too.
+   */
+  private adoptOrphanedCreates(): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const rows = this.db.prepare("SELECT c.id, l.token FROM computers c JOIN computer_lifecycle l ON l.id = c.id WHERE c.owner = ? AND c.state = 'transition' AND l.target IS NULL").all(this.options.owner) as { id: string; token: string }[];
+      for (const { id, token } of rows) {
+        if (this.held.has(token)) continue;
+        this.db.prepare("UPDATE computer_lifecycle SET phase = 'failed' WHERE id = ? AND token = ?").run(id, token);
+        this.db.prepare("UPDATE computers SET state = 'removing' WHERE id = ? AND owner = ? AND state = 'transition'").run(id, this.options.owner);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   /** Records the immutable container ID a removal is about to act on, so a later retry can inspect exactly that ID. */
   private recordTarget(id: string, token: string, target: string): void {
@@ -133,6 +154,8 @@ export class ComputerManager {
         const token = randomUUID();
         const swapped = this.db.prepare("UPDATE computer_lifecycle SET token = ?, phase = 'active' WHERE id = ? AND token = ? AND EXISTS (SELECT 1 FROM computers WHERE id = ? AND owner = ? AND state = 'removing')").run(token, id, reservation!.token, id, this.options.owner);
         if (Number(swapped.changes) !== 1) fail('computer_transition');
+        this.held.delete(reservation!.token);
+        this.held.add(token);
         tokens.set(id, token);
       }
       this.db.exec('COMMIT');
@@ -511,6 +534,7 @@ export class ComputerManager {
    * IDs proves the earlier Docker operations settled; an overlapping cleanup or destroy is refused.
    */
   async cleanup(): Promise<number> {
+    this.adoptOrphanedCreates();
     const observedOwner = this.db.prepare('SELECT token, phase FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner) as { token: string; phase: string } | undefined;
     const earlier = this.list().filter(row => row.state === 'removing');
     if (observedOwner && observedOwner.phase !== 'failed') {

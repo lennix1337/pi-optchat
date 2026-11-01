@@ -127,3 +127,42 @@ test('destroy removes by immutable ID and refuses a foreign replacement', async 
     assert.deepEqual(f.manager.list(), []);
   } finally { f.manager.close(); }
 });
+
+test('a create that a dead process left in transition is recovered by the next process cleanup', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'computer-orphan-'));
+  const databasePath = join(dir, 'computer.sqlite');
+  const f = fixture();
+  let dockerUp = false;
+  const docker: DockerRunner = async (args, options) => dockerUp ? f.manager['docker'](args, options) : failure;
+  const crashed = new ComputerManager({ databasePath, owner: 'owner', image: 'image', operatorAuthority: {}, docker });
+  try {
+    await assert.rejects(crashed.create('p', 'executor'), { message: 'computer_start_failed' });
+    crashed.close(); // the process dies here; its reservation stays in the database
+    dockerUp = true;
+    const next = new ComputerManager({ databasePath, owner: 'owner', image: 'image', operatorAuthority: {}, docker });
+    try {
+      await next.cleanup();
+      assert.deepEqual(next.list(), []);
+      const computer = await next.create('p', 'executor');
+      assert.equal(computer.state, 'ready');
+    } finally { next.close(); }
+  } finally { f.manager.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a transition held by this live process is never taken over by cleanup', async () => {
+  const f = fixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const inner = f.manager['docker'];
+  f.manager['docker'] = async (args: string[], options?: unknown) => { if (args[0] === 'run') await gate; return inner(args, options); };
+  try {
+    const creating = f.manager.create('p', 'a');
+    await new Promise(resolve => setImmediate(resolve));
+    await assert.rejects(f.manager.cleanup(), { message: 'computer_transition' });
+    release();
+    assert.equal((await creating).state, 'ready');
+  } finally { f.manager.close(); }
+});
