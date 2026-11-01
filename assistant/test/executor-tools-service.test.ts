@@ -11,7 +11,7 @@ import type { DockerRunner } from '../src/computer/docker.ts';
 import { RESTORE_HOLDS_FENCE, TaskStore } from '../src/store/db.ts';
 import { ExecutorDesk } from '../src/ops/executor-desk.ts';
 import { openTaskExecutor } from '../src/runtime/open-executor.ts';
-import { openToolService } from '../src/runtime/tool-service.ts';
+import { openToolService, openToolServiceIfDockerUp } from '../src/runtime/tool-service.ts';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
 import { queuedTask } from './task-fixtures.ts';
 
@@ -108,5 +108,17 @@ test('a shutdown cleanup that failed while Docker was down does not block the ne
     await tools.close();
     const again = await openToolService(config, store, fakeDocker().docker);
     await again.close();
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('with Docker down the assistant keeps running without preview tools and names the cause', async () => {
+  const dir = join(tmpdir(), 'executor-tools-' + randomUUID()); createPrivateDirectory(dir);
+  const config: Config = { version: 1, profileId, databasePath: join(dir, 'tasks.sqlite'), endpoint: 'http://127.0.0.1:1', token: 'token', executor: { agentDir: dir, channels: ['Pessoal'], tools: true } };
+  const store = new TaskStore(config.databasePath, profileId);
+  const logged: string[] = [];
+  try {
+    const down: DockerRunner = async () => ({ code: 1, stdout: '', stderr: 'Docker Desktop is not running' });
+    assert.equal(await openToolServiceIfDockerUp(config, store, down, message => logged.push(message)), undefined);
+    assert.match(logged.join(' '), /preview tools unavailable.*computer_start_failed/);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

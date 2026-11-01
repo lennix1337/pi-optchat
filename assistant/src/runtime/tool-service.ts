@@ -75,3 +75,15 @@ export async function openToolService(config: Config, store: TaskStore, docker?:
     } };
   } catch (error) { effects?.close(); gateway.close(); computers.close(); throw error; }
 }
+
+/**
+ * Preview tools need Docker; the rest of the assistant (Slack, Google, the tool-free draft executor) does not. When the
+ * computer cannot start, report the cause once and carry on without tools instead of taking the whole service down.
+ */
+export async function openToolServiceIfDockerUp(config: Config, store: TaskStore, docker?: DockerRunner, report: (message: string) => void = console.error): Promise<Awaited<ReturnType<typeof openToolService>> | undefined> {
+  try { return await openToolService(config, store, docker); }
+  catch (error) {
+    report(`Executor preview tools unavailable: ${error instanceof Error ? error.message : String(error)}; the assistant runs without them. Start Docker and restart the service to enable them.`);
+    return undefined;
+  }
+}

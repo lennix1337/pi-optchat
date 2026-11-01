@@ -225,8 +225,8 @@ async function openWorkers(config: Config, store: import('./store/db.ts').TaskSt
       const { openTaskExecutor } = await import('./runtime/open-executor.ts');
       const vouching = routines;
       if (config.executor.tools) {
-        const { openToolService } = await import('./runtime/tool-service.ts');
-        toolService = await openToolService(config, store);
+        const { openToolServiceIfDockerUp } = await import('./runtime/tool-service.ts');
+        toolService = await openToolServiceIfDockerUp(config, store);
       }
       executor = openTaskExecutor(config, store, vouching ? origin => vouching.created(origin) : undefined, toolService?.tools);
     }
