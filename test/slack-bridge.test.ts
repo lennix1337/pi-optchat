@@ -59,6 +59,21 @@ test('the final answer of a run that received a Slack message goes back to the D
   } finally { f.close(); }
 });
 
+test('a notice steering a Slack run does not swallow the answer the operator was waiting for', async () => {
+  const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'pode revisar no meu nome?' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(`${SLACK_PREFIX}pode revisar no meu nome?`);
+    f.bridge.assistantSaid(replies('Fechado. Regra registrada.')[0]!);
+    f.bridge.sawUserMessage('[gitwatch] lennix1337/pi-optchat #56 ready to merge');
+    f.bridge.assistantSaid(replies('O #56 espera o #57.')[0]!);
+    await f.bridge.runEnded(replies('Fechado. Regra registrada.', 'O #56 espera o #57.'));
+    await new Promise(resolve => setImmediate(resolve));
+    const sent = f.requests.filter(r => r.path === '/v1/slack/send').map(r => (r.body as { text: string }).text);
+    assert.deepEqual(sent.sort(), ['Fechado. Regra registrada.', 'O #56 espera o #57.']);
+  } finally { f.close(); }
+});
+
 test('a project channel message is marked with its channel and the run answers in that channel', async () => {
   const f = fixture([{ seq: 1, ts: '7.0', thread: null, text: 'como ta a release?', channelName: 'genexus18mcp' }]);
   try {
