@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { GOAL_HOLD, HOLD_MAX_MS, registerSelfReload, RELOAD_ENTRY } from '../src/self-reload.ts';
 
-function fixture() {
+function fixture(prepare: () => Promise<void> = async () => {}) {
   const entries: any[] = [], notices: string[] = [], sent: any[] = [], commands = new Map<string, any>(), hooks = new Map<string, any[]>();
   let busy: string | undefined, reloads = 0, prepares = 0;
   let tools: any[] = [], responder: ((data: any) => void) | undefined;
@@ -22,7 +22,7 @@ function fixture() {
     appendEntry: (customType: string, data: unknown) => entries.push({ type: 'custom', customType, data: structuredClone(data) }),
     sendUserMessage: (...args: any[]) => sent.push(['command', ...args]), sendMessage: (...args: any[]) => sent.push(['message', ...args]) } as unknown as ExtensionAPI;
   let toolDef: any;
-  const attach = () => { hooks.clear(); registerSelfReload(pi, () => ({ profile: 'fixture', blocked: busy }), async () => { prepares++; }); };
+  const attach = () => { hooks.clear(); registerSelfReload(pi, () => ({ profile: 'fixture', blocked: busy }), async () => { prepares++; await prepare(); }); };
   const emit = async (name: string, event: any = {}) => { for (const hook of hooks.get(name) ?? []) await hook(event, ctx); await new Promise(resolve => setImmediate(resolve)); };
   attach();
   (ctx as any).reload = async () => {
@@ -169,4 +169,33 @@ test('failed reload is recorded, not resumed or retried', async () => {
   assert.equal(f.latest().state, 'reloading', 'old extension APIs are not used after a possibly partial reload');
   f.attach(); await f.emit('session_start', { reason: 'reload' });
   assert.equal(f.sent.length, 1); assert.equal(f.latest().state, 'cancelled');
+});
+
+test('a checkpoint that fails after the operator typed leaves the ticket cancelled, never failed', async () => {
+  let fail!: (error: Error) => void;
+  const f = fixture(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+  await f.request();
+  await f.emit('agent_settled', { aborted: false });
+  const [name, token] = f.sent[0][1].slice(1).split(' ');
+  const running = f.commands.get(name).handler(token, f.ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  await f.emit('input', { source: 'interactive', text: 'wait, not now' });
+  assert.equal(f.latest().state, 'cancelled');
+  const notices = f.notices.length, written = f.entries.length;
+  fail(new Error('checkpoint disk full'));
+  await running;
+  assert.equal(f.latest().state, 'cancelled', 'a late failure cannot rewrite the cancellation');
+  assert.equal(f.entries.length, written, 'and writes no entry');
+  assert.equal(f.notices.length, notices, 'nor a second notice for a ticket the operator already ended');
+  assert.equal(f.reloads(), 0);
+});
+
+test('a failing checkpoint still records the failure when nothing else moved the ticket', async () => {
+  const f = fixture(async () => { throw new Error('checkpoint disk full'); });
+  await f.request();
+  await f.emit('agent_settled', { aborted: false });
+  const [name, token] = f.sent[0][1].slice(1).split(' ');
+  await f.commands.get(name).handler(token, f.ctx);
+  assert.equal(f.latest().state, 'failed'); assert.equal(f.reloads(), 0);
+  assert.match(f.notices.at(-1)!, /checkpoint failed: Error: checkpoint disk full/);
 });

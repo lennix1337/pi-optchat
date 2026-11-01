@@ -47,11 +47,23 @@ const CONTEXT_MAX = 2_000;
 export const closed = (s: CommitmentStatus) => s === 'done' || s === 'dropped';
 const clip = (s: string, max = MAX_TEXT) => clean(s, max);
 
+const isText = (value: unknown): value is string => typeof value === 'string';
+const isTime = (value: unknown): value is string => isText(value) && Number.isFinite(Date.parse(value));
+/** A stored item whose status is not one of STATUSES would read as open forever (`closed` is false for anything else), and one without notes or times breaks every list. */
+function isCommitment(value: unknown): value is Commitment {
+  if (typeof value !== 'object' || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return isText(c.id) && isText(c.text) && isText(c.source) && (c.owner === 'optchat' || c.owner === 'operator')
+    && STATUSES.some(status => status === c.status) && isTime(c.createdAt) && isTime(c.updatedAt) && isTime(c.progressAt)
+    && (c.due === undefined || isTime(c.due)) && (c.next === undefined || isText(c.next)) && (c.evidence === undefined || isText(c.evidence)) && (c.supersedes === undefined || isText(c.supersedes))
+    && Array.isArray(c.notes) && c.notes.every(note => typeof note === 'object' && note !== null && isTime((note as { at?: unknown }).at) && isText((note as { text?: unknown }).text));
+}
+
 export function readCommitments(dir: string): Commitment[] {
   const file = join(dir, COMMITMENTS_FILE);
   if (!existsSync(file)) return [];
   const parsed = JSON.parse(readFileSync(file, 'utf8')) as Document;
-  if (parsed?.version !== 1 || !Array.isArray(parsed.items)) throw new Error(`Unreadable commitments file ${file}`);
+  if (parsed?.version !== 1 || !Array.isArray(parsed.items) || !parsed.items.every(isCommitment)) throw new Error(`Unreadable commitments file ${file}`);
   return parsed.items;
 }
 

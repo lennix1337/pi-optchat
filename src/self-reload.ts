@@ -19,6 +19,13 @@ interface Ticket {
   id: string; session: string; cwd: string; profile: string; checkpoint: string; created: number;
   state: 'requested' | 'reloading' | 'resuming' | 'completed' | 'cancelled' | 'failed';
 }
+/** Every ticket state change goes through `write`: a ticket that ended (completed, cancelled, failed) never moves again, so a late failure cannot rewrite the operator's cancellation. */
+const MOVES: Record<Ticket['state'], readonly Ticket['state'][]> = {
+  requested: ['reloading', 'cancelled', 'failed'],
+  reloading: ['resuming', 'cancelled', 'failed'],
+  resuming: ['completed', 'cancelled', 'failed'],
+  completed: [], cancelled: [], failed: [],
+};
 function saved(ctx: ExtensionContext): Ticket | undefined {
   const entry = ctx.sessionManager.getBranch().findLast(e => e.type === 'custom' && e.customType === RELOAD_ENTRY);
   const t = entry?.type === 'custom' ? entry.data as Partial<Ticket> | undefined : undefined;
@@ -50,7 +57,12 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     if (now - holding.since <= HOLD_MAX_MS) (data as { hold(reason: string): void }).hold('OptChat self-reload pending');
   });
   pi.on('session_shutdown', () => { live = false; unhold(); });
-  const write = (t: Ticket, state: Ticket['state']) => { const next = { ...t, state }; pi.appendEntry(RELOAD_ENTRY, next); pending = next; return next; };
+  /** Records the move and returns the new ticket; undefined when the ticket's latest state does not allow it (the caller must then do nothing more). */
+  const write = (t: Ticket, state: Ticket['state']) => {
+    const current = pending?.id === t.id ? pending.state : t.state;
+    if (!MOVES[current].includes(state)) return undefined;
+    const next = { ...t, state }; pi.appendEntry(RELOAD_ENTRY, next); pending = next; return next;
+  };
   const sameOwner = (t: Ticket, ctx: ExtensionContext) => {
     if (t.profile !== owner()?.profile) return false;
     return t.cwd === ctx.cwd && t.session === ctx.sessionManager.getSessionId();
@@ -71,7 +83,8 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     return reasons.join(' ') || undefined;
   };
   const cancel = (t: Ticket, ctx: ExtensionContext, reason: string) => {
-    write(t, 'cancelled'); ctx.ui.notify(`Self reload/continuation cancelled: ${reason} No automatic replay. Inspect the checkpoint before requesting again.`, 'warning');
+    if (!write(t, 'cancelled')) return;
+    ctx.ui.notify(`Self reload/continuation cancelled: ${reason} No automatic replay. Inspect the checkpoint before requesting again.`, 'warning');
   };
   pi.registerTool({ name: 'self_reload', label: 'Reload and continue',
     description: 'Only with operator authority to reload: request native Pi reload and one automatic continuation after this run settles. Save verified work, evidence and the next action in checkpoint; no secrets. Active jobs, queued messages and uncertain effects block reload. Not permission to publish, change accounts or repeat effects. Do not call again for the same update.',
@@ -97,7 +110,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
       const reason = blocked(ctx);
       if (reason) { cancel(t, ctx, reason); return; }
       try { await prepare(); }
-      catch (error) { write(t, 'failed'); ctx.ui.notify(`Self reload checkpoint failed: ${String(error)}`, 'error'); return; }
+      catch (error) { if (write(t, 'failed')) ctx.ui.notify(`Self reload checkpoint failed: ${String(error)}`, 'error'); return; }
       if (!live || pending?.state !== 'requested' || pending.id !== t.id) return;
       const changed = !ctx.isIdle() || !sameOwner(t, ctx) ? 'Session changed while preparing the checkpoint.' : blocked(ctx);
       if (changed) { cancel(t, ctx, changed); return; }

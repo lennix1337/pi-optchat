@@ -329,3 +329,41 @@ test('posts with a topic open a message once, then reply in its thread; the sent
     assert.deepEqual(logged.map(l => l[0]), ['harness', 'harness', 'harness', 'dentai']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a DM stays in the inbox while the chat cannot take it, and arrives once it can', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const sent: string[] = [], requests: string[] = [];
+  let accepting = false;
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    accepting: () => accepting,
+    request: async (_owner, path) => { requests.push(path); return { messages: [{ seq: 1, ts: '1.0', thread: null, text: 'ainda aí?' }] }; },
+  });
+  try {
+    assert.equal(await bridge.poll(), 0);
+    assert.deepEqual(requests, [], 'the inbox is not even read while the chat drops what it is handed');
+    assert.throws(() => readFileSync(join(dir, 'slack-cursor.json'), 'utf8'), 'no cursor was written');
+    accepting = true;
+    assert.equal(await bridge.poll(), 1);
+    assert.deepEqual(sent, [`${SLACK_PREFIX}ainda aí?`]);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'slack-cursor.json'), 'utf8')), { seq: 1 });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a poll pass that throws is retried and said once, not left as an unhandled rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const warned: string[] = [], sent: string[] = [];
+  let refuse = true;
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { if (refuse) throw new Error('chat is closing'); sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    intervalMs: 5, warn: text => warned.push(text),
+    request: async () => ({ messages: [{ seq: 1, ts: '1.0', thread: null, text: 'oi' }] }),
+  });
+  try {
+    bridge.start();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.deepEqual(warned, ['Slack inbox pass failed; it retries: chat is closing'], 'the same failure is said once');
+    refuse = false;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.deepEqual(sent, [`${SLACK_PREFIX}oi`], 'the next pass delivers it');
+  } finally { bridge.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+

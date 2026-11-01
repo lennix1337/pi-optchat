@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment } from '../src/commitments.ts';
@@ -126,3 +126,20 @@ test('the tool requires a real source message and reports progress', async () =>
     assert.match(listed.content[0]!.text, /Answer question 90587 — next: reply · last: \d\d:\d\d drafted/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a commitments file with an unknown status or a damaged item is unreadable, not a commitment that stays open forever', () => {
+  const dir = temp();
+  try {
+    const item = addCommitment(dir, { text: 'ship the fix', source: '1' }, T0);
+    const file = join(dir, 'commitments.json');
+    const document = JSON.parse(readFileSync(file, 'utf8')) as { version: 1; items: Record<string, unknown>[] };
+    for (const damage of [{ status: 'finished' }, { status: undefined }, { notes: undefined }, { createdAt: 'yesterday' }, { owner: 'someone' }]) {
+      writeFileSync(file, JSON.stringify({ ...document, items: [{ ...item, ...damage }] }));
+      assert.throws(() => readCommitments(dir), /Unreadable commitments file/, JSON.stringify(damage));
+      assert.throws(() => updateCommitment(dir, { id: item.id, progress: 'x' }, T0), /Unreadable commitments file/);
+    }
+    writeFileSync(file, JSON.stringify(document));
+    assert.equal(readCommitments(dir).length, 1, 'the undamaged file still reads');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+

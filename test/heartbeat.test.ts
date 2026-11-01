@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
@@ -247,6 +247,19 @@ test('a failed check is noted once and retried at the interval like a SLEEP', as
   assert.equal(h.notes.filter(n => /rate limited/.test(n)).length, 1);
   assert.deepEqual(h.woken, []);
   rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a round that cannot save heartbeat.json is noted and re-armed, never left as a dead loop or an unhandled rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+  mkdirSync(join(dir, 'heartbeat.json')); // The swap onto a directory fails like a locked file on Windows.
+  const h = harness({ dir, verdicts: [{ wake: false, text: 'quiet' }, { wake: false, text: 'quiet' }] });
+  h.beat.arm(); await h.advance(30 * MIN);
+  assert.equal(h.checks.length, 1);
+  assert.equal(h.notes.filter(n => /Heartbeat round failed/.test(n)).length, 1);
+  assert.equal(h.pending(), 30 * MIN, 'the idle clock is armed again');
+  await h.advance(30 * MIN);
+  assert.equal(h.checks.length, 2, 'and the next interval checks again');
+  rmSync(dir, { recursive: true, force: true });
 });
 
 const model = { provider: 'anthropic', id: 'claude-haiku-5-5', api: 'anthropic-messages', reasoning: false, contextWindow: 200_000, maxTokens: 64_000 };
