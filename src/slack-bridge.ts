@@ -41,7 +41,7 @@ const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro
 /** A DM steered into a working run: a text-only reply would end the run and stop the work. */
 const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 
-const defaultRequest: Request = (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
+const defaultRequest: Request = async (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
