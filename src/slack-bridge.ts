@@ -8,6 +8,8 @@ import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
 import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
+import { failoverReader, homeStatus, remoteCommand, type CommandState } from './remote-commands.ts';
+import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
 
@@ -93,11 +95,15 @@ export class SlackBridge {
   private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void;
     schedule: (run: () => void, ms: number) => void;
     /** Whether the chat can take a DM now. While not, the inbox is left alone: a message handed to a chat that drops it would still move the cursor. */
-    accepting: () => boolean };
+    accepting: () => boolean;
+    /** The selected model (`provider/id`) and pi-multi-account's state, for the commands answered without a turn and the App Home. */
+    model: () => string | undefined; failover: () => unknown };
+  /** First line of the App Home: what the agent is doing now. */
+  private activity = '\u2705 *Livre*';
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, ...options };
+    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE), ...options };
   }
 
   start(): void {
@@ -138,6 +144,14 @@ export class SlackBridge {
         const channel = typeof m.channelName === 'string' ? m.channelName : null;
         if (!channel && typeof m.thread === 'string' && this.approvals.has(m.thread) && (APPROVE.test(m.text.trim()) || DENY.test(m.text.trim()))) {
           await this.decided(m.thread, APPROVE.test(m.text.trim()));
+          atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+          continue;
+        }
+        const command = channel ? undefined : remoteCommand(m.text);
+        if (command) {
+          // Answered here, at no model cost and even mid-run; the agent never sees it.
+          try { await this.send(command.run(this.commandState())); this.answered(null); }
+          catch (error) { this.options.warn(`Slack command "${command.name}" not answered: ${error instanceof Error ? error.message : String(error)}`); }
           atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
           continue;
         }
@@ -189,7 +203,15 @@ export class SlackBridge {
   /** The operator's App Home in Slack shows what the assistant is doing right now. Never blocks. */
   private home(text: string): void {
     const owner = this.owner();
-    if (owner) void this.options.request(owner, '/v1/slack/home', { text: text.slice(0, 2900) }).catch(() => undefined);
+    this.activity = text.split('\n')[0]!;
+    let status = '';
+    try { status = `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
+    if (owner) void this.options.request(owner, '/v1/slack/home', { text: `${text.slice(0, 2900 - status.length)}${status}` }).catch(() => undefined);
+  }
+
+  /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
+  commandState(): CommandState {
+    return { model: this.options.model, activity: () => this.activity, failover: this.options.failover, now: this.options.now };
   }
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
@@ -357,8 +379,12 @@ export class SlackBridge {
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
   options: { request?: Request; accepting?: () => boolean } = {}): SlackBridge {
   let warn: (text: string) => void = () => {};
-  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent, ...options });
-  pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); bridge.start(); });
+  let model: string | undefined;
+  const named = (m: { provider: string; id: string } | undefined) => m ? `${m.provider}/${m.id}` : undefined;
+  const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent, model: () => model, ...options });
+  pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); bridge.start(); });
+  // pi-multi-account switches by selecting the other account's model, so this follows its failovers too.
+  pi.on('model_select', event => { model = named(event.model); });
   pi.on('session_shutdown', () => bridge.stop());
   pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); });
   pi.on('agent_start', () => bridge.runStarted());
