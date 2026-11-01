@@ -202,7 +202,7 @@ async function main(): Promise<void> {
     if (web) artifacts = openArtifactService({ databasePath: config.databasePath, profileId: config.profileId });
     server = createAssistantServer({ store, token: config.token, profileId: config.profileId, web, inspection: () => ({ learning: learning ? { current: learning.current(), proposals: learning.list() } : null, notices: extras.notices?.() ?? null, restored: store.restoreHolds() }), ...(web ? { setup, artifacts, ...(config.webOrigins ? { webOrigins: config.webOrigins } : {}) } : {}), ...(config.voice ? { voice: piVoiceProvider(config.voice) } : {}), ...workers.server, ...extras.server });
   }
-  catch { await workers?.close(); artifacts?.close(); learning?.close(); extras.stop(); store.close(); console.error('Server could not be initialized.'); process.exitCode = 1; return; }
+  catch (error) { await workers?.close(); artifacts?.close(); learning?.close(); extras.stop(); store.close(); console.error(`Server could not be initialized: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; return; }
   const running = workers;
   server.once('listening', () => running.start());
   serve(server, { async close() { await running.close(); artifacts?.close(); learning?.close(); extras.stop(); store.close(); } }, config);

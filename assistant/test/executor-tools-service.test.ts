@@ -96,3 +96,17 @@ test('executor.mjs lists reviews and held revisions but refuses every decision o
   assert.equal(store.get('h')!.status, 'queued');
   assert.equal(cli('bogus').status, 1);
 }));
+
+test('a shutdown cleanup that failed while Docker was down does not block the next start', async () => {
+  const dir = join(tmpdir(), 'executor-tools-' + randomUUID()); createPrivateDirectory(dir);
+  const config: Config = { version: 1, profileId, databasePath: join(dir, 'tasks.sqlite'), endpoint: 'http://127.0.0.1:1', token: 'token', executor: { agentDir: dir, channels: ['Pessoal'], tools: true } };
+  const store = new TaskStore(config.databasePath, profileId);
+  try {
+    const first = fakeDocker(); let dockerDown = false;
+    const tools = await openToolService(config, store, async (args, options) => dockerDown ? { code: 1, stdout: '', stderr: 'Docker Desktop is not running' } : first.docker(args, options));
+    dockerDown = true;
+    await tools.close();
+    const again = await openToolService(config, store, fakeDocker().docker);
+    await again.close();
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
