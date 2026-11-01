@@ -70,6 +70,7 @@ function finalText(messages: readonly AgentMessage[]): string {
 export class SlackBridge {
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
+  private pollFailure: string | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
@@ -82,17 +83,26 @@ export class SlackBridge {
   /** Rewrites of decided approval posts, in order. */
   private settling: Promise<unknown> = Promise.resolve();
   private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void;
-    schedule: (run: () => void, ms: number) => void };
+    schedule: (run: () => void, ms: number) => void;
+    /** Whether the chat can take a DM now. While not, the inbox is left alone: a message handed to a chat that drops it would still move the cursor. */
+    accepting: () => boolean };
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, ...options };
+    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, ...options };
   }
 
   start(): void {
     this.stop();
-    this.timer = setInterval(() => void this.poll(), this.options.intervalMs);
+    this.timer = setInterval(() => void this.poll().then(() => { this.pollFailure = undefined; }, error => this.pollFailed(error)), this.options.intervalMs);
     this.timer.unref?.();
+  }
+  /** A pass that throws (the cursor cannot be written, the chat refuses the message) is retried at the next interval; it must not escape as an unhandled rejection, and a repeat of the same failure is said once. */
+  private pollFailed(error: unknown): void {
+    const text = error instanceof Error ? error.message : String(error);
+    if (text === this.pollFailure) return;
+    this.pollFailure = text;
+    this.options.warn(`Slack inbox pass failed; it retries: ${text}`);
   }
   stop(): void { clearInterval(this.timer); this.answering = undefined; this.waking = false; this.running = false; }
   runStarted(): void { this.running = true; }
@@ -100,7 +110,7 @@ export class SlackBridge {
   /** One pass: new DMs become user messages in order; the cursor advances only past delivered ones. */
   async poll(): Promise<number> {
     const owner = this.owner();
-    if (!owner || this.polling || this.options.now() < this.offUntil) return 0;
+    if (!owner || this.polling || !this.options.accepting() || this.options.now() < this.offUntil) return 0;
     this.polling = true;
     try {
       const seq = this.cursor(owner);
@@ -274,7 +284,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean } = {}): SlackBridge {
   let warn: (text: string) => void = () => {};
   const bridge = new SlackBridge(pi, owner, { warn: text => warn(text), sent, ...options });
   pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); bridge.start(); });

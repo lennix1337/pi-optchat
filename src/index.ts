@@ -75,6 +75,7 @@ import { Sync } from './sync.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
+import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { registerSelfReload } from './self-reload.ts';
 
 const binding = 'optchat.profile';
@@ -217,6 +218,12 @@ export default function optchat(pi: ExtensionAPI) {
   let checkpoints = Promise.resolve();
   let importing = false;
   let stopping = false;
+  /** Whether the profile is in one of `allowed` phases (src/profile-phase.ts): the one test every feature uses to ask if it may act on the open profile. */
+  const inPhase = (...allowed: ProfilePhase[]) => allowed.includes(profilePhase({ active: active !== undefined, remote: remote !== undefined || joined !== undefined,
+    stopping, importing, importPending: () => {
+      // A journal that cannot be read is an import nobody finished: it keeps the profile paused instead of throwing into a poll or a tool.
+      try { return active !== undefined && pendingImport(active.dir) !== undefined; } catch { return true; }
+    } }));
   let importController: AbortController | undefined;
   let importTask: Promise<void> | undefined;
   let unmountNavigation: (() => void) | undefined;
@@ -439,7 +446,7 @@ export default function optchat(pi: ExtensionAPI) {
       void sync.now();
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
-      if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
+      if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => inPhase('open'), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
@@ -601,32 +608,35 @@ export default function optchat(pi: ExtensionAPI) {
   pi.on('session_before_fork', (event, ctx) => blockSwitch(event.position === 'at' ? '/clone' : '/fork', ctx));
   registerAssistant(pi, () => {
     const a = active;
-    return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir) ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
+    return a && inPhase('open') ? { identity: a, name: a.name, dir: a.dir, sessionId: a.sessionId, zoom: (id, offset, limit) => a.memory.zoom(id, 1, offset, limit), localInbox: cursor => projectLocalInbox({ profileId: a.name, sessionId: a.sessionId, approvals: approvals?.pendingFor(a.sessionId) ?? [], operations: a.operations.snapshot(), runs: a.children.runs() }, cursor), attention: () => ({ approvals: approvals?.pendingFor(a.sessionId).length ?? 0, uncertain: a.operations.pending().length, agents: a.children.ids.length }) } : undefined;
   });
   registerAssistantMemory(pi, () => {
     const a = active;
-    return a && !remote && !joined && !stopping && !importing && !pendingImport(a.dir)
+    return a && inPhase('open')
       ? { identity: a, profileId: a.name, sessionId: a.sessionId, memory: a.memory, databasePath: join(a.dir, 'assistant-memory', 'corrections.sqlite'), ...(process.env.OPTCHAT_ABOUT_ME ? { aboutMePath: process.env.OPTCHAT_ABOUT_ME } : {}) }
       : undefined;
   });
-  const slackOwner = () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name } : undefined;
-  const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } });
+  const slackOwner = () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name } : undefined;
+  // A paused import still takes the reports out, but a DM is delivered only to a profile that can run it: the input hook drops
+  // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
+  const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
+    { accepting: () => inPhase('open') });
   // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
   registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
   // Production health probes every 5 min, read-only: an outage posts to #dentai and wakes the agent once (src/prod-health.ts).
   registerProdHealth(pi, slackOwner, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
   // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
-  const work = registerWorkTracker(pi, () => active && !remote && !joined && !stopping && !importing ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
+  const work = registerWorkTracker(pi, () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
   const unwatchWork: (() => void)[] = [];
-  const catchup = registerCatchup(pi, () => active && !remote && !joined && !importing && !pendingImport(active.dir)
+  const catchup = registerCatchup(pi, () => active && inPhase('open', 'closing')
     ? catchupSource(active, flush, approvals, shells) : undefined);
   // What OptChat promised and what waits on the operator, in every turn, plus the 10/30-min presence nudges (src/commitments.ts).
   const commitments = registerCommitments(pi, () => {
     const a = active;
-    return a && !remote && !joined && !importing ? { dir: a.dir, sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; } } : undefined;
+    return a && inPhase('open', 'closing', 'import-paused') ? { dir: a.dir, sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; } } : undefined;
   });
   // An operator correction gets one reminder to become a test or rule, and counts on the weekly scoreboard (src/corrections.ts).
-  registerCorrections(pi, () => active && !remote && !joined && !importing ? { dir: active.dir } : undefined);
+  registerCorrections(pi, () => active && inPhase('open', 'closing', 'import-paused') ? { dir: active.dir } : undefined);
   pi.on('input', async (event, ctx) => {
     if (joined) {
       try {

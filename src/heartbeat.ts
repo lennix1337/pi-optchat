@@ -261,7 +261,7 @@ export class Heartbeat {
     this.disarm();
     const minutes = this.deps.minutes();
     if (minutes <= 0) return;
-    this.timer = this.deps.setTimer(() => { this.timer = undefined; this.running = this.fire(); }, minutes * 60_000);
+    this.timer = this.deps.setTimer(() => { this.timer = undefined; this.running = this.fireOnce(); }, minutes * 60_000);
   }
   disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; }
   /** The operator is back: their turn decides what comes next. */
@@ -282,6 +282,16 @@ export class Heartbeat {
   }
   /** Resolves once the current check, if any, has finished. */
   settled() { return this.running; }
+
+  /** A round that throws (heartbeat.json cannot be written, say) is noted and the idle clock re-armed: left alone, its rejection ended the loop for good and, unhandled, took the host down. */
+  private async fireOnce() {
+    const epoch = this.epoch;
+    try { await this.fire(); }
+    catch (error) {
+      try { this.deps.note(`Heartbeat round failed: ${error instanceof Error ? error.message : String(error)}`); } catch { /* a notification must not end the loop either */ }
+      if (epoch === this.epoch) this.arm();
+    }
+  }
 
   private async fire() {
     const reason = this.deps.busy();
