@@ -358,7 +358,7 @@ async function startSlack(config: Config, settings: SlackConfig, store: import('
     const relay = new SlackRelay({ databasePath: relayPath, profileId: config.profileId });
     const poster = new SlackPoster({ botToken: settings.botToken, operator: settings.operators[0], ...(settings.channels ? { channels: settings.channels } : {}) });
     relay.attach(poster);
-    bridge = { relay, poster, ...(settings.channels ? { channels: settings.channels } : {}) };
+    bridge = { relay, poster, filesDir: dirname(config.databasePath), ...(settings.channels ? { channels: settings.channels } : {}) };
   }
   const relayChannels = new Set(Object.values(settings.channels ?? {}));
   const channel = new SlackChannel({ store, ledger, profileId: config.profileId, team: settings.team, appId: settings.appId, ...(bridge ? { relay: bridge.relay, relayChannels } : {}), reviewLink: id => `${config.endpoint}/#tarefa=${encodeURIComponent(id)}` });

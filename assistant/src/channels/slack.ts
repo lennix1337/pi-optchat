@@ -1,7 +1,10 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
-import { APPROVAL_ACTIONS, type SlackRelay } from './slack-relay.ts';
+import { APPROVAL_ACTIONS, FORWARD_CHANNEL, slackFiles, type SlackRelay } from './slack-relay.ts';
+
+/** The message shortcut ("Mandar pro Jarvis") the app manifest declares. */
+export const FORWARD_CALLBACK = 'optchat_forward';
 
 const WINDOW_SECONDS = 300;
 type Headers = Record<string, string | string[] | undefined>;
@@ -57,12 +60,19 @@ export class SlackChannel {
       const taskId = typeof body.actions?.[0]?.value === 'string' ? body.actions[0].value : '';
       return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };
     }
+    if (body.type === 'message_action') {
+      if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
+      if (body.callback_id !== FORWARD_CALLBACK || !o.relay) return { outcome: 'ignored' };
+      return this.forward(o.relay, body);
+    }
     if (body?.type !== 'event_callback' || body.event?.type !== 'message') return { outcome: 'ignored' };
     if (body.team_id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
     const event = body.event;
     if (typeof body.event_id !== 'string' || typeof event.channel !== 'string' || typeof event.ts !== 'string') return { outcome: 'ignored' };
     const human = !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string';
-    if (o.relay && (event.channel.startsWith('D') || o.relayChannels?.has(event.channel))) return this.relay(o.relay, body.event_id, event, human);
+    const relayed = o.relay && (event.channel.startsWith('D') || o.relayChannels?.has(event.channel));
+    // In the chat, a file the operator sends (a screenshot, an audio) is a message with an attachment.
+    if (relayed) return this.relay(o.relay!, body.event_id, event, human || (event.subtype === 'file_share' && !event.bot_id && typeof event.user === 'string'));
     return admit({
       platform: 'slack', account: o.team, delivery: body.event_id, sender: typeof event.user === 'string' ? event.user : '',
       human,
@@ -94,8 +104,27 @@ export class SlackChannel {
     if (!human) return { outcome: 'ignored_not_human' };
     if (!this.options.ledger.authorized('slack', this.options.team, event.user)) return { outcome: 'unauthorized_sender' };
     const text = typeof event.text === 'string' ? event.text.trim() : '';
-    if (!text) return { outcome: 'ignored' };
+    const files = slackFiles(event.files);
+    if (!text && !files.length) return { outcome: 'ignored' };
     const thread = typeof event.thread_ts === 'string' && event.thread_ts !== event.ts ? { thread: event.thread_ts } : {};
-    return { outcome: relay.enqueue({ delivery, sender: event.user, channel: event.channel, ts: event.ts, ...thread, text }) };
+    return { outcome: relay.enqueue({ delivery, sender: event.user, channel: event.channel, ts: event.ts, ...thread, text, ...(files.length ? { files } : {}) }) };
+  }
+
+  /**
+   * "Mandar pro Jarvis" on any message the operator can see: it joins the DM chat with its author, place, link and
+   * files. The shortcut is the operator's own act (checked like a DM sender); the forwarded text is someone else's
+   * words, quoted as such.
+   */
+  private forward(relay: SlackRelay, body: Record<string, any>): Received {
+    const user = body.user?.id, channel = body.channel?.id, message = body.message;
+    if (typeof user !== 'string' || typeof channel !== 'string' || typeof message?.ts !== 'string' || typeof body.action_ts !== 'string') return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    const author = typeof message.user === 'string' ? `<@${message.user}>` : typeof message.username === 'string' ? message.username : 'um app';
+    const domain = typeof body.team?.domain === 'string' && /^[\w-]{1,80}$/.test(body.team.domain) ? body.team.domain : 'app';
+    const link = `https://${domain}.slack.com/archives/${channel}/p${message.ts.replace('.', '')}`;
+    const original = typeof message.text === 'string' && message.text.trim() ? message.text.trim().split('\n').map((line: string) => `> ${line}`).join('\n') : '> (sem texto)';
+    const text = `\u21aa Encaminhada por você (atalho Mandar pro Jarvis) · mensagem de ${author} em <#${channel}> · ${link}\n${original}`;
+    const files = slackFiles(message.files);
+    return { outcome: relay.enqueue({ delivery: `forward:${channel}:${message.ts}:${body.action_ts}`, sender: user, channel: FORWARD_CHANNEL, ts: body.action_ts, text, ...(files.length ? { files } : {}) }) };
   }
 }
