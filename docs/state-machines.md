@@ -430,3 +430,5 @@ interval and unsubscribes; input handlers return when `ended`. Findings: none.
 | SM-F3 | P2 | Profile availability / Slack bridge | `profilePhase` + `accepting` gate | `test/profile-phase.test.ts`, `test/slack-bridge.test.ts` |
 | SM-F4 | P2 | Commitment item | validate items on read | `test/commitments.test.ts` |
 | SM-F5 | P2 | Slack poll | settle the poll promise, warn once, retry | `test/slack-bridge.test.ts` |
+| SM-F8 | P2 | Slack approval posts | `askApproval` returns whether the post went out; a command whose Aprovar could not be posted answers "nada mudou" | `test/remote-commands.test.ts` |
+| SM-F9 | P1 | WhatsApp bridge cursor (`src/whatsapp-bridge.ts`, `poll`) | cursor saved before handling; a failed send is not repeated on the next pass | `test/whatsapp-bridge.test.ts` |
