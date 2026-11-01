@@ -19,10 +19,11 @@ export type Kind = typeof KINDS[number];
 export interface Origin { source: 'claude' | 'claude-memory' | 'codex' | 'pi' | 'chatgpt'; conversation: string; message: string; title: string; project?: string }
 export interface Entry { i: number; kind: Kind; text: string; size: number; date: string; receipt?: string; origin?: Origin }
 export interface Part { l: number; i: number }
-export interface Summary extends Part { text: string; size: number }
+/** `revised`: a later record that replaces a built line's text (Memory.revise); the first record of a part builds it. */
+export interface Summary extends Part { text: string; size: number; revised?: true }
 /** `part` is the node to build: a message's leaf, or the merge of its two halves. A tool result can carry the call it answers;
  * a call can carry its output once available, so its summary preserves what it found. */
-export interface Compression { context: string; source: string; part: Part; historical?: boolean; result?: string; call?: { i: number; text: string } }
+export interface Compression { context: string; source: string; part: Part; historical?: boolean; result?: string; call?: { i: number; text: string }; revise?: string }
 export type Compressor = (input: Compression, signal: AbortSignal) => Promise<string>;
 const key = ({ l, i }: Part) => l * 2 ** 40 + i;
 const POLICY_REFUSAL = 'OPTCHAT_POLICY_REFUSAL' as const;
@@ -91,6 +92,8 @@ class Sawtooth {
       else return p;
     }
   }
+  /** A shown line's text changed size (Memory.revise). */
+  resized(part: Part, delta: number) { if (this.parts.some(p => p.l === part.l && p.i === part.i)) this.measured += delta; }
   /** A message got its node. Its line is usually still shown, but after a damaged tree file a saved parent can already hide it. */
   built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - UNBUILT_BYTES; }
   /** Returns whether any lines merged. */
@@ -194,7 +197,13 @@ export class Memory {
   }
   private loadTree(records: unknown[]) {
     for (const value of records) if (!isSummary(value) && !isTerminalRecord(value)) this.warn('Skipped an invalid OptChat summary record.');
-    this.loadSummaries(records.filter(isSummary).sort((a, b) => a.l - b.l || a.i - b.i));
+    const summaries = records.filter(isSummary);
+    this.loadSummaries(summaries.filter(s => !s.revised).sort((a, b) => a.l - b.l || a.i - b.i));
+    for (const value of summaries) {
+      if (!value.revised) continue;
+      if (!this.tree.has(key(value)) || !value.text.trim()) { this.warn('Skipped a revision of a missing OptChat summary.'); continue; }
+      this.tree.set(key(value), { l: value.l, i: value.i, text: value.text, size: lineBytes(value.text) });
+    }
     this.loadTerminalRecords(records.filter(isTerminalRecord));
   }
   private loadSummaries(summaries: Summary[]) {
@@ -397,6 +406,26 @@ export class Memory {
     while (this.root[last + 1]?.kind === 'tool') last++;
     const echo = this.root[last + 1 + i - first];
     return echo?.kind === 'echo' ? echo.text : undefined;
+  }
+  /** Rewrites, through the compactor, each shown line for which `stale` returns a note (what to drop); the new text is appended
+   * as a revision record, so it wins on load too. Returns how many lines changed. Used once to clean closed conflicts. */
+  async revise(stale: (text: string) => string | undefined, signal: AbortSignal = this.controller.signal) {
+    let changed = 0;
+    for (const part of [...this.view]) {
+      const node = this.node(part), note = node && stale(node.text);
+      // A short message is its own line: those are someone's exact words, never rewritten.
+      if (!node || note === undefined || part.l === 0 && node.text === `${this.root[part.i].kind}: ${this.root[part.i].text}`) continue;
+      let text = (await this.compress({ context: `${VIEW_OPEN}</chat>`, source: node.text, part, revise: note }, signal)).trim();
+      if (text && part.l === 0) text = labeled(this.root[part.i].kind, text);
+      if (!text || text === node.text || this.stopped) continue;
+      const revised: Summary = { ...part, text, size: lineBytes(text), revised: true };
+      const written = this.enqueue(() => this.store.appendNode(revised), error => { throw error; });
+      if (written) await written;
+      this.tree.set(key(part), { ...part, text, size: revised.size });
+      this.chat.resized(part, revised.size - node.size); this.compaction.resized(part, revised.size - node.size);
+      changed++;
+    }
+    return changed;
   }
   /** A call's summary waits for its result, while only calls and results follow it. */
   private awaitingResult(i: number) {

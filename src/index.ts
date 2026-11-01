@@ -52,6 +52,8 @@ import { describeGrant, grantTargets, orderGrantFor, readOperationalState, rende
 import { operationalStateTool } from './operational-tool.ts';
 import { registerCommitments } from './commitments.ts';
 import { registerCorrections } from './corrections.ts';
+import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
+import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
@@ -398,19 +400,22 @@ export default function optchat(pi: ExtensionAPI) {
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
       let diagnosticsFailed = false;
+      const closed = closedConflictsOf(dir, warning => ctx.ui.notify(warning, 'warning'));
       const compress = createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
         usage.compression(message, 'compactor', sessionId, attribution);
         status(ctx);
       }, () => config.summaryAcceptBytes, shared, diagnostic => {
         try { writeCompactorDiagnostic(dir, diagnostic); }
         catch (error) { if (!diagnosticsFailed) { diagnosticsFailed = true; ctx.ui.notify(`Could not save compactor diagnostics: ${errorText(error)}`, 'warning'); } }
-      }, undefined, () => ({ sessionId, recoveryIncidentId: recoveryIncidents.get(sessionId) }));
+      }, undefined, () => ({ sessionId, recoveryIncidentId: recoveryIncidents.get(sessionId) }), closed);
       const memory = await Memory.open(memoryDirectory(dir), async (input, signal) => {
         const started = performance.now();
         try { return await compress(input, signal); }
         finally { metrics.record('compaction', performance.now() - started); }
       }, warning => ctx.ui.notify(warning, 'error'), undefined, undefined, undefined, DEFER);
       openingMemory = memory;
+      void cleanClosedOnce(dir, memory, closed()).then(changed => { if (changed) ctx.ui.notify(`OptChat rewrote ${changed} memory lines that cited closed conflicts.`, 'info'); },
+        error => ctx.ui.notify(`Could not clean closed conflicts from memory: ${errorText(error)}`, 'warning'));
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
@@ -674,6 +679,8 @@ export default function optchat(pi: ExtensionAPI) {
     prompt = event.systemPrompt;
     const summary = briefDream(ctx);
     if (summary) ctx.ui.notify(summary, 'info');
+    const note = event.messageType === 'user' ? skillInvocationNote(event.prompt) : undefined;
+    if (note) return { message: { customType: SKILL_INVOCATION_TYPE, content: note, display: false } };
   });
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {

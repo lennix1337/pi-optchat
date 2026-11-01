@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS } from './settings.ts';
 import { CompactorTrace, createCompactorIncidentId, errorCategory, type CompactorDiagnostic } from './compactor-diagnostics.ts';
 import type { UsageAttribution } from './usage.ts';
 import { assertContextFits } from './run-context.ts';
+import { cited, closedFeedback, dropClosed, type ClosedConflict } from './closed-conflicts.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
 /** The chosen model, with the base provider as the fallback: a numbered account that does not publish the model still runs it on the family's base account. */
@@ -31,8 +32,11 @@ export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
 const RULER = '-'.repeat(NODE);
 const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
 /** The recipe's compaction task. A tool result also gets the call that produced it, plus its output. */
-export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string } }, targetBytes?: number) {
+export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string }; revise?: string }, targetBytes?: number) {
   const { source, part, result, call } = input;
+  // A one-time cleanup of a built line (src/closed-conflicts.ts): the same line, minus what the user closed.
+  if (input.revise !== undefined) return `Compaction: rewrite line ${label(part)} without the closed conflicts in <closed>. Keep every other item, its kind tags,\nids, numbers and wording; drop only what cites them. Output only the line.\n<closed>\n${input.revise}\n</closed>\n`
+    + (targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes.\n`) + `<input>\n${source}\n</input>`;
   const sizeHint = `${SUMMARY_SIGNPOSTS}\n` + (targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes (not characters), leaving room below the limit.\n`);
   const callContext = call ? `\nThe call is in <call>: context, like <chat>.\n<call>\n${call.text}\n</call>` : '';
   if (!part.l) {
@@ -126,7 +130,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
   onUsage: (message: AssistantMessage, attribution: UsageAttribution) => void = () => {}, accepted = () => DEFAULT_SETTINGS.summaryAcceptBytes,
   sharedOrRetries: (() => Shared | undefined) | readonly number[] = () => undefined,
   diagnose: (diagnostic: CompactorDiagnostic) => void = () => {}, retryDelays: readonly number[] = [1000, 2000],
-  incidentContext: () => IncidentContext = () => ({})): Compressor {
+  incidentContext: () => IncidentContext = () => ({}), closed: () => readonly ClosedConflict[] = () => []): Compressor {
   const gate = primeFirst();
   const shared = typeof sharedOrRetries === 'function' ? sharedOrRetries : () => undefined;
   const retries = typeof sharedOrRetries === 'function' ? retryDelays : sharedOrRetries;
@@ -144,7 +148,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
     let request = 0, failures = 0, attempts = 0, summaries = 0;
-    let shortest: string | undefined, blank: string | undefined;
+    let shortest: string | undefined, blank: string | undefined, stale: string | undefined, closedRetries = 0;
     const ask = async (): Promise<AssistantMessage> => {
       for (;;) {
         signal.throwIfAborted();
@@ -213,7 +217,15 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       const line = summaryText(reply, detail);
       summaries++;
       const size = bytes(line);
-      if (size <= limit) return line;
+      if (size <= limit) {
+        const hits = cited(line, closed());
+        if (!hits.length) return line;
+        // A line citing a conflict the user closed is asked for again twice, then stripped of it (src/closed-conflicts.ts).
+        stale = dropClosed(line, hits);
+        if (closedRetries++ >= 2) return stale;
+        messages.push(reply, { role: 'user', content: closedFeedback(hits), timestamp: Date.now() });
+        continue;
+      }
       if (size < sourceBytes && (shortest === undefined || size < bytes(shortest))) shortest = line;
       messages.push(reply);
       const cut = Buffer.from(line).subarray(0, limit).toString('utf8').replace(/\uFFFD$/, '');
@@ -221,7 +233,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     }
     // The byte target guides retries, not a second failure cliff. Keep the shortest
     // complete shrinking reply; persisted nodes and views account for actual bytes.
-    if (shortest !== undefined) return shortest;
+    if (stale !== undefined) return stale;
+    if (shortest !== undefined) return dropClosed(shortest, closed());
     if (!summaries && blank !== undefined) throw new Error(`Compactor returned no text in ${attempts} tries (${blank}). See compactor-diagnostics.jsonl.`);
     if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
     throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; source ${sourceBytes} bytes; shortest ${shortest === undefined ? 'none' : bytes(shortest)}; it must be smaller than the source).`);
