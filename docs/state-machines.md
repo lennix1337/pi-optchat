@@ -421,6 +421,13 @@ interval and unsubscribes; input handlers return when `ended`. Findings: none.
 
 ---
 
+## 37. Assistant computer lifecycle — `assistant/src/computer/manager.ts` (`create`, `cleanup`, `adoptOrphanedCreates`)
+
+States of a `computers` row: `transition` (create in flight) → `ready` ⇄ `paused` → `removing` → deleted. A `computer_lifecycle` reservation (token, target, phase `active`/`failed`) fences each transition.
+- Incident 01/11: Docker Desktop was off at startup; `docker run` failed, the process exited and left the row in `transition` with an `active` reservation. Every later start refused with `computer_transition`, and the whole assistant (Slack included) stayed down.
+- Now: the process remembers the tokens it holds. `cleanup()` first turns any `transition` row whose token belongs to no live holder into a failed removal, and the owner census removes any container that create may have started. A transition held by the live process is still refused.
+- Recovery: a Docker failure at startup no longer stops the service (`openToolServiceIfDockerUp`, #53); the next start with Docker up clears the orphan by itself.
+
 ## What changed in code
 
 | id | sev | machine | change | regression test |
@@ -430,5 +437,7 @@ interval and unsubscribes; input handlers return when `ended`. Findings: none.
 | SM-F3 | P2 | Profile availability / Slack bridge | `profilePhase` + `accepting` gate | `test/profile-phase.test.ts`, `test/slack-bridge.test.ts` |
 | SM-F4 | P2 | Commitment item | validate items on read | `test/commitments.test.ts` |
 | SM-F5 | P2 | Slack poll | settle the poll promise, warn once, retry | `test/slack-bridge.test.ts` |
+| SM-F6 | P1 | Assistant computer lifecycle | orphaned `transition` adopted as failed removal in `cleanup` | `assistant/test/computer-cleanup.test.ts` |
+| SM-F7 | P1 | Slack bridge run facets | answer delivered before a steering notice (#58) | `test/slack-bridge.test.ts` |
 | SM-F8 | P2 | Slack approval posts | `askApproval` returns whether the post went out; a command whose Aprovar could not be posted answers "nada mudou" | `test/remote-commands.test.ts` |
 | SM-F9 | P1 | WhatsApp bridge cursor (`src/whatsapp-bridge.ts`, `poll`) | cursor saved before handling; a failed send is not repeated on the next pass | `test/whatsapp-bridge.test.ts` |

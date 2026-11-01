@@ -122,3 +122,17 @@ test('with Docker down the assistant keeps running without preview tools and nam
     assert.match(logged.join(' '), /preview tools unavailable.*computer_start_failed/);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('after a start that failed with Docker down, the next start with Docker up gets the preview tools back', async () => {
+  const dir = join(tmpdir(), 'executor-tools-' + randomUUID()); createPrivateDirectory(dir);
+  const config: Config = { version: 1, profileId, databasePath: join(dir, 'tasks.sqlite'), endpoint: 'http://127.0.0.1:1', token: 'token', executor: { agentDir: dir, channels: ['Pessoal'], tools: true } };
+  const store = new TaskStore(config.databasePath, profileId);
+  try {
+    const down: DockerRunner = async () => ({ code: 1, stdout: '', stderr: 'Docker Desktop is not running' });
+    assert.equal(await openToolServiceIfDockerUp(config, store, down, () => {}), undefined);
+    const logged: string[] = [];
+    const up = await openToolServiceIfDockerUp(config, store, fakeDocker().docker, message => logged.push(message));
+    assert.ok(up, logged.join(' '));
+    await up.close();
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
