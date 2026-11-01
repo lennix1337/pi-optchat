@@ -129,3 +129,20 @@ test('an account switch from Slack posts Aprovar/Negar and switches only on appr
     assert.equal(selected.length, 1, 'one approval switches once');
   } finally { f.close(); }
 });
+
+test('when the Aprovar post cannot go out, the operator is told nothing changed instead of silence', async () => {
+  const selected: ModelRef[] = [];
+  const f = bridgeFixture([{ seq: 1, ts: '1.0', thread: null, text: 'modelo gpt' }], selected);
+  const request = (f.bridge as any).options.request;
+  (f.bridge as any).options.request = async (o: unknown, path: string, body: any) => {
+    if (path === '/v1/slack/send' && body?.approval) throw new Error('HTTP 500');
+    return request(o, path, body);
+  };
+  try {
+    await f.bridge.poll();
+    const replies = f.posts.filter(p => p.path === '/v1/slack/send');
+    assert.equal(replies.length, 1);
+    assert.match(replies[0]!.body.text, /Não consegui postar o Aprovar/);
+    assert.equal(selected.length, 0);
+  } finally { f.close(); }
+});

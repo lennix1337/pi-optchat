@@ -90,8 +90,12 @@ export class WhatsAppBridge {
         if (cursor.seen.includes(m.MsgID)) continue;
         cursor.seen = [...cursor.seen, m.MsgID].slice(-50);
         if (Date.parse(m.Timestamp) > Date.parse(cursor.after)) cursor.after = m.Timestamp;
-        if (this.fromOperator(m)) { await this.handle(m.Text!.trim()); handled++; }
+        // The cursor moves before handling: a reply whose send failed is never sent twice (at most once).
         this.save(dir, cursor);
+        if (!this.fromOperator(m)) continue;
+        handled++;
+        try { await this.handle(m.Text!.trim()); }
+        catch (error) { this.options.warn(`WhatsApp message ${m.MsgID} not answered; not retried: ${error instanceof Error ? error.message : String(error)}`); }
       }
       return handled;
     } finally { this.polling = false; }

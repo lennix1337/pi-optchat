@@ -231,11 +231,14 @@ export class SlackBridge {
     if (!result.confirm) { await this.send(result.text); this.answered(null); return; }
     const { summary, apply } = result.confirm;
     let ran = false;
-    await this.askApproval({
+    const posted = await this.askApproval({
       token: `cmd-${randomUUID()}`, label: `Comando *${command.name}*`, summary: `${result.text} ${summary}`.slice(0, 500), expires: this.options.now() + COMMAND_APPROVAL_MS,
       decide: () => !ran && (ran = true),
       onPhone: async approve => approve ? apply() : `Negado: continuo em ${this.options.model() ?? 'nenhum modelo'}.`,
     });
+    // An approval nobody can see would leave the operator waiting on silence.
+    if (!posted) await this.send(`Não consegui postar o Aprovar no Slack; nada mudou, continuo em ${this.options.model() ?? 'nenhum modelo'}. Tente de novo ou use /approve no terminal.`).catch(() => {});
+    this.answered(null);
   }
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
@@ -309,7 +312,7 @@ export class SlackBridge {
    * Posts a gated call to the operator's DM with Aprovar/Negar buttons; a tap (relayed by the service as that reply) or
    * their `aprovar`/`negar` in its thread decides it. Best effort: the terminal `/approve` keeps working when Slack is down.
    */
-  async askApproval(request: ApprovalRequest): Promise<void> {
+  async askApproval(request: ApprovalRequest): Promise<boolean> {
     const now = this.options.now();
     for (const [ts, post] of this.approvals) if (post.request.expires <= now) this.approvals.delete(ts);
     const minutes = Math.max(1, Math.round((request.expires - now) / 60_000));
@@ -324,7 +327,8 @@ export class SlackBridge {
       }
       this.approvals.set(ts, { request, channel: typeof channel === 'string' ? channel : null });
       this.options.schedule(() => void this.settled(request.token, 'expired'), Math.max(0, request.expires - now));
-    } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); }
+      return true;
+    } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); return false; }
   }
 
   /** The call of an approval post stopped waiting outside Slack (terminal, a newer call, expiry): the post says so. */
