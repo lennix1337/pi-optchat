@@ -77,7 +77,7 @@ export function wakeChannel(messages: readonly AgentMessage[]): string | null | 
   return projectOf(...delivering.map(call => JSON.stringify(call.arguments))) ?? null;
 }
 
-function finalText(messages: readonly AgentMessage[]): string {
+export function finalText(messages: readonly AgentMessage[]): string {
   const last = [...messages].reverse().find(m => m.role === 'assistant');
   return last ? textContent(last.content, false).trim() : '';
 }
