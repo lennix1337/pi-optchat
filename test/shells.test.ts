@@ -505,3 +505,14 @@ test('inner exit markers of zero or unrelated names do not fail a shell', () => 
   assert.equal(job.state, 'completed');
   assert.doesNotMatch(shellReport(job), /Inner exit codes/);
 });
+
+test('terminal escape sequences in shell output never reach the report, so colours cannot leak into the TUI', () => {
+  const esc = '\u001b';
+  const output = `${esc}[34mEstablishing trust${esc}[39m ${esc}[48;5;0mbg${esc}[0m ${esc}]8;;https://x${esc}\\link${esc}]8;;${esc}\\ done`;
+  const job: ShellJob = { id: 'sh-2', command: 'npm trust', cwd: '.', mode: 'background', state: 'completed', started: Date.now(), ended: Date.now(), output, exitCode: 0, notify: 'end' };
+  const text = shellReport(job);
+  assert.ok(!text.includes(esc), 'no ESC byte in the report');
+  assert.ok(text.includes('Establishing trust bg link done'));
+  const alert = alertReport('sh-2', 'x', { matches: 1, total: 1, hidden: 0, firstLine: 1, lastLine: 1, shown: [{ line: 1, text: `${esc}[31mx${esc}[0m`, before: [] }] } as ShellAlert);
+  assert.ok(!alert.includes(esc));
+});
