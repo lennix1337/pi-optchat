@@ -96,7 +96,9 @@ export class PrWatch {
     const search = async (q: string) => ((JSON.parse(await this.gh(['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=${q}`])) as { data?: { search?: { nodes?: PrNode[] } } })
       .data?.search?.nodes ?? []).filter(n => typeof n?.number === 'number');
     const byKey = new Map<string, PrNode>();
-    for (const n of [...await search('is:pr author:@me is:open'), ...await search(`is:pr author:@me updated:>=${since}`)]) byKey.set(`${n.repository.nameWithOwner}#${n.number}`, n);
+    // Independent reads: the open list and the recently updated ones go out together (one round trip of waiting, not two).
+    const [open, updated] = await Promise.all([search('is:pr author:@me is:open'), search(`is:pr author:@me updated:>=${since}`)]);
+    for (const n of [...open, ...updated]) byKey.set(`${n.repository.nameWithOwner}#${n.number}`, n);
     const nodes = [...byKey.values()];
     let known: Record<string, PrSeen> | undefined;
     try { known = JSON.parse(readFileSync(join(owner.dir, PRS), 'utf8')); } catch { known = undefined; }
