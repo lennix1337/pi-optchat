@@ -11,7 +11,8 @@ import { atomicWrite } from './store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { REPORT_TYPE, textContent } from './transcript.ts';
 
-export interface Beat { wake: boolean; text: string; model?: string }
+/** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
+export interface Beat { wake: boolean; text: string; model?: string; unchanged?: boolean }
 
 // The operator's request (2026-10-25): when the chat sits idle, a cheap model looks at why it stopped and whether
 // anything pending or worth improving can be done, so the assistant keeps working while they are away.
@@ -163,9 +164,12 @@ export function previousWakeNote(wake: WakeRecord) {
 If that wake left something open or unconfirmed (a CI run still running, a PR not merged, a check or deploy not confirmed), close it first: check it now and report the result. Start new work only after that, or when it is blocked and you say why.`;
 }
 
+/** Said when the radar has not moved since the last wake: the wake still delivers, with new work (operator, 02/11: "mesmo que nao tenha algo pendente, cria algo novo"). */
+export const NEW_WORK_NOTE = `The radar is unchanged since the last wake: nothing pending moved. This wake still delivers: after closing anything the last wake left open, choose and build something new, above all a harness improvement (pi-optchat, subagents, gitwatch, multi-account, ripwire, tools), measured before and after, and finish it end to end.`;
+
 /** The whole text of a woken turn: the wake text from wakeText(), the previous wake to close first (when there is one), and the report language. */
-export function wakeTurn(wake: string, previous?: WakeRecord) {
-  return [wake, ...previous ? [previousWakeNote(previous)] : [],
+export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false) {
+  return [wake, ...previous ? [previousWakeNote(previous)] : [], ...unchanged ? [NEW_WORK_NOTE] : [],
     'Write your final report in Portuguese (pt-BR), with every time in Brasília time (UTC-3, e.g. 15:41).'].join('\n');
 }
 
@@ -221,20 +225,17 @@ export interface WakeRecord {
   at: number; trigger: 'schedule' | 'check'; reason: string; outcome: 'running' | 'done' | 'interrupted' | 'error' | 'unsettled';
   endedAt?: number; reply?: string; tools?: number; commits?: string[];
 }
-/** A fixed-schedule wake may be skipped for an unchanged radar at most this many intervals in a row, so a 15-minute schedule still wakes about hourly. */
-const MAX_QUIET_SKIPS = 3;
-interface Saved { wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string; quietSkips: number }
+interface Saved { wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string }
 
 function readSaved(file: string): Saved {
-  if (!existsSync(file)) return { wakes: [], checks: [], wakeLog: [], quietSkips: 0 };
+  if (!existsSync(file)) return { wakes: [], checks: [], wakeLog: [] };
   try {
-    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown; quietSkips?: unknown } | null;
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown } | null;
     const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
     const timed = <T>(items: unknown) => Array.isArray(items) ? items.filter((c): c is T => !!c && typeof c === 'object' && typeof (c as { at?: unknown }).at === 'number') : [];
-    const quietSkips = typeof saved?.quietSkips === 'number' && Number.isInteger(saved.quietSkips) && saved.quietSkips >= 0 ? saved.quietSkips : 0;
     return { wakes, checks: timed<Check>(saved?.checks), wakeLog: timed<WakeRecord>(saved?.wakeLog),
-      ...typeof saved?.radarDigest === 'string' ? { radarDigest: saved.radarDigest } : {}, quietSkips };
-  } catch { return { wakes: [], checks: [], wakeLog: [], quietSkips: 0 }; }
+      ...typeof saved?.radarDigest === 'string' ? { radarDigest: saved.radarDigest } : {} };
+  } catch { return { wakes: [], checks: [], wakeLog: [] }; }
 }
 /** The profile's saved wakes and checks, for the /heartbeat report. */
 export const readHeartbeat = (dir: string) => readSaved(join(dir, 'heartbeat.json'));
@@ -306,9 +307,6 @@ export class Heartbeat {
     if (this.deps.busy() !== undefined) { this.arm(); return; }
     let beat: Beat = { wake: true, text: '' };
     const scheduled = this.deps.always();
-    // A fixed schedule with nothing new: the radar reads as at the last wake, which settled as done, and nothing is queued.
-    const quiet = scheduled ? this.quietReason(radar) : undefined;
-    if (quiet) { this.save({ verdict: 'SLEEP', text: quiet }); this.keep({ quietSkips: this.saved().quietSkips + 1 }); this.arm(); return; }
     if (!scheduled) try { beat = await this.deps.check(radar); this.failed = false; }
     catch (error) {
       if (spoke()) return;
@@ -326,21 +324,15 @@ export class Heartbeat {
     // One reading of the clock: the save takes milliseconds, and turnSettled finds the wake by this exact `at`.
     this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, at],
       { at, trigger: scheduled ? 'schedule' : 'check', reason: scheduled ? '' : beat.text, outcome: 'running' });
-    this.keep({ radarDigest: radarDigest(radar), quietSkips: 0 });
+    // Every scheduled interval wakes (operator, 02/11: "volta o wake em 15"); an unchanged radar only tells the turn to start something new.
+    // An unavailable or absent radar never counts as unchanged.
+    const digest = radarDigest(radar), last = this.saved().radarDigest;
+    this.keep({ radarDigest: digest });
     this.open = at;
-    this.deps.wake(beat, radar);
+    this.deps.wake(digest !== undefined && digest === last ? { ...beat, unchanged: true } : beat, radar);
   }
-  /** Why a fixed-schedule wake would add nothing, or undefined: the radar matches the digest of the last wake, that wake settled
-   * as done, nothing is queued, and the streak of skips is below the cap. An unavailable or absent radar never counts as unchanged. */
-  private quietReason(radar: string | undefined) {
-    const digest = radarDigest(radar);
-    if (digest === undefined) return undefined;
-    const saved = this.saved();
-    if (saved.radarDigest !== digest || saved.wakeLog.at(-1)?.outcome !== 'done' || this.deps.queued?.() || saved.quietSkips >= MAX_QUIET_SKIPS) return undefined;
-    return 'radar unchanged since last wake';
-  }
-  /** Sets the radar digest and the skip streak; save() carries both over, and a wake sets them again. */
-  private keep(fields: Partial<Pick<Saved, 'radarDigest' | 'quietSkips'>>) { atomicWrite(this.file, JSON.stringify({ ...this.saved(), ...fields })); }
+  /** Sets the radar digest; save() carries it over, and the next wake compares against it. */
+  private keep(fields: Partial<Pick<Saved, 'radarDigest'>>) { atomicWrite(this.file, JSON.stringify({ ...this.saved(), ...fields })); }
   /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */
   private save(check: Omit<Check, 'at'>, wakes?: number[], wake?: WakeRecord) {
     const saved = this.saved();
