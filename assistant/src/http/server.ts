@@ -55,9 +55,10 @@ const threadTs = (value: unknown) => value === null || typeof value === 'string'
 
 async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, slack: SlackBridge): Promise<void> {
   if (req.method === 'GET' && url.pathname === '/v1/slack/inbox') {
-    query(url, ['after', 'limit']);
+    query(url, ['after', 'limit', 'wait']);
     const names = new Map(Object.entries(slack.channels ?? {}).map(([name, id]) => [id, name]));
-    const messages = slack.relay.after(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 20, 1, 100));
+    // `wait` holds the read (long poll) until a message arrives or the bound passes; without it the read answers at once.
+    const messages = await slack.relay.waitAfter(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 20, 1, 100), numberParam(url, 'wait', 0, 0, 15_000));
     send(res, 200, { messages: messages.map(m => ({ ...m, channelName: names.get(m.channel) ?? null })) }); return;
   }
   if (req.method === 'POST' && url.pathname === '/v1/slack/send') {

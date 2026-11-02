@@ -40,16 +40,20 @@ const FILE_READS = 4;
 /** A Slack message link pasted in a message: https://x.slack.com/archives/C123/p1793000000123456 */
 const SLACK_LINK = /https:\/\/[\w-]+\.slack\.com\/archives\/([CDG][A-Z0-9]{2,20})\/p(\d{10})(\d{6})(?:\?[^\s>|]*thread_ts=(\d{10}\.\d{6}))?/g;
 const SEEN = 'eyes', DONE = 'white_check_mark';
-type Request = (owner: SlackOwner, path: string, body?: unknown) => Promise<unknown>;
+type Request = (owner: SlackOwner, path: string, body?: unknown, cancel?: AbortSignal) => Promise<unknown>;
 const CURSOR = 'slack-cursor.json';
 const OFF_FOR_MS = 5 * 60_000;
+/** The inbox read is held by the service up to this long (a message ends it at once); the service caps it at 15 s. */
+const LONG_POLL_MS = 15_000;
+/** A read the service held at least this long is followed at once; a faster empty answer waits for the interval. */
+const HELD_MS = 1_000;
 /** How long a remote command that needs approval (an account switch) waits for the tap. */
 const COMMAND_APPROVAL_MS = 10 * 60_000;
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 /** A DM steered into a working run: a text-only reply would end the run and stop the work. */
 const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 
-const defaultRequest: Request = async (owner, path, body) => assistantRequest(assistantConfig(owner), path, body, 20_000);
+const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, 20_000, cancel);
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
@@ -111,7 +115,9 @@ export function finalText(messages: readonly AgentMessage[]): string {
 }
 
 export class SlackBridge {
-  private timer: ReturnType<typeof setInterval> | undefined;
+  private generation = 0;
+  /** The inbox read in flight, cancelled by stop(). */
+  private cancelRead: AbortController | undefined;
   private polling = false;
   private pollFailure: string | undefined;
   private offUntil = 0;
@@ -128,7 +134,7 @@ export class SlackBridge {
   private readonly approvals = new Map<string, Post>();
   /** Rewrites of decided approval posts, in order. */
   private settling: Promise<unknown> = Promise.resolve();
-  private readonly options: { intervalMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void;
+  private readonly options: { intervalMs: number; waitMs: number; heldMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void;
     schedule: (run: () => void, ms: number) => void;
     /** Whether the chat can take a DM now. While not, the inbox is left alone: a message handed to a chat that drops it would still move the cursor. */
     accepting: () => boolean;
@@ -148,14 +154,28 @@ export class SlackBridge {
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
+    this.options = { intervalMs: 3000, waitMs: LONG_POLL_MS, heldMs: HELD_MS, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
       models: () => [], select: async () => false, abort: () => false, nextWake: () => undefined, ...options };
   }
 
+  /**
+   * Reads the inbox as a long poll: the service holds each read until a message comes, so a message is handed over as it
+   * arrives. A read the service held is followed at once; one it answered at once (or failed) waits the interval.
+   */
   start(): void {
     this.stop();
-    this.timer = setInterval(() => void this.poll().then(() => { this.pollFailure = undefined; }, error => this.pollFailed(error)), this.options.intervalMs);
-    this.timer.unref?.();
+    this.cycle(++this.generation);
+  }
+  private cycle(generation: number): void {
+    if (generation !== this.generation) return;
+    const started = this.options.now();
+    const cancel = this.cancelRead = new AbortController();
+    void this.poll(cancel.signal).then(delivered => { this.pollFailure = undefined; return delivered; }, error => { if (generation === this.generation && !cancel.signal.aborted) this.pollFailed(error); return 0; })
+      .then(delivered => {
+        if (generation !== this.generation) return;
+        const again = delivered > 0 || this.options.now() - started >= this.options.heldMs ? 0 : this.options.intervalMs;
+        this.options.schedule(() => this.cycle(generation), again);
+      });
   }
   /** A pass that throws (the cursor cannot be written, the chat refuses the message) is retried at the next interval; it must not escape as an unhandled rejection, and a repeat of the same failure is said once. */
   private pollFailed(error: unknown): void {
@@ -164,7 +184,10 @@ export class SlackBridge {
     this.pollFailure = text;
     this.options.warn(`Slack inbox pass failed; it retries: ${text}`);
   }
-  stop(): void { clearInterval(this.timer); this.answering = undefined; this.waking = false; this.running = false; }
+  stop(): void {
+    this.generation++; this.cancelRead?.abort(); this.cancelRead = undefined;
+    this.answering = undefined; this.waking = false; this.running = false;
+  }
   runStarted(): void { this.running = true; this.work = undefined; }
   /** What waits for the operator (approvals, items blocked on him); shown on the App Home, working or free. */
   setWaiting(read: () => readonly string[]): void { this.waiting = read; }
@@ -193,15 +216,20 @@ export class SlackBridge {
   }
 
   /** One pass: new DMs become user messages in order; the cursor advances only past delivered ones. */
-  async poll(): Promise<number> {
+  async poll(cancel?: AbortSignal): Promise<number> {
     const owner = this.owner();
     if (!owner || this.polling || !this.options.accepting() || this.options.now() < this.offUntil) return 0;
     this.polling = true;
     try {
       const seq = this.cursor(owner);
+      const wait = this.options.waitMs > 0 ? `&wait=${this.options.waitMs}` : '';
       let value: unknown;
-      try { value = await this.options.request(owner, `/v1/slack/inbox?after=${seq}&limit=20`); }
+      try { value = await this.options.request(owner, `/v1/slack/inbox?after=${seq}&limit=20${wait}`, undefined, cancel); }
       catch (error) {
+        // Cancelled by stop(): nothing failed, so nothing backs off.
+        if (cancel?.aborted) return 0;
+        // An assistant that predates the long poll refuses `wait`: plain reads from now on, with no back-off.
+        if (wait && error instanceof HttpError && error.status === 400) { this.options.waitMs = 0; return 0; }
         // No assistant.json, service down, or no bot token configured (404): try again later, quietly.
         if (!(error instanceof HttpError) || error.status !== 404) this.offUntil = this.options.now() + OFF_FOR_MS / 10;
         else this.offUntil = this.options.now() + OFF_FOR_MS;

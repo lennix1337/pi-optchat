@@ -585,3 +585,43 @@ test('a message with many files reads them a few at a time, not all at once', as
     for (let i = 0; i < 9; i++) assert.ok(sent[0]!.includes(`- f${i}.png [image/png]: C:/x/f${i}.png`), `file ${i} is listed`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('long poll: an assistant that refuses wait= gets plain polls at once, with no back-off', async () => {
+  const inbox = [{ seq: 1, ts: '1.1', thread: null, text: 'oi' }];
+  const seen: string[] = [];
+  const f = fixture(inbox, { request: async (_owner: unknown, path: string) => {
+    seen.push(path);
+    if (path.includes('wait=')) throw new HttpError(400);
+    return { messages: inbox.filter(m => m.seq > Number(new URLSearchParams(path.split('?')[1]).get('after'))) };
+  } });
+  try {
+    assert.equal(await f.bridge.poll(), 0, 'the refused read delivers nothing');
+    assert.equal(await f.bridge.poll(), 1, 'the next read is plain and is not held back by a back-off');
+    assert.match(seen[0]!, /wait=\d+/);
+    assert.doesNotMatch(seen[1]!, /wait=/);
+  } finally { f.close(); }
+});
+
+test('long poll: a read the service held is followed at once; stop() ends the read in flight and nothing else', async () => {
+  const reads: { path: string; signal?: AbortSignal }[] = [];
+  const f = fixture([], {
+    now: Date.now, intervalMs: 60_000, heldMs: 10,
+    schedule: (run: () => void, ms: number) => { setTimeout(run, ms).unref(); },
+    request: (_owner: unknown, path: string, _body: unknown, signal?: AbortSignal) => {
+      reads.push({ path, signal });
+      if (!path.includes('wait=')) return Promise.resolve({ messages: [] });
+      return new Promise(resolve => setTimeout(() => resolve({ messages: [] }), 30));
+    },
+  });
+  try {
+    f.bridge.start();
+    await new Promise(r => setTimeout(r, 200));
+    const held = reads.filter(r => r.path.includes('wait=')).length;
+    assert.ok(held >= 3, `held reads follow each other at once (${held} in 200 ms; the interval is 60 s)`);
+    f.bridge.stop();
+    assert.equal(reads.at(-1)!.signal?.aborted, true, 'stop() aborts the read in flight');
+    const count = reads.length;
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(reads.length, count, 'nothing is read after stop()');
+  } finally { f.close(); }
+});
