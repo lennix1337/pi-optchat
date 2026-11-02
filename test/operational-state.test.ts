@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describeGrant, grantTargets, latestGrant, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, scopePatternCompiles, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { describeGrant, grantTargets, latestGrant, operationalValidations, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, scopePatternCompiles, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -266,3 +266,16 @@ test('a scope pattern is compiled once, however many grants are compared against
   for (let index = 0; index < 50; index++) assert.equal(scopeCovers(scope, `c:/projetos/memo-scope-probe/file-${index}.ts`), true);
   assert.ok(scopePatternCompiles() - before <= 1, 'a repeated scope is compiled once, not once per comparison');
 });
+
+test('a document already validated at the read boundary is rendered without validating it again', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  updateOperationalState(file, objective);
+  const beforeRead = operationalValidations();
+  const state = readOperationalState(file);
+  assert.equal(operationalValidations() - beforeRead, 1, 'the read boundary validates the document once');
+  const beforeRender = operationalValidations();
+  assert.match(renderOperationalContext(state), /Finish the authorized test task/);
+  assert.equal(operationalValidations(), beforeRender, 'a turn renders the shared document without a second validation');
+  renderOperationalContext({ version: 1, entries: [...state.entries] });
+  assert.equal(operationalValidations() - beforeRender, 1, 'a document that did not come through the read boundary is still validated');
+}));

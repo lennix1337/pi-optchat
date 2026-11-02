@@ -269,3 +269,19 @@ test('analytics report rejects unknown nested value objects beyond preview rows'
     }
   } finally { f.close(); }
 });
+test('a referenced original is renewed at half its lifetime, not on every provider call', () => {
+  const f = fixture(); let now = 1_000_000;
+  try {
+    const store = new OutputStore(f.dir, 'lease', { ttlMs: 10 * 60_000, now: () => now });
+    const context = new OutputContext(store), messages = [message()];
+    const ref = /output:([a-f0-9]{64})/.exec(JSON.stringify(context.project(messages)))![1];
+    const stored = context.stats().stored;
+    for (let call = 0; call < 4; call++) { now += 60_000; context.project(messages); }
+    assert.equal(context.stats().stored, stored, 'a provider call within the first half-life writes nothing');
+    now += 2 * 60_000;
+    context.project(messages);
+    assert.equal(context.stats().stored, stored + 1, 'the record is renewed once its half-life has passed');
+    now += 9 * 60_000;
+    assert.equal(store.read(ref), log, 'the renewed original stays readable for its full lifetime');
+  } finally { f.close(); }
+});

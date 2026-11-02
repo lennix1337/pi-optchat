@@ -93,7 +93,8 @@ export class OutputContext {
         const content = `[Original saved as output:${ref}; use output_read with ref "${ref}" and offset/limit or findText. Expires after 7 days. Original transcript retained. Error flag: ${result.isError}.]\n${preview}`;
         if (Buffer.byteLength(content) >= size * 0.8) { this.unchanged.add(message); return message; }
         const projected = { ...result, content: result.content.map(part => part === textPart ? { ...part, text: content } : part) };
-        this.cached.set(message, { message: projected, expires: this.store.now() + Math.min(this.store.ttlMs / 2, 60_000) });
+        // Renewal is due at half the retention lifetime: a projection handed out within that window always names a live original.
+        this.cached.set(message, { message: projected, expires: this.store.now() + this.store.ttlMs / 2 });
         this.totals.stored++; this.totals.originalBytes += size; this.totals.previewBytes += Buffer.byteLength(content);
         return projected;
       } catch { this.totals.fallbacks++; return message; }

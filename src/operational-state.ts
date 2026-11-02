@@ -229,7 +229,26 @@ function validateLineage(entries: OperationalEntry[]) {
   }
 }
 
+let validations = 0;
+/** How many documents have been validated so far; tests read it to prove a document is not validated again. */
+export const operationalValidations = () => validations;
+/** Documents that passed validation at the read or write boundary, frozen. Rendering one needs no second validation. */
+const sealedDocuments = new WeakSet<OperationalState>();
+function sealed(state: OperationalState): OperationalState {
+  for (const entry of state.entries) {
+    for (const item of entry.evidence ?? []) Object.freeze(item);
+    if (entry.evidence) Object.freeze(entry.evidence);
+    if (entry.grant) Object.freeze(entry.grant);
+    Object.freeze(entry);
+  }
+  Object.freeze(state.entries);
+  Object.freeze(state);
+  sealedDocuments.add(state);
+  return state;
+}
+
 function validateState(value: unknown): OperationalState {
+  validations++;
   if (!isRecord(value)) fail('document must be an object');
   assertKeys(value, ['version', 'entries'], 'document');
   if (value.version !== OPERATIONAL_STATE_VERSION) fail(`version must be ${OPERATIONAL_STATE_VERSION}`);
@@ -260,7 +279,7 @@ export function readOperationalState(file: string): OperationalState {
   try { parsed = JSON.parse(readFileSync(file, 'utf8')); }
   catch (error) { throw new Error(`Could not read operational state JSON at ${file}`, { cause: error }); }
   if (Buffer.byteLength(JSON.stringify(parsed), 'utf8') > MAX_OPERATIONAL_STATE_BYTES) fail(`document exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
-  const state = validateState(parsed);
+  const state = sealed(validateState(parsed));
   documents.set(file, { identity, state });
   return state;
 }
@@ -282,7 +301,7 @@ export function updateOperationalState(file: string, update: OperationalUpdate):
     if (current.entries.some(entry => entry.supersedes === prior.id)) fail('superseded record already has a successor');
   }
   const entry = { id, ...input, createdAt: new Date().toISOString() } as OperationalEntry;
-  const next = validateState({ version: OPERATIONAL_STATE_VERSION, entries: [...current.entries, entry] });
+  const next = sealed(validateState({ version: OPERATIONAL_STATE_VERSION, entries: [...current.entries, entry] }));
   const serialized = `${JSON.stringify(next, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > MAX_OPERATIONAL_STATE_BYTES) fail(`document exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
   atomicWrite(file, serialized);
@@ -427,7 +446,7 @@ const TRUNCATION_NOTE = '[TRUNCATED: records omitted; inspect full state.]';
 
 /** Produces a bounded structured prompt section; evidence labels are preserved and authorization remains non-authoritative. */
 export function renderOperationalContext(state: OperationalState, maxChars = 6_000, now = Date.now()): string {
-  const valid = validateState(state);
+  const valid = sealedDocuments.has(state) ? state : validateState(state);
   if (!Number.isInteger(maxChars) || maxChars < 128) throw new Error('maxChars must be an integer of at least 128');
   const limit = Math.min(maxChars, MAX_OPERATIONAL_CONTEXT_CHARS);
   const superseded = new Set(valid.entries.flatMap(entry => entry.supersedes ? [entry.supersedes] : []));
