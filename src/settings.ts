@@ -59,6 +59,9 @@ export const SETTINGS = {
   heartbeatWakes: { kind: 'number', label: 'Heartbeat wakes per day', default: 6, min: 1, unit: '',
     description: 'The most main-agent turns the heartbeat may start in 24 hours; each one costs a full main-model turn. Checks that find nothing do not count.',
     applies: 'Applies to the next check.' },
+  routerMode: { kind: 'toggle', label: 'Router mode', default: false,
+    description: 'The main agent routes and reports and does not execute: its tools leave out bash, edit, write, shell_start and codemode, and long work goes to workers started with spawn. A worker\'s report reaches the main agent bounded, with pointers to its run and transcript, not the whole chat. Tasks and guidance are capped at 8 KB. Off: the main agent executes, as before.',
+    applies: 'Applies from the next turn; subagents started after this apply the caps and the bounded reports.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

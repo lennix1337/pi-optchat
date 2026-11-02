@@ -63,7 +63,8 @@ import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
-import { ShellJobs, adoptShells, handOffShells, registerShells, runningShells, shellReport } from './shells.ts';
+import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells, runningShells, shellReport } from './shells.ts';
+import { ROUTER_DOC, syncRouterTools } from './router-mode.ts';
 import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
 import { inspectorShortcut, mountNavigation } from './navigation.ts';
@@ -114,8 +115,11 @@ export default function optchat(pi: ExtensionAPI) {
   const adopted = adoptShells();
   const shells = adopted?.jobs ?? new ShellJobs();
   let adoptedProfile = adopted?.profile;
-  registerReapingBash(pi);
-  registerShells(pi, shells, () => { required(); if (stopping) throw new Error('Profile is closing'); }, { notifyDefault: () => active?.config.shellNotify ?? 'end' });
+  // A bash call expected to run long starts as a background shell instead of holding the turn (long-commands.ts).
+  const canStartShell = () => { required(); if (stopping) throw new Error('Profile is closing'); };
+  const shellSettings = { notifyDefault: () => active?.config.shellNotify ?? 'end' };
+  registerReapingBash(pi, longCommandMover(shells, shellSettings, canStartShell));
+  registerShells(pi, shells, canStartShell, shellSettings);
   let active: Active | undefined;
   // A background shell's end becomes an outcome even when its notify mode hides it from the model: exit code, latency and
   // zero model calls, never the command's text in a notification. Foreground bash is Pi's own result, not a managed job.
@@ -698,7 +702,9 @@ export default function optchat(pi: ExtensionAPI) {
     a.focus.advance();
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${PROMPT}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}${NAVIGATION_DOC}`, a.config.memorySearch);
+    syncRouterTools(pi, a.config.routerMode);
+    const router = a.config.routerMode ? `\n\n${ROUTER_DOC}` : '';
+    event.systemPromptOptions.customPrompt = allowSearch(`${PROMPT}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}${NAVIGATION_DOC}${router}`, a.config.memorySearch);
     const lessons = dreamLessons.get();
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}${lessons ? `\n\n${lessons}` : ''}`;
     prompt = event.systemPrompt;
@@ -951,7 +957,7 @@ export default function optchat(pi: ExtensionAPI) {
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */
   const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config, main,
     models: ctx.modelRegistry.getAvailable().map(m => ({ name: `${m.provider}/${m.id}`, thinking: getSupportedThinkingLevels(m) })).sort((x, y) => x.name.localeCompare(y.name)),
-    save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); setImmediate(() => a.sync.schedule()); } });
+    save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); syncRouterTools(pi, config.routerMode); setImmediate(() => a.sync.schedule()); } });
   const pickModel = async (ctx: ExtensionContext, role: 'compactor' | 'subagent') => {
     const a = required();
     if (ctx.mode !== 'tui') throw new Error('Choosing a model requires interactive Pi. Edit config.json in the profile directory instead.');

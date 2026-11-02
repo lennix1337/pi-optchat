@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Children, taskDirectory, type AgentTiming } from '../src/agents.ts';
+import { HANDOFF_MAX_BYTES, HandoffTooLarge } from '../src/handoff-envelope.ts';
 import { STEERABLE } from '../src/prompts.ts';
 import type { Settings } from '../src/settings.ts';
 import { Memory, PAGE } from '../src/memory.ts';
@@ -919,7 +920,7 @@ test('a connected run whose handoff has not been delivered is kept', async () =>
   } finally { await children.close(); removeDir(dir); }
 });
 
-async function quickChildren(dir: string, memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {})) {
+async function quickChildren(dir: string, memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {}), extra: { report?: (text: string) => Promise<void>; settings?: () => Partial<Settings> } = {}) {
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
@@ -932,8 +933,31 @@ async function quickChildren(dir: string, memory = new Memory(join(dir, 'profile
     },
   });
   return new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
-    async () => {}, () => {}, join(dir, 'profile'), { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    extra.report ?? (async () => {}), () => {}, join(dir, 'profile'), { settings: extra.settings ?? nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
 }
+
+test('router mode refuses an oversized dispatch and gives the main agent a bounded report; without it both are unchanged', { timeout: 60_000 }, async () => {
+  const reports: string[] = [];
+  const routerDir = mkdtempSync(join(tmpdir(), 'optchat-router-'));
+  const router = await quickChildren(routerDir, undefined, { report: async text => { reports.push(text); }, settings: () => ({ routerMode: true, subagentLevels: 1, maxAgents: 8 }) });
+  try {
+    await assert.rejects(router.spawn([{ task: 'x'.repeat(HANDOFF_MAX_BYTES + 1) }], routerDir), HandoffTooLarge);
+    await router.spawn([{ task: 'quick' }], routerDir);
+    await until(() => reports.length > 0);
+    assert.match(reports[0], /^\[handoff /);
+    assert.match(reports[0], /summary:\ndone/);
+    assert.match(reports[0], /pointers:\n- run: /);
+    assert.ok(Buffer.byteLength(reports[0]) <= HANDOFF_MAX_BYTES, 'the report stays within the handoff cap');
+  } finally { await router.close(); removeDir(routerDir); }
+  const plainDir = mkdtempSync(join(tmpdir(), 'optchat-plain-'));
+  const plain = await quickChildren(plainDir, undefined, { report: async text => { reports.push(text); } });
+  try {
+    const ids = await plain.spawn([{ task: 'x'.repeat(HANDOFF_MAX_BYTES + 1) }], plainDir);
+    assert.equal(ids.length, 1, 'outside router mode the same long task is started, as before');
+    await until(() => reports.length > 1);
+    assert.doesNotMatch(reports[1], /^\[handoff /);
+  } finally { await plain.close(); removeDir(plainDir); }
+});
 
 test('close() does not wait for a spawn that is still waiting for memory to be summarized', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-close-settling-'));
