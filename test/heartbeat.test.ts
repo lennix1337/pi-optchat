@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
+import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 
 const MIN = 60_000;
@@ -12,13 +12,13 @@ const MIN = 60_000;
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
-  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [];
+  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [];
   const beat = new Heartbeat({
     dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy, radar, queued,
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
-    wake: (beat, seen) => { woken.push(beat.text); wakeRadars.push(seen); },
+    wake: (beat, seen) => { woken.push(beat.text); wakeRadars.push(seen); unchanged.push(beat.unchanged ?? false); },
     note: text => { notes.push(text); },
   });
   const advance = async (ms: number) => {
@@ -26,7 +26,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     while (timer && timer.at <= until) { const t = timer; timer = undefined; now = t.at; t.run(); await beat.settled(); }
     now = until;
   };
-  return { beat, checks, woken, notes, checkRadars, wakeRadars, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
+  return { beat, checks, woken, notes, checkRadars, wakeRadars, unchanged, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
 }
 
 test('the radar runs before each check, and its snapshot reaches both the check and the woken turn', async () => {
@@ -449,71 +449,44 @@ test('the radar digest ignores the header time, item ages, probe latency and fre
   assert.equal(radarDigest('Wake radar unavailable: timed out after 60000 ms'), undefined, 'an unavailable radar is never the same as the last one');
 });
 
-test('on a fixed schedule an unchanged radar skips the wake after a wake that settled, recorded as a SLEEP check', async () => {
-  let reads = 0;
-  const h = harness({ always: true, wakes: 48, radar: async () => radarRead(++reads) });
-  for (let n = 0; n < 2; n++) { h.beat.arm(); await h.advance(30 * MIN); h.beat.turnSettled(turn); }
-  assert.equal(h.woken.length, 1, 'only the first wake runs');
-  assert.deepEqual(h.checks, [], 'a fixed schedule still skips the cheap check');
-  const file = saved(h.dir);
-  assert.equal(file.radarDigest, radarDigest(radarRead(1)), 'the wake records the digest it was woken with');
-  assert.deepEqual(file.checks.map((c: any) => [c.at, c.verdict, c.text]), [[30 * MIN, 'WAKE', 'fixed schedule'], [60 * MIN, 'SLEEP', 'radar unchanged since last wake']]);
-  rmSync(h.dir, { recursive: true, force: true });
-});
-
-test('a quiet streak is at most three intervals, so 15-minute intervals still wake about hourly', async () => {
+test('a 15-minute schedule wakes on every interval even with an unchanged radar, and marks those wakes as needing new work', async () => {
   let reads = 0;
   const h = harness({ always: true, minutes: 15, wakes: 96, radar: async () => radarRead(++reads) });
   for (let n = 0; n < 6; n++) { h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled(turn); }
-  assert.deepEqual(saved(h.dir).checks.map((c: any) => [c.at / MIN, c.verdict]), [[15, 'WAKE'], [30, 'SLEEP'], [45, 'SLEEP'], [60, 'SLEEP'], [75, 'WAKE'], [90, 'SLEEP']]);
-  assert.equal(h.woken.length, 2);
+  assert.deepEqual(saved(h.dir).checks.map((c: any) => [c.at / MIN, c.verdict]), [[15, 'WAKE'], [30, 'WAKE'], [45, 'WAKE'], [60, 'WAKE'], [75, 'WAKE'], [90, 'WAKE']]);
+  assert.equal(h.woken.length, 6, 'no interval is skipped');
+  assert.deepEqual(h.checks, [], 'a fixed schedule still skips the cheap check');
+  assert.deepEqual(h.unchanged, [false, true, true, true, true, true], 'the first wake has no earlier radar to match');
+  assert.equal(saved(h.dir).radarDigest, radarDigest(radarRead(1)));
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('a changed radar wakes on a fixed schedule', async () => {
+test('a changed or unavailable radar is not marked unchanged', async () => {
   let reads = 0;
-  const h = harness({ always: true, wakes: 48, radar: async () => radarRead(++reads, reads === 2 ? 'checks green' : 'checks failing') });
-  for (let n = 0; n < 2; n++) { h.beat.arm(); await h.advance(30 * MIN); h.beat.turnSettled(turn); }
-  assert.equal(h.woken.length, 2, 'the second read differs in an item, so it is not skipped');
-  rmSync(h.dir, { recursive: true, force: true });
-});
-
-test('a queued item, a previous wake that did not settle as done, and an unavailable radar all wake on a fixed schedule', async () => {
-  const queued = harness({ always: true, wakes: 48, queued: () => true, radar: async () => radarRead(1) });
-  for (let n = 0; n < 2; n++) { queued.beat.arm(); await queued.advance(30 * MIN); queued.beat.turnSettled(turn); }
-  assert.equal(queued.woken.length, 2, 'work in the queue is never skipped');
-
-  const interrupted = harness({ always: true, wakes: 48, radar: async () => radarRead(1) });
-  interrupted.beat.arm(); await interrupted.advance(30 * MIN); interrupted.beat.operatorSpoke();
-  interrupted.beat.arm(); await interrupted.advance(30 * MIN);
-  assert.equal(interrupted.woken.length, 2, 'an interrupted wake is not settled as done');
-
-  const errored = harness({ always: true, wakes: 48, radar: async () => radarRead(1) });
-  errored.beat.arm(); await errored.advance(30 * MIN); errored.beat.turnSettled({ ...turn, stopReason: 'error', reply: '429 quota' });
-  errored.beat.arm(); await errored.advance(30 * MIN);
-  assert.equal(errored.woken.length, 2, 'a wake that ended on an error is retried');
-
+  const changed = harness({ always: true, wakes: 48, radar: async () => radarRead(++reads, reads === 2 ? 'checks green' : 'checks failing') });
+  for (let n = 0; n < 2; n++) { changed.beat.arm(); await changed.advance(30 * MIN); changed.beat.turnSettled(turn); }
+  assert.deepEqual(changed.unchanged, [false, false]);
   const down = harness({ always: true, wakes: 48, radar: async () => 'Wake radar unavailable: timed out after 60000 ms' });
   for (let n = 0; n < 2; n++) { down.beat.arm(); await down.advance(30 * MIN); down.beat.turnSettled(turn); }
-  assert.equal(down.woken.length, 2, 'an unavailable radar cannot prove nothing changed');
-  for (const h of [queued, interrupted, errored, down]) rmSync(h.dir, { recursive: true, force: true });
+  assert.deepEqual(down.unchanged, [false, false], 'an unavailable radar cannot prove nothing changed');
+  for (const h of [changed, down]) rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('the quiet-streak count and the radar digest survive a reload', async () => {
+test('the radar digest survives a reload, so the first wake after it can still see nothing moved', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'beat-'));
   const radar = async () => radarRead(1);
   const first = harness({ dir, always: true, wakes: 48, radar });
   first.beat.arm(); await first.advance(30 * MIN); first.beat.turnSettled(turn);
-  first.beat.arm(); await first.advance(30 * MIN);
-  assert.equal(saved(dir).quietSkips, 1);
   const second = harness({ dir, always: true, wakes: 48, radar });
   second.beat.arm(); await second.advance(30 * MIN);
-  second.beat.arm(); await second.advance(30 * MIN);
-  assert.equal(second.woken.length, 0, 'the streak carried over: two more skips, not a wake');
-  second.beat.arm(); await second.advance(30 * MIN);
-  assert.equal(second.woken.length, 1, 'the third skip in a row is followed by a wake');
-  assert.equal(saved(dir).quietSkips, 0);
+  assert.deepEqual(second.unchanged, [true]);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('an unchanged-radar wake asks for new work; any other wake does not', () => {
+  const wake = wakeText('', 'haiku', 15, plan);
+  assert.ok(wakeTurn(wake, undefined, true).includes(NEW_WORK_NOTE));
+  assert.ok(!wakeTurn(wake).includes(NEW_WORK_NOTE));
 });
 
 test('the previous wake is the newest logged one that is not the wake starting now, with its outcome and reply', async () => {

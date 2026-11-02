@@ -353,7 +353,7 @@ export default function optchat(pi: ExtensionAPI) {
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
       wake: (beat, radar) => {
         const dream = briefDream(ctx);
-        const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar), previousWake(profile.dir));
+        const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar), previousWake(profile.dir), beat.unchanged);
         wakeOn(profile.dir, wakeModelFor(profile.config, main), wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
           .catch(error => { void wakeOff(profile.dir, wakeHost(ctx)).catch(() => undefined); ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error'); }); },
