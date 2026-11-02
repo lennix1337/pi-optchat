@@ -41,6 +41,8 @@ export class SlackRelay {
   private lastRead: number;
   private poster: SlackPoster | undefined;
   private pending: Promise<unknown> = Promise.resolve();
+  /** Readers held by `waitAfter`; each is ended by a new message or by its own deadline. */
+  private readonly arrivals = new Set<() => void>();
 
   constructor(options: { databasePath: string; profileId: string; now?: () => number }) {
     this.profileId = options.profileId; this.now = options.now ?? Date.now;
@@ -60,6 +62,7 @@ export class SlackRelay {
     const result = this.db.prepare('INSERT OR IGNORE INTO slack_relay (profile, delivery, sender, channel, ts, thread, text, received_at, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(this.profileId, message.delivery, message.sender, message.channel, message.ts, message.thread ?? null, message.text.slice(0, MAX_TEXT), new Date(this.now()).toISOString(), files);
     if (!result.changes) return 'duplicate';
+    for (const arrived of [...this.arrivals]) arrived();
     if (this.poster && this.now() - this.lastRead > READER_GRACE_MS) {
       const poster = this.poster;
       const channel = message.channel.startsWith('D') || message.channel === FORWARD_CHANNEL || message.channel === HOME_CHANNEL ? undefined : poster.nameOf(message.channel);
@@ -73,6 +76,21 @@ export class SlackRelay {
   retire(channel: string, ts: string, text: string): void {
     const poster = this.poster;
     if (poster) this.pending = this.pending.then(() => poster.update(channel, ts, text)).catch(() => undefined);
+  }
+
+  /**
+   * Messages after `seq`, oldest first, like `after`; when there are none, holds the read up to `waitMs` and answers as soon as
+   * a message arrives. Nothing is polled in between: the arrival itself ends the wait.
+   */
+  async waitAfter(seq: number, limit: number, waitMs: number): Promise<RelayMessage[]> {
+    const rows = this.after(seq, limit);
+    if (rows.length || waitMs <= 0) return rows;
+    await new Promise<void>(resolve => {
+      const done = () => { clearTimeout(timer); this.arrivals.delete(done); resolve(); };
+      const timer = setTimeout(done, waitMs);
+      this.arrivals.add(done);
+    });
+    return this.after(seq, limit);
   }
 
   /** Messages after `seq`, oldest first. Reading marks a reader as present. */

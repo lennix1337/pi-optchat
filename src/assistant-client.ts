@@ -44,8 +44,8 @@ function config(owner: Pick<AssistantOwner, 'dir' | 'name'>) {
 export { config as assistantConfig, request as assistantRequest };
 export class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
 class ResponseTooLarge extends Error {}
-async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000): Promise<unknown> {
-  const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000, cancel?: AbortSignal): Promise<unknown> {
+  const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs),
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status); }
   if (!response.body) throw new Error('Invalid response');

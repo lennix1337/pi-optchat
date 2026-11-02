@@ -316,3 +316,35 @@ test('HTTP: the Home carries Status agora, Parar (with confirm) while working an
       assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })).status, 400, JSON.stringify(body));
   } finally { await new Promise(done => server.close(done)); r.close(); }
 });
+
+test('long poll: a waiting inbox read ends when a message arrives, not at its deadline', async () => {
+  const r = relayFixture();
+  try {
+    const waiting = r.relay.waitAfter(0, 20, 5000);
+    const started = Date.now();
+    r.channel.accept(slackEnvelope('EvWait', 'oi?'));
+    assert.deepEqual((await waiting).map(m => m.text), ['oi?']);
+    assert.ok(Date.now() - started < 1000, 'the arrival ends the wait');
+    assert.deepEqual(await r.relay.waitAfter(1, 20, 30), [], 'with nothing new the read ends at its deadline, empty');
+  } finally { r.close(); }
+});
+
+test('HTTP: inbox wait= holds the read until a message arrives; wait above the limit is refused', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster, channels: CHANNELS } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const auth = { authorization: `Bearer ${TOKEN}` };
+  try {
+    const started = Date.now();
+    const pending = fetch(`${base}/v1/slack/inbox?after=0&limit=20&wait=5000`, { headers: auth }).then(x => x.json()) as Promise<{ messages: { text: string }[] }>;
+    setTimeout(() => r.channel.accept(slackEnvelope('EvLong', 'chegou')), 150);
+    assert.deepEqual((await pending).messages.map(m => m.text), ['chegou']);
+    assert.ok(Date.now() - started < 2000, 'answered by the arrival, not by the 5 s deadline');
+    const empty = await (await fetch(`${base}/v1/slack/inbox?after=1&wait=50`, { headers: auth })).json() as { messages: unknown[] };
+    assert.deepEqual(empty.messages, []);
+    assert.equal((await fetch(`${base}/v1/slack/inbox?after=1&wait=20000`, { headers: auth })).status, 400, 'the hold is bounded');
+  } finally { await new Promise(done => server.close(done)); r.close(); }
+});
