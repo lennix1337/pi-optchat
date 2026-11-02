@@ -7,12 +7,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
 import { DisplayLearning, displayBinding } from '../src/memory/display-learning.ts';
+import { assistantPath } from './assistant-paths.ts';
 
 test('CLI reads bounded candidate from stdin and rejects nonterminal mutations', { timeout: 120000 }, () => {
   const dir = join(tmpdir(), `display-cli-${randomUUID()}`); createPrivateDirectory(dir);
   const config = join(dir, 'config.json'); const db = join(dir, 'learning-display.sqlite');
   writeFileSync(config, JSON.stringify({ version: 1, profileId: 'fixture-profile', databasePath: join(dir, 'tasks.sqlite'), endpoint: 'http://127.0.0.1:34567', token: randomUUID() }));
-  const run = (args: string[], input = '') => spawnSync(process.execPath, [process.env.DISPLAY_LEARNING_TEST_CLI ?? 'assistant/scripts/display-learning.mjs', config, ...args], { input, encoding: 'utf8', timeout: 30000 });
+  const run = (args: string[], input = '') => spawnSync(process.execPath, [process.env.DISPLAY_LEARNING_TEST_CLI ?? assistantPath('scripts/display-learning.mjs'), config, ...args], { input, encoding: 'utf8', timeout: 30000 });
   let learning: DisplayLearning | undefined;
   try {
     const candidate = 'dashboard status task in progress completed tasks';

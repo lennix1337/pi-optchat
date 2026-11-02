@@ -11,7 +11,7 @@ try {
   // The row-state guard and the lifecycle reservation are redundant refusals; the mutant removes both.
   const anchors = [
     ["if (row.state === 'transition' || row.state === 'removing') fail('computer_transition');\n      const active =", "if (false) fail('computer_transition');\n      const active ="],
-    ["if (Number(result.changes) !== 1) fail('computer_transition');\n    return token;", 'return token;'],
+    ["if (Number(result.changes) !== 1) fail('computer_transition');\n    this.hold(token);\n    return token;", 'this.hold(token);\n    return token;'],
   ];
   let mutated = original;
   for (const [anchor, replacement] of anchors) {

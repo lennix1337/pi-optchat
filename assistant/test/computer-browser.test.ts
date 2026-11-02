@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { browserTextRequest, openBrowserText } from '../src/computer/effects.ts';
 import { base, inspectContainer, withComputers } from './computer-support.ts';
+import { assistantPath } from './assistant-paths.ts';
 
 test('offline browser renders text through gateway and respects ownership and takeover', () => withComputers(async ({ computers, gateway, authority }) => {
   const a = await computers.create('p', 'browser');
@@ -86,13 +87,13 @@ test('a browser close failure is reported, and a takeover cannot race into a run
 test('operator CLI previews through a disposable gateway and reports cleanup', async () => {
   const { spawnSync } = await import('node:child_process');
   const { dockerCli } = await import('../src/computer/docker.ts');
-  const result = spawnSync(process.execPath, ['assistant/scripts/computer.mjs', 'preview', '--text', 'CLI offline proof'], { encoding: 'utf8', timeout: 120_000 });
+  const result = spawnSync(process.execPath, [assistantPath('scripts/computer.mjs'), 'preview', '--text', 'CLI offline proof'], { encoding: 'utf8', timeout: 120_000 });
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const output = JSON.parse(result.stdout);
   assert.equal(output.mode, 'offline_text_only');
   assert.equal(output.containerCleanup, 'complete');
   assert.match(output.snapshot, /CLI offline proof/);
-  const status = spawnSync(process.execPath, ['assistant/scripts/computer.mjs', 'status'], { encoding: 'utf8', timeout: 30_000 });
+  const status = spawnSync(process.execPath, [assistantPath('scripts/computer.mjs'), 'status'], { encoding: 'utf8', timeout: 30_000 });
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).probe.imagePresent, true);
   const listing = await dockerCli(['ps', '--all', '--filter', `label=optchat.computer.owner=${output.owner}`, '--format', '{{.Names}}']);

@@ -14,6 +14,7 @@ import { openTaskExecutor } from '../src/runtime/open-executor.ts';
 import { openToolService, openToolServiceIfDockerUp } from '../src/runtime/tool-service.ts';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
 import { queuedTask } from './task-fixtures.ts';
+import { assistantPath } from './assistant-paths.ts';
 
 const profileId = 'tools-service';
 /** Docker stand-in: records every call; the "browser" answers with a snapshot of the text it was handed. */
@@ -76,7 +77,7 @@ test('the operator desk denies a preview: the task fails and the browser never o
 
 test('executor.mjs lists reviews and held revisions but refuses every decision outside a real terminal', () => service(async ({ store, config, executor, start }) => {
   const path = join(config.databasePath, '..', 'config.json'); writeFileSync(path, JSON.stringify(config));
-  const cli = (...args: string[]) => spawnSync(process.execPath, [process.env.EXECUTOR_TEST_CLI ?? 'assistant/scripts/executor.mjs', path, ...args], { input: '', encoding: 'utf8', timeout: 30000 });
+  const cli = (...args: string[]) => spawnSync(process.execPath, [process.env.EXECUTOR_TEST_CLI ?? assistantPath('scripts/executor.mjs'), path, ...args], { input: '', encoding: 'utf8', timeout: 30000 });
   start('p'); await executor.tick(); await executor.tick();
   const listed = cli('reviews'); assert.equal(listed.status, 0, listed.stderr);
   const { reviews } = JSON.parse(listed.stdout) as { reviews: { reviewId: string; text: string }[] };
