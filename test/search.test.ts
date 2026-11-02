@@ -36,7 +36,7 @@ test('search finds original messages newest first, pages backwards, and never re
   } finally { await memory.close(); removeDir(dir); }
 });
 
-test('paged search reuses complete hit indexes and append invalidates them without changing page order', async () => {
+test('paged search reuses complete hit indexes, and an append extends them without changing page order', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-search-cache-'));
   const memory = new Memory(dir, async () => 'summary', () => {});
   try {
@@ -54,21 +54,22 @@ test('paged search reuses complete hit indexes and append invalidates them witho
 test('query-hit cache bounds both retained queries and total message indexes', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-search-cache-bounds-'));
   const memory = new Memory(dir, async () => 'summary', () => {});
-  const cache = memory as unknown as { searchCache: Map<string, number[]>; searchCacheHits: number };
+  const cache = memory as unknown as { searchCache: Map<string, { hits: number[] }> };
+  const retainedHits = () => [...cache.searchCache.values()].reduce((sum, held) => sum + held.hits.length, 0);
   try {
     for (let i = 0; i < 20_002; i++) memory.root.push({ i, kind: 'user', text: `common bucket-${i % 7}`, date: '2026-01-01', size: 12 });
     assert.equal(memory.search('common').length, 20_002);
     assert.equal(cache.searchCache.has('common'), false, 'a broad result is not retained');
-    assert.equal(cache.searchCacheHits, 0);
+    assert.equal(retainedHits(), 0);
 
     for (let i = 0; i < 7; i++) memory.search(`bucket-${i}`);
-    assert.ok(cache.searchCacheHits <= 20_000, 'the combined cached result indexes stay within their budget');
+    assert.ok(retainedHits() <= 20_000, 'the combined cached result indexes stay within their budget');
     assert.equal(cache.searchCache.has('bucket-0'), false, 'the oldest result is evicted when the index budget is full');
     for (let i = 0; i < 9; i++) memory.search(`absent-${i}`);
     assert.equal(cache.searchCache.size, 8);
     assert.equal(cache.searchCache.has('absent-0'), false, 'the least recently used query is evicted');
     assert.equal(cache.searchCache.has('absent-8'), true);
-    assert.ok(cache.searchCacheHits <= 20_000);
+    assert.ok(retainedHits() <= 20_000);
   } finally { await memory.close(); removeDir(dir); }
 });
 
@@ -82,5 +83,19 @@ test('a search hit names the view line that holds it, so the agent can zoom from
     assert.match(memory.render(), /^0\+4\|/m);
     const ids = searchPage(memory, 'banner').split('\n').slice(1).map(line => line.split(' · ')[0]);
     assert.deepEqual(ids, ['7', '6', '5', '4', '3 (in 0+4)', '2 (in 0+4)', '1 (in 0+4)', '0 (in 0+4)']);
+  } finally { await memory.close(); removeDir(dir); }
+});
+
+test('a repeated search after new messages examines only the messages added since its last run', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oc-search-incremental-'));
+  const memory = new Memory(dir, async () => 'summary', () => {});
+  try {
+    for (let i = 0; i < 500; i++) memory.append('user', `filler ${i}`);
+    memory.append('user', 'needle first');
+    assert.deepEqual(memory.search('needle').map(entry => entry.i), [500]);
+    const scanned = memory.searchScans;
+    memory.append('talk', 'needle second');
+    assert.deepEqual(memory.search('NEEDLE').map(entry => entry.i), [501, 500]);
+    assert.equal(memory.searchScans - scanned, 1, 'history is append-only: the next search extends its index instead of rescanning 501 messages');
   } finally { await memory.close(); removeDir(dir); }
 });

@@ -38,6 +38,8 @@ const RESULT = 12_000;
 const SEARCH_CACHE_QUERIES = 8;
 const SEARCH_CACHE_HITS = 20_000;
 const SEARCH_CACHE_QUERY_CHARS = 256;
+/** Ascending indexes of the original messages a query matches, scanned through message `scanned - 1`. */
+interface HitIndex { scanned: number; hits: number[] }
 const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
 /** A cheap model can head a summary with the kind of a <chat> line it copied, so the code sets the message's own. */
 export const labeled = (kind: Kind, text: string) => `${kind}: ${text.replace(KIND_HEAD, '')}`;
@@ -155,9 +157,11 @@ export class Memory {
   private flushing = 0;
   private readonly chat: Sawtooth;
   private readonly compaction: Sawtooth;
-  /** Complete newest-first hit indexes keyed by lowercased query; `before` pages filter this bounded result. */
-  private readonly searchCache = new Map<string, number[]>();
-  private searchCacheHits = 0;
+  /** Hit indexes per lowercased query, extended as messages arrive; `before` pages filter this bounded result. */
+  private readonly searchCache = new Map<string, HitIndex>();
+  /** Messages examined by search so far; tests read it to prove a repeated query does not rescan history. */
+  private scans = 0;
+  get searchScans() { return this.scans; }
   /** The last store write still running, if any. Once an append fails, later writes are skipped and appends throw, as after a failed file write. */
   private writing?: Promise<void>;
   private failed?: string;
@@ -234,7 +238,6 @@ export class Memory {
     if (this.stopped) throw new Error('Memory is closed.');
     if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
     const entry: Entry = { i: this.root.length, kind, text, date, size: bytes(`${kind}: ${text}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
-    this.clearSearchCache();
     // New messages retry ordinary failures, but policy refusals stay blocked until an explicit retry action.
     this.retryAt.clear();
     void this.enqueue(() => this.store.append(entry), error => {
@@ -540,37 +543,43 @@ export class Memory {
       return `${start(part)}+${2 ** l}|${flat(node.text)}`;
     }).join('\n');
   }
-  private clearSearchCache() { this.searchCache.clear(); this.searchCacheHits = 0; }
-  private cacheSearch(needle: string, hits: readonly Entry[]) {
-    if (!needle || needle.length > SEARCH_CACHE_QUERY_CHARS || hits.length > SEARCH_CACHE_HITS) return;
-    const indexes = hits.map(entry => entry.i);
-    while (this.searchCache.size >= SEARCH_CACHE_QUERIES || this.searchCacheHits + indexes.length > SEARCH_CACHE_HITS) {
-      const oldest = this.searchCache.keys().next().value;
-      if (oldest === undefined) break;
-      this.searchCacheHits -= this.searchCache.get(oldest)!.length;
-      this.searchCache.delete(oldest);
-    }
-    this.searchCache.set(needle, indexes);
-    this.searchCacheHits += indexes.length;
-  }
   /** Original messages containing `text`, ignoring case, newest first, older than message `before`. Never summaries,
    * nor the logged zoom/search calls and results, which only copy memory. Tree changes do not affect original-message hits. */
   search(text: string, before = this.root.length) {
-    const needle = text.toLowerCase(), limit = Math.min(before, this.root.length), cached = this.searchCache.get(needle);
-    if (cached) {
-      this.searchCache.delete(needle); this.searchCache.set(needle, cached);
-      const page: Entry[] = [];
-      for (const i of cached) if (i < limit) page.push(this.root[i]);
-      return page;
-    }
-    const hits: Entry[] = [];
-    for (let i = limit - 1; i >= 0; i--) {
+    const needle = text.toLowerCase(), limit = Math.min(before, this.root.length);
+    const hits = this.hitIndexes(needle, limit), page: Entry[] = [];
+    for (let k = hits.length - 1; k >= 0; k--) if (hits[k] < limit) page.push(this.root[hits[k]]);
+    return page;
+  }
+  /** Ascending indexes of the messages containing `needle`. History is append-only, so a retained query is extended over
+   * the messages added since it last ran instead of being rescanned; a query too broad to retain scans only below `limit`. */
+  private hitIndexes(needle: string, limit: number): readonly number[] {
+    const retained = needle.length > 0 && needle.length <= SEARCH_CACHE_QUERY_CHARS;
+    const index = (retained && this.searchCache.get(needle)) || { scanned: 0, hits: [] as number[] };
+    this.extendHits(needle, index, retained ? this.root.length : limit);
+    if (retained) this.retainHits(needle, index);
+    return index.hits;
+  }
+  private extendHits(needle: string, index: HitIndex, end: number) {
+    for (let i = index.scanned; i < end; i++) {
+      this.scans++;
       const entry = this.root[i];
       if ((entry.kind === 'tool' || entry.kind === 'echo') && /^(zoom|search)[ :]/.test(entry.text)) continue;
-      if (entry.text.toLowerCase().includes(needle)) hits.push(entry);
+      if (entry.text.toLowerCase().includes(needle)) index.hits.push(i);
     }
-    if (limit === this.root.length) this.cacheSearch(needle, hits);
-    return hits;
+    index.scanned = Math.max(index.scanned, end);
+  }
+  /** Keeps the query most recently used, evicting the least recent queries past the query and total-index budgets. */
+  private retainHits(needle: string, index: HitIndex) {
+    this.searchCache.delete(needle);
+    if (index.hits.length > SEARCH_CACHE_HITS) return;
+    this.searchCache.set(needle, index);
+    const retainedHits = () => [...this.searchCache.values()].reduce((sum, held) => sum + held.hits.length, 0);
+    while (this.searchCache.size > SEARCH_CACHE_QUERIES || retainedHits() > SEARCH_CACHE_HITS) {
+      const oldest = this.searchCache.keys().next().value;
+      if (oldest === undefined || oldest === needle) break;
+      this.searchCache.delete(oldest);
+    }
   }
   date(id: number) {
     if (!Number.isSafeInteger(id) || !this.root[id]) throw new Error(`No message ${id}. ${messageScope(this.root.length)}${this.root.length ? '.' : ''}`);
