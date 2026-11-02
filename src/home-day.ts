@@ -38,13 +38,15 @@ export function sparkline(runs: readonly DayRun[], now: number): string {
   return `\`${String(first).padStart(2, '0')}h ${bars} ${String(last).padStart(2, '0')}h\``;
 }
 
-/** The "Hoje" block: totals, the hour-by-hour bar, the latest runs and the next wake. */
+/**
+ * The "Hoje" block: totals, the hour-by-hour bar and the next wake. Not one row per chat run: the Home shows the work as
+ * items (src/home-items.ts), and a run is a session, not a piece of work.
+ */
 export function renderDay(runs: readonly DayRun[], now: number, nextWake?: number): string {
   const lines: string[] = [];
   if (runs.length) {
     const total = runs.reduce((s, r) => s + r.end - r.start, 0), steps = runs.reduce((s, r) => s + r.steps, 0);
     lines.push(`*Hoje* \u00b7 ${runs.length} trabalho${runs.length === 1 ? '' : 's'} \u00b7 ${duration(total)} trabalhando \u00b7 ${steps} passo${steps === 1 ? '' : 's'}`, sparkline(runs, now));
-    for (const r of runs.slice(-5).reverse()) lines.push(`\u2022 ${hhmm(r.start)} \u00b7 ${duration(r.end - r.start)} \u00b7 ${r.about.slice(0, 90)}${r.origin === 'terminal' ? '' : ` _(${r.origin})_`}`);
   }
   if (nextWake && nextWake > now) lines.push(`\u23f0 Pr\u00f3xima checagem de wake \u00e0s ${hhmm(nextWake)} (acordo se houver trabalho e voc\u00ea n\u00e3o falar antes)`);
   return lines.filter(Boolean).join('\n');
