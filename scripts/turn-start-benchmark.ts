@@ -6,8 +6,8 @@
 //
 // Usage: node --experimental-transform-types --no-warnings scripts/turn-start-benchmark.ts [--messages=20000] [--turns=40] [--warmup=5] [--gap=0] [--cpu-profile=<file>]
 // --gap=<ms> waits between turns (untimed) like a person typing; 0 runs turns back to back, the worst case for background work.
-// Checkpoints run in the background after each settle: at gap 0 the queue can still be draining when the stats are read, so the
-// checkpoint stage is partial there; use a gap of a few seconds to see its full durations. Stages are read through /optchat-perf.
+// The local checkpoint (git) runs inside each settle, so providerToSettled includes it; its stage is `checkpoint`. Stages are read
+// through /optchat-perf, which reports p50/p95 per stage. Compare two trees interleaved: the machine's load moves absolute numbers.
 import '../test/support.ts';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
