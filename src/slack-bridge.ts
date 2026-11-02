@@ -35,6 +35,8 @@ type Inbound = { seq: number; ts: string; thread: string | null; text: string; c
 /** Where a Slack message came from: `channel` is the configured name (null = DM), `id`/`ts` the message itself for reactions. */
 type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
+/** Files of one message read at a time at most: a message can carry many, and each read is a round trip to the service. */
+const FILE_READS = 4;
 /** A Slack message link pasted in a message: https://x.slack.com/archives/C123/p1793000000123456 */
 const SLACK_LINK = /https:\/\/[\w-]+\.slack\.com\/archives\/([CDG][A-Z0-9]{2,20})\/p(\d{10})(\d{6})(?:\?[^\s>|]*thread_ts=(\d{10}\.\d{6}))?/g;
 const SEEN = 'eyes', DONE = 'white_check_mark';
@@ -72,6 +74,16 @@ const clock = (ms: number) => new Date(ms).toLocaleTimeString('pt-BR', { timeZon
 
 const HOME_STEP_MS = 20_000;
 const base = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).pop() ?? path : '';
+
+/** Runs `run` on every item, at most `limit` at a time; results keep the input order. `run` must not throw. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const index = next++; out[index] = await run(items[index]!); }
+  }));
+  return out;
+}
 
 /** A step in words, without arguments that could carry secrets: the program a shell ran, the file a tool touched. */
 export function stepLabel(tool: string, args: unknown): string {
@@ -234,24 +246,30 @@ export class SlackBridge {
    * why when it fails, so the agent never answers as if it had seen something it did not.
    */
   private async enrich(owner: SlackOwner, m: Inbound): Promise<string> {
-    const lines: string[] = [];
-    for (const file of Array.isArray(m.files) ? m.files : []) {
-      try {
-        const { path } = await this.options.request(owner, '/v1/slack/download', { url: file.url, name: file.name }) as { path: string };
-        const hint = file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') ? ' (transcreva com transcribe_file)' : file.mimetype.startsWith('image/') ? ' (veja com read)' : '';
-        lines.push(`- ${file.name} [${file.mimetype}]: ${path}${hint}`);
-      } catch (error) { lines.push(`- ${file.name} [${file.mimetype}]: não baixou (${error instanceof Error ? error.message : String(error)})`); }
-    }
+    // Files and linked messages are independent reads: they go out together, each part says its own failure, and the order he wrote is kept.
+    const [lines, quotes] = await Promise.all([
+      mapBounded(Array.isArray(m.files) ? m.files : [], FILE_READS, file => this.attachment(owner, file)),
+      Promise.all([...m.text.matchAll(SLACK_LINK)].slice(0, 3).map(([, channel, sec, frac, thread]) => this.quote(owner, channel!, `${sec}.${frac}`, thread))),
+    ]);
     const files = lines.length ? `\n\nAnexos:\n${lines.join('\n')}` : '';
-    const quotes: string[] = [];
-    for (const [, channel, sec, frac, thread] of [...m.text.matchAll(SLACK_LINK)].slice(0, 3)) {
-      const ts = `${sec}.${frac}`;
-      try {
-        const found = await this.options.request(owner, '/v1/slack/fetch', { channel, ts, thread: thread ?? ts }) as { user: string; text: string };
-        quotes.push(`Mensagem linkada (<@${found.user}> em <#${channel}>):\n${found.text.split('\n').map(line => `> ${line}`).join('\n')}`);
-      } catch (error) { quotes.push(`Mensagem linkada em <#${channel}>: não consegui ler (${error instanceof Error ? error.message : String(error)}; o bot precisa estar no canal).`); }
-    }
     return files + (quotes.length ? `\n\n${quotes.join('\n\n')}` : '');
+  }
+
+  /** One file he sent, saved locally: its line for the message, with what the agent should do with it. */
+  private async attachment(owner: SlackOwner, file: SlackFile): Promise<string> {
+    try {
+      const { path } = await this.options.request(owner, '/v1/slack/download', { url: file.url, name: file.name }) as { path: string };
+      const hint = file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') ? ' (transcreva com transcribe_file)' : file.mimetype.startsWith('image/') ? ' (veja com read)' : '';
+      return `- ${file.name} [${file.mimetype}]: ${path}${hint}`;
+    } catch (error) { return `- ${file.name} [${file.mimetype}]: não baixou (${error instanceof Error ? error.message : String(error)})`; }
+  }
+
+  /** One Slack message he linked, quoted; a failure says why, so the agent never answers as if it had read it. */
+  private async quote(owner: SlackOwner, channel: string, ts: string, thread: string | undefined): Promise<string> {
+    try {
+      const found = await this.options.request(owner, '/v1/slack/fetch', { channel, ts, thread: thread ?? ts }) as { user: string; text: string };
+      return `Mensagem linkada (<@${found.user}> em <#${channel}>):\n${found.text.split('\n').map(line => `> ${line}`).join('\n')}`;
+    } catch (error) { return `Mensagem linkada em <#${channel}>: não consegui ler (${error instanceof Error ? error.message : String(error)}; o bot precisa estar no canal).`; }
   }
 
   /** An emoji on the operator's message: 👀 when it reached the chat, ✅ when the answer went out. Never blocks. */
