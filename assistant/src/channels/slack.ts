@@ -93,12 +93,10 @@ export class SlackChannel {
     if (typeof user !== 'string' || typeof channel !== 'string' || typeof post !== 'string' || typeof at !== 'string') return { outcome: 'ignored' };
     if (!channel.startsWith('D')) return { outcome: 'ignored' };
     if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
-    const outcome = relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text: answer });
-    if (outcome === 'relayed') {
-      const original = typeof body.message?.text === 'string' ? body.message.text : 'Aprovação';
-      relay.retire(channel, post, `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : 'Negar'}*; o resultado vem nesta thread.`);
-    }
-    return { outcome };
+    const original = typeof body.message?.text === 'string' ? body.message.text : 'Aprovação';
+    // The buttons are retired by an outbox row that commits with the click, so a crash cannot leave them tappable twice.
+    const retire = { channel, ts: post, text: `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : 'Negar'}*; o resultado vem nesta thread.` };
+    return { outcome: relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text: answer }, retire) };
   }
 
   /**

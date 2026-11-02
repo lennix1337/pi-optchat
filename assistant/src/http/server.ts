@@ -69,7 +69,8 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
     shape(body, { text: boundedText(40_000), threadTs, ...optionalFields(body, { channel: known, approval: (v: unknown) => typeof v === 'boolean', broadcast: (v: unknown) => typeof v === 'boolean' }) });
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
     const input = body as { text: string; threadTs: string | null; channel?: string; approval?: boolean; broadcast?: boolean };
-    try { send(res, 200, await slack.poster.send(input.text, input.threadTs ?? undefined, input.channel, { approval: input.approval === true, ...(input.broadcast === true ? { broadcast: true } : {}) })); }
+    const destination = input.channel ?? 'dm';
+    try { send(res, 200, await slack.relay.record('send', { destination, text: input.text, thread: input.threadTs }, () => slack.poster!.send(input.text, input.threadTs ?? undefined, input.channel, { approval: input.approval === true, ...(input.broadcast === true ? { broadcast: true } : {}) }))); }
     catch (error) { send(res, 502, { error: error instanceof Error && /^[a-z][\w.-]{0,80}$/.test(error.message) ? error.message : 'slack_failed' }); }
     return;
   }
@@ -80,7 +81,7 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
     shape(body, { channel: (v: unknown) => typeof v === 'string' && /^D[A-Z0-9]{2,20}$/.test(v), ts: (v: unknown) => typeof v === 'string' && threadTs(v), text: boundedText(4_000) });
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
     const input = body as { channel: string; ts: string; text: string };
-    try { await slack.poster.update(input.channel, input.ts, input.text); send(res, 200, { ok: true }); }
+    try { await slack.relay.record('update', { channel: input.channel, ts: input.ts, text: input.text }, () => slack.poster!.update(input.channel, input.ts, input.text)); send(res, 200, { ok: true }); }
     catch (error) { send(res, 502, { error: error instanceof Error && /^[a-z][\w.-]{0,80}$/.test(error.message) ? error.message : 'slack_failed' }); }
     return;
   }
@@ -90,7 +91,7 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
     const body = await readBody(req);
     shape(body, typeof extra.shape === 'function' ? extra.shape(body) : extra.shape);
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
-    try { send(res, 200, (await extra.run(slack.poster, body as Record<string, any>, slack)) ?? { ok: true }); }
+    try { send(res, 200, (await (extra.write ? slack.relay.record(extra.write, body, () => extra.run(slack.poster!, body as Record<string, any>, slack)) : extra.run(slack.poster, body as Record<string, any>, slack))) ?? { ok: true }); }
     catch (error) { send(res, 502, { error: error instanceof Error && /^[a-z][\w.-]{0,80}$/.test(error.message) ? error.message : 'slack_failed' }); }
     return;
   }
@@ -100,10 +101,10 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
 const channelId = (v: unknown) => typeof v === 'string' && /^[CDG][A-Z0-9]{2,20}$/.test(v);
 const messageTs = (v: unknown) => typeof v === 'string' && threadTs(v);
 /** Reactions on the operator's messages, reading a message he linked, his App Home, and saving a file he sent. */
-const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolean> | ((body: unknown) => Record<string, (v: unknown) => boolean>); run: (poster: SlackPoster, body: Record<string, any>, slack: SlackBridge) => Promise<unknown> }> = {
-  '/v1/slack/react': { shape: { channel: channelId, ts: messageTs, name: (v: unknown) => typeof v === 'string' && /^[a-z0-9_+-]{1,40}$/.test(v), remove: (v: unknown) => typeof v === 'boolean' }, run: (p, b) => p.react(b.channel, b.ts, b.name, b.remove) },
+const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolean> | ((body: unknown) => Record<string, (v: unknown) => boolean>); /** The outbox kind of an outbound write; reads and local saves have none. */ write?: string; run: (poster: SlackPoster, body: Record<string, any>, slack: SlackBridge) => Promise<unknown> }> = {
+  '/v1/slack/react': { shape: { channel: channelId, ts: messageTs, name: (v: unknown) => typeof v === 'string' && /^[a-z0-9_+-]{1,40}$/.test(v), remove: (v: unknown) => typeof v === 'boolean' }, write: 'react', run: (p, b) => p.react(b.channel, b.ts, b.name, b.remove) },
   '/v1/slack/fetch': { shape: { channel: channelId, ts: messageTs, thread: messageTs }, run: (p, b) => p.fetchMessage(b.channel, b.ts, b.thread) },
-  '/v1/slack/home': { shape: body => ({ text: boundedText(3_000), ...optionalFields(body, { working: (v: unknown) => typeof v === 'boolean', approval: messageTs }) }), run: (p, b) => p.publishHome(b.text, { working: b.working === true, ...(messageTs(b.approval) ? { approval: b.approval } : {}) }) },
+  '/v1/slack/home': { shape: body => ({ text: boundedText(3_000), ...optionalFields(body, { working: (v: unknown) => typeof v === 'boolean', approval: messageTs }) }), write: 'home', run: (p, b) => p.publishHome(b.text, { working: b.working === true, ...(messageTs(b.approval) ? { approval: b.approval } : {}) }) },
   '/v1/slack/download': {
     shape: { url: (v: unknown) => typeof v === 'string' && v.length < 2000, name: boundedText(200) },
     run: (p, b, slack) => { if (!slack.filesDir) throw new Error('no_files_dir'); return p.download(b.url, b.name, slack.filesDir); },

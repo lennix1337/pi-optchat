@@ -21,7 +21,7 @@ test('HTTP boundary, metadata journey and persisted events', async t => {
   assert.throws(() => createAssistantServer({ store, token, profileId: 'other' }));
   const calls: unknown[][] = [];
   const poster = { send: async (...args: unknown[]) => { calls.push(args); return { ok: true }; } };
-  let server = createAssistantServer({ store, token, profileId: 'profile', slack: { relay: {} as any, poster: poster as any, channels: { project: 'C1' } } });
+  let server = createAssistantServer({ store, token, profileId: 'profile', slack: { relay: { record: (_kind: string, _payload: unknown, run: () => Promise<unknown>) => run() } as any, poster: poster as any, channels: { project: 'C1' } } });
   const listen = async () => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return `http://127.0.0.1:${(server.address() as any).port}`; };
   let base = await listen();
   const request = async (route: string, options: RequestInit = {}) => {
