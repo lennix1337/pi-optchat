@@ -63,6 +63,26 @@ function writes(lower: string, args: string[]) {
   return /^(?:post|put|patch|delete)$/i.test(args[0] ?? '') || args.some(arg => /^[\w.-]+:?=/.test(unquote(arg)));
 }
 
+const CREDENTIAL_FLAGS = /^(?:-u|--user|-b|--cookie|-E|--cert|--oauth2-bearer|-n|--netrc(?:-file)?|--http-user|--http-password|--password|--user|-a|--auth|-Credential|-WebSession|-Authentication|-Token|-Certificate)(?:=|$)/i;
+const CREDENTIAL_HEADER = /\b(?:authorization|cookie|token|api[-_]?key|secret|signature|session|auth)\b/i;
+
+/**
+ * An empty, anonymous POST does only what any stranger on the internet can: probing that an
+ * endpoint answers (a webhook rejecting an unsigned call, a form refusing empty input).
+ * A body, a credential, or a verb other than POST makes it a real write.
+ */
+function anonymousProbe(lower: string, args: string[]) {
+  const words = args.map(unquote);
+  const verb = words.find((_, i) => /^(?:-X|--request|-Method|--method)$/i.test(words[i - 1] ?? ''))
+    ?? /^(?:-X|--request=|--method=)(\w+)$/i.exec(words.find(w => /^(?:-X\w+|--request=\w+|--method=\w+)$/i.test(w)) ?? '')?.[1];
+  if (lower === 'http' || lower === 'https' || lower === 'xh') return false;
+  if (!verb || !/^post$/i.test(verb)) return false;
+  if (words.some(w => /^(?:-d|-F|-T|--data(?:-\w+)?|--json|--form(?:-string)?|--upload-file|--post-data|--post-file|--body-data|--body-file|-Body|-InFile)(?:=|$)/i.test(w) || /^-[dFT]./.test(w))) return false;
+  if (words.some(w => CREDENTIAL_FLAGS.test(w) || /^-Headers$/i.test(w))) return false;
+  return !words.some((w, i) => /^(?:-H|--header)$/i.test(words[i - 1] ?? '') && CREDENTIAL_HEADER.test(w.split(':')[0] ?? ''))
+    && !words.some(w => /^--header=/i.test(w) && CREDENTIAL_HEADER.test(w.slice(9).split(':')[0] ?? ''));
+}
+
 export type ExternalEffect = { action: 'message' | 'production-write'; targets: string[] };
 
 /** The external effects of one command (its words from the command word on). */
@@ -74,7 +94,7 @@ export function commandExternalEffects(w: string[]): ExternalEffect[] {
   const urls = args.map(unquote).filter(arg => /^https?:\/\//i.test(arg) || (/^(?:http|https|xh)$/.test(lower) && /^[\w-]+(?:\.[\w-]+)+(?:[:/]|$)/.test(arg)))
     .flatMap(arg => { const url = parse(arg); return url ? [url] : []; });
   const effects: ExternalEffect[] = [];
-  const write = writes(lower, args);
+  const write = writes(lower, args) && !anonymousProbe(lower, args);
   for (const url of urls) {
     const host = url.hostname.toLowerCase();
     // Telegram sends with a GET too: /bot<token>/sendMessage.
