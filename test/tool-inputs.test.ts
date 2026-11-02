@@ -23,7 +23,7 @@ const validInputs: Record<string, Record<string, unknown>> = {
   slack_send: { text: 'not sent' }, tool_inventory: {}, commitments: { action: 'list' },
 };
 // Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
-const nativeOverrides = process.platform === 'win32' ? ['bash'] : [];
+const nativeOverrides = ['bash'];
 const tools = registeredTools();
 test('the registered tool set is completely covered by strict input cases', () => {
   assert.deepEqual([...tools.keys()].sort(), [...Object.keys(validInputs), ...nativeOverrides].sort());
