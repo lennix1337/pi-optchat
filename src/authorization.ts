@@ -11,7 +11,7 @@ export interface PendingApproval { token: string; tool: string; kind?: string; s
 /** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
 export type ApprovalMode = 'all' | 'risk';
 /** How a call that waited for the operator stopped waiting. */
-export type Settled = 'approved' | 'denied' | 'superseded' | 'expired';
+export type Settled = 'approved' | 'denied' | 'superseded' | 'expired' | 'withdrawn';
 interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode; onSettled?: (token: string, outcome: Settled) => void }
 
 const reads = new Set(['read', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status', 'catchup_report']);
@@ -247,13 +247,13 @@ export class EffectApprovals {
     }
     if (diagnostic(call)) return;
     const kind = this.mode === 'risk' ? riskClass(call) : undefined;
-    if (this.mode === 'risk' && !kind) return;
+    if (this.mode === 'risk' && !kind) return this.withdraw(call.session);
     const key = standingKey(call);
-    if (key && this.standing.get(call.session)?.has(key)) return;
+    if (key && this.standing.get(call.session)?.has(key)) return this.withdraw(call.session);
     const fingerprint = createHash('sha256').update(serialized).digest('hex');
     for (const [token, entry] of this.pending) {
       if (entry.fingerprint !== fingerprint) continue;
-      if (entry.approved) { this.pending.delete(token); return; }
+      if (entry.approved) { this.pending.delete(token); return this.withdraw(call.session); }
       return this.refusal(call.tool, token, kind);
     }
     if (this.pending.size >= this.maxPending) return { block: true, reason: 'Not executed: effect approval capacity reached. Wait for expiry or session reset; do not dispatch a substitute action.' };
@@ -262,8 +262,13 @@ export class EffectApprovals {
     this.pending.set(token, { session: call.session, fingerprint, expires: now + this.ttlMs, approved: false, tool: call.tool, kind, summary: summarize(call), created: now });
     return this.refusal(call.tool, token, kind);
   }
+  /** An effect that runs means the agent went another way: what it left waiting no longer needs the operator. */
+  private withdraw(session: string): undefined {
+    [...this.pending].forEach(([token, entry]) => { if (entry.session === session && !entry.approved) this.drop(token, 'withdrawn'); });
+    return undefined;
+  }
   private refusal(tool: string, token: string, kind?: string): Refusal {
-    return { block: true, token, reason: `Not executed: ${tool}${kind ? ` is a ${kind} effect and` : ''} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. The operator approves it once by typing /approve (or exactly: approve-effect ${token}), or drops it with /deny. Tell them in one line what this call does and wait.` };
+    return { block: true, token, reason: `Not executed: ${tool}${kind ? ` is a ${kind} effect and` : ''} requires approval of this exact invocation. Inspect its arguments in the tool transcript. No nested calls, retries or changed arguments are authorized. The operator approves it once by typing /approve (or exactly: approve-effect ${token}), or drops it with /deny. If another route reaches the goal without approval, take it instead: running it withdraws this request. Otherwise tell them in one line what this call does and wait.` };
   }
   /** Calls of this session still waiting on the operator, newest first. */
   pendingFor(session: string): PendingApproval[] {

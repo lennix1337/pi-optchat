@@ -485,3 +485,14 @@ test('a phone decision binds one exact pending token and session, once; deny dro
   assert.equal(gate.decideFromPhone('owner', publish, false), true);
   assert.equal(gate.pendingFor('owner').some(p => p.token === publish), false);
 });
+
+test('a waiting call is withdrawn once the agent takes another route that runs, so the operator is not asked for something already solved', () => {
+  const settled: [string, string][] = [];
+  const gate = new EffectApprovals({ mode: 'risk', onSettled: (t, outcome) => settled.push([t, outcome]) });
+  const force = token(gate, invocation('bash', { command: 'git push --force-with-lease' }));
+  assert.equal(gate.admit(invocation('read', { path: 'x' })), undefined);
+  assert.equal(gate.pendingFor('owner').length, 1, 'a read-only check keeps the request waiting');
+  assert.equal(gate.admit(invocation('bash', { command: 'git cherry-pick abc' })), undefined);
+  assert.deepEqual(gate.pendingFor('owner'), [], 'the ungated route withdrew it');
+  assert.deepEqual(settled, [[force, 'withdrawn']]);
+});
