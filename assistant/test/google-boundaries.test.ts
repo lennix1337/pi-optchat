@@ -19,6 +19,28 @@ test('mail is read across every page in order, and a page token loop is refused'
   await assert.rejects(google.listMessages('personal'), /google_pagination_loop/);
 }));
 
+test('mail bodies are read a few at a time, and listed in the order the list gave them', () => withGoogle(async ({ google, connect, fake }) => {
+  fake.pageSize = 10;
+  fake.messageDelayMs = 40;
+  for (let i = 1; i <= 8; i++) fake.mail.personal.push(mail(`m${i}`, `2026-10-28T0${i}:00:00.000Z`));
+  await connect('personal', 'personal');
+  const read = await google.listMessages('personal');
+  assert.deepEqual(read.items.map(m => m.ref.id), ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8']);
+  assert.ok(fake.peakMessagesInFlight > 1, 'the bodies were read together, not one round trip after another');
+  assert.ok(fake.peakMessagesInFlight <= 6, 'and no more than a few at once');
+}));
+
+test('two reads at once with an expired access token refresh it once, not once each', () => withGoogle(async ({ open, connect, fake, clock }) => {
+  const google = open();
+  fake.mail.personal.push(mail('m1', '2026-10-28T01:00:00.000Z'), mail('m2', '2026-10-28T02:00:00.000Z'));
+  await connect('personal', 'personal', google);
+  clock.now += 2 * hour;
+  const [first, second] = await Promise.all([google.listMessages('personal'), google.listMessages('personal')]);
+  assert.deepEqual(first.items.map(m => m.ref.id), ['m1', 'm2']);
+  assert.deepEqual(second.items.map(m => m.ref.id), ['m1', 'm2']);
+  assert.equal(fake.requests('/token').filter(r => r.params.grant_type === 'refresh_token').length, 1);
+}));
+
 test('retention bounds: lookback window, message count, body length; older mail is dropped even if returned', () => withGoogle(async ({ open, connect, fake, clock }) => {
   const google = open({ retention: { mailLookbackDays: 1, maxMessages: 3, maxBodyChars: 10 } });
   fake.mail.personal.push(mail('old', '2026-10-26T12:00:00.000Z'), mail('m1', '2026-10-28T01:00:00.000Z', { body: 'x'.repeat(50) }), mail('m2', '2026-10-28T02:00:00.000Z'), mail('m3', '2026-10-28T03:00:00.000Z'), mail('m4', '2026-10-28T04:00:00.000Z'));

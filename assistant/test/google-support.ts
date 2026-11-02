@@ -59,6 +59,10 @@ export class FakeGoogle {
   /** Paths answered with this status instead of data. */
   readonly failures = new Map<string, number>();
   loopPageToken = false;
+  /** Latency of each message read; the most that ran at once shows whether a connector reads them together. */
+  messageDelayMs = 0;
+  messagesInFlight = 0;
+  peakMessagesInFlight = 0;
   readonly redirectUris = new Set<string>();
   /** The registered client; a test of the real client-file parser sets a `.apps.googleusercontent.com` id. */
   clientId = CLIENT_ID;
@@ -166,6 +170,9 @@ export class FakeGoogle {
     }
     const message = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
     if (message) {
+      this.messagesInFlight++; this.peakMessagesInFlight = Math.max(this.peakMessagesInFlight, this.messagesInFlight);
+      await new Promise(resolve => setTimeout(resolve, this.messageDelayMs));
+      this.messagesInFlight--;
       const found = this.mail[grant.account].find(m => m.id === decodeURIComponent(message[1]));
       if (!found || !grant.scopes.includes(MAIL_SCOPE)) { send(404, { error: 'not_found' }); return; }
       send(200, gmailResource(found));
