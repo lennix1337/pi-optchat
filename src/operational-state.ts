@@ -243,16 +243,26 @@ export function emptyOperationalState(): OperationalState {
   return { version: OPERATIONAL_STATE_VERSION, entries: [] };
 }
 
-/** Reads and strictly validates the bounded JSON document. Corruption is surfaced rather than overwritten. */
+/** The last document read per file, with the file identity it was read at. Turn start, the status file and every tool gate read
+ * the same unchanged document, and parsing and validating 256 records each time was measurable on every turn. */
+const documents = new Map<string, { identity: string; state: OperationalState }>();
+
+/** Reads and strictly validates the bounded JSON document. Corruption is surfaced rather than overwritten. The result is shared
+ * between reads of an unchanged file: callers read it, never write to it. Size, mtime and inode decide whether it is current. */
 export function readOperationalState(file: string): OperationalState {
   if (!existsSync(file)) return emptyOperationalState();
-  const size = statSync(file).size;
-  if (size > MAX_OPERATIONAL_STATE_BYTES) fail(`file exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
+  const stat = statSync(file);
+  if (stat.size > MAX_OPERATIONAL_STATE_BYTES) fail(`file exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
+  const identity = `${stat.size}:${stat.mtimeMs}:${stat.ino}`;
+  const held = documents.get(file);
+  if (held?.identity === identity) return held.state;
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(file, 'utf8')); }
   catch (error) { throw new Error(`Could not read operational state JSON at ${file}`, { cause: error }); }
   if (Buffer.byteLength(JSON.stringify(parsed), 'utf8') > MAX_OPERATIONAL_STATE_BYTES) fail(`document exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
-  return validateState(parsed);
+  const state = validateState(parsed);
+  documents.set(file, { identity, state });
+  return state;
 }
 
 /** Appends one explicit fact, preserving prior records and their supersession lineage. */
@@ -276,6 +286,7 @@ export function updateOperationalState(file: string, update: OperationalUpdate):
   const serialized = `${JSON.stringify(next, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > MAX_OPERATIONAL_STATE_BYTES) fail(`document exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
   atomicWrite(file, serialized);
+  documents.delete(file);
   return next;
 }
 
@@ -283,10 +294,24 @@ function normalizeScope(scope: string) {
   return scope.trim().replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase() || '/';
 }
 
+let scopePatternsCompiled = 0;
+/** How many scope patterns have been compiled so far; a repeated scope is compiled once (see scopeRegex). */
+export const scopePatternCompiles = () => scopePatternsCompiled;
+
+/** Compiled scope patterns. Grant overlap compares every pair of grants on each turn, so one scope is compiled once, not per pair. */
+const scopePatterns = new Map<string, RegExp>();
+const SCOPE_PATTERNS_MAX = 1024;
+
 function scopeRegex(scope: string) {
+  const held = scopePatterns.get(scope);
+  if (held) return held;
   const escape = (piece: string) => piece.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
   const source = scope.split('**').map(part => part.split('*').map(escape).join('[^/]*')).join('.*');
-  return new RegExp(`^${source}(?:/.*)?$`);
+  const pattern = new RegExp(`^${source}(?:/.*)?$`);
+  scopePatternsCompiled++;
+  if (scopePatterns.size >= SCOPE_PATTERNS_MAX) scopePatterns.clear();
+  scopePatterns.set(scope, pattern);
+  return pattern;
 }
 
 /** The spelling scopes and targets are matched in: repeated separators collapse and a Git Bash `/c/` drive reads as `c:/`. */

@@ -672,8 +672,10 @@ export default function optchat(pi: ExtensionAPI) {
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
       heartbeat?.operatorSpoke();
+      const journaled = performance.now();
       try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
       catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
+      finally { active.metrics.record('input', performance.now() - journaled); }
     }
     return { action: 'continue' };
   });
@@ -690,6 +692,7 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_agent_start', (event, ctx) => {
     if (!active) return; // Plain Pi run: leave Pi's own prompt untouched.
+    const started = performance.now();
     startRun(ctx);
     const a = required();
     a.focus.advance();
@@ -702,6 +705,7 @@ export default function optchat(pi: ExtensionAPI) {
     const summary = briefDream(ctx);
     if (summary) ctx.ui.notify(summary, 'info');
     const note = event.messageType === 'user' ? skillInvocationNote(event.prompt) : undefined;
+    a.metrics.record('start', performance.now() - started);
     if (note) return { message: { customType: SKILL_INVOCATION_TYPE, content: note, display: false } };
   });
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
@@ -768,18 +772,22 @@ export default function optchat(pi: ExtensionAPI) {
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
       if (view === undefined) {
+        const memoryStarted = performance.now();
         if (lastRequestAt === undefined || Date.now() - lastRequestAt >= coldAfter(ctx.model)) a.memory.cool();
         view = await memoryView(ctx); // Capture old history before logging the new input.
         focusView = a.focus.render(a.memory);
         flush();
+        a.metrics.record('memory', performance.now() - memoryStarted);
       }
       // Later extensions (including MCP) may add system-prompt sections; keep Pi's current prompt when our preamble is present.
       const current = ctx.getSystemPrompt();
       if (current.startsWith(PROMPT.slice(0, 40))) prompt = current;
       const system = stateless(promptFor(prompt, a.config));
       if (records?.epoch !== viewEpoch) {
+        const operationalStarted = performance.now();
         const operational = readOperationalState(join(a.dir, 'operational-state.json'));
         records = { epoch: viewEpoch, text: [operational.entries.length ? renderOperationalContext(operational) : '', commitments.context(a.dir), catchup.context()].filter(Boolean).join('\n\n') };
+        a.metrics.record('operational', performance.now() - operationalStarted);
       }
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
@@ -791,8 +799,10 @@ export default function optchat(pi: ExtensionAPI) {
       // After a pause that expired the turn's cache entry, moving the turn into memory costs nothing extra.
       const refresh = refreshPoint(projectedRun, keep, coldBudget(refreshBudget(window, refreshFraction(a.config.refreshAt), refreshTokens(a.config.refreshTokensK)),
         lastRequestAt === undefined ? undefined : Date.now() - lastRequestAt));
+      const budgetStarted = performance.now();
       let budgeted = inputBudget === undefined ? undefined
         : budgetContext(a.memory, event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, inputBudget, previous, system.state, statusLine, focusView);
+      a.metrics.record('budget', performance.now() - budgetStarted);
       if (refresh || budgeted && !budgeted.fits) {
         const cut = refresh?.cut ?? lastStep(run);
         if (cut > keep) {
@@ -807,6 +817,7 @@ export default function optchat(pi: ExtensionAPI) {
         }
       }
       const compat: Record<string, unknown> = record(ctx.model?.compat) ? ctx.model.compat : {};
+      const assembleStarted = performance.now();
       const messages = stableHead.apply(
         budgeted?.messages ?? buildContext(event.messages, refreshedRun(projectedRun, keep, TURN_REFRESHED), view, system.prompt, previous, system.state, statusLine, focusView),
         { model: `${ctx.model?.provider}/${ctx.model?.id}`, native: nativeHead(compat),
@@ -818,8 +829,11 @@ export default function optchat(pi: ExtensionAPI) {
         if (!savedHead || JSON.stringify(head) !== JSON.stringify(savedHead)) pi.appendEntry(HEAD_ENTRY, head);
         savedHead = head;
       }
+      a.metrics.record('assemble', performance.now() - assembleStarted);
       if (window) assertContextFits(messages, window, ctx.model?.maxTokens);
+      const telemetryStarted = performance.now();
       a.metrics.context(messages);
+      a.metrics.record('telemetry', performance.now() - telemetryStarted);
       return { messages };
     } catch (error) {
       // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
@@ -831,7 +845,10 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_provider_request', (event, ctx) => {
     if (active) lastRequestAt = Date.now();
-    return ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model), entries: viewEntries }) : event.payload;
+    const started = performance.now();
+    const payload = ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model), entries: viewEntries }) : event.payload;
+    active?.metrics.record('provider_hook', performance.now() - started);
+    return payload;
   });
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
   pi.on('session_before_compact', async (event, ctx) => {
@@ -849,11 +866,14 @@ export default function optchat(pi: ExtensionAPI) {
     }
   });
   const collectUsage = (ctx: ExtensionContext) => {
+    const started = performance.now();
     try { active?.usage.backfill(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId()); }
     catch (error) { ctx.ui.notify(`Could not save usage: ${errorText(error)}`, 'error'); }
+    finally { active?.metrics.record('usage', performance.now() - started); }
   };
   pi.on('turn_end', (_event, ctx) => collectUsage(ctx));
   pi.on('agent_settled', async (_event, ctx) => {
+    const settledStarted = performance.now();
     collectUsage(ctx);
     const persistenceStarted = performance.now();
     try { flush(); active?.inbox.dropReturned(); } catch (error) { fault = errorText(error); ctx.ui.notify(fault, 'error'); }
@@ -870,10 +890,15 @@ export default function optchat(pi: ExtensionAPI) {
     if (active && !fault && !stopping) heartbeat?.arm();
     if (active) {
       const dir = active.dir;
+      const metrics = active.metrics, statusStarted = performance.now();
       void active.sync.now();
+      metrics.record('status', performance.now() - statusStarted);
       checkpoints = checkpoints.then(() => checkpoint(dir)).catch(error => ctx.ui.notify(`Local checkpoint failed: ${errorText(error)}`, 'error'));
+      const checkpointStarted = performance.now();
       await checkpoints;
+      metrics.record('checkpoint', performance.now() - checkpointStarted);
     }
+    active?.metrics.record('settled', performance.now() - settledStarted);
   });
   registerSelfReload(pi, () => {
     if (!active) return undefined;

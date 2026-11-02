@@ -4,8 +4,12 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { estimatedContextTokens } from './run-context.ts';
 
-export type Stage = 'context' | 'projection' | 'tool' | 'provider_headers' | 'first_content' | 'response' | 'persistence' | 'settle' | 'child_open' | 'compaction';
-interface Timing { count: number; totalMs: number; maxMs: number; lastMs: number }
+export type Stage = 'context' | 'projection' | 'tool' | 'provider_headers' | 'first_content' | 'response' | 'persistence' | 'settle' | 'child_open' | 'compaction'
+  // Turn start and settle, in the hooks' own order: input, before_agent_start, the context hook's parts, the provider hook; then the settle work.
+  | 'input' | 'start' | 'memory' | 'operational' | 'budget' | 'assemble' | 'telemetry' | 'provider_hook' | 'settled' | 'checkpoint' | 'status' | 'usage';
+interface Timing { count: number; totalMs: number; maxMs: number; lastMs: number; samples: number[] }
+/** Recent durations kept per stage for its percentiles; the totals stay exact. */
+const STAGE_SAMPLES = 256;
 /** Tool names kept apart; later ones are counted together. Recent durations kept per tool for its percentiles. */
 const TOOL_NAMES = 64, TOOL_SAMPLES = 256, OTHER_TOOLS = '(other)';
 const round = (ms: number) => Math.round(ms * 10) / 10;
@@ -47,8 +51,9 @@ export class PerformanceMetrics {
   private request = { calls: 0, estimatedTokens: 0, systemBytes: 0, toolSchemaBytes: 0, instructionBytes: 0, skillCatalogueBytes: 0, prefixChanges: 0 };
   record(stage: Stage, duration: number) {
     if (!Number.isFinite(duration) || duration < 0) return;
-    const old = this.stages[stage] ?? { count: 0, totalMs: 0, maxMs: 0, lastMs: 0 };
-    this.stages[stage] = { count: old.count + 1, totalMs: old.totalMs + duration, maxMs: Math.max(old.maxMs, duration), lastMs: duration };
+    const timing = this.stages[stage] ?? (this.stages[stage] = { count: 0, totalMs: 0, maxMs: 0, lastMs: 0, samples: [] });
+    timing.count++; timing.totalMs += duration; timing.maxMs = Math.max(timing.maxMs, duration); timing.lastMs = duration;
+    timing.samples.push(duration); if (timing.samples.length > STAGE_SAMPLES) timing.samples.shift();
   }
   /** One tool execution, from Pi's start to its end event: the tool's own time, without the model's. */
   recordTool(name: string, duration: number, isError = false) {
@@ -81,7 +86,13 @@ export class PerformanceMetrics {
     this.request = { calls: this.request.calls + 1, estimatedTokens: estimatedContextTokens(messages), systemBytes, toolSchemaBytes,
       instructionBytes, skillCatalogueBytes, prefixChanges: this.request.prefixChanges + changed };
   }
-  snapshot() { return { stages: structuredClone(this.stages), tools: this.tools.snapshot(), request: { ...this.request }, payload: { ...this.payload } }; }
+  snapshot() {
+    const stages = Object.fromEntries(Object.entries(this.stages).map(([name, t]) => {
+      const sorted = [...t!.samples].sort((a, b) => a - b);
+      return [name, { count: t!.count, totalMs: t!.totalMs, maxMs: t!.maxMs, lastMs: t!.lastMs, p50Ms: round(rank(sorted, 0.5)), p95Ms: round(rank(sorted, 0.95)) }];
+    }));
+    return { stages, tools: this.tools.snapshot(), request: { ...this.request }, payload: { ...this.payload } };
+  }
 }
 /** Real hook boundaries, not provider inference time or end-to-end speed claims. */
 export function registerPerformance(pi: ExtensionAPI, metrics: () => PerformanceMetrics | undefined,

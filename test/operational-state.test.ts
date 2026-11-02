@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describeGrant, grantTargets, latestGrant, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { describeGrant, grantTargets, latestGrant, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, scopePatternCompiles, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -243,3 +243,26 @@ test('a folder grant lifts an order for the GitHub repo its checkout points at, 
   assert.equal(lift(['c:/users/swluc', 'lennix1337/dentai']), undefined, 'a same-named repository under another owner');
   assert.equal(orderGrantFor(state, { action: 'merge', targets: ['c:/users/swluc', 'tecnologia-ai/dentai'] }, id => said[id], Date.now(), () => undefined), undefined, 'no checkout, no slug to match');
 }));
+
+test('an unchanged operational file is parsed and validated once, not on every read', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  updateOperationalState(file, objective);
+  const first = readOperationalState(file);
+  assert.equal(readOperationalState(file), first, 'turn start, the status file and tool gates read the same unchanged document');
+}));
+
+test('a file changed outside this process is read again; an update is visible at the next read', () => withDirectory(directory => {
+  const file = join(directory, 'operational-state.json');
+  updateOperationalState(file, objective);
+  assert.equal(readOperationalState(file).entries.length, 1);
+  writeFileSync(file, JSON.stringify({ version: 1, entries: [] }));
+  assert.equal(readOperationalState(file).entries.length, 0, 'an external rewrite is seen');
+  updateOperationalState(file, { ...objective, text: 'A second objective, written by this process.' });
+  assert.equal(readOperationalState(file).entries.at(-1)?.text, 'A second objective, written by this process.');
+}));
+
+test('a scope pattern is compiled once, however many grants are compared against it', () => {
+  const scope = 'c:/projetos/memo-scope-probe/**', before = scopePatternCompiles();
+  for (let index = 0; index < 50; index++) assert.equal(scopeCovers(scope, `c:/projetos/memo-scope-probe/file-${index}.ts`), true);
+  assert.ok(scopePatternCompiles() - before <= 1, 'a repeated scope is compiled once, not once per comparison');
+});
