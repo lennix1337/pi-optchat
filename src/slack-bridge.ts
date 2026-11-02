@@ -56,7 +56,7 @@ export type ApprovalRequest = { token: string; summary: string; label: string; e
 /** What an approval post says once the call stopped waiting, so it never stays "pendente" with live buttons. */
 const SETTLED_TEXT: Record<Settled | 'phone-approved' | 'phone-denied', string> = {
   approved: '\u2705 *Aprovado no terminal*', denied: '\u{1f6ab} *Negado no terminal*', superseded: '\u21aa\ufe0f *Substitu\u00edda por uma chamada mais nova*',
-  expired: '\u231b *Expirou sem decis\u00e3o*', 'phone-approved': '\u2705 *Aprovado no Slack*', 'phone-denied': '\u{1f6ab} *Negado no Slack*',
+  expired: '\u231b *Expirou sem decis\u00e3o*', withdrawn: '\u21a9\ufe0f *Retirado: resolvi por outro caminho, sem precisar de aprova\u00e7\u00e3o*', 'phone-approved': '\u2705 *Aprovado no Slack*', 'phone-denied': '\u{1f6ab} *Negado no Slack*',
 };
 type Post = { request: ApprovalRequest; channel: string | null };
 const TOPICS = 'slack-threads.json';
