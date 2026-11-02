@@ -10,6 +10,7 @@ import { openArtifactService } from '../src/artifacts/service.ts';
 import { TaskStore } from '../src/store/db.ts';
 import { createAssistantServer } from '../src/http/server.ts';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
+import { assistantPath } from './assistant-paths.ts';
 
 test('source root junction resolving to filesystem root is refused before registry creation', () => {
   const dir = join(tmpdir(), `artifact-root-${randomUUID()}`);
@@ -33,7 +34,7 @@ test('trusted CLI registration survives HTTP gallery and registry reopen, isolat
   const config = join(dir, 'config.json'); const databasePath = join(dir, 'tasks.sqlite');
   const token = 'DISPOSABLE-TEST-TOKEN';
   writeFileSync(config, JSON.stringify({ version: 1, profileId: 'owner', databasePath, endpoint: 'http://127.0.0.1:12345', token }), { mode: 0o600 });
-  const invoke = (...args: string[]) => spawnSync(process.execPath, ['assistant/scripts/artifact.mjs', ...args], { encoding: 'utf8' });
+  const invoke = (...args: string[]) => spawnSync(process.execPath, [assistantPath('scripts/artifact.mjs'), ...args], { encoding: 'utf8' });
   let registry: ReturnType<typeof openArtifactService> | undefined;
   let store: TaskStore | undefined;
   let server: ReturnType<typeof createAssistantServer> | undefined;

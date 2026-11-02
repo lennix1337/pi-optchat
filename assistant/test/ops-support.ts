@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { TaskStore } from '../src/store/db.ts';
 import { processInfo } from '../src/ops/service.ts';
 import { queuedTask, storeEvent } from './task-fixtures.ts';
+import { assistantPath } from './assistant-paths.ts';
 
 export const PROFILE = 'ops-profile';
 export const TOKEN = 'OPS-TEST-TOKEN-5c1d';
@@ -95,7 +96,7 @@ export function api(endpoint: string, path: string, body?: unknown): Promise<{ s
 }
 /** Runs `main.ts --config <config> --web` from this checkout; `stop` sends SIGTERM, which on Windows ends it without a drain. */
 export function launchWeb(config: string) {
-  const child = spawn(process.execPath, ['assistant/src/main.ts', '--config', config, '--web'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(process.execPath, [assistantPath('src/main.ts'), '--config', config, '--web'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let output = '';
   const exited = once(child, 'exit');
   const ready = new Promise<void>((resolve, reject) => {

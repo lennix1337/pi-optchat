@@ -26,6 +26,13 @@ function clip(text: string): { text: string; truncated: boolean } {
 }
 
 /**
+ * Lifecycle tokens held by managers still open in this process. The owner's lifecycle reservations are only
+ * abandoned by a manager that is closed or dead: a live reservation of another open manager (same process) must
+ * not be adopted as an orphan, or a concurrent cleanup would remove a create that is still running.
+ */
+const liveLifecycleTokens = new Set<string>();
+
+/**
  * One disposable Linux computer per (owner, profile, agent): its own container and tmpfs workspace,
  * no network, no host mounts, no Docker socket, no capabilities, non-root, read-only root filesystem.
  * State lives in SQLite so a human takeover recorded by the host blocks agent reads in every process.
@@ -79,19 +86,21 @@ export class ComputerManager {
     return { id: row.id, profileId: row.profile, agentId: row.agent, container: row.container, state: row.state, expiresAt: row.expires };
   }
   private authorize(authority: object): void { if (authority !== this.options.authority) fail('unauthorized'); }
-  /** Lifecycle tokens reserved by this process. The owner runs as one process, so any other token belongs to a dead one. */
+  /** Lifecycle tokens this manager reserved and has not released. Closing the manager gives them up as dead. */
   private readonly held = new Set<string>();
+  private hold(token: string): void { this.held.add(token); liveLifecycleTokens.add(token); }
+  private unhold(token: string): void { this.held.delete(token); liveLifecycleTokens.delete(token); }
   private reserveLifecycle(id: string): string {
     const token = randomUUID();
     const result = this.db.prepare('INSERT OR IGNORE INTO computer_lifecycle (id, token) VALUES (?, ?)').run(id, token);
     if (Number(result.changes) !== 1) fail('computer_transition');
-    this.held.add(token);
+    this.hold(token);
     return token;
   }
   private releaseLifecycle(id: string, token: string): void {
     const result = this.db.prepare('DELETE FROM computer_lifecycle WHERE id = ? AND token = ?').run(id, token);
     if (Number(result.changes) !== 1) fail('computer_transition');
-    this.held.delete(token);
+    this.unhold(token);
   }
   /**
    * A create interrupted by a process that died (crash, restart, Docker down at startup) leaves its row in
@@ -103,7 +112,7 @@ export class ComputerManager {
     try {
       const rows = this.db.prepare("SELECT c.id, l.token FROM computers c JOIN computer_lifecycle l ON l.id = c.id WHERE c.owner = ? AND c.state = 'transition' AND l.target IS NULL").all(this.options.owner) as { id: string; token: string }[];
       for (const { id, token } of rows) {
-        if (this.held.has(token)) continue;
+        if (liveLifecycleTokens.has(token)) continue;
         this.db.prepare("UPDATE computer_lifecycle SET phase = 'failed' WHERE id = ? AND token = ?").run(id, token);
         this.db.prepare("UPDATE computers SET state = 'removing' WHERE id = ? AND owner = ? AND state = 'transition'").run(id, this.options.owner);
       }
@@ -154,8 +163,8 @@ export class ComputerManager {
         const token = randomUUID();
         const swapped = this.db.prepare("UPDATE computer_lifecycle SET token = ?, phase = 'active' WHERE id = ? AND token = ? AND EXISTS (SELECT 1 FROM computers WHERE id = ? AND owner = ? AND state = 'removing')").run(token, id, reservation!.token, id, this.options.owner);
         if (Number(swapped.changes) !== 1) fail('computer_transition');
-        this.held.delete(reservation!.token);
-        this.held.add(token);
+        this.unhold(reservation!.token);
+        this.hold(token);
         tokens.set(id, token);
       }
       this.db.exec('COMMIT');
@@ -581,7 +590,11 @@ export class ComputerManager {
     return result.removed;
   }
 
-  close(): void { this.db.close(); }
+  close(): void {
+    for (const token of this.held) liveLifecycleTokens.delete(token);
+    this.held.clear();
+    this.db.close();
+  }
 }
 
 export function createComputers(options: ComputerOptions): ComputerManager { return new ComputerManager(options); }

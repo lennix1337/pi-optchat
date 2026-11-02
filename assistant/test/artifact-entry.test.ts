@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
 import { freePort, launchWeb as launch } from './ops-support.ts';
+import { assistantPath } from './assistant-paths.ts';
 
 test('production --web startup serves registered artifact preview, review and download after restart', { timeout: 60000 }, async () => {
   const dir = join(tmpdir(), 'artifact-entry-' + randomUUID()); createPrivateDirectory(dir);
@@ -17,7 +18,7 @@ test('production --web startup serves registered artifact preview, review and do
   writeFileSync(config, JSON.stringify({ version: 1, profileId: 'artifact-owner', databasePath: join(dir, 'tasks.sqlite'), endpoint, token }));
   let running: ReturnType<typeof launch> | undefined;
   try {
-    const registered = spawnSync(process.execPath, ['assistant/scripts/artifact.mjs', 'register', '--config', config, '--source-root', sources,
+    const registered = spawnSync(process.execPath, [assistantPath('scripts/artifact.mjs'), 'register', '--config', config, '--source-root', sources,
       '--source', source, '--type', 'page', '--owner', 'operator', '--producer', 'skill', '--provenance', 'disposable-startup-test'], { encoding: 'utf8', timeout: 20000 });
     assert.equal(registered.status, 0, registered.stderr + registered.stdout);
     const { artifact } = JSON.parse(registered.stdout);
