@@ -129,24 +129,36 @@ export class BriefingComposer {
     const taskSequence = this.readTasks(since, sources, items);
     const agenda: (Omit<BriefingItem, 'itemId'> & { at: string })[] = [];
     const { from, to } = dayRange(localDate, this.options.timeZone);
-    for (const connectionId of this.options.connections) {
-      await this.read(`${connectionId}:mail`, sources, async () => {
-        const page = await this.options.google.listMessages(connectionId);
-        for (const message of page.items) {
-          const result = triage(message, this.options.rules);
-          if (result.urgency === 'low') { distractions++; continue; }
-          items.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: true });
-        }
-        return page.truncated;
-      });
-      await this.read(`${connectionId}:calendar`, sources, async () => {
-        const page = await this.options.google.listEvents(connectionId, { from, to, timeZone: this.options.timeZone });
-        for (const event of page.items) {
-          agenda.push({ at: event.allDay ? '' : event.start, section: 'agenda', title: bounded(`${event.localStart ?? 'All day'} ${event.title}`), sourceRef: `calendar:${connectionId}:${event.ref.id}`, reason: event.recurring ? 'recurring_event' : 'event', urgency: 'normal', uncertainty: 'low', untrusted: true, startable: true });
-          if (since && updatedSince(event, since.createdAt)) items.push({ section: 'changes', title: bounded(`${event.title} (updated)`), sourceRef: `calendar:${connectionId}:${event.ref.id}`, reason: 'changed_since_last_briefing', urgency: 'normal', uncertainty: 'low', untrusted: true, startable: false });
-        }
-        return page.truncated;
-      });
+    // Each account's mail and agenda are independent reads, and so are the accounts: they run together. What each read
+    // found is merged back in the configured order, so the briefing is the same whatever order the answers came in.
+    const reads = await Promise.all(this.options.connections.map(async connectionId => {
+      const found = { mail: [] as Omit<BriefingItem, 'itemId'>[], changes: [] as Omit<BriefingItem, 'itemId'>[], agenda: [] as (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: 0 };
+      const [mail, calendar] = await Promise.all([
+        this.read(`${connectionId}:mail`, async () => {
+          const page = await this.options.google.listMessages(connectionId);
+          for (const message of page.items) {
+            const result = triage(message, this.options.rules);
+            if (result.urgency === 'low') { found.distractions++; continue; }
+            found.mail.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: true });
+          }
+          return page.truncated;
+        }),
+        this.read(`${connectionId}:calendar`, async () => {
+          const page = await this.options.google.listEvents(connectionId, { from, to, timeZone: this.options.timeZone });
+          for (const event of page.items) {
+            found.agenda.push({ at: event.allDay ? '' : event.start, section: 'agenda', title: bounded(`${event.localStart ?? 'All day'} ${event.title}`), sourceRef: `calendar:${connectionId}:${event.ref.id}`, reason: event.recurring ? 'recurring_event' : 'event', urgency: 'normal', uncertainty: 'low', untrusted: true, startable: true });
+            if (since && updatedSince(event, since.createdAt)) found.changes.push({ section: 'changes', title: bounded(`${event.title} (updated)`), sourceRef: `calendar:${connectionId}:${event.ref.id}`, reason: 'changed_since_last_briefing', urgency: 'normal', uncertainty: 'low', untrusted: true, startable: false });
+          }
+          return page.truncated;
+        }),
+      ]);
+      return { found, states: [mail, calendar] };
+    }));
+    for (const { found, states } of reads) {
+      sources.push(...states);
+      items.push(...found.mail, ...found.changes);
+      agenda.push(...found.agenda);
+      distractions += found.distractions;
     }
     agenda.sort((a, b) => a.at.localeCompare(b.at));
     const ordered = [...items, ...agenda.map(({ at: _at, ...item }) => item)]
@@ -194,12 +206,12 @@ export class BriefingComposer {
   }
 
   /** One source: a failure is recorded with its code and does not stop the others. */
-  private async read(sourceId: string, sources: SourceState[], work: () => Promise<boolean>): Promise<void> {
+  private async read(sourceId: string, work: () => Promise<boolean>): Promise<SourceState> {
     try {
       const truncated = await work();
-      sources.push({ sourceId, state: truncated ? 'partial' : 'ok', error: truncated ? 'truncated' : null });
+      return { sourceId, state: truncated ? 'partial' : 'ok', error: truncated ? 'truncated' : null };
     } catch (error) {
-      sources.push({ sourceId, state: 'unavailable', error: errorCode(error) });
+      return { sourceId, state: 'unavailable', error: errorCode(error) };
     }
   }
 }

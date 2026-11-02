@@ -135,6 +135,14 @@ test('one daily briefing per profile and local date across clients; on-demand br
   assert.equal(other.get(next.briefingId), null);
 }));
 
+test('the mail and agenda of each account are read at the same time, and the sources keep their order', () => withGoogle(async rig => {
+  await connectBoth(rig);
+  rig.fake.apiLatencyMs = 80;
+  const briefing = await composer(rig).daily();
+  assert.ok(rig.fake.peakApiInFlight >= 2, 'the reads overlapped instead of waiting for each other');
+  assert.deepEqual(briefing.sources.map(s => s.sourceId), ['tasks', 'personal:mail', 'personal:calendar', 'dentai:mail', 'dentai:calendar']);
+}));
+
 test('changes since the previous briefing: task transitions and updated events', () => withGoogle(async rig => {
   await rig.connect('personal', 'personal');
   rig.fake.mail.personal.push({ id: 'plan', from: 'Rita <boss@dentai.example.test>', subject: 'Plan the offsite', body: 'Ideas?', receivedAt: '2026-10-28T10:00:00.000Z' });

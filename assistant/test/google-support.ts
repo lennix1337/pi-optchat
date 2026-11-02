@@ -63,6 +63,10 @@ export class FakeGoogle {
   messageDelayMs = 0;
   messagesInFlight = 0;
   peakMessagesInFlight = 0;
+  /** Latency of every Gmail or Calendar request, with the most in flight at once. */
+  apiLatencyMs = 0;
+  apiInFlight = 0;
+  peakApiInFlight = 0;
   readonly redirectUris = new Set<string>();
   /** The registered client; a test of the real client-file parser sets a `.apps.googleusercontent.com` id. */
   clientId = CLIENT_ID;
@@ -156,6 +160,11 @@ export class FakeGoogle {
       return;
     }
     if (!grant || grant.expires <= this.clock.now) { send(401, { error: { code: 401, status: 'UNAUTHENTICATED' } }); return; }
+    if (url.pathname.startsWith('/gmail/') || url.pathname.startsWith('/calendar/')) {
+      this.apiInFlight++; this.peakApiInFlight = Math.max(this.peakApiInFlight, this.apiInFlight);
+      await new Promise(resolve => setTimeout(resolve, this.apiLatencyMs));
+      this.apiInFlight--;
+    }
     const page = <T>(items: T[]) => {
       const start = Number(params.pageToken ?? 0);
       const size = Math.min(this.pageSize, Number(params.maxResults ?? this.pageSize));
