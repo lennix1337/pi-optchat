@@ -69,6 +69,21 @@ const TOPIC_DAYS = 14;
  */
 const clock = (ms: number) => new Date(ms).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
 
+const HOME_STEP_MS = 20_000;
+const base = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).pop() ?? path : '';
+
+/** A step in words, without arguments that could carry secrets: the program a shell ran, the file a tool touched. */
+export function stepLabel(tool: string, args: unknown): string {
+  const a = (args ?? {}) as Record<string, unknown>;
+  if (tool === 'bash' && typeof a.command === 'string') {
+    const part = a.command.split(/&&|;|\|\||\n/).map(s => s.trim()).find(s => s && !/^cd\s/.test(s)) ?? '';
+    return `rodando \`${part.split(/\s+/).filter(w => !w.startsWith('-')).slice(0, 2).join(' ').slice(0, 40)}\``;
+  }
+  if (tool === 'read') return `lendo ${base(a.path)}`;
+  if (tool === 'edit' || tool === 'write') return `editando ${base(a.path)}`;
+  return `usando ${tool}`;
+}
+
 export function wakeChannel(messages: readonly AgentMessage[]): string | null | undefined {
   const calls = toolCalls(messages);
   if (calls.some(c => c.name === 'slack_send')) return undefined;
@@ -109,6 +124,9 @@ export class SlackBridge {
     models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean> };
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
+  /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
+  private work: { since: number; origin: string; about: string; step: string; steps: number; shown: number } | undefined;
+  private waiting: () => readonly string[] = () => [];
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
@@ -129,7 +147,32 @@ export class SlackBridge {
     this.options.warn(`Slack inbox pass failed; it retries: ${text}`);
   }
   stop(): void { clearInterval(this.timer); this.answering = undefined; this.waking = false; this.running = false; }
-  runStarted(): void { this.running = true; }
+  runStarted(): void { this.running = true; this.work = undefined; }
+  /** What waits for the operator (approvals, items blocked on him); shown on the App Home, working or free. */
+  setWaiting(read: () => readonly string[]): void { this.waiting = read; }
+
+  /** Each tool call of the run: the App Home names the step, at most once per HOME_STEP_MS so Slack is not flooded. */
+  toolStarted(tool: string, args: unknown): void {
+    if (!this.work) return;
+    this.work.steps++;
+    this.work.step = stepLabel(tool, args);
+    if (this.work.steps === 1 || this.options.now() - this.work.shown >= HOME_STEP_MS) this.showWork();
+  }
+
+  private showWork(): void {
+    const w = this.work!;
+    const now = this.options.now();
+    w.shown = now;
+    const minutes = Math.floor((now - w.since) / 60_000);
+    this.home([`\u{1f504} *Trabalhando* há ${minutes} min (desde ${clock(w.since)}, ${w.origin})`, `> ${w.about}`,
+      ...w.steps ? [`Agora: ${w.step} · ${w.steps} passo${w.steps === 1 ? '' : 's'}`] : []].join('\n'));
+  }
+
+  private waitingBlock(): string {
+    let items: readonly string[] = [];
+    try { items = this.waiting(); } catch { /* the Home still goes out */ }
+    return items.length ? `\n\n*Esperando você*\n${items.slice(0, 5).map(i => `• ${i.slice(0, 160)}`).join('\n')}` : '';
+  }
 
   /** One pass: new DMs become user messages in order; the cursor advances only past delivered ones. */
   async poll(): Promise<number> {
@@ -214,8 +257,8 @@ export class SlackBridge {
   private home(text: string): void {
     const owner = this.owner();
     this.activity = text.split('\n')[0]!;
-    let status = '';
-    try { status = `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
+    let status = this.waitingBlock();
+    try { status += `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
     if (owner) void this.options.request(owner, '/v1/slack/home', { text: `${text.slice(0, 2900 - status.length)}${status}` }).catch(() => undefined);
   }
 
@@ -243,10 +286,15 @@ export class SlackBridge {
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
   sawUserMessage(text: string): void {
-    if (wakeTask(text) !== undefined) { this.waking = true; this.home(`\u{1f504} *Trabalhando* (turno automático) desde ${clock(this.options.now())}`); return; }
     const match = FROM_SLACK.exec(text);
-    const about = text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
-    if (!this.running || match) this.home(`\u{1f504} *Trabalhando* desde ${clock(this.options.now())}\n> ${about}`);
+    const wake = wakeTask(text) !== undefined;
+    const about = wake ? 'turno automático (wake)' : text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
+    // The first message of a run names it, wherever it came from; a later Slack message renames it, a gitwatch notice does not.
+    if (!this.work || match) {
+      this.work = { since: this.work?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: '', steps: this.work?.steps ?? 0, shown: 0 };
+      this.showWork();
+    }
+    if (wake) { this.waking = true; return; }
     if (!match) {
       // Another message (a gitwatch notice, a wake) steering this run would otherwise replace the answer the operator is waiting for.
       if (this.answering && this.replied && this.replied !== this.delivered) { this.delivered = this.replied; void this.answer(this.answering, this.replied, false); }
@@ -293,8 +341,10 @@ export class SlackBridge {
     const answering = this.answering, waking = this.waking, delivered = this.delivered;
     this.answering = undefined; this.waking = false; this.replied = ''; this.delivered = '';
     this.running = false;
+    const steps = this.work?.steps ?? 0;
+    this.work = undefined;
     const last = finalText(messages);
-    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${last ? `\n\u00daltima resposta:\n${last.slice(0, 1500)}` : ''}`);
+    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta:\n${last.slice(0, 1200)}` : ''}`);
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.
       if (last && last === delivered) return;
@@ -447,6 +497,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('session_shutdown', () => bridge.stop());
   pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); else bridge.assistantSaid(message); });
   pi.on('agent_start', () => bridge.runStarted());
+  pi.on('tool_execution_start', event => bridge.toolStarted(event.toolName, event.args));
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',

@@ -51,7 +51,7 @@ import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
-import { registerCommitments } from './commitments.ts';
+import { readCommitments, registerCommitments, summaryLines } from './commitments.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
 import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
@@ -624,6 +624,12 @@ export default function optchat(pi: ExtensionAPI) {
   // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
     { accepting: () => inPhase('open') });
+  // The App Home lists what waits on him: approvals pending in this chat and commitments blocked on him.
+  slack.setWaiting(() => {
+    if (!active) return [];
+    const approvals$ = approvals?.pendingFor(active.sessionId) ?? [];
+    return [...approvals$.map(p => `Aprovação pendente: ${p.summary}`), ...summaryLines(readCommitments(active.dir), Date.now()).waiting];
+  });
   // The operator's WhatsApp through wacli, when ~/.pi/agent/optchat-whatsapp.json exists (src/whatsapp-bridge.ts).
   registerWhatsAppBridge(pi, () => active && inPhase('open') ? active.dir : undefined, () => slack.commandState(), () => inPhase('open'));
   // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
