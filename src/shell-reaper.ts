@@ -4,6 +4,7 @@ import { access } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SettingsManager, createBashToolDefinition, createLocalBashOperations, getAgentDir, getShellConfig, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { LONG_COMMAND_NOTE } from './long-commands.ts';
 
 /**
  * Git Bash pipelines outlive Pi's bash timeout on Windows. Each stage is forked and then exec'd, so its
@@ -157,9 +158,20 @@ const reapingBash = (cwd: string) => {
   return createBashToolDefinition(cwd, { commandPrefix, shellPath, operations: reapingBashOperations(shellPath) });
 };
 
-/** On Windows, Pi's bash tool and the user's `!` commands run with the reaping kill; elsewhere Pi's own already reaches the whole group. */
-export function registerReapingBash(pi: ExtensionAPI) {
-  if (process.platform !== 'win32') return;
-  pi.registerTool({ ...reapingBash(process.cwd()), execute: (id, params, signal, onUpdate, ctx) => reapingBash(ctx.cwd).execute(id, params, signal, onUpdate, ctx) });
-  pi.on('user_bash', (_event, ctx) => ({ operations: reapingBashOperations(shellSettings(ctx.cwd).shellPath) }));
+/** A bash call the mover takes: it returns the tool result at once, or undefined to run the call here. */
+export type LongBashMover = (args: { command: string; timeout?: number }, cwd: string) => { content: { type: 'text'; text: string }[] } | undefined;
+
+/**
+ * On Windows, Pi's bash tool and the user's `!` commands run with the reaping kill; elsewhere Pi's own already reaches the
+ * whole group. With `moveLong`, the bash tool is registered on every platform so long commands can leave the turn.
+ */
+export function registerReapingBash(pi: ExtensionAPI, moveLong?: LongBashMover) {
+  if (process.platform !== 'win32' && !moveLong) return;
+  const definition = reapingBash(process.cwd());
+  pi.registerTool({ ...definition, description: moveLong ? `${definition.description} ${LONG_COMMAND_NOTE}` : definition.description,
+    execute: async (id, params, signal, onUpdate, ctx) => {
+      const moved = moveLong?.(params, ctx.cwd);
+      return moved ? { ...moved, details: undefined } : reapingBash(ctx.cwd).execute(id, params, signal, onUpdate, ctx);
+    } });
+  if (process.platform === 'win32') pi.on('user_bash', (_event, ctx) => ({ operations: reapingBashOperations(shellSettings(ctx.cwd).shellPath) }));
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createBashTool, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { reapingBashOperations } from './shell-reaper.ts';
+import { reapingBashOperations, type LongBashMover } from './shell-reaper.ts';
+import { longCommandReason } from './long-commands.ts';
 import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
@@ -197,6 +198,22 @@ function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, c
     return runShell(id, cwd, args, abort, update, watch);
   }, { notify, alert: args.alert });
   return id;
+}
+
+/**
+ * The bash mover: a call expected to run long (long-commands.ts) starts as a managed background shell, so the turn is not
+ * held while it runs. The call's result is the shell's ID; its end arrives as the same "[shell ID]" message shell_start gives.
+ * Short commands return undefined and run in bash as before.
+ */
+export function longCommandMover(jobs: ShellJobs, settings: ShellSettings, canStart: () => void = () => {}): LongBashMover {
+  return (args, cwd) => {
+    const reason = longCommandReason(args.command, args.timeout);
+    if (reason === undefined) return undefined;
+    canStart();
+    const id = startShell(jobs, settings, { command: args.command, timeout: args.timeout }, cwd);
+    const text = `Long command moved to background shell ${id} (${reason}). It is not finished: its outcome arrives as a "[shell ${id}]" message with exit code and the end of its output. Do not poll or sleep; go on with other work or end the turn. shell_status reads more output while it runs.`;
+    return { content: [{ type: 'text', text }] };
+  };
 }
 
 export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () => void = () => {}, settings: ShellSettings = {}) {

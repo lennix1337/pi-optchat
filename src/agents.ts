@@ -30,6 +30,8 @@ import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
 import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
+import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
+import { routerReport } from './router-mode.ts';
 export { CWD_DOC } from './child-resources.ts';
 
 export interface LiveRun {
@@ -323,6 +325,8 @@ export class Children {
     return `Started: ${ids.join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}`;
   }
   private async launch(tasks: { task: string; cwd?: string }[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false) {
+    // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
+    if (this.settings.routerMode) for (const { task } of tasks) checkHandoffSummary(task, HANDOFF_MAX_BYTES, 'Task');
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
     if (this.closing) throw new Error('Profile is closing.');
     this.settling++;
@@ -606,8 +610,11 @@ export class Children {
     if (this.deleting.has(info.id)) info.report = 'Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.';
     // A metadata failure must not suppress delivery of the actual result.
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
+    // Router mode: the main agent gets the report bounded, with pointers to the run and its transcript, not the whole chat.
     // A deleted run's transcript is gone.
-    await this.deliver(info, live.batch, `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`);
+    const text = this.settings.routerMode && !info.parentId ? routerReport(info)
+      : `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`;
+    await this.deliver(info, live.batch, text);
   }
   /** Sends a run's report to its parent; in a grouped spawn, only once every child of the spawn has one. */
   private async deliver(info: RunInfo, batch: LiveRun['batch'], text: string) {
@@ -634,6 +641,7 @@ export class Children {
   /** `caller` is the agent sending a manager message: undefined for the main agent, else the parent subagent's ID. */
   async tell(id: string, message: string, source: 'manager' | 'user' = 'manager', caller?: string) {
     if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
+    if (this.settings.routerMode && source === 'manager') checkHandoffSummary(message, HANDOFF_MAX_BYTES, 'Guidance');
     if (this.externalRun(id)) {
       if (source !== 'user') throw new Error(`${id} belongs to pi-subagents; only the user can steer it from this panel.`);
       await this.steerExternal(id, message);
