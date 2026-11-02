@@ -28,9 +28,16 @@ test('incidents: a real WhatsApp, a production HTTP write and an email are irrev
   assert.deepEqual(kinds('curl -X PATCH https://api.dentai.com.br/subscriptions/2cd5eaa6 --json \'{"plan":"br"}\''), ['production-write https:api.dentai.com.br']);
   assert.deepEqual(kinds('Invoke-RestMethod -Method Post -Uri https://usdentai.com/api/x -Body $b'), ['production-write https:usdentai.com']);
   assert.deepEqual(kinds('http POST api.dentai.com.br/leads name=x'), ['production-write https:api.dentai.com.br']);
+  // With a credential, a body, or a destructive verb, an empty request is no longer anonymous probing.
+  for (const write of ['curl -X POST https://api.dentai.com.br/jobs/run -H "Authorization: Bearer $T"', 'curl -X POST -u admin:x https://api.dentai.com.br/x',
+    'curl -X POST -b session=1 https://api.dentai.com.br/x', 'curl -X POST https://api.dentai.com.br/x -H "Stripe-Signature: t=1"',
+    'curl -X PUT https://api.dentai.com.br/x', 'Invoke-RestMethod -Method Post -Uri https://api.dentai.com.br/x -Headers $h'])
+    assert.deepEqual(kinds(write), ['production-write https:api.dentai.com.br'], write);
   for (const read of ['curl -s https://api.dentai.com.br/health', 'curl -sI https://dentai.com.br/', 'curl -X GET https://api.dentai.com.br/plans',
     'curl -s https://graph.facebook.com/v19.0/me', 'wget -q https://dentai.com.br/robots.txt', 'Invoke-RestMethod https://api.dentai.com.br/health',
-    'curl -X POST http://localhost:3000/api/x -d a=1', 'grep -rn "curl -X POST https://graph.facebook.com" docs'])
+    'curl -X POST http://localhost:3000/api/x -d a=1',
+    // An anonymous, empty POST does only what any stranger on the internet can: a probe (webhook signature check, endpoint up).
+    'curl -s -i -m 20 -X POST https://api.dentai.com.br/webhooks/stripe', 'curl -X POST https://api.github.com/x -H "Accept: application/json"', 'Invoke-WebRequest -Method Post -Uri https://usdentai.com/api/hook', 'grep -rn "curl -X POST https://graph.facebook.com" docs'])
     assert.deepEqual(kinds(read), [], read);
 });
 
