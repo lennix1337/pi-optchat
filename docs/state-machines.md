@@ -50,6 +50,8 @@ Fixed in this change: SM-F1 … SM-F5 (all P2). No P1 was found. Everything else
 | 34 | Catch-up windows (`CatchupWindows`) | none → cursor → spans | validated file | same | none |
 | 35 | Heartbeat queue (`heartbeat-queue.md`) | open / done / blocked | markdown marks, parsed | same | none |
 | 36 | UI views with `ended` (`AgentView`, `Inspector`, `LiveTurn`, `TabTitle`, `BarNavigation`) | live → disposed | one flag + interval | same | none |
+| 38 | Assistant outbox (`assistant/src/outbox/outbox.ts`, `Outbox`) | pending → sending → sent / pending (retry) / failed / uncertain → sent / pending (operator) | row written with the state change; `dispatch` claims before the call | same | **SM-F10** P1 |
+| 39 | Environment action (`assistant/src/environment/`, `Environment.run` / `open`) | allowed → started → exited / uncertain; refused before any process | allow-list table, typed requests | same | **SM-F11** P2 |
 
 ---
 
@@ -428,6 +430,38 @@ States of a `computers` row: `transition` (create in flight) → `ready` ⇄ `pa
 - Now: the process remembers the tokens it holds. `cleanup()` first turns any `transition` row whose token belongs to no live holder into a failed removal, and the owner census removes any container that create may have started. A transition held by the live process is still refused.
 - Recovery: a Docker failure at startup no longer stops the service (`openToolServiceIfDockerUp`, #53); the next start with Docker up clears the orphan by itself.
 
+## 38. Assistant outbox — `assistant/src/outbox/outbox.ts` (`Outbox`)
+
+Every outbound effect of the assistant service (Slack posts, receipts, approval retirements, Slack writes through the loopback API) is a row of the `outbox` table in the same SQLite file as the state it comes from. The row is written in the same `BEGIN IMMEDIATE` transaction as the state change (`stage` refuses to run outside a transaction), so a rolled-back change leaves no effect and a committed one always has its row.
+
+States of a row (`reason` names the cause):
+- `pending` — staged, waiting for its first send or a retry (`next_at`, backoff of `attempt × retryDelay`).
+- `sending` — claimed and committed **before** the transport call (`dispatch`), or as the intent of a synchronous write (`perform`). The attempt counter increments at the claim.
+- `sent` — the transport returned. Terminal.
+- `pending` again — a retryable refusal (`OutboxRefused(code, retryable)`, for example Slack `ratelimited`) inside `dispatch`, while attempts remain.
+- `failed` — a definite refusal (`unknown_channel`, `empty_message`, Slack `invalid_*` codes), or the retry budget exhausted (`:attempts_exhausted`). Terminal.
+- `uncertain` — any other transport error (`transport_error`, `slack_partial_post`): the effect may have reached the provider, so it is never resent by the dispatcher. `recover()` at startup turns a row left `sending` into `uncertain` (`interrupted`), never `pending`.
+- `uncertain` → `sent` (`reconcile`, `reconciled_sent`) or → `pending` (`reconcile`, `reconciled_not_sent`, the operator checked the provider).
+
+Idempotency: the row id is the key. The same id with the same channel, kind and payload is a no-op (`duplicate`); with other content it throws `outbox_conflict` and changes nothing.
+
+Crash points and what happens on restart:
+- crash after the state change, before the send: the row is `pending`; the dispatcher sends it once.
+- crash inside the call: the row is `sending`; `recover()` makes it `uncertain`; nothing is sent again without a reconciliation.
+- crash after the provider accepted, before `sent` is written: the same as above (`uncertain`), so a duplicate is not sent automatically.
+
+Regression tests: `assistant/test/service-outbox.test.ts` (crash between state change and send; duplicate delivery; transport failure uncertain; retry with backoff; retry budget; synchronous write intent; receipts; approval retirements; Slack loopback writes). Mutants that remove each guard must fail: `assistant/test/outbox-mutations.mjs`, `assistant/test/channel-mutations.mjs`.
+
+Other outboxes, not changed here: the notification center (`notifications/center.ts`) already claims a row before transport (`pending` → `accepted` / `failed` / `uncertain`); the runtime worker's `outbox` table (`runtime/worker.ts`, `notify`/`deliver`) is marked `delivered` in a separate transaction after the send, so a crash between them can repeat a notification. It has no caller in `src` today; move it onto `Outbox` before it gets one.
+
+## 39. Environment actions — `assistant/src/environment/` (`Environment`)
+
+The service asks for a named action with typed fields; it never spawns a process itself for these. `actions.ts` is the allow-list (a declarative table): `docker` (only the manager's subcommands and no host-escaping flags), `toast` (text via the environment), `dpapi` (protect/unprotect, data on stdin), and the streams `docker_stream` (`https-relay`, `socat-viewer`). An unknown action, a field outside its table or a refused flag fails before a process starts (`EnvironmentRefused`).
+- Local adapter (`local.ts`): starts the planned file with the planned argv, no shell. Exit 125–127 and a killed or unstartable process are `uncertain`.
+- Loopback daemon (`daemon.ts`): the same `run` over `127.0.0.1` with a bearer token from a private token file (created once, 0600 in a private directory, refused if malformed). Streams are not remotable.
+
+Call sites on the port: `computer/docker.ts` (`dockerCli`), `computer/relay.ts`, `computer/graphical-takeover.ts`, `notifications/task-notifier.ts` (`windowsToast`), `secrets/protector.ts` (DPAPI). Still direct, listed for the next step: `connectors/stdio.ts` (operator-configured MCP server commands, not an allow-list case), `ops/service.ts` (`spawnSync` of PowerShell and `ps` probes, and the service's own launch), `store/privacy.ts` and `store/private-directory.ts` (`spawnSync` ACL checks). The port is async-only; those sites depend on `spawnSync` error and timeout classes, so they move with a synchronous method, not silently.
+
 ## What changed in code
 
 | id | sev | machine | change | regression test |
@@ -441,3 +475,5 @@ States of a `computers` row: `transition` (create in flight) → `ready` ⇄ `pa
 | SM-F7 | P1 | Slack bridge run facets | answer delivered before a steering notice (#58) | `test/slack-bridge.test.ts` |
 | SM-F8 | P2 | Slack approval posts | `askApproval` returns whether the post went out; a command whose Aprovar could not be posted answers "nada mudou" | `test/remote-commands.test.ts` |
 | SM-F9 | P1 | WhatsApp bridge cursor (`src/whatsapp-bridge.ts`, `poll`) | cursor saved before handling; a failed send is not repeated on the next pass | `test/whatsapp-bridge.test.ts` |
+| SM-F10 | P1 | Assistant outbox (Slack relay) | durable outbox row in the state change's transaction; claim before send; a crash inside a send is `uncertain`, never resent | `assistant/test/service-outbox.test.ts`, `assistant/test/outbox-mutations.mjs` |
+| SM-F11 | P2 | Environment actions (Docker, toast, DPAPI, streams) | allow-list table + local adapter + loopback daemon with token file; 5 call sites moved | `assistant/test/environment-port.test.ts` |

@@ -1,8 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { dockerCli } from './docker.ts';
+import { dockerVia } from './docker.ts';
+import { localEnvironment, type Environment } from '../environment/local.ts';
 import { SESSION_READY, START_SESSION } from './takeover-session.ts';
 import type { ComputerManager } from './manager.ts';
 
@@ -12,6 +13,7 @@ export type GraphicalTakeoverOptions = {
   authority: object;
   authorizeOwner: (request: IncomingMessage) => boolean;
   revocation: AbortSignal;
+  environment?: Environment;
 };
 
 /**
@@ -21,6 +23,8 @@ export type GraphicalTakeoverOptions = {
  */
 export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions): Promise<{ port: number; handBack: (authority: object) => Promise<void> }> {
   const { computers, id, authority, authorizeOwner, revocation } = options;
+  const environment = options.environment ?? localEnvironment;
+  const dockerCli = dockerVia(environment);
   if (revocation.aborted) throw new Error('takeover_revoked');
   const { generation, target } = await computers.beginGraphical(id, authority);
   try {
@@ -57,7 +61,7 @@ export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions):
     if (closing || request.headers.host !== `127.0.0.1:${port}` || (request.headers.origin !== undefined && request.headers.origin !== `http://127.0.0.1:${port}`) || !authorizeOwner(request) || request.method !== 'GET' || !['/', '/index.html', '/takeover-client.js'].includes(request.url ?? '')) {
       response.writeHead(403); response.end(); return;
     }
-    const child = spawn('docker', ['exec', '-i', target, 'socat', '-', 'TCP:127.0.0.1:6088'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = environment.open({ action: 'docker_stream', container: target, program: 'socat-viewer' });
     children.add(child); child.once('close', () => children.delete(child));
     child.stderr.resume(); response.once('close', () => child.kill());
     child.on('error', () => { if (!response.headersSent) response.writeHead(502); response.end(); });
@@ -80,7 +84,7 @@ export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions):
     if (closing || request.headers.host !== `127.0.0.1:${port}` || !authorizeOwner(request) || request.url !== '/websockify' || request.headers.origin !== origin || controller) { socket.destroy(); return; }
     controller = socket; // one controller at a time; the viewer inside the computer refuses a second one as well
     socket.once('close', () => { if (controller === socket) controller = undefined; });
-    const child = spawn('docker', ['exec', '-i', target, 'socat', '-', 'TCP:127.0.0.1:6088'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = environment.open({ action: 'docker_stream', container: target, program: 'socat-viewer' });
     children.add(child); child.stderr.resume(); child.once('close', () => { children.delete(child); socket.destroy(); });
     child.on('error', () => socket.destroy());
     const lines = [`GET /websockify HTTP/1.1`, `Host: localhost`, ...Object.entries(request.headers).filter(([key]) => !['host', 'origin', 'cookie', 'authorization'].includes(key)).map(([key, value]) => `${key}: ${value}`), '', ''];

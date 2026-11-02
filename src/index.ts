@@ -1,6 +1,7 @@
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
+import { NO_WORK, readHomeWork } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { readManyTool } from './read-many.ts';
@@ -628,7 +629,9 @@ export default function optchat(pi: ExtensionAPI) {
   // A paused import still takes the reports out, but a DM is delivered only to a profile that can run it: the input hook drops
   // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
-    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt });
+    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt,
+      // The App Home's work items: read-only, from this profile's files and the shells running now (src/home-items.ts).
+      items: () => active && inPhase('open', 'import-paused') ? readHomeWork(active.dir, runningShells(shells).map(job => `${job.id} \u00b7 ${job.command}`), Date.now()) : NO_WORK });
   // The App Home lists what waits on him: approvals pending in this chat and commitments blocked on him.
   slack.setWaiting(() => {
     if (!active) return [];

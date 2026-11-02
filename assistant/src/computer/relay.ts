@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
 import type { ComputerManager } from './manager.ts';
 import { normalizeOrigins, readPublicPage, type Resolver } from './egress.ts';
 import type { request } from 'node:https';
+import { localEnvironment, type Environment } from '../environment/local.ts';
 
-type BrokerIO = { resolve?: Resolver; transport?: typeof request };
+type BrokerIO = { resolve?: Resolver; transport?: typeof request; environment?: Environment };
 
 export type Relay = { port: number; fingerprint: string; close: () => Promise<void>; failures: () => number; assertActive: () => void; finished: Promise<void> };
 
@@ -21,7 +21,7 @@ export async function startBrowserRelay(computers: ComputerManager, id: string, 
     lease.finish();
     throw error;
   }
-  const child = spawn('docker', ['exec', '--interactive', '--user', '1000:1000', '--workdir', '/work', target, 'timeout', '-s', 'KILL', '150', 'node', '/opt/optchat/https-relay.mjs'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = (io.environment ?? localEnvironment).open({ action: 'docker_stream', container: target, program: 'https-relay' });
   const controller = new AbortController();
   const seen = new Set<number>();
   let closed = false, failures = 0, active = 0, buffer = '', stderr = '';

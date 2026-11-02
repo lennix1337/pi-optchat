@@ -7,6 +7,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { TaskStore } from '../assistant/src/store/db.ts';
 import { createAssistantServer } from '../assistant/src/http/server.ts';
 import { classify, registerWorkTracker, WorkTracker } from '../src/work-tracker.ts';
+import { budgetNote } from '../src/slack-policy.ts';
 import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
@@ -155,4 +156,9 @@ test('classify names the door each run came through', () => {
   assert.equal(classify('[c6191f36] report').channel, 'Subagente');
   assert.equal(classify('oi').channel, 'OptChat');
   assert.deepEqual(classify('[Slack #dentai] e o deploy?'), { channel: 'Slack #dentai', title: 'e o deploy?' });
+});
+
+test('the title of a Slack run is the operator message, without the reply-budget line the bridge appends', () => {
+  assert.deepEqual(classify(`[Slack #dentai] e o deploy?\n\n${budgetNote(60)}`), { channel: 'Slack #dentai', title: 'e o deploy?' });
+  assert.deepEqual(classify(`[Slack] resume o dia\n\n${budgetNote(100)}`), { channel: 'Slack', title: 'resume o dia' });
 });

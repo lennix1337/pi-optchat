@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
 import { SLACK_PREFIX, SlackBridge, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { budgetNote, words } from '../src/slack-policy.ts';
 import { readDay } from '../src/home-day.ts';
 import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
@@ -42,7 +43,7 @@ test('operator DMs become [Slack] user messages in order, once, across restarts'
   const f = fixture([{ seq: 1, ts: '1.0', thread: null, text: 'como ta o deploy?' }, { seq: 2, ts: '2.0', thread: null, text: 'e o CI?' }]);
   try {
     assert.equal(await f.bridge.poll(), 2);
-    assert.deepEqual(f.sent.map(s => s.text), [`${SLACK_PREFIX}como ta o deploy?`, `${SLACK_PREFIX}e o CI?`]);
+    assert.deepEqual(f.sent.map(s => s.text), [`${SLACK_PREFIX}como ta o deploy?\n\n${budgetNote(100)}`, `${SLACK_PREFIX}e o CI?\n\n${budgetNote(100)}`]);
     assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'slack-cursor.json'), 'utf8')), { seq: 2 });
     assert.equal(await f.bridge.poll(), 0, 'the cursor keeps a message from arriving twice');
     f.inbox.push({ seq: 3, ts: '3.0', thread: null, text: 'oi' });
@@ -54,7 +55,7 @@ test('the final answer of a run that received a Slack message goes back to the D
   const f = fixture([{ seq: 1, ts: '5.0', thread: '4.0', text: 'status?' }]);
   try {
     await f.bridge.poll();
-    f.bridge.sawUserMessage(`${SLACK_PREFIX}status?`);
+    f.bridge.sawUserMessage(f.sent[0]!.text);
     await f.bridge.runEnded(replies('rodando', 'Tudo verde.'));
     const reply = f.requests.find(r => r.path === '/v1/slack/send');
     assert.deepEqual(reply?.body, { text: 'Tudo verde.', threadTs: '4.0' });
@@ -80,7 +81,7 @@ test('a project channel message is marked with its channel and the run answers i
   const f = fixture([{ seq: 1, ts: '7.0', thread: null, text: 'como ta a release?', channelName: 'genexus18mcp' }]);
   try {
     await f.bridge.poll();
-    assert.equal(f.sent[0].text, '[Slack #genexus18mcp] como ta a release?');
+    assert.equal(f.sent[0].text, `[Slack #genexus18mcp] como ta a release?\n\n${budgetNote(100)}`);
     f.bridge.sawUserMessage(f.sent[0].text);
     await f.bridge.runEnded(replies('v4.0.5 publicada.'));
     assert.deepEqual(f.requests.find(r => r.path === '/v1/slack/send')?.body, { text: 'v4.0.5 publicada.', threadTs: null, channel: 'genexus18mcp' });
@@ -91,7 +92,7 @@ test('a DM that arrives mid-run tells the agent to answer with slack_send and ke
   const f = fixture([{ seq: 1, ts: '1.0', thread: null, text: 'que horas são?' }, { seq: 2, ts: '2.0', thread: null, text: 'e agora?' }]);
   try {
     await f.bridge.poll();
-    assert.equal(f.sent[0].text, `${SLACK_PREFIX}que horas são?`, 'an idle session gets the plain message: the run exists to answer it');
+    assert.equal(f.sent[0].text, `${SLACK_PREFIX}que horas são?\n\n${budgetNote(100)}`, 'an idle session gets the plain message: the run exists to answer it');
     f.bridge.runStarted();
     await f.bridge.poll();
     f.bridge.runStarted();
@@ -105,7 +106,7 @@ test('a DM that arrives mid-run tells the agent to answer with slack_send and ke
     await f.bridge.runEnded(replies('feito'));
     f.inbox.push({ seq: 4, ts: '4.0', thread: null, text: 'oi' });
     await f.bridge.poll();
-    assert.equal(f.sent.at(-1)!.text, `${SLACK_PREFIX}oi`, 'after the run ends the session is idle again');
+    assert.equal(f.sent.at(-1)!.text, `${SLACK_PREFIX}oi\n\n${budgetNote(100)}`, 'after the run ends the session is idle again');
   } finally { f.close(); }
 });
 
@@ -361,7 +362,7 @@ test('a DM stays in the inbox while the chat cannot take it, and arrives once it
     assert.throws(() => readFileSync(join(dir, 'slack-cursor.json'), 'utf8'), 'no cursor was written');
     accepting = true;
     assert.equal(await bridge.poll(), 1);
-    assert.deepEqual(sent, [`${SLACK_PREFIX}ainda aí?`]);
+    assert.deepEqual(sent, [`${SLACK_PREFIX}ainda aí?\n\n${budgetNote(100)}`]);
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'slack-cursor.json'), 'utf8')), { seq: 1 });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -380,7 +381,7 @@ test('a poll pass that throws is retried and said once, not left as an unhandled
     assert.deepEqual(warned, ['Slack inbox pass failed; it retries: chat is closing'], 'the same failure is said once');
     refuse = false;
     await new Promise(resolve => setTimeout(resolve, 60));
-    assert.deepEqual(sent, [`${SLACK_PREFIX}oi`], 'the next pass delivers it');
+    assert.deepEqual(sent, [`${SLACK_PREFIX}oi\n\n${budgetNote(100)}`], 'the next pass delivers it');
   } finally { bridge.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -445,7 +446,7 @@ test('files he sends are saved and pointed to; Slack links he pastes are read an
 
 test('App Home: a run typed in the terminal shows working too, with the live step, elapsed time and what waits for him', async () => {
   const f = fixture();
-  const homes = () => f.requests.filter(r => r.path === '/v1/slack/home').map(r => (r.body as { text: string }).text);
+  const homes = () => bodiesFor<{ text: string }>('/v1/slack/home')(f).map(body => body.text);
   try {
     f.bridge.setWaiting(() => ['Rotacionar a chave rk_live do DentAI']);
     f.bridge.runStarted();
@@ -465,7 +466,9 @@ test('App Home: a run typed in the terminal shows working too, with the live ste
   } finally { f.close(); }
 });
 
-const homeBodies = (f: ReturnType<typeof fixture>) => f.requests.filter(r => r.path === '/v1/slack/home').map(r => r.body as { text: string; working?: boolean; approval?: string });
+/** The bodies the bridge posted to one service path, in order: `bodiesFor<T>(path)(f)`. */
+const bodiesFor = <T,>(path: string) => (f: ReturnType<typeof fixture>) => f.requests.filter(r => r.path === path).map(r => r.body as T);
+const homeBodies = bodiesFor<{ text: string; working?: boolean; approval?: string }>('/v1/slack/home');
 
 test('App Home buttons: Parar while working, Aprovar naming the waiting post, and its tap decides that call', async () => {
   const f = fixture([{ seq: 1, ts: '9.0', thread: '1.1', text: 'aprovar', channelName: null }]);
@@ -512,7 +515,7 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
     const text = homeBodies(f).at(-1)!.text;
     assert.match(text, /\*Hoje\* · 1 trabalho · 25 min trabalhando · 1 passo\b/);
     assert.match(text, /`09h [▁-█] 09h`/);
-    assert.match(text, /• 09:00 · 25 min · arruma o CI/);
+    assert.doesNotMatch(text, /• 09:00/, 'the Home shows work items, not one row per chat run');
     assert.match(text, /Próxima checagem de wake às 10:10/);
     assert.equal(readDay(f.dir, now).length, 1, 'a reload reads the day back');
     assert.equal(readDay(f.dir, now + 86_400_000).length, 0, 'tomorrow starts empty');
@@ -623,5 +626,126 @@ test('long poll: a read the service held is followed at once; stop() ends the re
     const count = reads.length;
     await new Promise(r => setTimeout(r, 120));
     assert.equal(reads.length, count, 'nothing is read after stop()');
+  } finally { f.close(); }
+});
+
+const WORK = { prs: [{ repo: 'lennix1337/pi-optchat', number: 13, title: 'Assistente', url: 'https://github.com/lennix1337/pi-optchat/pull/13', checks: 'verdes' as const }],
+  commitments: [{ text: 'Revisar o #13', status: 'em aberto', url: 'https://github.com/lennix1337/pi-optchat/pull/13' }], jobs: ['bash-3 \u00b7 npm test'] };
+
+test('App Home shows the work as items: open PRs and commitments with links, running jobs; the Home is the only write', async () => {
+  const f = fixture([], { items: () => WORK });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('arruma o CI');
+    await f.bridge.runEnded(replies('CI verde.'));
+    const text = homeBodies(f).at(-1)!.text;
+    assert.match(text, /\*PRs abertas\* \(1\)/);
+    assert.match(text, /<https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|pi-optchat#13 Assistente> \u00b7 checks verdes/);
+    assert.match(text, /\*Compromissos abertos\* \(1\)\n\u2022 <https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|Revisar o #13> \u00b7 em aberto/);
+    assert.match(text, /\*Rodando agora\* \(1\)\n\u2022 bash-3 \u00b7 npm test/);
+    assert.deepEqual([...new Set(f.requests.map(r => r.path))], ['/v1/slack/home'], 'reads only; nothing is sent to Slack for the items');
+  } finally { f.close(); }
+});
+
+test('App Home: a work reader that throws leaves the Home to go out without the items', async () => {
+  const f = fixture([], { items: () => { throw new Error('pr-watch unreadable'); } });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('arruma o CI');
+    await f.bridge.runEnded(replies('CI verde.'));
+    const text = homeBodies(f).at(-1)!.text;
+    assert.match(text, /\u2705 \*Livre\*/);
+    assert.doesNotMatch(text, /PRs abertas/);
+  } finally { f.close(); }
+});
+
+const sendsOf = bodiesFor<{ text: string; threadTs: string | null; channel?: string }>('/v1/slack/send');
+const paragraphs = (n: number) => Array.from({ length: n }, (_, i) => `Parágrafo ${i + 1}: ${Array.from({ length: 30 }, () => 'palavra').join(' ')}.`).join('\n\n');
+
+test('a final answer over the DM budget goes out as a short head, then the full text in a thread reply', async () => {
+  const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'resume o dia' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    const long = paragraphs(6);
+    await f.bridge.runEnded(replies(long));
+    const sends = sendsOf(f);
+    assert.equal(sends.length, 2, 'a head, then the full text');
+    assert.ok(words(sends[0]!.text) <= 100, `head has ${words(sends[0]!.text)} words`);
+    assert.match(sends[0]!.text, /texto completo na thread/);
+    assert.equal(sends[0]!.threadTs, null, 'the head is the answer, in the DM as before');
+    assert.equal(sends[1]!.text, long, 'the full text is kept whole');
+    assert.equal(sends[1]!.threadTs, '1.1', "the full text replies in the head's thread");
+  } finally { f.close(); }
+});
+
+test('a final answer within the budget is one post, as before', async () => {
+  const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'status?' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    await f.bridge.runEnded(replies('Tudo verde.'));
+    assert.deepEqual(sendsOf(f), [{ text: 'Tudo verde.', threadTs: null }]);
+  } finally { f.close(); }
+});
+
+test('slack_send over the channel budget posts a head in the channel and the full text in its thread', async () => {
+  const f = fixture();
+  try {
+    const long = Array.from({ length: 150 }, (_, i) => `item${i}`).join(' ');
+    await f.bridge.post(long, 'dentai');
+    const sends = sendsOf(f);
+    assert.deepEqual(sends.map(s => s.channel), ['dentai', 'dentai']);
+    assert.ok(words(sends[0]!.text) <= 100);
+    assert.equal(sends[1]!.text, long);
+    assert.equal(sends[1]!.threadTs, '1.1');
+  } finally { f.close(); }
+});
+
+test('a topic post over the budget keeps its topic thread, and the full text goes in that thread too', async () => {
+  const f = fixture();
+  try {
+    const long = Array.from({ length: 150 }, (_, i) => `t${i}`).join(' ');
+    await f.bridge.post('primeiro post', 'harness', 'denta-1');
+    f.requests.length = 0;
+    await f.bridge.post(long, 'harness', 'denta-1');
+    const sends = sendsOf(f);
+    assert.equal(sends.length, 2);
+    assert.equal(sends[0]!.threadTs, '1.1', 'the topic reply goes in the topic thread');
+    assert.equal(sends[1]!.threadTs, '1.1', 'and so does the full text');
+    assert.equal(sends[1]!.text, long);
+  } finally { f.close(); }
+});
+
+test('the word budget is per channel: a project channel can set its own, the DM keeps the default', async () => {
+  const f = fixture([], { wordBudgets: { dentai: 60 } });
+  try {
+    const eighty = Array.from({ length: 80 }, (_, i) => `p${i}`).join(' ');
+    await f.bridge.post(eighty, 'dentai');
+    assert.equal(sendsOf(f).length, 2, 'over the dentai budget of 60: split');
+    f.requests.length = 0;
+    await f.bridge.post(eighty, null);
+    assert.deepEqual(sendsOf(f), [{ text: eighty, threadTs: null }], 'within the DM budget of 100: whole');
+  } finally { f.close(); }
+});
+
+test('a wake report over the budget is split the same way, in the repo channel', async () => {
+  const f = fixture();
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['bash', { command: 'cd C:/projetos/Genexus18MCP && git commit -m fix && git push' }]], paragraphs(5)));
+    const sends = sendsOf(f);
+    assert.equal(sends.length, 2, JSON.stringify(sends.map(s => s.text.slice(0, 40))));
+    assert.ok(words(sends[0]!.text) <= 100);
+    assert.equal(sends[1]!.text, `*Wake* · ${paragraphs(5)}`);
+  } finally { f.close(); }
+});
+
+test('a Slack message tells the model the reply budget of its own channel', async () => {
+  const f = fixture([{ seq: 1, ts: '7.0', thread: null, text: 'oi do dentai', channelName: 'dentai' }, { seq: 2, ts: '8.0', thread: null, text: 'oi da DM' }], { wordBudgets: { dentai: 60 } });
+  try {
+    await f.bridge.poll();
+    assert.match(f.sent[0]!.text, /até 60 palavras/);
+    assert.match(f.sent[1]!.text, /até 100 palavras/);
   } finally { f.close(); }
 });

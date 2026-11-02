@@ -14,6 +14,8 @@ import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
+import { budgetNote, fitPost, wordBudget, type WordBudgets } from './slack-policy.ts';
+import { NO_WORK, renderWork, type HomeWork } from './home-items.ts';
 
 /**
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
@@ -120,6 +122,7 @@ export class SlackBridge {
   private cancelRead: AbortController | undefined;
   private polling = false;
   private pollFailure: string | undefined;
+  private itemsFailure: string | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
@@ -136,6 +139,10 @@ export class SlackBridge {
   private settling: Promise<unknown> = Promise.resolve();
   private readonly options: { intervalMs: number; waitMs: number; heldMs: number; now: () => number; request: Request; warn: (text: string) => void; sent: (channel: string | null, text: string) => void;
     schedule: (run: () => void, ms: number) => void;
+    /** Word budget of project channels by name (src/slack-policy.ts); the DM and unlisted channels use the default. */
+    wordBudgets: WordBudgets;
+    /** The work the App Home lists: open PRs, open commitments, running jobs (src/home-items.ts). */
+    items: () => HomeWork;
     /** Whether the chat can take a DM now. While not, the inbox is left alone: a message handed to a chat that drops it would still move the cursor. */
     accepting: () => boolean;
     /** The selected model (`provider/id`) and pi-multi-account's state, for the commands answered without a turn and the App Home. */
@@ -154,7 +161,7 @@ export class SlackBridge {
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
-    this.options = { intervalMs: 3000, waitMs: LONG_POLL_MS, heldMs: HELD_MS, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
+    this.options = { intervalMs: 3000, waitMs: LONG_POLL_MS, heldMs: HELD_MS, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, wordBudgets: {}, items: () => NO_WORK, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
       models: () => [], select: async () => false, abort: () => false, nextWake: () => undefined, ...options };
   }
 
@@ -209,6 +216,18 @@ export class SlackBridge {
       ...w.steps ? [`Agora: ${w.step} · ${w.steps} passo${w.steps === 1 ? '' : 's'}`] : []].join('\n'));
   }
 
+  /** The work as items (PRs, commitments, jobs); a reader that fails leaves them out, and the Home still goes out. */
+  private itemsBlock(): string {
+    let text = '';
+    try { text = renderWork(this.options.items()); }
+    catch (error) {
+      // Said once, like a failing inbox pass: the Home repeats at every run end.
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== this.itemsFailure) { this.itemsFailure = message; this.options.warn(`App Home items not read: ${message}`); }
+    }
+    return text ? `\n\n${text}` : '';
+  }
+
   private waitingBlock(): string {
     let items: readonly string[] = [];
     try { items = this.waiting(); } catch { /* the Home still goes out */ }
@@ -257,7 +276,7 @@ export class SlackBridge {
         const id = typeof m.channel === 'string' && REAL_CHANNEL.test(m.channel) ? m.channel : undefined;
         if (id) this.react(owner, id, m.ts, SEEN);
         const extras = await this.enrich(owner, m);
-        const text = `${slackPrefix(channel)}${m.text}${extras}${this.running ? MID_RUN : ''}`;
+        const text = `${slackPrefix(channel)}${m.text}${extras}\n\n${budgetNote(wordBudget(channel, this.options.wordBudgets))}${this.running ? MID_RUN : ''}`;
         this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel, ...(id ? { id, ts: m.ts } : {}) });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
@@ -313,7 +332,7 @@ export class SlackBridge {
     this.homeText = text;
     const owner = this.owner();
     this.activity = text.split('\n')[0]!;
-    let status = this.waitingBlock();
+    let status = this.waitingBlock() + this.itemsBlock();
     try { if (owner) { const today = renderDay(readDay(owner.dir, this.options.now()), this.options.now(), this.options.nextWake()); if (today) status += `\n\n${today}`; } } catch { /* the Home goes out without the day */ }
     try { status += `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
     // Buttons: Parar only while working; Aprovar decides the newest pending approval post, as a tap on that post would.
@@ -392,7 +411,7 @@ export class SlackBridge {
   private async answer(answering: Origin, text: string, closing: boolean): Promise<void> {
     const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
     try {
-      await this.send(text, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
+      await this.publish(text, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
       this.answered(answering.channel);
       const owner = this.owner();
       if (closing && owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
@@ -418,7 +437,7 @@ export class SlackBridge {
     const text = waking && finalText(messages);
     const channel = text ? wakeChannel(messages) : undefined;
     if (!text || channel === undefined) return;
-    try { await this.send(`*Wake* · ${text}`, null, channel); }
+    try { await this.publish(`*Wake* · ${text}`, null, channel); }
     catch (error) { this.options.warn(`Wake report not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -499,19 +518,30 @@ export class SlackBridge {
    */
   async post(text: string, channel: string | null, topic?: string): Promise<{ parts: number; ts: string }> {
     const owner = this.owner();
-    if (!topic || !owner) return this.send(text, this.progressThread(channel), channel);
+    if (!topic || !owner) return this.publish(text, this.progressThread(channel), channel);
     const file = join(owner.dir, TOPICS), now = this.options.now();
     let topics: Record<string, { channel: string | null; ts: string; at: number }> = {};
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none yet */ }
     const known = topics[topic];
     const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
-    const result = await this.send(text, open?.ts ?? null, channel);
+    const result = await this.publish(text, open?.ts ?? null, channel);
     if (!open) {
       topics[topic] = { channel, ts: result.ts, at: now };
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
       atomicWrite(file, JSON.stringify(Object.fromEntries(fresh)));
     }
     return result;
+  }
+
+  /**
+   * A post the agent wants to make (a final answer, a wake report, slack_send): within its channel's word budget it is one
+   * post; over it, the short head goes first and the full text follows as a reply in the same thread (or under the head).
+   */
+  private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
+    const { head, full } = fitPost(text, wordBudget(channel, this.options.wordBudgets));
+    const sent = await this.send(head, threadTs, channel, options);
+    if (full !== undefined) await this.send(full, threadTs ?? sent.ts, channel);
+    return sent;
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
@@ -546,7 +576,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
@@ -569,7 +599,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel instead of the DM: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles); route reports by the repo the work is in, and keep the DM for general matters, urgent blockers and decisions. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here.",
+    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel instead of the DM: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles); route reports by the repo the work is in, and keep the DM for general matters, urgent blockers and decisions. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and its full text follows in the thread.",
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #; omit for the DM.' })),
