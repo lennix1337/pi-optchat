@@ -126,3 +126,23 @@ test('an empty day still says so', () => {
   assert.match(text, /Precisa de você hoje\*\n• Nada\./);
   assert.match(text, /Briefing do Google indisponível/);
 });
+
+test('the two PR searches of a pass run at the same time, not one after the other', async () => {
+  const dir = temp();
+  writeFileSync(join(dir, 'assistant.json'), '{}');
+  try {
+    const node = (number: number) => ({ number, title: 'Inbox', url: `https://github.com/lennix1337/pi-optchat/pull/${number}`, state: 'OPEN', isDraft: false, createdAt: '2020-01-01T00:00:00Z',
+      repository: { name: 'pi-optchat', nameWithOwner: 'lennix1337/pi-optchat' }, commits: { nodes: [{ commit: { statusCheckRollup: { state: 'PENDING' } } }] } });
+    let inFlight = 0, peak = 0;
+    const gh = async (args: string[]) => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      inFlight--;
+      return JSON.stringify({ data: { search: { nodes: [node(args.some(a => a.startsWith('q=') && a.includes('updated:>=')) ? 2 : 1)] } } });
+    };
+    const watch = new PrWatch(() => ({ dir, name: 'p' }), recorder().post, gh, () => Date.parse('2026-10-29T12:00:00Z'));
+    assert.equal(await watch.poll(), 0);
+    assert.equal(peak, 2, 'both GitHub searches were in flight together');
+    assert.deepEqual(watch.open(dir).map(p => p.url).sort(), [1, 2].map(n => `https://github.com/lennix1337/pi-optchat/pull/${n}`));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

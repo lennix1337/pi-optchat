@@ -535,3 +535,53 @@ test('App Home: a service from before the buttons refuses the new fields; the te
     assert.deepEqual(Object.keys(calls[1]!), ['text']);
   } finally { f.close(); }
 });
+
+/** A request fake whose enrichment calls take `ms` each and record how many were in flight at once. */
+function slowEnrichment(ms: number) {
+  let inFlight = 0, peak = 0;
+  const request = async (_o: unknown, path: string, body: any) => {
+    if (path === '/v1/slack/react') return { ok: true };
+    if (path.startsWith('/v1/slack/inbox')) return { messages: [] };
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise(resolve => setTimeout(resolve, ms));
+    inFlight--;
+    if (path === '/v1/slack/download') return { path: `C:/x/${body.name}` };
+    return { user: 'U0ALICE', text: `texto de ${body.ts}` };
+  };
+  return { request, peak: () => peak };
+}
+
+test('the files and linked messages of one Slack message are read at the same time, and listed in the order sent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const sent: string[] = [];
+  const slow = slowEnrichment(60);
+  const files = ['a.png', 'b.png', 'c.png'].map((name, i) => ({ id: `F${i}`, name, mimetype: 'image/png', url: `https://files.slack.com/${name}` }));
+  const inbox = [{ seq: 1, ts: '1793000000.000100', thread: null, channel: 'D0OWNER',
+    text: 'veja https://lennix.slack.com/archives/C0GERAL/p1793000000123456 e https://lennix.slack.com/archives/C0GERAL/p1793000000999999', files }];
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    request: async (o, path, body: any) => path.startsWith('/v1/slack/inbox') ? { messages: inbox } : slow.request(o, path, body),
+  });
+  try {
+    await bridge.poll();
+    assert.equal(slow.peak(), 5, 'three downloads and two fetches were in flight together');
+    const text = sent[0]!;
+    assert.ok(text.indexOf('a.png') < text.indexOf('b.png') && text.indexOf('b.png') < text.indexOf('c.png'), 'attachments keep the order he sent');
+    assert.ok(text.indexOf('Anexos') < text.indexOf('Mensagem linkada'), 'attachments come before the quotes, as before');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a message with many files reads them a few at a time, not all at once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const slow = slowEnrichment(40);
+  const files = Array.from({ length: 9 }, (_, i) => ({ id: `F${i}`, name: `f${i}.png`, mimetype: 'image/png', url: `https://files.slack.com/f${i}` }));
+  const inbox = [{ seq: 1, ts: '1793000000.000100', thread: null, channel: 'D0OWNER', text: 'nove prints', files }];
+  const sent: string[] = [];
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    request: async (o, path, body: any) => path.startsWith('/v1/slack/inbox') ? { messages: inbox } : slow.request(o, path, body),
+  });
+  try {
+    await bridge.poll();
+    assert.equal(slow.peak(), 4, 'at most four downloads at once');
+    for (let i = 0; i < 9; i++) assert.ok(sent[0]!.includes(`- f${i}.png [image/png]: C:/x/f${i}.png`), `file ${i} is listed`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

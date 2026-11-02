@@ -59,6 +59,8 @@ type Reply = { status: number; body: unknown };
 const PENDING_MS = 10 * 60_000;
 const MAX_PENDING = 32;
 const REFRESH_MARGIN_MS = 60_000;
+/** Message bodies read at once within a page: a page of 50 takes about nine rounds of reads instead of 50. */
+const READS_AT_ONCE = 6;
 const DAY_MS = 86_400_000;
 const CONNECTION_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const EMAIL = /^[^\s@<>",;]{1,64}@[^\s@<>",;]+\.[^\s@<>",;]+$/;
@@ -103,6 +105,8 @@ export class GoogleConnections {
   private readonly fetch: typeof fetch;
   private readonly now: () => number;
   private readonly pending = new Map<string, Pending>();
+  /** One token refresh per connection in flight: reads that find the access token expired share it. */
+  private readonly refreshing = new Map<string, Promise<void>>();
 
   constructor(options: GoogleOptions) {
     if (!options?.operatorAuthority || typeof options.operatorAuthority !== 'object' || !singleLine(options.profileId, 128) || !singleLine(options.clientId, 512) || !options.vault || !options.gateway) fail('invalid_options');
@@ -270,6 +274,12 @@ export class GoogleConnections {
     return { connectionId, subject: identity.subject, email: identity.email, scopes, state: 'active' };
   }
 
+  private refreshOnce(row: Row): Promise<void> {
+    const running = this.refreshing.get(row.connection_id) ?? this.refresh(row).finally(() => this.refreshing.delete(row.connection_id));
+    this.refreshing.set(row.connection_id, running);
+    return running;
+  }
+
   private async refresh(row: Row): Promise<void> {
     const reply = await this.withSecret(row.refresh_ref, 'google.refresh', this.endpoints.token, token => this.tokenRequest({ grant_type: 'refresh_token', refresh_token: token, client_id: this.options.clientId }));
     if (reply.status === 400 || reply.status === 401) fail('google_reauthorization_required');
@@ -284,7 +294,7 @@ export class GoogleConnections {
     let row = this.active(connectionId);
     if (!(JSON.parse(row.scopes) as string[]).includes(scope)) fail('google_scope_missing');
     if (row.access_expires - REFRESH_MARGIN_MS <= this.now()) {
-      await this.refresh(row);
+      await this.refreshOnce(row);
       row = this.active(connectionId);
     }
     const url = new URL(path, this.endpoints.api);
@@ -305,10 +315,16 @@ export class GoogleConnections {
       const entries = body?.[key] ?? [];
       const next = body?.nextPageToken;
       if (!Array.isArray(entries) || (next !== undefined && !singleLine(next, 2048))) fail('google_response_invalid');
-      for (const entry of entries as unknown[]) {
-        if (items.length >= max) return { items, truncated: true };
-        const item = await take(entry);
-        if (item !== null) items.push(item);
+      // The entries of a page are independent reads: a few go out together, then their results are taken in order, so the
+      // items, the bound and the first failure are the ones reading them one by one would give.
+      const list = entries as unknown[];
+      for (let start = 0; start < list.length; start += READS_AT_ONCE) {
+        const outcomes = await Promise.allSettled(list.slice(start, start + READS_AT_ONCE).map(entry => take(entry)));
+        for (const outcome of outcomes) {
+          if (items.length >= max) return { items, truncated: true };
+          if (outcome.status === 'rejected') throw outcome.reason;
+          if (outcome.value !== null) items.push(outcome.value);
+        }
       }
       if (next === undefined) return { items, truncated: false };
       if (items.length >= max) return { items, truncated: true };
