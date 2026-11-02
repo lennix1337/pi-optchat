@@ -6,11 +6,12 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
 import { SLACK_PREFIX, SlackBridge, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { readDay } from '../src/home-day.ts';
 import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 
-function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = []) {
+function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = [], extra: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const owner = { dir, name: 'p' };
   const sent: { text: string; options: unknown }[] = [];
@@ -30,6 +31,7 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
       return { parts: 1, ts: '1.1', channel: 'D1' };
     },
     schedule: (run, ms) => { timers.push({ run, ms }); },
+    ...extra,
   });
   return { dir, owner, bridge, timers, sent, requests, inbox, advance: (ms: number) => { now += ms; }, fail: (error?: Error) => { fail = error; }, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
@@ -460,5 +462,76 @@ test('App Home: a run typed in the terminal shows working too, with the live ste
     assert.match(homes().at(-1)!, /Esperando você[\s\S]*rk_live/);
     await f.bridge.runEnded(replies('Pronto.'));
     assert.match(homes().at(-1)!, /Livre[\s\S]*Pronto\.[\s\S]*Esperando você/);
+  } finally { f.close(); }
+});
+
+const homeBodies = (f: ReturnType<typeof fixture>) => f.requests.filter(r => r.path === '/v1/slack/home').map(r => r.body as { text: string; working?: boolean; approval?: string });
+
+test('App Home buttons: Parar while working, Aprovar naming the waiting post, and its tap decides that call', async () => {
+  const f = fixture([{ seq: 1, ts: '9.0', thread: '1.1', text: 'aprovar', channelName: null }]);
+  let ran = 0;
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('faz o deploy');
+    assert.equal(homeBodies(f).at(-1)!.working, true);
+    assert.equal(homeBodies(f).at(-1)!.approval, undefined);
+    await f.bridge.askApproval({ token: 't1', label: 'bash', summary: 'git push --force', expires: 1_000_000 + 600_000, decide: () => (ran++, true) });
+    assert.equal(homeBodies(f).at(-1)!.approval, '1.1', 'the Home offers Aprovar for the waiting post');
+    assert.equal(await f.bridge.poll(), 0, 'a Home tap arrives as aprovar in the thread of that post');
+    assert.equal(ran, 1);
+    assert.equal(homeBodies(f).at(-1)!.approval, undefined, 'decided: the button goes away');
+    await f.bridge.runEnded(replies('ok'));
+    assert.equal(homeBodies(f).at(-1)!.working, false, 'free: no Parar');
+  } finally { f.close(); }
+});
+
+test('parar from the DM or the Home stops the run in progress; idle says there was nothing', async () => {
+  let running = true, stopped = 0;
+  const f = fixture([{ seq: 1, ts: '1.0', thread: null, text: 'parar' }, { seq: 2, ts: '2.0', thread: null, text: 'parar' }],
+    { abort: () => { if (!running) return false; running = false; stopped++; return true; } });
+  try {
+    await f.bridge.poll();
+    assert.equal(stopped, 1);
+    const replies$ = f.requests.filter(r => r.path === '/v1/slack/send').map(r => (r.body as { text: string }).text);
+    assert.match(replies$[0]!, /Parei/);
+    assert.match(replies$[1]!, /Nada rodando/);
+    assert.equal(f.sent.length, 0, 'the agent never sees it');
+  } finally { f.close(); }
+});
+
+test('App Home "Hoje": finished runs survive in home-day.json with totals, an hour bar and the next wake check', async () => {
+  const base = Date.parse('2026-11-02T12:00:00Z'); // 09:00 in Brasilia
+  let now = base;
+  const f = fixture([], { now: () => now, nextWake: () => now + 45 * 60_000 });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('arruma o CI');
+    f.bridge.toolStarted('bash', { command: 'npm test' });
+    now += 25 * 60_000;
+    await f.bridge.runEnded(replies('CI verde.'));
+    const text = homeBodies(f).at(-1)!.text;
+    assert.match(text, /\*Hoje\* · 1 trabalho · 25 min trabalhando · 1 passo\b/);
+    assert.match(text, /`09h [▁-█] 09h`/);
+    assert.match(text, /• 09:00 · 25 min · arruma o CI/);
+    assert.match(text, /Próxima checagem de wake às 10:10/);
+    assert.equal(readDay(f.dir, now).length, 1, 'a reload reads the day back');
+    assert.equal(readDay(f.dir, now + 86_400_000).length, 0, 'tomorrow starts empty');
+  } finally { f.close(); }
+});
+
+test('App Home: a service from before the buttons refuses the new fields; the text alone still goes out', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const f = fixture([], { request: async (_o: unknown, path: string, body: Record<string, unknown>) => {
+    if (path !== '/v1/slack/home') return { parts: 1, ts: '1.1', channel: 'D1' };
+    calls.push(body);
+    if ('working' in body) throw new Error('HTTP 400 bad request');
+    return { ok: true };
+  } });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('oi');
+    await new Promise(done => setTimeout(done, 10));
+    assert.equal(calls.length, 2);
+    assert.deepEqual(Object.keys(calls[1]!), ['text']);
   } finally { f.close(); }
 });
