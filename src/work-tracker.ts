@@ -7,6 +7,7 @@ import type { RunInfo } from './runs.ts';
 import type { ShellJob } from './shells.ts';
 import { PROJECTS, projectOf, projectOfRun, type Project } from './projects.ts';
 import { FROM_SLACK } from './slack-bridge.ts';
+import { BUDGET_NOTE } from './slack-policy.ts';
 import { textContent } from './transcript.ts';
 
 /**
@@ -33,7 +34,7 @@ const defaultRequest: Request = (owner, path, body) => assistantRequest(assistan
 /** Which door a run came through, and the card title. */
 export function classify(prompt: string): { channel: string; title: string } {
   const slack = FROM_SLACK.exec(prompt);
-  if (slack) return { channel: slack[1] ? `Slack #${slack[1]}` : 'Slack', title: prompt.slice(slack[0].length) };
+  if (slack) return { channel: slack[1] ? `Slack #${slack[1]}` : 'Slack', title: prompt.slice(slack[0].length).replace(BUDGET_NOTE, '') };
   const wake = wakeTask(prompt);
   if (wake !== undefined) return { channel: 'Wake', title: wake ? `Wake: ${wake}` : 'Wake agendado' };
   if (/^\[shell [^\]]+\]/.test(prompt)) return { channel: 'Shell', title: prompt };
