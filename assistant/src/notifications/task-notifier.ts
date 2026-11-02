@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { localEnvironment, type Environment } from '../environment/local.ts';
 import type { StoredEvent, TaskStore } from '../store/db.ts';
 import type { DeliveredNotification, NotificationCategory, NotificationCenter, NotificationChannel } from './center.ts';
 import { singleFlight } from '../single-flight.ts';
@@ -65,30 +65,10 @@ export class TaskNotifier {
   stop(): void { clearInterval(this.timer); this.timer = undefined; }
 }
 
-export type RunProcess = (file: string, args: string[], env: Record<string, string | undefined>) => Promise<number>;
-
-const TOAST_SCRIPT = `
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null
-$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$t = $x.GetElementsByTagName('text')
-$t.Item(0).AppendChild($x.CreateTextNode('OptChat')) > $null
-$t.Item(1).AppendChild($x.CreateTextNode($env:OPTCHAT_TOAST_TEXT)) > $null
-$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($x))
-`;
-
-const runProcess: RunProcess = (file, args, env) => new Promise(resolve => {
-  execFile(file, args, { env: { ...process.env, ...env }, windowsHide: true, timeout: 20_000 }, error => {
-    resolve(error ? (typeof error.code === 'number' ? error.code : 1) : 0);
-  });
-});
-
-/** Windows toast through Windows PowerShell's registered app id. The text travels in the environment, not the command line. */
-export function windowsToast(run: RunProcess = runProcess): (note: DeliveredNotification) => Promise<void> {
-  const encoded = Buffer.from(TOAST_SCRIPT, 'utf16le').toString('base64');
+/** Windows toast through the environment port (the `toast` action): fixed text, the app id and script are the port's. */
+export function windowsToast(environment: Environment = localEnvironment): (note: DeliveredNotification) => Promise<void> {
   return async note => {
-    const code = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { OPTCHAT_TOAST_TEXT: note.text });
-    if (code !== 0) throw new Error('toast_failed');
+    const result = await environment.run({ action: 'toast', text: note.text });
+    if (result.code !== 0) throw new Error('toast_failed');
   };
 }

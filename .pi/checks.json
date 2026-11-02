@@ -267,8 +267,18 @@
       "timeoutMs": 60000
     },
     "assistant-channel-mutations": {
-      "description": "Disposable-source proof that each Slack/Teams boundary guard is load-bearing (18 mutants)",
+      "description": "Disposable-source proof that each Slack/Teams boundary guard is load-bearing (22 mutants)",
       "argv": ["node", "assistant/test/channel-mutations.mjs"],
+      "timeoutMs": 600000
+    },
+    "assistant-outbox": {
+      "description": "Durable outbox: crash between state change and send, duplicate delivery, uncertain transport, retry with backoff and budget, Slack relay/HTTP writes; plus the environment allow-list and loopback daemon. Temp DBs only, no network",
+      "argv": ["node", "--experimental-transform-types", "--no-warnings", "--test", "--test-timeout=60000", "assistant/test/service-outbox.test.ts", "assistant/test/environment-port.test.ts"],
+      "timeoutMs": 120000
+    },
+    "assistant-outbox-mutations": {
+      "description": "Disposable-source proof that each outbox guard (staging transaction, conflict, recovery, uncertain, refusal, claim) is load-bearing",
+      "argv": ["node", "assistant/test/outbox-mutations.mjs"],
       "timeoutMs": 600000
     },
     "assistant-briefing-panel-mutations": {

@@ -64,11 +64,10 @@ test('a notice recorded before a crash is not duplicated when its event is repla
   finally { h.close(); }
 }));
 
-test('the Windows toast passes only the fixed text, through the environment, and a failed toast rejects', async () => {
-  const calls: { file: string; args: string[]; env: Record<string, string | undefined> }[] = [];
-  await windowsToast((file, args, env) => { calls.push({ file, args, env }); return Promise.resolve(0); })({ id: 'x:r1', text: 'An assistant task finished.', ref: 'x' });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].env.OPTCHAT_TOAST_TEXT, 'An assistant task finished.');
-  assert.ok(!calls[0].args.join(' ').includes('finished'), 'text is not on the command line');
-  await assert.rejects(windowsToast(() => Promise.resolve(1))({ id: 'x:r1', text: 't', ref: 'x' }), /toast_failed/);
+test('the Windows toast asks the environment port for the toast action with only the fixed text, and a failed toast rejects', async () => {
+  const requests: unknown[] = [];
+  const env = (code: number) => ({ run: async (request: unknown) => { requests.push(request); return { code, stdout: '', stderr: '', uncertain: false }; }, open: () => { throw new Error('unused'); } });
+  await windowsToast(env(0))({ id: 'x:r1', text: 'An assistant task finished.', ref: 'x' });
+  assert.deepEqual(requests, [{ action: 'toast', text: 'An assistant task finished.' }]);
+  await assert.rejects(windowsToast(env(1))({ id: 'x:r1', text: 't', ref: 'x' }), /toast_failed/);
 });

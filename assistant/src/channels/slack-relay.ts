@@ -1,6 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
+import { immediate } from '../store/transaction.ts';
 
 /**
  * The Slack DM as a chat with the operator's OptChat session. Operator DMs (already authenticated by Socket Mode, the
@@ -32,6 +34,11 @@ const MAX_TEXT = 8000;
 /** Without a reader for this long, a new DM gets an automatic receipt so the operator knows it waits in the queue. */
 const READER_GRACE_MS = 2 * 60_000;
 const OFFLINE_RECEIPT = 'Recebi. O OptChat não está aberto agora; sua mensagem ficou na fila e eu respondo assim que ele voltar.';
+/** Slack's own refusals that say the post did not happen and may succeed later. */
+const RETRYABLE_SLACK_ERRORS = new Set(['ratelimited', 'internal_error', 'service_unavailable']);
+
+/** Replaces an approval post with its decided text (no buttons), queued with the click that decided it. */
+export type RetireRequest = { channel: string; ts: string; text: string };
 
 export class SlackRelay {
   private readonly db: DatabaseSync;
@@ -41,10 +48,13 @@ export class SlackRelay {
   private lastRead: number;
   private poster: SlackPoster | undefined;
   private pending: Promise<unknown> = Promise.resolve();
+  private retryTimer: NodeJS.Timeout | undefined;
   /** Readers held by `waitAfter`; each is ended by a new message or by its own deadline. */
   private readonly arrivals = new Set<() => void>();
+  /** The relay's effects: receipts and retirements are staged with the message; HTTP writes are recorded by `record`. */
+  readonly outbox: Outbox;
 
-  constructor(options: { databasePath: string; profileId: string; now?: () => number }) {
+  constructor(options: { databasePath: string; profileId: string; now?: () => number; outbox?: OutboxOptions }) {
     this.profileId = options.profileId; this.now = options.now ?? Date.now;
     this.lastRead = this.now();
     this.db = new DatabaseSync(options.databasePath);
@@ -52,30 +62,61 @@ export class SlackRelay {
       CREATE TABLE IF NOT EXISTS slack_relay (seq INTEGER PRIMARY KEY AUTOINCREMENT, profile TEXT NOT NULL, delivery TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, ts TEXT NOT NULL, thread TEXT, text TEXT NOT NULL, received_at TEXT NOT NULL, UNIQUE(profile, delivery));`);
     const columns = this.db.prepare('PRAGMA table_info(slack_relay)').all() as { name: string }[];
     if (!columns.some(c => c.name === 'files')) this.db.exec('ALTER TABLE slack_relay ADD COLUMN files TEXT');
+    this.outbox = new Outbox(this.db, options.profileId, { now: this.now, ...options.outbox });
+    // Before any dispatch: a send a previous process left in flight is uncertain, never resent.
+    this.outbox.recover();
   }
 
-  /** The poster used for the offline receipt; optional, so intake works before a bot token is configured. */
-  attach(poster: SlackPoster): void { this.poster = poster; }
+  /** The poster that delivers the outbox; optional, so intake works before a bot token is configured. Pending rows go out now. */
+  attach(poster: SlackPoster): void { this.poster = poster; this.schedule(); }
 
-  enqueue(message: QueuedMessage): 'relayed' | 'duplicate' {
+  /**
+   * Queues an operator message. The message, its offline receipt and the `retire` update of the approval post it
+   * answers commit in one transaction, so a crash after the commit still sends them, once, and a crash before it sends nothing.
+   */
+  enqueue(message: QueuedMessage, retire?: RetireRequest): 'relayed' | 'duplicate' {
     const files = message.files?.length ? JSON.stringify(message.files) : null;
-    const result = this.db.prepare('INSERT OR IGNORE INTO slack_relay (profile, delivery, sender, channel, ts, thread, text, received_at, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(this.profileId, message.delivery, message.sender, message.channel, message.ts, message.thread ?? null, message.text.slice(0, MAX_TEXT), new Date(this.now()).toISOString(), files);
-    if (!result.changes) return 'duplicate';
+    const relayed = immediate(this.db, () => {
+      const result = this.db.prepare('INSERT OR IGNORE INTO slack_relay (profile, delivery, sender, channel, ts, thread, text, received_at, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(this.profileId, message.delivery, message.sender, message.channel, message.ts, message.thread ?? null, message.text.slice(0, MAX_TEXT), new Date(this.now()).toISOString(), files);
+      if (!result.changes) return false;
+      this.stageReceipt(message);
+      if (retire && this.poster) this.outbox.stage({ id: `retire:${message.delivery}`, channel: 'slack', kind: 'retire', payload: retire });
+      return true;
+    });
+    if (!relayed) return 'duplicate';
     for (const arrived of [...this.arrivals]) arrived();
-    if (this.poster && this.now() - this.lastRead > READER_GRACE_MS) {
-      const poster = this.poster;
-      const channel = message.channel.startsWith('D') || message.channel === FORWARD_CHANNEL || message.channel === HOME_CHANNEL ? undefined : poster.nameOf(message.channel);
-      // Best effort and logged by the caller's socket line only; the message itself is already durable in the queue.
-      if (channel !== null) this.pending = this.pending.then(() => poster.send(OFFLINE_RECEIPT, message.thread ?? message.ts, channel)).catch(() => undefined);
-    }
+    this.schedule();
     return 'relayed';
   }
 
-  /** Replaces an approval post once a click on it was queued, so its buttons cannot be pressed again. Best effort. */
-  retire(channel: string, ts: string, text: string): void {
+  /** Stages the automatic receipt for a DM or project-channel message when no reader has been present for a while. */
+  private stageReceipt(message: QueuedMessage): void {
     const poster = this.poster;
-    if (poster) this.pending = this.pending.then(() => poster.update(channel, ts, text)).catch(() => undefined);
+    if (!poster || this.now() - this.lastRead <= READER_GRACE_MS) return;
+    const destination = message.channel.startsWith('D') || message.channel === FORWARD_CHANNEL || message.channel === HOME_CHANNEL ? undefined : poster.nameOf(message.channel);
+    if (destination === null) return;
+    this.outbox.stage({ id: `receipt:${message.delivery}`, channel: 'slack', kind: 'receipt', payload: { text: OFFLINE_RECEIPT, thread: message.thread ?? message.ts, ...(destination ? { destination } : {}) } });
+  }
+
+  /** An outbound Slack write requested over the loopback API: its intent commits before the call (see `Outbox.perform`). */
+  record<T>(kind: string, payload: unknown, run: () => Promise<T>): Promise<T> { return this.outbox.perform('slack', kind, payload, run); }
+
+  /** Runs one dispatch pass; passes are serialized, and a pass schedules the next one when a retry comes due. */
+  private schedule(): void { this.pending = this.pending.then(() => this.flush()).catch(() => undefined); }
+  private async flush(): Promise<void> {
+    const poster = this.poster;
+    if (!poster) return;
+    clearTimeout(this.retryTimer);
+    await this.outbox.dispatch(row => this.deliver(poster, row));
+    const next = this.outbox.nextDueAt();
+    if (next !== null) { this.retryTimer = setTimeout(() => this.schedule(), Math.max(0, next - this.now())); this.retryTimer.unref(); }
+  }
+  private async deliver(poster: SlackPoster, row: OutboxRow): Promise<void> {
+    const payload = row.payload as Record<string, string | undefined>;
+    if (row.kind === 'receipt') { await poster.send(String(payload.text), payload.thread, payload.destination); return; }
+    if (row.kind === 'retire') { await poster.update(String(payload.channel), String(payload.ts), String(payload.text)); return; }
+    throw new OutboxRefused('unknown_outbox_kind');
   }
 
   /**
@@ -100,9 +141,9 @@ export class SlackRelay {
     return rows.map(row => ({ seq: Number(row.seq), sender: String(row.sender), channel: String(row.channel), ts: String(row.ts), thread: row.thread === null ? null : String(row.thread), text: String(row.text), receivedAt: String(row.received_at), ...(row.files ? { files: JSON.parse(String(row.files)) as SlackFile[] } : {}) }));
   }
 
-  /** Settles pending automatic receipts (tests, shutdown). */
+  /** Settles the running dispatch pass (tests, shutdown). */
   idle(): Promise<unknown> { return this.pending; }
-  close(): void { this.db.close(); }
+  close(): void { clearTimeout(this.retryTimer); this.db.close(); }
 }
 
 const POST_URL = 'https://slack.com/api/chat.postMessage';
@@ -174,13 +215,16 @@ export class SlackPoster {
   /** Also returns the conversation id Slack posted to (the DM's `D…` id), which `update` needs. */
   async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
     const destination = channel === undefined ? this.options.operator : Object.hasOwn(this.options.channels, channel) ? this.options.channels[channel] : undefined;
-    if (!destination) throw new Error('unknown_channel');
+    if (!destination) throw new OutboxRefused('unknown_channel');
     const chunks = parts(slackText(text));
-    if (!chunks.length) throw new Error('empty_message');
+    if (!chunks.length) throw new OutboxRefused('empty_message');
     const buttons = options.approval && chunks.length === 1 && chunks[0]!.length <= SECTION_MAX;
     let ts = '', posted: string | undefined;
-    for (const chunk of chunks) {
-      const body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false });
+    for (const [index, chunk] of chunks.entries()) {
+      let body: { ts?: unknown; channel?: unknown };
+      try { body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
+      // A later part that fails means earlier parts were posted: the whole send is uncertain, never a refusal to retry.
+      catch (error) { throw index === 0 ? error : new Error('slack_partial_post'); }
       ts = typeof body.ts === 'string' ? body.ts : ts;
       posted = typeof body.channel === 'string' ? body.channel : posted;
     }
@@ -189,13 +233,13 @@ export class SlackPoster {
 
   /** Rewrites one of the bot's own DM posts as plain text, dropping its buttons. */
   async update(channel: string, ts: string, text: string): Promise<void> {
-    if (!/^D[A-Z0-9]{2,20}$/.test(channel)) throw new Error('unknown_channel');
+    if (!/^D[A-Z0-9]{2,20}$/.test(channel)) throw new OutboxRefused('unknown_channel');
     await this.call(UPDATE_URL, { channel, ts, text: slackText(text), blocks: [] });
   }
 
   /** Marks a message the operator wrote (DM or a configured channel) with an emoji: seen, done. */
   async react(channel: string, ts: string, name: string, remove = false): Promise<void> {
-    if (!/^D[A-Z0-9]{2,20}$/.test(channel) && !Object.values(this.options.channels).includes(channel)) throw new Error('unknown_channel');
+    if (!/^D[A-Z0-9]{2,20}$/.test(channel) && !Object.values(this.options.channels).includes(channel)) throw new OutboxRefused('unknown_channel');
     try { await this.call(`${API}reactions.${remove ? 'remove' : 'add'}`, { channel, timestamp: ts, name }); }
     catch (error) { if (!/already_reacted|no_reaction/.test((error as Error).message)) throw error; }
   }
@@ -241,7 +285,11 @@ export class SlackPoster {
       body: form ? new URLSearchParams(Object.entries(payload).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(payload),
     });
     const body = await response.json() as { ok?: boolean; ts?: unknown; channel?: unknown; error?: unknown };
-    if (!body.ok) throw new Error(`slack_${typeof body.error === 'string' ? body.error.replace(/[^\w.-]/g, '').slice(0, 60) : `http_${response.status}`}`);
+    // Slack answers ok:false before it posts or edits anything: a definite refusal, retryable only for its rate and outage codes.
+    if (!body.ok) {
+      const code = typeof body.error === 'string' ? body.error.replace(/[^\w.-]/g, '').slice(0, 60) : `http_${response.status}`;
+      throw new OutboxRefused(`slack_${code}`, RETRYABLE_SLACK_ERRORS.has(code));
+    }
     return body;
   }
 }

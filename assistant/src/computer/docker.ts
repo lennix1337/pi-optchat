@@ -1,16 +1,17 @@
-import { execFile } from 'node:child_process';
+import type { Environment } from '../environment/local.ts';
+import { localEnvironment } from '../environment/local.ts';
 
 export type DockerResult = { code: number; stdout: string; stderr: string; uncertain?: boolean };
 /** Runs the docker CLI with an argv array (never a shell string). Injected so tests can observe the exact arguments. */
 export type DockerRunner = (args: readonly string[], options?: { timeoutMs?: number }) => Promise<DockerResult>;
 
-export const dockerCli: DockerRunner = (args, options = {}) => new Promise(resolve => {
-  execFile('docker', [...args], { timeout: options.timeoutMs ?? 30_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, encoding: 'utf8' }, (error, stdout, stderr) => {
-    const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0;
-    const uncertain = !!error && (typeof (error as { code?: unknown }).code !== 'number' || code >= 125 && code <= 127);
-    resolve({ code, stdout, stderr, uncertain });
-  });
-});
+/** The docker CLI through the environment port: only the allow-listed subcommands and flags reach the process. */
+export const dockerVia = (environment: Environment): DockerRunner => async (args, options = {}) => {
+  const result = await environment.run({ action: 'docker', args: [...args], ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) });
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr, uncertain: result.uncertain };
+};
+
+export const dockerCli: DockerRunner = dockerVia(localEnvironment);
 
 export type BackendProbe =
   | { available: true; backend: 'docker'; serverVersion: string; os: string; seccomp: boolean; imagePresent: boolean }
