@@ -11,6 +11,7 @@ import { projectOfRepo } from './projects.ts';
 import { appendRecent, atomicWrite, readJsonl, readJsonOr } from './store.ts';
 import { QUOTA_FILE, QUOTA_HEALTH_FILE, quotaRisks } from './quota-health.ts';
 import { WeeklyScoreboard } from './scoreboard.ts';
+import { activityLines, githubActivity, harnessCost, type Activity } from './briefing-sources.ts';
 import { logBackgroundFailure } from './exec-log.ts';
 
 /**
@@ -131,9 +132,21 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; risks?: string[]; fixes?: string[] };
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, risks, fixes }: SummaryInputs): string {
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string };
+/**
+ * The 07:00 briefing, most actionable first: what needs him today, a short plan, what closed in the last day, what
+ * the harness did and noticed, then state (production, PC, quotas, PRs, agenda) and its cost. A source that failed
+ * is named at the end.
+ */
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, risks, fixes, github, cost }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
+  const act = github ? activityLines(github) : { needs: [], closed: [] };
+  const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
+    ...(commitments?.waiting ?? []).map(t => `Pendência: ${one(t, 160)}`), ...act.needs.map(n => one(n, 260))];
+  lines.push('', '*Precisa de você hoje*', ...(wait.length ? wait.map(w => `• ${w}`) : ['• Nada.']));
+  const plan = [...wait.slice(0, 3), ...(risks ?? []).slice(0, Math.max(0, 3 - wait.length))];
+  if (plan.length) lines.push('', '*Plano do dia*', ...plan.map((p, i) => `${i + 1}. ${one(p.replace(/<([^|>]+)\|([^>]+)>/g, '$2'), 160)}`));
+  if (act.closed.length) lines.push('', '*Fechado nas últimas 24h*', ...act.closed);
   if (fixes?.length) lines.push('', '*Resolvi sozinho*', ...fixes.slice(-8).map(f => `• ${one(f, 200)}`));
   const byChannel = new Map<string, string[]>();
   for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
@@ -143,9 +156,6 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
     lines.push(`• #${channel} (${entries.length}):`);
     for (const line of entries.slice(-4)) lines.push(`   – ${one(line, 160)}`);
   }
-  const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
-    ...(commitments?.waiting ?? []).map(t => `Pendência: ${one(t, 160)}`)];
-  lines.push('', '*Esperando você*', ...(wait.length ? wait.map(w => `• ${w}`) : ['• Nada.']));
   if (risks) lines.push('', '*Pode dar problema hoje*', ...(risks.length ? risks.slice(0, 10).map(r => `• ${one(r, 220)}`) : ['• Nada previsto.']));
   if (health?.length) lines.push('', '*Produção agora*', ...health.map(h => `\u2022 ${h}`));
   if (pc?.length) lines.push('', '*Este PC*', ...pc.map(h => `\u2022 ${h}`));
@@ -164,12 +174,14 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
     const off = briefing.sources.filter(s => s.state !== 'ok').map(s => `${s.sourceId} ${s.state}`);
     if (off.length) lines.push(`_Fontes incompletas: ${off.join(', ')}_`);
   } else lines.push('', '_Briefing do Google indisponível agora._');
+  if (cost) lines.push('', '*Custo do harness*', `• ${cost}`);
+  if (github?.failed.length) lines.push(`_Fontes incompletas: ${github.failed.join(', ')}_`);
   return lines.join('\n');
 }
 
 export class DailySummary {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly prs: PrWatch,
-    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string } = {}) {}
+    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh } = {}) {}
 
   /** Posts once a day, the first check after `at` (07:00) and before `until` (noon): a late start skips the day. */
   async maybePost(): Promise<boolean> {
@@ -183,9 +195,19 @@ export class DailySummary {
     try { if ((JSON.parse(readFileSync(file, 'utf8')) as { date?: string }).date === today) return false; } catch { /* first day */ }
     atomicWrite(file, JSON.stringify({ date: today })); // Before posting: a crash mid-post must not post twice.
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
-    await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE), approvals: this.approvals() }), null);
+    const github = await githubInputs(this.options.gh ?? defaultGh, now);
+    await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
+      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now) }), null);
     return true;
   }
+}
+
+/** GitHub around the operator in the last day; without `gh` or a login, the summary names the gap instead. */
+async function githubInputs(gh: Gh, now: number): Promise<Activity> {
+  let me: string;
+  try { me = (await gh(['api', 'user', '--jq', '.login'])).trim(); }
+  catch { return { closed: [], reviews: [], mentions: [], comments: [], failed: ['GitHub (gh sem login)'] }; }
+  return githubActivity(gh, now, me);
 }
 
 /** What the assistant service knows: today's Google briefing and the panel's questions. Both are optional. */

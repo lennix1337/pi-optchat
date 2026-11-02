@@ -71,5 +71,5 @@ test('registered: a low disk runs the maintenance alone, tells the DM so, and th
   assert.match(posts[1]![0], /voltou .* resolvido sozinho/);
   assert.deepEqual(wakes, [], 'the PC never wakes the agent');
   const summary = composeSummary({ ...localInputs(dir, now, []), waiting: [], approvals: 0 });
-  assert.match(summary, /^☀️ \*Bom dia! Resumo das últimas 24h\*\n\n\*Resolvi sozinho\*\n• PC: disco C:: a manutenção do PC às \d\d:\d\d · resolvido\n\n\*Feito\*/);
+  assert.match(summary, /^☀️ \*Bom dia! Resumo das últimas 24h\*\n\n\*Precisa de você hoje\*\n• Nada\.\n\n\*Resolvi sozinho\*\n• PC: disco C:: a manutenção do PC às \d\d:\d\d · resolvido\n\n\*Feito\*/);
 });

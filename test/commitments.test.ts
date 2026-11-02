@@ -63,7 +63,7 @@ test('the 07:00 summary lists what waits on the operator and my overdue or stuck
     assert.deepEqual(lines.waiting, ['Approve the DentAI deploy']);
     assert.deepEqual(lines.attention, ['Fix flaky test — atrasado 1h']);
     const text = composeSummary({ day: [], waiting: [], prs: [], approvals: 0, commitments: lines });
-    assert.match(text, /\*Esperando você\*\n• Pendência: Approve the DentAI deploy/);
+    assert.match(text, /\*Precisa de você hoje\*\n• Pendência: Approve the DentAI deploy/);
     assert.match(text, /\*Compromissos meus atrasados ou parados \(1\)\*\n• Fix flaky test — atrasado 1h/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

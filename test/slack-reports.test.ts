@@ -102,7 +102,7 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
       return { tasks: [{ status: 'needs_input', title: 'Qual conta usar?' }, { status: 'working', title: 'x' }] };
     };
     const prs = new PrWatch(() => ({ dir, name: 'p' }), r.post, async () => '{}');
-    const daily = new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 1, { now: () => now, request });
+    const daily = new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 1, { now: () => now, request, gh: async () => { throw new Error('gh: not logged in'); } });
     assert.equal(await daily.maybePost(), false, 'before 07:00');
     writeFileSync(join(dir, 'pr-watch.json'), JSON.stringify({ 'o/pi-optchat#9': { sig: 'OPEN:FAILURE', seen: now, since: now - 5 * 3_600_000, title: 'Quebrado', url: 'https://github.com/o/pi-optchat/pull/9', channel: 'harness' } }));
     writeFileSync(join(dir, 'pc-health.json'), JSON.stringify({ 'PC: disco C:': { failures: 0, down: false, since: now, ms: 0, detail: '122 GB livres de 1023 GB' } }));
@@ -123,6 +123,6 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
 test('an empty day still says so', () => {
   const text = composeSummary({ day: [], waiting: [], prs: [], approvals: 0 });
   assert.match(text, /Nada reportado nos canais/);
-  assert.match(text, /Esperando você\*\n• Nada\./);
+  assert.match(text, /Precisa de você hoje\*\n• Nada\./);
   assert.match(text, /Briefing do Google indisponível/);
 });
