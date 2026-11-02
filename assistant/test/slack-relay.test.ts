@@ -273,3 +273,46 @@ test('HTTP: send accepts the approval flag and passes it to the poster', async (
     assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'x', threadTs: null, approval: 'yes' }) })).status, 400);
   } finally { await new Promise(done => server.close(done)); r.close(); }
 });
+
+function homeClick(action: string, actionTs: string, over: Record<string, unknown> = {}, value: string = action) {
+  return { type: 'block_actions', team: { id: TEAM }, api_app_id: APP, user: { id: 'U0OWNER' }, container: { type: 'view', view_id: 'V0HOME' }, view: { type: 'home' },
+    actions: [{ action_id: action, value, action_ts: actionTs }], ...over };
+}
+
+test('App Home buttons become the operator\'s DM commands; Aprovar answers the named approval post\'s thread', () => {
+  const r = relayFixture();
+  try {
+    r.relay.after(0, 0);
+    assert.equal(r.channel.accept(homeClick('optchat_home_status', '1793000001.000100')).outcome, 'relayed');
+    assert.equal(r.channel.accept(homeClick('optchat_home_stop', '1793000001.000200')).outcome, 'relayed');
+    assert.equal(r.channel.accept(homeClick('optchat_home_approve', '1793000001.000300', {}, POST_TS)).outcome, 'relayed');
+    assert.equal(r.channel.accept(homeClick('optchat_home_approve', '1793000001.000300', {}, POST_TS)).outcome, 'duplicate');
+    assert.equal(r.channel.accept(homeClick('optchat_home_approve', '1793000001.000400', {}, 'not-a-ts')).outcome, 'ignored', 'Aprovar needs the post it decides');
+    assert.equal(r.channel.accept(homeClick('optchat_home_stop', '1793000001.000500', { user: { id: 'U0STRANGER' } })).outcome, 'unauthorized_sender');
+    assert.equal(r.channel.accept(homeClick('optchat_home_stop', '1793000001.000600', { view: { type: 'modal' } })).outcome, 'ignored', 'only the Home view');
+    assert.equal(r.channel.accept(homeClick('optchat_home_stop', '1793000001.000700', { team: { id: 'T0OTHER' } })).outcome, 'foreign_workspace');
+    assert.deepEqual(r.relay.after(0, 10).map(m => [m.channel, m.thread ?? null, m.text]),
+      [['home', null, 'status'], ['home', null, 'parar'], ['home', POST_TS, 'aprovar']]);
+  } finally { r.close(); }
+});
+
+test('HTTP: the Home carries Status agora, Parar (with confirm) while working and Aprovar for a waiting call; old bodies still work', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/slack/home`;
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  const ids = (i: number) => ((slack.calls[i].body.view as { blocks: { elements?: { action_id: string; value: string; confirm?: unknown }[] }[] }).blocks[1].elements ?? []);
+  try {
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'Livre' }) })).status, 200);
+    assert.deepEqual(ids(0).map(e => e.action_id), ['optchat_home_status']);
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'Trabalhando', working: true, approval: POST_TS }) })).status, 200);
+    assert.deepEqual(ids(1).map(e => e.action_id), ['optchat_home_approve', 'optchat_home_status', 'optchat_home_stop']);
+    assert.equal(ids(1)[0].value, POST_TS);
+    assert.ok(ids(1)[2].confirm, 'Parar asks before stopping');
+    for (const body of [{ text: 'x', working: 'yes' }, { text: 'x', approval: 'nope' }, { text: 'x', extra: 1 }])
+      assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })).status, 400, JSON.stringify(body));
+  } finally { await new Promise(done => server.close(done)); r.close(); }
+});

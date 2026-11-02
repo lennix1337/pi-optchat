@@ -22,6 +22,8 @@ export interface CommandState {
   /** Models with usable credentials, and selecting one (false when Pi refused it). */
   models(): readonly ModelRef[];
   select(model: ModelRef): Promise<boolean>;
+  /** Stops the run in progress, as Esc does in the terminal; false when nothing was running. */
+  abort?(): boolean;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
@@ -90,6 +92,10 @@ async function changeModel(state: CommandState, query: string): Promise<CommandR
 
 export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
   { name: 'status', aliases: ['estado'], summary: 'o que estou fazendo, modelo e conta atuais', run: state => ({ text: withSwitch(state, [state.activity(), modelLine(state)]) }) },
+  {
+    name: 'parar', aliases: ['pare', 'stop'], summary: 'interrompe o trabalho em andamento (como Esc no terminal)',
+    run: state => ({ text: !state.abort ? 'Não consigo parar daqui nesta sessão.' : state.abort() ? '\u23f9 Parei o trabalho em andamento. Mande a próxima instrução quando quiser.' : 'Nada rodando agora; não havia o que parar.' }),
+  },
   { name: 'cota', aliases: ['cotas', 'quota'], summary: 'cota de cada conta (leitura em cache)', run: state => ({ text: ['*Cota* (leitura em cache):', ...quotaLines(state)].join('\n') }) },
   {
     name: 'modelo', aliases: ['model'], summary: 'modelo em uso; *modelo sonnet* troca (outra conta pede aprovação)',

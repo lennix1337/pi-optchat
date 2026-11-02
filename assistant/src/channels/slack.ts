@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
-import { APPROVAL_ACTIONS, FORWARD_CHANNEL, slackFiles, type SlackRelay } from './slack-relay.ts';
+import { APPROVAL_ACTIONS, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, slackFiles, type SlackRelay } from './slack-relay.ts';
 
 /** The message shortcut ("Mandar pro Jarvis") the app manifest declares. */
 export const FORWARD_CALLBACK = 'optchat_forward';
@@ -56,6 +56,8 @@ export class SlackChannel {
       if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
       const answer = APPROVAL_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && answer) return this.approvalClick(o.relay, body, answer);
+      const home = HOME_ACTIONS[body.actions?.[0]?.action_id];
+      if (o.relay && home) return this.homeClick(o.relay, body, home);
       // A button is a remote click, not the operator's authenticated review of the exact effect.
       const taskId = typeof body.actions?.[0]?.value === 'string' ? body.actions[0].value : '';
       return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };
@@ -97,6 +99,20 @@ export class SlackChannel {
       relay.retire(channel, post, `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : 'Negar'}*; o resultado vem nesta thread.`);
     }
     return { outcome };
+  }
+
+  /**
+   * A tap on an App Home button: only the operator sees his Home, and the sender is still checked like a DM. Status and
+   * Parar become those DM commands; Aprovar becomes `aprovar` in the thread of the approval post the Home named, so the
+   * OptChat session decides it exactly as a tap on that post (one pending call, once).
+   */
+  private homeClick(relay: SlackRelay, body: Record<string, any>, text: 'status' | 'parar' | 'aprovar'): Received {
+    const user = body.user?.id, action = body.actions[0], at = action.action_ts;
+    if (typeof user !== 'string' || typeof at !== 'string' || body.view?.type !== 'home') return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    const thread = text === 'aprovar' ? action.value : undefined;
+    if (text === 'aprovar' && (typeof thread !== 'string' || !/^\d{1,12}\.\d{1,9}$/.test(thread))) return { outcome: 'ignored' };
+    return { outcome: relay.enqueue({ delivery: `home:${action.action_id}:${at}`, sender: user, channel: HOME_CHANNEL, ts: at, ...(thread ? { thread } : {}), text }) };
   }
 
   /** An operator DM for the chat session: same sender and human checks as a task, queued instead of created. */

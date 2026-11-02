@@ -14,6 +14,8 @@ export type RelayMessage = { seq: number; sender: string; channel: string; ts: s
 export type QueuedMessage = { delivery: string; sender: string; channel: string; ts: string; thread?: string; text: string; files?: SlackFile[] };
 /** The relay's channel for a message the operator forwarded with the shortcut: answered in the DM, never in the source channel. */
 export const FORWARD_CHANNEL = 'forward';
+/** The relay's channel for a tap on an App Home button: answered in the DM. */
+export const HOME_CHANNEL = 'home';
 const FILE_HOST = /^https:\/\/files\.slack\.com\//;
 
 /** Slack's file objects reduced to what the chat needs; anything not hosted by Slack is dropped. */
@@ -60,7 +62,7 @@ export class SlackRelay {
     if (!result.changes) return 'duplicate';
     if (this.poster && this.now() - this.lastRead > READER_GRACE_MS) {
       const poster = this.poster;
-      const channel = message.channel.startsWith('D') || message.channel === FORWARD_CHANNEL ? undefined : poster.nameOf(message.channel);
+      const channel = message.channel.startsWith('D') || message.channel === FORWARD_CHANNEL || message.channel === HOME_CHANNEL ? undefined : poster.nameOf(message.channel);
       // Best effort and logged by the caller's socket line only; the message itself is already durable in the queue.
       if (channel !== null) this.pending = this.pending.then(() => poster.send(OFFLINE_RECEIPT, message.thread ?? message.ts, channel)).catch(() => undefined);
     }
@@ -94,6 +96,19 @@ const PART = 3900;
 const SECTION_MAX = 3000;
 /** The button ids `SlackChannel` turns into the operator's `aprovar`/`negar` in the post's thread. */
 export const APPROVAL_ACTIONS: Readonly<Record<string, 'aprovar' | 'negar'>> = { optchat_approve: 'aprovar', optchat_deny: 'negar' };
+/** App Home buttons, each queued as the DM text the operator could have typed (`optchat_home_approve` in the approval's thread). */
+export const HOME_ACTIONS: Readonly<Record<string, 'status' | 'parar' | 'aprovar'>> = { optchat_home_status: 'status', optchat_home_stop: 'parar', optchat_home_approve: 'aprovar' };
+
+/** The App Home: the text, then Status agora, Parar while working (with a confirm) and Aprovar when a call waits. */
+export function homeBlocks(text: string, options: { working?: boolean; approval?: string } = {}): unknown[] {
+  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label }, ...extra });
+  const elements = [
+    ...options.approval ? [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] : [],
+    button('optchat_home_status', 'Status agora'),
+    ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : [],
+  ];
+  return [{ type: 'section', text: { type: 'mrkdwn', text } }, { type: 'actions', elements }];
+}
 
 function approvalBlocks(text: string): unknown[] {
   const button = (action_id: string, label: string, style: string) => ({ type: 'button', action_id, value: action_id, style, text: { type: 'plain_text', text: label } });
@@ -178,9 +193,9 @@ export class SlackPoster {
   }
 
   /** The operator's App Home: what the assistant is doing now. */
-  async publishHome(markdown: string): Promise<void> {
+  async publishHome(markdown: string, options: { working?: boolean; approval?: string } = {}): Promise<void> {
     const text = slackText(markdown).slice(0, SECTION_MAX);
-    await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] } });
+    await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, options) } });
   }
 
   /** Saves a Slack-hosted file under `<dir>/slack-files`, so the agent can read an image or transcribe audio. */

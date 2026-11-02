@@ -8,6 +8,7 @@ import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
 import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, toolCalls } from './projects.ts';
+import { readDay, recordRun, renderDay } from './home-day.ts';
 import { failoverReader, homeStatus, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
 import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
@@ -121,17 +122,22 @@ export class SlackBridge {
     accepting: () => boolean;
     /** The selected model (`provider/id`) and pi-multi-account's state, for the commands answered without a turn and the App Home. */
     model: () => string | undefined; failover: () => unknown;
-    models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean> };
+    models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean>;
+    /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
+    abort: () => boolean;
+    /** When the heartbeat next checks for a wake, if armed. */
+    nextWake: () => number | undefined };
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
   private work: { since: number; origin: string; about: string; step: string; steps: number; shown: number } | undefined;
   private waiting: () => readonly string[] = () => [];
+  private homeText = '';
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
     this.options = { intervalMs: 3000, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
-      models: () => [], select: async () => false, ...options };
+      models: () => [], select: async () => false, abort: () => false, nextWake: () => undefined, ...options };
   }
 
   start(): void {
@@ -254,18 +260,29 @@ export class SlackBridge {
   }
 
   /** The operator's App Home in Slack shows what the assistant is doing right now. Never blocks. */
+  /** Republishes the Home as it stands (a new or settled approval changes its buttons). */
+  private refreshHome(): void { if (this.homeText) this.home(this.homeText); }
+
   private home(text: string): void {
+    this.homeText = text;
     const owner = this.owner();
     this.activity = text.split('\n')[0]!;
     let status = this.waitingBlock();
+    try { if (owner) { const today = renderDay(readDay(owner.dir, this.options.now()), this.options.now(), this.options.nextWake()); if (today) status += `\n\n${today}`; } } catch { /* the Home goes out without the day */ }
     try { status += `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
-    if (owner) void this.options.request(owner, '/v1/slack/home', { text: `${text.slice(0, 2900 - status.length)}${status}` }).catch(() => undefined);
+    // Buttons: Parar only while working; Aprovar decides the newest pending approval post, as a tap on that post would.
+    const approval = [...this.approvals].filter(([, p]) => p.request.expires > this.options.now()).at(-1)?.[0];
+    if (!owner) return;
+    const body = { text: `${text.slice(0, 2900 - status.length)}${status}` };
+    // A service from before the Home buttons refuses the extra fields: the text alone still goes out.
+    void this.options.request(owner, '/v1/slack/home', { ...body, working: !!this.work, ...(approval ? { approval } : {}) })
+      .catch(error => error instanceof Error && /HTTP 400/.test(error.message) ? this.options.request(owner, '/v1/slack/home', body) : undefined).catch(() => undefined);
   }
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
-    const { model, failover, now, models, select } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select };
+    const { model, failover, now, models, select, abort } = this.options;
+    return { model, activity: () => this.activity, failover, now, models, select, abort };
   }
 
   /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
@@ -341,8 +358,9 @@ export class SlackBridge {
     const answering = this.answering, waking = this.waking, delivered = this.delivered;
     this.answering = undefined; this.waking = false; this.replied = ''; this.delivered = '';
     this.running = false;
-    const steps = this.work?.steps ?? 0;
+    const steps = this.work?.steps ?? 0, work = this.work, owner = this.owner();
     this.work = undefined;
+    if (work && steps && owner) try { recordRun(owner.dir, { start: work.since, end: this.options.now(), about: work.about, origin: work.origin, steps }); } catch { /* the Home's day is a courtesy */ }
     const last = finalText(messages);
     this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta:\n${last.slice(0, 1200)}` : ''}`);
     if (answering) {
@@ -376,6 +394,7 @@ export class SlackBridge {
         ({ ts, channel } = await this.send(`${head}Responda *aprovar* ou *negar* nesta thread ${tail}`));
       }
       this.approvals.set(ts, { request, channel: typeof channel === 'string' ? channel : null });
+      this.refreshHome();
       this.options.schedule(() => void this.settled(request.token, 'expired'), Math.max(0, request.expires - now));
       return true;
     } catch (error) { this.options.warn(`Approval not posted to Slack: ${error instanceof Error ? error.message : String(error)}`); return false; }
@@ -386,6 +405,7 @@ export class SlackBridge {
     const found = [...this.approvals].find(([, post]) => post.request.token === token);
     if (!found) return this.settling;
     this.approvals.delete(found[0]);
+    this.refreshHome();
     return this.retire(found[0], found[1], outcome);
   }
 
@@ -411,6 +431,7 @@ export class SlackBridge {
   private async decided(ts: string, approve: boolean): Promise<void> {
     const post = this.approvals.get(ts)!, { request } = post;
     this.approvals.delete(ts);
+    this.refreshHome();
     const done = request.expires > this.options.now() && request.decide(approve);
     if (done) await this.retire(ts, post, approve ? 'phone-approved' : 'phone-denied');
     if (done && request.onPhone) {
@@ -479,19 +500,20 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined } = {}): SlackBridge {
+  let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
   const named = (m: { provider: string; id: string } | undefined) => m ? `${m.provider}/${m.id}` : undefined;
   let registry: { getAvailable(): readonly ModelRef[]; find(provider: string, id: string): unknown } | undefined;
   const bridge = new SlackBridge(pi, owner, {
-    warn: text => warn(text), sent, model: () => model,
+    warn: text => warn(text), sent, model: () => model, abort: () => abort(),
     models: () => registry?.getAvailable().map(m => ({ provider: m.provider, id: m.id })) ?? [],
     // Through Pi, like `/model`: pi-multi-account sees an ordinary user switch.
     select: async ({ provider, id }) => { const found = registry?.find(provider, id); return found ? pi.setModel(found as never) : false; },
     ...options,
   });
-  pi.on('session_start', (_event, ctx) => { warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); registry = ctx.modelRegistry; bridge.start(); });
+  pi.on('session_start', (_event, ctx) => { abort = () => { if (ctx.isIdle()) return false; ctx.abort(); return true; }; warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); registry = ctx.modelRegistry; bridge.start(); });
   // pi-multi-account switches by selecting the other account's model, so this follows its failovers too.
   pi.on('model_select', event => { model = named(event.model); });
   pi.on('session_shutdown', () => bridge.stop());
