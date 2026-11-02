@@ -4,6 +4,8 @@
 // `key: value` object (AXI-compact; a TOON subset for flat scalar objects); stderr carries usage only. It never forces
 // a push, never skips hooks and never merges with --admin.
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup';
 const TIMEOUT_MS = { local: 60_000, push: 180_000, gh: 60_000, create: 120_000 };
@@ -55,7 +57,7 @@ function emit(status, fields) {
   return EXIT[status];
 }
 
-// --- processes: git and gh run without a shell, except gh, a .cmd shim on Windows that execFile cannot start alone ---
+// --- processes: git and gh run without a shell; gh falls back to one only when it is a .cmd shim that execFile cannot start alone ---
 function run(file, args, kind, shell = false) {
   return new Promise(resolve => {
     execFile(file, args, { cwd: process.cwd(), shell, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: timeoutFor(kind) }, (error, stdout, stderr) => {
@@ -69,9 +71,26 @@ function run(file, args, kind, shell = false) {
   });
 }
 const git = (args, kind = 'local') => run('git', args, kind);
+// The first gh on PATH, directory by directory as the shell would pick it. Only a .cmd/.bat shim needs a shell (arguments passed SAFE_GH_ARG,
+// so it cannot reinterpret them); a real executable runs without cmd.exe and without Node's DEP0190 warning.
+let ghFound;
+function findGh() {
+  if (ghFound) return ghFound;
+  const win = process.platform === 'win32';
+  const names = win ? ['gh.exe', 'gh.cmd', 'gh.bat'] : ['gh'];
+  const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
+  for (const dir of (process.env[pathKey] ?? '').split(delimiter).filter(Boolean)) {
+    for (const name of names) {
+      const file = join(dir, name);
+      if (existsSync(file)) return (ghFound = { file, shell: /\.(cmd|bat)$/i.test(name) });
+    }
+  }
+  return (ghFound = { file: 'gh', shell: win });
+}
 function gh(args, kind = 'gh') {
   if (!args.every(arg => SAFE_GH_ARG.test(arg))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
-  return run('gh', args, kind, true);
+  const found = findGh();
+  return run(found.file, args, kind, found.shell);
 }
 
 // --- pull requests and checks ---
