@@ -56,7 +56,8 @@ test('the PR watch records silently on its first pass, then posts changes in eac
     const r = recorder();
     const watch = new PrWatch(() => ({ dir, name: 'p' }), r.post, async args => { calls.push(args); return JSON.stringify({ data: { search: { nodes } } }); }, () => Date.parse('2026-10-29T12:00:00Z'));
     assert.equal(await watch.poll(), 0);
-    assert.match(calls[0]!.join(' '), /q=is:pr author:@me updated:>=2026-10-27/);
+    assert.match(calls[0]!.join(' '), /q=is:pr author:@me is:open/);
+    assert.match(calls[1]!.join(' '), /q=is:pr author:@me updated:>=2026-10-27/);
     nodes = [node('OPEN', 'FAILURE'), node('OPEN', 'FAILURE', 'elsewhere')];
     assert.equal(await watch.poll(), 1, 'a repo outside the three projects stays silent');
     assert.deepEqual(r.posts[0], { text: '❌ CI vermelho · <https://github.com/lennix1337/pi-optchat/pull/13|pi-optchat#13> Inbox', channel: 'harness', topic: 'pr:lennix1337/pi-optchat#13' });
@@ -65,6 +66,22 @@ test('the PR watch records silently on its first pass, then posts changes in eac
     assert.equal(await watch.poll(), 1);
     assert.match(r.posts[1]!.text, /^🟣 Mergeado/);
     assert.deepEqual(watch.open(dir), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an open PR merged out of sight leaves the open list, and GitHub activity is kept for the stall check', async () => {
+  const dir = temp();
+  writeFileSync(join(dir, 'assistant.json'), '{}');
+  try {
+    const node = (n: number, updatedAt: string) => ({ number: n, title: `T${n}`, url: `https://github.com/lennix1337/pi-optchat/pull/${n}`, state: 'OPEN', isDraft: false, createdAt: '2020-01-01T00:00:00Z', updatedAt,
+      repository: { name: 'pi-optchat', nameWithOwner: 'lennix1337/pi-optchat' }, commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] } });
+    let nodes = [node(1, '2026-10-29T11:00:00Z'), node(2, '2026-10-20T00:00:00Z')];
+    const watch = new PrWatch(() => ({ dir, name: 'p' }), recorder().post, async () => JSON.stringify({ data: { search: { nodes } } }), () => Date.parse('2026-10-29T12:00:00Z'));
+    await watch.poll();
+    assert.equal(watch.open(dir).find(p => p.title === 'T1')?.updated, Date.parse('2026-10-29T11:00:00Z'));
+    nodes = [node(1, '2026-10-29T11:00:00Z')]; // #2 merged by someone else and no search returns it any more
+    await watch.poll();
+    assert.deepEqual(watch.open(dir).map(p => p.title), ['T1']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

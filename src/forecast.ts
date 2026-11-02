@@ -3,9 +3,11 @@ import { brasiliaTime } from './heartbeat.ts';
 import type { HealthState } from './prod-health.ts';
 
 /** What the 07:00 summary knows about an open PR: its CI state, since when, and how often CI changed its mind. */
-export interface PrOutlook { title: string; url: string; ci: string; since: number; flips: number }
+/** `updated`: GitHub's last activity (comments, reviews, pushes), so a discussed PR is not called stalled. */
+export interface PrOutlook { title: string; url: string; ci: string; since: number; flips: number; updated?: number }
 
 const HOUR = 3_600_000;
+const clip = (t: string, max = 140) => t.length > max ? `${t.slice(0, max - 1)}…` : t;
 /** A PR whose state has not moved for this long is stuck, not just waiting. */
 export const STUCK_MS = 48 * HOUR;
 /** Checks pending this long are hung, not running. */
@@ -21,7 +23,8 @@ function prRisk(p: PrOutlook, now: number): string | undefined {
   if (p.ci === 'FAILURE' || p.ci === 'ERROR') return `❌ CI vermelha há ${ago(age)}: ${ref(p)}`;
   if ((p.ci === 'PENDING' || p.ci === 'EXPECTED') && age >= HUNG_CI_MS) return `⏳ CI pendente há ${ago(age)} (travada?): ${ref(p)}`;
   if (p.flips >= FLAKY_FLIPS) return `🎲 CI instável (mudou ${p.flips}× de verde/vermelho): ${ref(p)}`;
-  if (age >= STUCK_MS) return `💤 parado há ${ago(age)}: ${ref(p)}`;
+  const quiet = now - Math.max(p.since, p.updated ?? 0);
+  if (quiet >= STUCK_MS) return `💤 sem atividade há ${ago(quiet)}: ${ref(p)}`;
   return undefined;
 }
 
@@ -33,7 +36,7 @@ export function forecast({ commitments, prs, health, pc = {}, now }: { commitmen
   const due = commitments
     .filter(c => !closed(c.status) && c.due && Date.parse(c.due) > now && Date.parse(c.due) - now <= 24 * HOUR)
     .sort((a, b) => a.due!.localeCompare(b.due!))
-    .map(c => `⏰ vence às ${brasiliaTime(Date.parse(c.due!))}: ${c.text}`);
+    .map(c => `⏰ vence às ${brasiliaTime(Date.parse(c.due!))}${c.status === 'waiting_operator' ? ' (aguarda você)' : ''}: ${clip(c.text)}${c.next ? ` → agora: ${clip(c.next)}` : ''}`);
   const pr = prs.map(p => prRisk(p, now)).filter((l): l is string => !!l);
   const down = Object.entries(health).filter(([, s]) => s.down)
     .map(([name, s]) => `🔴 ${name} fora desde ${brasiliaTime(s.since)} (${s.problem ?? 'sem resposta'}): investigar antes de qualquer deploy`);

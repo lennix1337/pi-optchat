@@ -30,7 +30,17 @@ test('the forecast names what tends to go wrong today and stays quiet about heal
     '❌ CI vermelha há 5 h: <https://github.com/o/r/pull/1|r#1> PR 1',
     '⏳ CI pendente há 3 h (travada?): <https://github.com/o/r/pull/2|r#2> PR 2',
     '🎲 CI instável (mudou 3× de verde/vermelho): <https://github.com/o/r/pull/4|r#4> PR 4',
-    '💤 parado há 3 dias: <https://github.com/o/r/pull/5|r#5> PR 5',
+    '💤 sem atividade há 3 dias: <https://github.com/o/r/pull/5|r#5> PR 5',
+  ]);
+});
+
+test('a commented PR is not stalled, and a due commitment shows its next step and who it waits on', () => {
+  const lines = forecast({ now, health: {},
+    commitments: [{ ...commitment('c9', '2026-10-31T20:00:00Z', 'waiting_operator'), next: 'rodar o check do webhook' }],
+    prs: [{ ...pr(7, 'SUCCESS', 72), updated: now - 2 * H }, pr(8, 'SUCCESS', 72)] });
+  assert.deepEqual(lines, [
+    '⏰ vence às 17:00 (aguarda você): tarefa c9 → agora: rodar o check do webhook',
+    '💤 sem atividade há 3 dias: <https://github.com/o/r/pull/8|r#8> PR 8',
   ]);
 });
 
