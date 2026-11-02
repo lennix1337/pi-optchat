@@ -244,6 +244,8 @@ export const previousWake = (dir: string) => readHeartbeat(dir).wakeLog.filter(w
 /** Arms when the chat settles, disarms when a turn starts; checks every interval while the chat stays idle. */
 export class Heartbeat {
   private timer: unknown;
+  /** When the armed idle check fires (ms epoch), for the App Home; undefined while disarmed. */
+  nextAt: number | undefined;
   private running = Promise.resolve();
   private failed = false;
   private readonly file: string;
@@ -261,9 +263,10 @@ export class Heartbeat {
     this.disarm();
     const minutes = this.deps.minutes();
     if (minutes <= 0) return;
-    this.timer = this.deps.setTimer(() => { this.timer = undefined; this.running = this.fireOnce(); }, minutes * 60_000);
+    this.nextAt = this.deps.now() + minutes * 60_000;
+    this.timer = this.deps.setTimer(() => { this.timer = undefined; this.nextAt = undefined; this.running = this.fireOnce(); }, minutes * 60_000);
   }
-  disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; }
+  disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; this.nextAt = undefined; }
   /** The operator is back: their turn decides what comes next. */
   operatorSpoke() {
     this.disarm(); this.epoch++;
