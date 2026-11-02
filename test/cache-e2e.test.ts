@@ -76,7 +76,7 @@ class SimulatedCache {
  * one `bash` call sleeping `n` seconds for "wait n", one `operational_state` record for "record state", else text. */
 function reply(body: { messages: { role: string; content: string | Block[] }[] }): { tool?: string; input?: Record<string, unknown>; text?: string } {
   const blocks = (m: { content: string | Block[] }) => typeof m.content === 'string' ? [{ type: 'text', text: m.content }] as Block[] : m.content;
-  const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|wait \d+|record state|question)\s*$/.test(String(b.text))));
+  const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|wait \d+|long \d+|record state|question)\s*$/.test(String(b.text))));
   const prompt = asked < 0 ? '' : blocks(body.messages[asked]).map(b => String(b.text ?? '')).join('');
   const results = body.messages.slice(asked + 1).flatMap(m => blocks(m).filter(b => b.type === 'tool_result')).length;
   if (/enable web\s*$/.test(prompt) && !results) return { tool: 'enable_web' };
@@ -84,6 +84,8 @@ function reply(body: { messages: { role: string; content: string | Block[] }[] }
   if (busy && results < Number(busy[1])) return { tool: 'noop' };
   const wait = /wait (\d+)\s*$/.exec(prompt);
   if (wait && !results) return { tool: 'bash', input: { command: `sleep ${wait[1]}; echo waited` } };
+  const long = /long (\d+)\s*$/.exec(prompt);
+  if (long && !results) return { tool: 'bash', input: { command: `node -e "setTimeout(() => console.log('late-ok'), ${Number(long[1]) * 1000})"`, timeout: 121 } };
   if (/record state\s*$/.test(prompt) && !results)
     return { tool: 'operational_state', input: { update: { kind: 'decision', text: 'Recorded mid-turn: keep the cached run.', sourceMessageId: '0' } } };
   return { text: 'OK' };
@@ -325,6 +327,23 @@ test('real Pi + OptChat: an operational_state record mid-turn keeps the cached r
       .find(text => text.includes('<chat>'));
     assert.match(withView ?? '', /Operational state \(records[\s\S]*Recorded mid-turn/, 'the next turn shows the record after the view');
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
+    assert.deepEqual(errors, []);
+  } finally {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+    await anthropic.close();
+  }
+});
+
+test('real Pi + OptChat: a long bash call is moved to a background shell, so the call returns before the command ends', { timeout: 60_000 }, async () => {
+  const anthropic = await simulatedAnthropic();
+  const { session, errors } = await piSession(anthropic, 'long-command', () => {});
+  try {
+    await session.prompt('long 3');
+    const result = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'bash');
+    assert.ok(result && result.role === 'toolResult' && !result.isError, 'the bash call returns a result');
+    const text = JSON.stringify(result.content);
+    assert.match(text, /Long command moved to background shell/);
+    assert.doesNotMatch(text, /late-ok/, 'the command had not printed when the call returned: it runs in its shell');
     assert.deepEqual(errors, []);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();

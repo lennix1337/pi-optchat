@@ -1,8 +1,8 @@
 /**
  * Bash calls expected to run long. The main agent blocks on a foreground bash call until it ends, so a build or a
  * test suite holds the operator's reply. Such a call is moved to a managed background shell instead (shells.ts), whose
- * end arrives as a message. Measured over 21,413 bash calls in the OptChat main session (2026-10-08 to 2026-11-02):
- * 494 ran over 60 s and 210 over 120 s; the long ones were package scripts, test runners, builds, wsl/pwsh wrappers.
+ * end arrives as a message. Context: scripts/delegation-stats.mjs over the OptChat main sessions finds that, per operator
+ * run with commands, their time is a median of 21 s and a p90 of 353 s; 120 s is the cut-off chosen for a call to count as long.
  */
 
 /** A foreground bash call longer than this (seconds) is moved to a background shell. */
