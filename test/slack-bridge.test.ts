@@ -440,3 +440,25 @@ test('files he sends are saved and pointed to; Slack links he pastes are read an
     assert.match(text, /<#C0PRIV>: não consegui ler \(not_in_channel/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('App Home: a run typed in the terminal shows working too, with the live step, elapsed time and what waits for him', async () => {
+  const f = fixture();
+  const homes = () => f.requests.filter(r => r.path === '/v1/slack/home').map(r => (r.body as { text: string }).text);
+  try {
+    f.bridge.setWaiting(() => ['Rotacionar a chave rk_live do DentAI']);
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('melhora a home do optchat');
+    assert.match(homes().at(-1)!, /Trabalhando[\s\S]*terminal[\s\S]*melhora a home/);
+    f.bridge.toolStarted('bash', { command: 'cd C:/projetos/pi-optchat && git push -u origin HEAD' });
+    assert.match(homes().at(-1)!, /Agora: .*git push[\s\S]*1 passo/);
+    f.advance(5_000);
+    f.bridge.toolStarted('read', { path: 'C:/projetos/pi-optchat/src/slack-bridge.ts' });
+    assert.equal(homes().length, 2, 'steps closer than the throttle are not published');
+    f.advance(30_000);
+    f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/slack-bridge.ts' });
+    assert.match(homes().at(-1)!, /há 0 min[\s\S]*Agora: editando slack-bridge\.ts · 3 passos/);
+    assert.match(homes().at(-1)!, /Esperando você[\s\S]*rk_live/);
+    await f.bridge.runEnded(replies('Pronto.'));
+    assert.match(homes().at(-1)!, /Livre[\s\S]*Pronto\.[\s\S]*Esperando você/);
+  } finally { f.close(); }
+});
