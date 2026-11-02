@@ -11,6 +11,7 @@ import { projectOfRepo } from './projects.ts';
 import { appendRecent, atomicWrite, readJsonl, readJsonOr } from './store.ts';
 import { QUOTA_FILE, QUOTA_HEALTH_FILE, quotaRisks } from './quota-health.ts';
 import { WeeklyScoreboard } from './scoreboard.ts';
+import { logBackgroundFailure } from './exec-log.ts';
 
 /**
  * What the operator hears on Slack without asking, each in its project's channel: his PRs changing (CI green or red,
@@ -38,11 +39,11 @@ export const readDay = (dir: string, since: number): DayEntry[] => readJsonl<Day
 
 // ---- The operator's PRs. ----
 type Gh = (args: string[]) => Promise<string>;
-const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
-const PR_QUERY = `query($q:String!){search(query:$q,type:ISSUE,first:50){nodes{... on PullRequest{number title url state isDraft createdAt repository{name nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}`;
-type PrNode = { number: number; title: string; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; isDraft: boolean; createdAt: string; repository: { name: string; nameWithOwner: string }; commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] } };
+const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
+const PR_QUERY = `query($q:String!){search(query:$q,type:ISSUE,first:50){nodes{... on PullRequest{number title url state isDraft createdAt updatedAt repository{name nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}`;
+type PrNode = { number: number; title: string; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; isDraft: boolean; createdAt: string; updatedAt?: string; repository: { name: string; nameWithOwner: string }; commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] } };
 /** `since`: when `sig` was first seen; `flips`: how often CI went from green to red or back; `verdict`: the last green/red seen. */
-export type PrSeen = { sig: string; seen: number; title: string; url: string; channel: string; since?: number; flips?: number; verdict?: 'green' | 'red' };
+export type PrSeen = { sig: string; seen: number; title: string; url: string; channel: string; since?: number; flips?: number; verdict?: 'green' | 'red'; updated?: number };
 
 const VERDICT = new Set(['SUCCESS', 'FAILURE', 'ERROR']);
 /**
@@ -74,7 +75,7 @@ export function prChange(before: string | undefined, pr: { state: string; ci: st
 }
 
 /** The forecast's view of a recorded PR. */
-export const outlook = (p: PrSeen): PrOutlook => ({ title: p.title, url: p.url, ci: p.sig.split(':')[1] ?? 'NONE', since: p.since ?? p.seen, flips: p.flips ?? 0 });
+export const outlook = (p: PrSeen): PrOutlook => ({ title: p.title, url: p.url, ci: p.sig.split(':')[1] ?? 'NONE', since: p.since ?? p.seen, flips: p.flips ?? 0, ...(p.updated ? { updated: p.updated } : {}) });
 
 export class PrWatch {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly gh: Gh = defaultGh, private readonly now: () => number = Date.now) {}
@@ -90,11 +91,17 @@ export class PrWatch {
     if (!owner || !existsSync(join(owner.dir, 'assistant.json'))) return 0;
     const now = this.now();
     const since = new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
-    const out = JSON.parse(await this.gh(['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=is:pr author:@me updated:>=${since}`])) as { data?: { search?: { nodes?: PrNode[] } } };
-    const nodes = (out.data?.search?.nodes ?? []).filter(n => typeof n?.number === 'number');
+    // Open PRs come whatever their age: a quiet one must still be seen when it merges or gets comments.
+    const search = async (q: string) => ((JSON.parse(await this.gh(['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=${q}`])) as { data?: { search?: { nodes?: PrNode[] } } })
+      .data?.search?.nodes ?? []).filter(n => typeof n?.number === 'number');
+    const byKey = new Map<string, PrNode>();
+    for (const n of [...await search('is:pr author:@me is:open'), ...await search(`is:pr author:@me updated:>=${since}`)]) byKey.set(`${n.repository.nameWithOwner}#${n.number}`, n);
+    const nodes = [...byKey.values()];
     let known: Record<string, PrSeen> | undefined;
     try { known = JSON.parse(readFileSync(join(owner.dir, PRS), 'utf8')); } catch { known = undefined; }
-    const next: Record<string, PrSeen> = Object.fromEntries(Object.entries(known ?? {}).filter(([, p]) => now - p.seen < PR_KEEP_MS));
+    // A recorded open PR in neither search is no longer open (merged or closed out of sight): it leaves the open list.
+    const next: Record<string, PrSeen> = Object.fromEntries(Object.entries(known ?? {})
+      .filter(([key, p]) => now - p.seen < PR_KEEP_MS && (byKey.has(key) || !p.sig.startsWith('OPEN:'))));
     let posted = 0;
     for (const pr of nodes) {
       const channel = projectOfRepo(pr.repository.name);
@@ -103,7 +110,7 @@ export class PrWatch {
       const ci = pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? 'NONE';
       const sig = `${pr.state}:${ci}`;
       const change = known && prChange(known[key]?.sig, { state: pr.state, ci, createdAt: Date.parse(pr.createdAt) }, now);
-      next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel, ...nextSeen(known?.[key], sig, now) };
+      next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel, ...nextSeen(known?.[key], sig, now), ...(pr.updatedAt ? { updated: Date.parse(pr.updatedAt) } : {}) };
       if (!change) continue;
       try { await this.post(`${change} · <${pr.url}|${pr.repository.name}#${pr.number}> ${one(pr.title, 120)}${pr.isDraft && pr.state === 'OPEN' ? ' (draft)' : ''}`, channel, `pr:${key}`); posted++; }
       catch { /* the next pass sees no change; a lost post is not resent */ }
@@ -220,6 +227,7 @@ export function registerSlackReports(pi: ExtensionAPI, owner: () => ReportOwner 
   const warned = new Set<string>();
   /** A report that keeps failing says so once per session, not every pass. */
   const pass = (label: string, run: () => Promise<unknown>) => () => void run().catch(error => {
+    logBackgroundFailure(owner()?.dir, label, error);
     if (warned.has(label)) return;
     warned.add(label);
     console.error(`OptChat ${label}: ${error instanceof Error ? error.message : String(error)}`);

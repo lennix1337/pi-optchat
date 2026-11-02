@@ -76,6 +76,7 @@ import { Sync } from './sync.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
+import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { registerSelfReload } from './self-reload.ts';
 
@@ -118,6 +119,7 @@ export default function optchat(pi: ExtensionAPI) {
   // A background shell's end becomes an outcome even when its notify mode hides it from the model: exit code, latency and
   // zero model calls, never the command's text in a notification. Foreground bash is Pi's own result, not a managed job.
   shells.setEndObserver(job => { const current = active; if (!current || stopping) return; recordShellOutcome(current.dir, current.sessionId, job); });
+  registerExecLog(pi, () => active?.dir);
   registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
   const recoveryIncidents = new Map<string, string>();
   const recoveryEvent = (event: unknown) => {

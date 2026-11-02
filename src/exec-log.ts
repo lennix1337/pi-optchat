@@ -1,0 +1,72 @@
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+
+/** What happened to one execution, in words the operator can read in the log. */
+export type ExecClass = 'ok' | 'exit_nonzero' | 'timeout' | 'not_found' | 'refused' | 'aborted' | 'network' | 'rate_limited' | 'error';
+export type ExecEntry = { at: string; source: 'tool' | 'background'; name: string; target?: string; class: ExecClass; ms?: number; code?: number; detail?: string };
+
+export const EXEC_LOG = 'exec-log.jsonl';
+/** One live file plus one rotated `.1`: at most about 2 MB on disk. */
+export const EXEC_LOG_MAX_BYTES = 1_000_000;
+
+const clip = (text: string, max: number) => { const one = text.replace(/\s+/g, ' ').trim(); return one.length > max ? `${one.slice(0, max - 1)}…` : one; };
+
+/** Classifies from the error text; order matters: a gate refusal or timeout also carries a non-zero exit. */
+export function classify(failed: boolean, text: string, code?: number | string): ExecClass {
+  if (/^Not executed:|refused by|autonomy gate|blocked by/i.test(text)) return 'refused';
+  if (/timed? ?out|ETIMEDOUT|SIGTERM/i.test(text) || code === 'ETIMEDOUT') return 'timeout';
+  if (/aborted|AbortError|cancell?ed by/i.test(text)) return 'aborted';
+  if (/ENOENT|command not found|not recognized as/i.test(text) || code === 'ENOENT') return 'not_found';
+  if (/rate limit|API rate|HTTP 429|secondary rate/i.test(text)) return 'rate_limited';
+  if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|network|connection reset|TLS handshake/i.test(text)) return 'network';
+  if (!failed) return 'ok';
+  if (typeof code === 'number' && code !== 0 || /exited with code [1-9]/.test(text)) return 'exit_nonzero';
+  return 'error';
+}
+
+export function appendExecLog(dir: string, entry: ExecEntry, maxBytes = EXEC_LOG_MAX_BYTES): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, EXEC_LOG), line = `${JSON.stringify(entry)}\n`;
+    if (existsSync(file) && statSync(file).size + Buffer.byteLength(line) > maxBytes) renameSync(file, `${file}.1`);
+    appendFileSync(file, line, { mode: 0o600 });
+  } catch { /* the log never breaks the work it records */ }
+}
+
+const resultText = (result: unknown): string => {
+  const content = (result as { content?: { type: string; text?: string }[] } | undefined)?.content;
+  return Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n') : typeof result === 'string' ? result : '';
+};
+const targetOf = (args: unknown): string | undefined => {
+  if (!args || typeof args !== 'object') return undefined;
+  const a = args as Record<string, unknown>;
+  const value = a.command ?? a.path ?? a.action ?? a.url ?? a.name;
+  return typeof value === 'string' ? clip(value, 200) : undefined;
+};
+
+/** One entry per tool call: everything the agent runs, its outcome class and, on failure, the reason. */
+export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined) {
+  const started = new Map<string, string | undefined>();
+  pi.on('tool_execution_start', event => { started.set(event.toolCallId, targetOf(event.args)); });
+  pi.on('tool_execution_end', event => {
+    const where = dir(); const target = started.get(event.toolCallId); started.delete(event.toolCallId);
+    if (!where) return;
+    const text = resultText(event.result);
+    const exit = /exited with code (\d+)/.exec(text);
+    const kind = classify(event.isError === true || (exit !== null && exit[1] !== '0'), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
+    appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
+      ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
+      ...(kind === 'ok' ? {} : { detail: clip(text.slice(-600), 300) }) });
+  });
+  pi.on('agent_settled', () => started.clear());
+}
+
+/** Background jobs (PR watch, summaries): logs the failure with the program's own reason, e.g. gh's stderr. */
+export function logBackgroundFailure(dir: string | undefined, name: string, error: unknown): void {
+  if (!dir) return;
+  const e = error as { message?: string; code?: number | string; stderr?: string; killed?: boolean } | undefined;
+  const text = [e?.stderr, e?.message ?? String(error)].filter(Boolean).join(' | ');
+  appendExecLog(dir, { at: new Date().toISOString(), source: 'background', name, class: e?.killed ? 'timeout' : classify(true, text, e?.code),
+    ...(typeof e?.code === 'number' ? { code: e.code } : {}), detail: clip(text, 400) });
+}
