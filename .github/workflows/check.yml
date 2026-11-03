@@ -77,8 +77,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    # Normal run ~6 min; a hang (PR #81, 26 min, log lost) must fail fast.
+    # The suite took 4m11s of a ~5-min job (PR #94), the slowest leg before every merge; two shards halve the wait.
+    # A hang (PR #81, 26 min, log lost) must fail fast.
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -86,9 +91,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run check
-      - run: npm test
-      - run: npm run test:pi-compat
+      - if: matrix.shard == 1
+        run: npm run check
+      # npm test's file list, split by node's own --test-shard (node expands the quoted glob itself on Windows).
+      - run: node --experimental-transform-types --import ./test/support.ts --test --test-shard=${{ matrix.shard }}/2 "test/*.test.ts"
+      - if: matrix.shard == 2
+        run: npm run test:pi-compat
   # The one check branch protection requires: green when every job this change needed passed.
   ci-ok:
     if: always()

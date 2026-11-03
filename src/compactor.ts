@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS } from './settings.ts';
 import { CompactorTrace, createCompactorIncidentId, errorCategory, type CompactorDiagnostic } from './compactor-diagnostics.ts';
 import type { UsageAttribution } from './usage.ts';
 import { assertContextFits } from './run-context.ts';
+import { carriedFeedback, dropCarried, foreignIds } from './carried-ids.ts';
 import { cited, closedFeedback, dropClosed, type ClosedConflict } from './closed-conflicts.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
@@ -42,7 +43,7 @@ export function task(input: { source: string; part: Part; result?: string; call?
   if (!part.l) {
     const kind = /^(\w+): /.exec(source)?.[1];
     return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
-      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in.\n${sizeHint}<input>\n${source}\n</input>`
+      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in,\nnor their ids or open items: what <input> did not check, it does not report.\n${sizeHint}<input>\n${source}\n</input>`
       + callContext + (result === undefined ? '' : `\nThe call's result is in <result>: say in a few words what it found or did.\n<result>\n${result}\n</result>`);
   }
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };
@@ -147,6 +148,9 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const base = shared() ?? { systemPrompt: PROMPT };
+    // Only a one-message line is held to its own message; a merge may take details from the messages it covers.
+    const own = [input.source, input.call?.text ?? '', input.result ?? '', String(input.part.i), String(input.call?.i ?? '')];
+    const carriedIn = (line: string) => input.part.l === 0 && input.revise === undefined ? foreignIds(line, own) : [];
     let request = 0, failures = 0, attempts = 0, summaries = 0;
     let shortest: string | undefined, blank: string | undefined, stale: string | undefined, closedRetries = 0;
     const ask = async (): Promise<AssistantMessage> => {
@@ -218,12 +222,14 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       summaries++;
       const size = bytes(line);
       if (size <= limit) {
-        const hits = cited(line, closed());
-        if (!hits.length) return line;
-        // A line citing a conflict the user closed is asked for again twice, then stripped of it (src/closed-conflicts.ts).
-        stale = dropClosed(line, hits);
-        if (closedRetries++ >= 2) return stale;
-        messages.push(reply, { role: 'user', content: closedFeedback(hits), timestamp: Date.now() });
+        const hits = cited(line, closed()), carried = carriedIn(line);
+        if (!hits.length && !carried.length) return line;
+        // A line citing a conflict the user closed is asked for again twice, then stripped of it (src/closed-conflicts.ts);
+        // one that only copies ids from other lines gets one more try (src/carried-ids.ts).
+        stale = dropCarried(dropClosed(line, hits), carried);
+        if (closedRetries++ >= (hits.length ? 2 : 1)) return stale;
+        const feedback = [...hits.length ? [closedFeedback(hits)] : [], ...carried.length ? [carriedFeedback(carried)] : []].join('\n\n');
+        messages.push(reply, { role: 'user', content: feedback, timestamp: Date.now() });
         continue;
       }
       if (size < sourceBytes && (shortest === undefined || size < bytes(shortest))) shortest = line;
@@ -234,7 +240,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     // The byte target guides retries, not a second failure cliff. Keep the shortest
     // complete shrinking reply; persisted nodes and views account for actual bytes.
     if (stale !== undefined) return stale;
-    if (shortest !== undefined) return dropClosed(shortest, closed());
+    if (shortest !== undefined) return dropCarried(dropClosed(shortest, closed()), carriedIn(shortest));
     if (!summaries && blank !== undefined) throw new Error(`Compactor returned no text in ${attempts} tries (${blank}). See compactor-diagnostics.jsonl.`);
     if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
     throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; source ${sourceBytes} bytes; shortest ${shortest === undefined ? 'none' : bytes(shortest)}; it must be smaller than the source).`);
