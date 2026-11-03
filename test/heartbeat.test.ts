@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 
@@ -523,4 +524,14 @@ test('a heartbeat.json with a damaged skip streak or digest reads as no state, s
   h.beat.arm(); await h.advance(30 * MIN);
   assert.equal(h.woken.length, 1, 'no digest to match, so it wakes');
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('every wake is told to deliver a change, and one after an empty wake is told it was empty', () => {
+  const wake = wakeText('', 'haiku', 15, plan);
+  assert.ok(wake.includes(DELIVERY_RULE));
+  assert.doesNotMatch(wake, /instead of inventing work/);
+  const at = 0, base = { at, trigger: 'schedule' as const, reason: '', outcome: 'done' as const, reply: 'nada novo' };
+  assert.match(previousWakeNote({ ...base, commits: [] }), /committed nothing: it delivered no change\. This one must\./);
+  assert.doesNotMatch(previousWakeNote({ ...base, commits: ['abc1234'] }), /committed nothing/);
+  assert.doesNotMatch(previousWakeNote({ ...base, outcome: 'interrupted', commits: [] }), /committed nothing/);
 });

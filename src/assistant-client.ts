@@ -44,9 +44,15 @@ function config(owner: Pick<AssistantOwner, 'dir' | 'name'>) {
 export { config as assistantConfig, request as assistantRequest };
 export class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
 class ResponseTooLarge extends Error {}
+/** A kept-alive socket the server closed while idle fails the next request with a reset before any byte is read. */
+const staleSocket = (error: unknown) => error instanceof TypeError && error.message === 'fetch failed'
+  && ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(String((error.cause as { code?: unknown } | undefined)?.code));
 async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000, cancel?: AbortSignal): Promise<unknown> {
-  const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs),
+  const signal = cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs);
+  const send = () => fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal,
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  // Reads are idempotent, so one retry on a fresh socket is safe; writes never repeat (their effect may have landed).
+  const response = await send().catch(error => { if (body === undefined && staleSocket(error)) return send(); throw error; });
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status); }
   if (!response.body) throw new Error('Invalid response');
   const reader = response.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
@@ -141,7 +147,11 @@ async function briefingPage(c: ReturnType<typeof config>, owner: AssistantOwner,
     `${value.distractions} low-priority messages hidden.`].join('\n');
 }
 
-function readErrorMessage(error: unknown): string {
+/** Names the failure class (timeout, unreachable, bad data) so a red run shows its cause; never echoes response bodies. */
+export function readErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'TimeoutError') return 'Assistant did not answer in time; no data displayed.';
+  const code = error instanceof TypeError && error.message === 'fetch failed' ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
+  if (typeof code === 'string' && /^[A-Z_]+$/.test(code)) return `Assistant unreachable (${code}); no data displayed.`;
   if (error instanceof ResponseTooLarge) return 'Assistant item exceeds the safe response size; inspect it with another bounded client.';
   if (error instanceof HttpError) return 'Assistant request failed.';
   if (error instanceof Error && (error.message.startsWith('Assistant disabled.') || error.message.startsWith('Invalid assistant.json') || error.message === 'Assistant configuration unavailable.')) return error.message;

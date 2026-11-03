@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { dropWhere } from './carried-ids.ts';
 import { readOperationalState } from './operational-state.ts';
 
 /** A conflict the operator already closed, which a memory line must stop citing. The compactor copies what the lines it merges
@@ -79,14 +80,4 @@ export async function cleanClosedOnce(dir: string, memory: { revise(stale: (text
 }
 
 /** Last resort when the model keeps citing it: drop the parentheses, then the items, that do. Never returns an empty line. */
-export function dropClosed(line: string, list: readonly ClosedConflict[]) {
-  const hits = (text: string) => cited(text, list).length > 0;
-  const kept = items(line).flatMap(item => {
-    if (!hits(item)) return [item];
-    // A parenthesis that alone, or in its item, carries the citation goes; the item stays if that was all.
-    let lean = item;
-    for (const group of item.match(/\s*\([^()]*\)/g) ?? []) if (hits(group) || !hits(lean.replace(group, ''))) lean = lean.replace(group, '');
-    return hits(lean) ? [] : [lean];
-  });
-  return (kept.join(' ').trim() || line).replace(/\s{2,}/g, ' ');
-}
+export const dropClosed = (line: string, list: readonly ClosedConflict[]) => dropWhere(line, text => cited(text, list).length > 0);

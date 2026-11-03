@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import { registerAssistant, type AssistantOwner } from '../src/assistant-client.ts';
+import { assistantRequest, readErrorMessage, registerAssistant, type AssistantOwner } from '../src/assistant-client.ts';
 
 test('registered command uses loopback, guards owner, and keeps response private', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'assistant-client-')); const calls: { method?: string; url?: string; body: string }[] = [];
@@ -157,4 +157,31 @@ test('briefing command shows the latest briefing as untrusted data; "now" asks f
     state = 'foreign'; await handler('briefing', ctx); assert.match(output.pop()!, /invalid/);
     assert(!output.join('\n').includes('secret'));
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('read errors name timeouts and unreachable services instead of calling them invalid data', () => {
+  const timeoutError = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  assert.equal(readErrorMessage(timeoutError), 'Assistant did not answer in time; no data displayed.');
+  const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }) });
+  assert.equal(readErrorMessage(refused), 'Assistant unreachable (ECONNREFUSED); no data displayed.');
+  const redirect = new TypeError('fetch failed', { cause: new Error('unexpected redirect') });
+  assert.equal(readErrorMessage(redirect), 'Assistant request or response invalid; no data displayed.');
+  assert.equal(readErrorMessage(new Error('Invalid task')), 'Assistant request or response invalid; no data displayed.');
+});
+
+test('a read retries once when the server dropped the idle socket; a write never repeats', async () => {
+  let hits = 0;
+  const server = createServer((req, res) => {
+    hits++;
+    if (hits % 2 === 1) { req.socket.destroy(); return; } // The server closed the connection before answering.
+    res.setHeader('content-type', 'application/json'); res.end('{"ok":true}');
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const c = { endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token: 't' };
+    assert.deepEqual(await assistantRequest(c, '/v1/tasks'), { ok: true });
+    assert.equal(hits, 2);
+    await assert.rejects(assistantRequest(c, '/v1/tasks', { x: 1 }));
+    assert.equal(hits, 3, 'a write whose effect may have landed is not sent twice');
+  } finally { server.close(); }
 });

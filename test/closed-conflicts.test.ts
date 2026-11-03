@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { cited, cleanClosedOnce, closedConflictsOf, dropClosed, fromRecords, CLOSED_FILE } from '../src/closed-conflicts.ts';
+import { dropCarried, foreignIds } from '../src/carried-ids.ts';
 import { createCompressor } from '../src/compactor.ts';
 import { Memory } from '../src/memory.ts';
 import { updateOperationalState } from '../src/operational-state.ts';
@@ -120,5 +121,34 @@ test('shown lines citing a closed conflict are rewritten once, and the rewrite s
     assert.equal(memory.render(), view, 'the revision record wins on load');
     assert.equal(memory.zoom(0, 1), `0+1|user: ${long}`, 'the original message is untouched');
     await memory.close();
+  } finally { removeDir(dir); }
+});
+
+// Real leaf 104353 (03/11): a shell result line that carried three approvals and two message ids from other lines.
+const SHELL = 'work: [shell 13b6174f] completed · exit 0 · App Home tests pass 13, fail 0; without src 2 fail; tsc rc=0.';
+const CARRIED = 'work: shell 13b6174f: App Home tests 13/0 with fix, 2 fail without src; tsc rc=0. Home "livre" cause (103394, 104291) UNVERIFIED. Approvals 38f9c222, 44d5f68c, 8266855f still open.';
+
+test('ids a one-message line copied from other lines are named; its own are not', () => {
+  assert.deepEqual(foreignIds(CARRIED, [SHELL]), ['103394', '104291', '38f9c222', '44d5f68c', '8266855f']);
+  assert.deepEqual(foreignIds('tool: ship.mjs merged 02eab54 (#95); c_bb4b18 open.', ['02eab547aa merged', 'c_bb4b18']), [], 'a hash prefix and a named commitment are its own');
+  assert.equal(dropCarried(CARRIED, foreignIds(CARRIED, [SHELL])), 'work: shell 13b6174f: App Home tests 13/0 with fix, 2 fail without src; tsc rc=0.');
+});
+
+test('the compactor asks once more when a leaf copies ids from <chat>, then strips them', async () => {
+  const { dir, sent, calls, compress } = await compressorWith([CARRIED, CARRIED]);
+  try {
+    const line = await compress({ context: '<chat>\n</chat>', source: `${SHELL} ${'output '.repeat(80)}`, part: { l: 0, i: 104353 } }, new AbortController().signal);
+    assert.equal(line, 'work: shell 13b6174f: App Home tests 13/0 with fix, 2 fail without src; tsc rc=0.');
+    assert.equal(calls(), 2);
+    assert.match(sent[1], /names 103394, 104291, 38f9c222, 44d5f68c, 8266855f, which <input> does not mention/);
+  } finally { removeDir(dir); }
+});
+
+test('a merge of two lines may name what its lines name', async () => {
+  const { dir, calls, compress } = await compressorWith(['104352-353: shell 13b6174f 13/0; approvals 38f9c222 open.']);
+  try {
+    const line = await compress({ context: '<chat>\n</chat>', source: `${'line '.repeat(80)}`, part: { l: 1, i: 52176 } }, new AbortController().signal);
+    assert.match(line, /38f9c222/);
+    assert.equal(calls(), 1);
   } finally { removeDir(dir); }
 });
