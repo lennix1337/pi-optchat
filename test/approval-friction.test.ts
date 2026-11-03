@@ -40,6 +40,8 @@ test('reading the contract is not changing it', () => {
   assert.equal(touchesContract({ tool: 'read_many', input: { files: [{ path: file }] } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `find ~/.optchat -maxdepth 3 -name "autonomy.json" 2>/dev/null` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `sed -n 1,20p ${file}` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `node --import tsx -e "JSON.parse(require('fs').readFileSync('${file}','utf8'))"` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `node --import tsx -e "require('fs').writeFileSync('${file}','{}')"` } }), true);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({command:"cat ${file}"})` } }), false);
   // Writers still wait for the operator.
   assert.equal(touchesContract({ tool: 'bash', input: { command: `find ~/.optchat -name autonomy.json -delete` } }), true);

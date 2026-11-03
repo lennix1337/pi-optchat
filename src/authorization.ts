@@ -84,7 +84,8 @@ const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp
 const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
 const loopHeader = /^for\s+\w+\s+in\b/;
 /** `node -e|-p` whose inline script uses no file-writing API only reads. */
-const nodeInline = /^node\s+(?:-e|-p|--eval|--print)\s/;
+// Loader flags may come first (`node --import tsx -e`, 03/11 false positive).
+const nodeInline = /^node\s+(?:(?:--import|--require|-r|--loader)\s+\S+\s+|--[\w-]+(?:=\S+)?\s+)*(?:-e|-p|--eval|--print)\s/;
 const fsWrite = /\b(?:writeFile|appendFile|rename|copyFile|cp|rm|unlink|truncate|createWriteStream|open|symlink|link)(?:Sync)?\s*\(/;
 /**
  * A codemode script can write the contract through `edit`/`write` naming it, or through a shell command that writes it.
