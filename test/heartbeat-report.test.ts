@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beatSnapshot, type WakeRecord } from '../src/heartbeat.ts';
-import { heartbeatCommand, renderReport, summarizeTurn } from '../src/heartbeat-report.ts';
+import { heartbeatCommand, memoryShapedIdle, renderReport, summarizeTurn } from '../src/heartbeat-report.ts';
 import { queueFile } from '../src/heartbeat-queue.ts';
 
 const call = (id: string, name: string, args: unknown) => ({ type: 'toolCall', id, name, arguments: args });
@@ -105,4 +105,22 @@ test('the cheap check also sees the next queue item as an open job', () => {
   const text = beatSnapshot({ view: 'v', state: '', idleMinutes: 30, agents: [], shells: [], queueItem: 'fix the flaky test' });
   assert.match(text, /work queue[^]*fix the flaky test/i);
   assert.doesNotMatch(beatSnapshot({ view: 'v', state: '', idleMinutes: 30, agents: [], shells: [] }), /work queue/i);
+});
+
+test('a ship.mjs run counts as a delivery: the PR it opened is logged, so the next wake is not told it committed nothing', () => {
+  const summary = summarizeTurn([
+    assistant([call('1', 'bash', { command: 'node scripts/ship.mjs -m "x" -b "y" src/a.ts 2>&1 | tail -6' })]),
+    result('1', 'bash', 'url: "https://github.com/lennix1337/pi-optchat/pull/97"\nstate: OPEN\nauto_merge: queued'),
+  ]);
+  assert.deepEqual(summary.commits, ['pr https://github.com/lennix1337/pi-optchat/pull/97']);
+});
+
+test('a wake that only wrote a memory line is caught (03/11 16:35); a real report or any tool run is not', () => {
+  const memoryLine = '104704-112 OptChat 03/11 15:57-16:20 BRT, read-only monitoring, no operator order beyond user 104994';
+  assert.equal(memoryShapedIdle({ reply: memoryLine, tools: 0, commits: [] }), true);
+  assert.equal(memoryShapedIdle({ reply: '105113+1|work: heartbeat', tools: 0, commits: [] }), true);
+  assert.equal(memoryShapedIdle({ reply: 'tool: bash ran tests; echo: 80 pass', tools: 0, commits: [] }), true);
+  assert.equal(memoryShapedIdle({ reply: memoryLine, tools: 3, commits: [] }), false, 'it worked, only the report is odd');
+  assert.equal(memoryShapedIdle({ reply: 'Abri a PR #97 e o merge automático está programado.', tools: 0, commits: [] }), false);
+  assert.equal(memoryShapedIdle({ reply: '2 PRs mergeadas às 15:30.', tools: 0, commits: [] }), false);
 });

@@ -10,7 +10,8 @@ const textOf = (content: unknown) => typeof content === 'string' ? content : blo
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
 
 // `git commit`, `git -C dir push`, `git -c k=v commit`, anywhere in a shell command.
-const gitEffect = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:commit|push)\b/;
+// `scripts/ship.mjs` commits and pushes too: its wakes were logged as "committed nothing" (03/11 15:50, PR #97).
+const gitEffect = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:commit|push)\b|\bship\.mjs\b/;
 const MAX_COMMITS = 20;
 
 /** `commit <sha> <branch>`, `push <old>..<new> <branch>` or `push new <branch>` for each one git printed. */
@@ -19,6 +20,7 @@ function gitLines(output: string): string[] {
   for (const m of output.matchAll(/^\[(.+?) ([0-9a-f]{7,40})\]/gm)) found.push(`commit ${m[2]} ${m[1].replace(/ \(root-commit\)$/, '')}`);
   for (const m of output.matchAll(/^[ +]\s*([0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40})\s+(\S+)\s+->/gm)) found.push(`push ${m[1]} ${m[2]}`);
   for (const m of output.matchAll(/^ \* \[new (?:branch|tag)\]\s+(\S+)\s+->/gm)) found.push(`push new ${m[1]}`);
+  for (const m of output.matchAll(/^url: "(https:\/\/github\.com\/[^"\s]+\/pull\/\d+)"/gm)) found.push(`pr ${m[1]}`);
   return found;
 }
 
@@ -38,6 +40,19 @@ export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
   const last = messages.findLast(m => m.role === 'assistant');
   return { reply: last ? oneLine(textOf(last.content)) || oneLine(last.errorMessage ?? '') : '', tools, commits, ...last?.stopReason ? { stopReason: last.stopReason } : {} };
 }
+
+/**
+ * A wake reply shaped like a memory line (`104704-112 OptChat ...`, `id+n|`, `user: ...; echo: ...`) with no tool call: the
+ * model summarized the view instead of working (03/11 16:35: the operator saw a memory line and "vc n fez nada").
+ */
+export function memoryShapedIdle(summary: WakeSummary): boolean {
+  if (summary.tools > 0) return false;
+  const reply = summary.reply.trim();
+  return /^\d{3,}(?:[-+]\d+)?[|\s]/.test(reply) || /^(?:user|talk|tool|echo|work|note):\s/.test(reply);
+}
+
+/** Sent once into the same wake when its reply was a memory line and nothing ran. */
+export const MEMORY_REPLY_RETRY = '[OptChat heartbeat] Your wake reply was a memory summary line and you ran no tool: that is not a wake, and the operator reads it as "did nothing". Do the wake now: close what the previous wake left open, then deliver a change with your tools, and end with a short report in Portuguese (pt-BR) in plain sentences, never in memory-line format.';
 
 export interface ReportContext { now: number; cap: number; minutes: number; /** Every wake of the daily cap's count; without it the report counts the logged wakes. */ wakes?: number[] }
 
