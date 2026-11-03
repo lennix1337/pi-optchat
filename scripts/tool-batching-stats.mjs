@@ -2,7 +2,9 @@
 // is also a lone read-only call (a missed batch), and the round-trip it costs.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-const root = process.argv[2], sinceMs = Date.parse(process.argv[3] ?? '1970-01-01');
+import { homedir } from 'node:os';
+// Usage: node tool-batching-stats.mjs [sessionsDir] [sinceISO]; the dir defaults to ~/.pi/agent/sessions.
+const root = process.argv[2] ?? join(homedir(), '.pi', 'agent', 'sessions'), sinceMs = Date.parse(process.argv[3] ?? '1970-01-01');
 const READS = new Set(['read', 'zoom', 'output_read', 'project_evidence', 'ripwire', 'date']);
 const isRead = c => READS.has(c.name) || (c.name === 'bash' && /^\s*(cd [^&;]+(&&|;)\s*)?(grep|rg|sed -n|cat|ls|git (status|log|diff|show)|head|wc)\b/.test(String(c.arguments?.command ?? '')));
 const files = []; const walk = d => { for (const n of readdirSync(d)) { const p = join(d, n); const s = statSync(p); if (s.isDirectory()) walk(p); else if (n.endsWith('.jsonl') && s.mtimeMs >= sinceMs) files.push(p); } };
