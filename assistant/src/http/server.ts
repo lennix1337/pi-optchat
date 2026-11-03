@@ -14,14 +14,22 @@ import type { InspectionSource } from '../channels/inspection.ts';
 import { authenticate } from './auth.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from './io.ts';
 
-type Diagnostic = { category: 'internal'; operation: 'request' };
+/** `cause` is only the error class and code (e.g. `Error ERR_INVALID_STATE`), never its message, stack or any request data. */
+type Diagnostic = { category: 'internal'; operation: 'request'; cause?: string };
 type ErrorObserver = (diagnostic: Diagnostic) => void | Promise<void>;
 function safeLog(message: string): void {
   try { console.error(message); } catch { /* Diagnostics must not disrupt the request. */ }
 }
-export function reportError(observer: ErrorObserver): void {
+const safeToken = (v: unknown) => typeof v === 'string' && /^[A-Za-z][\w.-]{0,60}$/.test(v) ? v : undefined;
+function describeCause(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const parts = [safeToken(error.name), safeToken((error as { code?: unknown }).code)].filter(Boolean);
+  return parts.length ? parts.join(' ') : undefined;
+}
+export function reportError(observer: ErrorObserver, error?: unknown): void {
+  const cause = describeCause(error);
   try {
-    Promise.resolve(observer({ category: 'internal', operation: 'request' })).catch(() => safeLog('assistant HTTP diagnostic observer failed'));
+    Promise.resolve(observer({ category: 'internal', operation: 'request', ...(cause ? { cause } : {}) })).catch(() => safeLog('assistant HTTP diagnostic observer failed'));
   } catch { safeLog('assistant HTTP diagnostic observer failed'); }
 }
 const statuses = oneOf('suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'succeeded', 'failed', 'cancelled', 'resolved');
@@ -197,7 +205,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
   } catch (error) {
     if (error instanceof BadRequest) send(res, 400, { error: 'Bad request' });
     else if (error instanceof Conflict) send(res, 409, { error: 'Conflict' });
-    else { reportError(onError); send(res, 500, { error: 'Internal error' }); }
+    else { reportError(onError, error); send(res, 500, { error: 'Internal error' }); }
   }
 }
 /** Optional surfaces are fields here, so adding one does not change the server's signature. */
@@ -206,10 +214,10 @@ export type AssistantServerOptions = OptionalRoutes & {
   setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; voice?: VoiceProvider; prompt?: PromptSource; inspection?: InspectionSource; journal?: JournalApi; onError?: ErrorObserver;
 };
 
-export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, voice, prompt, inspection, journal, briefings, slack, executor, onError = () => safeLog('assistant HTTP internal request failure') }: AssistantServerOptions): Server {
+export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, voice, prompt, inspection, journal, briefings, slack, executor, onError = diagnostic => safeLog(diagnostic.cause ? `assistant HTTP internal request failure (${diagnostic.cause})` : 'assistant HTTP internal request failure') }: AssistantServerOptions): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
   const channel = web ? new WebChannel({ store, token, profileId, setup, origins: webOrigins, artifacts, voice, prompt, briefings, inspection }) : null;
-  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal }).catch(() => { reportError(onError); res.destroy(); }); });
+  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal }).catch(error => { reportError(onError, error); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
   return server;

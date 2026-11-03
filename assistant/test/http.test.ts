@@ -150,7 +150,9 @@ test('closed SQLite yields one safe diagnostic and 500', async () => {
   try {
     const response = await fetch(`http://127.0.0.1:${(server.address() as any).port}/v1/tasks?cursor=PRIVATE-RESPONSE`, { headers: { authorization: `Bearer ${token}` } });
     assert.equal(response.status, 500); assert.equal(await response.text(), '{"error":"Internal error"}');
-    assert.deepEqual(diagnostics, [{ category: 'internal', operation: 'request' }]);
+    assert.equal(diagnostics.length, 1);
+    assert.deepEqual({ ...(diagnostics[0] as object), cause: undefined }, { category: 'internal', operation: 'request', cause: undefined });
+    assert.match((diagnostics[0] as { cause?: string }).cause ?? '', /^[A-Za-z][\w.-]*( [A-Za-z][\w.-]*)?$/);
     assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE-RESPONSE|test-secret|SQLITE|stack/i);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
@@ -168,7 +170,10 @@ test('failed diagnostic observers cannot leak or cause unhandled rejections', as
         assert.equal(response.status, 500); await response.text();
       } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
     }
-    assert.deepEqual(logs, ['assistant HTTP diagnostic observer failed', 'assistant HTTP diagnostic observer failed', 'assistant HTTP internal request failure']);
+    assert.equal(logs.length, 3);
+    assert.deepEqual(logs.slice(0, 2), ['assistant HTTP diagnostic observer failed', 'assistant HTTP diagnostic observer failed']);
+    assert.match(logs[2]!, /^assistant HTTP internal request failure \([A-Za-z][\w. -]*\)$/);
+    assert.doesNotMatch(logs.join(' '), /PRIVATE-RESPONSE|SQLITE|stack/i);
   } finally { console.error = original; }
 });
 
