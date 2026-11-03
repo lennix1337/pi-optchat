@@ -52,7 +52,7 @@ function fixture(): Fixture {
 }
 
 function envFor(fx: Fixture, extra: Record<string, string> = {}) {
-  const env: Record<string, string> = { ...process.env, ...IDENTITY, FAKE_GH_STATE: fx.statePath, FAKE_GH_LOG: fx.logPath, ...extra } as Record<string, string>;
+  const env: Record<string, string> = { ...process.env, ...IDENTITY, FAKE_GH_STATE: fx.statePath, FAKE_GH_LOG: fx.logPath, PI_GITWATCH_DIR: join(fx.dir, 'gitwatch'), ...extra } as Record<string, string>;
   const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
   env[pathKey] = fx.bin + delimiter + (env[pathKey] ?? '');
   return env;
@@ -122,6 +122,9 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   assert.equal(calls[1], 'pr create --fill --base main --head feat/x');
   assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup');
   assert.ok(calls.includes('pr merge 1 --squash --auto'));
+  assert.equal(r.out.gitwatch, 'requested');
+  const follow = join(fx.dir, 'gitwatch', 'follow', 'acme__app#1.json');
+  assert.deepEqual(JSON.parse(readFileSync(follow, 'utf8')), { repo: 'acme/app', pr: 1 }, 'the poller is asked to follow the PR, so its merge wakes the agent');
   const traced = existsSync(trace) ? readFileSync(trace, 'utf8') : '';
   assert.ok(traced.includes('"commit"'), 'git ran through the trace');
   for (const forbidden of ['--no-verify', '--force', '--admin']) assert.equal(traced.includes(forbidden) || calls.join(' ').includes(forbidden), false, forbidden);
