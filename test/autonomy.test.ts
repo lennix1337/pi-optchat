@@ -317,7 +317,9 @@ test('reads and prose that name the contract file never wait for the operator', 
   assert.equal(touchesContract({ tool: 'commitments', input: { action: 'add', text: `propor mudança no ${f}`, source: '1' } }), false);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `const s = await tools.zoom({ id: 87018, n: 1, findText: '${f}' }); text(s);` } }), false);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.edit({ path: '~/.optchat/${f}', edits: [] })` } }), true);
-  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cat ~/.optchat/${f}' })` } }), true, 'a nested shell call stays fail-closed');
+  // Operator 03/11: a `cat` of the file through codemode was gated as a contract change; a nested read is a read.
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cat ~/.optchat/${f}' })` } }), false, 'a nested shell read is a read');
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cp x ~/.optchat/${f}' })` } }), true, 'a nested shell write stays gated');
   assert.equal(touchesContract({ tool: 'some_mcp_tool', input: { path: `~/.optchat/${f}` } }), true, 'an unknown tool naming it still asks');
 });
 

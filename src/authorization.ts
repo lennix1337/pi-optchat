@@ -14,7 +14,7 @@ export type ApprovalMode = 'all' | 'risk';
 export type Settled = 'approved' | 'denied' | 'superseded' | 'expired' | 'withdrawn';
 interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode; onSettled?: (token: string, outcome: Settled) => void }
 
-const reads = new Set(['read', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status', 'catchup_report']);
+const reads = new Set(['read', 'read_many', 'output_read', 'get_search_content', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status', 'catchup_report']);
 const navigation = new Set(['map', 'task', 'search', 'symbol', 'callers', 'callees', 'impact', 'exemplar', 'edit_check', 'quality', 'test_gate']);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
@@ -59,7 +59,8 @@ function diagnostic({ tool, input }: Invocation) {
 // obfuscated commands (eval, variables, encoded scripts) pass it. `all` mode is the boundary.
 const riskClasses: [string, RegExp][] = [
   // `git stash push` saves local changes; it is not a remote push.
-  ['push', /\bgit\b(?:(?!\bstash\b)[^;&|\n])*\spush\b/],
+  // `gh pr close --delete-branch` deletes the remote branch like `git push --delete` (03/11: it passed while the push waited).
+  ['push', /\bgit\b(?:(?!\bstash\b)[^;&|\n])*\spush\b|\bgh\s+pr\s+close\b[^;&|\n]*\s(?:-d|--delete-branch)\b/],
   ['publish', /\b(?:npm|pnpm|yarn|cargo|vsce)\s+publish\b|\bgh\s+(?:release\s+create|pr\s+merge|repo\s+(?:create|delete))\b/],
   ['global install', /\b(?:npm|pnpm|yarn)\s+(?:i|install|add|link)\b[^;&|\n]*\s(?:-g|--global)\b|\b(?:cargo|winget|choco|scoop)\s+install\b/],
   ['discard', /\bgit\b[^;&|\n]*\s(?:reset\s+--hard|clean\s+-[a-zA-Z]*f[a-zA-Z]*|worktree\s+remove\b[^;&|\n]*--force|branch\s+-D|stash\s+(?:drop|clear))\b/],
@@ -77,15 +78,27 @@ const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerC
 const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor', 'spawn', 'subagent', 'tell',
   // Messages and records: a Slack report or a commitment that names the file only tells about it (false positive 2026-10-30).
   'slack_send', 'commitments', 'update_goal']);
-const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
+// `find` reads unless it deletes, runs or writes (`-delete`, `-exec`, `-fprint`); `sed -n` without `-i` prints.
+const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|realpath|readlink|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|Resolve-Path|find(?![^;&|\n]*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)|sed\s+-n(?![^;&|\n]*\s-i)|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
 /** Shell control words in front of a segment's command: `for f in a b` only lists words, `do`/`then` precede the real command. */
 const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
 const loopHeader = /^for\s+\w+\s+in\b/;
 /** `node -e|-p` whose inline script uses no file-writing API only reads. */
 const nodeInline = /^node\s+(?:-e|-p|--eval|--print)\s/;
 const fsWrite = /\b(?:writeFile|appendFile|rename|copyFile|cp|rm|unlink|truncate|createWriteStream|open|symlink|link)(?:Sync)?\s*\(/;
-/** Codemode tools that can write a file; a script without one only reads or reports. */
-const codemodeWriter = /\btools\.(?:edit|write|bash|shell_start)\s*\(/;
+/**
+ * A codemode script can write the contract through `edit`/`write` naming it, or through a shell command that writes it.
+ * Shell commands are judged like bash (a `cat` of the file only reads, 03/11 false positive); a script whose shell calls
+ * cannot all be read as literal commands still counts as a writer.
+ */
+function codemodeWritesContract(code: string) {
+  if (!namesContract(code)) return false;
+  if (/\btools\.(?:edit|write)\s*\(/.test(code)) return true;
+  const shells = code.match(/\btools\.(?:bash|shell_start)\s*\(/g)?.length ?? 0;
+  if (!shells) return false;
+  const commands = scriptCommands(code);
+  return commands.length < shells || commands.some(shellWritesContract);
+}
 
 /** Shell text without here-document bodies: a body is content for the file its command line names, like a write's content. */
 const withoutHeredocBodies = (command: string) =>
@@ -126,7 +139,7 @@ export function touchesContract({ tool, input }: { tool: string; input: unknown 
   if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
   if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && namesContract(input.path);
   if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command);
-  if (tool === 'codemode' && record(input) && typeof input.code === 'string') return namesContract(input.code) && codemodeWriter.test(input.code);
+  if (tool === 'codemode' && record(input) && typeof input.code === 'string') return codemodeWritesContract(input.code);
   return namesContract(input);
 }
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
