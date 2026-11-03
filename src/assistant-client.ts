@@ -44,9 +44,15 @@ function config(owner: Pick<AssistantOwner, 'dir' | 'name'>) {
 export { config as assistantConfig, request as assistantRequest };
 export class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
 class ResponseTooLarge extends Error {}
+/** A kept-alive socket the server closed while idle fails the next request with a reset before any byte is read. */
+const staleSocket = (error: unknown) => error instanceof TypeError && error.message === 'fetch failed'
+  && ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(String((error.cause as { code?: unknown } | undefined)?.code));
 async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000, cancel?: AbortSignal): Promise<unknown> {
-  const response = await fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs),
+  const signal = cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs);
+  const send = () => fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal,
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  // Reads are idempotent, so one retry on a fresh socket is safe; writes never repeat (their effect may have landed).
+  const response = await send().catch(error => { if (body === undefined && staleSocket(error)) return send(); throw error; });
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status); }
   if (!response.body) throw new Error('Invalid response');
   const reader = response.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
