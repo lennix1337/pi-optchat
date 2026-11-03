@@ -49,7 +49,7 @@ import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadar, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
-import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
+import { heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedIdle, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
@@ -251,6 +251,8 @@ export default function optchat(pi: ExtensionAPI) {
   /** The nightly dream's active lessons, frozen for the local day so the system prompt stays cacheable. */
   const dreamLessons = new DayFrozenLessons();
   let settledAt = Date.now();
+  /** The open wake was already sent back once for a memory-line reply; a second one settles as it is. */
+  let wakeRetried = false;
   /** The messages of the current run, read when it settles to report what a heartbeat wake did. */
   let turn: AgentMessage[] = [];
   const idleMinutes = () => Math.round((Date.now() - settledAt) / 60_000);
@@ -357,6 +359,7 @@ export default function optchat(pi: ExtensionAPI) {
       check: radar => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile, radar),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
       wake: (beat, radar) => {
+        wakeRetried = false;
         const dream = briefDream(ctx);
         const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar), previousWake(profile.dir), beat.unchanged);
         wakeOn(profile.dir, wakeModelFor(profile.config, main), wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
@@ -916,9 +919,14 @@ export default function optchat(pi: ExtensionAPI) {
     working = false; showTitle(ctx);
     settledAt = Date.now();
     const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
-    heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
-    if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
-    if (active && !fault && !stopping) heartbeat?.arm();
+    // A memory-line reply with no tool run is sent back once; the wake stays open (same model, same record) for the run that works.
+    const retry = !!wake && !wakeRetried && !fault && !stopping && memoryShapedIdle(wake);
+    if (retry) { wakeRetried = true; void deliverReport(MEMORY_REPLY_RETRY); }
+    else {
+      heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
+      if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
+      if (active && !fault && !stopping) heartbeat?.arm();
+    }
     if (active) {
       const dir = active.dir;
       const metrics = active.metrics, statusStarted = performance.now();
