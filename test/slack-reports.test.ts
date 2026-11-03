@@ -120,6 +120,16 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('the Feito list keeps the latest post of each PR, not one line per state change', () => {
+  const pr = (n: number, what: string) => ({ at: n, channel: 'harness', line: `${what} · <https://github.com/lennix1337/pi-optchat/pull/84|pi-optchat#84> relay` });
+  const day = [pr(1, '🆕 PR aberto'), pr(2, '✅ CI verde'), pr(3, '🟣 Mergeado'), { at: 4, channel: 'harness', line: 'Corrigi o EPERM' }];
+  const text = composeSummary({ day, waiting: [], prs: [], approvals: 0 });
+  assert.match(text, /#harness \(2\):/);
+  assert.match(text, /Mergeado/);
+  assert.doesNotMatch(text, /PR aberto|CI verde/);
+  assert.match(text, /Corrigi o EPERM/);
+});
+
 test('an empty day still says so', () => {
   const text = composeSummary({ day: [], waiting: [], prs: [], approvals: 0 });
   assert.match(text, /Nada reportado nos canais/);
