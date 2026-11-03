@@ -558,6 +558,20 @@ test('App Home: a publish that fails for another reason is said once, not swallo
   } finally { f.close(); }
 });
 
+test('App Home: a profile without the assistant publishes nothing and warns nothing', async () => {
+  const warnings: string[] = [];
+  const f = fixture([], { warn: (m: string) => warnings.push(m), request: async (_o: unknown, path: string) => {
+    if (path === '/v1/slack/home') throw new Error('Assistant disabled. Add assistant.json to the active profile to enable it.');
+    return { parts: 1, ts: '1.1', channel: 'D1' };
+  } });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('oi');
+    await new Promise(done => setTimeout(done, 10));
+    assert.deepEqual(warnings.filter(w => /App Home/.test(w)), []);
+  } finally { f.close(); }
+});
+
 /** A request fake whose enrichment calls take `ms` each and record how many were in flight at once. */
 function slowEnrichment(ms: number) {
   let inFlight = 0, peak = 0;

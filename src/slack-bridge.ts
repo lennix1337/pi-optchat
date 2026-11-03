@@ -383,7 +383,9 @@ export class SlackBridge {
         await this.options.request(owner, '/v1/slack/home', old);
         this.homeWarn('App Home: the assistant service refused the buttons (older than this extension); sent the text alone. Restart the service to load its new code.');
       })
-      .catch(error => this.homeWarn(`App Home not published: ${error instanceof Error ? error.message : String(error)}`));
+      // A profile without the assistant has no Home to publish: that is its normal state, not a failure to report.
+      .catch(error => error instanceof Error && error.message.startsWith('Assistant disabled.') ? undefined
+        : this.homeWarn(`App Home not published: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   private homeWarn(message: string): void {
