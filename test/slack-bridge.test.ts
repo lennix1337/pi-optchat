@@ -523,11 +523,12 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
 });
 
 test('App Home: a service from before the buttons refuses the new fields; the text alone still goes out', async () => {
-  const calls: Record<string, unknown>[] = [];
-  const f = fixture([], { request: async (_o: unknown, path: string, body: Record<string, unknown>) => {
+  // The refusal as the real client reports it: HttpError, whose message never says "HTTP 400" (03/11: the Home froze for hours).
+  const calls: Record<string, unknown>[] = [], warnings: string[] = [];
+  const f = fixture([], { warn: (m: string) => warnings.push(m), request: async (_o: unknown, path: string, body: Record<string, unknown>) => {
     if (path !== '/v1/slack/home') return { parts: 1, ts: '1.1', channel: 'D1' };
     calls.push(body);
-    if ('working' in body) throw new Error('HTTP 400 bad request');
+    if ('working' in body) throw new HttpError(400);
     return { ok: true };
   } });
   try {
@@ -536,6 +537,24 @@ test('App Home: a service from before the buttons refuses the new fields; the te
     await new Promise(done => setTimeout(done, 10));
     assert.equal(calls.length, 2);
     assert.deepEqual(Object.keys(calls[1]!), ['text']);
+    f.bridge.sawUserMessage('[Slack] de novo');
+    await new Promise(done => setTimeout(done, 10));
+    assert.equal(warnings.filter(w => /Restart the service/.test(w)).length, 1, 'said once, with what to do');
+  } finally { f.close(); }
+});
+
+test('App Home: a publish that fails for another reason is said once, not swallowed', async () => {
+  const warnings: string[] = [];
+  const f = fixture([], { warn: (m: string) => warnings.push(m), request: async (_o: unknown, path: string) => {
+    if (path === '/v1/slack/home') throw new HttpError(502);
+    return { parts: 1, ts: '1.1', channel: 'D1' };
+  } });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('oi');
+    f.bridge.sawUserMessage('[Slack] de novo');
+    await new Promise(done => setTimeout(done, 10));
+    assert.equal(warnings.filter(w => /App Home not published/.test(w)).length, 1);
   } finally { f.close(); }
 });
 

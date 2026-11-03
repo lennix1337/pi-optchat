@@ -86,6 +86,9 @@ const IDLE = /^\u2705 \*Livre\*/;
 /** What the service queues for the Home's Ver tudo / Ver menos buttons (assistant/src/channels/slack-relay.ts HOME_ACTIONS). */
 const HOME_FOLD = { channel: 'home', more: 'tudo', less: 'menos' } as const;
 /** At most `max` characters, cut at a word and marked with \u2026, so a quote or a link is never cut in half silently. */
+/** A service that refuses a field it predates answers 400; the client reports it as `HttpError`, whose message never names the status. */
+const refused = (error: unknown) => error instanceof HttpError ? error.status === 400 : error instanceof Error && /HTTP 400/.test(error.message);
+
 export function clipWords(text: string, max: number): string {
   if (text.length <= max) return text;
   if (max <= 1) return '';
@@ -136,6 +139,8 @@ export class SlackBridge {
   private polling = false;
   private pollFailure: string | undefined;
   private itemsFailure: string | undefined;
+  /** The last Home failure said, so a service that keeps refusing is reported once, not at every run end. */
+  private homeFailure: string | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
@@ -369,10 +374,20 @@ export class SlackBridge {
     const full = `${clipWords(text, HOME_CHARS - status.length)}${status}`;
     const choices = waiting.filter(w => w.choices?.length).slice(0, 3).map(w => ({ label: clipWords(w.text, 120), options: w.choices! }));
     const fold = items.hidden ? 'more' : this.expanded ? 'less' : undefined;
-    // A service from before these fields refuses them (HTTP 400): the old 3000-character text alone still goes out.
+    // A service from before these fields refuses them (HTTP 400): the old 3000-character text alone still goes out,
+    // and the warning says to restart it. 03/11: the check read the message, which never says "HTTP 400", so the Home froze for hours.
     const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
     void this.options.request(owner, '/v1/slack/home', { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}) })
-      .catch(error => error instanceof Error && /HTTP 400/.test(error.message) ? this.options.request(owner, '/v1/slack/home', old) : undefined).catch(() => undefined);
+      .then(() => { this.homeFailure = undefined; }, async error => {
+        if (!refused(error)) throw error;
+        await this.options.request(owner, '/v1/slack/home', old);
+        this.homeWarn('App Home: the assistant service refused the buttons (older than this extension); sent the text alone. Restart the service to load its new code.');
+      })
+      .catch(error => this.homeWarn(`App Home not published: ${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  private homeWarn(message: string): void {
+    if (message !== this.homeFailure) { this.homeFailure = message; this.options.warn(message); }
   }
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
@@ -486,7 +501,7 @@ export class SlackBridge {
       try { ({ ts, channel } = await this.send(`${head}Toque em *Aprovar* ou *Negar*, ou responda *aprovar*/*negar* nesta thread ${tail}`, null, null, { approval: true })); }
       catch (error) {
         // A service from before the buttons refuses the field: the thread reply still decides.
-        if (!(error instanceof Error && /HTTP 400/.test(error.message))) throw error;
+        if (!refused(error)) throw error;
         ({ ts, channel } = await this.send(`${head}Responda *aprovar* ou *negar* nesta thread ${tail}`));
       }
       this.approvals.set(ts, { request, channel: typeof channel === 'string' ? channel : null });
