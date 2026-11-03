@@ -82,6 +82,7 @@ import { PerformanceMetrics, registerPerformance, performanceTool } from './perf
 import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { registerSelfReload } from './self-reload.ts';
+import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
 
 const binding = 'optchat.profile';
 /** The request head the prompt cache holds (StableHead), kept in the session so /reload sends it again. */
@@ -246,6 +247,7 @@ export default function optchat(pi: ExtensionAPI) {
   let untitle: (() => void) | undefined;
   /** Wakes the main agent after a long idle when a cheap check finds work (heartbeatMinutes); interactive owner only. */
   let heartbeat: Heartbeat | undefined;
+  let retroTimer: ReturnType<typeof setInterval> | undefined;
   /** The nightly dream's active lessons, frozen for the local day so the system prompt stays cacheable. */
   const dreamLessons = new DayFrozenLessons();
   let settledAt = Date.now();
@@ -364,9 +366,21 @@ export default function optchat(pi: ExtensionAPI) {
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
     settledAt = Date.now(); heartbeat.arm();
+    // The daily retro (operator 03/11): once a day after the configured time, on an idle chat.
+    if (retroTimer) clearInterval(retroTimer);
+    retroTimer = setInterval(() => {
+      const at = own()?.config.dailyRetro;
+      if (!at || at === 'off' || stopping || working || !idle() || reports.length) return;
+      const now = Date.now();
+      if (!retroDue(profile.dir, now, at)) return;
+      try { markRetro(profile.dir, now); } catch (error) { ctx.ui.notify(`Daily retro could not be recorded: ${errorText(error)}`, 'warning'); return; }
+      void deliverReport(retroPrompt(new Date(now).toLocaleDateString('sv-SE'))).catch(error => ctx.ui.notify(`Daily retro could not start: ${errorText(error)}`, 'error'));
+    }, 60_000);
+    retroTimer.unref?.();
   };
   const stop = async (reason?: string) => {
     heartbeat?.disarm(); heartbeat = undefined;
+    if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
     inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;

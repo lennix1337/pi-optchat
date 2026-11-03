@@ -3,6 +3,9 @@ import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApprov
 import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './effect-advisor.ts';
 import { classifyEffects, describeDecision, logReported, type Decision, type Effect, type Repo } from './autonomy.ts';
 import { readProfileEffectPolicy } from './effect-policy.ts';
+import { judgeSelfEdit } from './autonomy-self-edit.ts';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
@@ -125,7 +128,17 @@ function liftOrdered(dir: string, effects: Effect[], orderGrant: OrderGrant, pen
 
 /** The contract's word on a refused call: `run`, a refusal note, or undefined when it has no rule (the advisor decides). */
 function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
-  if (touchesContract(call)) return { note: 'Only the operator changes autonomy.json: neither the contract nor the advisor can approve this. ' };
+  if (touchesContract(call)) {
+    const self = judgeSelfEdit(contractDir(), call);
+    if (self?.ok) {
+      const dir = contractDir()!;
+      try { appendFileSync(join(dir, 'autonomy-log.jsonl'), `${JSON.stringify({ at: Date.now(), action: 'contract-self-edit', targets: [join(dir, 'autonomy.json')], summary: self.summary, rule: 'operator 03/11: the daily retro adjusts autonomy.json outside the protected rules' })}\n`); }
+      catch (error) { ctx.ui.notify(`Could not log the autonomy.json self-edit: ${error instanceof Error ? error.message : String(error)}`, 'warning'); }
+      ctx.ui.notify(self.summary, 'info');
+      return 'run';
+    }
+    return { note: `Only the operator changes autonomy.json here${self ? ` (${self.reason})` : ''}: neither the contract nor the advisor can approve it. An edit/write of the file that leaves the protected rules and the default alone runs by itself. ` };
+  }
   const dir = contractDir(), effects = classifyEffects(call, repo);
   let decision = readProfileEffectPolicy(dir, () => effects);
   if (decision?.level === 'ask' && !decision.problem && orderGrant && dir) {
