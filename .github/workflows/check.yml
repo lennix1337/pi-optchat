@@ -57,7 +57,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm test
+        timeout-minutes: 12
       - run: npm run test:pi-compat
+        timeout-minutes: 6
       - run: npm pack --dry-run
   assistant:
     # The assistant is a standalone Node 24 service with its own tsconfig and tests, which the root
@@ -77,6 +79,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
+    # Normal run ~6 min; a hang (PR #81, 26 min, log lost) must fail fast.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
