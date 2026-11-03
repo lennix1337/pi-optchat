@@ -119,6 +119,26 @@ export class ComputerManager {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  /**
+   * An owner cleanup whose process died (crash, restart) between reserving and issuing any `docker rm` leaves an
+   * `active` owner fence and removals without a recorded target that nobody will finish, refusing every create
+   * forever. A fence or reservation whose token no live manager holds is given up as failed: without a recorded
+   * target no removal was ever issued, so the owner cleanup that follows can safely take them over.
+   */
+  private adoptOrphanedCleanup(): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const fence = this.db.prepare("SELECT token FROM computer_owner_cleanup WHERE owner = ? AND phase = 'active'").get(this.options.owner) as { token: string } | undefined;
+      if (fence && !liveLifecycleTokens.has(fence.token)) {
+        this.db.prepare("UPDATE computer_owner_cleanup SET phase = 'failed' WHERE owner = ? AND token = ?").run(this.options.owner, fence.token);
+        const rows = this.db.prepare("SELECT c.id, l.token FROM computers c JOIN computer_lifecycle l ON l.id = c.id WHERE c.owner = ? AND c.state = 'removing' AND l.target IS NULL AND l.phase = 'active'").all(this.options.owner) as { id: string; token: string }[];
+        for (const { id, token } of rows) {
+          if (!liveLifecycleTokens.has(token)) this.db.prepare("UPDATE computer_lifecycle SET phase = 'failed' WHERE id = ? AND token = ?").run(id, token);
+        }
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   /** Records the immutable container ID a removal is about to act on, so a later retry can inspect exactly that ID. */
   private recordTarget(id: string, token: string, target: string): void {
     this.db.prepare('UPDATE computer_lifecycle SET target = ? WHERE id = ? AND token = ?').run(target, id, token);
@@ -544,6 +564,7 @@ export class ComputerManager {
    */
   async cleanup(): Promise<number> {
     this.adoptOrphanedCreates();
+    this.adoptOrphanedCleanup();
     const observedOwner = this.db.prepare('SELECT token, phase FROM computer_owner_cleanup WHERE owner = ?').get(this.options.owner) as { token: string; phase: string } | undefined;
     const earlier = this.list().filter(row => row.state === 'removing');
     if (observedOwner && observedOwner.phase !== 'failed') {
@@ -559,9 +580,10 @@ export class ComputerManager {
       if (current?.token !== observedOwner?.token) fail('computer_cleanup_active');
       const rows = this.list();
       if (rows.some(row => row.state === 'graphical' || row.state === 'transition' || (row.state === 'removing' && !resumed.has(row.id)))) fail('computer_transition');
-      if (current) this.db.prepare('DELETE FROM computer_owner_cleanup WHERE owner = ? AND token = ?').run(this.options.owner, current.token);
+      if (current) { this.db.prepare('DELETE FROM computer_owner_cleanup WHERE owner = ? AND token = ?').run(this.options.owner, current.token); this.unhold(current.token); }
       ownerToken = randomUUID();
       this.db.prepare('INSERT INTO computer_owner_cleanup (owner, token) VALUES (?, ?)').run(this.options.owner, ownerToken);
+      this.hold(ownerToken);
       for (const row of rows) reservations.set(row.container, { id: row.id, token: resumed.get(row.id) ?? this.reserveLifecycle(row.id) });
       containers = rows.map(row => row.container);
       this.db.prepare("UPDATE computers SET state = 'removing' WHERE owner = ?").run(this.options.owner);
@@ -583,6 +605,7 @@ export class ComputerManager {
       if (!result.failures) {
         const released = this.db.prepare('DELETE FROM computer_owner_cleanup WHERE owner = ? AND token = ?').run(this.options.owner, ownerToken);
         if (Number(released.changes) !== 1) fail('computer_cleanup_active');
+        this.unhold(ownerToken);
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
