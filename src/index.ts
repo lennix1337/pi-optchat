@@ -28,6 +28,7 @@ import { cachePayload, coldAfter, prefixRetention, record, ViewEntries } from '.
 import { nativeHead, StableHead, type SavedHead } from './stable-head.ts';
 import { saveImages } from './images.ts';
 import { wakeOff, wakeOn, type WakeHost } from './wake-model.ts';
+import { quietGhTelemetry } from './gh-quiet.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, coldBudget, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
@@ -113,6 +114,7 @@ export const version = ((): string | undefined => {
 const brand = version ? `OptChat v${version}` : 'OptChat';
 
 export default function optchat(pi: ExtensionAPI) {
+  quietGhTelemetry();
   // Shells a /reload handed over keep running under the same IDs; another profile opening first stops them.
   const adopted = adoptShells();
   const shells = adopted?.jobs ?? new ShellJobs();
