@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -9,7 +9,7 @@ import { composeSummary, DailySummary, logSent, prChange, PrWatch, readDay } fro
 
 const temp = () => mkdtempSync(join(tmpdir(), 'slack-reports-'));
 type Posted = { text: string; channel: string | null; topic?: string };
-const recorder = () => { const posts: Posted[] = []; return { posts, post: async (text: string, channel: string | null, topic?: string) => { posts.push({ text, channel, topic }); } }; };
+const recorder = () => { const posts: Posted[] = []; return { posts, post: async (text: string, channel: string | null, topic?: string) => { posts.push({ text, channel, topic }); return { parts: 1, ts: '1793.1' }; } }; };
 
 test('projects come from projetos/<repo> paths, most mentioned first', () => {
   assert.equal(projectOf('cd C:/projetos/dentai-mono && pnpm test'), 'dentai');
@@ -109,6 +109,9 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
     now += 2 * 60_000;
     assert.equal(await daily.maybePost(), true);
     assert.equal(await daily.maybePost(), false, 'once a day');
+    const record = JSON.parse(readFileSync(join(dir, 'slack-daily.json'), 'utf8')) as { date: string; sentAt?: number; ts?: string };
+    assert.equal(record.sentAt, now, 'the file records the delivery, not only the attempt');
+    assert.equal(record.ts, '1793.1', "and Slack's message id");
     assert.deepEqual(paths, ['/v1/briefing', '/v1/briefing POST', '/v1/tasks?limit=50'], "yesterday's briefing is refreshed first");
     const text = r.posts[0]!.text;
     assert.equal(r.posts[0]!.channel, null);

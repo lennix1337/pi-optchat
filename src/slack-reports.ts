@@ -206,8 +206,11 @@ export class DailySummary {
     atomicWrite(file, JSON.stringify({ date: today })); // Before posting: a crash mid-post must not post twice.
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
-    await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
+    const sent = await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
       approvals: this.approvals(), github, cost: harnessCost(owner.dir, now) }), null);
+    // The date above says "tried"; `sentAt` and Slack's `ts` say "delivered": a date alone cannot tell a failed post from a sent one.
+    const ts = (sent as { ts?: unknown } | undefined)?.ts;
+    atomicWrite(file, JSON.stringify({ date: today, sentAt: (this.options.now ?? Date.now)(), ...(typeof ts === 'string' ? { ts } : {}) }));
     return true;
   }
 }
