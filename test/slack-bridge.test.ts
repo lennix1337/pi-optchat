@@ -767,6 +767,29 @@ test('App Home: idle in the chat with a shell or a subagent still running says s
   } finally { f.close(); }
 });
 
+test('App Home: idle with a PR whose CI is pending says what it waits for, not "Livre"', async () => {
+  const pending = { ...WORK, jobs: [], prs: [{ ...WORK.prs[0]!, repo: 'lennix1337/Genexus18MCP', number: 840, checks: 'pendentes' as const }] };
+  const f = fixture([], { items: () => pending });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('faz a release');
+    await f.bridge.runEnded(replies('Esperando o CI da #840.'));
+    const text = homes$(f).at(-1)!.text;
+    assert.match(text, /^\u23f3 \*Esperando CI de Genexus18MCP#840\* \u00b7 chat livre desde/);
+    assert.doesNotMatch(text, /Livre\*/);
+  } finally { f.close(); }
+});
+
+test('App Home: idle with nothing running nor pending CI still says "Livre"', async () => {
+  const f = fixture([], { items: () => ({ ...WORK, jobs: [] }) });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('oi');
+    await f.bridge.runEnded(replies('Pronto.'));
+    assert.match(homes$(f).at(-1)!.text, /^\u2705 \*Livre\* desde/);
+  } finally { f.close(); }
+});
+
 test('App Home: what waits on him shows what is asked, its answers as buttons, and Ver tudo when items were folded', async () => {
   const f = fixture([], { items: () => MANY });
   try {

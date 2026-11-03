@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Commitment } from '../src/commitments.ts';
-import { backgroundSummary, commitmentItems, readPrItems, renderWork, renderWorkParts, type HomeWork } from '../src/home-items.ts';
+import { backgroundSummary, commitmentItems, idleLine, pendingCi, readPrItems, renderWork, renderWorkParts, type HomeWork } from '../src/home-items.ts';
 
 const NOW = Date.parse('2026-11-02T15:00:00Z');
 const commitment = (over: Partial<Commitment>): Commitment => ({
@@ -100,6 +100,16 @@ test('renderWorkParts: Ver tudo lists every item and says nothing was hidden; su
   assert.equal(backgroundSummary(running), '1 subagente e 1 comando');
   assert.equal(backgroundSummary(work({ agents: ['a', 'b'] })), '2 subagentes');
   assert.equal(backgroundSummary(work()), '');
+});
+
+test('idleLine: running work and pending CI are named; nothing awaited is empty', () => {
+  const pr = (number: number, checks: 'pendentes' | 'verdes') => ({ repo: 'o/r', number, title: 't', url: 'https://x/1', checks });
+  assert.equal(pendingCi(work({ prs: [pr(1, 'verdes')] })), '');
+  assert.equal(pendingCi(work({ prs: [pr(1, 'pendentes'), pr(2, 'pendentes')] })), 'CI de r#1 e r#2');
+  assert.equal(pendingCi(work({ prs: [pr(1, 'pendentes'), pr(2, 'pendentes'), pr(3, 'pendentes')] })), 'CI de 3 PRs');
+  assert.equal(idleLine(work({ prs: [pr(7, 'pendentes')] })), '\u23f3 *Esperando CI de r#7* \u00b7 chat livre');
+  assert.equal(idleLine(work({ jobs: ['j'], prs: [pr(7, 'pendentes')] })), '\u23f3 *Em segundo plano* (1 comando rodando; esperando CI de r#7) \u00b7 chat livre');
+  assert.equal(idleLine(work({ prs: [pr(7, 'verdes')] })), '');
 });
 
 test('renderWork: the whole block stays under its character budget, and a line is never cut inside its link', () => {
