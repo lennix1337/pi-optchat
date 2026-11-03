@@ -38,6 +38,14 @@ export function logSent(dir: string, channel: string | null, text: string, now =
 }
 export const readDay = (dir: string, since: number): DayEntry[] => readJsonl<DayEntry>(join(dir, DAY), e => e.at >= since);
 
+/** One PR runs through opened, CI green and merged: the day's list keeps its latest post, so four lines are four things done. */
+export function latestPerLink(day: DayEntry[]): DayEntry[] {
+  const key = (e: DayEntry) => /<(https:\/\/github\.com\/[^|>]+)\|/.exec(e.line)?.[1];
+  const last = new Map<string, number>();
+  day.forEach((e, i) => { const k = key(e); if (k) last.set(k, i); });
+  return day.filter((e, i) => { const k = key(e); return !k || last.get(k) === i; });
+}
+
 // ---- The operator's PRs. ----
 type Gh = (args: string[]) => Promise<string>;
 const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
@@ -151,7 +159,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
   if (act.closed.length) lines.push('', '*Fechado nas últimas 24h*', ...act.closed);
   if (fixes?.length) lines.push('', '*Resolvi sozinho*', ...fixes.slice(-8).map(f => `• ${one(f, 200)}`));
   const byChannel = new Map<string, string[]>();
-  for (const e of day) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
+  for (const e of latestPerLink(day)) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
   lines.push('', '*Feito*');
   if (!byChannel.size) lines.push('• Nada reportado nos canais.');
   for (const [channel, entries] of byChannel) {
