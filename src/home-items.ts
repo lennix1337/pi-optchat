@@ -102,3 +102,20 @@ export function backgroundSummary(work: HomeWork): string {
   const agents = work.agents?.length ?? 0, jobs = work.jobs.length;
   return [agents ? `${agents} subagente${agents === 1 ? '' : 's'}` : '', jobs ? `${jobs} comando${jobs === 1 ? '' : 's'}` : ''].filter(Boolean).join(' e ');
 }
+
+/** The PRs whose CI is still running, in words ("CI de pi-optchat#88", "CI de 3 PRs"); empty when none. */
+export function pendingCi(work: HomeWork): string {
+  const pending = work.prs.filter(p => p.checks === 'pendentes');
+  if (!pending.length) return '';
+  return pending.length <= 2 ? `CI de ${pending.map(p => `${p.repo.split('/').pop()}#${p.number}`).join(' e ')}` : `CI de ${pending.length} PRs`;
+}
+
+/**
+ * The status line when the chat is idle but the agent is not: what runs in the background and what it waits for, so
+ * the operator tells "waiting on CI" from "doing nothing". Empty when nothing runs or is awaited (the Home says Livre).
+ */
+export function idleLine(work: HomeWork): string {
+  const running = backgroundSummary(work), ci = pendingCi(work);
+  if (running) return `\u23f3 *Em segundo plano* (${running} rodando${ci ? `; esperando ${ci}` : ''}) \u00b7 chat livre`;
+  return ci ? `\u23f3 *Esperando ${escape(ci)}* \u00b7 chat livre` : '';
+}

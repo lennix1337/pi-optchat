@@ -15,7 +15,7 @@ import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
 import { budgetNote, fitPost, wordBudget, type WordBudgets } from './slack-policy.ts';
-import { backgroundSummary, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
+import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
 import type { WaitingItem } from './commitments.ts';
 
 /**
@@ -355,9 +355,9 @@ export class SlackBridge {
   private home(text: string): void {
     this.homeText = text;
     const owner = this.owner();
-    const work = this.readWork(), background = backgroundSummary(work);
-    // Idle in the chat is not idle: subagents or shells still running say so instead of "Livre".
-    if (!this.work && background) text = text.replace(IDLE, `\u23f3 *Em segundo plano* (${background} rodando) \u00b7 chat livre`);
+    const work = this.readWork(), idle = idleLine(work);
+    // Idle in the chat is not idle: subagents or shells still running, or CI still pending, say so instead of "Livre".
+    if (!this.work && idle) text = text.replace(IDLE, idle);
     this.activity = text.split('\n')[0]!;
     const waiting = this.readWaiting(), items = renderWorkParts(work, this.expanded);
     let status = SlackBridge.waitingBlock(waiting) + (items.text ? `\n\n${items.text}` : '');
