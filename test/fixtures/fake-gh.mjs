@@ -26,7 +26,7 @@ if (verb === 'view') {
   if (state.createFails) fail(state.createFails);
   const number = Math.max(0, ...state.prs.map(p => p.number)) + 1;
   const url = `https://github.com/acme/app/pull/${number}`;
-  state.prs.push({ number, url, state: 'OPEN', headRefName: flag('--head'), baseRefName: flag('--base'), mergeStateStatus: state.defaults.mergeStateStatus, autoMergeRequest: null, statusCheckRollup: state.defaults.checks });
+  state.prs.push({ number, url, state: 'OPEN', headRefName: flag('--head'), baseRefName: flag('--base'), mergeStateStatus: state.defaults.mergeStateStatus, autoMergeRequest: null, statusCheckRollup: state.defaults.checks, body: flag('--body-file') ? readFileSync(flag('--body-file'), 'utf8') : '' });
   save();
   process.stdout.write(url + '\n');
 } else if (verb === 'merge') {
