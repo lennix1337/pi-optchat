@@ -329,6 +329,15 @@ test('long poll: a waiting inbox read ends when a message arrives, not at its de
   } finally { r.close(); }
 });
 
+test('long poll: closing the relay ends a held read with an empty answer, not a read of the closed database', async () => {
+  const r = relayFixture();
+  const waiting = r.relay.waitAfter(0, 20, 5000);
+  const started = Date.now();
+  r.close();
+  assert.deepEqual(await waiting, []);
+  assert.ok(Date.now() - started < 1000, 'close ends the wait');
+});
+
 test('HTTP: inbox wait= holds the read until a message arrives; wait above the limit is refused', async () => {
   const slack = fakeSlack();
   const r = relayFixture();
