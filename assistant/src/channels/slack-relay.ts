@@ -51,6 +51,7 @@ export class SlackRelay {
   private retryTimer: NodeJS.Timeout | undefined;
   /** Readers held by `waitAfter`; each is ended by a new message or by its own deadline. */
   private readonly arrivals = new Set<() => void>();
+  private closed = false;
   /** The relay's effects: receipts and retirements are staged with the message; HTTP writes are recorded by `record`. */
   readonly outbox: Outbox;
 
@@ -131,7 +132,8 @@ export class SlackRelay {
       const timer = setTimeout(done, waitMs);
       this.arrivals.add(done);
     });
-    return this.after(seq, limit);
+    // A reader still held when the relay closes answers empty: the database it would read is gone.
+    return this.closed ? [] : this.after(seq, limit);
   }
 
   /** Messages after `seq`, oldest first. Reading marks a reader as present. */
@@ -143,7 +145,7 @@ export class SlackRelay {
 
   /** Settles the running dispatch pass (tests, shutdown). */
   idle(): Promise<unknown> { return this.pending; }
-  close(): void { clearTimeout(this.retryTimer); this.db.close(); }
+  close(): void { this.closed = true; clearTimeout(this.retryTimer); for (const done of [...this.arrivals]) done(); this.db.close(); }
 }
 
 const POST_URL = 'https://slack.com/api/chat.postMessage';
