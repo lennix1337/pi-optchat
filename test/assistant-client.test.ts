@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import { registerAssistant, type AssistantOwner } from '../src/assistant-client.ts';
+import { readErrorMessage, registerAssistant, type AssistantOwner } from '../src/assistant-client.ts';
 
 test('registered command uses loopback, guards owner, and keeps response private', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'assistant-client-')); const calls: { method?: string; url?: string; body: string }[] = [];
@@ -157,4 +157,14 @@ test('briefing command shows the latest briefing as untrusted data; "now" asks f
     state = 'foreign'; await handler('briefing', ctx); assert.match(output.pop()!, /invalid/);
     assert(!output.join('\n').includes('secret'));
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('read errors name timeouts and unreachable services instead of calling them invalid data', () => {
+  const timeoutError = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  assert.equal(readErrorMessage(timeoutError), 'Assistant did not answer in time; no data displayed.');
+  const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }) });
+  assert.equal(readErrorMessage(refused), 'Assistant unreachable (ECONNREFUSED); no data displayed.');
+  const redirect = new TypeError('fetch failed', { cause: new Error('unexpected redirect') });
+  assert.equal(readErrorMessage(redirect), 'Assistant request or response invalid; no data displayed.');
+  assert.equal(readErrorMessage(new Error('Invalid task')), 'Assistant request or response invalid; no data displayed.');
 });

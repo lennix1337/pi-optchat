@@ -141,7 +141,11 @@ async function briefingPage(c: ReturnType<typeof config>, owner: AssistantOwner,
     `${value.distractions} low-priority messages hidden.`].join('\n');
 }
 
-function readErrorMessage(error: unknown): string {
+/** Names the failure class (timeout, unreachable, bad data) so a red run shows its cause; never echoes response bodies. */
+export function readErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'TimeoutError') return 'Assistant did not answer in time; no data displayed.';
+  const code = error instanceof TypeError && error.message === 'fetch failed' ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
+  if (typeof code === 'string' && /^[A-Z_]+$/.test(code)) return `Assistant unreachable (${code}); no data displayed.`;
   if (error instanceof ResponseTooLarge) return 'Assistant item exceeds the safe response size; inspect it with another bounded client.';
   if (error instanceof HttpError) return 'Assistant request failed.';
   if (error instanceof Error && (error.message.startsWith('Assistant disabled.') || error.message.startsWith('Invalid assistant.json') || error.message === 'Assistant configuration unavailable.')) return error.message;
