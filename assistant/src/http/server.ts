@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from 'node:crypto';
 import { parseTask, type TaskResponse, type TaskStatus } from '../contracts/tasks.ts';
 import { boundedText, oneOf, optionalFields, positive, text, version } from '../contracts/validation.ts';
-import type { SlackPoster, SlackRelay } from '../channels/slack-relay.ts';
+import { HOME_MAX, type SlackPoster, type SlackRelay } from '../channels/slack-relay.ts';
 import type { Event } from '../contracts/events.ts';
 import { TaskStore } from '../store/db.ts';
 import type { ArtifactRegistry } from '../artifacts/registry.ts';
@@ -108,11 +108,16 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
 
 const channelId = (v: unknown) => typeof v === 'string' && /^[CDG][A-Z0-9]{2,20}$/.test(v);
 const messageTs = (v: unknown) => typeof v === 'string' && threadTs(v);
+/** Answers to tap on the Home: up to 3 items, each a short label and 1-4 short answers (a Slack button label fits 75). */
+const homeChoices = (v: unknown) => Array.isArray(v) && v.length <= 3 && v.every(c => c !== null && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).every(k => k === 'label' || k === 'options')
+  && typeof c.label === 'string' && c.label.length > 0 && c.label.length <= 120 && Array.isArray(c.options) && c.options.length > 0 && c.options.length <= 4
+  && c.options.every((o: unknown) => typeof o === 'string' && o.trim().length > 0 && o.length <= 40));
 /** Reactions on the operator's messages, reading a message he linked, his App Home, and saving a file he sent. */
 const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolean> | ((body: unknown) => Record<string, (v: unknown) => boolean>); /** The outbox kind of an outbound write; reads and local saves have none. */ write?: string; run: (poster: SlackPoster, body: Record<string, any>, slack: SlackBridge) => Promise<unknown> }> = {
   '/v1/slack/react': { shape: { channel: channelId, ts: messageTs, name: (v: unknown) => typeof v === 'string' && /^[a-z0-9_+-]{1,40}$/.test(v), remove: (v: unknown) => typeof v === 'boolean' }, write: 'react', run: (p, b) => p.react(b.channel, b.ts, b.name, b.remove) },
   '/v1/slack/fetch': { shape: { channel: channelId, ts: messageTs, thread: messageTs }, run: (p, b) => p.fetchMessage(b.channel, b.ts, b.thread) },
-  '/v1/slack/home': { shape: body => ({ text: boundedText(3_000), ...optionalFields(body, { working: (v: unknown) => typeof v === 'boolean', approval: messageTs }) }), write: 'home', run: (p, b) => p.publishHome(b.text, { working: b.working === true, ...(messageTs(b.approval) ? { approval: b.approval } : {}) }) },
+  '/v1/slack/home': { shape: body => ({ text: boundedText(HOME_MAX), ...optionalFields(body, { working: (v: unknown) => typeof v === 'boolean', approval: messageTs, choices: homeChoices, fold: (v: unknown) => v === 'more' || v === 'less' }) }), write: 'home',
+    run: (p, b) => p.publishHome(b.text, { working: b.working === true, ...(messageTs(b.approval) ? { approval: b.approval } : {}), ...(b.choices ? { choices: b.choices } : {}), ...(b.fold ? { fold: b.fold } : {}) }) },
   '/v1/slack/download': {
     shape: { url: (v: unknown) => typeof v === 'string' && v.length < 2000, name: boundedText(200) },
     run: (p, b, slack) => { if (!slack.filesDir) throw new Error('no_files_dir'); return p.download(b.url, b.name, slack.filesDir); },

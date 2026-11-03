@@ -158,17 +158,46 @@ const SECTION_MAX = 3000;
 /** The button ids `SlackChannel` turns into the operator's `aprovar`/`negar` in the post's thread. */
 export const APPROVAL_ACTIONS: Readonly<Record<string, 'aprovar' | 'negar'>> = { optchat_approve: 'aprovar', optchat_deny: 'negar' };
 /** App Home buttons, each queued as the DM text the operator could have typed (`optchat_home_approve` in the approval's thread). */
-export const HOME_ACTIONS: Readonly<Record<string, 'status' | 'parar' | 'aprovar'>> = { optchat_home_status: 'status', optchat_home_stop: 'parar', optchat_home_approve: 'aprovar' };
+export const HOME_ACTIONS: Readonly<Record<string, 'status' | 'parar' | 'aprovar' | 'tudo' | 'menos'>> = {
+  optchat_home_status: 'status', optchat_home_stop: 'parar', optchat_home_approve: 'aprovar', optchat_home_more: 'tudo', optchat_home_less: 'menos' };
+/** An answer the operator taps under an item that waits on him: queued as his DM reply, the button's value. */
+export const HOME_CHOICE = 'optchat_home_choice';
+/** The Home's text budget, split into Slack sections of at most SECTION_MAX. */
+export const HOME_MAX = 12_000;
+export type HomeChoice = { label: string; options: string[] };
+export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less' };
 
-/** The App Home: the text, then Status agora, Parar while working (with a confirm) and Aprovar when a call waits. */
-export function homeBlocks(text: string, options: { working?: boolean; approval?: string } = {}): unknown[] {
+/** Whole lines per section; a single line longer than a section is cut at the limit. */
+function sections(text: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  for (const line of text.split('\n')) {
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length <= SECTION_MAX) { current = next; continue; }
+    if (current) out.push(current);
+    current = line.slice(0, SECTION_MAX);
+  }
+  if (current) out.push(current);
+  return out.length ? out : [' '];
+}
+
+/**
+ * The App Home: the text in sections, the answers to tap under each item that waits on him, then Aprovar when a call
+ * waits, Status agora, Ver tudo / Ver menos when items were folded, and Parar while working (with a confirm).
+ */
+export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
   const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label }, ...extra });
+  const choices = (options.choices ?? []).flatMap((choice, i) => [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `Responder: *${choice.label}*` }] },
+    { type: 'actions', elements: choice.options.map((option, j) => button(HOME_CHOICE, option, { action_id: `${HOME_CHOICE}_${i}_${j}`, value: `Sobre "${choice.label}": ${option}` })) },
+  ]);
   const elements = [
     ...options.approval ? [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] : [],
     button('optchat_home_status', 'Status agora'),
+    ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [],
     ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : [],
   ];
-  return [{ type: 'section', text: { type: 'mrkdwn', text } }, { type: 'actions', elements }];
+  return [...sections(text).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...choices, { type: 'actions', elements }];
 }
 
 function approvalBlocks(text: string): unknown[] {
@@ -257,8 +286,8 @@ export class SlackPoster {
   }
 
   /** The operator's App Home: what the assistant is doing now. */
-  async publishHome(markdown: string, options: { working?: boolean; approval?: string } = {}): Promise<void> {
-    const text = slackText(markdown).slice(0, SECTION_MAX);
+  async publishHome(markdown: string, options: HomeOptions = {}): Promise<void> {
+    const text = slackText(markdown).slice(0, HOME_MAX);
     await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, options) } });
   }
 

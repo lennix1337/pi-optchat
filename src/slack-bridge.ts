@@ -15,7 +15,8 @@ import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
 import { budgetNote, fitPost, wordBudget, type WordBudgets } from './slack-policy.ts';
-import { NO_WORK, renderWork, type HomeWork } from './home-items.ts';
+import { backgroundSummary, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
+import type { WaitingItem } from './commitments.ts';
 
 /**
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
@@ -79,6 +80,18 @@ const TOPIC_DAYS = 14;
 const clock = (ms: number) => new Date(ms).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
 
 const HOME_STEP_MS = 20_000;
+/** The Home's text budget; the service splits it into Slack sections. */
+const HOME_CHARS = 11_000;
+const IDLE = /^\u2705 \*Livre\*/;
+/** What the service queues for the Home's Ver tudo / Ver menos buttons (assistant/src/channels/slack-relay.ts HOME_ACTIONS). */
+const HOME_FOLD = { channel: 'home', more: 'tudo', less: 'menos' } as const;
+/** At most `max` characters, cut at a word and marked with \u2026, so a quote or a link is never cut in half silently. */
+export function clipWords(text: string, max: number): string {
+  if (text.length <= max) return text;
+  if (max <= 1) return '';
+  const cut = text.slice(0, max - 1), space = cut.search(/\s\S*$/);
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
+}
 const base = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).pop() ?? path : '';
 
 /** Runs `run` on every item, at most `limit` at a time; results keep the input order. `run` must not throw. */
@@ -156,8 +169,10 @@ export class SlackBridge {
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
   private work: { since: number; origin: string; about: string; step: string; steps: number; shown: number } | undefined;
-  private waiting: () => readonly string[] = () => [];
+  private waiting: () => readonly (string | WaitingItem)[] = () => [];
   private homeText = '';
+  /** The Home's Ver tudo: every PR, commitment and job instead of the first few; Ver menos folds them again. */
+  private expanded = false;
 
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
@@ -197,7 +212,7 @@ export class SlackBridge {
   }
   runStarted(): void { this.running = true; this.work = undefined; }
   /** What waits for the operator (approvals, items blocked on him); shown on the App Home, working or free. */
-  setWaiting(read: () => readonly string[]): void { this.waiting = read; }
+  setWaiting(read: () => readonly (string | WaitingItem)[]): void { this.waiting = read; }
 
   /** Each tool call of the run: the App Home names the step, at most once per HOME_STEP_MS so Slack is not flooded. */
   toolStarted(tool: string, args: unknown): void {
@@ -216,22 +231,24 @@ export class SlackBridge {
       ...w.steps ? [`Agora: ${w.step} · ${w.steps} passo${w.steps === 1 ? '' : 's'}`] : []].join('\n'));
   }
 
-  /** The work as items (PRs, commitments, jobs); a reader that fails leaves them out, and the Home still goes out. */
-  private itemsBlock(): string {
-    let text = '';
-    try { text = renderWork(this.options.items()); }
+  /** The work as items (PRs, commitments, jobs, subagents); a reader that fails leaves them out, and the Home still goes out. */
+  private readWork(): HomeWork {
+    try { return this.options.items(); }
     catch (error) {
       // Said once, like a failing inbox pass: the Home repeats at every run end.
       const message = error instanceof Error ? error.message : String(error);
       if (message !== this.itemsFailure) { this.itemsFailure = message; this.options.warn(`App Home items not read: ${message}`); }
+      return NO_WORK;
     }
-    return text ? `\n\n${text}` : '';
   }
 
-  private waitingBlock(): string {
-    let items: readonly string[] = [];
-    try { items = this.waiting(); } catch { /* the Home still goes out */ }
-    return items.length ? `\n\n*Esperando você*\n${items.slice(0, 5).map(i => `• ${i.slice(0, 160)}`).join('\n')}` : '';
+  private readWaiting(): WaitingItem[] {
+    try { return this.waiting().slice(0, 5).map(i => typeof i === 'string' ? { text: i } : i); } catch { return []; /* the Home still goes out */ }
+  }
+
+  /** Each item, then what is asked of him on its own line; answers he can tap go as buttons under the Home's text. */
+  private static waitingBlock(items: readonly WaitingItem[]): string {
+    return items.length ? `\n\n*Esperando você*\n${items.map(i => `• ${clipWords(i.text, 160)}${i.ask ? `\n   \u21b3 _${clipWords(i.ask, 200)}_` : ''}`).join('\n')}` : '';
   }
 
   /** One pass: new DMs become user messages in order; the cursor advances only past delivered ones. */
@@ -262,6 +279,13 @@ export class SlackBridge {
         const channel = typeof m.channelName === 'string' ? m.channelName : null;
         if (!channel && typeof m.thread === 'string' && this.approvals.has(m.thread) && (APPROVE.test(m.text.trim()) || DENY.test(m.text.trim()))) {
           await this.decided(m.thread, APPROVE.test(m.text.trim()));
+          atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+          continue;
+        }
+            // The Home's Ver tudo / Ver menos: the Home itself changes, no DM and no model.
+        if (m.channel === HOME_FOLD.channel && (m.text === HOME_FOLD.more || m.text === HOME_FOLD.less)) {
+          this.expanded = m.text === HOME_FOLD.more;
+          this.refreshHome();
           atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
           continue;
         }
@@ -331,17 +355,24 @@ export class SlackBridge {
   private home(text: string): void {
     this.homeText = text;
     const owner = this.owner();
+    const work = this.readWork(), background = backgroundSummary(work);
+    // Idle in the chat is not idle: subagents or shells still running say so instead of "Livre".
+    if (!this.work && background) text = text.replace(IDLE, `\u23f3 *Em segundo plano* (${background} rodando) \u00b7 chat livre`);
     this.activity = text.split('\n')[0]!;
-    let status = this.waitingBlock() + this.itemsBlock();
+    const waiting = this.readWaiting(), items = renderWorkParts(work, this.expanded);
+    let status = SlackBridge.waitingBlock(waiting) + (items.text ? `\n\n${items.text}` : '');
     try { if (owner) { const today = renderDay(readDay(owner.dir, this.options.now()), this.options.now(), this.options.nextWake()); if (today) status += `\n\n${today}`; } } catch { /* the Home goes out without the day */ }
     try { status += `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
     // Buttons: Parar only while working; Aprovar decides the newest pending approval post, as a tap on that post would.
     const approval = [...this.approvals].filter(([, p]) => p.request.expires > this.options.now()).at(-1)?.[0];
     if (!owner) return;
-    const body = { text: `${text.slice(0, 2900 - status.length)}${status}` };
-    // A service from before the Home buttons refuses the extra fields: the text alone still goes out.
-    void this.options.request(owner, '/v1/slack/home', { ...body, working: !!this.work, ...(approval ? { approval } : {}) })
-      .catch(error => error instanceof Error && /HTTP 400/.test(error.message) ? this.options.request(owner, '/v1/slack/home', body) : undefined).catch(() => undefined);
+    const full = `${clipWords(text, HOME_CHARS - status.length)}${status}`;
+    const choices = waiting.filter(w => w.choices?.length).slice(0, 3).map(w => ({ label: clipWords(w.text, 120), options: w.choices! }));
+    const fold = items.hidden ? 'more' : this.expanded ? 'less' : undefined;
+    // A service from before these fields refuses them (HTTP 400): the old 3000-character text alone still goes out.
+    const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
+    void this.options.request(owner, '/v1/slack/home', { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}) })
+      .catch(error => error instanceof Error && /HTTP 400/.test(error.message) ? this.options.request(owner, '/v1/slack/home', old) : undefined).catch(() => undefined);
   }
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
@@ -427,7 +458,7 @@ export class SlackBridge {
     this.work = undefined;
     if (work && steps && owner) try { recordRun(owner.dir, { start: work.since, end: this.options.now(), about: work.about, origin: work.origin, steps }); } catch { /* the Home's day is a courtesy */ }
     const last = finalText(messages);
-    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta:\n${last.slice(0, 1200)}` : ''}`);
+    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta:\n${clipWords(last, 1200)}` : ''}`);
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.
       if (last && last === delivered) return;

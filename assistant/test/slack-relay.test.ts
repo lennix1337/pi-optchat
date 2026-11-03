@@ -357,3 +357,42 @@ test('HTTP: inbox wait= holds the read until a message arrives; wait above the l
     assert.equal((await fetch(`${base}/v1/slack/inbox?after=1&wait=20000`, { headers: auth })).status, 400, 'the hold is bounded');
   } finally { await new Promise(done => server.close(done)); r.close(); }
 });
+
+test('App Home answers: a tap queues its value as the operator\'s DM reply; Ver tudo / Ver menos become tudo / menos', () => {
+  const r = relayFixture();
+  try {
+    r.relay.after(0, 0);
+    assert.equal(r.channel.accept(homeClick('optchat_home_choice_0_1', '1793000002.000100', {}, 'Sobre "Resumo das 07:00": não chegou')).outcome, 'relayed');
+    assert.equal(r.channel.accept(homeClick('optchat_home_choice_0_0', '1793000002.000200', {}, 'aprovar')).outcome, 'ignored', 'only the answer text this service wrote');
+    assert.equal(r.channel.accept(homeClick('optchat_home_choice_0_0', '1793000002.000300', { user: { id: 'U0STRANGER' } }, 'Sobre "x": y')).outcome, 'unauthorized_sender');
+    assert.equal(r.channel.accept(homeClick('optchat_home_more', '1793000002.000400')).outcome, 'relayed');
+    assert.equal(r.channel.accept(homeClick('optchat_home_less', '1793000002.000500')).outcome, 'relayed');
+    assert.deepEqual(r.relay.after(0, 10).map(m => [m.channel, m.thread ?? null, m.text]),
+      [['home', null, 'Sobre "Resumo das 07:00": não chegou'], ['home', null, 'tudo'], ['home', null, 'menos']]);
+  } finally { r.close(); }
+});
+
+test('HTTP: the Home splits a long text into sections, puts each item\'s answers under it and offers Ver tudo; bad answers are refused', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/slack/home`;
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  type Block = { type: string; text?: { text: string }; elements?: { action_id?: string; value?: string; text: { text: string } }[] };
+  try {
+    const text = Array.from({ length: 80 }, (_, i) => `linha ${i} ${'x'.repeat(60)}`).join('\n');
+    const body = { text, choices: [{ label: 'Resumo das 07:00', options: ['chegou', 'não chegou'] }], fold: 'more' };
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })).status, 200);
+    const blocks = (slack.calls[0].body.view as { blocks: Block[] }).blocks;
+    const sections = blocks.filter(b => b.type === 'section');
+    assert.ok(sections.length >= 2 && sections.every(s => s.text!.text.length <= 3000), 'split at lines, each within Slack\'s limit');
+    assert.equal(sections.map(s => s.text!.text).join('\n'), text, 'nothing lost between sections');
+    const answers = blocks.find(b => b.type === 'actions' && b.elements!.some(e => e.action_id?.startsWith('optchat_home_choice_')))!;
+    assert.deepEqual(answers.elements!.map(e => [e.text.text, e.value]), [['chegou', 'Sobre "Resumo das 07:00": chegou'], ['não chegou', 'Sobre "Resumo das 07:00": não chegou']]);
+    assert.ok(blocks.at(-1)!.elements!.some(e => e.action_id === 'optchat_home_more'), 'Ver tudo with the main buttons');
+    for (const bad of [{ text: 'x', choices: [{ label: 'a', options: [] }] }, { text: 'x', choices: [{ label: 'a', options: ['y'.repeat(41)] }] }, { text: 'x', choices: [{ label: 'a', options: ['b'], extra: 1 }] }, { text: 'x', fold: 'all' }])
+      assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(bad) })).status, 400, JSON.stringify(bad));
+  } finally { await new Promise(done => server.close(done)); r.close(); }
+});

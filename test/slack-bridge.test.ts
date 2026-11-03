@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
-import { SLACK_PREFIX, SlackBridge, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { SLACK_PREFIX, SlackBridge, clipWords, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
 import { budgetNote, words } from '../src/slack-policy.ts';
 import { readDay } from '../src/home-day.ts';
 import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 
-function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null }[] = [], extra: Record<string, unknown> = {}) {
+function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null; channel?: string }[] = [], extra: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const owner = { dir, name: 'p' };
   const sent: { text: string; options: unknown }[] = [];
@@ -748,4 +748,61 @@ test('a Slack message tells the model the reply budget of its own channel', asyn
     assert.match(f.sent[0]!.text, /até 60 palavras/);
     assert.match(f.sent[1]!.text, /até 100 palavras/);
   } finally { f.close(); }
+});
+
+type HomeBody = { text: string; working?: boolean; choices?: { label: string; options: string[] }[]; fold?: string };
+const homes$ = bodiesFor<HomeBody>('/v1/slack/home');
+const MANY = { ...WORK, prs: Array.from({ length: 7 }, (_, i) => ({ ...WORK.prs[0]!, number: i + 1 })) };
+
+test('App Home: idle in the chat with a shell or a subagent still running says so instead of "Livre"', async () => {
+  const f = fixture([], { items: () => ({ ...WORK, agents: ['subagente a1 \u00b7 revisar #830'] }) });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('arruma o CI');
+    await f.bridge.runEnded(replies('Rodando os testes.'));
+    const text = homes$(f).at(-1)!.text;
+    assert.match(text, /^\u23f3 \*Em segundo plano\* \(1 subagente e 1 comando rodando\) \u00b7 chat livre desde/);
+    assert.doesNotMatch(text, /Livre\*/);
+    assert.match(text, /\*Rodando agora\* \(2\)/);
+  } finally { f.close(); }
+});
+
+test('App Home: what waits on him shows what is asked, its answers as buttons, and Ver tudo when items were folded', async () => {
+  const f = fixture([], { items: () => MANY });
+  try {
+    f.bridge.setWaiting(() => ['Aprovação pendente: git push', { text: 'Resumo das 07:00 v2', ask: 'Confirmar se o DM chegou', choices: ['chegou', 'não chegou'] }]);
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('oi');
+    await f.bridge.runEnded(replies('ok'));
+    const body = homes$(f).at(-1)!;
+    assert.match(body.text, /\u2022 Resumo das 07:00 v2\n   \u21b3 _Confirmar se o DM chegou_/);
+    assert.deepEqual(body.choices, [{ label: 'Resumo das 07:00 v2', options: ['chegou', 'não chegou'] }]);
+    assert.equal(body.fold, 'more');
+  } finally { f.close(); }
+});
+
+test('App Home: Ver tudo / Ver menos from the Home change the Home only: no DM, no message to the chat', async () => {
+  const f = fixture([{ seq: 1, ts: '1.0', thread: null, text: 'tudo', channel: 'home' }, { seq: 2, ts: '2.0', thread: null, text: 'menos', channel: 'home' }], { items: () => MANY });
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('oi');
+    await f.bridge.runEnded(replies('ok'));
+    f.inbox.splice(1);
+    assert.equal(await f.bridge.poll(), 0);
+    let body = homes$(f).at(-1)!;
+    assert.equal(body.fold, 'less');
+    assert.equal((body.text.match(/pi-optchat#\d/g) ?? []).length, 7, 'every PR listed');
+    f.inbox.push({ seq: 2, ts: '2.0', thread: null, text: 'menos', channel: 'home' });
+    await f.bridge.poll();
+    body = homes$(f).at(-1)!;
+    assert.equal(body.fold, 'more');
+    assert.equal(f.sent.length, 0, 'the chat never sees the taps');
+    assert.equal(f.requests.filter(r => r.path === '/v1/slack/send').length, 0);
+  } finally { f.close(); }
+});
+
+test('clipWords: cuts at a word with an ellipsis, never mid-word', () => {
+  assert.equal(clipWords('curto', 10), 'curto');
+  assert.equal(clipWords('o vigia marcava como "loop" sem motivo', 24), 'o vigia marcava como\u2026');
+  assert.equal(clipWords('x'.repeat(30), 10), `${'x'.repeat(9)}\u2026`);
 });

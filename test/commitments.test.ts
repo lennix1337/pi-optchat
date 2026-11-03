@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment } from '../src/commitments.ts';
+import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment, waitingItems } from '../src/commitments.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 import { plainToolResult } from './support.ts';
 
@@ -143,3 +143,15 @@ test('a commitments file with an unknown status or a damaged item is unreadable,
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+
+test('choices: a waiting item carries the answers the Home offers; an empty list clears them; too many are refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'commit-choices-'));
+  try {
+    const item = addCommitment(dir, { text: 'Confirmar o DM', source: '1', owner: 'operator', next: 'diga se chegou', choices: ['chegou', 'não chegou', 'chegou'] });
+    assert.deepEqual(item.choices, ['chegou', 'não chegou'], 'duplicates folded');
+    assert.deepEqual(waitingItems(readCommitments(dir), Date.now()), [{ text: 'Confirmar o DM', ask: 'diga se chegou', choices: ['chegou', 'não chegou'] }]);
+    assert.equal(updateCommitment(dir, { id: item.id, progress: 'x' }).choices?.length, 2, 'kept when not named');
+    assert.equal(updateCommitment(dir, { id: item.id, choices: [] }).choices, undefined, 'cleared');
+    assert.throws(() => updateCommitment(dir, { id: item.id, choices: ['a', 'b', 'c', 'd', 'e'] }), /At most 4/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

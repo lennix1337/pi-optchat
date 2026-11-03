@@ -53,7 +53,7 @@ import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
-import { readCommitments, registerCommitments, summaryLines } from './commitments.ts';
+import { readCommitments, registerCommitments, waitingItems } from './commitments.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
 import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
@@ -631,12 +631,17 @@ export default function optchat(pi: ExtensionAPI) {
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
     { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt,
       // The App Home's work items: read-only, from this profile's files and the shells running now (src/home-items.ts).
-      items: () => active && inPhase('open', 'import-paused') ? readHomeWork(active.dir, runningShells(shells).map(job => `${job.id} \u00b7 ${job.command}`), Date.now()) : NO_WORK });
+      items: () => {
+        const a = active;
+        if (!a || !inPhase('open', 'import-paused')) return NO_WORK;
+        const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running').map(r => `subagente ${r.id} \u00b7 ${oneLine(r.task)}`);
+        return readHomeWork(a.dir, runningShells(shells).map(job => `${job.id} \u00b7 ${job.command}`), Date.now(), agents);
+      } });
   // The App Home lists what waits on him: approvals pending in this chat and commitments blocked on him.
   slack.setWaiting(() => {
     if (!active) return [];
     const approvals$ = approvals?.pendingFor(active.sessionId) ?? [];
-    return [...approvals$.map(p => `Aprovação pendente: ${p.summary}`), ...summaryLines(readCommitments(active.dir), Date.now()).waiting];
+    return [...approvals$.map(p => `Aprovação pendente: ${p.summary}`), ...waitingItems(readCommitments(active.dir), Date.now())];
   });
   // The operator's WhatsApp through wacli, when ~/.pi/agent/optchat-whatsapp.json exists (src/whatsapp-bridge.ts).
   registerWhatsAppBridge(pi, () => active && inPhase('open') ? active.dir : undefined, () => slack.commandState(), () => inPhase('open'));
