@@ -4,7 +4,8 @@
 // `key: value` object (AXI-compact; a TOON subset for flat scalar objects); stderr carries usage only. It never forces
 // a push, never skips hooks and never merges with --admin.
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup';
@@ -194,8 +195,27 @@ function nextFor(reason, number) {
   }
 }
 
+/**
+ * Asks pi-gitwatch's poller to follow the PR (a file in its `follow/` folder, the format of pi-gitwatch
+ * src/follow-requests.ts). Its bash hook never sees this process's `gh pr create`, so without this the merge of a
+ * shipped PR woke nobody (03/11: #91, #92, #94).
+ */
+function requestFollow(url) {
+  const m = /github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/.exec(url ?? '');
+  if (!m) return 'not_requested';
+  try {
+    const dir = join(process.env.PI_GITWATCH_DIR ?? join(homedir(), '.pi', 'agent', 'gitwatch'), 'follow');
+    mkdirSync(dir, { recursive: true });
+    const name = `${m[1].replace('/', '__')}#${m[2]}`, tmp = join(dir, `${name}.${process.pid}.tmp`);
+    writeFileSync(tmp, JSON.stringify({ repo: m[1], pr: Number(m[2]) }));
+    renameSync(tmp, join(dir, `${name}.json`));
+    return 'requested';
+  } catch { return 'request_failed'; }
+}
+
 function reportAuto(ctx, result) {
   const pr = result.pr;
+  if ((pr?.state ?? 'OPEN') === 'OPEN' && result.auto !== 'merged') ctx.gitwatch = requestFollow(pr?.url ?? ctx.url);
   const common = { ...ctx, state: pr?.state, url: pr?.url ?? ctx.url, checks: pr ? checksText(summarizeChecks(pr.statusCheckRollup)) : undefined };
   if (result.auto === 'queued') return emit('queued', { ...common, auto_merge: 'queued', next: 'gitwatch avisa no CI verde e na fusão; não consulte o gh em loop' });
   if (result.auto === 'merged') return emit('merged', { ...common, auto_merge: 'merged' });
@@ -312,7 +332,7 @@ async function shipBranch(opts, ctx) {
   const pr = existingOpen ?? await openPr(branch, base);
   ctx.pr = pr.number;
   ctx.url = pr.url;
-  if (opts.noAuto) return emit('pr_open', { ...ctx, state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
+  if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
   return reportAuto(ctx, await autoMerge(pr.number, opts.wait));
 }
 
