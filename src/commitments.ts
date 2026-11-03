@@ -34,6 +34,8 @@ export interface Commitment {
   next?: string;
   evidence?: string;
   supersedes?: string;
+  /** While it waits on the operator: the answers he can tap on the App Home (each becomes his DM reply). */
+  choices?: string[];
   notes: { at: string; text: string }[];
 }
 interface Document { version: 1; items: Commitment[] }
@@ -44,6 +46,8 @@ const MAX_TEXT = 400;
 const CLOSED_KEEP_MS = 14 * 86_400_000;
 export const STALE_MS = 24 * 3_600_000;
 const CONTEXT_MAX = 2_000;
+export const MAX_CHOICES = 4;
+export const CHOICE_MAX = 40;
 export const closed = (s: CommitmentStatus) => s === 'done' || s === 'dropped';
 const clip = (s: string, max = MAX_TEXT) => clean(s, max);
 
@@ -56,6 +60,7 @@ function isCommitment(value: unknown): value is Commitment {
   return isText(c.id) && isText(c.text) && isText(c.source) && (c.owner === 'optchat' || c.owner === 'operator')
     && STATUSES.some(status => status === c.status) && isTime(c.createdAt) && isTime(c.updatedAt) && isTime(c.progressAt)
     && (c.due === undefined || isTime(c.due)) && (c.next === undefined || isText(c.next)) && (c.evidence === undefined || isText(c.evidence)) && (c.supersedes === undefined || isText(c.supersedes))
+    && (c.choices === undefined || (Array.isArray(c.choices) && c.choices.every(isText)))
     && Array.isArray(c.notes) && c.notes.every(note => typeof note === 'object' && note !== null && isTime((note as { at?: unknown }).at) && isText((note as { text?: unknown }).text));
 }
 
@@ -85,7 +90,15 @@ function dueAt(input: { due?: string; dueInMinutes?: number }, now: number): str
   return iso(at);
 }
 
-export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string };
+/** Short distinct answers, at most MAX_CHOICES; an empty list clears them. */
+function choicesOf(choices: readonly string[] | undefined): string[] | undefined {
+  if (choices === undefined) return undefined;
+  const kept = [...new Set(choices.map(c => clean(c, CHOICE_MAX)).filter(Boolean))];
+  if (kept.length > MAX_CHOICES) throw new Error(`At most ${MAX_CHOICES} choices.`);
+  return kept;
+}
+
+export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[] };
 export function addCommitment(dir: string, input: AddInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
   const at = iso(now);
@@ -100,6 +113,7 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
     ...(input.next ? { next: clip(input.next) } : {}),
     ...(dueAt(input, now) ? { due: dueAt(input, now) } : {}),
     ...(input.supersedes ? { supersedes: input.supersedes } : {}),
+    ...(choicesOf(input.choices)?.length ? { choices: choicesOf(input.choices) } : {}),
   };
   const next = items.map(c => c.id === input.supersedes
     ? { ...c, status: 'dropped' as const, updatedAt: at, notes: [...c.notes, { at, text: `superseded by ${item.id}` }].slice(-MAX_NOTES) } : c);
@@ -107,15 +121,17 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
   return item;
 }
 
-export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number };
+export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; choices?: string[] };
 export function updateCommitment(dir: string, input: UpdateInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
   const old = items.find(c => c.id === input.id);
   if (!old) throw new Error(`No commitment ${input.id}`);
   if (input.status === 'done' && !input.evidence && !old.evidence) throw new Error('Closing as done needs evidence: what was observed that proves it.');
-  const at = iso(now), due = dueAt(input, now);
+  const at = iso(now), due = dueAt(input, now), choices = choicesOf(input.choices);
+  const { choices: _old, ...rest } = old;
   const updated: Commitment = {
-    ...old, updatedAt: at,
+    ...(choices === undefined ? old : rest), updatedAt: at,
+    ...(choices?.length ? { choices } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.next ? { next: clip(input.next) } : {}),
     ...(input.evidence ? { evidence: clip(input.evidence) } : {}),
@@ -179,6 +195,13 @@ export function summaryLines(items: readonly Commitment[], now: number) {
   };
 }
 
+/** What waits on the operator, as the App Home lists it: the item, what is asked of him and the answers he can tap. */
+export type WaitingItem = { text: string; ask?: string; choices?: string[] };
+export function waitingItems(items: readonly Commitment[], now: number): WaitingItem[] {
+  return openCommitments(items, now).filter(c => c.owner === 'operator' || c.status === 'waiting_operator')
+    .map(c => ({ text: c.text, ...(c.next ? { ask: c.next } : {}), ...(c.choices?.length ? { choices: c.choices } : {}) }));
+}
+
 // ---- Presence: a long turn tells the operator where it is, and a stuck one changes course. ----
 export const PRESENCE_REPORT_MS = 10 * 60_000;
 export const PRESENCE_STALL_MS = 30 * 60_000;
@@ -220,10 +243,11 @@ const params = Type.Object({
   due: Type.Optional(Type.String({ description: 'ISO deadline' })),
   dueInMinutes: Type.Optional(Type.Number({ description: 'deadline as minutes from now' })),
   supersedes: Type.Optional(Type.String({ description: 'add: id of an older commitment this replaces (it is dropped)' })),
+  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'waiting on the operator: up to 4 short answers he can tap on the Slack Home (e.g. ["chegou","não chegou"]); [] clears' })),
   all: Type.Optional(Type.Boolean({ description: 'list: include closed ones (last 14 days)' })),
 }, { additionalProperties: false });
 type Params = { action: 'list' | 'add' | 'update'; id?: string; text?: string; source?: string; owner?: CommitmentOwner; status?: CommitmentStatus;
-  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; all?: boolean };
+  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; all?: boolean };
 
 function listText(dir: string, all: boolean, now: number) {
   const items = readCommitments(dir), shown = all ? items : openCommitments(items, now);

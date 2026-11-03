@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Commitment } from '../src/commitments.ts';
-import { commitmentItems, readPrItems, renderWork, type HomeWork } from '../src/home-items.ts';
+import { backgroundSummary, commitmentItems, readPrItems, renderWork, renderWorkParts, type HomeWork } from '../src/home-items.ts';
 
 const NOW = Date.parse('2026-11-02T15:00:00Z');
 const commitment = (over: Partial<Commitment>): Commitment => ({
@@ -76,7 +76,7 @@ test('renderWork: a section keeps whole items within its budget and says how man
   const text = renderWork(work({ prs }));
   const kept = (text.match(/^• /gm) ?? []).length;
   assert.ok(kept >= 1 && kept <= 4, `kept ${kept}`);
-  assert.match(text, new RegExp(`… mais ${9 - kept}$`, 'm'));
+  assert.ok(text.endsWith(`… mais ${9 - kept} (toque em *Ver tudo*)`), text.slice(-60));
 });
 
 test('renderWork: at most 4 items per section, however short, and the rest is counted', () => {
@@ -84,7 +84,22 @@ test('renderWork: at most 4 items per section, however short, and the rest is co
   const text = renderWork(work({ prs }));
   const kept = (text.match(/^• /gm) ?? []).length;
   assert.ok(kept <= 4, `kept ${kept}`);
-  assert.match(text, new RegExp(`… mais ${9 - kept}$`, 'm'));
+  assert.ok(text.endsWith(`… mais ${9 - kept} (toque em *Ver tudo*)`), text.slice(-60));
+});
+
+test('renderWorkParts: Ver tudo lists every item and says nothing was hidden; subagents count as running', () => {
+  const prs = Array.from({ length: 9 }, (_, i) => pr(i + 1, 'x'));
+  const folded = renderWorkParts(work({ prs }));
+  assert.equal(folded.hidden, 9 - (folded.text.match(/^\u2022 /gm) ?? []).length);
+  assert.ok(folded.hidden > 0);
+  const open = renderWorkParts(work({ prs }), true);
+  assert.equal(open.hidden, 0);
+  assert.equal((open.text.match(/^• /gm) ?? []).length, 9);
+  const running = work({ jobs: ['bash-1 · npm test'], agents: ['subagente a1 · revisar'] });
+  assert.match(renderWork(running), /\*Rodando agora\* \(2\)\n• subagente a1 · revisar\n• bash-1 · npm test/);
+  assert.equal(backgroundSummary(running), '1 subagente e 1 comando');
+  assert.equal(backgroundSummary(work({ agents: ['a', 'b'] })), '2 subagentes');
+  assert.equal(backgroundSummary(work()), '');
 });
 
 test('renderWork: the whole block stays under its character budget, and a line is never cut inside its link', () => {

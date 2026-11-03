@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
-import { APPROVAL_ACTIONS, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, slackFiles, type SlackRelay } from './slack-relay.ts';
+import { APPROVAL_ACTIONS, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, HOME_CHOICE, slackFiles, type SlackRelay } from './slack-relay.ts';
 
 /** The message shortcut ("Mandar pro Jarvis") the app manifest declares. */
 export const FORWARD_CALLBACK = 'optchat_forward';
@@ -58,6 +58,7 @@ export class SlackChannel {
       if (o.relay && answer) return this.approvalClick(o.relay, body, answer);
       const home = HOME_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && home) return this.homeClick(o.relay, body, home);
+      if (o.relay && typeof body.actions?.[0]?.action_id === 'string' && body.actions[0].action_id.startsWith(`${HOME_CHOICE}_`)) return this.homeChoice(o.relay, body);
       // A button is a remote click, not the operator's authenticated review of the exact effect.
       const taskId = typeof body.actions?.[0]?.value === 'string' ? body.actions[0].value : '';
       return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };
@@ -104,7 +105,20 @@ export class SlackChannel {
    * Parar become those DM commands; Aprovar becomes `aprovar` in the thread of the approval post the Home named, so the
    * OptChat session decides it exactly as a tap on that post (one pending call, once).
    */
-  private homeClick(relay: SlackRelay, body: Record<string, any>, text: 'status' | 'parar' | 'aprovar'): Received {
+  /**
+   * An answer tapped under an item that waits on him: the button's value ("Sobre "<item>": <answer>", written by this
+   * service when it published the Home) is queued as his DM reply, a plain message to the chat: never a command,
+   * never an approval (no thread), and bounded like a DM.
+   */
+  private homeChoice(relay: SlackRelay, body: Record<string, any>): Received {
+    const user = body.user?.id, action = body.actions[0], at = action.action_ts, text = action.value;
+    if (typeof user !== 'string' || typeof at !== 'string' || body.view?.type !== 'home') return { outcome: 'ignored' };
+    if (typeof text !== 'string' || !/^Sobre "/.test(text) || text.length > 400) return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    return { outcome: relay.enqueue({ delivery: `home:${action.action_id}:${at}`, sender: user, channel: HOME_CHANNEL, ts: at, text }) };
+  }
+
+  private homeClick(relay: SlackRelay, body: Record<string, any>, text: 'status' | 'parar' | 'aprovar' | 'tudo' | 'menos'): Received {
     const user = body.user?.id, action = body.actions[0], at = action.action_ts;
     if (typeof user !== 'string' || typeof at !== 'string' || body.view?.type !== 'home') return { outcome: 'ignored' };
     if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };

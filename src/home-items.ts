@@ -10,8 +10,9 @@ import { readJsonOr } from './store.ts';
  */
 export type PrItem = { repo: string; number: number; title: string; url: string; checks: 'verdes' | 'vermelhos' | 'pendentes' | 'sem checks' };
 export type CommitmentItem = { text: string; status: string; url?: string };
-export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[] };
-export const NO_WORK: HomeWork = { prs: [], commitments: [], jobs: [] };
+/** `jobs`: background shells running now; `agents`: subagents running now. Either one means the agent is not idle. */
+export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[] };
+export const NO_WORK: HomeWork = { prs: [], commitments: [], jobs: [], agents: [] };
 
 /**
  * Items per section and characters per section: the rest is counted, not listed, so the Home keeps room for its waiting
@@ -51,8 +52,8 @@ export function commitmentItems(items: readonly Commitment[], now: number): Comm
 }
 
 /** Everything the Home shows as work, read from the profile's files; `jobs` are the background shells running now. */
-export function readHomeWork(dir: string, jobs: readonly string[], now: number): HomeWork {
-  return { prs: readPrItems(dir), commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs] };
+export function readHomeWork(dir: string, jobs: readonly string[], now: number, agents: readonly string[] = []): HomeWork {
+  return { prs: readPrItems(dir), commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs], agents: [...agents] };
 }
 
 const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -66,24 +67,38 @@ const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').po
 const commitLine = (c: CommitmentItem) => `\u2022 ${c.url ? `<${c.url}|${escape(clip(c.text, 140))}>` : escape(clip(c.text, 140))} \u00b7 ${c.status}`;
 const jobLine = (j: string) => `\u2022 ${escape(clip(j, 120))}`;
 
-/** The title, then whole lines while they fit in SECTION_CHARS (at most LIMIT); the rest is counted in one `… mais` line. */
-function section(title: string, lines: readonly string[]): string {
+/** Expanded (the Home's Ver tudo): every item, still within Slack's view size. */
+const EXPANDED = { limit: 30, chars: 3_000 };
+
+/** The title, then whole lines while they fit in the budget (at most `limit`); the rest is counted in one `… mais` line. */
+function section(title: string, lines: readonly string[], expanded: boolean): { text: string; hidden: number } {
   const kept: string[] = [];
-  let left = SECTION_CHARS - title.length - 1;
-  for (const line of lines.slice(0, LIMIT)) {
+  const { limit, chars } = expanded ? EXPANDED : { limit: LIMIT, chars: SECTION_CHARS };
+  let left = chars - title.length - 1;
+  for (const line of lines.slice(0, limit)) {
     if (line.length + 1 > left) break;
     kept.push(line);
     left -= line.length + 1;
   }
   const more = lines.length - kept.length;
-  return [title, ...kept, ...more ? [`\u2026 mais ${more}`] : []].join('\n');
+  return { text: [title, ...kept, ...more ? [`\u2026 mais ${more} (toque em *Ver tudo*)`] : []].join('\n'), hidden: more };
 }
 
-/** The sections with something in them, one after another; an empty Home part is empty text. */
-export function renderWork(work: HomeWork): string {
-  const parts: string[] = [];
-  if (work.prs.length) parts.push(section(`*PRs abertas* (${work.prs.length})`, work.prs.map(prLine)));
-  if (work.commitments.length) parts.push(section(`*Compromissos abertos* (${work.commitments.length})`, work.commitments.map(commitLine)));
-  if (work.jobs.length) parts.push(section(`*Rodando agora* (${work.jobs.length})`, work.jobs.map(jobLine)));
-  return parts.join('\n\n');
+/** The sections with something in them, one after another, and how many items were left out (the Home then offers Ver tudo). */
+export function renderWorkParts(work: HomeWork, expanded = false): { text: string; hidden: number } {
+  const running = [...work.agents ?? [], ...work.jobs];
+  const parts = [
+    ...work.prs.length ? [section(`*PRs abertas* (${work.prs.length})`, work.prs.map(prLine), expanded)] : [],
+    ...work.commitments.length ? [section(`*Compromissos abertos* (${work.commitments.length})`, work.commitments.map(commitLine), expanded)] : [],
+    ...running.length ? [section(`*Rodando agora* (${running.length})`, running.map(jobLine), expanded)] : [],
+  ];
+  return { text: parts.map(p => p.text).join('\n\n'), hidden: parts.reduce((n, p) => n + p.hidden, 0) };
+}
+
+export function renderWork(work: HomeWork, expanded = false): string { return renderWorkParts(work, expanded).text; }
+
+/** What still runs in the background, in words ("2 subagentes e 1 comando"); empty when nothing does. */
+export function backgroundSummary(work: HomeWork): string {
+  const agents = work.agents?.length ?? 0, jobs = work.jobs.length;
+  return [agents ? `${agents} subagente${agents === 1 ? '' : 's'}` : '', jobs ? `${jobs} comando${jobs === 1 ? '' : 's'}` : ''].filter(Boolean).join(' e ');
 }
