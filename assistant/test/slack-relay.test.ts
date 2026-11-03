@@ -392,6 +392,12 @@ test('HTTP: the Home splits a long text into sections, puts each item\'s answers
     const answers = blocks.find(b => b.type === 'actions' && b.elements!.some(e => e.action_id?.startsWith('optchat_home_choice_')))!;
     assert.deepEqual(answers.elements!.map(e => [e.text.text, e.value]), [['chegou', 'Sobre "Resumo das 07:00": chegou'], ['não chegou', 'Sobre "Resumo das 07:00": não chegou']]);
     assert.ok(blocks.at(-1)!.elements!.some(e => e.action_id === 'optchat_home_more'), 'Ver tudo with the main buttons');
+    assert.ok(!JSON.stringify(blocks).includes('Responder:'), 'one question needs no caption: its text is in the Home above (03/11)');
+    const two = { text: 'x', choices: [{ label: 'um dois três quatro cinco seis sete oito nove dez', options: ['a'] }, { label: 'outra', options: ['b'] }] };
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(two) })).status, 200);
+    const captions = (slack.calls.at(-1).body.view as { blocks: Block[] }).blocks.filter(b => b.type === 'context').map(b => JSON.stringify(b));
+    assert.equal(captions.length, 2);
+    assert.match(captions[0]!, /Responder: \*um dois três quatro cinco seis sete oito…\*/);
     for (const bad of [{ text: 'x', choices: [{ label: 'a', options: [] }] }, { text: 'x', choices: [{ label: 'a', options: ['y'.repeat(41)] }] }, { text: 'x', choices: [{ label: 'a', options: ['b'], extra: 1 }] }, { text: 'x', fold: 'all' }])
       assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(bad) })).status, 400, JSON.stringify(bad));
   } finally { await new Promise(done => server.close(done)); r.close(); }

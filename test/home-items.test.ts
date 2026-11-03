@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Commitment } from '../src/commitments.ts';
-import { backgroundSummary, commitmentItems, idleLine, pendingCi, readPrItems, renderWork, renderWorkParts, type HomeWork } from '../src/home-items.ts';
+import { backgroundSummary, commitmentItems, headline, idleLine, pendingCi, readPrItems, renderWork, renderWorkParts, stillWaiting, type HomeWork } from '../src/home-items.ts';
 
 const NOW = Date.parse('2026-11-02T15:00:00Z');
 const commitment = (over: Partial<Commitment>): Commitment => ({
@@ -107,8 +107,8 @@ test('idleLine: running work and pending CI are named; nothing awaited is empty'
   assert.equal(pendingCi(work({ prs: [pr(1, 'verdes')] })), '');
   assert.equal(pendingCi(work({ prs: [pr(1, 'pendentes'), pr(2, 'pendentes')] })), 'CI de r#1 e r#2');
   assert.equal(pendingCi(work({ prs: [pr(1, 'pendentes'), pr(2, 'pendentes'), pr(3, 'pendentes')] })), 'CI de 3 PRs');
-  assert.equal(idleLine(work({ prs: [pr(7, 'pendentes')] })), '\u23f3 *Esperando CI de r#7* \u00b7 chat livre');
-  assert.equal(idleLine(work({ jobs: ['j'], prs: [pr(7, 'pendentes')] })), '\u23f3 *Em segundo plano* (1 comando rodando; esperando CI de r#7) \u00b7 chat livre');
+  assert.equal(idleLine(work({ prs: [pr(7, 'pendentes')] })), '\u23f3 *Parado, esperando CI de r#7*');
+  assert.equal(idleLine(work({ jobs: ['j'], prs: [pr(7, 'pendentes')] })), '\u23f3 *Em segundo plano* (1 comando rodando; esperando CI de r#7)');
   assert.equal(idleLine(work({ prs: [pr(7, 'verdes')] })), '');
 });
 
@@ -122,4 +122,22 @@ test('renderWork: the whole block stays under its character budget, and a line i
   assert.ok(text.length <= 900, `text has ${text.length} chars`);
   assert.match(text, /\*Rodando agora\*/, 'a later section still shows, with what fits');
   for (const line of text.split('\n').filter(l => l.startsWith('• '))) assert.equal((line.match(/</g) ?? []).length, (line.match(/>/g) ?? []).length, `unbalanced link: ${line.slice(-60)}`);
+});
+
+test('headline: a PR title or commitment reads in about 8 words, without its aside (03/11 Home cut them mid-sentence)', () => {
+  assert.equal(headline('Gitwatch acorda sozinho em merge por auto-merge (operador 03/11: só recebia junto com msg dele): PR no pi-gitwatch'), 'Gitwatch acorda sozinho em merge por auto-merge');
+  assert.equal(headline('Release mais segura: preflight antes de criar estado remoto'), 'Release mais segura');
+  assert.equal(headline('um dois três quatro cinco seis sete oito nove dez'), 'um dois três quatro cinco seis sete oito\u2026');
+  assert.equal(headline('Fix: x'), 'Fix: x', 'a short head is not a title on its own');
+});
+
+test('stillWaiting: an item whose named PRs all merged or closed leaves the Home; open or unknown ones stay', () => {
+  const watch = { 'o/Genexus18MCP#843': { sig: 'MERGED:SUCCESS' }, 'o/pi-optchat#92': { sig: 'OPEN:PENDING' }, 'o/r#5': { sig: 'CLOSED:NONE' } };
+  const items = [
+    { text: 'Home mostra Esperando', ask: 'Confirme Esperando CI de Genexus18MCP#843 (GX18MCP #843)' },
+    { text: 'Ver r#5 e pi-optchat #92' },
+    { text: 'Confirmar o resumo das 07:00' },
+    { text: 'Ver x#1, que o watch não conhece' },
+  ];
+  assert.deepEqual(stillWaiting(items, watch).map(i => i.text), ['Ver r#5 e pi-optchat #92', 'Confirmar o resumo das 07:00', 'Ver x#1, que o watch não conhece']);
 });

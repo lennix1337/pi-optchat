@@ -1,7 +1,7 @@
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
-import { NO_WORK, readHomeWork } from './home-items.ts';
+import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { readManyTool } from './read-many.ts';
@@ -658,7 +658,7 @@ export default function optchat(pi: ExtensionAPI) {
   slack.setWaiting(() => {
     if (!active) return [];
     const approvals$ = approvals?.pendingFor(active.sessionId) ?? [];
-    return [...approvals$.map(p => `Aprovação pendente: ${p.summary}`), ...waitingItems(readCommitments(active.dir), Date.now())];
+    return [...approvals$.map(p => `Aprovação pendente: ${p.summary}`), ...stillWaiting(waitingItems(readCommitments(active.dir), Date.now()), readWatch(active.dir))];
   });
   // The operator's WhatsApp through wacli, when ~/.pi/agent/optchat-whatsapp.json exists (src/whatsapp-bridge.ts).
   registerWhatsAppBridge(pi, () => active && inPhase('open') ? active.dir : undefined, () => slack.commandState(), () => inPhase('open'));

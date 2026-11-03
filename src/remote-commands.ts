@@ -133,9 +133,42 @@ export function remoteCommand(text: string): { command: RemoteCommand; arg: stri
   return { command, arg };
 }
 
+const FAMILY: Record<string, string> = { anthropic: 'Claude', 'openai-codex': 'Codex', openai: 'OpenAI', google: 'Gemini' };
+/** An account as he names it: `anthropic-account-2` is "Claude conta 2", the base provider is conta 1. */
+function account(provider: string): { family: string; label: string } {
+  const match = /^(.*?)-account-(\d+)$/.exec(provider), base = match?.[1] ?? provider;
+  const family = FAMILY[base] ?? base;
+  return { family, label: `${family} conta ${match?.[2] ?? '1'}` };
+}
+
+/** `anthropic-account-2/claude-opus-5-5` as "Opus 5.5 \u00b7 conta 2"; another family keeps its name on the account. */
+export function modelName(ref: string | undefined): string {
+  if (!ref) return 'nenhum selecionado';
+  const slash = ref.indexOf('/'), provider = slash < 0 ? '' : ref.slice(0, slash), id = ref.slice(slash + 1);
+  const claude = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(id);
+  const name = claude ? `${claude[1]![0]!.toUpperCase()}${claude[1]!.slice(1)} ${claude[2]}.${claude[3]}` : id;
+  if (!provider) return name;
+  const { family, label } = account(provider);
+  return `${name} \u00b7 ${claude && family === 'Claude' ? label.replace(/^Claude /, '') : label}`;
+}
+
+/**
+ * The Home's quota, short: accounts with no usage window are left out, and a family whose every account is spent is one
+ * line with the first return. The *cota* command keeps the full per-account list.
+ */
+function homeQuota(state: CommandState): string[] {
+  const all = accounts(record(state.failover()), state.now()).filter(a => safeIdentifier(a.id));
+  if (!all.length) return ['• sem leitura de cota ainda'];
+  const families = new Map<string, typeof all>();
+  for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
+  return [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
+    ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label}: ${a.used}% usado, renova ${brasiliaDayTime(a.resetAt!)}`));
+}
+
 /** The status block of the App Home: model, account and quota under what the agent is doing. */
 export function homeStatus(state: CommandState): string {
-  return [modelLine(state), '*Cota* (cache):', ...quotaLines(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
+  return [`*Modelo:* ${modelName(state.model())}`, '*Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
 }
 
 export function failoverReader(file: string): () => unknown { return () => readJsonOr<unknown>(file, {}); }

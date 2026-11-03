@@ -187,8 +187,11 @@ function sections(text: string): string[] {
  */
 export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
   const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label }, ...extra });
+  // One question needs no caption: its text is right above in "Esperando voc\u00ea" (03/11, it repeated it). Several get a short one each.
+  const many = (options.choices ?? []).length > 1;
+  const caption = (label: string) => { const words = label.replace(/\s+/g, ' ').trim().split(' '); return words.length > 8 ? `${words.slice(0, 8).join(' ')}\u2026` : words.join(' '); };
   const choices = (options.choices ?? []).flatMap((choice, i) => [
-    { type: 'context', elements: [{ type: 'mrkdwn', text: `Responder: *${choice.label}*` }] },
+    ...many ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `Responder: *${caption(choice.label)}*` }] }] : [],
     { type: 'actions', elements: choice.options.map((option, j) => button(HOME_CHOICE, option, { action_id: `${HOME_CHOICE}_${i}_${j}`, value: `Sobre "${choice.label}": ${option}` })) },
   ]);
   const elements = [

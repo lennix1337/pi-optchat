@@ -513,8 +513,9 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
     now += 25 * 60_000;
     await f.bridge.runEnded(replies('CI verde.'));
     const text = homeBodies(f).at(-1)!.text;
-    assert.match(text, /\*Hoje\* · 1 trabalho · 25 min trabalhando · 1 passo\b/);
-    assert.match(text, /`09h [▁-█] 09h`/);
+    assert.match(text, /\*Hoje\* · 1 trabalho · 25 min trabalhando · último agora há pouco/);
+    assert.doesNotMatch(text, /`09h/, 'no hour bar: it could not be read on the phone (03/11)');
+    assert.match(text, /^Última resposta: CI verde\.$/m);
     assert.doesNotMatch(text, /• 09:00/, 'the Home shows work items, not one row per chat run');
     assert.match(text, /Próxima checagem de wake às 10:10/);
     assert.equal(readDay(f.dir, now).length, 1, 'a reload reads the day back');
@@ -794,7 +795,7 @@ test('App Home: idle in the chat with a shell or a subagent still running says s
     f.bridge.sawUserMessage('arruma o CI');
     await f.bridge.runEnded(replies('Rodando os testes.'));
     const text = homes$(f).at(-1)!.text;
-    assert.match(text, /^\u23f3 \*Em segundo plano\* \(1 subagente e 1 comando rodando\) \u00b7 chat livre desde/);
+    assert.match(text, /^\u23f3 \*Em segundo plano\* \(1 subagente e 1 comando rodando\) desde/);
     assert.doesNotMatch(text, /Livre\*/);
     assert.match(text, /\*Rodando agora\* \(2\)/);
   } finally { f.close(); }
@@ -808,8 +809,20 @@ test('App Home: idle with a PR whose CI is pending says what it waits for, not "
     f.bridge.sawUserMessage('faz a release');
     await f.bridge.runEnded(replies('Esperando o CI da #840.'));
     const text = homes$(f).at(-1)!.text;
-    assert.match(text, /^\u23f3 \*Esperando CI de Genexus18MCP#840\* \u00b7 chat livre desde/);
-    assert.doesNotMatch(text, /Livre\*/);
+    assert.match(text, /^\u23f3 \*Parado, esperando CI de Genexus18MCP#840\* desde/);
+    assert.doesNotMatch(text, /Livre\*|chat livre/);
+  } finally { f.close(); }
+});
+
+test('App Home: "Última resposta" is the reply\'s opening paragraph, clipped, not the whole answer (03/11)', async () => {
+  const f = fixture([]);
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('arruma a Home');
+    await f.bridge.runEnded(replies(`Feito: a Home volta a atualizar.\n\n**Por que travou:** ${'detalhe '.repeat(200)}`));
+    const text = homes$(f).at(-1)!.text;
+    assert.match(text, /^Última resposta: Feito: a Home volta a atualizar\.$/m);
+    assert.doesNotMatch(text, /Por que travou/);
   } finally { f.close(); }
 });
 

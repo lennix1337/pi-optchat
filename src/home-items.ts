@@ -63,8 +63,21 @@ const clip = (s: string, max: number) => {
   return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
 };
 
-const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').pop()}#${p.number} ${clip(p.title, 80)}`)}> \u00b7 checks ${p.checks}`;
-const commitLine = (c: CommitmentItem) => `\u2022 ${c.url ? `<${c.url}|${escape(clip(c.text, 140))}>` : escape(clip(c.text, 140))} \u00b7 ${c.status}`;
+/**
+ * A title the phone reads at a glance: the words before the first aside ("(...)", ": ", " — ") once they say enough,
+ * then at most `words` words. 03/11: PR titles and commitments went out cut mid-sentence, with the internal detail.
+ */
+export function headline(text: string, words = 8): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const aside = /\s\(|:\s|\s[\u2014\u2013-]\s/.exec(flat);
+  const head = aside && flat.slice(0, aside.index).split(' ').length >= 3 ? flat.slice(0, aside.index) : flat;
+  const list = head.split(' ');
+  // Words are the measure, characters the bound: a run-on token (a URL, a path) must not take the section's budget.
+  return clip(list.length > words ? `${list.slice(0, words).join(' ').replace(/[,.;:]$/, '')}\u2026` : head.replace(/[,.;:]$/, ''), 80);
+}
+
+const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').pop()}#${p.number} ${headline(p.title)}`)}> \u00b7 checks ${p.checks}`;
+const commitLine = (c: CommitmentItem) => `\u2022 ${c.url ? `<${c.url}|${escape(headline(c.text))}>` : escape(headline(c.text))} \u00b7 ${c.status}`;
 const jobLine = (j: string) => `\u2022 ${escape(clip(j, 120))}`;
 
 /** Expanded (the Home's Ver tudo): every item, still within Slack's view size. */
@@ -116,6 +129,24 @@ export function pendingCi(work: HomeWork): string {
  */
 export function idleLine(work: HomeWork): string {
   const running = backgroundSummary(work), ci = pendingCi(work);
-  if (running) return `\u23f3 *Em segundo plano* (${running} rodando${ci ? `; esperando ${ci}` : ''}) \u00b7 chat livre`;
-  return ci ? `\u23f3 *Esperando ${escape(ci)}* \u00b7 chat livre` : '';
+  // One state, not two: "Esperando CI" next to "chat livre" read as a contradiction (03/11).
+  if (running) return `\u23f3 *Em segundo plano* (${running} rodando${ci ? `; esperando ${ci}` : ''})`;
+  return ci ? `\u23f3 *Parado, esperando ${escape(ci)}*` : '';
 }
+
+/** The PRs a text names (`Genexus18MCP#843`, `pi-optchat #92`), as watch keys' repo name and number. */
+const PR_REF = /([A-Za-z][\w.-]*)\s?#(\d+)/g;
+
+/**
+ * Drops what waits on the operator once its subject is over: an item whose every PR it names that the watch knows is
+ * merged or closed. An item naming no known PR stays. 03/11: the Home asked him to check #843 hours after it merged.
+ */
+export function stillWaiting<T extends { text: string; ask?: string }>(items: readonly T[], watch: Record<string, Pick<PrSeen, 'sig'>>): T[] {
+  const byRef = new Map(Object.entries(watch).map(([key, seen]) => [key.split('/').pop()!.toLowerCase(), String(seen?.sig ?? '')]));
+  return items.filter(item => {
+    const states = [...`${item.text} ${item.ask ?? ''}`.matchAll(PR_REF)].map(([, repo, n]) => byRef.get(`${repo!.toLowerCase()}#${n}`)).filter((s): s is string => s !== undefined);
+    return !states.length || states.some(s => s.startsWith('OPEN:'));
+  });
+}
+
+export function readWatch(dir: string): Record<string, PrSeen> { return readJsonOr<Record<string, PrSeen>>(join(dir, PRS), {}) ?? {}; }
