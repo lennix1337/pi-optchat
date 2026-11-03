@@ -9,7 +9,6 @@ export interface DayRun { start: number; end: number; about: string; origin: str
 
 const BRT = 3 * 3_600_000;
 const FILE = 'home-day.json';
-const BARS = '\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588';
 const day = (at: number) => new Date(at - BRT).toISOString().slice(0, 10);
 const hhmm = (at: number) => new Date(at - BRT).toISOString().slice(11, 16);
 
@@ -24,29 +23,17 @@ export function recordRun(dir: string, run: DayRun): void {
 
 const duration = (ms: number) => { const m = Math.round(ms / 60_000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`; };
 
-/** Busy minutes per hour of today, from the first busy hour to now, as one bar each. */
-export function sparkline(runs: readonly DayRun[], now: number): string {
-  if (!runs.length) return '';
-  const base = Date.parse(`${day(now)}T00:00:00Z`) + BRT, busy = new Array<number>(24).fill(0);
-  for (const r of runs) for (let h = 0; h < 24; h++) {
-    const from = Math.max(r.start, base + h * 3_600_000), to = Math.min(r.end, base + (h + 1) * 3_600_000);
-    if (to > from) busy[h]! += to - from;
-  }
-  const first = busy.findIndex(ms => ms > 0), last = Math.floor((now - base) / 3_600_000);
-  if (first < 0 || last < first) return '';
-  const bars = busy.slice(first, last + 1).map(ms => ms ? BARS[Math.min(7, Math.floor(ms / 3_600_000 * 8))]! : '\u00b7').join('');
-  return `\`${String(first).padStart(2, '0')}h ${bars} ${String(last).padStart(2, '0')}h\``;
-}
-
 /**
- * The "Hoje" block: totals, the hour-by-hour bar and the next wake. Not one row per chat run: the Home shows the work as
- * items (src/home-items.ts), and a run is a session, not a piece of work.
+ * The "Hoje" block: totals, how long ago the last work ended and the next wake. Not one row per chat run: the Home
+ * shows the work as items (src/home-items.ts), and a run is a session, not a piece of work. 03/11: the hour-by-hour bar
+ * could not be read on the phone, so the Home says when the last work ended instead.
  */
 export function renderDay(runs: readonly DayRun[], now: number, nextWake?: number): string {
   const lines: string[] = [];
   if (runs.length) {
-    const total = runs.reduce((s, r) => s + r.end - r.start, 0), steps = runs.reduce((s, r) => s + r.steps, 0);
-    lines.push(`*Hoje* \u00b7 ${runs.length} trabalho${runs.length === 1 ? '' : 's'} \u00b7 ${duration(total)} trabalhando \u00b7 ${steps} passo${steps === 1 ? '' : 's'}`, sparkline(runs, now));
+    const total = runs.reduce((s, r) => s + r.end - r.start, 0), ago = now - Math.max(...runs.map(r => r.end));
+    const last = ago < 60_000 ? 'agora há pouco' : `há ${duration(ago)}`;
+    lines.push(`*Hoje* \u00b7 ${runs.length} trabalho${runs.length === 1 ? '' : 's'} \u00b7 ${duration(total)} trabalhando \u00b7 último ${last}`);
   }
   if (nextWake && nextWake > now) lines.push(`\u23f0 Pr\u00f3xima checagem de wake \u00e0s ${hhmm(nextWake)} (acordo se houver trabalho e voc\u00ea n\u00e3o falar antes)`);
   return lines.filter(Boolean).join('\n');

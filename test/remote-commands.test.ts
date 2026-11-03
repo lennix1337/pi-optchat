@@ -105,7 +105,7 @@ test('a command DM is answered by the bridge without reaching the agent; other D
     f.bridge.sawUserMessage('[Slack] cota da openai acabou?');
     const home = f.posts.findLast(p => p.path === '/v1/slack/home')!;
     assert.match(home.body.text, /Trabalhando/);
-    assert.match(home.body.text, /Modelo:\* anthropic-account-2\/claude-sonnet-5-5/);
+    assert.match(home.body.text, /Modelo:\* Sonnet 5\.5 · conta 2/);
     assert.match(home.body.text, /42% usado/);
   } finally { f.close(); }
 });
@@ -145,4 +145,19 @@ test('when the Aprovar post cannot go out, the operator is told nothing changed 
     assert.match(replies[0]!.body.text, /Não consegui postar o Aprovar/);
     assert.equal(selected.length, 0);
   } finally { f.close(); }
+});
+
+test('homeStatus: the model as he names it, spent families on one line, unmeasured accounts left out', () => {
+  const failover = { usageByProvider: {
+    'anthropic-account-2': { primary: { usedPercent: 56, resetAt: NOW + 3_600_000 } },
+    'openai-codex': { primary: { usedPercent: 100, resetAt: NOW + 7_200_000 } },
+    'openai-codex-account-2': { primary: { usedPercent: 100, resetAt: NOW + 9_000_000 } },
+    anthropic: { plan: 'api-key' },
+  } };
+  const text = homeStatus(state({ model: () => 'anthropic-account-2/claude-opus-5-5', failover: () => failover }));
+  assert.match(text, /\*Modelo:\* Opus 5\.5 · conta 2\n/);
+  assert.match(text, /• Claude conta 2: 56% usado/);
+  assert.match(text, /• Codex \*esgotado\* até 01\/11 17:00/);
+  assert.doesNotMatch(text, /sem medição|openai-codex|anthropic/);
+  assert.match(homeStatus(state({ model: () => 'openai-codex-account-2/gpt-6.1-sol' })), /gpt-6\.1-sol · Codex conta 2/);
 });

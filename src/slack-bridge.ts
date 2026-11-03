@@ -89,6 +89,15 @@ const HOME_FOLD = { channel: 'home', more: 'tudo', less: 'menos' } as const;
 /** A service that refuses a field it predates answers 400; the client reports it as `HttpError`, whose message never names the status. */
 const refused = (error: unknown) => error instanceof HttpError ? error.status === 400 : error instanceof Error && /HTTP 400/.test(error.message);
 
+/**
+ * The Home's "Última resposta": the reply's opening paragraph, where the outcome goes, clipped; the whole answer is in
+ * the DM. 03/11: the Home showed almost the whole reply and hid what mattered below it.
+ */
+export function replyLead(text: string, max = 280): string {
+  const first = text.trim().split(/\n\s*\n/)[0]!.replace(/\s*\n\s*/g, ' ');
+  return clipWords(first, max);
+}
+
 export function clipWords(text: string, max: number): string {
   if (text.length <= max) return text;
   if (max <= 1) return '';
@@ -475,7 +484,7 @@ export class SlackBridge {
     this.work = undefined;
     if (work && steps && owner) try { recordRun(owner.dir, { start: work.since, end: this.options.now(), about: work.about, origin: work.origin, steps }); } catch { /* the Home's day is a courtesy */ }
     const last = finalText(messages);
-    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta:\n${clipWords(last, 1200)}` : ''}`);
+    this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta: ${replyLead(last)}` : ''}`);
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.
       if (last && last === delivered) return;
