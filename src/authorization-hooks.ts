@@ -13,15 +13,29 @@ export type ContractDir = () => string | undefined;
 const textOf = (content: unknown) => typeof content === 'string' ? content
   : Array.isArray(content) ? content.flatMap(block => (block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n') : '';
 
+/** His Slack messages arrive as `[Slack] ` or `[Slack #channel] ` text; every other bracketed head is a machine notice. */
+const SLACK_HEAD = /^\[Slack(?: #[\w-]+)?\]\s+/;
+/**
+ * What the operator himself wrote, or undefined for a machine notice that also arrives as a user message (gitwatch,
+ * shell ends, reload resumes, status notes, Slack approval relays) or an approval token. Counting notices let a
+ * release order fall out of the window after four gitwatch notices (03/11: three refusals of a requested delete).
+ */
+export function operatorWords(raw: string): string | undefined {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  if (!text || /^approve-(?:effect|standing)\b/.test(text)) return undefined;
+  if (SLACK_HEAD.test(text)) { const said = text.replace(SLACK_HEAD, ''); return /^\(aprova\u00e7\u00e3o\)/.test(said) ? undefined : said; }
+  return text.startsWith('[') ? undefined : text;
+}
+
 /** The operator's last few typed messages, so the advisor can tell a requested push from an unrequested one. */
-function recentRequests(ctx: UiContext, count = 4, chars = 600) {
+export function recentRequests(ctx: UiContext, count = 8, chars = 600) {
   const requests: string[] = [];
   const branch = ctx.sessionManager.getBranch?.() ?? [];
   for (let i = branch.length - 1; i >= 0 && requests.length < count; i--) {
     const entry = branch[i];
     if (entry.type !== 'message' || entry.message.role !== 'user') continue;
-    const text = textOf(entry.message.content).replace(/\s+/g, ' ').trim();
-    if (text && !/^approve-(?:effect|standing)\b/.test(text)) requests.unshift(text.length > chars ? `${text.slice(0, chars - 1)}\u2026` : text);
+    const text = operatorWords(textOf(entry.message.content));
+    if (text) requests.unshift(text.length > chars ? `${text.slice(0, chars - 1)}\u2026` : text);
   }
   return requests;
 }
@@ -171,6 +185,31 @@ function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, gr
   };
 }
 
+/**
+ * Holds each new pending call until the run ends (or `holdMs` passes), then passes on the ones still waiting: a call
+ * the agent withdrew by taking another route is never announced.
+ */
+function heldUntilRunEnds(gate: EffectApprovals, announce: (pending: PendingApproval, session: string) => void, holdMs: number) {
+  const held = new Map<string, { session: string; timer: ReturnType<typeof setTimeout> }>();
+  const release = (token: string) => {
+    const entry = held.get(token);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    held.delete(token);
+    const pending = gate.pendingFor(entry.session).find(p => p.token === token);
+    if (pending) announce(pending, entry.session);
+  };
+  return {
+    hold(pending: PendingApproval, session: string) {
+      const timer = setTimeout(() => release(pending.token), holdMs);
+      timer.unref?.();
+      held.set(pending.token, { session, timer });
+    },
+    flush: () => [...held.keys()].forEach(release),
+    clear: () => { held.forEach(({ timer }) => clearTimeout(timer)); held.clear(); },
+  };
+}
+
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell, advisor = undefined as Advisor | undefined,
   contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined,
@@ -179,13 +218,16 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   /** Called once per call that waits for the operator (after the contract and the advisor), e.g. to ask on Slack. */
   onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined,
   /** Called when such a call stops waiting (approved, denied, superseded or expired), wherever it was decided. */
-  onSettled = undefined as ((token: string, outcome: Settled) => void) | undefined } = {}) {
+  onSettled = undefined as ((token: string, outcome: Settled) => void) | undefined,
+  /** Longest a pending call is held back from `onPending` while the run goes on. */
+  holdMs = 3 * 60_000 } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   if (!(enabled ?? (env === '1' || env === 'risk'))) return;
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), onSettled: (token, outcome) => onSettled?.(token, outcome) });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
   const advised = advisedAdmission(gate, pi, { advisor, grant, contract: { dir: contractDir, repo, orderGrant } });
+  const phone = heldUntilRunEnds(gate, (pending, session) => onPending?.(pending, session, gate), holdMs);
   // Child SDK prompt/steer calls default to interactive even when manager-authored.
   if (grant) pi.on('input', (event, ctx) => {
     const command = operatorCommand(gate, event.text, event.source, ctx);
@@ -209,11 +251,14 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
       alerted.add(pending.token);
       ctx.ui.notify(`Approval needed \u2014 ${label(pending)}: ${pending.summary}. Type /approve to run it once, /deny to drop it.`, 'warning');
       bell();
-      onPending?.(pending, session, gate);
+      if (onPending) phone.hold(pending, session);
     }
     return { block: true, reason: note + refusal.reason };
   });
-  const reset = (ctx: UiContext) => { gate.clear(); alerted.clear(); advised.clear(); if (grant) display.hide(ctx); };
+  // The phone hears only of calls still waiting once the run ends: one the agent replaced by another route meanwhile
+  // never reaches it (operator 03/11: asked to approve, then the next call did it anyway).
+  pi.on('agent_end', () => phone.flush());
+  const reset = (ctx: UiContext) => { gate.clear(); alerted.clear(); advised.clear(); phone.clear(); if (grant) display.hide(ctx); };
   pi.on('session_start', (_event, ctx) => reset(ctx));
   pi.on('session_shutdown', (_event, ctx) => reset(ctx));
   return gate;

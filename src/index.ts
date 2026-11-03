@@ -53,7 +53,7 @@ import { heartbeatCommand, summarizeTurn } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
-import { readCommitments, registerCommitments, waitingItems } from './commitments.ts';
+import { openTaskOrders, readCommitments, registerCommitments, waitingItems } from './commitments.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
 import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
@@ -156,7 +156,10 @@ export default function optchat(pi: ExtensionAPI) {
       const line = describeGrant(readOperationalState(join(profile.dir, 'operational-state.json')), request.kind, request.input, grantTargets(request.input, request.cwd));
       if (line) grants = [line];
     } catch { /* an unreadable state file must not block the advisor; the operator still decides */ }
-    return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants },
+    let tasks: string[] = [];
+    try { tasks = openTaskOrders(readCommitments(profile.dir), id => profile.memory.root[Number(id)]); }
+    catch { /* no commitments file: the recent messages alone decide */ }
+    return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants, tasks },
       message => profile.usage.compression(message, 'advisor', profile.sessionId));
   }, contractDir: () => active?.dir,
   // "pode fazer o merge e o deploy", recorded as grants quoting it, covers the calls it names instead of one prompt each.

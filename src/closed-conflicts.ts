@@ -20,6 +20,10 @@ function isRecord(value: unknown): value is ClosedRecord {
 export function fromRecords(records: unknown): ClosedConflict[] {
   if (!Array.isArray(records) || !records.every(isRecord)) throw new Error(`${CLOSED_FILE} must be a list of {id, match, with?, say}.`);
   return records.map(record => {
+    // In JSON "\b" is a backspace, not a word boundary: such a pattern silently never matches (02/11 entry autonomy-0211).
+    for (const pattern of [record.match, record.with ?? '']) if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(pattern)) {
+      throw new Error(`${CLOSED_FILE} entry ${record.id} has a control character in a pattern: write \\\\b, \\\\d in JSON for \\b, \\d.`);
+    }
     const match = new RegExp(record.match, 'i'), also = record.with === undefined ? undefined : new RegExp(record.with, 'i');
     return { id: record.id, say: record.say, cites: segment => match.test(segment) && (!also || also.test(segment)) };
   });
