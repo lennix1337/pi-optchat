@@ -4,7 +4,7 @@
 // `key: value` object (AXI-compact; a TOON subset for flat scalar objects); stderr carries usage only. It never forces
 // a push, never skips hooks and never merges with --admin.
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
@@ -17,8 +17,11 @@ const FORBIDDEN_HINT = {
   '--force': 'ship não força push', '-f': 'ship não força push', '--force-with-lease': 'ship não força push',
   '--no-verify': 'ship não pula hooks', '--admin': 'merge com --admin é decisão do operador',
 };
-const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--base BRANCH] [--wait S] [--dry-run]
+const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--base BRANCH] [--wait S] [--dry-run]
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
+  -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
+                       (obrigatória quando a branch ainda não tem PR aberta)
+  --body-file ARQ      a mesma descrição, lida de um arquivo
   --all                git add -A antes do commit
   --pr N               só enfileira o auto-merge da PR N (sem commit, push ou PR)
   --no-auto            abre a PR sem enfileirar o auto-merge
@@ -225,8 +228,12 @@ function reportAuto(ctx, result) {
   return emit('not_queued', { ...common, auto_merge: 'not_queued', reason: result.reason, detail: result.detail, next: nextFor(result.reason, ctx.pr) });
 }
 
-async function openPr(branch, base) {
-  const c = await gh(['pr', 'create', '--fill', '--base', base, '--head', branch], 'create');
+// The description goes through a file under .git: gh arguments must stay in SAFE_GH_ARG, and free text cannot.
+async function openPr(branch, base, body) {
+  const file = (await git(['rev-parse', '--git-path', 'SHIP_PR_BODY'])).out.trim();
+  writeFileSync(file, `${body.trim()}\n`);
+  const c = await gh(['pr', 'create', '--fill', '--body-file', file, '--base', base, '--head', branch], 'create')
+    .finally(() => rmSync(file, { force: true }));
   if (c.killed) {
     const found = await viewPr(branch);
     if (found.pr?.state === 'OPEN') return found.pr;
@@ -269,6 +276,12 @@ async function shipBranch(opts, ctx) {
   // The read-only lookups overlap with staging and the commit; their results are needed only before a push or a PR.
   const aheadP = git(['rev-list', '--count', `origin/${base}..HEAD`]);
   const existingP = opts.directMain ? Promise.resolve(undefined) : viewPr(branch);
+  if (!opts.directMain && opts.body === undefined) {
+    const existing = await existingP;
+    if (!existing?.error && existing?.pr?.state !== 'OPEN') {
+      throw refuse('body_required', 'a PR nova precisa de descrição: passe -b "problema, mudança, pendências e evidência" ou --body-file ARQ');
+    }
+  }
 
   if (opts.dryRun) {
     const [, existing] = await Promise.all([aheadP, existingP]);
@@ -293,7 +306,7 @@ async function shipBranch(opts, ctx) {
   }
   if (commitNeeded) {
     const headBefore = headR.out.trim();
-    const c = await git(['commit', '-m', opts.message, ...(selecting && !opts.all ? ['--', ...opts.paths] : [])]);
+    const c = await git(['commit', '-m', opts.message, ...(opts.body ? ['-m', opts.body] : []), ...(selecting && !opts.all ? ['--', ...opts.paths] : [])]);
     if (c.killed) {
       const head = (await git(['rev-parse', '--verify', '--quiet', 'HEAD'])).out.trim();
       if (head === headBefore || !head) throw uncertain('commit', 'git log -1 para reconciliar; não repita o commit');
@@ -329,7 +342,7 @@ async function shipBranch(opts, ctx) {
 
   if (opts.directMain) return emit('pushed', { ...ctx, branch: target });
 
-  const pr = existingOpen ?? await openPr(branch, base);
+  const pr = existingOpen ?? await openPr(branch, base, opts.body);
   ctx.pr = pr.number;
   ctx.url = pr.url;
   if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
@@ -338,7 +351,7 @@ async function shipBranch(opts, ctx) {
 
 // --- arguments and entry ---
 function parseArgs(argv) {
-  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, base: undefined, wait: 20, dryRun: false, message: undefined, help: false };
+  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, base: undefined, wait: 20, dryRun: false, message: undefined, body: undefined, help: false };
   const valueOf = (flag, i) => {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith('-')) throw refuse('missing_value', `${flag} precisa de um valor`);
@@ -352,6 +365,15 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '-h' || arg === '--help') opts.help = true;
     else if (arg === '-m' || arg === '--message') { opts.message = valueOf(arg, i); i++; }
+    else if (arg === '-b' || arg === '--body') {
+      // A description may open with a markdown list ("- ..."), so only a missing value is refused here.
+      if (argv[i + 1] === undefined) throw refuse('missing_value', `${arg} precisa de um valor`);
+      opts.body = argv[++i];
+    }
+    else if (arg === '--body-file') {
+      const path = valueOf(arg, i); i++;
+      try { opts.body = readFileSync(path, 'utf8'); } catch { throw refuse('body_file_unreadable', `não consegui ler ${path}`); }
+    }
     else if (arg === '--all') opts.all = true;
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
@@ -370,7 +392,8 @@ function parseArgs(argv) {
   if (opts.all && opts.paths.length) throw refuse('conflicting_args', '--all e caminhos juntos: escolha um');
   if ((opts.all || opts.paths.length) && opts.message === undefined) throw refuse('message_required', 'com caminhos ou --all, passe -m "assunto"');
   if (opts.message !== undefined && !opts.message.trim()) throw refuse('message_required', '-m não pode ser vazio');
-  if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.directMain || opts.noAuto || opts.base !== undefined)) {
+  if (opts.body !== undefined && !opts.body.trim()) throw refuse('body_required', 'a descrição (-b/--body-file) não pode ser vazia');
+  if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.base !== undefined)) {
     throw refuse('conflicting_args', '--pr só enfileira o auto-merge de uma PR existente');
   }
   if (opts.directMain && opts.noAuto) throw refuse('conflicting_args', '--direct-main não abre PR: --no-auto não se aplica');

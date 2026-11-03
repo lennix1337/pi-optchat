@@ -11,6 +11,7 @@ import { tempDir } from './support.ts';
 const SHIP = fileURLToPath(new URL('../scripts/ship.mjs', import.meta.url));
 const FAKE_GH = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
 const IDENTITY = { GIT_AUTHOR_NAME: 'Ship Test', GIT_AUTHOR_EMAIL: 'ship@test.invalid', GIT_COMMITTER_NAME: 'Ship Test', GIT_COMMITTER_EMAIL: 'ship@test.invalid' };
+const BODY = ['-b', 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.'];
 const PENDING_CI = [{ __typename: 'CheckRun', name: 'ci', status: 'IN_PROGRESS', conclusion: null }];
 
 type Fixture = { dir: string; work: string; origin: string; bin: string; statePath: string; logPath: string; setGh(patch: Record<string, unknown>): void; ghCalls(): string[][]; close(): void };
@@ -107,7 +108,7 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   commitFile(fx, 'b.txt');
   git(fx.work, ['add', 'b.txt']);
   const trace = join(fx.dir, 'trace.log');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt'], { GIT_TRACE2_EVENT: trace });
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { GIT_TRACE2_EVENT: trace });
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.status, 'queued');
   assert.equal(r.out.branch, 'feat/x');
@@ -119,7 +120,11 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   assert.equal(remoteSha(fx, 'feat/x'), localSha(fx));
   const calls = fx.ghCalls().map(args => args.join(' '));
   assert.equal(calls[0], 'pr view feat/x --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup');
-  assert.equal(calls[1], 'pr create --fill --base main --head feat/x');
+  assert.equal(calls[1], 'pr create --fill --body-file ' + calls[1].split(' ')[4] + ' --base main --head feat/x');
+  const state = JSON.parse(readFileSync(fx.statePath, 'utf8'));
+  assert.equal(state.prs[0].body, 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.\n', 'the PR carries the description');
+  assert.equal(existsSync(calls[1].split(' ')[4]), false, 'the description file is removed');
+  assert.match(git(fx.work, ['log', '-1', '--format=%b']), /Problema: a.txt faltava/, 'the commit carries it too');
   assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup');
   assert.ok(calls.includes('pr merge 1 --squash --auto'));
   assert.equal(r.out.gitwatch, 'requested');
@@ -128,6 +133,18 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   const traced = existsSync(trace) ? readFileSync(trace, 'utf8') : '';
   assert.ok(traced.includes('"commit"'), 'git ran through the trace');
   for (const forbidden of ['--no-verify', '--force', '--admin']) assert.equal(traced.includes(forbidden) || calls.join(' ').includes(forbidden), false, forbidden);
+});
+
+test('a new PR without a description is refused before staging, committing or pushing', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, ['-m', 'feat: a', 'a.txt']);
+  assert.equal(r.code, 2);
+  assert.equal(r.out.error, 'body_required');
+  assert.equal(git(fx.work, ['diff', '--cached', '--name-only']), '');
+  assert.equal(git(fx.work, ['ls-remote', 'origin', 'refs/heads/feat/x']), '');
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'create'));
+  assert.equal(ship(fx, ['-m', 'feat: a', '-b', '  ', 'a.txt']).out.error, 'body_required', 'a blank description is no description');
 });
 
 test('a re-run reuses the open PR and creates nothing', t => {
@@ -156,7 +173,7 @@ test('checks not reported yet, and a merge that would land at once: reported, no
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ defaults: { mergeStateStatus: 'CLEAN', checks: [] } });
   commitFile(fx, 'a.txt');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt', '--wait', '1']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt', '--wait', '1']);
   assert.equal(r.code, 3);
   assert.equal(r.out.status, 'not_queued');
   assert.equal(r.out.reason, 'checks_not_reported');
@@ -169,7 +186,7 @@ test('CLEAN with checks still running would merge at once, so it is not queued',
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ defaults: { mergeStateStatus: 'CLEAN', checks: PENDING_CI } });
   commitFile(fx, 'a.txt');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
   assert.equal(r.code, 3);
   assert.equal(r.out.reason, 'merge_would_be_immediate');
   assert.equal(r.out.checks, '0 pass / 1 pending / 0 fail');
@@ -180,7 +197,7 @@ test('a failing check is reported and blocks the queue', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ defaults: { mergeStateStatus: 'BLOCKED', checks: [{ __typename: 'CheckRun', name: 'billing', status: 'COMPLETED', conclusion: 'FAILURE' }, { __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }] } });
   commitFile(fx, 'a.txt');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
   assert.equal(r.code, 3);
   assert.equal(r.out.reason, 'checks_failed');
   assert.equal(r.out.detail, 'billing');
@@ -191,7 +208,7 @@ test('a repository that disables auto-merge is reported as not queued', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ autoMerge: 'disabled' });
   commitFile(fx, 'a.txt');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
   assert.equal(r.code, 3);
   assert.equal(r.out.status, 'not_queued');
   assert.equal(r.out.reason, 'auto_merge_disabled');
@@ -201,7 +218,7 @@ test('a repository that disables auto-merge is reported as not queued', t => {
 test('--no-auto opens the PR and leaves auto-merge alone', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt', '--no-auto']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt', '--no-auto']);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.status, 'pr_open');
   assert.equal(r.out.auto_merge, 'skipped');
@@ -223,7 +240,7 @@ test('a push the remote rejects fails without force, and opens no PR', t => {
   git(other, ['push', '-q', 'origin', 'feat/x']);
   const remoteBefore = remoteSha(fx, 'feat/x');
   commitFile(fx, 'b.txt');
-  const r = ship(fx, ['-m', 'local work', 'b.txt']);
+  const r = ship(fx, [...BODY, '-m', 'local work', 'b.txt']);
   assert.equal(r.code, 1);
   assert.equal(r.out.status, 'failed');
   assert.equal(r.out.stage, 'push');
@@ -237,7 +254,7 @@ test('a failing pre-commit hook stops before any push', t => {
   chmodSync(join(fx.work, '.git', 'hooks', 'pre-commit'), 0o755);
   commitFile(fx, 'a.txt');
   const before = remoteSha(fx, 'feat/x');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
   assert.equal(r.code, 1);
   assert.equal(r.out.stage, 'commit');
   assert.equal(remoteSha(fx, 'feat/x'), before);
@@ -260,7 +277,7 @@ test('a PR create that times out is reconciled and not replayed', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ createHangs: true });
   commitFile(fx, 'a.txt');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt'], { SHIP_TIMEOUT_MS: '1500' });
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_TIMEOUT_MS: '1500' });
   assert.equal(r.code, 4);
   assert.equal(r.out.status, 'uncertain');
   assert.equal(r.out.stage, 'pr_create');
@@ -271,7 +288,7 @@ test('dry-run prints the plan and runs no effect', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');
   const before = remoteSha(fx, 'feat/x');
-  const r = ship(fx, ['-m', 'feat: a', 'a.txt', '--dry-run']);
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt', '--dry-run']);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.status, 'dry_run');
   assert.match(r.out.plan, /stage a\.txt > commit > push feat\/x > abrir PR > auto-merge/);
@@ -282,7 +299,7 @@ test('dry-run prints the plan and runs no effect', t => {
 
 test('nothing to ship is refused, not sent as an empty PR', t => {
   const fx = fixture(); t.after(fx.close);
-  const r = ship(fx, []);
+  const r = ship(fx, BODY);
   assert.equal(r.code, 2);
   assert.equal(r.out.error, 'nothing_to_ship');
   assert.ok(!fx.ghCalls().some(args => args[1] === 'create' || args[1] === 'merge'), 'only the read-only PR lookup ran');
