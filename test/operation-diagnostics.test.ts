@@ -216,3 +216,28 @@ test('a block message names each uncertain call with its tool and says read-only
   assert.match(reason, /Read-only tools still work \(read, grep, find, ls, zoom, search/);
   assert.match(reason, /operation_state/);
 });
+
+test('everyday inspections seen refused behind an uncertain barrier are read-only', () => {
+  for (const command of [
+    'git status --short; echo rc=$?', 'cd C:/projetos/x && git log --oneline -1 | cat; echo st=$?', 'echo "exit $?"',
+    'date', 'date +%H:%M:%S', 'date -u "+%Y-%m-%d"', 'ps -e', 'ps -eo pid,etime,args | grep node',
+    'git stash list | head -3', 'git ls-remote origin refs/heads/main', 'git -C C:/projetos/x ls-remote --heads origin',
+    "find C:/Users/swluc/.pi -maxdepth 1 -name '*.json' -mmin -60",
+    "gh pr view 43 --json state,mergeStateStatus --jq '{state,auto:(.autoMergeRequest!=null)}'", 'gh pr list --state open --json number,title', 'gh pr checks 7', 'gh pr diff 7 --name-only',
+    'gh run list --repo lennix1337/dotfiles --branch main --limit 2 --json databaseId,status,conclusion', 'gh run view 123 --log-failed | tail -20', 'gh issue view 5 --comments',
+    "gh api repos/lennix1337/pi-optchat/pulls/43 --jq '{state,merged}'", 'gh auth status --hostname github.com',
+  ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
+});
+
+test('the wider inspections still refuse anything that writes, runs a helper or reaches an unknown expansion', () => {
+  for (const command of [
+    'echo $?x', 'echo $??', '$? file', 'echo \\$?', 'FOO=$? cat file',
+    'date -s "2020-01-01"', 'date --set=2020-01-01', 'date 010100002020', 'ps -e > out', 'ps -e; touch x',
+    'git stash', 'git stash drop', 'git stash list --output=x', 'git ls-remote --upload-pack=evil origin', 'git ls-remote --upload-pack evil origin', 'git ls-remote -o evil origin', 'git fetch origin',
+    'find . -delete', 'find . -exec rm x +', 'find . -execdir rm x +', 'find . -exec rm {} ;', "find . -name '*.tmp' -execdir rm {} +", 'find . -ok rm {} ;', 'find . -fprint out', 'find . -fls out', 'find *',
+    'gh pr merge 5', 'gh pr close 5', 'gh pr comment 5 --body hi', 'gh pr view 5 --web', 'gh pr view 5 -w', 'gh pr checkout 5', 'gh pr create', 'gh pr edit 5 --title x',
+    'gh run rerun 5', 'gh run cancel 5', 'gh run download 5', 'gh issue close 5', 'gh issue create', 'gh repo delete x', 'gh release create v1', 'gh auth login', 'gh auth token',
+    'gh api repos/x/y -X DELETE', 'gh api repos/x/y --method POST', 'gh api repos/x/y -f a=b', 'gh api repos/x/y -F a=b', 'gh api repos/x/y --input file', 'gh api graphql', 'gh api -XPOST repos/x/y', 'gh api repos/x/y -H "Accept: x" --field a=b',
+    'gh pr view 5 --json state; gh pr merge 5', 'gh alias set x y', 'gh extension install x', 'gh pr view $(touch x)',
+  ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
+});
