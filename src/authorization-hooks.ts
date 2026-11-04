@@ -4,6 +4,7 @@ import { readGitHubIdentity, type AdvisorRequest, type AdvisorVerdict } from './
 import { classifyEffects, describeDecision, logReported, type Decision, type Effect, type Repo } from './autonomy.ts';
 import { readProfileEffectPolicy } from './effect-policy.ts';
 import { judgeSelfEdit } from './autonomy-self-edit.ts';
+import { operatorWords } from './operator-words.ts';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -16,19 +17,7 @@ export type ContractDir = () => string | undefined;
 const textOf = (content: unknown) => typeof content === 'string' ? content
   : Array.isArray(content) ? content.flatMap(block => (block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n') : '';
 
-/** His Slack messages arrive as `[Slack] ` or `[Slack #channel] ` text; every other bracketed head is a machine notice. */
-const SLACK_HEAD = /^\[Slack(?: #[\w-]+)?\]\s+/;
-/**
- * What the operator himself wrote, or undefined for a machine notice that also arrives as a user message (gitwatch,
- * shell ends, reload resumes, status notes, Slack approval relays) or an approval token. Counting notices let a
- * release order fall out of the window after four gitwatch notices (03/11: three refusals of a requested delete).
- */
-export function operatorWords(raw: string): string | undefined {
-  const text = raw.replace(/\s+/g, ' ').trim();
-  if (!text || /^approve-(?:effect|standing)\b/.test(text)) return undefined;
-  if (SLACK_HEAD.test(text)) { const said = text.replace(SLACK_HEAD, ''); return /^\(aprova\u00e7\u00e3o\)/.test(said) ? undefined : said; }
-  return text.startsWith('[') ? undefined : text;
-}
+export { operatorWords } from './operator-words.ts';
 
 /** The operator's last few typed messages, so the advisor can tell a requested push from an unrequested one. */
 export function recentRequests(ctx: UiContext, count = 8, chars = 600) {

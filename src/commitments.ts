@@ -250,7 +250,7 @@ const params = Type.Object({
   action: stringEnum(['list', 'add', 'update']),
   id: Type.Optional(Type.String({ description: 'update: the commitment id (c_xxxxxx)' })),
   text: Type.Optional(Type.String({ maxLength: 2000, description: 'add: what is promised or awaited, one line' })),
-  source: Type.Optional(Type.String({ description: 'add: the memory message id it came from (the operator\'s request)' })),
+  source: Type.Optional(Type.String({ description: 'add: memory message id of his request, or "latest" (his last message)' })),
   owner: Type.Optional(stringEnum(['optchat', 'operator'])),
   status: Type.Optional(stringEnum(STATUSES)),
   next: Type.Optional(Type.String({ maxLength: 1000, description: 'the next concrete step' })),
@@ -274,18 +274,24 @@ function listText(dir: string, all: boolean, now: number) {
   }).join('\n');
 }
 
-export function commitmentsTool(owner: () => { dir: string; sourceExists(id: string): boolean }, onProgress: () => void = () => {}) {
+type Owner = { dir: string; sourceExists(id: string): boolean; latestSource?(): string | undefined };
+
+export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
   return {
     name: 'commitments', label: 'Commitments',
-    description: 'Track what you promised the operator and what waits on him, so nothing rots: add (text, source message id, owner, next step, deadline), update (progress, next, status open/waiting_operator/blocked/done/dropped; done needs evidence), list. Open ones appear in every turn with age and deadline; a new operator decision supersedes the old item.',
+    description: 'Track what you promised the operator and what waits on him, so nothing rots: add (text, source, owner, next step, deadline), update (progress, next, status open/waiting_operator/blocked/done/dropped; done needs evidence), list. Open ones appear in every turn with age and deadline; a new operator decision supersedes the old item.',
     parameters: params,
     async execute(_id: string, args: Params) {
-      const { dir, sourceExists } = owner(), now = Date.now();
+      const { dir, sourceExists, latestSource } = owner(), now = Date.now();
       if (args.action === 'list') return result(listText(dir, args.all === true, now));
       if (args.action === 'add') {
         if (!args.text?.trim()) throw new Error('add needs text');
-        if (!args.source || !sourceExists(args.source)) throw new Error('add needs source: the exact memory message id the commitment comes from');
-        const item = addCommitment(dir, { ...args, text: args.text, source: args.source }, now);
+        // The request that started this turn is not in the view yet, so "latest" stands for it.
+        const latest = latestSource?.();
+        if (args.source === 'latest' && !latest) throw new Error('add source "latest": no operator message yet in this profile');
+        const source = args.source === 'latest' ? latest! : args.source;
+        if (!source || !sourceExists(source)) throw new Error(`add needs source: the exact memory message id the commitment comes from, or "latest"${latest ? ` (now ${latest})` : ''}`);
+        const item = addCommitment(dir, { ...args, text: args.text, source }, now);
         onProgress();
         return result(`Added ${describe(item, now)}`);
       }
@@ -298,7 +304,7 @@ export function commitmentsTool(owner: () => { dir: string; sourceExists(id: str
 }
 
 /** Registers the tool and the presence nudges of a running turn. */
-export function registerCommitments(pi: ExtensionAPI, owner: () => { dir: string; sourceExists(id: string): boolean } | undefined, now: () => number = Date.now) {
+export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undefined, now: () => number = Date.now) {
   const presence = new Presence();
   const required = () => {
     const o = owner();
