@@ -43,6 +43,7 @@ import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerForegroundWaitGuard } from './foreground-wait.ts';
+import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerCommitHookGuard } from './commit-hook-guard.ts';
 import { registerMergeCiGuard } from './merge-ci-guard.ts';
 import { registerBrowserPages } from './external-effects.ts';
@@ -146,6 +147,8 @@ export default function optchat(pi: ExtensionAPI) {
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
   // First: a refused wait never ran, so it needs no approval and leaves no operation to journal.
   registerForegroundWaitGuard(pi);
+  // So is a PowerShell script bash would rewrite first (`$_` inside double quotes).
+  registerPowerShellQuotingGuard(pi);
   // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
   registerCommitHookGuard(pi);
   // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts).

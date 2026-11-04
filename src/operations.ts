@@ -62,7 +62,7 @@ export class OperationJournal {
   blockReason(tool: string, trustedReadOnly = false) {
     if (trustedReadOnly || READ_ONLY.has(tool)) return;
     const uncertain = this.pending().filter(o => !this.inFlight.has(o.id));
-    if (uncertain.length) return `Not executed: external outcome uncertain for ${uncertain.map(o => `${o.id} (${o.tool})`).join(', ')}; that earlier call was interrupted or timed out. Do not repeat effects. Read-only tools still work (read, grep, find, ls, zoom, search, installed tools marked read-only, read-only bash such as git status/diff/log, cmp, cat): use them to check the real state, then call operation_state with an evidence reference to reconcile.`;
+    if (uncertain.length) return `Not executed: external outcome uncertain for ${uncertain.map(o => `${o.id} (${o.tool})`).join(', ')}; that earlier call was interrupted or timed out. Do not repeat effects. Read-only tools still work (read, grep, find, ls, zoom, search, installed tools marked read-only, read-only bash such as git status/diff/log, cmp, cat, netstat, loopback curl; browser_harness status/inspect/screenshot, shell_status): use them to check the real state, then call operation_state with an evidence reference to reconcile.`;
   }
   start(session: string, call: string, tool: string, args: unknown, trustedReadOnly = false, recoveryIncidentId?: string, dispatchObserved = false) {
     if (trustedReadOnly || READ_ONLY.has(tool) || isReadOnlyDiagnostic(tool, args)) return;
