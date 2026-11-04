@@ -334,7 +334,8 @@ test('real Pi + OptChat: an operational_state record mid-turn keeps the cached r
   }
 });
 
-test('real Pi + OptChat: a long bash call is moved to a background shell, so the call returns before the command ends', { timeout: 60_000 }, async () => {
+// 14 days of sessions: 159 of 166 moved commands ended within 30 s, and each then cost a "[shell ID]" message or polls.
+test('real Pi + OptChat: a long bash call that ends within the grace returns its output in the call, with no shell message after', { timeout: 60_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const { session, errors } = await piSession(anthropic, 'long-command', () => {});
   try {
@@ -342,8 +343,10 @@ test('real Pi + OptChat: a long bash call is moved to a background shell, so the
     const result = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'bash');
     assert.ok(result && result.role === 'toolResult' && !result.isError, 'the bash call returns a result');
     const text = JSON.stringify(result.content);
-    assert.match(text, /Long command moved to background shell/);
-    assert.doesNotMatch(text, /late-ok/, 'the command had not printed when the call returned: it runs in its shell');
+    assert.match(text, /late-ok/, 'the call waited for the command, which ended within the grace');
+    assert.doesNotMatch(text, /moved to background shell/);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.doesNotMatch(JSON.stringify(session.messages), /\[shell [0-9a-f-]{36}\]/, 'no end notice follows a result the call already returned');
     assert.deepEqual(errors, []);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
@@ -351,20 +354,17 @@ test('real Pi + OptChat: a long bash call is moved to a background shell, so the
   }
 });
 
-test('real Pi + OptChat: a foreground sleep in bash is refused before it runs, pointing to shell_start', { timeout: 60_000 }, async () => {
+// The guard used to refuse these: 37 refusals and 29 retries of the same wait in one session (01a1704e).
+test('real Pi + OptChat: a foreground sleep in bash runs instead of being refused, and its output comes back within the grace', { timeout: 60_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const { session, errors } = await piSession(anthropic, 'foreground-wait', () => {});
   try {
-    assert.ok(session.getActiveToolNames().includes('shell_start'));
-    const started = Date.now();
-    await session.prompt('wait 30');
+    await session.prompt('wait 16');
     const result = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'bash');
-    assert.ok(result && result.role === 'toolResult' && result.isError, 'the bash call comes back as an error');
+    assert.ok(result && result.role === 'toolResult' && !result.isError, 'the bash call is not refused');
     const text = JSON.stringify(result.content);
-    assert.match(text, /sleeps 30 s/);
-    assert.match(text, /shell_start/);
-    assert.doesNotMatch(text, /waited/, 'the command never ran');
-    assert.ok(Date.now() - started < 20_000, 'the turn did not wait');
+    assert.match(text, /waited/, 'the wait ran and its output is the result');
+    assert.doesNotMatch(text, /shell_start|moved to background shell/);
     assert.deepEqual(errors, []);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
