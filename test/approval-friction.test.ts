@@ -61,6 +61,18 @@ test('reading the contract is not changing it', () => {
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.write({path:"${file}",content:"{}"})` } }), true);
 });
 
+test('a read-only command substitution naming the contract only reads it (04/11: grep of autonomy.json refused)', () => {
+  const file = 'C:/Users/x/.optchat/profiles/p/autonomy.json';
+  const writes = (command: string) => touchesContract({ tool: 'bash', input: { command } });
+  assert.equal(writes(`f=$(ls ${file} ~/.optchat/autonomy.json 2>/dev/null | head -1); echo "$f"; grep -n -i "deploy" "$f" | cut -c1-300 | head`), false);
+  assert.equal(writes(`n=\`wc -l < ${file}\`; echo $n`), false);
+  // The variable carries the file name: what a later segment does with it is judged as if it named the file.
+  assert.equal(writes(`f=$(ls ${file}); echo '{}' > "$f"`), true);
+  assert.equal(writes(`f=$(ls ${file}); sed -i s/a/b/ \${f}`), true);
+  assert.equal(writes(`x=$(cp y ${file})`), true);
+  assert.equal(writes(`x=$(cat $(ls ${file}))`), true);
+});
+
 test('gh pr close --delete-branch is judged as the remote push it is', () => {
   const gate = new EffectApprovals({ mode: 'risk' });
   const refusal = gate.admit({ session: 's', cwd: '/r', tool: 'bash', input: { command: 'gh pr close 841 --delete-branch' } });

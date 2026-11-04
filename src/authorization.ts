@@ -114,6 +114,21 @@ function loopVariablesResolved(text: string) {
   }
   return text;
 }
+/** A flat `$(...)` or backtick substitution; a nested one is left in place and judged as a writer. */
+const substitution = /\$\(([^()`]*)\)|`([^`$()]*)`/g;
+/**
+ * Substitutions judged as the commands they are (04/11: `f=$(ls .../autonomy.json | head -1)` refused a grep). A variable
+ * assigned from one that names the contract carries the file name into later segments; the substitution itself becomes
+ * an empty word. Returns undefined when an inner command can write the file.
+ */
+function substitutionsResolved(text: string) {
+  const inner = [...text.matchAll(substitution)].map(match => match[1] ?? match[2]);
+  if (inner.some(shellWritesContract)) return undefined;
+  for (const [, name, value] of text.matchAll(/\b(\w+)="?(\$\([^()`]*\)|`[^`$()]*`)/g)) {
+    if (namesContract(value)) text = text.replace(new RegExp(`\\$\\{?${name}\\b\\}?`, 'g'), 'autonomy.json');
+  }
+  return text.replace(substitution, '""');
+}
 /** A copy writes only its last argument; its sources are read. */
 const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
 
@@ -122,9 +137,10 @@ const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
  * and is not a read-only command. Command substitution naming it counts, since its segments cannot be told apart.
  */
 function shellWritesContract(command: string) {
-  const text = loopVariablesResolved(withoutHeredocBodies(command).replace(/\d*>&\d/g, ''));
-  if (!namesContract(text)) return false;
-  if (/`|\$\(/.test(text)) return true;
+  const raw = loopVariablesResolved(withoutHeredocBodies(command).replace(/\d*>&\d/g, ''));
+  if (!namesContract(raw)) return false;
+  const text = substitutionsResolved(raw);
+  if (text === undefined || /`|\$\(/.test(text)) return true;
   return segments(text, '.').some(({ command: segment }) => {
     if ([...segment.matchAll(redirect)].some(match => namesContract(match[1]))) return true;
     const rest = segment.replace(redirect, '').replace(/^(?:\w+=\S*\s+)*/, '').trim().replace(controlPrefix, '');
