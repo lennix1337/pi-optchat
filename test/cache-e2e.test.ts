@@ -2,7 +2,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
@@ -208,6 +208,12 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
   }
 });
 
+/** Lines in the profile's memory log (`main/`) and summary nodes (`tree/`): how much of the chat has a built line. */
+function memoryCounts(name: string) {
+  const count = (sub: string) => { const dir = join(profilePath(name), sub); return existsSync(dir) ? readdirSync(dir).reduce((n, f) => n + readFileSync(join(dir, f), 'utf8').split(/\r?\n/).filter(Boolean).length, 0) : -1; };
+  return { entries: count('main'), nodes: count('tree') };
+}
+
 test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the view past the marks\' lookback still reads the view cached before it', { timeout: 300_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const { session, errors } = await piSession(anthropic, 'cache-reload-view', webTools);
@@ -222,7 +228,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const start = requests[from];
     const entriesFile = join(profilePath('cache-reload-view'), 'cache-entries.json');
     const beforeReload = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
-    const capturedAt = Date.now();
+    const capturedAt = Date.now(), memoryBefore = memoryCounts('cache-reload-view');
     await session.reload();
     const after = requests.length;
     await session.prompt('next question');
@@ -246,7 +252,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const before = beforeReload.previous?.chain ?? [], afterChain = afterReload.previous?.chain ?? [];
     let commonPrefix = 0;
     while (commonPrefix < Math.min(before.length, afterChain.length) && before[commonPrefix] === afterChain[commonPrefix]) commonPrefix++;
-    const evidence = JSON.stringify({ start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
+    const evidence = JSON.stringify({ memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
       liveBefore: at(afterReload, liveBefore), matchingAfter: at(afterReload, matchingAfter), beforeEntries: at(beforeReload, beforeReload.entries),
       afterEntries: at(afterReload, afterReload.entries), chainLengths: [before.length, afterChain.length], commonPrefix });
     // The scenario itself: the busy turn's ~320 messages must reach the post-reload view as ~80 more blocks. On that CI run they
