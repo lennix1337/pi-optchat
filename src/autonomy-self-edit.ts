@@ -47,19 +47,27 @@ export type SelfEdit = { ok: true; summary: string } | { ok: false; reason: stri
 
 /**
  * Judges a call that would change the profile's autonomy.json: an `edit` or `write` of exactly that file whose result
- * parses and leaves the operator's protected rules untouched is mine to make (logged and reported). Anything else
- * (shell writes, other files, an unparseable result) is not judged here and still waits for him.
+ * parses and leaves the operator's protected rules untouched is mine to make (logged and reported). A copy elsewhere
+ * (the dotfiles mirror) is judged the same way against the live contract, so restoring it cannot loosen what is his.
+ * Anything else (shell writes, other files, an unparseable result) is not judged here and still waits for him.
  */
 export function judgeSelfEdit(dir: string | undefined, call: { tool: string; input: unknown }): SelfEdit | undefined {
   if (!dir || (call.tool !== 'edit' && call.tool !== 'write')) return undefined;
   const input = call.input as Record<string, unknown> | null;
   if (!input || typeof input.path !== 'string') return undefined;
   const file = join(dir, 'autonomy.json');
-  if (!samePath(input.path, file)) return undefined;
-  let current: string;
+  const live = samePath(input.path, file);
+  if (!live && !/(?:^|[\\/])autonomy\.json$/i.test(input.path)) return undefined;
+  let current: string, edited: string;
   try { current = readFileSync(file, 'utf8'); } catch { return { ok: false, reason: 'autonomy.json is unreadable now' }; }
-  const text = resultingText(call.tool, input, current);
+  try { edited = live || call.tool === 'write' ? current : readFileSync(input.path, 'utf8'); } catch { return { ok: false, reason: 'the copy is unreadable now' }; }
+  const text = resultingText(call.tool, input, edited);
   if (text === undefined) return { ok: false, reason: 'the edit does not apply exactly once to the current file' };
+  return compareContracts(current, text, live ? 'self-edit' : `copy ${input.path}`);
+}
+
+/** The live contract text against the text a call would leave: protected rules untouched, or why not. */
+function compareContracts(current: string, text: string, label: string): SelfEdit {
   let before: Contract, after: Contract;
   try { before = parseContract(JSON.parse(current)); } catch (error) { return { ok: false, reason: `current autonomy.json is invalid (${String(error)})` }; }
   try { after = parseContract(JSON.parse(text)); } catch (error) { return { ok: false, reason: `the result would be invalid (${error instanceof Error ? error.message : String(error)})` }; }
@@ -68,5 +76,5 @@ export function judgeSelfEdit(dir: string | undefined, call: { tool: string; inp
   const added = after.rules.filter(r => !before.rules.some(b => JSON.stringify(b) === JSON.stringify(r)));
   const removed = before.rules.filter(r => !after.rules.some(a => JSON.stringify(a) === JSON.stringify(r)));
   const show = (r: Rule) => `${r.action} ${r.scope.join(',')} ${r.level}`;
-  return { ok: true, summary: `autonomy.json self-edit: +[${added.map(show).join('; ')}] -[${removed.map(show).join('; ')}]` };
+  return { ok: true, summary: `autonomy.json ${label}: +[${added.map(show).join('; ')}] -[${removed.map(show).join('; ')}]` };
 }

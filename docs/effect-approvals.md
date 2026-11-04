@@ -42,7 +42,9 @@ itself, never from the conversation, so a misread "sim" cannot widen it.
   `gh repo create|delete`, `release.ps1`/`publish.ps1`), `deploy`, `production-write`, `paid` (targets `subagent`
   or `model-run`; a local script whose source builds a model runtime or provider client counts as `model-run`),
   `discard` (hard reset, forced clean, branch -D, remote branch delete, `Invoke-PcMaintenance|WorktreeCleanup -Apply`
-  with targets `pc-maintenance` / `worktree-cleanup`), `recursive-delete`, `global-install`; `*` matches any.
+  with targets `pc-maintenance` / `worktree-cleanup`), `recursive-delete`, `global-install`, `process-kill`
+  (`taskkill`, `kill`, `pkill`/`killall`, `Stop-Process`, `wmic ... delete`; targets `pid:N`, `name:x` or `process`;
+  `kill -0`/`-l` only look); `*` matches any.
 - **Targets**: the working folder (`git -C`, the last `cd`, else cwd; lowercase, forward slashes), the GitHub
   `owner/repo` of the remote it uses (`--repo`/`-R`, the pushed remote, else `origin`, read with local git), or
   `ssh:<host>`. `scope` patterns use `*` as a wildcard; `*` alone matches everything.

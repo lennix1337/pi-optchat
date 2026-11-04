@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { judgeSelfEdit, selfEditViolations } from '../src/autonomy-self-edit.ts';
 import { parseContract } from '../src/autonomy.ts';
@@ -54,5 +54,22 @@ test('an edit of the profile autonomy.json runs by itself only when the result i
   assert.equal(judgeSelfEdit(dir, { tool: 'write', input: { path: file, content: '{' } })?.ok, false);
   assert.equal(judgeSelfEdit(dir, { tool: 'edit', input: { path: file, edits: [{ oldText: 'nope', newText: 'x' }] } })?.ok, false);
   assert.equal(judgeSelfEdit(dir, { tool: 'bash', input: { command: `echo {} > ${file}` } }), undefined);
-  assert.equal(judgeSelfEdit(dir, { tool: 'write', input: { path: join(dir, 'other', 'autonomy.json'), content: '{}' } }), undefined);
+  assert.equal(judgeSelfEdit(dir, { tool: 'write', input: { path: join(dir, 'other', 'autonomy.json'), content: '{}' } })?.ok, false);
+  assert.equal(judgeSelfEdit(dir, { tool: 'write', input: { path: join(dir, 'autonomy.json.md'), content: '{}' } }), undefined);
+});
+
+// 03/11 retro: mirroring the profile into dotfiles (payload/pi/.../autonomy.json) waited for the operator, though the
+// copy was byte-for-byte the live contract. A copy is judged against the live file: it may not loosen what is his.
+test('a copy of autonomy.json elsewhere runs by itself when its protected rules match the live contract', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'self-edit-'));
+  writeFileSync(join(dir, 'autonomy.json'), JSON.stringify(contract, null, 2));
+  const mirror = join(mkdtempSync(join(tmpdir(), 'dotfiles-')), 'payload', 'autonomy.json');
+  const same = judgeSelfEdit(dir, { tool: 'write', input: { path: mirror, content: JSON.stringify(contract, null, 2) } });
+  assert.equal(same?.ok, true);
+  assert.match(same?.ok ? same.summary : '', /copy/);
+  const loosened = { ...contract, rules: [{ action: 'deploy', scope: ['*'], level: 'free' }, ...contract.rules.slice(1)] };
+  assert.equal(judgeSelfEdit(dir, { tool: 'write', input: { path: mirror, content: JSON.stringify(loosened) } })?.ok, false);
+  writeFileSync(join(dirname(mirror), '..', 'autonomy.json'), JSON.stringify(contract, null, 2));
+  const edited = judgeSelfEdit(dir, { tool: 'edit', input: { path: join(dirname(mirror), '..', 'autonomy.json'), edits: [{ oldText: '"*/dist"', newText: '"*/dist",\n        "*/dist/*"' }] } });
+  assert.equal(edited?.ok, true);
 });
