@@ -130,8 +130,14 @@ export class ShellJobs {
 
 /** A /reload re-runs the extension in the same process, so running shells are handed to the reloaded OptChat instead of being stopped. */
 const HANDOFF = Symbol.for('pi-optchat.shell-handoff');
-/** Bump when ShellJobs' methods change: the reloaded code drives the old instance, so it adopts only one whose methods it knows. */
-const HANDOFF_VERSION = 1;
+/**
+ * Bump when ShellJobs' methods change meaning: the reloaded code drives the old instance, so it adopts only one whose
+ * methods it knows. A method added without a bump is still caught by `drivable` (2: settle() and its waiters, #107).
+ */
+const HANDOFF_VERSION = 2;
+/** Whether the reloaded code can drive an instance built by older code: it has every method of the current class. */
+const drivable = (jobs: ShellJobs) => Object.getOwnPropertyNames(ShellJobs.prototype)
+  .every(name => name === 'constructor' || typeof (jobs as unknown as Record<string, unknown>)[name] === 'function');
 interface ShellHandoff { version: number; profile: string; jobs: ShellJobs }
 const handoffStore = globalThis as Record<symbol, ShellHandoff | undefined>;
 /** Leaves the profile's shells running for the reloaded OptChat. Their ends are held until it sets a reporter. */
@@ -144,7 +150,7 @@ export function adoptShells(): { jobs: ShellJobs; profile: string } | undefined 
   const handoff = handoffStore[HANDOFF];
   delete handoffStore[HANDOFF];
   if (!handoff) return undefined;
-  if (handoff.version === HANDOFF_VERSION) return { jobs: handoff.jobs, profile: handoff.profile };
+  if (handoff.version === HANDOFF_VERSION && drivable(handoff.jobs)) return { jobs: handoff.jobs, profile: handoff.profile };
   void handoff.jobs.close(); // Its tasks settle their own errors, so close() does not reject.
   return undefined;
 }
