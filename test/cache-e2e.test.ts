@@ -169,7 +169,7 @@ async function piSession(anthropic: { url: string }, name: string, extra: (pi: E
   const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('anthropic', 'claude-sim'), resourceLoader: loader, settingsManager, sessionManager: manager });
   session.extensionRunner.setFlagValue('optchat-profile', name);
   const errors: string[] = [];
-  await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), notify: () => {} }, mode: 'print', onError: error => { errors.push(error.error); } });
+  await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), notify: (message: string, type?: string) => { if (type === 'error') errors.push(`notify: ${message}`); } }, mode: 'print', onError: error => { errors.push(error.error); } });
   return { session, errors };
 }
 
@@ -222,10 +222,12 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     await session.prompt('first question');
     // The first busy turn makes the view long; the second adds its 320 messages as about 80 blocks of lines, past the 20-block
     // lookback of every default mark.
+    const firstFrom = requests.length;
     await session.prompt('now get busy 160');
     const from = requests.length;
     await session.prompt('again get busy 160');
     const start = requests[from];
+    const busyRequests = [from - firstFrom, requests.length - from];
     const entriesFile = join(profilePath('cache-reload-view'), 'cache-entries.json');
     const beforeReload = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
     const capturedAt = Date.now(), memoryBefore = memoryCounts('cache-reload-view');
@@ -252,7 +254,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const before = beforeReload.previous?.chain ?? [], afterChain = afterReload.previous?.chain ?? [];
     let commonPrefix = 0;
     while (commonPrefix < Math.min(before.length, afterChain.length) && before[commonPrefix] === afterChain[commonPrefix]) commonPrefix++;
-    const evidence = JSON.stringify({ memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
+    const evidence = JSON.stringify({ busyRequests, errors, memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
       liveBefore: at(afterReload, liveBefore), matchingAfter: at(afterReload, matchingAfter), beforeEntries: at(beforeReload, beforeReload.entries),
       afterEntries: at(afterReload, afterReload.entries), chainLengths: [before.length, afterChain.length], commonPrefix });
     // The scenario itself: the busy turn's ~320 messages must reach the post-reload view as ~80 more blocks. On that CI run they
@@ -410,7 +412,7 @@ test('real Pi + OptChat on Anthropic\'s wire: a tool enabled mid-turn and a turn
     from = requests.length;
     await session.prompt('again get busy 160');
     const busy = requests.slice(from);
-    assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}`);
+    assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}; errors ${JSON.stringify(errors)}`);
     from = requests.length;
     await session.prompt('next question');
     const next = requests[from], start = busy[0];
