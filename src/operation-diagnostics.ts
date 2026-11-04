@@ -12,6 +12,9 @@ const separator = /^(?:&&|\|\||;|\|)$/;
 
 function diagnosticTokens(command: string): string[] | undefined {
   if (/[\r\n\0]/.test(command)) return undefined;
+  // `$?` expands to a number, never to code, and `; echo rc=$?` ends most inspections. Any other
+  // expansion, or `$?` glued to more word characters, still fails closed in the tokenizer below.
+  command = command.replace(/\$\?(?![\w?*\[])/g, '0');
   // Quoted operators stay literal; unsupported expansions, escapes, word concatenation and
   // redirects fail closed. Only `2>&1` and output to /dev/null may disappear from the token list.
   const token = /\s+|(?:2>&1|[12]?>\s*\/dev\/null)(?=$|[\s;&|])|&&|\|\||[;|]|"[^"$`\\\r\n]*"|'[^'\r\n]*'|[^\s"'&;|$`<>\\(){}#!]+/gy;
@@ -138,8 +141,36 @@ function readOnlyGit(words: Word[]): boolean {
     case 'worktree': return rest.length >= 1 && rest[0].value === 'list' && rest.slice(1).every(word => ['--porcelain', '-v', '--verbose'].includes(word.value));
     case 'remote': return rest.every(word => ['-v', '--verbose'].includes(word.value));
     case 'config': return readOnlyGitConfig(rest);
+    // Listing stashes; `--output` and the like are not accepted, only the subcommand and a count.
+    case 'stash': return rest.length >= 1 && rest[0].value === 'list' && rest.slice(1).every(word => ['--oneline', '--stat', '--no-color'].includes(word.value));
+    // `--upload-pack`/`-o` make ls-remote run a program or send options to the server.
+    case 'ls-remote': return rest.every(word => !word.value.startsWith('-') || ['--heads', '--tags', '--refs', '-q', '--quiet', '--symref'].includes(word.value));
     default: return false;
   }
+}
+
+// `find` can run (`-exec`, `-ok`), delete (`-delete`) or write (`-fprint`, `-fls`) on its own.
+const FIND_MUTATING = /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/;
+const readOnlyFind = (words: Word[]) => !words.some(word => FIND_MUTATING.test(word.value));
+
+// GitHub reads only, by allow-list: any flag not named here (`--web`, `--method`, `--field`, `--input`, ...)
+// refuses the whole command, as do subcommands that change a PR, a run, a release or an account.
+const GH_READS: Record<string, string[]> = {
+  pr: ['view', 'list', 'checks', 'diff', 'status'], run: ['list', 'view'], issue: ['view', 'list', 'status'], auth: ['status'],
+};
+const GH_FLAGS = new Set(['--json', '--jq', '-q', '--repo', '-R', '--limit', '-L', '--state', '-s', '--branch', '-b', '--author', '-A', '--label', '-l',
+  '--search', '-S', '--base', '--head', '--draft', '--comments', '-c', '--log', '--log-failed', '--job', '-j', '--name-only', '--patch', '--required', '--hostname', '--workflow', '-w']);
+function readOnlyGh(words: Word[]): boolean {
+  const rest = words.slice(1).map(word => word.value);
+  if (rest[0] === 'api') {
+    // A GET only: no method, body, field, header or input flag, and not the GraphQL endpoint (always POST).
+    const args = rest.slice(1);
+    const paths = args.filter((value, at) => !value.startsWith('-') && !['--jq', '-q'].includes(args[at - 1]));
+    return paths.length === 1 && paths[0] !== 'graphql' && args.every(value => !value.startsWith('-') || ['--jq', '-q', '--paginate'].includes(value));
+  }
+  if (!rest[0] || !GH_READS[rest[0]]?.includes(rest[1] ?? '')) return false;
+  // `-w` is `--web` on pr/issue (opens a browser) and `--workflow` only on `run list`.
+  return rest.slice(2).every(value => !value.startsWith('-') || GH_FLAGS.has(value) && !(value === '-w' && rest[0] !== 'run'));
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -195,9 +226,12 @@ function readOnlyWords({ words, piped }: Command): boolean {
     case 'uniq': return readOnlyUniq(words);
     case 'file': return readOnlyFile(words);
     case 'curl': return readOnlyCurl(words);
+    case 'date': return words.slice(1).every(word => word.value.startsWith('+') || ['-u', '--utc', '--universal'].includes(word.value));
+    case 'find': return readOnlyFind(words);
+    case 'gh': return readOnlyGh(words);
     // `tr` only reads stdin; as the first command there is nothing it could usefully inspect.
     case 'tr': return piped;
-    default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'cmp', 'od', 'stat', 'cut', 'nl', 'which', 'type', 'tasklist', 'netstat'].includes(name);
+    default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'cmp', 'od', 'stat', 'cut', 'nl', 'which', 'type', 'tasklist', 'netstat', 'ps'].includes(name);
   }
 }
 
