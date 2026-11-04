@@ -47,6 +47,10 @@ test('reading the contract is not changing it', () => {
   const mirror = 'C:/projetos/dotfiles/payload/pi/optchat/p/autonomy.json';
   assert.equal(touchesContract({ tool: 'bash', input: { command: `cd C:/projetos/dotfiles && git add ${mirror} && git commit -q -m "espelho" && git push origin main` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `git -C C:/projetos/dotfiles add payload/pi/optchat/p/autonomy.json` } }), false);
+  // ship.mjs commits and queues a PR like git does: a commit message that names the file only tells about it (04/11: 3 refusals).
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `cd C:/projetos/pi-optchat && node scripts/ship.mjs -m "Retro: ajusta o autonomy.json fora das regras protegidas" --all` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `node C:/projetos/pi-optchat/scripts/ship.mjs --pr 5 --body-file autonomy.json` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `cp x ${file} && node scripts/ship.mjs -m "espelho"` } }), true);
   // Writers still wait for the operator.
   assert.equal(touchesContract({ tool: 'bash', input: { command: `git checkout -- ${file}` } }), true);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `git add ${mirror} && cp x ${file}` } }), true);
