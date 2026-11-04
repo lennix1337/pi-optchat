@@ -39,6 +39,21 @@ test('every tool call is logged with its class, and failures keep the reason', (
   assert.match(b.detail, /boom/);
 });
 
+test('words in a finished command output do not make it a timeout, network error or refusal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  const end = (id: string, isError: boolean, text: string) => {
+    handlers.tool_execution_start({ toolCallId: id, toolName: 'bash', args: { command: id } });
+    handlers.tool_execution_end({ toolCallId: id, toolName: 'bash', isError, durationMs: 5, result: { content: [{ type: 'text', text }] } });
+  };
+  end('grep hit', false, 'src/a.ts:3: const timeout = 30; // timed out, ECONNRESET, Not executed: x, SIGTERM');
+  end('failing log', true, 'not ok 3 - handles timeout and socket hang up\nCommand exited with code 1');
+  end('killed by timeout', true, 'partial\nCommand exited with code 124');
+  end('real timeout', true, 'Command timed out after 60 seconds');
+  assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero', 'timeout', 'timeout']);
+});
+
 test('a background failure keeps the program stderr, not only the truncated command', () => {
   const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
   logBackgroundFailure(dir, 'PR watch', Object.assign(new Error('Command failed: gh api graphql -f query=...'), { code: 1, stderr: 'HTTP 502: Bad Gateway' }));
