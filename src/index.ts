@@ -42,7 +42,6 @@ import { registerWhatsAppBridge } from './whatsapp-bridge.ts';
 import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
-import { registerForegroundWaitGuard } from './foreground-wait.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerCommitHookGuard } from './commit-hook-guard.ts';
 import { registerMergeCiGuard } from './merge-ci-guard.ts';
@@ -145,9 +144,8 @@ export default function optchat(pi: ExtensionAPI) {
     catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
-  // First: a refused wait never ran, so it needs no approval and leaves no operation to journal.
-  registerForegroundWaitGuard(pi);
-  // So is a PowerShell script bash would rewrite first (`$_` inside double quotes).
+  // First: a PowerShell script bash would rewrite (`$_` inside double quotes) is refused before it runs, so it needs no
+  // approval and leaves no operation to journal. A foreground wait is not refused: the bash mover runs it as a shell (shells.ts).
   registerPowerShellQuotingGuard(pi);
   // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
   registerCommitHookGuard(pi);

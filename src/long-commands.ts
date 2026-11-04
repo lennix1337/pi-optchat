@@ -7,9 +7,15 @@
 
 /** A foreground bash call longer than this (seconds) is moved to a background shell. */
 export const LONG_COMMAND_SECONDS = 120;
+/**
+ * How long (seconds) a moved call still waits for its shell before returning the ID. Over 14 days of sessions
+ * (local-validation/performance/tool-waste/moves.mjs) 159 of 166 moved commands ended within 30 s, median 3.6 s; each
+ * then cost a "[shell ID]" message, polls or an ended turn to get the result a foreground call returns.
+ */
+export const LONG_COMMAND_GRACE_SECONDS = 30;
 
 /** What the bash tool's description says about the move, so the model reads the result as a shell ID. */
-export const LONG_COMMAND_NOTE = `Commands expected to run long (test suites, builds, dev servers, a timeout above ${LONG_COMMAND_SECONDS} s) are moved to a background shell: this call returns its ID at once, and the outcome arrives later as a "[shell ID]" message.`;
+export const LONG_COMMAND_NOTE = `Commands expected to run long (test suites, builds, dev servers, a timeout above ${LONG_COMMAND_SECONDS} s) or to wait (a sleep of 15 s or more, a polling loop, gh run watch) run as a background shell: one that ends within ${LONG_COMMAND_GRACE_SECONDS} s returns its output here as usual; one still running returns its shell ID, and the outcome arrives later as a "[shell ID]" message.`;
 
 const MAX_SHELL_DEPTH = 3;
 /** Commands that run another command: their argument is classified in its turn. */
