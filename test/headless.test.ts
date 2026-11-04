@@ -380,6 +380,13 @@ async function until(done: () => boolean, ms = 15_000) {
   for (const deadline = Date.now() + ms; !done() && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
 }
 
+/** What a missing shell report leaves behind, so a CI flake says where the report stopped instead of only "0 !== 1". */
+function reportDiagnostic(pi: { turns: string[]; notes: unknown[]; errors: unknown[] }, marker: string): string {
+  const pendingPath = join(profilePath('work'), 'pending-reports.json');
+  const pending = existsSync(pendingPath) ? readFileSync(pendingPath, 'utf8').slice(0, 1000) : 'missing';
+  return `; pending reports=${pending}; notes=${JSON.stringify(pi.notes.slice(-5)).slice(0, 1000)}; errors=${JSON.stringify(pi.errors).slice(0, 1000)}; requests=${pi.turns.length}, with marker=${pi.turns.filter(turn => turn.includes(marker)).length}; last request tail=${JSON.stringify(pi.turns.at(-1)?.slice(-300) ?? '')}`;
+}
+
 test('an ended background shell reaches the model once as its own message: between tool calls mid-turn, or as a new turn when idle', { timeout: 60_000 }, async () => {
   const idleIds: string[] = [], idle = await headless('rpc', { flag: 'work', connect: 'off', realTools: true, script: shellScript('idle', idleIds) });
   try {
@@ -423,9 +430,7 @@ test('a shell stopped with shell_stop reports the stop once, not as a failure', 
     if (reported.length !== 1) {
       await pi.ask('shell stop diagnostic');
       const status = pi.messages().findLast(message => message.role === 'toolResult' && message.toolName === 'shell_status');
-      const pendingPath = join(profilePath('work'), 'pending-reports.json');
-      const pending = existsSync(pendingPath) ? readFileSync(pendingPath, 'utf8').slice(0, 1000) : 'missing';
-      diagnostic = `; shell_status=${status?.role === 'toolResult' ? textContent(status.content).slice(0, 500) : 'missing'}; pending reports=${pending}; notes=${JSON.stringify(pi.notes.slice(-5)).slice(0, 1000)}; errors=${JSON.stringify(pi.errors).slice(0, 1000)}; marker requests after diagnostic=${pi.turns.filter(turn => turn.includes(marker)).length}`;
+      diagnostic = `; shell_status=${status?.role === 'toolResult' ? textContent(status.content).slice(0, 500) : 'missing'}${reportDiagnostic(pi, marker)}`;
     }
     assert.equal(reported.length, 1, `the stop is reported in one model request${diagnostic}`);
     assert.equal(reported[0].split(marker).length - 1, 1, 'once');
@@ -458,7 +463,7 @@ test('notify failure: a shell that fails is reported once; one that completes or
     const marker = `[shell ${failIds[0]}] `;
     await until(() => failing.turns.some(turn => turn.includes(marker)));
     const reported = failing.turns.filter(turn => turn.includes(marker));
-    assert.equal(reported.length, 1, 'the failure is reported in one model request');
+    assert.equal(reported.length, 1, `the failure is reported in one model request${reported.length === 1 ? '' : reportDiagnostic(failing, marker)}`);
     assert.match(reported[0], /\[shell [^\]]+\] failed · exit 3 · ran /);
     assert.match(reported[0], /fail-out/);
     assert.deepEqual(failing.errors, []);
