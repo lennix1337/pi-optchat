@@ -25,6 +25,16 @@ test('literal regex operators in quotes do not turn diagnostics into shell pipel
   }
 });
 
+test('a backslash before an ordinary character in double quotes is literal, as in bash', () => {
+  for (const command of [String.raw`grep -n "cleaner\|const DIRS" a.ts b.ts`, String.raw`grep -n "a\.b" file`, String.raw`cd C:/x && grep -c "C:\Users" file`]) {
+    assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
+  }
+  // \$, \`, \" and \\ keep their escaping meaning, so they stay refused with the other expansions.
+  for (const command of [String.raw`cat "\$HOME"`, String.raw`cat "a\"b"`, String.raw`cat "a\\b"`, String.raw`cat "\`touch x\`"`, String.raw`cat "a\|$(touch x)"`]) {
+    assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
+  }
+});
+
 test('plain rg is read-only only without executable configuration or helper flags', () => {
   const original = process.env.RIPGREP_CONFIG_PATH;
   try {

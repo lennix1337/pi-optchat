@@ -16,8 +16,9 @@ function diagnosticTokens(command: string): string[] | undefined {
   // expansion, or `$?` glued to more word characters, still fails closed in the tokenizer below.
   command = command.replace(/\$\?(?![\w?*\[])/g, '0');
   // Quoted operators stay literal; unsupported expansions, escapes, word concatenation and
-  // redirects fail closed. Only `2>&1` and output to /dev/null may disappear from the token list.
-  const token = /\s+|(?:2>&1|[12]?>\s*\/dev\/null)(?=$|[\s;&|])|&&|\|\||[;|]|"[^"$`\\\r\n]*"|'[^'\r\n]*'|[^\s"'&;|$`<>\\(){}#!]+/gy;
+  // redirects fail closed. In double quotes a backslash before any other character stays literal (bash
+  // keeps it); before `$`, a backtick, `"` or `\` it escapes, which the pattern still refuses. Only `2>&1` and output to /dev/null may disappear from the token list.
+  const token = /\s+|(?:2>&1|[12]?>\s*\/dev\/null)(?=$|[\s;&|])|&&|\|\||[;|]|"(?:[^"$`\\\r\n]|\\[^"$`\\\r\n])*"|'[^'\r\n]*'|[^\s"'&;|$`<>\\(){}#!]+/gy;
   const tokens: string[] = [];
   let adjacent = false;
   for (let offset = 0; offset < command.length;) {
