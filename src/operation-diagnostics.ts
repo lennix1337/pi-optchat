@@ -212,6 +212,42 @@ function readOnlyCurl(words: Word[]): boolean {
   return url !== undefined && (skipsConfig || !curlrc()) && loopbackUrl(url);
 }
 
+// PowerShell inspections: `-NoProfile [-NonInteractive] -Command '<script>'` where every command is an allow-listed
+// read cmdlet. Aliases (`kill`, `del`, `iex`, `%`), `&`, dot-sourcing, redirects, method calls, static members and
+// subexpressions inside strings are refused, so the script cannot start, stop, write or evaluate anything.
+const PS_CMDLETS = new Set(['get-ciminstance', 'get-process', 'get-service', 'get-content', 'get-childitem', 'get-item', 'get-itemproperty', 'get-date',
+  'get-nettcpconnection', 'test-path', 'select-string', 'where-object', 'foreach-object', 'select-object', 'sort-object', 'group-object', 'measure-object',
+  'format-table', 'format-list', 'convertto-json', 'convertfrom-json', 'out-string', 'write-output', 'write-host']);
+const PS_OPTIONS = new Set(['-noprofile', '-noninteractive', '-nologo']);
+
+function readOnlyPowerShellScript(script: string): boolean {
+  if (script.length > 2000 || /[\x00-\x1f]/.test(script)) return false;
+  let bad = false;
+  // Strings become \u0001, opaque to the scan below, so a double-quoted one must not hide `$(...)`.
+  const code = script.replace(/'(?:[^']|'')*'|"(?:[^"`]|"")*"/g, (text) => {
+    if (text.startsWith('"') && /\$[({]/.test(text)) bad = true;
+    return '\u0001';
+  });
+  if (bad || /['"`<>&?]|::/.test(code) || /\.\s*[\w$]*\s*\(/.test(code) || /\.\s*[$(\[@\u0001]/.test(code)) return false;
+  // Every place a command can start: the script, and after `|`, `;`, `{`, `(` or `=`.
+  const slots = [0];
+  for (let at = 0; at < code.length; at++) if ('|;{(='.includes(code[at])) slots.push(at + 1);
+  for (const slot of slots) {
+    const start = slot + (/^\s*/.exec(code.slice(slot))![0].length), first = code[start];
+    if (first === undefined || /[$@\[\d\-{}()|;=\u0001]/.test(first)) continue;
+    if (!PS_CMDLETS.has(/[\w.-]*/.exec(code.slice(start))![0].toLowerCase())) return false;
+  }
+  return true;
+}
+
+function readOnlyPowerShell(words: Word[]): boolean {
+  let at = 1;
+  while (PS_OPTIONS.has(words[at]?.value.toLowerCase())) at++;
+  const flag = words[at]?.value.toLowerCase();
+  const script = words[at + 1];
+  return (flag === '-command' || flag === '-c') && !!script?.quoted && words.length === at + 2 && readOnlyPowerShellScript(script.value);
+}
+
 function readOnlyWords({ words, piped }: Command): boolean {
   const name = words[0].value;
   // Beyond the long-standing set below, an unquoted glob could expand to an option.
@@ -230,6 +266,7 @@ function readOnlyWords({ words, piped }: Command): boolean {
     case 'date': return words.slice(1).every(word => word.value.startsWith('+') || ['-u', '--utc', '--universal'].includes(word.value));
     case 'find': return readOnlyFind(words);
     case 'gh': return readOnlyGh(words);
+    case 'powershell': case 'powershell.exe': case 'pwsh': case 'pwsh.exe': return readOnlyPowerShell(words);
     // `tr` only reads stdin; as the first command there is nothing it could usefully inspect.
     case 'tr': return piped;
     default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'cmp', 'od', 'stat', 'cut', 'nl', 'which', 'type', 'tasklist', 'netstat', 'ps'].includes(name);
