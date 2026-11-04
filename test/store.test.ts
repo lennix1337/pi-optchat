@@ -1,6 +1,6 @@
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -170,3 +170,20 @@ test('a timed log past its size keeps only the records younger than the window, 
   appendRecent(file, { at: 100 }, 10, 40);
   assert.deepEqual(readJsonl<{ at: number }>(file, () => true).map(e => e.at), [90, 100], 'past the cap: old records and the torn line go');
 }));
+
+test('FileStore: a message text is read back from its line, loaded or appended, with accents intact, and a moved line is refused', () => {
+  const dir = temp();
+  try {
+    const first = new FileStore(dir); first.load(); first.append(entry(0, 'já carregada')); first.append(entry(1, 'segunda'));
+    const store = new FileStore(dir); store.load();
+    store.append(entry(2, 'acrescentada ção'));
+    assert.equal(store.reader(0)?.(), 'já carregada');
+    assert.equal(store.reader(1)?.(), 'segunda');
+    assert.equal(store.reader(2)?.(), 'acrescentada ção');
+    assert.equal(store.reader(3), undefined);
+    const swapped = new FileStore(dir); swapped.load();
+    const file = join(dir, 'main', `${localDay()}.jsonl`);
+    writeFileSync(file, readFileSync(file, 'utf8').replace('"i":1', '"i":7'));
+    assert.throws(() => swapped.reader(1)!(), /no longer where it was/);
+  } finally { removeDir(dir); }
+});

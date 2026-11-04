@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Memory, cap, CAP, start, end, bytes, mostDue, COLD_LONG_MS, COLD_MS, type Compression, type Part } from '../src/memory.ts';
+import { Memory, cap, CAP, start, end, bytes, mostDue, COLD_LONG_MS, COLD_MS, HOT_TEXTS, type Compression, type Part } from '../src/memory.ts';
 import { appendJson, FileStore, localDay } from '../src/store.ts';
 import { lockProfile } from '../src/profiles.ts';
 import { splitView, cachePayload, coldAfter, prefixRetention, ViewEntries } from '../src/cache.ts';
@@ -1161,5 +1161,29 @@ test('a call is summarized with its result, and the code sets each summary kind'
     memory.append('tool', big('last call'));
     await memory.settle(AbortSignal.timeout(2000));
     assert.ok(memory.ready, 'a turn does not wait for a result that has not come');
+  } finally { await memory.close(); removeDir(dir); }
+});
+
+test('old summarized messages keep their text on disk, not in RAM, and still zoom, search and serialize whole', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-cold-'));
+  const total = HOT_TEXTS + 40, text = (i: number) => `Original ${i}: memória ${'x'.repeat(i % 7)}`;
+  const line = (value: object) => `${JSON.stringify(value)}
+`, date = '2026-10-09T12:00:00.000Z';
+  mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
+  writeFileSync(join(dir, 'main', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ i, kind: 'user', text: text(i), size: 0, date })).join(''));
+  writeFileSync(join(dir, 'tree', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ l: 0, i, text: `user: ${text(i)}`, size: 0 })).join(''));
+  const memory = new Memory(dir, async input => input.source.slice(0, 60), () => {}, 4000);
+  try {
+    const held = (i: number) => Object.getOwnPropertyDescriptor(memory.root[i], 'text')?.writable === true;
+    assert.equal(held(0), false);
+    assert.equal(held(total - HOT_TEXTS - 1), false);
+    assert.equal(held(total - HOT_TEXTS), true);
+    assert.equal(memory.root[5].text, text(5));
+    assert.equal(memory.zoom(5, 1), `5+1|user: ${text(5)}`);
+    assert.deepEqual(memory.search('Original 17:').map(e => e.i), [17]);
+    assert.equal(JSON.parse(JSON.stringify(memory.root[9])).text, text(9));
+    memory.append('talk', 'one more');
+    assert.equal(held(total - HOT_TEXTS), false);
+    assert.equal(memory.root[total - HOT_TEXTS].text, text(total - HOT_TEXTS));
   } finally { await memory.close(); removeDir(dir); }
 });

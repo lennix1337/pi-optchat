@@ -35,6 +35,8 @@ const UNBUILT_BYTES = bytes(UNBUILT);
 /** The most of a tool result a call's summary task shows. */
 const RESULT = 12_000;
 /** Bound repeated-search caching to eight queries and 20,000 message indexes; broad and long queries are not retained. */
+/** The newest messages keep their text in RAM; older summarized ones are read back from the store when asked for. */
+export const HOT_TEXTS = 2048;
 const SEARCH_CACHE_QUERIES = 8;
 const SEARCH_CACHE_HITS = 20_000;
 const SEARCH_CACHE_QUERY_CHARS = 256;
@@ -192,6 +194,7 @@ export class Memory {
     this.loadTree(saved.tree);
     for (const node of this.tree.values()) this.queueParent(node);
     for (let i = 0; i < this.root.length; i++) if (!this.node({ l: 0, i })) this.unbuilt.add(i);
+    for (let i = 0; i < this.root.length - HOT_TEXTS; i++) this.chill(i);
     // Refolding the log gives a different view than the live one, and every cache entry would miss, so the view is saved.
     const loaded = this.load(saved.view);
     for (const part of this.view) this.compaction.push(part);
@@ -244,8 +247,15 @@ export class Memory {
       this.failed ??= error instanceof Error ? error.message : String(error);
       this.warn(`Memory could not be saved: ${this.failed}`);
     });
-    this.root.push(entry); this.push(entry.i); if (this.fit()) this.save(); this.schedule();
+    this.root.push(entry); this.push(entry.i); this.chill(entry.i - HOT_TEXTS); if (this.fit()) this.save(); this.schedule();
     return entry;
+  }
+  /** Drops a summarized message's text from RAM when the store can read it back: the entry keeps a `text` that reads it. */
+  private chill(i: number) {
+    const entry = this.root[i];
+    if (!entry || !this.node({ l: 0, i }) || !Object.getOwnPropertyDescriptor(entry, 'text')?.writable) return;
+    const read = this.store.reader?.(i);
+    if (read) Object.defineProperty(entry, 'text', { get: read, enumerable: true, configurable: true });
   }
   node(part: Part) { return this.tree.get(key(part)); }
   /** Explicitly reset a policy-refused node; normal appends never clear this terminal block. */
