@@ -7,6 +7,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { classifyEffects, decide, parseContract, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { touchesContract } from '../src/authorization.ts';
+import { ADVISOR_PROMPT } from '../src/effect-advisor.ts';
 
 /** Checkouts by path, without git: slug and current branch. */
 const repos: Record<string, [string, string]> = {
@@ -388,4 +389,29 @@ test("an ask rule runs when the operator's typed order covers it, and says so; w
     assert.deepEqual(log.map(entry => [entry.action, entry.rule]), [['merge', 'operator order 86455'], ['merge', 'operator order 86455'], ['deploy', 'operator order 86455'], ['deploy', 'operator order 86455']], 'one line per merge and per deploy run');
     assert.ok(notices.some(text => /operator order 86455/.test(text)));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 03/11: asked only "what are these python processes, why so much CPU" and "can Beatriz's dev server be optimized",
+// the agent killed both with taskkill. No gate saw it: a kill was not an effect, so the advisor never weighed it.
+test('the 03/11 kills are process-kill effects with the processes they stop', () => {
+  assert.deepEqual(effects('for p in 6584 33888; do taskkill //PID $p //F >/dev/null 2>&1; echo "$p rc=$?"; done'), ['process-kill pid:$p']);
+  assert.deepEqual(effects('taskkill //PID 33856 //T //F 2>&1 | tail -5; echo rc=$?'), ['process-kill pid:33856']);
+  assert.deepEqual(effects('taskkill /F /IM python.exe /PID 12'), ['process-kill pid:12,name:python.exe']);
+  assert.deepEqual(effects('kill -9 4242 4343'), ['process-kill pid:4242,pid:4343']);
+  assert.deepEqual(effects('pkill -f "next dev"'), ['process-kill name:next dev']);
+  assert.deepEqual(effects('killall node'), ['process-kill name:node']);
+  assert.deepEqual(effects('powershell -NoProfile -Command "Stop-Process -Id 40652 -Force"'), ['process-kill pid:40652']);
+  assert.deepEqual(effects('pwsh -c "Get-Process python | Stop-Process"'), ['process-kill process']);
+  assert.deepEqual(effects('wmic process where "name=\'python.exe\'" delete'), ['process-kill process']);
+});
+
+test('looking at processes is not a kill', () => {
+  for (const command of ['kill -0 4242', 'kill -l', 'kill -s 0 4242', 'tasklist /FI "PID eq 5"', 'powershell -c "Get-Process node"',
+    'netstat -ano | grep 3100', 'wmic process get ProcessId,CommandLine', 'echo taskkill', 'grep -n taskkill src/x.ts'])
+    assert.deepEqual(effects(command), [], command);
+});
+
+test('the advisor weighs a kill against what the operator asked', () => {
+  assert.match(ADVISOR_PROMPT, /stops a process the agent did not start/);
+  assert.match(ADVISOR_PROMPT, /only asked what it is or why it uses CPU or memory/);
 });

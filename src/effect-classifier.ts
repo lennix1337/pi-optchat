@@ -3,7 +3,7 @@ import { browserConsentEffect, commandExternalEffects } from './external-effects
 
 /** High-impact effects the autonomy contract decides on. */
 export const ACTIONS = ['push', 'push-main', 'force-push', 'merge', 'publish', 'deploy', 'production-write', 'paid',
-  'discard', 'recursive-delete', 'global-install', 'message', 'consent', 'merge-bypass'] as const;
+  'discard', 'recursive-delete', 'global-install', 'message', 'consent', 'merge-bypass', 'process-kill'] as const;
 /**
  * Effects that cannot be taken back once they reach the world: without a rule of the operator's own in autonomy.json
  * they always wait for him; the advisor never decides them.
@@ -132,6 +132,27 @@ function recursiveDelete(args: string[], dir: string): string[] | undefined {
   return !targets.length || !targets.every(target => tempDir.test(target)) ? targets : undefined;
 }
 
+/**
+ * The processes `taskkill`, `kill`, `pkill`, `killall`, `Stop-Process` or `wmic ... delete` stop, as `pid:N` / `name:x`
+ * (`process` when a pipe picks them). `kill -0`, `kill -l` and `kill -s 0` only look: undefined.
+ */
+function processKill(lower: string, args: string[]): string[] | undefined {
+  const after = (flag: RegExp) => args.flatMap((arg, i) => flag.test(arg) && args[i + 1] !== undefined ? args[i + 1].split(',') : []);
+  const found = (targets: string[]) => targets.length ? targets : ['process'];
+  if (lower === 'taskkill') return found([...after(/^\/{1,2}pid$/i).map(p => `pid:${p}`), ...after(/^\/{1,2}im$/i).map(n => `name:${n.toLowerCase()}`)]);
+  if (lower === 'stop-process' || lower === 'spps') {
+    const named = [...after(/^-id$/i).map(p => `pid:${p}`), ...after(/^-(?:name|processname)$/i).map(n => `name:${n.toLowerCase()}`)];
+    return found(named.length ? named : args.filter(arg => /^\d+$/.test(arg)).map(p => `pid:${p}`));
+  }
+  if (lower === 'kill') {
+    if (args.some((arg, i) => /^-(?:l|L|0|-list)$/.test(arg) || (/^-[sn]$/.test(arg) && args[i + 1] === '0'))) return;
+    return found(args.filter((arg, i) => !arg.startsWith('-') && !/^-[sn]$/.test(args[i - 1] ?? '')).map(p => `pid:${p.toLowerCase()}`));
+  }
+  if (lower === 'pkill' || lower === 'killall') return found(args.filter(arg => !arg.startsWith('-')).map(n => `name:${n.toLowerCase()}`));
+  if (lower === 'wmic' && args.some(arg => /^(?:delete|terminate)$/i.test(arg)) && args.some(arg => /^process$/i.test(arg))) return ['process'];
+  return undefined;
+}
+
 function repoTargets(path: string, repo: Repo, args: string[], remote?: string) {
   const at = args.findIndex(arg => arg === '-R' || arg === '--repo' || arg.startsWith('--repo='));
   const named = at < 0 ? undefined : args[at].startsWith('--repo=') ? args[at].slice(7) : args[at + 1];
@@ -230,6 +251,8 @@ function toolEffects(w: string[], lower: string, dir: string, repo: Repo): Effec
   if ((tool === 'docker' && (toolArgs[0] === 'push' || (toolArgs[0] === 'image' && toolArgs[1] === 'push'))) || (tool === 'kubectl' && /^(?:apply|rollout)$/.test(toolArgs[0] ?? '')))
     return [{ action: 'deploy', targets: [dir] }];
   if (lower === 'pi' && args.some(arg => arg === '-p' || arg === '--print')) return [{ action: 'paid', targets: ['model-run'] }];
+  const killed = processKill(lower, args);
+  if (killed) return [{ action: 'process-kill', targets: killed }];
   const deleted = /^(?:rm|remove-item|ri|rmdir|rd)$/.test(lower) ? recursiveDelete(args, dir) : undefined;
   return deleted ? [{ action: 'recursive-delete', targets: deleted.length ? deleted : [dir] }] : [];
 }
