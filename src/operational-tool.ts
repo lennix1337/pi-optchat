@@ -19,8 +19,16 @@ function checkSource(memory: Memory, update: OperationalUpdate): OperationalUpda
   if (source.kind !== 'user' || source.origin)
     throw new Error('Authorization/constraint records require a direct non-imported user source; historical records grant no permission');
   if (update.text !== source.text)
-    throw new Error('Authorization/constraint text must exactly quote the entire user source, not an interpreted or partial permission');
+    throw new Error(`Authorization/constraint text must exactly quote the entire user source, not an interpreted or partial permission. ${quoteHint(update.text, source.text)}`);
   return update;
+}
+
+/** Where the text stops matching the source, with the source around that point, so one retry can quote it exactly. */
+function quoteHint(text: string, source: string): string {
+  let at = 0;
+  while (at < text.length && text[at] === source[at]) at++;
+  const from = Math.max(0, at - 40);
+  return `Source is ${source.length} characters, yours ${text.length}; first difference at character ${at + 1}: source reads ${JSON.stringify(source.slice(from, at + 80))}`;
 }
 
 /** The new record and the count, not the whole document: echoing every record on each update cost tens of KB per call. */
