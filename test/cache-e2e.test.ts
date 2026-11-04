@@ -228,6 +228,9 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     await session.prompt('again get busy 160');
     const start = requests[from];
     const busyRequests = [from - firstFrom, requests.length - from];
+    // A provider call that fails ends a busy turn early without a simulated rejection: keep Pi's own reason for it.
+    const turnErrors = session.messages.flatMap(m => m.role === 'assistant' && m.stopReason !== 'toolUse' && m.stopReason !== 'stop'
+      ? [`${m.stopReason}: ${String(m.errorMessage ?? '').slice(0, 200)}`] : []);
     const entriesFile = join(profilePath('cache-reload-view'), 'cache-entries.json');
     const beforeReload = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
     const capturedAt = Date.now(), memoryBefore = memoryCounts('cache-reload-view');
@@ -254,7 +257,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const before = beforeReload.previous?.chain ?? [], afterChain = afterReload.previous?.chain ?? [];
     let commonPrefix = 0;
     while (commonPrefix < Math.min(before.length, afterChain.length) && before[commonPrefix] === afterChain[commonPrefix]) commonPrefix++;
-    const evidence = JSON.stringify({ busyRequests, errors, memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
+    const evidence = JSON.stringify({ busyRequests, turnErrors, errors, memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
       liveBefore: at(afterReload, liveBefore), matchingAfter: at(afterReload, matchingAfter), beforeEntries: at(beforeReload, beforeReload.entries),
       afterEntries: at(afterReload, afterReload.entries), chainLengths: [before.length, afterChain.length], commonPrefix });
     // The scenario itself: the busy turn's ~320 messages must reach the post-reload view as ~80 more blocks. On that CI run they
