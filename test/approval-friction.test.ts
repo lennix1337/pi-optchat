@@ -43,7 +43,13 @@ test('reading the contract is not changing it', () => {
   assert.equal(touchesContract({ tool: 'bash', input: { command: `node --import tsx -e "JSON.parse(require('fs').readFileSync('${file}','utf8'))"` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `node --import tsx -e "require('fs').writeFileSync('${file}','{}')"` } }), true);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({command:"cat ${file}"})` } }), false);
+  // Staging and committing a copy only records it (03/11: the dotfiles mirror commit waited for an approval).
+  const mirror = 'C:/projetos/dotfiles/payload/pi/optchat/p/autonomy.json';
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `cd C:/projetos/dotfiles && git add ${mirror} && git commit -q -m "espelho" && git push origin main` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `git -C C:/projetos/dotfiles add payload/pi/optchat/p/autonomy.json` } }), false);
   // Writers still wait for the operator.
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `git checkout -- ${file}` } }), true);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `git add ${mirror} && cp x ${file}` } }), true);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `find ~/.optchat -name autonomy.json -delete` } }), true);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `sed -i s/a/b/ ${file}` } }), true);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({command:"cp x ${file}"})` } }), true);

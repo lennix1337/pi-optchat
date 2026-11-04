@@ -79,7 +79,8 @@ const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'conta
   // Messages and records: a Slack report or a commitment that names the file only tells about it (false positive 2026-10-30).
   'slack_send', 'commitments', 'update_goal']);
 // `find` reads unless it deletes, runs or writes (`-delete`, `-exec`, `-fprint`); `sed -n` without `-i` prints.
-const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|realpath|readlink|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|Resolve-Path|find(?![^;&|\n]*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)|sed\s+-n(?![^;&|\n]*\s-i)|git\s+(?:grep|log|diff|show|status|blame|ls-files))\b/i;
+// `git add/commit/push` record the working-tree file without writing it (03/11: the dotfiles mirror commit waited).
+const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|realpath|readlink|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|Resolve-Path|find(?![^;&|\n]*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)|sed\s+-n(?![^;&|\n]*\s-i)|git\s+(?:-C\s+\S+\s+)?(?:grep|log|diff|show|status|blame|ls-files|add|commit|push))\b/i;
 /** Shell control words in front of a segment's command: `for f in a b` only lists words, `do`/`then` precede the real command. */
 const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
 const loopHeader = /^for\s+\w+\s+in\b/;
