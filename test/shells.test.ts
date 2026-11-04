@@ -125,6 +125,23 @@ test('a handed-off shell keeps running, its end waits for the next reporter, and
   await jobs.close();
 });
 
+test('a handoff from code whose ShellJobs lacks a current method is stopped, not adopted', async () => {
+  // Before #107 the version stayed 1 while ShellJobs gained settle(), so the reloaded mover called a missing method.
+  const store = globalThis as Record<symbol, unknown>, current = new ShellJobs();
+  let closed = 0;
+  const old = Object.create(null) as Record<string, unknown>;
+  for (const name of Object.getOwnPropertyNames(ShellJobs.prototype)) {
+    if (name !== 'constructor' && name !== 'settle') old[name] = (current as unknown as Record<string, unknown>)[name];
+  }
+  old.close = async () => { closed++; };
+  handOffShells(current, 'main');
+  const handoff = store[Symbol.for('pi-optchat.shell-handoff')] as { jobs: unknown };
+  handoff.jobs = old;
+  assert.equal(adoptShells(), undefined, 'an instance missing settle() is not driven by the reloaded code');
+  assert.equal(closed, 1, 'its shells are stopped, as before handoffs existed');
+  assert.equal(adoptShells(), undefined);
+});
+
 test('retention bounds finished history without dropping active executions', () => {
   const jobs = new ShellJobs(); jobs.begin('active', 'server', '.', 'foreground');
   for (let i = 0; i < 70; i++) { jobs.begin(`job-${i}`, 'echo', '.', 'foreground'); jobs.end(`job-${i}`, 'done', false); }
