@@ -13,8 +13,15 @@ const date = new Date().toISOString().slice(0, 10);
 const read = (sub) => readFileSync(join(dir, sub, `${date}.jsonl`), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const msgs = new Map(read('main').map((m) => [m.i, m]));
 const sources = new Map([...msgs].map(([i, m]) => [i, m.text]));
-// Same allowance as the compactor (compactor.ts `own`): the message's own id, and for a result its call's text and id.
-const allowed = (i) => { const call = msgs.get(i)?.kind === 'echo' ? msgs.get(i - 1) : undefined; return [sources.get(i), String(i), call?.kind === 'tool' ? call.text : '', call?.kind === 'tool' ? String(call.i) : '']; };
+const kind = (i) => msgs.get(i)?.kind;
+// Calls and results pair by position within a batch, as Memory.resultOf/callOf do.
+const resultOf = (i) => { let first = i, last = i; while (kind(first - 1) === 'tool') first--; while (kind(last + 1) === 'tool') last++; const j = last + 1 + i - first; return kind(j) === 'echo' ? msgs.get(j) : undefined; };
+const callOf = (i) => { let results = i; while (kind(results - 1) === 'echo') results--; let calls = results; while (kind(calls - 1) === 'tool') calls--; const j = calls + i - results; return j < results && kind(j) === 'tool' ? msgs.get(j) : undefined; };
+// Same allowance as the compactor (compactor.ts `own`): the message's own id; a call also sees its result, a result its call's text and id.
+const allowed = (i) => {
+  const result = kind(i) === 'tool' ? resultOf(i) : undefined, call = kind(i) === 'echo' ? callOf(i) : undefined;
+  return [sources.get(i), String(i), result?.text ?? '', call?.text ?? '', call ? String(call.i) : ''];
+};
 const leaves = new Map();
 for (const l of read('tree')) if (l.l === 0 && l.i >= +from && sources.has(l.i)) leaves.set(l.i, l); // later entries win
 const rows = [...leaves.values()].map((l) => ({ i: l.i, ids: foreignIds(l.text, allowed(l.i)) }));
