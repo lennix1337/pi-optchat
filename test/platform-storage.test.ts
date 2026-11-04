@@ -26,6 +26,35 @@ test('a failed file flush preserves the previous state and a subsequent write re
   } finally { mock.restoreAll(); syncBuiltinESMExports(); removeDir(dir); }
 });
 
+const windowsLock = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+
+test('on Windows a rename refused while another process briefly holds the file is retried, and a lasting refusal still fails', { skip: process.platform !== 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oc-rename-'));
+  const realRename = fs.renameSync;
+  try {
+    const file = join(dir, 'state.json');
+    atomicWrite(file, 'previous committed value');
+    // Defender or the indexer opens a just-written file without delete sharing: rename then fails with EPERM/EACCES/EBUSY for a moment.
+    let refusals = 0;
+    mock.method(fs, 'renameSync', (from: string, to: string) => {
+      if (refusals < 3) { refusals++; throw windowsLock(['EPERM', 'EACCES', 'EBUSY'][refusals - 1]); }
+      return realRename(from, to);
+    });
+    syncBuiltinESMExports();
+    atomicWrite(file, 'replacement');
+    assert.equal(refusals, 3);
+    assert.equal(readFileSync(file, 'utf8'), 'replacement');
+    assert.deepEqual(readdirSync(dir), ['state.json']);
+    mock.restoreAll();
+    mock.method(fs, 'renameSync', () => { throw windowsLock('EPERM'); });
+    syncBuiltinESMExports();
+    const started = Date.now();
+    assert.throws(() => atomicWrite(file, 'never committed'), (error: NodeJS.ErrnoException) => error.code === 'EPERM');
+    assert.ok(Date.now() - started < 5_000, 'the retry is bounded');
+    assert.equal(readFileSync(file, 'utf8'), 'replacement');
+  } finally { mock.restoreAll(); syncBuiltinESMExports(); removeDir(dir); }
+});
+
 test('a profile lock is released by the OS when its owning process is killed', { timeout: 20_000 }, async () => {
   // macOS's default TMPDIR can exceed the Unix socket path limit.
   const dir = mkdtempSync(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'oc-crash-'));

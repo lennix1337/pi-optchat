@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Entry, Summary } from './memory.ts';
@@ -78,14 +78,30 @@ export function appendJsonl<T>(file: string, value: T, maxBytes: number, keep: (
 export const appendRecent = <T extends { at: number }>(file: string, value: T, maxBytes: number, keepMs: number) =>
   appendJsonl<T>(file, value, maxBytes, e => e.at >= value.at - keepMs);
 
+const WINDOWS_LOCKS = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_MS = 2_000;
+/** Windows refuses a rename for a moment while another process (Defender, the indexer) holds the destination without delete
+ * sharing. Retry that refusal for up to RENAME_RETRY_MS, as graceful-fs does; a lasting one is thrown and the temporary removed. */
+function renameRetryingWindowsLocks(temporary: string, file: string) {
+  const started = Date.now();
+  for (let wait = 10; ; wait = Math.min(wait * 2, 200)) {
+    try { renameSync(temporary, file); return; } catch (error) {
+      if (!WINDOWS_LOCKS.has((error as NodeJS.ErrnoException).code ?? '') || Date.now() - started >= RENAME_RETRY_MS) {
+        try { rmSync(temporary, { force: true }); } catch { /* the rename error is the one to report */ }
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    }
+  }
+}
 export function atomicWrite(file: string, text: string | Uint8Array) {
   mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
   // One read-write handle: Windows refuses fsync on a read-only one, and it cannot open a directory at all, so there the file flush is the whole guarantee.
   const fd = openSync(temporary, 'w+', 0o600);
   try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(temporary, file);
-  if (process.platform === 'win32') return;
+  if (process.platform !== 'win32') renameSync(temporary, file);
+  else { renameRetryingWindowsLocks(temporary, file); return; }
   const parent = openSync(resolve(file, '..'), 'r');
   try { fsyncSync(parent); } finally { closeSync(parent); }
 }
