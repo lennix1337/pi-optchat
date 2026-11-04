@@ -64,9 +64,15 @@ test('output_read overflow errors give the valid scope and a continuation', () =
   const store = new OutputStore(mkdtempSync(join(tmpdir(), 'optchat-retrieval-output-')), 'session');
   try {
     const lines = store.put(Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n'));
-    assert.throws(() => store.query(lines, { kind: 'lines', startLine: 1, endLine: 201 }),
-      /Invalid line range: use 1-based startLine <= endLine, at most 200 lines per query/);
-    assert.throws(() => store.query(lines, { kind: 'lines', startLine: 290, endLine: 310 }),
+    // Oversize and past-the-end ranges are clamped, and the header names the range actually returned.
+    const wideRange = store.query(lines, { kind: 'lines', startLine: 1, endLine: 201 });
+    assert.ok(wideRange.includes('[Lines 1-200 of 300; 1-based inclusive]'));
+    assert.ok(wideRange.includes('\n1: line 1\n2: line 2'));
+    assert.ok(wideRange.endsWith('200: line 200'));
+    const pastEnd = store.query(lines, { kind: 'lines', startLine: 290, endLine: 310 });
+    assert.ok(pastEnd.includes('[Lines 290-300 of 300; 1-based inclusive]'));
+    assert.ok(pastEnd.endsWith('300: line 300'));
+    assert.throws(() => store.query(lines, { kind: 'lines', startLine: 301, endLine: 301 }),
       /Line range exceeds output length \(300 lines\); use endLine 300 or less/);
     const wide = store.put('é'.repeat(30_000));
     assert.throws(() => store.query(wide, { kind: 'lines', startLine: 1, endLine: 1 }),
