@@ -155,3 +155,16 @@ test('choices: a waiting item carries the answers the Home offers; an empty list
     assert.throws(() => updateCommitment(dir, { id: item.id, choices: ['a', 'b', 'c', 'd', 'e'] }), /At most 4/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('source "latest" is the operator\'s latest message, and a missing source names it', async () => {
+  const dir = temp();
+  let latest: string | undefined = '5';
+  const tool = commitmentsTool(() => ({ dir, sourceExists: id => id === '5', latestSource: () => latest }));
+  try {
+    await assert.rejects(tool.execute('a', { action: 'add', text: 'x' }), /add needs source.*"latest".*now 5/);
+    await tool.execute('b', { action: 'add', text: 'Answer the question', source: 'latest' });
+    assert.equal(readCommitments(dir)[0]!.source, '5');
+    latest = undefined;
+    await assert.rejects(tool.execute('c', { action: 'add', text: 'y', source: 'latest' }), /no operator message yet/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

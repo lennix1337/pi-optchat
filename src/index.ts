@@ -56,6 +56,7 @@ import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
 import { openTaskOrders, readCommitments, registerCommitments, waitingItems } from './commitments.ts';
+import { latestOperatorMessage } from './operator-words.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
 import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
@@ -682,7 +683,11 @@ export default function optchat(pi: ExtensionAPI) {
   // What OptChat promised and what waits on the operator, in every turn, plus the 10/30-min presence nudges (src/commitments.ts).
   const commitments = registerCommitments(pi, () => {
     const a = active;
-    return a && inPhase('open', 'closing', 'import-paused') ? { dir: a.dir, sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; } } : undefined;
+    return a && inPhase('open', 'closing', 'import-paused') ? {
+      dir: a.dir,
+      sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; },
+      latestSource: () => { flush(); const latest = latestOperatorMessage(a.memory.root); return latest ? String(latest.i) : undefined; },
+    } : undefined;
   });
   // An operator correction gets one reminder to become a test or rule, and counts on the weekly scoreboard (src/corrections.ts).
   registerCorrections(pi, () => active && inPhase('open', 'closing', 'import-paused') ? { dir: active.dir } : undefined);

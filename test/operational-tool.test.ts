@@ -36,3 +36,31 @@ test('operational tool validates original provenance and never treats assistant/
     assert.equal(flushed, 6);
   } finally { await memory.close(); }
 });
+
+test('sourceMessageId "latest" names the operator\'s latest own message, never a machine notice, and stores its real id', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operational-tool-'));
+  const memory = new Memory(dir, async () => 'short');
+  const tool = operationalStateTool(() => ({ dir, memory }), () => {});
+  try {
+    await assert.rejects(tool.execute('none', { update: { kind: 'decision', text: 'x', sourceMessageId: 'latest' } }), /no operator message yet/);
+    memory.append('user', 'pode mergear o 12');
+    memory.append('user', '[gitwatch] lennix1337/pi-optchat · #12 merged');
+    memory.append('user', '[Slack] (aprovação) aprovar');
+    memory.append('talk', 'Merged #12.');
+    const decided = JSON.parse((await tool.execute('a', { update: { kind: 'decision', text: 'Merge #12 now', sourceMessageId: 'latest' } })).content[0]!.text);
+    assert.equal(decided.recorded.sourceMessageId, '0');
+    // The exact-quote rule still applies to the message "latest" resolves to.
+    await assert.rejects(tool.execute('b', { update: { kind: 'authorization', text: 'merge everything', sourceMessageId: 'latest' } }), /exactly quote/);
+    const authorized = JSON.parse((await tool.execute('c', { update: { kind: 'authorization', text: 'pode mergear o 12', sourceMessageId: 'latest' } })).content[0]!.text);
+    assert.equal(authorized.recorded.sourceMessageId, '0');
+    // A Slack message from him counts as his words.
+    memory.append('user', '[Slack #harness] faz o 3');
+    const slack = JSON.parse((await tool.execute('d', { update: { kind: 'decision', text: 'do item 3', sourceMessageId: 'latest' } })).content[0]!.text);
+    assert.equal(slack.recorded.sourceMessageId, '4');
+    // An imported conversation is history, not his latest word.
+    memory.append('user', 'imported request', undefined, undefined, { source: 'pi', conversation: 'old', message: '3', title: 'Imported conversation' });
+    const afterImport = JSON.parse((await tool.execute('f', { update: { kind: 'decision', text: 'still item 3', sourceMessageId: 'latest' } })).content[0]!.text);
+    assert.equal(afterImport.recorded.sourceMessageId, '4');
+    await assert.rejects(tool.execute('e', { update: { kind: 'decision', text: 'x', sourceMessageId: '9999' } }), /original message.*latest operator message is 4/);
+  } finally { await memory.close(); }
+});
