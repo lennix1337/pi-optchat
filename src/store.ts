@@ -45,6 +45,8 @@ export interface Store {
   saveView(view: string): Write;
   putImage(name: string, mimeType: Mime, data: Uint8Array): Write;
   image(name: string): Maybe<{ mimeType: Mime; data: Uint8Array } | undefined>;
+  /** Reads message `i`'s text back from the log, so Memory can drop old texts from RAM. Undefined when the store cannot. */
+  reader?(i: number): (() => string) | undefined;
   lock?: Lease;
 }
 
@@ -124,32 +126,55 @@ export function appendJson(file: string, value: unknown, size?: number) {
     return fstatSync(fd).size;
   } finally { closeSync(fd); }
 }
-function records(dir: string, warn: (s: string) => void): unknown[] {
+/** Where a record's line lies in its file: bytes `offset` to `offset + length`, newline excluded. */
+type Located = (value: unknown, file: string, offset: number, length: number) => void;
+function records(dir: string, warn: (s: string) => void, located?: Located): unknown[] {
   if (!existsSync(dir)) return [];
   const result: unknown[] = [];
   for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort()) {
-    const file = join(dir, name), text = readFileSync(file, 'utf8'), lines = text.split('\n');
+    const file = join(dir, name), data = readFileSync(file);
+    let from = 0, index = 0;
     // Newline is the append commit marker. Even a parseable unterminated tail may be a write interrupted before commit.
-    for (let index = 0; index < lines.length - 1; index++) {
-      const line = lines[index];
+    for (let newline = data.indexOf(0x0a); newline >= 0; from = newline + 1, newline = data.indexOf(0x0a, from)) {
+      index++;
+      const line = data.toString('utf8', from, newline);
       if (!line.trim()) continue;
-      try { result.push(JSON.parse(line)); }
-      catch { warn(`Skipped damaged JSON at ${file}:${index + 1}`); }
+      let value: unknown;
+      try { value = JSON.parse(line); }
+      catch { warn(`Skipped damaged JSON at ${file}:${index}`); continue; }
+      result.push(value); located?.(value, file, from, newline - from);
     }
-    if (lines.at(-1)?.trim()) warn(`Skipped damaged JSON at ${file}:${lines.length}`);
+    if (data.toString('utf8', from).trim()) warn(`Skipped damaged JSON at ${file}:${index + 1}`);
   }
   return result;
 }
+/** The text of message `i` in the line at `offset`, refusing a line that no longer holds it. */
+function lineText(data: Buffer, offset: number, length: number, i: number, file: string) {
+  const moved = () => new Error(`Message ${i} is no longer where it was in ${file}; restart Pi to reload the memory.`);
+  let record: { i?: unknown; text?: unknown } | null;
+  try { record = JSON.parse(data.toString('utf8', offset, offset + length)); } catch { throw moved(); }
+  if (record?.i !== i || typeof record.text !== 'string') throw moved();
+  return record.text;
+}
+/** How long a log file read for an old message stays in RAM: a scan over a range reads each file once. */
+const READ_CACHE_MS = 1000;
 
 /** Memory as files in one directory: `main/` and `tree/` hold dated JSONL, each line fsynced as it is appended; `view.json` and
  * `images/<hash>.<ext>` are replaced atomically. Every write is done when it returns. */
 export class FileStore implements Store {
   /** Each log file's size as this store last left it, so a write by another process is refused instead of interleaved. */
   private readonly lastSeenBytes = new Map<string, number>();
+  /** Where each message's line is, by message index, so its text can be read back. */
+  private readonly lines = new Map<number, { file: string; offset: number; length: number }>();
+  private cached?: { file: string; data: Buffer; timer: ReturnType<typeof setTimeout> };
   constructor(readonly directory: string, private readonly warn: (s: string) => void = console.error) {}
   load(): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
-    const main = join(this.directory, 'main'), entries = records(main, this.warn);
+    this.lines.clear();
+    const main = join(this.directory, 'main'), entries = records(main, this.warn, (value, file, offset, length) => {
+      const i = (value as { i?: unknown } | null)?.i;
+      if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+    });
     for (const name of readdirSync(main).filter(n => n.endsWith('.jsonl'))) this.lastSeenBytes.set(join(main, name), statSync(join(main, name)).size);
     const view = join(this.directory, 'view.json');
     // An unreadable view is rebuilt, as a damaged one is.
@@ -160,8 +185,24 @@ export class FileStore implements Store {
   append(entry: Entry): undefined {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
     if (!this.lastSeenBytes.has(file)) this.checkLog(file);
-    this.lastSeenBytes.set(file, appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0));
+    const length = Buffer.byteLength(JSON.stringify(entry)), size = appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0);
+    this.lastSeenBytes.set(file, size);
+    this.lines.set(entry.i, { file, offset: size - length - 1, length });
+    if (this.cached?.file === file) this.drop();
   }
+  reader(i: number) {
+    const line = this.lines.get(i);
+    return line && (() => lineText(this.read(line.file), line.offset, line.length, i, line.file));
+  }
+  private read(file: string) {
+    if (this.cached?.file === file) { this.cached.timer.refresh(); return this.cached.data; }
+    this.drop();
+    const data = readFileSync(file), timer = setTimeout(() => this.drop(), READ_CACHE_MS);
+    timer.unref();
+    this.cached = { file, data, timer };
+    return data;
+  }
+  private drop() { if (this.cached) clearTimeout(this.cached.timer); this.cached = undefined; }
   private checkLog(next: string) {
     const main = dirname(next), names = readdirSync(main).filter(n => n.endsWith('.jsonl'));
     if (names.length !== this.lastSeenBytes.size || names.some(n => statSync(join(main, n)).size !== this.lastSeenBytes.get(join(main, n)))) throw otherWriter(next);
