@@ -251,3 +251,22 @@ test('the wider inspections still refuse anything that writes, runs a helper or 
     'gh pr view 5 --json state; gh pr merge 5', 'gh alias set x y', 'gh extension install x', 'gh pr view $(touch x)',
   ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
 });
+
+test('PowerShell inspections built only from read cmdlets are read-only; anything that writes or runs code is refused', () => {
+  for (const command of [
+    "powershell -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \"node.exe\" } | Select-Object ProcessId,CommandLine | Format-List'",
+    "pwsh -NoProfile -NonInteractive -Command 'Get-Process | Sort-Object CPU -Descending | Select-Object -First 5'",
+    "powershell.exe -NoProfile -Command 'Get-Content \"$env:USERPROFILE/.pi/agent/settings.json\" -Raw | ConvertFrom-Json | ConvertTo-Json'",
+    "pwsh -NoProfile -Command '$s = Get-Content x.json -Raw | ConvertFrom-Json; $s.packages | ConvertTo-Json'",
+    "pwsh -NoProfile -Command 'Get-Process | Where-Object { $_.Name -match \"a|b\" -and ($_.Id -gt 4) } | ForEach-Object { Write-Output $_.Id }'",
+  ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
+  for (const command of [
+    "pwsh -NoProfile -Command 'Stop-Process -Id 5'", "pwsh -NoProfile -Command 'Get-Process | Stop-Process'", "pwsh -NoProfile -Command 'Get-Process | kill'",
+    "pwsh -NoProfile -Command 'Get-Process | ForEach-Object { $_.Kill() }'", "pwsh -NoProfile -Command '[Diagnostics.Process]::Start(\"x\")'",
+    "pwsh -NoProfile -Command 'Get-Content x | Out-File y'", "pwsh -NoProfile -Command 'Get-Content x > y'", "pwsh -NoProfile -Command 'Get-Content x | iex'",
+    "pwsh -NoProfile -Command 'Get-Content x; del y'", "pwsh -NoProfile -Command 'Get-Content x && del y'", "pwsh -NoProfile -Command 'Get-Content x | Out-Null'", "pwsh -NoProfile -Command '& calc'", "pwsh -NoProfile -Command '. ./x.ps1'", "pwsh -NoProfile -Command '$x = del y'",
+    "pwsh -NoProfile -Command 'Get-Process | % { del x }'", "pwsh -NoProfile -Command 'Get-Content \"$(del x)\"'",
+    "pwsh -NoProfile -Command 'Get-Content x' extra", 'pwsh -NoProfile -File x.ps1', 'pwsh -NoProfile -EncodedCommand AAAA', 'pwsh -NoProfile', "pwsh -Command 'Get-Content x' -ExecutionPolicy Bypass",
+    "pwsh -NoProfile -Command 'Get-Content x; $x.Invoke()'", "pwsh -NoProfile -Command '$x.(\"Kill\")()'", "pwsh -NoProfile -Command 'Get-Process; Start-Sleep 1; Set-Content a b'",
+  ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
+});
