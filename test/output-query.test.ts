@@ -59,7 +59,7 @@ test('rejects invalid, missing, excessive, or oversized line ranges explicitly',
     const ref = store.put(Array.from({ length: OUTPUT_QUERY_MAX_LINES + 1 }, (_, i) => `line ${i + 1}`).join('\n'));
     assert.throws(() => store.query(ref, { kind: 'lines', startLine: 0, endLine: 1 }), /Invalid line range/);
     assert.throws(() => store.query(ref, { kind: 'lines', startLine: 2, endLine: 1 }), /Invalid line range/);
-    assert.throws(() => store.query(ref, { kind: 'lines', startLine: 1, endLine: OUTPUT_QUERY_MAX_LINES + 1 }), /Invalid line range/);
+    assert.ok(store.query(ref, { kind: 'lines', startLine: 1, endLine: OUTPUT_QUERY_MAX_LINES + 1 }).includes(`[Lines 1-${OUTPUT_QUERY_MAX_LINES} of ${OUTPUT_QUERY_MAX_LINES + 1};`));
     assert.throws(() => store.query(ref, { kind: 'lines', startLine: 202, endLine: 202 }), /exceeds output length/);
 
     const longRef = store.put('é'.repeat(OUTPUT_QUERY_MAX_BYTES));

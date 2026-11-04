@@ -18,10 +18,11 @@ function boundedResult(text: string, request: string) {
   return text;
 }
 
-function lineRange(text: string, startLine: number, endLine: number) {
-  if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine
-    || endLine - startLine + 1 > OUTPUT_QUERY_MAX_LINES)
+function lineRange(text: string, startLine: number, requestedEnd: number) {
+  if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(requestedEnd) || startLine < 1 || requestedEnd < startLine)
     throw new Error(`Invalid line range: use 1-based startLine <= endLine, at most ${OUTPUT_QUERY_MAX_LINES} lines per query`);
+  // A range wider than the cap is served up to the cap; the header names the range returned so the caller continues from there.
+  let endLine = Math.min(requestedEnd, startLine + OUTPUT_QUERY_MAX_LINES - 1);
   // Count every line for the header, but retain offsets only for the requested range.
   const breaks = /\r\n|\n|\r/g;
   let count = 1, from = 0, to = text.length;
@@ -33,7 +34,8 @@ function lineRange(text: string, startLine: number, endLine: number) {
     count++;
     if (count === startLine) from = breaks.lastIndex;
   }
-  if (endLine > count) throw new Error(`Line range exceeds output length (${count} lines); use endLine ${count} or less`);
+  if (startLine > count) throw new Error(`Line range exceeds output length (${count} lines); use endLine ${count} or less`);
+  if (endLine > count) endLine = count;
   const selected = text.slice(from, to).split(/\r\n|\n|\r/).map((line, index) => `${startLine + index}: ${line}`).join('\n');
   return boundedResult(`[Lines ${startLine}-${endLine} of ${count}; 1-based inclusive]\n${selected}`, 'fewer or shorter lines');
 }
