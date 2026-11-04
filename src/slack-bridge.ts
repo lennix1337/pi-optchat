@@ -7,7 +7,7 @@ import { assistantConfig, assistantRequest, HttpError } from './assistant-client
 import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
 import { recordAnswer, recordInbound } from './slack-metrics.ts';
-import { delivers, projectOf, toolCalls } from './projects.ts';
+import { delivers, projectOf, projectOfRepo, toolCalls } from './projects.ts';
 import { readDay, recordRun, renderDay } from './home-day.ts';
 import { failoverReader, homeStatus, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
 import { randomUUID } from 'node:crypto';
@@ -156,6 +156,8 @@ export class SlackBridge {
   /** Set when a heartbeat wake started the current run: what it delivered is reported to the repo's channel. */
   private waking = false;
   private running = false;
+  /** Arguments of this run's tool calls, so a slack_send without a channel goes to the project the work is in. */
+  private touched: string[] = [];
   /** The latest finished assistant reply of a run answering Slack, and the reply already delivered early. */
   private replied = '';
   private delivered = '';
@@ -224,12 +226,13 @@ export class SlackBridge {
     this.generation++; this.cancelRead?.abort(); this.cancelRead = undefined;
     this.answering = undefined; this.waking = false; this.running = false;
   }
-  runStarted(): void { this.running = true; this.work = undefined; }
+  runStarted(): void { this.running = true; this.work = undefined; this.touched = []; }
   /** What waits for the operator (approvals, items blocked on him); shown on the App Home, working or free. */
   setWaiting(read: () => readonly (string | WaitingItem)[]): void { this.waiting = read; }
 
   /** Each tool call of the run: the App Home names the step, at most once per HOME_STEP_MS so Slack is not flooded. */
   toolStarted(tool: string, args: unknown): void {
+    if (this.touched.length < 400) { try { this.touched.push(JSON.stringify(args ?? null).slice(0, 2000)); } catch { /* unserializable args name no repo */ } }
     if (!this.work) return;
     this.work.steps++;
     this.work.step = stepLabel(tool, args);
@@ -573,21 +576,37 @@ export class SlackBridge {
    * Posts under a topic: the first post of a `topic` opens a message in the channel, later ones reply in its thread,
    * so one subject (a PR, a long task) keeps its history together. Topics last two weeks.
    */
-  async post(text: string, channel: string | null, topic?: string): Promise<{ parts: number; ts: string }> {
+  async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string }> {
     const owner = this.owner();
-    if (!topic || !owner) return this.publish(text, this.progressThread(channel), channel);
+    if (!topic || !owner) return this.publish(text, this.progressThread(channel), channel, this.answering?.channel === channel ? options : {});
     const file = join(owner.dir, TOPICS), now = this.options.now();
     let topics: Record<string, { channel: string | null; ts: string; at: number }> = {};
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none yet */ }
     const known = topics[topic];
     const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
-    const result = await this.publish(text, open?.ts ?? null, channel);
+    const result = await this.publish(text, open?.ts ?? null, channel, open ? options : {});
     if (!open) {
       topics[topic] = { channel, ts: result.ts, at: now };
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
       atomicWrite(file, JSON.stringify(Object.fromEntries(fresh)));
     }
     return result;
+  }
+
+  /**
+   * A slack_send: without a channel it goes where the work is (the project of its topic, else of the repos this run
+   * touched), unless the run answers his DM; `dm` forces the DM. A reply in a thread also shows in the conversation,
+   * so he sees every report without opening threads.
+   */
+  async report(text: string, channel?: string, topic?: string): Promise<{ channel: string | null }> {
+    const to = channel === 'dm' ? null : channel ?? this.workChannel(topic);
+    await this.post(text, to, topic, { broadcast: true });
+    return { channel: to };
+  }
+
+  private workChannel(topic?: string): string | null {
+    if (this.answering) return this.answering.channel;
+    return (topic ? projectOfRepo(topic) : undefined) ?? projectOf(...this.touched) ?? null;
   }
 
   /**
@@ -656,16 +675,16 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('agent_end', event => bridge.runEnded(event.messages));
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel instead of the DM: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles); route reports by the repo the work is in, and keep the DM for general matters, urgent blockers and decisions. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and its full text follows in the thread.",
+    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles), or `dm` for the DM. Omitted, it goes to the project of the topic, else of the repos this run touched, else the DM; during a run started by his DM it answers there. Pass `dm` for general matters, urgent blockers and decisions. A post under a known topic replies in its thread and also shows in the conversation. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and its full text follows in the thread.",
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
-      channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #; omit for the DM.' })),
+      channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #, or dm; omit to follow the work.' })),
       topic: Type.Optional(Type.String({ pattern: '^[\\w.#:/-]{1,80}$', description: 'Short key of the task this post belongs to (e.g. denta-106, gx-issue-701). The first post with a topic opens it; later posts with the same topic reply in its thread.' })),
     }, { additionalProperties: false }),
     async execute(_id, params) {
-      const result = await bridge.post(params.text, params.channel ?? null, params.topic);
-      bridge.answered(params.channel ?? null);
-      return { content: [{ type: 'text', text: `Sent to ${params.channel ? `Slack #${params.channel}` : "the operator's Slack DM"} (${result.parts} part${result.parts === 1 ? '' : 's'}).` }], details: undefined };
+      const { channel } = await bridge.report(params.text, params.channel, params.topic);
+      bridge.answered(channel);
+      return { content: [{ type: 'text', text: `Sent to ${channel ? `Slack #${channel}` : "the operator's Slack DM"}.` }], details: undefined };
     },
   });
   return bridge;

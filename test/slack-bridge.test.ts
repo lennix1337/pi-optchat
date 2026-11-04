@@ -348,6 +348,50 @@ test('posts with a topic open a message once, then reply in its thread; the sent
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// 03/11: the operator never saw two retro DMs nor the link he asked for again: later slack_send posts of a topic
+// went only into the thread of its first post, and DentAI reports went to the DM instead of #dentai.
+test('slack_send replies in a topic thread also show in the conversation; automatic topic posts stay in the thread', async () => {
+  const f = fixture();
+  try {
+    await f.bridge.report('Retro rodando.', undefined, 'retro-0311');
+    await f.bridge.report('Retro feita.', undefined, 'retro-0311');
+    await f.bridge.post('CI verde', 'harness', 'pr:x#1');
+    await f.bridge.post('mergeado', 'harness', 'pr:x#1');
+    assert.deepEqual(sendsOf(f), [
+      { text: 'Retro rodando.', threadTs: null },
+      { text: 'Retro feita.', threadTs: '1.1', broadcast: true },
+      { text: 'CI verde', threadTs: null, channel: 'harness' },
+      { text: 'mergeado', threadTs: '1.1', channel: 'harness' },
+    ]);
+  } finally { f.close(); }
+});
+
+test('slack_send without a channel goes to the channel of the work: its topic, else the repos the run touched; dm keeps the DM', async () => {
+  const f = fixture();
+  try {
+    f.bridge.runStarted();
+    assert.deepEqual(await f.bridge.report('Link da Beatriz: https://x', undefined, 'dentai-tunnel-beatriz'), { channel: 'dentai' });
+    f.bridge.toolStarted('bash', { command: 'cd C:/projetos/pi-optchat && git status' });
+    f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/a.ts' });
+    assert.deepEqual(await f.bridge.report('PR aberto'), { channel: 'harness' });
+    assert.deepEqual(await f.bridge.report('Preciso da sua decisão', 'dm'), { channel: null });
+    assert.deepEqual(await f.bridge.report('Em #dentai', 'dentai'), { channel: 'dentai' });
+    f.bridge.runStarted();
+    assert.deepEqual(await f.bridge.report('Sem projeto'), { channel: null }, 'a new run forgets the repos of the last one');
+  } finally { f.close(); }
+});
+
+test('slack_send without a channel during a run started by his DM answers in that DM, whatever the repos', async () => {
+  const f = fixture([{ seq: 1, ts: '1793000000.000100', thread: null, text: 'como ta a beatriz?', channel: 'D0OWNER' } as never]);
+  try {
+    await f.bridge.poll();
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    f.bridge.toolStarted('bash', { command: 'cd C:/projetos/dentai-mono && git status' });
+    assert.deepEqual(await f.bridge.report('Etapa 1 feita.'), { channel: null });
+  } finally { f.close(); }
+});
+
 test('a DM stays in the inbox while the chat cannot take it, and arrives once it can', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const sent: string[] = [], requests: string[] = [];
