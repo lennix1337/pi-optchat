@@ -57,11 +57,15 @@ export function decideEffect(contract: Contract, effect: Effect, now = Date.now(
   return { level: IRREVERSIBLE.includes(effect.action) ? 'ask' : contract.default, effect };
 }
 
+/** A recursive delete removes each of its folders; other effects name one repository several ways (checkout, slug). */
+const separately = (effect: Effect): Effect[] => effect.action === 'recursive-delete' && effect.targets.length > 1
+  ? effect.targets.map(target => ({ ...effect, targets: [target] })) : [effect];
+
 /** The strictest decision over every effect of a call; `advisor` when nothing asks and an effect has no rule, or the call has no recognised effect. */
 export function decide(contract: Contract, effects: Effect[], now = Date.now()): Decision {
   // The gate stopped the call for a reason the classifier cannot name: the contract has nothing to say about it.
   if (!effects.length) return { level: 'advisor' };
-  const decisions = effects.map(effect => decideEffect(contract, effect, now));
+  const decisions = effects.flatMap(separately).map(effect => decideEffect(contract, effect, now));
   const asked = decisions.find(d => d.level === 'ask');
   if (asked) return asked;
   const open = decisions.find(d => d.level === 'advisor');

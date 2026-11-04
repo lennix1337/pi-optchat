@@ -157,6 +157,24 @@ test('the first live rule that matches the action and a target decides; otherwis
   assert.equal(verdict('git status'), 'advisor', 'no effect: nothing to decide here; the gate already let it through');
 });
 
+// Retro 03/11: widening the free build-folder rule to `*/.next/*` would have freed `rm -rf web/.next/types web/src`,
+// because a rule matched when any one of the deleted folders did.
+test('a delete of several folders is as strict as its strictest folder', () => {
+  const deletes = parseContract({ version: 1, default: 'advisor', rules: [
+    { action: 'recursive-delete', scope: ['*/.next', '*/.next/*'], level: 'free' },
+    { action: 'recursive-delete', scope: ['*/worktrees/*'], level: 'report' },
+    { action: 'recursive-delete', scope: ['*'], level: 'ask' },
+  ] });
+  const level = (command: string) => decide(deletes, classifyEffects({ tool: 'bash', input: { command }, cwd: 'C:/projetos/dentai-mono/apps/web' }, repo)).level;
+  assert.equal(level('rm -rf .next/types'), 'free');
+  assert.equal(level('rm -rf .next .next/types'), 'free');
+  assert.equal(level('rm -rf .next/types src'), 'ask');
+  assert.equal(level('rm -rf src .next'), 'ask');
+  assert.equal(level('rm -rf .next C:/projetos/dentai-mono/worktrees/denta-81'), 'report');
+  // Pushes and merges name one repository twice (checkout and slug): any name still matches.
+  assert.equal(verdict('git -C C:/projetos/dotfiles push origin main'), 'report');
+});
+
 test('a call with no recognised effect goes to the advisor even when the default asks', () => {
   // The live contract defaults to ask; the fixture above defaults to advisor and would hide this.
   const strict = parseContract({ version: 1, default: 'ask', rules: [{ action: 'push', scope: ['lennix1337/*'], level: 'free' }] });
