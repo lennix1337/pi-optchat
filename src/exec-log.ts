@@ -14,14 +14,17 @@ const clip = (text: string, max: number) => { const one = text.replace(/\s+/g, '
 
 /** Classifies from the error text; order matters: a gate refusal or timeout also carries a non-zero exit. */
 export function classify(failed: boolean, text: string, code?: number | string): ExecClass {
+  // A call that did not fail is ok whatever its output says (a grep hit on "timeout" is not a timeout).
+  if (!failed) return 'ok';
+  // A command that ran to its own exit code is judged by that code; 124/137/143 are timeout/SIGKILL/SIGTERM inside it.
+  const exit = typeof code === 'number' ? code : /exited with code (\d+)\s*$/.exec(text)?.[1];
+  if (exit !== undefined && Number(exit) !== 0) return [124, 137, 143].includes(Number(exit)) ? 'timeout' : 'exit_nonzero';
   if (/^Not executed:|refused by|autonomy gate|blocked by/i.test(text)) return 'refused';
   if (/timed? ?out|ETIMEDOUT|SIGTERM/i.test(text) || code === 'ETIMEDOUT') return 'timeout';
   if (/aborted|AbortError|cancell?ed by/i.test(text)) return 'aborted';
   if (/ENOENT|command not found|not recognized as/i.test(text) || code === 'ENOENT') return 'not_found';
   if (/rate limit|API rate|HTTP 429|secondary rate/i.test(text)) return 'rate_limited';
   if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|network|connection reset|TLS handshake/i.test(text)) return 'network';
-  if (!failed) return 'ok';
-  if (typeof code === 'number' && code !== 0 || /exited with code [1-9]/.test(text)) return 'exit_nonzero';
   return 'error';
 }
 
