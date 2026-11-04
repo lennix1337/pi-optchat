@@ -39,12 +39,14 @@ test('multi-account numbered accounts: the role follows the account the main mod
 });
 
 test('a numbered account that does not publish the fallback model runs it on the family\'s base account', () => {
-  const models = new Map([['openai-codex/gpt-6-luna', { provider: 'openai-codex', id: 'gpt-6-luna' }]]);
-  const registry = { find: (provider: string, model: string) => models.get(`${provider}/${model}`) } as unknown as ModelRegistry;
+  const models = new Map([['openai-codex/gpt-6-luna', { provider: 'openai-codex', id: 'gpt-6-luna' }], ['openai-codex-account-2/gpt-6.1-terra', { provider: 'openai-codex-account-2', id: 'gpt-6.1-terra' }]]);
+  const registry = { find: (provider: string, model: string) => models.get(`${provider}/${model}`), getAll: () => [...models.values()] } as unknown as ModelRegistry;
   assert.deepEqual(resolveModel(registry, { provider: 'openai-codex-account-2', model: 'gpt-6-luna', thinking: 'high' }),
     { provider: 'openai-codex', model: models.get('openai-codex/gpt-6-luna') });
   assert.equal(resolveModel(registry, { provider: 'openai-codex-account-2', model: 'gpt-6.1-sol', thinking: 'high' }), undefined);
   assert.equal(resolveModel(registry, { provider: 'google', model: 'gpt-6-luna', thinking: 'high' }), undefined);
+  // An account not published yet (multi-account between a reload and its session_start) never borrows the base account.
+  assert.equal(resolveModel(registry, { provider: 'openai-codex-account-3', model: 'gpt-6-luna', thinking: 'high' }), undefined);
 });
 
 test('a fallback list keeps one entry per provider family', () => {

@@ -15,14 +15,20 @@ import { carriedFeedback, dropCarried, foreignIds } from './carried-ids.ts';
 import { cited, closedFeedback, dropClosed, type ClosedConflict } from './closed-conflicts.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
-/** The chosen model, with the base provider as the fallback: a numbered account that does not publish the model still runs it on the family's base account. */
+/** Whether a provider is in the registry at all: multi-account drops its numbered accounts at every reload and publishes them again in its own session_start. */
+const published = (registry: ModelRegistry, provider: string) => registry.getAll().some(model => model.provider === provider);
+/** The chosen model, with the base provider as the fallback: a published numbered account that lacks the model still runs it on the family's base account.
+ * One not published yet resolves to nothing: the base account is another account, with its own bill (a reload sent summaries to an `anthropic` key with no credit). */
 export function resolveModel(registry: ModelRegistry, selected: ModelChoice): { provider: string; model: Model<Api> } | undefined {
   const model = registry.find(selected.provider, selected.model);
   if (model) return { provider: selected.provider, model };
   const base = accountGroup(selected.provider);
-  const fallback = base === selected.provider ? undefined : registry.find(base, selected.model);
+  const fallback = base === selected.provider || !published(registry, selected.provider) ? undefined : registry.find(base, selected.model);
   return fallback && { provider: base, model: fallback };
 }
+/** A numbered account multi-account has not published yet; after a reload it is back within about a second. */
+const accountPending = (registry: ModelRegistry, selected: ModelChoice) => accountGroup(selected.provider) !== selected.provider && !published(registry, selected.provider);
+const ACCOUNT_WAIT_MS = 10_000, ACCOUNT_POLL_MS = 100;
 /** A level the model can't take would be sent as no level, which Sonnet 5.5 runs at high effort; Pi's own sessions clamp the same way. */
 export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
   const thinking = clampThinkingLevel(model, level);
@@ -138,7 +144,11 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
   return async (input, signal) => {
     const incidentId = createCompactorIncidentId();
     const { sessionId, recoveryIncidentId } = incidentContext();
-    const selected = choice(), resolved = resolveModel(registry, selected);
+    let selected = choice(), resolved = resolveModel(registry, selected);
+    for (const until = Date.now() + ACCOUNT_WAIT_MS; !resolved && accountPending(registry, selected) && Date.now() < until;) {
+      await sleep(ACCOUNT_POLL_MS, undefined, { signal });
+      selected = choice(); resolved = resolveModel(registry, selected);
+    }
     if (!resolved) throw new Error(`Compactor model unavailable: ${selected.provider}/${selected.model}. Use /optchat model.`);
     const model = resolved.model, thinking = reasoningFor(model, selected.thinking);
     const sourceBytes = bytes(input.source), limit = Math.min(accepted(), sourceBytes - 1);
