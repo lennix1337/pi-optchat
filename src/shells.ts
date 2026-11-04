@@ -230,13 +230,14 @@ function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, c
  * The bash mover: a call expected to run long (long-commands.ts) or to wait on something (foreground-wait.ts) starts as a
  * managed background shell. If it ends within `graceMs` the call returns its output as bash would; otherwise it returns
  * the shell's ID, and the end arrives as the same "[shell ID]" message shell_start gives, so the turn is not held for
- * minutes. Short commands return undefined and run in bash as before.
+ * minutes. Short commands return undefined and run in bash as before, and so does every call while `canMove` is false:
+ * with no profile to own a shell (a subagent's plain Pi run) or one that is closing, a long call runs in place as Pi's
+ * own bash would, instead of being refused.
  */
-export function longCommandMover(jobs: ShellJobs, settings: ShellSettings, canStart: () => void = () => {}, graceMs = LONG_COMMAND_GRACE_SECONDS * 1000): LongBashMover {
+export function longCommandMover(jobs: ShellJobs, settings: ShellSettings, canMove: () => boolean = () => true, graceMs = LONG_COMMAND_GRACE_SECONDS * 1000): LongBashMover {
   return (args, cwd, signal) => {
     const reason = longCommandReason(args.command, args.timeout) ?? foregroundWait(args.command);
-    if (reason === undefined) return undefined;
-    canStart();
+    if (reason === undefined || !canMove()) return undefined;
     const id = startShell(jobs, settings, { command: args.command, timeout: args.timeout }, cwd);
     return jobs.settle(id, graceMs, signal).then(job => {
       if (job) {

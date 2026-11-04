@@ -20,7 +20,7 @@ const text = (result: { content: { text?: string }[] }) => result.content.map(pa
 
 test('a long command still running after the grace returns its background shell ID, and its end reaches the reporter', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
-  const moved = await longCommandMover(jobs, {}, () => {}, 200)({ command: slow, timeout: 121 }, process.cwd());
+  const moved = await longCommandMover(jobs, {}, () => true, 200)({ command: slow, timeout: 121 }, process.cwd());
   assert.ok(moved, 'an explicit timeout above the limit is moved, not run here');
   assert.equal(jobs.list()[0].state, 'running', 'the call returned while the command was still running');
   const id = jobs.list()[0].id;
@@ -35,7 +35,7 @@ test('a long command still running after the grace returns its background shell 
 // "[shell ID]" message, polls or an ended turn to get a result a foreground call would have returned.
 test('a long command that ends within the grace returns its output inline, and no end notice follows', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
-  const result = await longCommandMover(jobs, {}, () => {}, 10_000)({ command: printed, timeout: 121 }, process.cwd());
+  const result = await longCommandMover(jobs, {}, () => true, 10_000)({ command: printed, timeout: 121 }, process.cwd());
   assert.ok(result);
   assert.match(text(result), /moved-ok/);
   assert.doesNotMatch(text(result), /background shell/);
@@ -47,7 +47,7 @@ test('a long command that ends within the grace returns its output inline, and n
 
 test('a failing long command that ends within the grace is an error result with its exit code', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
-  const result = await longCommandMover(jobs, {}, () => {}, 10_000)({ command: `node -e "console.log('bad'); process.exit(3)"`, timeout: 121 }, process.cwd());
+  const result = await longCommandMover(jobs, {}, () => true, 10_000)({ command: `node -e "console.log('bad'); process.exit(3)"`, timeout: 121 }, process.cwd());
   assert.ok(result);
   assert.equal(result.isError, true);
   assert.match(text(result), /bad/);
@@ -57,7 +57,7 @@ test('a failing long command that ends within the grace is an error result with 
 
 test('an aborted call stops the shell it started instead of leaving it running', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs), abort = new AbortController();
-  const pending = longCommandMover(jobs, {}, () => {}, 10_000)({ command: `node -e "setTimeout(() => {}, 20000)"`, timeout: 121 }, process.cwd(), abort.signal);
+  const pending = longCommandMover(jobs, {}, () => true, 10_000)({ command: `node -e "setTimeout(() => {}, 20000)"`, timeout: 121 }, process.cwd(), abort.signal);
   setTimeout(() => abort.abort(), 300);
   const result = await pending;
   assert.ok(result);
@@ -71,7 +71,7 @@ test('an aborted call stops the shell it started instead of leaving it running',
 test('a foreground wait is moved like a long command instead of refused', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
   const command = `node -e "setTimeout(() => console.log('waited'), 1500)" ; sleep 16 2>/dev/null || true`;
-  const moved = await longCommandMover(jobs, {}, () => {}, 200)({ command }, process.cwd());
+  const moved = await longCommandMover(jobs, {}, () => true, 200)({ command }, process.cwd());
   assert.ok(moved, 'a 16 s sleep is a wait, so it leaves the turn');
   assert.match(text(moved), /it sleeps 16 s/);
   assert.equal(jobs.list()[0].state, 'running');
@@ -90,7 +90,7 @@ test('a short command is not moved: no shell starts and the mover returns nothin
 test('the bash tool moves a long call to a shell, runs a short one in place, and says so in its description', { timeout: 30_000 }, async () => {
   const jobs = new ShellJobs(), tools = new Map<string, any>();
   const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on() {} } as unknown as ExtensionAPI;
-  registerReapingBash(pi, longCommandMover(jobs, {}, () => {}, 200));
+  registerReapingBash(pi, longCommandMover(jobs, {}, () => true, 200));
   const bash = tools.get('bash');
   assert.ok(bash, 'the bash tool is registered with the mover, on every platform');
   assert.ok(bash.description.includes(LONG_COMMAND_NOTE), 'the model reads that a long call returns a shell ID');
@@ -103,10 +103,26 @@ test('the bash tool moves a long call to a shell, runs a short one in place, and
   assert.equal(jobs.list().length, 1, 'only the long call started a managed shell');
 });
 
+// 04/11: a subagent is a plain Pi run with no OptChat profile; its `npm test` and `npm run check` were refused with
+// "Choose an OptChat profile first" because the mover asked the profile for a background shell.
+test('without an OptChat profile (a subagent\'s plain Pi run), a long call runs in place as plain bash, never refused', { timeout: 30_000 }, async () => {
+  const jobs = new ShellJobs(), tools = new Map<string, any>();
+  const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on() {} } as unknown as ExtensionAPI;
+  const mover = longCommandMover(jobs, {}, () => false, 200);
+  assert.equal(mover({ command: printed, timeout: 121 }, process.cwd()), undefined, 'the mover leaves the call to bash');
+  registerReapingBash(pi, mover);
+  const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => 'test-session', getSessionFile: () => undefined } };
+  const result = await tools.get('bash').execute('long', { command: printed, timeout: 121 }, undefined, undefined, ctx);
+  assert.notEqual(result.isError, true, text(result));
+  assert.match(text(result), /moved-ok/);
+  assert.doesNotMatch(text(result), /background shell|profile/i);
+  assert.equal(jobs.list().length, 0, 'no managed shell without a profile to own it');
+});
+
 test('through the bash tool, a long command that fails within the grace is an error result', { timeout: 30_000 }, async () => {
   const jobs = new ShellJobs(), tools = new Map<string, any>();
   const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on() {} } as unknown as ExtensionAPI;
-  registerReapingBash(pi, longCommandMover(jobs, {}, () => {}, 10_000));
+  registerReapingBash(pi, longCommandMover(jobs, {}, () => true, 10_000));
   const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => 'test-session', getSessionFile: () => undefined } };
   const failed = await tools.get('bash').execute('fail', { command: `node -e "process.exit(4)"`, timeout: 121 }, undefined, undefined, ctx);
   assert.equal(failed.isError, true);

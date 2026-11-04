@@ -125,7 +125,7 @@ export default function optchat(pi: ExtensionAPI) {
   // A bash call expected to run long starts as a background shell instead of holding the turn (long-commands.ts).
   const canStartShell = () => { required(); if (stopping) throw new Error('Profile is closing'); };
   const shellSettings = { notifyDefault: () => active?.config.shellNotify ?? 'end' };
-  registerReapingBash(pi, longCommandMover(shells, shellSettings, canStartShell));
+  registerReapingBash(pi, longCommandMover(shells, shellSettings, () => active !== undefined && !stopping));
   registerShells(pi, shells, canStartShell, shellSettings);
   let active: Active | undefined;
   // A background shell's end becomes an outcome even when its notify mode hides it from the model: exit code, latency and
