@@ -20,6 +20,7 @@ interface Operation {
   /** Pi dispatch event precedes validation/tool_call; it does not prove the tool body ran. */
   dispatchObserved?: boolean;
 }
+const listed = (ops: readonly Readonly<Operation>[]) => ops.map(o => `${o.id} (${o.tool})`).join(', ');
 const READ_ONLY = new Set(['read', 'grep', 'find', 'ls', 'zoom', 'date', 'search', 'operation_state', 'operational_state', 'catchup_report']);
 const LIMIT = 1000;
 const bounded = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -87,11 +88,25 @@ export class OperationJournal {
     try { this.save(this.operations.map(o => o.id === id ? { ...o, status: 'response_recorded', error, responseAt: Date.now(), dispatchObserved: o.dispatchObserved || dispatchObserved } : o)); }
     finally { this.inFlight.delete(id); }
   }
-  resolve(id: string, evidence: string) {
-    if (this.inFlight.has(id)) throw new Error('Operation is still executing; wait for its response before reconciliation');
+  /** Ids are long (`session:entry:toolCallId`) and get truncated or shortened when copied, so a prefix or
+   * suffix of at least 8 characters names an operation when no other one in the journal, settled or not,
+   * shares it, as a short Git hash does. A bare session id therefore stays ambiguous. */
+  private match(id: string) {
+    const exact = this.operations.find(o => o.id === id);
+    if (exact || id.length < 8) return exact ? [exact] : [];
+    return this.operations.filter(o => o.id.startsWith(id) || o.id.endsWith(id));
+  }
+  resolve(id: string, evidence: string): { id: string; status: 'reconciled' | 'already_reconciled' | 'not_uncertain' } {
+    const found = this.match(id), pending = this.pending();
+    if (found.length > 1) throw new Error(`Ambiguous operation id ${id}: matches ${found.length} operations (${found.slice(0, 5).map(o => o.id).join(', ')}${found.length > 5 ? ', …' : ''}); pass the full id`);
+    if (!found.length) throw new Error(`Unknown uncertain operation ${id}; ${pending.length ? `pending: ${listed(pending)}` : 'nothing is pending'}`);
+    const target = found[0].id;
+    if (found[0].status === 'reconciled') return { id: target, status: 'already_reconciled' };
+    if (!pending.some(o => o.id === target)) return { id: target, status: 'not_uncertain' };
+    if (this.inFlight.has(target)) throw new Error('Operation is still executing; wait for its response before reconciliation');
     if (!bounded(evidence.trim(), 1000)) throw new Error('Independent observation evidence reference is required');
-    if (!this.pending().some(o => o.id === id)) throw new Error('Unknown uncertain operation');
-    this.save(this.operations.map(o => o.id === id ? { ...o, status: 'reconciled', evidence: evidence.trim() } : o));
+    this.save(this.operations.map(o => o.id === target ? { ...o, status: 'reconciled', evidence: evidence.trim() } : o));
+    return { id: target, status: 'reconciled' };
   }
   settled(session: string) {
     for (const id of this.inFlight) if (id.startsWith(`${session}:`)) this.inFlight.delete(id);
@@ -194,9 +209,12 @@ export function registerOperationSafety(pi: ExtensionAPI, journal: () => Operati
     async execute(_id, args) {
       const current = journal();
       if (!current) throw new Error('No active operation journal');
-      if (args.id !== undefined) current.resolve(args.id, args.evidence ?? '');
-      else if (args.evidence !== undefined) throw new Error('Evidence requires an operation ID');
-      return { content: [{ type: 'text', text: JSON.stringify({ uncertain: current.pending(), guidance: 'Response recorded does not mean external outcome verified. Resolve only with independent observation evidence.' }) }], details: {} };
+      const resolved = args.id !== undefined ? current.resolve(args.id, args.evidence ?? '') : undefined;
+      if (args.id === undefined && args.evidence !== undefined) {
+        const pending = current.pending();
+        throw new Error(`Evidence requires an operation ID; ${pending.length ? `pending: ${listed(pending)}` : 'nothing is pending'}`);
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ ...(resolved ? { resolved } : {}), uncertain: current.pending(), guidance: 'Response recorded does not mean external outcome verified. Resolve only with independent observation evidence.' }) }], details: {} };
     },
   });
 }
