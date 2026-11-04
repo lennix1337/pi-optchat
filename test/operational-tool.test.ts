@@ -21,6 +21,9 @@ test('operational tool validates original provenance and never treats assistant/
     await assert.rejects(tool.execute('b', { update: { kind: 'authorization', text: 'Push approved', sourceMessageId: '2' } }), /direct non-imported user/);
     await assert.rejects(tool.execute('c', { update: { kind: 'decision', text: 'Invalid source', sourceMessageId: '9999' } }), /original message/);
     await assert.rejects(tool.execute('fabricated', { update: { kind: 'authorization', text: 'Production deploy approved', sourceMessageId: '0' } }), /exactly quote the entire user source/);
+    // The refusal shows where the text diverges and the source around it, so one retry can quote it exactly.
+    await assert.rejects(tool.execute('hint', { update: { kind: 'constraint', text: 'Implement locally; do pull.', sourceMessageId: '0' } }),
+      (e: Error) => /first difference at character 23/.test(e.message) && e.message.includes('do not push.'));
     const recorded = await tool.execute('d', { update: { kind: 'constraint', text: 'Implement locally; do not push.', sourceMessageId: '0' } });
     const reply = JSON.parse(recorded.content[0]!.text) as { recorded: { id: string; text: string }; entries: number; version?: number };
     assert.equal(reply.recorded.text, 'Implement locally; do not push.');
@@ -33,7 +36,7 @@ test('operational tool validates original provenance and never treats assistant/
     const state = readOperationalState(join(dir, 'operational-state.json'));
     assert.equal(state.entries.length, 1);
     assert.match(renderOperationalContext(state), /no authority/);
-    assert.equal(flushed, 6);
+    assert.equal(flushed, 7);
   } finally { await memory.close(); }
 });
 
