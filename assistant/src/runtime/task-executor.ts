@@ -113,7 +113,8 @@ export class TaskExecutor {
     // Account readiness concerns every task, so its failure fails the pass rather than this task.
     const ready = () => readiness ??= (this.options.ready?.() ?? Promise.resolve(true)).catch((cause: unknown) => { throw new PassFailure(cause); });
     for (const task of page.tasks) {
-      if (!this.admitted(task) || !['queued', 'working'].includes(task.status)) continue;
+      // Status first: most tasks are finished, and only an active one needs the lookup of its origin.
+      if (!['queued', 'working'].includes(task.status) || !this.admitted(task)) continue;
       try {
         const prepared = await this.prepare(task, ready);
         if (prepared) pending.push(prepared);

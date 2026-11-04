@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { TaskStore } from '../src/store/db.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { TASK_CREATION_SQL, TaskStore } from '../src/store/db.ts';
 import { MAX_ROUTE_ATTEMPTS, TaskExecutor, WAIT, type DraftInput, type DraftRunner } from '../src/runtime/task-executor.ts';
 import type { Event, SourceKind } from '../src/contracts/events.ts';
 import { queuedTask } from './task-fixtures.ts';
@@ -120,6 +121,28 @@ test('only human-created tasks in the configured channels are admitted', async (
   assert.equal(f.store.get('local-human')!.status, 'ready_for_review');
   assert.equal(f.store.get('voice')!.status, 'ready_for_review');
   for (const id of ['other-channel', 'model-made', 'slack-made']) assert.equal(f.store.get(id)!.status, 'queued', id);
+}));
+
+test('a finished task is not looked up again: idle passes leave the event log alone', async () => fixture(async f => {
+  const executor = await f.executor(async () => ({ kind: 'draft', text: 'pronto' }));
+  f.create('done', 'Já resolvida');
+  await executor.tick();
+  assert.equal(f.store.get('done')!.status, 'ready_for_review');
+  let lookups = 0;
+  const creation = f.store.creation.bind(f.store);
+  f.store.creation = taskId => { lookups++; return creation(taskId); };
+  await executor.tick(); await executor.tick();
+  assert.equal(lookups, 0, 'a task out of queued/working never reaches the origin lookup');
+}));
+
+test('the origin lookup reads an index instead of parsing every stored event', async () => fixture(async f => {
+  f.create('t1', 'Uma tarefa');
+  const raw = new DatabaseSync(join(f.dir, 'tasks.sqlite'), { readOnly: true });
+  try {
+    const plan = raw.prepare(`EXPLAIN QUERY PLAN ${TASK_CREATION_SQL}`).all(PROFILE, 't1').map(row => String(row.detail)).join(' | ');
+    assert.match(plan, /USING INDEX events_task_creation/, plan);
+  } finally { raw.close(); }
+  assert.equal(f.store.creation('t1')?.event.taskId, 't1');
 }));
 
 test('one task the executor cannot prepare fails visibly; the other tasks still get drafts', async () => fixture(async f => {
