@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { createBashTool, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { reapingBashOperations, type LongBashMover } from './shell-reaper.ts';
-import { longCommandReason } from './long-commands.ts';
+import { LONG_COMMAND_GRACE_SECONDS, longCommandReason } from './long-commands.ts';
+import { foregroundWait } from './foreground-wait.ts';
 import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
@@ -44,6 +45,8 @@ export class ShellJobs {
   private readonly controllers = new Map<string, AbortController>();
   private readonly tasks = new Set<Promise<void>>();
   private readonly listeners = new Set<() => void>();
+  /** Jobs a foreground call is still waiting on: their end goes back to that call instead of a "[shell ID]" message. */
+  private readonly waiters = new Map<string, (job: ShellJob) => void>();
   private reporter?: ShellReporter;
   /** Called once per background job that ends, whatever its notify mode; a journal observation must never fail the job. */
   private endObserver?: (job: ShellJob) => void;
@@ -79,7 +82,24 @@ export class ShellJobs {
     if (job.mode === 'background') {
       try { this.endObserver?.(job); } catch { /* the journal is an observer, never the owner of the job's result */ }
     }
+    const waiter = this.waiters.get(id);
+    if (waiter) { this.waiters.delete(id); waiter(job); return; }
     if (job.mode === 'background' && endNoticeWanted(job.notify, job.state)) void (this.reporter ? this.reporter.finished(job) : this.unreported.push(job));
+  }
+  /**
+   * Waits up to `ms` for a running job: resolves to the job when it ends in time, and its end then sends no notice, since
+   * the caller returns it; or to undefined at the deadline, and the end is reported as usual. An abort stops the job.
+   */
+  settle(id: string, ms: number, signal?: AbortSignal): Promise<ShellJob | undefined> {
+    const job = this.jobs.get(id);
+    if (!job || job.ended !== undefined) return Promise.resolve(job);
+    return new Promise(resolve => {
+      const onAbort = () => { this.stop(id); };
+      const done = (ended: ShellJob | undefined) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); this.waiters.delete(id); resolve(ended); };
+      const timer = setTimeout(() => done(undefined), ms);
+      this.waiters.set(id, done);
+      if (signal?.aborted) onAbort(); else signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
   stop(id: string) {
     const job = this.jobs.get(id), controller = this.controllers.get(id);
@@ -201,23 +221,49 @@ function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, c
 }
 
 /**
- * The bash mover: a call expected to run long (long-commands.ts) starts as a managed background shell, so the turn is not
- * held while it runs. The call's result is the shell's ID; its end arrives as the same "[shell ID]" message shell_start gives.
- * Short commands return undefined and run in bash as before.
+ * The bash mover: a call expected to run long (long-commands.ts) or to wait on something (foreground-wait.ts) starts as a
+ * managed background shell. If it ends within `graceMs` the call returns its output as bash would; otherwise it returns
+ * the shell's ID, and the end arrives as the same "[shell ID]" message shell_start gives, so the turn is not held for
+ * minutes. Short commands return undefined and run in bash as before.
  */
-export function longCommandMover(jobs: ShellJobs, settings: ShellSettings, canStart: () => void = () => {}): LongBashMover {
-  return (args, cwd) => {
-    const reason = longCommandReason(args.command, args.timeout);
+export function longCommandMover(jobs: ShellJobs, settings: ShellSettings, canStart: () => void = () => {}, graceMs = LONG_COMMAND_GRACE_SECONDS * 1000): LongBashMover {
+  return (args, cwd, signal) => {
+    const reason = longCommandReason(args.command, args.timeout) ?? foregroundWait(args.command);
     if (reason === undefined) return undefined;
     canStart();
     const id = startShell(jobs, settings, { command: args.command, timeout: args.timeout }, cwd);
-    const text = `Long command moved to background shell ${id} (${reason}). It is not finished: its outcome arrives as a "[shell ${id}]" message with exit code and the end of its output. Do not poll or sleep; go on with other work or end the turn. shell_status reads more output while it runs.`;
-    return { content: [{ type: 'text', text }] };
+    return jobs.settle(id, graceMs, signal).then(job => {
+      if (job) {
+        const output = plainText(job.output).trimEnd() || '(no output)';
+        const stopped = job.state === 'stopped' ? '\n\nCommand aborted' : '';
+        return { content: [{ type: 'text' as const, text: `${output}${stopped}${job.log ? `\n\n[Full output: ${job.log}]` : ''}` }], isError: job.state !== 'completed' };
+      }
+      const text = `Long command still running after ${graceMs / 1000} s (${reason}): moved to background shell ${id}. Its outcome arrives as a "[shell ${id}]" message with exit code and the end of its output. Do not poll or sleep; go on with other work or end the turn. shell_status reads more output while it runs.`;
+      return { content: [{ type: 'text' as const, text }] };
+    });
   };
+}
+
+/**
+ * One shell_status read of a job: its whole output the first time, then only what is new since the previous read, and a
+ * one-line answer when nothing is. Over 14 days, 278 reads of running shells returned output already read (1.2 MB).
+ */
+export function readShell(job: ShellJob, reads: Map<string, { output: string; at: number }>, now = Date.now()): string {
+  const head = `${job.state} · ${job.mode}\n${job.command}`, output = plainText(job.output), last = reads.get(job.id);
+  reads.set(job.id, { output, at: now });
+  if (!last) return `${head}\n${output || '(No output yet)'}`;
+  const since = `${Math.round((now - last.at) / 1000)} s`;
+  const ending = job.state === 'running' ? ' Its end arrives as a "[shell ID]" message: go on with other work or end the turn instead of reading again.' : '';
+  if (output === last.output) return `${head}\nNo new output since the last read ${since} ago.${ending}`;
+  // The kept output is a sliding tail, so the previous read is found by its end, not by its start.
+  const seen = last.output.slice(-500), at = seen ? output.lastIndexOf(seen) : -1;
+  if (at >= 0) return `${head}\nNew output since the last read ${since} ago:\n${output.slice(at + seen.length).replace(/^\n/, '')}`;
+  return `${head}\n${output || '(No output yet)'}`;
 }
 
 export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () => void = () => {}, settings: ShellSettings = {}) {
   const shell = (name: string) => name === 'bash' || name === 'powershell';
+  const reads = new Map<string, { output: string; at: number }>();
   pi.on('tool_execution_start', (event, ctx) => {
     if (shell(event.toolName) && typeof event.args?.command === 'string') jobs.begin(event.toolCallId, event.args.command, ctx.cwd, 'foreground');
   });
@@ -239,7 +285,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
     async execute(_id, args) {
       const list = jobs.list(), job = args.id ? list.find(j => j.id === args.id) : undefined;
       if (args.id && !job) throw new Error('Unknown shell ID');
-      return { content: [{ type: 'text', text: job ? `${job.state} · ${job.mode}\n${job.command}\n${plainText(job.output) || '(No output yet)'}` : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
+      return { content: [{ type: 'text', text: job ? readShell(job, reads) : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
     },
   });
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',

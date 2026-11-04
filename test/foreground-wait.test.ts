@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { foregroundWait, registerForegroundWaitGuard } from '../src/foreground-wait.ts';
+import { foregroundWait } from '../src/foreground-wait.ts';
 
 // Commands taken from session 01a1704e, where 56 foreground waits cost 38 minutes.
 test('long sleeps, polling loops and watch commands are foreground waits', () => {
@@ -32,25 +31,4 @@ test('short readiness waits and ordinary commands are not', () => {
     "cat > /c/tmp/x.sh <<'EOF'\nwhile true; do sleep 60; done\nEOF\nchmod +x /c/tmp/x.sh",
     'gh run view 123 --log | grep watch',
   ]) assert.equal(foregroundWait(command), undefined, command);
-});
-
-function harness(active: string[] = ['bash', 'shell_start']) {
-  const hooks = new Map<string, (...args: unknown[]) => unknown>();
-  const pi = { on(name: string, handler: (...args: unknown[]) => unknown) { hooks.set(name, handler); }, getActiveTools: () => active } as unknown as ExtensionAPI;
-  registerForegroundWaitGuard(pi);
-  return (command: string, toolName = 'bash') => hooks.get('tool_call')!({ toolName, toolCallId: 'c', input: { command } }, {}) as { block: true; reason: string } | undefined;
-}
-
-test('the guard blocks a foreground wait before it runs and points to shell_start', () => {
-  const call = harness();
-  const blocked = call('sleep 45; gh pr checks 685');
-  assert.equal(blocked?.block, true);
-  assert.match(blocked!.reason, /shell_start/);
-  assert.match(blocked!.reason, /45 s/);
-  assert.equal(call('sleep 2 && ls'), undefined);
-  assert.equal(call('sleep 45', 'shell_start'), undefined, 'a background shell may wait');
-});
-
-test('without shell_start there is no alternative, so the wait runs', () => {
-  assert.equal(harness(['bash'])('sleep 45; gh pr checks 685'), undefined);
 });

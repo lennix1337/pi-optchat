@@ -158,8 +158,10 @@ const reapingBash = (cwd: string) => {
   return createBashToolDefinition(cwd, { commandPrefix, shellPath, operations: reapingBashOperations(shellPath) });
 };
 
-/** A bash call the mover takes: it returns the tool result at once, or undefined to run the call here. */
-export type LongBashMover = (args: { command: string; timeout?: number }, cwd: string) => { content: { type: 'text'; text: string }[] } | undefined;
+/** The result of a call the mover took: the command's own output when it ended within the grace, else its shell ID. */
+export interface MovedResult { content: { type: 'text'; text: string }[]; isError?: boolean }
+/** A bash call the mover takes: it resolves to the tool result, or returns undefined to run the call here. */
+export type LongBashMover = (args: { command: string; timeout?: number }, cwd: string, signal?: AbortSignal) => Promise<MovedResult> | undefined;
 
 /**
  * On Windows, Pi's bash tool and the user's `!` commands run with the reaping kill; elsewhere Pi's own already reaches the
@@ -170,8 +172,8 @@ export function registerReapingBash(pi: ExtensionAPI, moveLong?: LongBashMover) 
   const definition = reapingBash(process.cwd());
   pi.registerTool({ ...definition, description: moveLong ? `${definition.description} ${LONG_COMMAND_NOTE}` : definition.description,
     execute: async (id, params, signal, onUpdate, ctx) => {
-      const moved = moveLong?.(params, ctx.cwd);
-      return moved ? { ...moved, details: undefined } : reapingBash(ctx.cwd).execute(id, params, signal, onUpdate, ctx);
+      const moved = moveLong?.(params, ctx.cwd, signal);
+      return moved ? { ...await moved, details: undefined } : reapingBash(ctx.cwd).execute(id, params, signal, onUpdate, ctx);
     } });
   if (process.platform === 'win32') pi.on('user_bash', (_event, ctx) => ({ operations: reapingBashOperations(shellSettings(ctx.cwd).shellPath) }));
 }

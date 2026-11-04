@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ShellJobs, adoptShells, alertReport, endNoticeWanted, handOffShells, registerShells, runningShells, shellReport, type ShellJob } from '../src/shells.ts';
+import { ShellJobs, adoptShells, alertReport, endNoticeWanted, handOffShells, readShell, registerShells, runningShells, shellReport, type ShellJob } from '../src/shells.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from '../src/shell-alerts.ts';
 import { Check } from 'typebox/value';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -515,4 +515,24 @@ test('terminal escape sequences in shell output never reach the report, so colou
   assert.ok(text.includes('Establishing trust bg link done'));
   const alert = alertReport('sh-2', 'x', { matches: 1, total: 1, hidden: 0, firstLine: 1, lastLine: 1, shown: [{ line: 1, text: `${esc}[31mx${esc}[0m`, before: [] }] } as ShellAlert);
   assert.ok(!alert.includes(esc));
+});
+
+// 278 shell_status reads of running shells in 14 days returned output already read: 1.2 MB sent to the model again.
+test('shell_status returns the whole output once, then only what is new, and one line when nothing is', () => {
+  const job = { id: 's1', command: 'npm test', cwd: '.', mode: 'background', owner: 'main', state: 'running', started: 0, output: 'line 1\nline 2', notify: 'end' } as ShellJob;
+  const reads = new Map<string, { output: string; at: number }>();
+  assert.equal(readShell(job, reads, 1_000), 'running · background\nnpm test\nline 1\nline 2');
+  const same = readShell(job, reads, 11_000);
+  assert.match(same, /No new output since the last read 10 s ago/);
+  assert.match(same, /end the turn instead of reading again/);
+  assert.doesNotMatch(same, /line 1/);
+  job.output = 'line 1\nline 2\nline 3';
+  assert.equal(readShell(job, reads, 12_000), 'running · background\nnpm test\nNew output since the last read 1 s ago:\nline 3');
+  job.output = `${'z'.repeat(700)}line 3`;
+  readShell(job, reads, 12_500);
+  job.output = `[Earlier output omitted]\n${'z'.repeat(650)}line 3\nline 4`;
+  assert.match(readShell(job, reads, 13_000), /New output since the last read 1 s ago:\nline 4$/, 'found by its end once the tail slides');
+  job.state = 'completed';
+  assert.doesNotMatch(readShell(job, reads, 14_000), /end the turn/, 'an ended shell has no end to wait for');
+  assert.match(readShell({ ...job, id: 's2' }, reads, 15_000), /line 4$/, 'each shell has its own first read');
 });
