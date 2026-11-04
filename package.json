@@ -13,6 +13,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "verify": "npm run check && npm test",
     "test": "node --experimental-transform-types --import ./test/support.ts --test test/*.test.ts",
     "test:one": "node --experimental-transform-types --no-warnings --import ./test/support.ts --test",
     "test:pi-compat": "node --import tsx --test test/pi-runtime-compat.test.mjs",
