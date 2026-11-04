@@ -239,8 +239,20 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     // alone does not prove that the marked content is still the same. The controlled-view test below isolates restoration.
     const liveBefore = beforeReload.entries.filter(([, entry]) => entry.until > Date.parse(reloaded.date));
     const matchingAfter = liveBefore.filter(([digest, entry]) => afterReload.previous?.chain[entry.at] === digest);
-    const evidence = JSON.stringify({ busyView, reloaded, capturedAt, beforeReload, afterReload, liveBefore, matchingAfter,
-      start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write } });
+    // Each digest chain holds ~90 hashes and node clips a long assertion message, which hid the decisive figures when this failed
+    // once on CI (windows shard 2, 2026-11-04, green on rerun): keep the figures first and the chains out, down to the entries.
+    const at = (state: ViewEntriesState, entries: ViewEntriesState['entries']) => entries.map(([digest, entry]) =>
+      ({ at: entry.at, digest: digest.slice(0, 8), chainHere: state.previous?.chain[entry.at]?.slice(0, 8), until: entry.until, ttl: entry.ttl }));
+    const before = beforeReload.previous?.chain ?? [], afterChain = afterReload.previous?.chain ?? [];
+    let commonPrefix = 0;
+    while (commonPrefix < Math.min(before.length, afterChain.length) && before[commonPrefix] === afterChain[commonPrefix]) commonPrefix++;
+    const evidence = JSON.stringify({ start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
+      liveBefore: at(afterReload, liveBefore), matchingAfter: at(afterReload, matchingAfter), beforeEntries: at(beforeReload, beforeReload.entries),
+      afterEntries: at(afterReload, afterReload.entries), chainLengths: [before.length, afterChain.length], commonPrefix });
+    // The scenario itself: the busy turn's ~320 messages must reach the post-reload view as ~80 more blocks. On that CI run they
+    // took 7 (busy call 82 blocks, persisted chain and post-reload view 89, same first blocks), the call read the entry at 80 and
+    // the read/write figures below missed by 17 tokens. Name that case instead of reporting it as a cache regression.
+    assert.ok(reloaded.blocks >= busyView.blocks + 40, `the busy turn did not grow the view past the marks' lookback, so this run cannot test /reload: ${evidence}`);
     assert.ok(matchingAfter.length > 0, `a live persisted digest must match the post-reload view: ${evidence}`);
     assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${evidence}`);
     assert.ok(reloaded.marks.some((block: number) => matchingAfter.some(([, entry]) => block >= entry.at && block - entry.at <= 20)),
