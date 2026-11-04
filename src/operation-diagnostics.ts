@@ -1,3 +1,7 @@
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 // This intentionally recognizes only simple diagnostic commands, not general shell syntax.
 // Git may execute configured helpers; ripwire may write caches/baselines.
 type Word = { value: string; quoted: boolean };
@@ -126,14 +130,54 @@ function readOnlyGit(words: Word[]): boolean {
   }
   const subcommand = words[at]?.value, rest = words.slice(at + 1);
   switch (subcommand) {
-    case 'status': case 'log': case 'diff': case 'show': case 'rev-parse': case 'ls-files':
-      return !rest.some(word => abbreviates(word, '--output', 3) || abbreviates(word, '--ext-diff', 4) || abbreviates(word, '--open-files-in-pager', 3));
+    case 'status': case 'log': case 'diff': case 'show': case 'rev-parse': case 'ls-files': case 'grep':
+      // `git grep -O` opens the matches in a pager or editor.
+      return !rest.some(word => abbreviates(word, '--output', 3) || abbreviates(word, '--ext-diff', 4) || abbreviates(word, '--open-files-in-pager', 3)
+        || subcommand === 'grep' && shortCluster(word, 'O'));
     case 'branch': return readOnlyBranch(rest);
     case 'worktree': return rest.length >= 1 && rest[0].value === 'list' && rest.slice(1).every(word => ['--porcelain', '-v', '--verbose'].includes(word.value));
     case 'remote': return rest.every(word => ['-v', '--verbose'].includes(word.value));
     case 'config': return readOnlyGitConfig(rest);
     default: return false;
   }
+}
+
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const CURL_FLAGS = /^-[sSfiIv]+$/;
+const CURL_LONG_FLAGS = new Set(['--silent', '--show-error', '--fail', '--include', '--head', '--verbose', '--compressed', '-q', '--disable']);
+const CURL_VALUES = new Set(['-m', '--max-time', '--connect-timeout', '-w', '--write-out', '-o', '--output']);
+// A curlrc can add `-o file`, `-d` or `-K` to every call; `-q`/`--disable` first skips it.
+const curlrc = () => [process.env.CURL_HOME, process.env.XDG_CONFIG_HOME, homedir(), process.env.APPDATA]
+  .filter((dir): dir is string => !!dir).some(dir => existsSync(join(dir, '.curlrc')) || existsSync(join(dir, '_curlrc')));
+
+/** The single URL of a curl call whose options only shape its output, or undefined. */
+function curlOperand(words: Word[]): string | undefined {
+  let url: string | undefined;
+  for (let at = 1; at < words.length; at++) {
+    const value = words[at].value;
+    if (CURL_VALUES.has(value)) {
+      const operand = words[++at]?.value;
+      if (operand === undefined || ['-o', '--output'].includes(value) && operand !== '/dev/null') return undefined;
+    } else if (!CURL_FLAGS.test(value) && !CURL_LONG_FLAGS.has(value)) {
+      if (value.startsWith('-') || url !== undefined) return undefined;
+      url = value;
+    }
+  }
+  return url;
+}
+
+function loopbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password && LOOPBACK.has(parsed.hostname);
+  } catch { return false; }
+}
+
+/** One GET (or HEAD) of a loopback URL: no body, method, header, config, redirect or output file. */
+function readOnlyCurl(words: Word[]): boolean {
+  const url = curlOperand(words);
+  const skipsConfig = ['-q', '--disable'].includes(words[1]?.value);
+  return url !== undefined && (skipsConfig || !curlrc()) && loopbackUrl(url);
 }
 
 function readOnlyWords({ words, piped }: Command): boolean {
@@ -150,13 +194,33 @@ function readOnlyWords({ words, piped }: Command): boolean {
     case 'sort': return readOnlySort(words);
     case 'uniq': return readOnlyUniq(words);
     case 'file': return readOnlyFile(words);
+    case 'curl': return readOnlyCurl(words);
     // `tr` only reads stdin; as the first command there is nothing it could usefully inspect.
     case 'tr': return piped;
-    default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'cmp', 'od', 'stat', 'cut', 'nl', 'which', 'type', 'tasklist'].includes(name);
+    default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'cmp', 'od', 'stat', 'cut', 'nl', 'which', 'type', 'tasklist', 'netstat'].includes(name);
   }
 }
 
+/** Tools that only read; an uncertain earlier call must not keep them from checking the real state. */
+const READ_TOOLS = new Set(['shell_status', 'read_many', 'get_search_content', 'project_evidence', 'get_goal']);
+/** Observing actions of tools that dispatch on an action field; every other action may change a page, an app or a record. */
+const OBSERVING: Record<string, { field: string; fallback?: string; actions: Set<string> }> = {
+  browser_harness: { field: 'action', fallback: 'status', actions: new Set(['status', 'inspect', 'screenshot', 'read']) },
+  desktop: { field: 'command', fallback: 'status', actions: new Set(['snapshot', 'find', 'get', 'is', 'screenshot', 'list-windows', 'list-displays', 'list-apps', 'list-surfaces', 'list-notifications', 'clipboard-get', 'wait', 'status', 'version', 'skills']) },
+  gitwatch: { field: 'action', fallback: 'status', actions: new Set(['status']) },
+  commitments: { field: 'action', actions: new Set(['list']) },
+};
+
+function observingCall(tool: string, input: unknown): boolean {
+  const spec = OBSERVING[tool];
+  if (!spec || !input || typeof input !== 'object' || Array.isArray(input)) return false;
+  const action = (input as Record<string, unknown>)[spec.field] ?? spec.fallback;
+  return typeof action === 'string' && spec.actions.has(action);
+}
+
 export function isReadOnlyDiagnostic(tool: string, input: unknown): boolean {
+  if (READ_TOOLS.has(tool)) return true;
+  if (tool in OBSERVING) return observingCall(tool, input);
   if (tool !== 'bash' || !input || typeof input !== 'object') return false;
   const command = (input as { command?: unknown }).command;
   if (typeof command !== 'string' || !command.trim() || command.length > 8192) return false;

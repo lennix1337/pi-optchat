@@ -155,6 +155,58 @@ test('near-miss commands that write, execute or hide a mutation are not read-onl
   for (const command of rejected) assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
 });
 
+// 03/11: after one browser timeout the barrier refused 25 inspections in a day, among them the `browser_harness status`
+// that the timed-out result itself names as the next step, shell_status, netstat and loopback curl.
+test('observing actions and loopback inspections pass the barrier; effects of the same tools do not', () => {
+  const observing: [string, unknown][] = [
+    ['browser_harness', { action: 'status' }], ['browser_harness', {}], ['browser_harness', { action: 'screenshot', tab: 'T' }],
+    ['browser_harness', { action: 'inspect', tab: 'T' }], ['browser_harness', { action: 'read', receipt: 'r', offset: 10 }],
+    ['shell_status', { id: 'x' }], ['shell_status', {}], ['read_many', { files: [{ path: 'a' }] }], ['project_evidence', { id: 'x' }],
+    ['desktop', { command: 'snapshot', args: ['--app', 'notepad.exe', '-i'] }], ['desktop', {}], ['desktop', { command: 'list-windows' }],
+    ['commitments', { action: 'list' }], ['commitments', { action: 'list', all: true }], ['gitwatch', {}], ['gitwatch', { action: 'status' }],
+    ['bash', { command: 'netstat -ano | grep ":9333 .*LISTEN"' }],
+    ['bash', { command: 'git grep -n -e "scripts/validation" origin/main -- docs' }],
+    ['bash', { command: 'curl -s --max-time 8 http://127.0.0.1:9333/json/version | head -c 300' }],
+    ['bash', { command: 'curl -sS -o /dev/null -w "%{http_code} " -m 5 "http://localhost:3434/health?x=1"' }],
+    ['bash', { command: 'curl -I "http://[::1]:8080/"' }],
+  ];
+  for (const [tool, input] of observing) assert.equal(isReadOnlyDiagnostic(tool, input), true, JSON.stringify([tool, input]));
+  const effects: [string, unknown][] = [
+    ['browser_harness', { action: 'click', tab: 'T', node: 1 }], ['browser_harness', { action: 'evaluate', tab: 'T', expression: '1' }],
+    ['browser_harness', { action: 'open' }], ['browser_harness', { action: 'close', tab: 'T' }], ['browser_harness', { action: 'navigate', tab: 'T', url: 'x' }],
+    ['browser_harness', { action: 'type', tab: 'T', node: 1, text: 'x' }], ['browser_harness', 'status'], ['browser_harness', { action: 1 }],
+    ['desktop', { command: 'click', args: ['@e1'] }], ['desktop', { command: 'clipboard-set' }], ['desktop', { command: 'launch' }], ['desktop', { command: 'permissions' }],
+    ['commitments', { action: 'add' }], ['commitments', {}], ['commitments', { action: 'update', id: 'c_1' }], ['gitwatch', { action: 'watch', repo: 'a/b' }],
+    ['bash', { command: 'git grep -O pattern' }], ['bash', { command: 'git grep -nO pattern' }], ['bash', { command: 'git grep --open-files-in-pager=vim x' }],
+    ['bash', { command: 'curl -s https://example.com/' }], ['bash', { command: 'curl -X POST http://127.0.0.1:1/x' }],
+    ['bash', { command: 'curl -d a=1 http://127.0.0.1:1/x' }], ['bash', { command: 'curl -o out.txt http://127.0.0.1:1/x' }],
+    ['bash', { command: 'curl -L http://127.0.0.1:1/x' }], ['bash', { command: 'curl -K cfg http://127.0.0.1:1/x' }],
+    ['bash', { command: 'curl -H "X-HTTP-Method-Override: DELETE" http://127.0.0.1:1/x' }], ['bash', { command: 'curl -sd x http://127.0.0.1:1/x' }],
+    ['bash', { command: 'curl http://127.0.0.1:1/a http://127.0.0.1:1/b' }], ['bash', { command: 'curl http://127.0.0.1.evil.com/' }],
+    ['bash', { command: 'curl http://localhost@evil.com/' }], ['bash', { command: 'curl file:///etc/passwd' }], ['bash', { command: 'curl -m' }], ['bash', { command: 'curl' }],
+    // Unquoted brackets are a glob that could expand to an option.
+    ['bash', { command: 'curl -I http://[::1]:8080/' }],
+  ];
+  for (const [tool, input] of effects) assert.equal(isReadOnlyDiagnostic(tool, input), false, JSON.stringify([tool, input]));
+});
+
+test('the recovery step a timed-out browser call names runs behind the barrier it opened', async () => {
+  const j = journal();
+  const hooks = new Map<string, (...args: unknown[]) => unknown>();
+  const pi = { on(name: string, handler: (...args: unknown[]) => unknown) { hooks.set(name, handler); }, getAllTools() { return []; }, registerTool() {} } as unknown as ExtensionAPI;
+  const ctx = { sessionManager: { getSessionId: () => 'session', getLeafId: () => 'entry' } };
+  registerOperationSafety(pi, () => j);
+  const call = (id: string, toolName: string, input: unknown) => hooks.get('tool_call')!({ toolName, toolCallId: id, input }, ctx);
+  await call('eval', 'browser_harness', { action: 'evaluate', tab: 'T', expression: 'document.title' });
+  await hooks.get('tool_result')!({ toolName: 'browser_harness', toolCallId: 'eval', isError: true, content: [{ type: 'text', text: '{"status":"outcome_uncertain","message":"Runtime.evaluate timed out after 40s"}' }] }, ctx);
+  assert.equal(j.pending().length, 1);
+  for (const [id, tool, input] of [['status', 'browser_harness', { action: 'status' }], ['shot', 'browser_harness', { action: 'screenshot', tab: 'T' }], ['shell', 'shell_status', { id: 'x' }]] as const) {
+    assert.equal(await call(id, tool, input), undefined, `${tool} ${JSON.stringify(input)}`);
+  }
+  assert.equal((await call('again', 'browser_harness', { action: 'evaluate', tab: 'T', expression: 'document.title' }) as { block?: boolean })?.block, true);
+  assert.equal(j.pending().length, 1);
+});
+
 test('a block message names each uncertain call with its tool and says read-only tools still work', () => {
   const j = journal();
   j.start('s', 'slow-call', 'bash', { command: 'git push' });
