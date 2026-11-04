@@ -14,6 +14,12 @@ export type RestoreHold = { taskId: string; revision: number; title: string; sta
  * after the snapshot, so no worker starts new work for a held revision until the operator reconciles it.
  */
 export const RESTORE_HOLDS_TABLE = 'CREATE TABLE IF NOT EXISTS restore_holds (profile TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(profile,task_id))';
+/**
+ * Finds the event that created a task. The executor asks this for every active task on every pass, so it goes through
+ * TASK_CREATION_INDEX (same expressions, same `create` filter) instead of parsing the JSON of every stored event.
+ */
+export const TASK_CREATION_SQL = "SELECT payload FROM events WHERE profile = ? AND json_extract(payload, '$.event.taskId') = ? AND json_extract(payload, '$.operation') = 'create' LIMIT 1";
+export const TASK_CREATION_INDEX = "CREATE INDEX IF NOT EXISTS events_task_creation ON events (profile, json_extract(payload, '$.event.taskId')) WHERE json_extract(payload, '$.operation') = 'create'";
 /** Restore runs this on the snapshot's task database: every task revision that was queued or working is held. */
 export const RESTORE_HOLDS_FENCE = "INSERT OR REPLACE INTO restore_holds (profile, task_id, revision) SELECT profile, id, json_extract(snapshot, '$.revision') FROM tasks WHERE json_extract(snapshot, '$.status') IN ('queued', 'working')";
 
@@ -39,6 +45,7 @@ export class TaskStore {
         this.db.exec('CREATE TABLE IF NOT EXISTS task_store_identity (id TEXT PRIMARY KEY)');
         if (!this.db.prepare('SELECT id FROM task_store_identity LIMIT 1').get()) this.db.prepare('INSERT INTO task_store_identity VALUES (?)').run(randomUUID());
         this.db.exec(RESTORE_HOLDS_TABLE);
+        this.db.exec(TASK_CREATION_INDEX);
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     } catch (error) { this.db.close(); throw error; }
@@ -188,7 +195,7 @@ export class TaskStore {
   }
   /** The event that created the task: its channel and source decide what may act on it. */
   creation(taskId: string): StoredEvent | null {
-    const row = this.taskRow("SELECT payload FROM events WHERE profile = ? AND json_extract(payload, '$.event.taskId') = ? AND json_extract(payload, '$.operation') = 'create' LIMIT 1", taskId);
+    const row = this.taskRow(TASK_CREATION_SQL, taskId);
     return row ? JSON.parse(String(row.payload)) as StoredEvent : null;
   }
   close(): void { this.db.close(); }
