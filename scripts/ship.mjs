@@ -18,7 +18,7 @@ const FORBIDDEN_HINT = {
   '--force': 'ship não força push', '-f': 'ship não força push', '--force-with-lease': 'ship não força push',
   '--no-verify': 'ship não pula hooks', '--admin': 'merge com --admin é decisão do operador',
 };
-const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--base BRANCH] [--wait S] [--dry-run]
+const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run]
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
   -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
                        (obrigatória quando a branch ainda não tem PR aberta)
@@ -27,6 +27,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --pr N               só enfileira o auto-merge da PR N (sem commit, push ou PR)
   --no-auto            abre a PR sem enfileirar o auto-merge
   --direct-main        envia a branch padrão direto, sem PR
+  --branch NOME        estando na branch padrão, cria a branch NOME com as mudanças atuais e envia por ela
   --base BRANCH        base da PR (padrão: branch padrão do origin)
   --wait S             espera até S segundos pelos checks (padrão 20)
   --dry-run            mostra o plano, sem efeitos
@@ -263,13 +264,19 @@ async function shipBranch(opts, ctx) {
   ]);
   if (branchR.code === 128) throw refuse('not_a_git_repo', 'rode dentro de um repositório git');
   if (branchR.code !== 0) throw refuse('detached_head', 'HEAD solto: crie uma branch (git switch -c NOME)');
-  const branch = branchR.out.trim();
+  let branch = branchR.out.trim();
   const base = opts.base ?? (originR.code === 0 ? originR.out.trim().replace(/^origin\//, '') : 'main');
   const staged = stagedR.out.trim();
   const selecting = opts.all || opts.paths.length > 0;
   ctx.branch = branch;
 
-  if (!opts.directMain && branch === base) throw refuse('default_branch', `a branch é ${base}: crie uma branch, ou passe --direct-main para enviar direto`);
+  const creating = opts.branch !== undefined && branch !== opts.branch;
+  if (creating) {
+    if (branch !== base) throw refuse('branch_flag_not_on_base', `--branch só cria a partir da branch padrão (${base}); você está em ${branch}`);
+    if ((await git(['rev-parse', '--verify', '--quiet', `refs/heads/${opts.branch}`])).code === 0) throw refuse('branch_exists', `a branch ${opts.branch} já existe: troque para ela e rode sem --branch`);
+    branch = opts.branch;
+  }
+  if (!creating && !opts.directMain && branch === base) throw refuse('default_branch', `a branch é ${base}: passe --branch NOME para criar uma, ou --direct-main para enviar direto`);
   if (opts.directMain && branch !== base) throw refuse('direct_main_not_default', `--direct-main só vale na branch padrão (${base}); você está em ${branch}`);
   if (!opts.directMain && !SAFE_REF.test(branch)) throw refuse('branch_name_unsupported', `nome de branch fora do formato aceito pelo gh: ${branch}`);
   if (!selecting && staged && opts.message === undefined) throw refuse('message_required', 'há mudanças staged: passe -m "assunto"');
@@ -289,6 +296,7 @@ async function shipBranch(opts, ctx) {
     if (existing?.error) throw failed('pr_lookup', existing.error, 'gh pr view falhou: confira a conexão e rode de novo');
     const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
     const plan = [
+      creating && `criar branch ${branch}`,
       selecting && (opts.all ? 'stage --all' : `stage ${opts.paths.join(' ')}`),
       'commit',
       opts.directMain ? `push ${base}` : `push ${branch}`,
@@ -296,6 +304,12 @@ async function shipBranch(opts, ctx) {
       !opts.directMain && !opts.noAuto && 'auto-merge',
     ].filter(Boolean).join(' > ');
     return emit('dry_run', { ...ctx, base, pr: existingOpen?.number, plan });
+  }
+
+  if (creating) {
+    const sw = await git(['switch', '-c', opts.branch]);
+    if (sw.code) throw failed('branch', sw, 'git switch -c recusou: nada foi commitado; confira o nome e o estado do repositório');
+    ctx.branch = branch;
   }
 
   let commit;
@@ -325,6 +339,7 @@ async function shipBranch(opts, ctx) {
   const aheadCount = ahead.code === 0 ? Number(ahead.out) : null;
   const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
   if (!commitNeeded && aheadCount === 0 && !existingOpen) {
+    if (creating) { await git(['switch', base]); await git(['branch', '-d', branch]); }
     throw refuse('nothing_to_ship', 'nada para commitar, nada à frente da base e nenhuma PR aberta para esta branch');
   }
 
@@ -352,7 +367,7 @@ async function shipBranch(opts, ctx) {
 
 // --- arguments and entry ---
 function parseArgs(argv) {
-  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, base: undefined, wait: 20, dryRun: false, message: undefined, body: undefined, help: false };
+  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, body: undefined, help: false };
   const valueOf = (flag, i) => {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith('-')) throw refuse('missing_value', `${flag} precisa de um valor`);
@@ -379,6 +394,10 @@ function parseArgs(argv) {
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
     else if (arg === '--direct-main') opts.directMain = true;
+    else if (arg === '--branch') {
+      opts.branch = valueOf(arg, i); i++;
+      if (!SAFE_REF.test(opts.branch)) throw refuse('branch_name_unsupported', `nome de branch fora do formato aceito pelo gh: ${opts.branch}`);
+    }
     else if (arg === '--base') {
       opts.base = valueOf(arg, i); i++;
       if (!SAFE_REF.test(opts.base)) throw refuse('base_name_unsupported', `nome de base fora do formato aceito: ${opts.base}`);
@@ -394,9 +413,10 @@ function parseArgs(argv) {
   if ((opts.all || opts.paths.length) && opts.message === undefined) throw refuse('message_required', 'com caminhos ou --all, passe -m "assunto"');
   if (opts.message !== undefined && !opts.message.trim()) throw refuse('message_required', '-m não pode ser vazio');
   if (opts.body !== undefined && !opts.body.trim()) throw refuse('body_required', 'a descrição (-b/--body-file) não pode ser vazia');
-  if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.base !== undefined)) {
+  if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined || opts.base !== undefined)) {
     throw refuse('conflicting_args', '--pr só enfileira o auto-merge de uma PR existente');
   }
+  if (opts.directMain && opts.branch !== undefined) throw refuse('conflicting_args', '--direct-main e --branch juntos: escolha um');
   if (opts.directMain && opts.noAuto) throw refuse('conflicting_args', '--direct-main não abre PR: --no-auto não se aplica');
   return opts;
 }

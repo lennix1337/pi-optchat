@@ -333,3 +333,38 @@ test('help prints usage and exits 0', t => {
   assert.equal(r.code, 0);
   assert.match(r.raw, /node scripts\/ship\.mjs/);
 });
+
+test('--branch creates the branch from the default branch with the working changes and ships through it', t => {
+  const fx = fixture(); t.after(fx.close);
+  git(fx.work, ['switch', '-q', 'main']);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt', '--branch', 'feat/novo']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out.branch, 'feat/novo');
+  assert.equal(git(fx.work, ['branch', '--show-current']), 'feat/novo');
+  assert.equal(git(fx.work, ['rev-parse', 'main']), git(fx.work, ['rev-parse', 'origin/main']), 'main stays untouched');
+  assert.ok(remoteSha(fx, 'feat/novo'));
+});
+
+test('--branch dry-run plans the branch and creates nothing', t => {
+  const fx = fixture(); t.after(fx.close);
+  git(fx.work, ['switch', '-q', 'main']);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt', '--branch', 'feat/novo', '--dry-run']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out.plan, /^criar branch feat\/novo > stage a\.txt/);
+  assert.equal(git(fx.work, ['branch', '--show-current']), 'main');
+});
+
+test('--branch is refused off the default branch and when the name exists', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const off = ship(fx, [...BODY, '-m', 'x', 'a.txt', '--branch', 'feat/outra']);
+  assert.equal(off.code, 2);
+  assert.equal(off.out.error, 'branch_flag_not_on_base');
+  git(fx.work, ['switch', '-q', 'main']);
+  const dup = ship(fx, [...BODY, '-m', 'x', 'a.txt', '--branch', 'feat/x']);
+  assert.equal(dup.code, 2);
+  assert.equal(dup.out.error, 'branch_exists');
+  assert.equal(git(fx.work, ['branch', '--show-current']), 'main');
+});
