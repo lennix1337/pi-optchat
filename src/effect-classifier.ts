@@ -1,5 +1,5 @@
 import { record } from './cache.ts';
-import { browserConsentEffect, commandExternalEffects } from './external-effects.ts';
+import { browserConsentEffect, browserScriptEffects, commandExternalEffects, pageScriptEffects } from './external-effects.ts';
 
 /** High-impact effects the autonomy contract decides on. */
 export const ACTIONS = ['push', 'push-main', 'force-push', 'merge', 'publish', 'deploy', 'production-write', 'paid',
@@ -261,6 +261,9 @@ function toolEffects(w: string[], lower: string, dir: string, repo: Repo): Effec
 function segmentEffects(command: string, dir: string, repo: Repo, depth: number): Effect[] {
   const w = commandWords(command);
   if (!w.length) return [];
+  // A page script handed to any runner (a browser helper's `eval`, node -e...) writes where its fetch points.
+  const page = pageScriptEffects(command);
+  if (page.length) return page;
   const head = unquote(w[0]).replace(/^&$/, '').replace(/\.exe$/i, '');
   const lower = head.toLowerCase().split(/[/\\]/).at(-1)!;
   if (interpreters.test(lower)) return interpreterEffects(w, lower, dir, repo, depth);
@@ -305,7 +308,7 @@ export const scriptCommands = (code: string) => [...code.matchAll(/\bcommand\s*:
 export function classifyEffects({ tool, input, cwd }: { tool: string; input: unknown; cwd: string }, repo: Repo): Effect[] {
   // Targets name the kind of spend: delegated agents on the operator's plan, or a direct model run (bench, pi -p, models.*).
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? [] : [{ action: 'paid', targets: ['subagent'] }];
-  if (tool === 'browser_harness') { const consent = browserConsentEffect(input); return consent ? [consent] : []; }
+  if (tool === 'browser_harness') { const consent = browserConsentEffect(input); return [...(consent ? [consent] : []), ...browserScriptEffects(input)]; }
   const shell = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? [input.command] : undefined;
   const code = record(input) && typeof input.code === 'string' && tool === 'codemode' ? input.code : undefined;
   const texts = shell ?? (code !== undefined ? scriptCommands(code) : []);
