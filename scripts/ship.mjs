@@ -9,7 +9,8 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup';
-const TIMEOUT_MS = { local: 60_000, push: 180_000, gh: 60_000, create: 120_000 };
+// A commit runs the repository's pre-commit hook (lint, types, tests, build), which can take many minutes: killing it at the local limit leaves the hook running orphaned.
+const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
 const SAFE_GH_ARG = /^[A-Za-z0-9._/,:=-]+$/;
 const EXIT = { queued: 0, merged: 0, pr_open: 0, pushed: 0, dry_run: 0, failed: 1, refused: 2, not_queued: 3, uncertain: 4 };
@@ -42,7 +43,7 @@ const uncertain = (stage, next) => new Stop('uncertain', { stage, next });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const firstLine = text => (text.trim().split(/\r?\n/)[0] ?? '').slice(0, 200);
 const tail = text => text.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 300);
-const timeoutFor = kind => Number(process.env.SHIP_TIMEOUT_MS) || TIMEOUT_MS[kind];
+const timeoutFor = kind => Number(process.env[kind === 'commit' ? 'SHIP_COMMIT_TIMEOUT_MS' : 'SHIP_TIMEOUT_MS']) || TIMEOUT_MS[kind];
 
 // --- output: a flat key: value object; values that could be misread (colons, quotes, numeric text) are quoted ---
 const TOON_ESCAPE = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
@@ -306,7 +307,7 @@ async function shipBranch(opts, ctx) {
   }
   if (commitNeeded) {
     const headBefore = headR.out.trim();
-    const c = await git(['commit', '-m', opts.message, ...(opts.body ? ['-m', opts.body] : []), ...(selecting && !opts.all ? ['--', ...opts.paths] : [])]);
+    const c = await git(['commit', '-m', opts.message, ...(opts.body ? ['-m', opts.body] : []), ...(selecting && !opts.all ? ['--', ...opts.paths] : [])], 'commit');
     if (c.killed) {
       const head = (await git(['rev-parse', '--verify', '--quiet', 'HEAD'])).out.trim();
       if (head === headBefore || !head) throw uncertain('commit', 'git log -1 para reconciliar; não repita o commit');

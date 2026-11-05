@@ -284,6 +284,28 @@ test('a PR create that times out is reconciled and not replayed', t => {
   assert.equal(fx.ghCalls().filter(args => args[1] === 'create').length, 1, 'the create ran once, not replayed');
 });
 
+test('a slow pre-commit hook is not killed by the short local timeout', t => {
+  const fx = fixture(); t.after(fx.close);
+  const hook = join(fx.work, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\nsleep 3\n');
+  chmodSync(hook, 0o755);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_TIMEOUT_MS: '1500' });
+  assert.notEqual(r.out.stage, 'commit', r.raw + r.err);
+  assert.equal(git(fx.work, ['log', '-1', '--format=%s']), 'feat: a');
+});
+
+test('a commit that outlives its own timeout stays uncertain', t => {
+  const fx = fixture(); t.after(fx.close);
+  const hook = join(fx.work, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\nsleep 5\n');
+  chmodSync(hook, 0o755);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_COMMIT_TIMEOUT_MS: '1500' });
+  assert.equal(r.code, 4);
+  assert.equal(r.out.stage, 'commit');
+});
+
 test('dry-run prints the plan and runs no effect', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');
