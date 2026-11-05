@@ -95,6 +95,45 @@ test('the last output line carries the exit code, so a piped run (| tail) still 
   assert.equal(dry.raw.trimEnd().split('\n').at(-1), 'rc: 0');
 });
 
+test('--sync returns to the default branch, fast-forwards it and drops the merged local branch', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', '-A']); git(fx.work, ['commit', '-q', '-m', 'feat']);
+  git(fx.work, ['push', '-q', 'origin', 'feat/x:main']);
+  const r = ship(fx, ['--sync']);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.status, 'synced');
+  assert.equal(r.out.local_branch, 'deleted feat/x');
+  assert.equal(git(fx.work, ['branch', '--show-current']), 'main');
+  assert.equal(localSha(fx), git(fx.work, ['rev-parse', 'origin/main']));
+  assert.equal(r.raw.trimEnd().split('\n').at(-1), 'rc: 0');
+});
+
+test('--sync keeps a branch git does not call merged, and refuses a dirty tree before any effect', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', '-A']); git(fx.work, ['commit', '-q', '-m', 'unmerged work']);
+  const kept = ship(fx, ['--sync']);
+  assert.equal(kept.code, 0);
+  assert.equal(kept.out.local_branch, 'kept feat/x');
+  assert.match(git(fx.work, ['branch', '--list', 'feat/x']), /feat\/x/);
+  git(fx.work, ['switch', '-q', 'feat/x']);
+  commitFile(fx, 'dirty.txt');
+  const refused = ship(fx, ['--sync']);
+  assert.equal(refused.code, 2);
+  assert.equal(refused.out.error, 'dirty_tree');
+  assert.equal(git(fx.work, ['branch', '--show-current']), 'feat/x');
+});
+
+test('--sync does not combine with commit or PR options', t => {
+  const fx = fixture(); t.after(fx.close);
+  for (const extra of [['--all', '-m', 'x'], ['--pr', '3'], ['--direct-main'], ['--branch', 'feat/y']]) {
+    const r = ship(fx, ['--sync', ...extra]);
+    assert.equal(r.code, 2, extra.join(' '));
+    assert.equal(r.out.error, 'conflicting_args');
+  }
+});
+
 test('refuses flags that would force a push, skip hooks or merge as admin', t => {
   const fx = fixture(); t.after(fx.close);
   for (const flag of ['--force', '-f', '--force-with-lease', '--no-verify', '--admin', '--delete-branch']) {

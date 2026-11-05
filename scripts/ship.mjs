@@ -13,12 +13,12 @@ const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusChec
 const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
 const SAFE_GH_ARG = /^[A-Za-z0-9._/,:=-]+$/;
-const EXIT = { queued: 0, merged: 0, pr_open: 0, pushed: 0, dry_run: 0, failed: 1, refused: 2, not_queued: 3, uncertain: 4 };
+const EXIT = { queued: 0, merged: 0, synced: 0, pr_open: 0, pushed: 0, dry_run: 0, failed: 1, refused: 2, not_queued: 3, uncertain: 4 };
 const FORBIDDEN_HINT = {
   '--force': 'ship não força push', '-f': 'ship não força push', '--force-with-lease': 'ship não força push',
   '--no-verify': 'ship não pula hooks', '--admin': 'merge com --admin é decisão do operador',
 };
-const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run]
+const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
   -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
                        (obrigatória quando a branch ainda não tem PR aberta)
@@ -31,6 +31,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --base BRANCH        base da PR (padrão: branch padrão do origin)
   --wait S             espera até S segundos pelos checks (padrão 20)
   --dry-run            mostra o plano, sem efeitos
+  --sync               depois do merge: vai para a branch padrão, puxa só com fast-forward e apaga a branch local anterior se o git a considera mesclada
 saída: "status" final. exit 0 feito · 1 falhou · 2 recusado antes de qualquer efeito · 3 PR aberta sem auto-merge · 4 efeito incerto: reconcilie, não repita`;
 
 /** A stop with a final status and its fields. Refusals stop before any effect; uncertain stops name the stage to reconcile. */
@@ -258,6 +259,34 @@ async function autoMergeOnly(opts, ctx) {
   return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait));
 }
 
+// After a merge: back on the default branch, fast-forwarded, and the finished branch removed only when git itself calls it merged (-d, never -D).
+async function syncAfterMerge(opts, ctx) {
+  const [branchR, originR, dirtyR] = await Promise.all([
+    git(['symbolic-ref', '--quiet', '--short', 'HEAD']),
+    git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']),
+    git(['status', '--porcelain']),
+  ]);
+  if (dirtyR.code === 128) throw refuse('not_a_git_repo', 'rode dentro de um repositório git');
+  if (branchR.code !== 0) throw refuse('detached_head', 'HEAD solto: troque para uma branch antes');
+  const branch = branchR.out.trim();
+  const base = opts.base ?? (originR.code === 0 ? originR.out.trim().replace(/^origin\//, '') : 'main');
+  ctx.branch = branch;
+  if (dirtyR.out.trim()) throw refuse('dirty_tree', 'há mudanças não commitadas: commite ou guarde antes de --sync');
+  if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `switch ${base} > pull --ff-only > branch -d ${branch === base ? '(nada)' : branch}` });
+  const fetched = await git(['fetch', '-q', 'origin'], 'push');
+  if (fetched.code) throw failed('fetch', fetched, 'git fetch falhou: confira a conexão e rode de novo');
+  if (branch !== base) {
+    const sw = await git(['switch', '-q', base]);
+    if (sw.code) throw failed('switch', sw, `não consegui trocar para ${base}`);
+  }
+  const pull = await git(['pull', '-q', '--ff-only'], 'push');
+  if (pull.code) throw failed('pull', pull, `${base} divergiu do origin: resolva à mão, ship não força`);
+  const head = (await git(['log', '--oneline', '-1'])).out.trim();
+  if (branch === base) return emit('synced', { branch: base, head, local_branch: 'none' });
+  const del = await git(['branch', '-d', branch]);
+  return emit('synced', { branch: base, head, local_branch: del.code === 0 ? `deleted ${branch}` : `kept ${branch}`, detail: del.code === 0 ? undefined : firstLine(del.err), next: del.code === 0 ? undefined : `a branch ${branch} tem commits fora de ${base}: confira a PR antes de apagar` });
+}
+
 async function shipBranch(opts, ctx) {
   const [branchR, headR, stagedR, originR] = await Promise.all([
     git(['symbolic-ref', '--quiet', '--short', 'HEAD']),
@@ -370,7 +399,7 @@ async function shipBranch(opts, ctx) {
 
 // --- arguments and entry ---
 function parseArgs(argv) {
-  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, body: undefined, help: false };
+  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, body: undefined, help: false };
   const valueOf = (flag, i) => {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith('-')) throw refuse('missing_value', `${flag} precisa de um valor`);
@@ -396,6 +425,7 @@ function parseArgs(argv) {
     else if (arg === '--all') opts.all = true;
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
+    else if (arg === '--sync') opts.sync = true;
     else if (arg === '--direct-main') opts.directMain = true;
     else if (arg === '--branch') {
       opts.branch = valueOf(arg, i); i++;
@@ -412,6 +442,9 @@ function parseArgs(argv) {
     else opts.paths.push(arg);
   }
   if (opts.help) return opts;
+  if (opts.sync && (opts.all || opts.paths.length || opts.pr !== undefined || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined)) {
+    throw refuse('conflicting_args', '--sync só sincroniza depois do merge (aceita --base e --dry-run)');
+  }
   if (opts.all && opts.paths.length) throw refuse('conflicting_args', '--all e caminhos juntos: escolha um');
   if ((opts.all || opts.paths.length) && opts.message === undefined) throw refuse('message_required', 'com caminhos ou --all, passe -m "assunto"');
   if (opts.message !== undefined && !opts.message.trim()) throw refuse('message_required', '-m não pode ser vazio');
@@ -439,6 +472,7 @@ async function main(argv) {
   }
   const ctx = {};
   try {
+    if (opts.sync) return await syncAfterMerge(opts, ctx);
     return opts.pr !== undefined
       ? await autoMergeOnly(opts, { pr: Number(opts.pr) })
       : await shipBranch(opts, ctx);
