@@ -102,6 +102,10 @@ test('Windows autostart is explicit opt-in: dry run by default, reversible, neve
   assert.match(launcher, /^optchat-assistant-[0-9a-f]{12}\.cmd$/);
   const content = readFileSync(join(startup, launcher), 'utf8');
   assert.match(content, /start\.mjs" --config "/); assert.doesNotMatch(content, new RegExp(TOKEN));
+  // At logon the machine is busy and the console closes: the launcher waits out transient failures and keeps its output.
+  assert.match(content, /--wait-seconds \d+/);
+  assert.match(content, />> "[^"]+assistant-autostart\.log" 2>&1/);
+  assert.match(plan.stdout, /assistant-autostart\.log/);
   assert.equal(run('install', '--config', svc.config, '--yes').json.result, 'already_installed');
 
   assert.equal(run('uninstall', '--config', svc.config).json.result, 'dry_run');
@@ -109,6 +113,16 @@ test('Windows autostart is explicit opt-in: dry run by default, reversible, neve
   assert.equal(run('uninstall', '--config', svc.config, '--yes').json.result, 'uninstalled');
   assert.deepEqual(readdirSync(startup), []);
   assert.equal(run('uninstall', '--config', svc.config, '--yes').json.result, 'not_installed');
+
+  // A launcher from the earlier version (no wait, no log) is ours: install upgrades it in place, uninstall removes it.
+  const legacy = content.split('\r\n').map(line => line.replace(/ --wait-seconds \d+.*$/, '')).filter(line => !line.startsWith('echo ')).join('\r\n');
+  writeFileSync(join(startup, launcher), legacy);
+  assert.equal(run('install', '--config', svc.config).json.result, 'dry_run');
+  assert.equal(readFileSync(join(startup, launcher), 'utf8'), legacy, 'a dry run leaves the old launcher alone');
+  assert.equal(run('install', '--config', svc.config, '--yes').json.result, 'upgraded');
+  assert.equal(readFileSync(join(startup, launcher), 'utf8'), content);
+  writeFileSync(join(startup, launcher), legacy);
+  assert.equal(run('uninstall', '--config', svc.config, '--yes').json.result, 'uninstalled');
 
   writeFileSync(join(startup, launcher), 'someone else\r\n');
   assert.equal(run('install', '--config', svc.config, '--yes').json.code, 'autostart_conflict');

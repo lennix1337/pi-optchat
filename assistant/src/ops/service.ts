@@ -190,6 +190,25 @@ export async function startService(options: { configPath: string; web?: boolean;
   });
 }
 
+/** Failures a busy machine causes (ACL or process inspection timing out, a concurrent start, a slow first health read). */
+const TRANSIENT_START_CODES = new Set(['privacy_check_timed_out', 'process_inspection_failed', 'service_busy', 'start_unhealthy']);
+
+/**
+ * Retries `start` on transient failures until `waitMs` has passed; any other failure, or the last transient one, is
+ * rethrown. Used at logon, where the first attempt often times out and nobody is watching the console.
+ */
+export async function startWithRetry<T>(start: () => Promise<T>, options: { waitMs: number; delayMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> }): Promise<T> {
+  const now = options.now ?? Date.now, pause = options.sleep ?? sleep, delayMs = options.delayMs ?? 10_000;
+  const deadline = now() + options.waitMs;
+  for (;;) {
+    try { return await start(); } catch (error) {
+      if (!(error instanceof OpsError) || !TRANSIENT_START_CODES.has(error.message) || now() + delayMs > deadline) throw error;
+      console.error(`${new Date().toISOString()} start attempt failed (${error.message}); retrying in ${Math.round(delayMs / 1000)} s`);
+      await pause(delayMs);
+    }
+  }
+}
+
 async function waitForExit(pid: number, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) { if (!alive(pid)) return true; await sleep(100); }
