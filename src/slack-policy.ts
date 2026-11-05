@@ -13,6 +13,10 @@ export const wordBudget = (channel: string | null, budgets: WordBudgets = {}): n
 export const budgetNote = (budget: number): string => `(Responda em até ${budget} palavras; o que passar disso vai para a thread.)`;
 /** The paragraph `budgetNote` ends a Slack message with, matched to take it off again (a message's title). */
 export const BUDGET_NOTE = /\n\n\(Responda em até \d+ palavras; o que passar disso vai para a thread\.\)/;
+/** The paragraph a Slack message gets when it arrives while a run is working. */
+export const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
+/** His message without the notes the bridge appended to it: what he actually wrote. */
+export const withoutBridgeNotes = (text: string): string => text.replace(MID_RUN, '').replace(BUDGET_NOTE, '');
 
 const POINTER = '_… texto completo na thread._';
 export const words = (text: string): number => text.match(/\S+/g)?.length ?? 0;

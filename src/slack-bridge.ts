@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
-import { budgetNote, fitPost, wordBudget, type WordBudgets } from './slack-policy.ts';
+import { budgetNote, fitPost, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
 import type { WaitingItem } from './commitments.ts';
 
@@ -54,7 +54,6 @@ const HELD_MS = 1_000;
 const COMMAND_APPROVAL_MS = 10 * 60_000;
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 /** A DM steered into a working run: a text-only reply would end the run and stop the work. */
-const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 
 const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, 20_000, cancel);
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
