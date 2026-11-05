@@ -194,7 +194,8 @@ function nextFor(reason, number) {
   switch (reason) {
     case 'checks_not_reported': return `quando os checks aparecerem: node scripts/ship.mjs --pr ${number}`;
     case 'checks_failed': return `corrija o CI da PR ${number} e rode: node scripts/ship.mjs --pr ${number}`;
-    case 'merge_would_be_immediate': return `o GitHub faria o merge na hora: espere os checks e rode node scripts/ship.mjs --pr ${number}`;
+    case 'merge_would_be_immediate':
+    case 'merge_state_unstable': return `sem check obrigatório o GitHub não enfileira o auto-merge (repetir --pr não muda isso): espere os checks ficarem verdes (o gitwatch avisa) e mescle com: gh pr merge ${number} --squash --delete-branch`;
     case 'auto_merge_disabled': return 'o repositório desligou o auto-merge: decida com o operador';
     default: return `resolva o motivo e rode: node scripts/ship.mjs --pr ${number}`;
   }
