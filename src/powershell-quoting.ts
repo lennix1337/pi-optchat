@@ -27,10 +27,24 @@ function doubleQuoted(command: string, from: number): string[] {
   return strings;
 }
 
+/** Whether `index` falls inside a quoted string, where `powershell` is text (a grep pattern) rather than a call. */
+function insideQuotes(command: string, index: number): boolean {
+  let quote: string | undefined;
+  for (let at = 0; at < index; at++) {
+    const char = command[at];
+    if (quote === '"' && char === '\\') { at++; continue; }
+    if (quote) { if (char === quote) quote = undefined; continue; }
+    if (char === '\\') { at++; continue; }
+    if (char === '"' || char === "'") quote = char;
+  }
+  return quote !== undefined;
+}
+
 /** The PowerShell variable bash would expand first, or undefined. Pure so the patterns are testable. */
 export function bashMangledPowerShell(command: string): string | undefined {
   const text = command.replace(HEREDOC, '');
   for (const match of text.matchAll(INVOCATION)) {
+    if (insideQuotes(text, match.index! + match[0].search(/\S/))) continue;
     for (const body of doubleQuoted(text, match.index! + match[0].length)) {
       const hit = POWERSHELL_DOLLAR.exec(body);
       if (hit) return hit[0].replace(/[.[]$/, '');

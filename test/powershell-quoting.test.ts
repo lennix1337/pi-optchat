@@ -28,6 +28,9 @@ test('scripts bash leaves alone, and bash variables meant for bash, are not refu
     'echo "$_.x" ; ls',
     "cat > probe.ps1 <<'EOF'\nGet-Process | Where-Object { $_.CPU -gt 10 }\nEOF\npowershell -File probe.ps1",
     'echo "powershell" "$_.x"',
+    // 05/11: the word inside a grep pattern is text, not a call; the later "$((...))" belongs to bash.
+    'cd C:/projetos; s=$(date +%s%N); grep -rln "before PowerShell starts" pi-* | wc -l; echo "grep rc=$? $(( ($(date +%s%N)-s)/1000000 ))ms"; s=$(date +%s%N); rg -l "before PowerShell starts" pi-* | wc -l; echo "rg $(( ($(date +%s%N)-s)/1000000 ))ms"',
+    "grep -n 'run pwsh -c here' notes.md; echo \"$(date)\"; echo \"$(whoami)\"",
   ];
   for (const command of fine) assert.equal(bashMangledPowerShell(command), undefined, command);
 });
