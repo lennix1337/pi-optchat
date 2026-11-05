@@ -191,6 +191,10 @@ test('CLEAN with checks still running would merge at once, so it is not queued',
   assert.equal(r.out.reason, 'merge_would_be_immediate');
   assert.equal(r.out.checks, '0 pass / 1 pending / 0 fail');
   assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
+
+  // Without a required check GitHub never queues: repeating --pr cannot help, so the hint names the merge that can.
+  assert.doesNotMatch(r.out.next, /ship\.mjs --pr/);
+  assert.match(r.out.next, /gh pr merge 1 --squash/);
 });
 
 test('a failing check is reported and blocks the queue', t => {
