@@ -19,6 +19,9 @@ const sdk: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 
 test('native Pi command -> HTTP -> SQLite -> visible response and original survive reload and reopen', { timeout: 25000 }, async t => {
+  // A Windows CI run timed out here (04/11, a5bb407) with no clue where; each step is reported with the test's result, a timeout included.
+  const started = Date.now();
+  const step = (name: string) => t.diagnostic(`step ${name} at ${Date.now() - started} ms`);
   const dir = mkdtempSync(join(tmpdir(), 'assistant-native-'));
   const profileId = 'assistant-native';
   createProfile(profileId);
@@ -51,6 +54,7 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
   const encoded = encodeURIComponent(taskId);
   const context = (sourceEventId: string) => ({ sessionId: 'producer-session', channelId: 'producer-channel', runId: 'producer-run', sourceEventId, evidenceReference: `optchat:${profileId}:0` });
   const post = async (route: string, value: unknown, expected = 200) => {
+    step(`POST ${route.split('/').at(-1)}`);
     const response = await fetch(endpoint + route, { method: 'POST', headers: { authorization: 'Bearer disposable-native-token', 'content-type': 'application/json' }, body: JSON.stringify(value) });
     assert.equal(response.status, expected);
     return response.json();
@@ -66,6 +70,7 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
   let onInput = async () => 'PRIVATE-NATIVE-ANSWER';
   let session: Awaited<ReturnType<typeof sdk.createAgentSession>>['session'] | undefined;
   try {
+    step('loader.reload');
     await loader.reload();
     const manager = sdk.SessionManager.create(dir, join(dir, 'sessions'));
     manager.appendCustomEntry('optchat.profile', { name: profileId });
@@ -77,8 +82,10 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
     mkdirSync(join(profile, 'runs'), { recursive: true });
     new RunHistory(profile).save({ id: 'local-worker', task: 'PRIVATE-LOCAL-CANARY', cwd: dir, model: 'fixture', thinking: 'off', parentSession: manager.getSessionId(), started: 1, ended: 2, depth: 1, state: 'failed', report: 'PRIVATE-LOCAL-CANARY', guidance: [] });
     ({ session } = await sdk.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager: settings, sessionManager: manager, tools: [] }));
+    step('bindExtensions');
     await session.bindExtensions({ mode: 'print', onError: event => errors.push(event.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: text => notices.push(text) } });
     const command = async (args: string) => {
+      step(`/assistant ${args.split(' ')[0]}`);
       const runner = session!.extensionRunner!;
       runner.setUIContext({ ...runner.getUIContext(), notify: text => notices.push(text), input: async () => { inputCalls++; return onInput(); } }, 'tui');
       const definition = runner.getCommand('assistant'); assert.ok(definition, 'real OptChat registration exposes the command');
@@ -121,12 +128,15 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
     assert.equal(store.events().length, 6, 'stale answer is not committed');
     await post(`/v1/tasks/${encoded}/transition`, { expectedRevision: 6, nextStatus: 'succeeded', context: context('completed-source') });
     const beforeReload = store.events();
+    step('session.reload');
     await session.reload();
     assert.match(await command(`show ${encoded}`), /succeeded.*verification: not_verified/s);
     assert.deepEqual(store.events(), beforeReload, 'native reload neither duplicates nor dispatches task work');
     assert.ok((await command('local')).includes(operationId));
     assert.equal(readFileSync(join(profile, 'operations.json'), 'utf8'), journalBeforeRead);
+    step('server.close');
     await new Promise<void>(resolve => server.close(() => resolve())); store.close();
+    step('reopen');
     store = new TaskStore(dbPath, profileId);
     server = createAssistantServer({ store, profileId, token: 'disposable-native-token' }); endpoint = await listen();
     assert.match(await command(`show ${encoded}`), /succeeded/);
@@ -137,6 +147,7 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
     assert.deepEqual(errors, []); assert.equal(inference, 0); assert.ok(requests > 20);
     console.log(JSON.stringify({ sdk: process.env.OPTCHAT_TEST_PI_ENTRY ? 'installed' : 'pinned', inference, requests, events: store.events().length, reloads: 1, storeReopens: 1 }));
   } finally {
+    step('shutdown');
     if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     await new Promise<void>(resolve => server.close(() => resolve())); store.close(); removeDir(dir);
   }
