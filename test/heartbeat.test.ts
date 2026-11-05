@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
-import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
+import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 
 const MIN = 60_000;
@@ -534,4 +534,15 @@ test('every wake is told to deliver a change, and one after an empty wake is tol
   assert.match(previousWakeNote({ ...base, commits: [] }), /committed nothing: it delivered no change\. This one must\./);
   assert.doesNotMatch(previousWakeNote({ ...base, commits: ['abc1234'] }), /committed nothing/);
   assert.doesNotMatch(previousWakeNote({ ...base, outcome: 'interrupted', commits: [] }), /committed nothing/);
+});
+
+test('runRadarFresh runs the command now in config.json when the loaded one is unavailable, and only then', async () => {
+  const node = process.execPath, good = [node, '-e', 'console.log("# Wake radar ok")'], bad = ['C:/no/such/radar.exe'];
+  assert.equal(await runRadarFresh(bad, () => good), '# Wake radar ok');
+  assert.match(await runRadarFresh(bad, () => bad), /^Wake radar unavailable/);
+  assert.match(await runRadarFresh(bad, () => undefined), /^Wake radar unavailable/);
+  assert.match(await runRadarFresh(bad, () => { throw new Error('bad json'); }), /^Wake radar unavailable/);
+  let reads = 0;
+  assert.equal(await runRadarFresh(good, () => { reads++; return bad; }), '# Wake radar ok');
+  assert.equal(reads, 0);
 });
