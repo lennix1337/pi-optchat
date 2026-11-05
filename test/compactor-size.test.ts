@@ -179,6 +179,14 @@ test('the task is the recipe\'s, with a 512-dash ruler for the size, and a merge
   assert.equal(compaction({ source: 'a\nb', part: { l: 3, i: 5 } }), merge);
 });
 
+test('an echo that replays memory or saved output is summarized as a lookup, never as an action taken now', () => {
+  // 05/11: a zoom echo of an old shell_start deploy (116635) became the line "OptChat deployed d4d925a0 instead" at 117838.
+  for (const source of ['echo: zoom: 116635+1|tool: shell_start {"command":"deploy-changed.ps1 -Commit d4d925a0"}', 'echo: output_read: {"ok":true}'])
+    assert.match(task({ source, part: { l: 0, i: 117838 } }), /replays earlier messages or saved output: report it as recalled .*never as something done now/);
+  assert.doesNotMatch(task({ source: 'echo: bash: ok', part: { l: 0, i: 41 } }), /replays earlier/);
+  assert.doesNotMatch(task({ source: 'a\nb', part: { l: 3, i: 5 } }), /replays earlier/);
+});
+
 test('a line over the limit is sent back with the recipe\'s "Too long" cut, and an id+n| head copied from the view is dropped', async () => {
   const source = 'user: ' + 'a long message '.repeat(70);
   assert.deepEqual(await attempts(700, { source }), { calls: 2, bytes: 400 });

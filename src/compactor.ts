@@ -48,8 +48,11 @@ export function task(input: { source: string; part: Part; result?: string; call?
   const callContext = call ? `\nThe call is in <call>: context, like <chat>.\n<call>\n${call.text}\n</call>` : '';
   if (!part.l) {
     const kind = /^(\w+): /.exec(source)?.[1];
+    // A zoom or saved-output echo shows old messages again; read as news it turned an old deploy into a new one (05/11).
+    const replay = /^echo: (?:zoom|output_read|project_evidence|get_search_content): /.test(source)
+      ? 'This echo replays earlier messages or saved output: report it as recalled (what was looked up and what it showed), never as something done now.\n' : '';
     return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
-      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in,\nnor their ids or open items: what <input> did not check, it does not report.\n${sizeHint}<input>\n${source}\n</input>`
+      + `Summarize <input> alone${kind ? `, starting with "${kind}:"` : ''}: the <chat> lines are other messages, never copy them in,\nnor their ids or open items: what <input> did not check, it does not report.\n${replay}${sizeHint}<input>\n${source}\n</input>`
       + callContext + (result === undefined ? '' : `\nThe call's result is in <result>: say in a few words what it found or did.\n<result>\n${result}\n</result>`);
   }
   const a = { l: part.l - 1, i: 2 * part.i }, b = { l: part.l - 1, i: 2 * part.i + 1 };

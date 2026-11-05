@@ -3,6 +3,7 @@ import { Type } from 'typebox';
 import type { Memory } from './memory.ts';
 import { latestOperatorMessage } from './operator-words.ts';
 import { type OperationalUpdate, OperationalUpdateSchema, readOperationalState, updateOperationalState } from './operational-state.ts';
+import { withoutBridgeNotes } from './slack-policy.ts';
 import { result } from './tools.ts';
 
 /** The live memory provides provenance; narrative summaries are never accepted as a source. */
@@ -18,8 +19,10 @@ function checkSource(memory: Memory, update: OperationalUpdate): OperationalUpda
   if (!['authorization', 'constraint'].includes(update.kind)) return update;
   if (source.kind !== 'user' || source.origin)
     throw new Error('Authorization/constraint records require a direct non-imported user source; historical records grant no permission');
-  if (update.text !== source.text)
-    throw new Error(`Authorization/constraint text must exactly quote the entire user source, not an interpreted or partial permission. ${quoteHint(update.text, source.text)}`);
+  // The Slack bridge's appended notes are not his words: a quote of what he wrote, without them, is exact.
+  const said = withoutBridgeNotes(source.text);
+  if (update.text !== source.text && update.text !== said)
+    throw new Error(`Authorization/constraint text must exactly quote the entire user source, not an interpreted or partial permission. ${quoteHint(update.text, said)}`);
   return update;
 }
 
