@@ -44,6 +44,7 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
+import { registerRecursiveGrepNarrowing } from './bash-recursive-grep.ts';
 import { registerCommitHookGuard } from './commit-hook-guard.ts';
 import { registerMergeCiGuard } from './merge-ci-guard.ts';
 import { registerBrowserPages } from './external-effects.ts';
@@ -150,6 +151,7 @@ export default function optchat(pi: ExtensionAPI) {
   // approval and leaves no operation to journal. A foreground wait is not refused: the bash mover runs it as a shell (shells.ts).
   registerPowerShellQuotingGuard(pi);
   registerBashTimezoneGuard(pi);
+  registerRecursiveGrepNarrowing(pi);
   // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
   registerCommitHookGuard(pi);
   // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts).
