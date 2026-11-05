@@ -59,8 +59,10 @@ function emit(status, fields) {
   const lines = Object.entries({ status, ...fields })
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
     .map(([key, value]) => `${key}: ${toon(value)}`);
-  process.stdout.write(`${lines.join('\n')}\n`);
-  return EXIT[status];
+  const code = EXIT[status];
+  // Last line repeats the exit code: a run piped into tail/head reports the pipe's code, not ours.
+  process.stdout.write(`${lines.join('\n')}\nrc: ${code}\n`);
+  return code;
 }
 
 // --- processes: git and gh run without a shell; gh falls back to one only when it is a .cmd shim that execFile cannot start alone ---

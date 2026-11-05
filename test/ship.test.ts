@@ -83,6 +83,18 @@ test('refuses the default branch without --direct-main, before any effect', t =>
   assert.deepEqual(fx.ghCalls(), []);
 });
 
+test('the last output line carries the exit code, so a piped run (| tail) still shows it', t => {
+  const fx = fixture(); t.after(fx.close);
+  git(fx.work, ['switch', '-q', 'main']);
+  commitFile(fx, 'a.txt');
+  const refused = ship(fx, ['-m', 'mexe no main', 'a.txt']);
+  assert.equal(refused.code, 2);
+  assert.equal(refused.raw.trimEnd().split('\n').at(-1), 'rc: 2');
+  const dry = ship(fx, ['--dry-run', '-m', 'x', '-b', 'corpo', '--branch', 'feat/rc', 'a.txt']);
+  assert.equal(dry.code, 0);
+  assert.equal(dry.raw.trimEnd().split('\n').at(-1), 'rc: 0');
+});
+
 test('refuses flags that would force a push, skip hooks or merge as admin', t => {
   const fx = fixture(); t.after(fx.close);
   for (const flag of ['--force', '-f', '--force-with-lease', '--no-verify', '--admin', '--delete-branch']) {
