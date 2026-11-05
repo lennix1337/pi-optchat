@@ -415,7 +415,10 @@ test('real Pi + OptChat on Anthropic\'s wire: a tool enabled mid-turn and a turn
     from = requests.length;
     await session.prompt('again get busy 160');
     const busy = requests.slice(from);
-    assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}; errors ${JSON.stringify(errors)}`);
+    // A provider call that fails ends a busy turn early without a simulated rejection: keep Pi's own reason for it (CI run 42008145755 stopped short with errors []).
+    const turnErrors = session.messages.flatMap(m => m.role === 'assistant' && m.stopReason !== 'toolUse' && m.stopReason !== 'stop'
+      ? [`${m.stopReason}: ${String(m.errorMessage ?? '').slice(0, 200)}`] : []);
+    assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}; errors ${JSON.stringify(errors)}; turnErrors ${JSON.stringify(turnErrors)}; non-200 ${JSON.stringify(requests.filter(r => r.status !== 200).map(r => r.status))}`);
     from = requests.length;
     await session.prompt('next question');
     const next = requests[from], start = busy[0];
