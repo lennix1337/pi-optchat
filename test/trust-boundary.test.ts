@@ -41,6 +41,28 @@ test('incidents: a real WhatsApp, a production HTTP write and an email are irrev
     assert.deepEqual(kinds(read), [], read);
 });
 
+test('incidents 05/11: a page script that writes to production and a Stripe API write are production writes; their reads are not', () => {
+  forgetBrowserPages();
+  // 116952: the Odontoclinic landing re-uploaded to production from a page script run through a browser helper.
+  const pagePut = `node brave-dentai.mjs eval $T "(async()=>{const fd=new FormData();const r=await fetch('https://api.dentai.com.br/attract/admin/suppliers/cd0d87f8/html',{method:'PUT',credentials:'include',body:fd});return r.status})()"`;
+  assert.deepEqual(kinds(pagePut), ['production-write https:api.dentai.com.br']);
+  assert.deepEqual(kinds(pagePut.replaceAll("'", '\\"')), ['production-write https:api.dentai.com.br'], 'escaped quotes inside the shell string');
+  assert.deepEqual(kinds(`node x.mjs eval $T "axios.delete('https://usdentai.com/api/users/1')"`), ['production-write https:usdentai.com']);
+  assert.deepEqual(kinds(`node x.mjs eval $T "const x=new XMLHttpRequest();x.open('POST','https://api.dentai.com.br/leads');x.send(b)"`), ['production-write https:api.dentai.com.br']);
+  const browser = (expression: string, tab = 'P1') => lines(classifyEffects({ tool: 'browser_harness', input: { action: 'evaluate', tab, expression }, cwd: '' }, repo));
+  observeBrowser({ action: 'open', url: 'https://dentai.com.br/admin' }, '{"status":"ok","tab":"P1"}');
+  observeBrowser({ action: 'open', url: 'http://localhost:3000/' }, '{"status":"ok","tab":"L1"}');
+  assert.deepEqual(browser("fetch('https://api.dentai.com.br/x',{method:'PATCH',body:b})"), ['production-write https:api.dentai.com.br']);
+  assert.deepEqual(browser("fetch('/api/suppliers/1',{method:'DELETE'})"), ['production-write https:dentai.com.br'], 'a relative URL resolves against the tab page');
+  // 116829: a write through the Stripe API with the operator's key changes his live account.
+  assert.deepEqual(kinds('curl -s https://api.stripe.com/v1/account -u "$K:" -d "business_profile[support_email]=contato@dentai.com.br"'), ['production-write https:api.stripe.com']);
+  for (const read of ["fetch('https://api.dentai.com.br/health')", "fetch('https://api.dentai.com.br/x',{method:'GET'})", "fetch('/api/x',{method:'POST'})"])
+    assert.deepEqual(browser(read, read.startsWith("fetch('/") ? 'L1' : 'P1'), [], read);
+  for (const read of ['curl -s https://api.stripe.com/v1/account -u "$K:"', `node x.mjs eval $T "fetch('https://dentai.com.br/robots.txt').then(r=>r.text())"`,
+    `node x.mjs eval $T "fetch('http://localhost:3000/api/x',{method:'POST'})"`])
+    assert.deepEqual(kinds(read), [], read);
+});
+
 test('without a rule of the operator, an irreversible effect asks; the default and the advisor no longer decide it', () => {
   const contract = parseContract({ version: 1, default: 'free', rules: [{ action: 'push', scope: ['*'], level: 'free' }] });
   for (const action of ['message', 'production-write', 'deploy', 'publish', 'force-push', 'consent', 'merge-bypass'] as const)

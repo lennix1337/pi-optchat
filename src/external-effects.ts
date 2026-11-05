@@ -6,8 +6,9 @@
  * guardrail against the accidents the operator already lived through (a real WhatsApp sent, a consent clicked).
  */
 
-/** The operator's production web hosts: a write there changes live data. Subdomains count. */
-export const PRODUCTION_HOSTS = ['dentai.com.br', 'usdentai.com'];
+/** The operator's production web hosts: a write there changes live data. Subdomains count. The Stripe API is his
+ * live billing account (05/11: a support e-mail saved there with his key). */
+export const PRODUCTION_HOSTS = ['dentai.com.br', 'usdentai.com', 'api.stripe.com'];
 /** Messaging and email APIs: any request that sends through them reaches a person. */
 const MESSAGE_HOSTS = ['graph.facebook.com', 'api.whatsapp.com', 'whatsapp.net', 'api.twilio.com', 'api.sendgrid.com', 'api.mailgun.net',
   'api.resend.com', 'api.postmarkapp.com', 'api.brevo.com', 'api.sendinblue.com', 'z-api.io', 'api.telegram.org', 'api.zenvia.com',
@@ -104,6 +105,32 @@ export function commandExternalEffects(w: string[]): ExternalEffect[] {
   return effects;
 }
 
+// ---- Page scripts: fetch, XMLHttpRequest and axios calls in a browser evaluate or a shell command that runs one. ----
+const WRITE_VERB = /^(?:post|put|patch|delete)$/i;
+const PAGE_CALLS = [
+  // fetch(url, { ...method: 'PUT'... })
+  { re: /\bfetch\(\s*(['"`])([^'"`]+)\1\s*,\s*\{([^}]*)\}/g, url: 2, verb: (m: RegExpMatchArray) => /\bmethod\s*:\s*['"`](\w+)['"`]/.exec(m[3]!)?.[1] },
+  // xhr.open('POST', url)
+  { re: /\.open\(\s*(['"`])(\w+)\1\s*,\s*(['"`])([^'"`]+)\3/g, url: 4, verb: (m: RegExpMatchArray) => m[2] },
+  // axios.put(url, ...)
+  { re: /\baxios\.(post|put|patch|delete)\(\s*(['"`])([^'"`]+)\2/gi, url: 3, verb: (m: RegExpMatchArray) => m[1] },
+];
+
+/** The production writes and messages a page script makes; a relative URL resolves against `page`, the tab's address. */
+export function pageScriptEffects(script: string, page?: string): ExternalEffect[] {
+  const text = script.replace(/\\(["'`])/g, '$1');
+  const effects: ExternalEffect[] = [];
+  for (const call of PAGE_CALLS) for (const m of text.matchAll(call.re)) {
+    if (!WRITE_VERB.test(call.verb(m) ?? '')) continue;
+    let url: URL | undefined;
+    try { url = new URL(m[call.url]!, page); } catch { continue; }
+    const host = url.hostname.toLowerCase();
+    if (messageHost(host)) effects.push({ action: 'message', targets: [host] });
+    else if (productionHost(host)) effects.push({ action: 'production-write', targets: [`https:${host}`] });
+  }
+  return effects;
+}
+
 // ---- The browser: which page each owned tab shows, as its results report it. ----
 const tabPages = new Map<string, string>();
 const MAX_TABS = 64;
@@ -138,6 +165,13 @@ export function browserConsentEffect(input: unknown): { action: 'consent'; targe
   if (!acts) return undefined;
   const page = typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined;
   return page && sensitivePage(page) ? { action: 'consent', targets: [parse(page)!.hostname.toLowerCase()] } : undefined;
+}
+
+/** The production writes and messages of a browser evaluate, its relative URLs read against the tab's last known page. */
+export function browserScriptEffects(input: unknown): ExternalEffect[] {
+  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown };
+  if (args.action !== 'evaluate' || typeof args.expression !== 'string') return [];
+  return pageScriptEffects(args.expression, typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined);
 }
 
 /** Test seam: forget every tab. */
