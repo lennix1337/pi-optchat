@@ -49,7 +49,7 @@ import { registerMergeCiGuard } from './merge-ci-guard.ts';
 import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
-import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadar, wakeText, wakeTurn } from './heartbeat.ts';
+import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedIdle, summarizeTurn } from './heartbeat-report.ts';
@@ -360,7 +360,7 @@ export default function optchat(pi: ExtensionAPI) {
       radar: async () => {
         const argv = own()?.config.heartbeatRadar;
         if (!argv) return undefined;
-        const text = await runRadar(argv);
+        const text = await runRadarFresh(argv, () => loadConfig(profile.dir).heartbeatRadar);
         try { atomicWrite(join(profile.dir, 'radar.md'), `${text}\n`); } catch (error) { ctx.ui.notify(`Heartbeat could not save radar.md: ${errorText(error)}`, 'warning'); }
         return text;
       },
