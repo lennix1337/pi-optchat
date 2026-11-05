@@ -94,6 +94,7 @@ test('runRadar returns the program output, bounded, and turns every failure into
   assert.match(long, /\[radar output cut at 100 chars\]$/);
   assert.match(await runRadar([node, '-e', 'console.error("gh: not logged in"); process.exit(2)']), /^Wake radar unavailable: .*gh: not logged in/);
   assert.match(await runRadar([node, '-e', 'setTimeout(() => {}, 10000)'], { timeoutMs: 200 }), /^Wake radar unavailable: timed out after 200 ms/);
+  assert.match(await runRadar([node, '-e', 'console.error("node:internal/loader:1\\n  throw err;\\n\\nError: Cannot find module x\\n    at y"); process.exit(1)']), /^Wake radar unavailable: Error: Cannot find module x$/);
   assert.match(await runRadar(['C:/no/such/radar.exe']), /^Wake radar unavailable: /);
   assert.match(await runRadar([node, '-e', '']), /^Wake radar unavailable: no output/);
 });
