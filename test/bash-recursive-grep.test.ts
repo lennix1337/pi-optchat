@@ -15,6 +15,11 @@ test('a recursive grep over project trees skips node_modules and worktrees', () 
     ['grep -R foo src', `grep ${EXCLUDES} -R foo src`],
     ['grep -n --recursive foo .', `grep ${EXCLUDES} -n --recursive foo .`],
     ['ls && grep -rhoE "x" a; grep -rn y b', `ls && grep ${EXCLUDES} -rhoE "x" a; grep ${EXCLUDES} -rn y b`],
+    // 05/11: `time grep -rn` ran unnarrowed (18 s); a prefix keeps grep in command position.
+    ['cd a && time grep -rn x C:/projetos/pi-optchat | head', `cd a && time grep ${EXCLUDES} -rn x C:/projetos/pi-optchat | head`],
+    ['LC_ALL=C grep -r x .', `LC_ALL=C grep ${EXCLUDES} -r x .`],
+    ['env LC_ALL=C timeout 30 grep -r x .', `env LC_ALL=C timeout 30 grep ${EXCLUDES} -r x .`],
+    ['nice -n 10 command grep -r x .', `nice -n 10 command grep ${EXCLUDES} -r x .`],
   ];
   for (const [command, expected] of narrowed) assert.equal(narrowRecursiveGrep(command), expected, command);
 });
@@ -29,6 +34,8 @@ test('greps that are not recursive, ask for those folders, or are only text are 
     'grep -rn foo C:/projetos/dotfiles/.worktrees/bench',
     'grep -rn foo --exclude-dir=dist src',
     'echo "grep -rn foo src"',
+    'echo time grep -r x .',
+    'ls -r grep',
     "git log --grep 'x' -r",
     'rg -n foo src',
     'egrep -r foo src',

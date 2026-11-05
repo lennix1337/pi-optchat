@@ -15,6 +15,10 @@ const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s|$)/g;
 
 interface Word { text: string; start: number }
 
+// Words that leave the next word in command position: `time grep`, `LC_ALL=C grep`, `timeout 30 grep`, `nice -n 10 grep`.
+// Numbers and flags count only after one of them, since command position starts false after any other word.
+const PREFIX_WORD = /^(?:time|command|nice|env|timeout|[A-Za-z_]\w*=\S*|-\w+|\d+[smhd]?)$/;
+
 /** Words of one simple command from `from`, up to the first unquoted separator; quotes stay in the text. */
 function commandWords(command: string, from: number): Word[] {
   const words: Word[] = [];
@@ -48,8 +52,9 @@ function grepCommands(command: string): number[] {
     if (/[\n;&|(]/.test(char)) { commandStart = true; continue; }
     if (/\s/.test(char)) continue;
     if (commandStart && /^grep(?=\s)/.test(command.slice(at, at + 5))) starts.push(at);
-    commandStart = false;
+    const wordStart = at;
     while (at + 1 < command.length && !/[\s\n;&|()"']/.test(command[at + 1])) at++;
+    commandStart &&= PREFIX_WORD.test(command.slice(wordStart, at + 1));
   }
   return starts;
 }
