@@ -16,13 +16,15 @@ import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
 import { budgetNote, fitPost, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
+import { WAKE_LOG_CHANNEL, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
 
 /**
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
  * bridge polls them over the loopback API, hands each to the agent as a user message marked `[Slack]`, and posts the
  * run's final answer back to the DM. `slack_send` lets the agent write first (progress, finished work, a blocker).
- * A heartbeat wake that delivered something (an edit, commit, push or PR) posts its final answer to that repo's channel.
+ * Every heartbeat wake posts its effects and final answer to the #wakes log; without that channel, a wake that delivered
+ * something (an edit, commit, push or PR) posts its final answer to that repo's channel.
  * Pi marks these messages as extension input, so a Slack message never approves a gated effect by itself. The one
  * exception is an approval post (`askApproval`): the operator's `aprovar` or `negar` in that post's DM thread decides
  * that one pending call. The service queues only human messages from the configured operator, and Slack signs them, so
@@ -493,7 +495,13 @@ export class SlackBridge {
       await this.answer(answering, last || EMPTY_RUN, true);
       return;
     }
-    const text = waking && finalText(messages);
+    if (!waking) return;
+    const text = finalText(messages);
+    // Every wake, idle ones too, goes to the #wakes log; a service without that channel keeps the per-repo report.
+    try { await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), null, WAKE_LOG_CHANNEL); return; }
+    catch (error) {
+      if (!(error instanceof Error && error.message.startsWith('Unknown Slack channel'))) { this.options.warn(`Wake log not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); return; }
+    }
     const channel = text ? wakeChannel(messages) : undefined;
     if (!text || channel === undefined) return;
     try { await this.publish(`*Wake* · ${text}`, null, channel); }

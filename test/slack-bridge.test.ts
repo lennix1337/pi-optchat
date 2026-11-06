@@ -11,8 +11,10 @@ import { readDay } from '../src/home-day.ts';
 import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
+import { wakeEffects } from '../src/wake-log.ts';
 
-function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null; channel?: string }[] = [], extra: Record<string, unknown> = {}) {
+/** `channels`: the service's configured Slack channels besides the projects; without `wakes` a wake falls back to its repo channel. */
+function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null; channel?: string }[] = [], extra: Record<string, unknown> = {}, channels: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const owner = { dir, name: 'p' };
   const sent: { text: string; options: unknown }[] = [];
@@ -23,6 +25,8 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
   const bridge = new SlackBridge({ sendUserMessage: ((text: string, options: unknown) => { sent.push({ text, options }); }) as never }, () => owner, {
     now: () => now,
     request: async (_owner, path, body) => {
+      // A refused post (an unconfigured channel) never reached Slack: it is not recorded.
+      if (path === '/v1/slack/send' && (body as { channel?: string }).channel === 'wakes' && !channels.includes('wakes')) throw new HttpError(400);
       requests.push({ path, body });
       if (fail) throw fail;
       if (path.startsWith('/v1/slack/inbox')) {
@@ -158,7 +162,9 @@ test('a wake delivered the way OptChat really sends it, as a report custom messa
   const dir = mkdtempSync(join(tmpdir(), 'slack-hooks-'));
   const { pi, fire } = hookedPi();
   const bodies: unknown[] = [];
-  registerSlackBridge(pi, () => ({ dir, name: 'p' }), undefined, { request: async (_o, path, body) => { if (path === '/v1/slack/send') bodies.push(body); return { parts: 1, ts: '1.0' }; } });
+  registerSlackBridge(pi, () => ({ dir, name: 'p' }), undefined, { request: async (_o, path, body) => {
+    if (path === '/v1/slack/send' && (body as { channel?: string }).channel === 'wakes') throw new HttpError(400);
+    if (path === '/v1/slack/send') bodies.push(body); return { parts: 1, ts: '1.0' }; } });
   try {
     // index.ts sendReport: once the OptChat prompt is ready, a report (the wake prompt too) is a custom message, not a user one.
     fire('message_end', { message: { role: 'custom', customType: REPORT_TYPE, content: WAKE, display: true } });
@@ -166,6 +172,52 @@ test('a wake delivered the way OptChat really sends it, as a report custom messa
     await fire('agent_end', { messages: calling([['bash', { command: 'cd C:/projetos/pi-optchat && git commit -qm x && git push' }]], 'Corrigi.') });
     assert.deepEqual(bodies, [{ text: '*Wake* \u00b7 Corrigi.', threadTs: null, channel: 'harness' }]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('with a #wakes channel every wake is logged there, idle ones too, with the effects its calls had', async () => {
+  const f = fixture([], {}, ['wakes']);
+  const sends = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string; channel?: string });
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['read', { path: 'C:/projetos/dentai-mono/a.ts' }]], 'Nada novo.'));
+    assert.equal(sends().length, 1, 'an idle wake is logged');
+    assert.equal(sends()[0]!.channel, 'wakes');
+    assert.match(sends()[0]!.text, /^\*Wake\* \d\d:\d\d→\d\d:\d\d \(0 min, 0 passos\) · sem entrega\n\*Relato:\* Nada novo\.$/);
+
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['edit', { path: 'C:\\projetos\\Genexus18MCP\\src\\x.cs' }], ['bash', { command: 'cd C:/projetos/Genexus18MCP && gh pr merge 12 --squash' }],
+      ['slack_send', { text: 'pronto', channel: 'genexus18mcp' }]], 'Corrigi.'));
+    const log = sends().at(-1)!;
+    assert.equal(sends().length, 2, 'one post per wake, and not in the repo channel as well');
+    assert.equal(log.channel, 'wakes', 'logged even when the wake already used slack_send');
+    assert.ok(log.text.includes('• Genexus18MCP: editou x.cs\n• Genexus18MCP: merge da PR #12\n• Slack: mensagem para #genexus18mcp\n*Relato:* Corrigi.'), log.text);
+
+    f.bridge.sawUserMessage('typed at the terminal');
+    await f.bridge.runEnded(calling([['edit', { path: 'C:/projetos/pi-optchat/x.ts' }]], 'ok'));
+    assert.equal(sends().length, 2, 'only wakes are logged');
+  } finally { f.close(); }
+});
+
+test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the calls that failed', () => {
+  const messages = [
+    { role: 'assistant', content: [
+      { type: 'toolCall', id: 's', name: 'bash', arguments: { command: 'cd C:/projetos/Genexus18MCP && node C:/projetos/pi-optchat/scripts/ship.mjs -m x a.cs' } },
+      { type: 'toolCall', id: 'c', name: 'bash', arguments: { command: 'cd C:/projetos/Genexus18MCP && gh issue comment 886 --body x' } },
+      { type: 'toolCall', id: 'd', name: 'bash', arguments: { command: 'cd C:/projetos/Genexus18MCP && git push -q origin --delete fix/888' } },
+      { type: 'toolCall', id: 'w', name: 'write', arguments: { path: 'C:/Users/swluc/AppData/Local/Temp/pr.md', content: 'x' } },
+      { type: 'toolCall', id: 'r', name: 'read', arguments: { path: 'C:/projetos/Genexus18MCP/b.cs' } },
+      { type: 'toolCall', id: 'k', name: 'commitments', arguments: { action: 'update', id: 'c_a0ae29', status: 'done' } },
+    ] },
+    { role: 'toolResult', toolCallId: 's', content: [{ type: 'text', text: 'status: queued\nbranch: fix/889\ncommit: "1004742"\npush: sent\npr: 895\nurl: "https://github.com/lennix1337/Genexus18MCP/pull/895"\n' }] },
+    { role: 'toolResult', toolCallId: 'd', isError: true, content: [{ type: 'text', text: 'refused' }] },
+  ];
+  assert.deepEqual(wakeEffects(messages), [
+    'fora dos projetos: editou pr.md',
+    'Genexus18MCP: ship: commit 1004742, <https://github.com/lennix1337/Genexus18MCP/pull/895|PR #895> (auto-merge na fila)',
+    'Genexus18MCP: comentou na issue #886',
+    'Genexus18MCP: apagou a branch remota fix/888 (falhou)',
+    'compromisso c_a0ae29 fechado',
+  ]);
 });
 
 test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake that already used slack_send is not repeated', () => {
