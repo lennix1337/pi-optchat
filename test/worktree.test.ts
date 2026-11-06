@@ -69,3 +69,33 @@ test('a checkout without node_modules still gets a worktree and says so', () => 
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /node_modules: absent/);
 } finally { f.close(); } });
+
+test('--remove takes the worktree and its node_modules junction away, leaves the main node_modules intact and keeps the branch when unmerged', () => {
+  const f = fixture(); try {
+  assert.equal(f.run(['gone']).code, 0);
+  const wt = join(f.work, '.worktrees', 'gone');
+  writeFileSync(join(wt, 'new.txt'), 'n\n'); git(wt, ['add', 'new.txt']); git(wt, ['commit', '-m', 'unmerged work']);
+  const r = f.run(['--remove', 'gone']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /status: removed/);
+  assert.ok(!existsSync(wt), 'no leftover folder');
+  assert.ok(existsSync(join(f.work, 'node_modules', 'pkg', 'i.js')), 'main node_modules untouched');
+  assert.match(r.out, /branch: kept/);
+  assert.equal(git(f.work, ['branch', '--list', 'wt/gone']).includes('wt/gone'), true);
+} finally { f.close(); } });
+
+test('--remove deletes a merged branch and refuses a dirty worktree, restoring its junction', () => {
+  const f = fixture(); try {
+  assert.equal(f.run(['clean']).code, 0);
+  const merged = f.run(['--remove', 'clean']);
+  assert.match(merged.out, /branch: deleted/);
+  assert.equal(git(f.work, ['branch', '--list', 'wt/clean']), '');
+  assert.equal(f.run(['dirty']).code, 0);
+  const wt = join(f.work, '.worktrees', 'dirty');
+  writeFileSync(join(wt, 'a.txt'), 'changed\n');
+  const r = f.run(['--remove', 'dirty']);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /error: dirty/);
+  assert.ok(existsSync(join(wt, 'node_modules', 'pkg', 'i.js')), 'junction restored after the refusal');
+  assert.match(f.run(['--remove', 'nope']).out, /error: not_found/);
+} finally { f.close(); } });
