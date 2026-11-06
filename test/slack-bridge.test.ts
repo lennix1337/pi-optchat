@@ -220,6 +220,22 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
   ]);
 });
 
+test('wakeEffects ignores commands quoted in scripts, searches, heredocs and message bodies', () => {
+  const commands = [
+    `node -e "console.log('git push; gh pr merge 5; node scripts/ship.mjs')"`,
+    `grep -n 'gh pr merge 7' test/autowatch.test.ts`,
+    `python - <<'PY'\ncommand = 'git commit -m x; git push; gh pr merge 5'\nPY`,
+    `git log --format='git push; gh pr merge 7'`,
+    `gh issue comment 12 --body 'example: gh pr merge 7; git push'`,
+    `git push origin main; gh pr merge 21 --squash`,
+  ];
+  const messages = commands.flatMap((command, i) => [
+    { role: 'assistant', content: [{ type: 'toolCall', id: String(i), name: 'bash', arguments: { command } }] },
+    { role: 'toolResult', toolCallId: String(i), content: [{ type: 'text', text: '[main abc1234] example output' }] },
+  ]);
+  assert.deepEqual(wakeEffects(messages), ['comentou na issue #12', 'push', 'merge da PR #21']);
+});
+
 test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake that already used slack_send is not repeated', () => {
   assert.equal(wakeChannel(calling([['edit', { path: 'C:/projetos/pi-goal-x/a.ts' }], ['write', { path: 'C:/projetos/pi-optchat/b.ts' }], ['edit', { path: 'C:/projetos/dentai-mono/c.ts' }]], 'x')), 'harness');
   assert.equal(wakeChannel(calling([['edit', { path: 'C:/Users/swluc/.optchat/profiles/p/AGENTS.md' }]], 'x')), null);
