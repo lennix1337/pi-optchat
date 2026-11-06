@@ -23,3 +23,11 @@ test('wake report distinguishes missing tool results from confirmed effects', ()
   assert.match(post, /edição de a\.ts não confirmada/);
   assert.doesNotMatch(post, /\*Feito:\*/);
 });
+
+test('wake report links a merged PR when the command names its repository', () => {
+  const messages = [
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'm1', name: 'bash', arguments: { command: 'gh pr merge 12 --repo lennix1337/example --squash' } }] },
+    { role: 'toolResult', toolCallId: 'm1', content: 'ok' },
+  ];
+  assert.ok(wakeEffects(messages).includes('merge da <https://github.com/lennix1337/example/pull/12|PR #12>'));
+});
