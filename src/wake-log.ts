@@ -27,8 +27,11 @@ function shellEffects(segment: string, output: string): string[] {
     else found.push(`ship: ${[commit && `commit ${commit}`, pr && (url ? `<${url}|PR #${pr}>` : `PR #${pr}`)].filter(Boolean).join(', ') || 'sem commit'}${status && status !== 'queued' ? ` (${status})` : status ? ' (auto-merge na fila)' : ''}`);
     return found;
   }
-  for (const m of command.matchAll(/^gh\s+pr\s+(merge|close|comment|review)\s+(\d+)([^;&|\n]*)/g))
-    found.push(m[1] === 'merge' ? `${/--auto\b/.test(m[3]!) ? 'auto-merge na fila' : 'merge'} da PR #${m[2]}` : m[1] === 'close' ? `fechou a PR #${m[2]}` : m[1] === 'review' ? `revisou a PR #${m[2]}` : `comentou na PR #${m[2]}`);
+  for (const m of command.matchAll(/^gh\s+pr\s+(merge|close|comment|review)\s+(\d+)([^;&|\n]*)/g)) {
+    const repo = /(?:--repo|-R)\s+([\w.-]+\/[\w.-]+)/.exec(m[3]!)?.[1];
+    const pr = repo ? `<https://github.com/${repo}/pull/${m[2]}|PR #${m[2]}>` : `PR #${m[2]}`;
+    found.push(m[1] === 'merge' ? `${/--auto\b/.test(m[3]!) ? 'auto-merge na fila' : 'merge'} da ${pr}` : m[1] === 'close' ? `fechou a ${pr}` : m[1] === 'review' ? `revisou a ${pr}` : `comentou na ${pr}`);
+  }
   const opened = /(https:\/\/github\.com\/\S+\/pull\/(\d+))/.exec(output);
   if (/^gh\s+pr\s+create\b/.test(command)) found.push(`abriu ${opened ? `<${opened[1]}|PR #${opened[2]}>` : 'PR'}`);
   for (const m of command.matchAll(/^gh\s+issue\s+(comment|close|reopen)\s+(\d+)/g))
