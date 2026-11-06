@@ -46,7 +46,7 @@ function removeWorktree(name, cwd) {
   return out('removed', { path, branch: !branch ? 'none' : deleted ? 'deleted' : 'kept', next: branch && !deleted ? `branch ${branch} tem commits não mesclados` : undefined }, 0);
 }
 
-function listWorktrees(cwd) {
+function listWorktrees(cwd, all = false) {
   const main = mainOf(cwd);
   if (!main) return out('refused', { error: 'not_a_repo' }, 2);
   const base = git(main, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out || 'origin/main';
@@ -57,8 +57,8 @@ function listWorktrees(cwd) {
   for (const block of git(main, ['worktree', 'list', '--porcelain']).out.split(/\r?\n\r?\n/)) {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    const name = path && relative(root, real(path));
-    if (!name || name.startsWith('..') || /[\\/]/.test(name)) continue;
+    const name = path && relative(all ? real(main) : root, real(path)).split('\\').join('/');
+    if (!name || (!all && (name.startsWith('..') || name.includes('/')))) continue;
     const dirty = lines(git(path, ['status', '--porcelain']).out).length;
     const unique = branch ? lines(git(main, ['cherry', base, branch]).out).filter((l) => l.startsWith('+')).length : 0;
     const verdict = !branch ? 'keep: detached' : dirty ? 'keep: dirty' : unique ? 'keep: unmerged' : 'removable';
@@ -69,7 +69,7 @@ function listWorktrees(cwd) {
 }
 
 function createWorktree(argv, cwd = process.cwd()) {
-  if (argv[0] === '--list') return listWorktrees(cwd);
+  if (argv[0] === '--list') return listWorktrees(cwd, argv[1] === '--all');
   if (argv[0] === '--remove') return removeWorktree(argv[1] ?? '', cwd);
   const opts = { name: '', branch: '', base: '' };
   for (let i = 0; i < argv.length; i++) {
