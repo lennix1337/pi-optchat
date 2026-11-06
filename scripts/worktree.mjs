@@ -6,7 +6,7 @@
 //        node scripts/worktree.mjs --list   (one row per worktree: name | branch | dirty | unique commits vs origin/<base> | removable or keep: reason)
 // Output is a flat key: value block ending in `rc:`; exit 0 created, 2 refused, 3 failed.
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,13 +50,14 @@ function listWorktrees(cwd) {
   const main = mainOf(cwd);
   if (!main) return out('refused', { error: 'not_a_repo' }, 2);
   const base = git(main, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out || 'origin/main';
-  const root = join(main, '.worktrees');
+  const real = (p) => { try { return realpathSync.native(p); } catch { return resolve(p); } };
+  const root = real(join(main, '.worktrees'));
   const lines = (text) => text.split(/\r?\n/).filter(Boolean);
   const rows = [];
   for (const block of git(main, ['worktree', 'list', '--porcelain']).out.split(/\r?\n\r?\n/)) {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    const name = path && relative(root, path);
+    const name = path && relative(root, real(path));
     if (!name || name.startsWith('..') || /[\\/]/.test(name)) continue;
     const dirty = lines(git(path, ['status', '--porcelain']).out).length;
     const unique = branch ? lines(git(main, ['cherry', base, branch]).out).filter((l) => l.startsWith('+')).length : 0;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -124,4 +124,13 @@ test('--list classifies each worktree in one call: removable, dirty, unmerged', 
   assert.deepEqual(rows.dirty, ['wt/dirty', 'dirty=1', 'unique=0', 'keep: dirty']);
   assert.deepEqual(rows.ahead, ['wt/ahead', 'dirty=0', 'unique=1', 'keep: unmerged']);
   assert.match(r.out, /status: listed/);
+} finally { f.close(); } });
+
+test('--list also finds worktrees when the repo is reached through a link (Windows short or junction paths)', () => {
+  const f = fixture(false); try {
+  assert.equal(f.run(['viaLink']).code, 0);
+  const link = join(f.work, '..', 'work-link');
+  symlinkSync(f.work, link, 'junction');
+  const r = f.run(['--list'], link);
+  assert.match(r.out, /viaLink \| wt\/viaLink \| dirty=0 \| unique=0 \| removable/, r.out);
 } finally { f.close(); } });
