@@ -58,19 +58,20 @@ export function wakeEffects(messages: readonly Message[]): string[] {
     for (const call of blocks(m.content)) {
       if (call.type !== 'toolCall') continue;
       const args = (call.arguments ?? {}) as Record<string, unknown>, result = call.id ? results.get(call.id) : undefined;
-      const failed = result?.error ? ' (falhou)' : '';
+      const failed = !result ? ' (resultado não observado)' : result.error ? ' (falhou)' : '';
       if ((call.name === 'edit' || call.name === 'write') && typeof args.path === 'string') {
         if (result?.error) continue;
         const repo = repoIn(args.path) ?? 'fora dos projetos';
-        (edited.get(repo) ?? edited.set(repo, new Set()).get(repo)!).add(base(args.path));
+        if (!result) lines.push(`${repo}: edição de ${base(args.path)} não confirmada`);
+        else (edited.get(repo) ?? edited.set(repo, new Set()).get(repo)!).add(base(args.path));
       } else if ((call.name === 'bash' || call.name === 'powershell') && typeof args.command === 'string') {
         const repo = repoIn(args.command);
         for (const segment of segments(args.command, ''))
           lines.push(...shellEffects(segment.command, result?.text ?? '').map(effect => `${repo ? `${repo}: ` : ''}${effect}${failed}`));
       } else if (call.name === 'slack_send') lines.push(`Slack: mensagem para ${typeof args.channel === 'string' ? `#${args.channel}` : 'o canal do trabalho'}${failed}`);
-      else if (call.name === 'commitments' && args.action === 'add') lines.push(`compromisso aberto: ${String(args.text ?? '').slice(0, 80)}`);
-      else if (call.name === 'commitments' && args.action === 'update' && args.status === 'done') lines.push(`compromisso ${String(args.id ?? '')} fechado`);
-      else if (call.name === 'self_reload') lines.push('pediu reload do Pi');
+      else if (call.name === 'commitments' && args.action === 'add') lines.push(`compromisso aberto: ${String(args.text ?? '').slice(0, 80)}${failed}`);
+      else if (call.name === 'commitments' && args.action === 'update' && args.status === 'done') lines.push(`compromisso ${String(args.id ?? '')} fechado${failed}`);
+      else if (call.name === 'self_reload') lines.push(`pediu reload do Pi${failed}`);
     }
   }
   const files = [...edited].map(([repo, names]) => `${repo}: editou ${[...names].join(', ')}`);
@@ -83,5 +84,5 @@ const clock = (at: number) => { const d = new Date(at); return `${String(d.getHo
 export function wakeLogPost(run: { start: number; end: number; steps: number; messages: readonly Message[]; report: string }): string {
   const effects = wakeEffects(run.messages), minutes = Math.max(0, Math.round((run.end - run.start) / 60_000));
   const head = `*Wake* ${clock(run.start)}\u2192${clock(run.end)} (${minutes} min, ${run.steps} passo${run.steps === 1 ? '' : 's'})${effects.length ? '' : ' \u00b7 sem entrega'}`;
-  return [head, ...effects.length ? ['*Feito:*', ...effects.map(e => `\u2022 ${e}`)] : [], ...run.report ? [`*Relato:* ${run.report}`] : []].join('\n');
+  return [head, ...effects.length ? ['*Efeitos:*', ...effects.map(e => `\u2022 ${e}`)] : [], ...run.report ? [`*Relato:* ${run.report}`] : []].join('\n');
 }
