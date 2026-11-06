@@ -10,9 +10,9 @@ import { withDir } from './runtime-support.ts';
 const PROFILE = 'p';
 const operator = {};
 let ids = 0;
-function event(store: TaskStore, taskId: string) {
+function event(store: TaskStore, taskId: string, channelId = 'channel') {
   const n = ++ids;
-  return storeEvent(PROFILE, taskId, store.nextSequence(), { eventId: `e${n}`, sourceEventId: `s${n}`, correlationId: `c${n}`, actorId: 'a', sourceKind: 'external', reference: `r${n}` });
+  return { ...storeEvent(PROFILE, taskId, store.nextSequence(), { eventId: `e${n}`, sourceEventId: `s${n}`, correlationId: `c${n}`, actorId: 'a', sourceKind: 'external', reference: `r${n}` }), channelId };
 }
 function suggest(store: TaskStore, taskId: string, title: string) {
   const ev = event(store, taskId);
@@ -42,6 +42,31 @@ test('a new suggested task and a task needing input each push one fixed-text not
     assert.deepEqual(h.sent.map(n => n.id), ['slack-1:r1', 'slack-1:r4'], 'queued/working are silent; a repeated poll pushes nothing');
     assert.equal(h.sent[1].text, 'An assistant task needs your input.');
     assert.ok(h.sent.every(n => !n.text.includes('1234')));
+  } finally { h.close(); }
+}));
+
+// Seen live 2026-11-05: 336 toasts in one day, 236 of them "An assistant task finished" for background shells. The work tracker
+// mirrors every shell, subagent, wake and Slack run as a task; only the end of a turn in the terminal is a thing to interrupt for.
+test('only the end of an OptChat turn toasts; shells, subagents, wakes and Slack runs mirrored as tasks stay silent', () => withDir('notifier-quiet-', async dir => {
+  const h = open(dir);
+  try {
+    await h.notifier.poll();
+    const run = (taskId: string, channel: string, last: 'succeeded' | 'ready_for_review' | 'failed' | 'needs_input') => {
+      const first = event(h.store, taskId, channel);
+      h.store.create(queuedTask(PROFILE, taskId, taskId, first.source.sourceEventId), first);
+      h.store.transition(taskId, 1, 'working', event(h.store, taskId, channel));
+      h.store.transition(taskId, 2, last, event(h.store, taskId, channel));
+    };
+    run('shell-ok', 'Shell · harness', 'succeeded');
+    run('shell-bad', 'Shell', 'failed');
+    run('sub', 'Subagente · harness', 'ready_for_review');
+    run('wake', 'Wake', 'ready_for_review');
+    run('slack', 'Slack #harness', 'ready_for_review');
+    run('turn', 'OptChat · harness', 'ready_for_review');
+    run('turn-ask', 'OptChat', 'needs_input');
+    run('turn-bad', 'OptChat', 'failed');
+    await h.notifier.poll();
+    assert.deepEqual(h.sent.map(n => n.ref).sort(), ['turn', 'turn-ask', 'turn-bad']);
   } finally { h.close(); }
 }));
 
