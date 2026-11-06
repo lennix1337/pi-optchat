@@ -134,3 +134,16 @@ test('--list also finds worktrees when the repo is reached through a link (Windo
   const r = f.run(['--list'], link);
   assert.match(r.out, /viaLink \| wt\/viaLink \| dirty=0 \| unique=0 \| removable/, r.out);
 } finally { f.close(); } });
+
+test('--list --all also lists worktrees outside .worktrees/, by path relative to the repo', () => {
+  const f = fixture(false); try {
+  git(f.work, ['worktree', 'add', join(f.work, 'worktrees', 'old'), '-b', 'old/branch', 'origin/main']);
+  assert.equal(f.run(['inside']).code, 0);
+  const plain = f.run(['--list']);
+  assert.doesNotMatch(plain.out, /old/, plain.out);
+  const all = f.run(['--list', '--all']);
+  assert.equal(all.code, 0, all.out);
+  assert.match(all.out, /^worktrees\/old \| old\/branch \| dirty=0 \| unique=0 \| removable$/m, all.out);
+  assert.match(all.out, /^\.worktrees\/inside \| wt\/inside \|/m, all.out);
+  assert.match(all.out, /count: 2/);
+} finally { f.close(); } });
