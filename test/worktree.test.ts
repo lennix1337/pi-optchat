@@ -99,3 +99,12 @@ test('--remove deletes a merged branch and refuses a dirty worktree, restoring i
   assert.ok(existsSync(join(wt, 'node_modules', 'pkg', 'i.js')), 'junction restored after the refusal');
   assert.match(f.run(['--remove', 'nope']).out, /error: not_found/);
 } finally { f.close(); } });
+
+test('the next-step hint names the ship.mjs next to this script, also for a repository that has none', () => {
+  const f = fixture(); try {
+  const r = f.run(['task-hint']);
+  assert.equal(r.code, 0, r.out);
+  const flat = (text: string) => text.replace(/[\\/]+/g, '/');
+  const hint = flat(r.out.split('\n').find((l) => l.startsWith('next:')) ?? '');
+  assert.ok(hint.includes(flat(fileURLToPath(new URL('../scripts/ship.mjs', import.meta.url)))), hint);
+} finally { f.close(); } });

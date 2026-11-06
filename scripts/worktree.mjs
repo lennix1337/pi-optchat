@@ -6,7 +6,8 @@
 // Output is a flat key: value block ending in `rc:`; exit 0 created, 2 refused, 3 failed.
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, rmSync, symlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const out = (status, fields, code) => {
   const lines = Object.entries({ status, ...fields }).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => `${k}: ${JSON.stringify(v).replace(/^"|"$/g, '')}`);
@@ -73,7 +74,7 @@ function createWorktree(argv, cwd = process.cwd()) {
     try { symlinkSync(join(main, 'node_modules'), join(path, 'node_modules'), 'junction'); modules = 'linked'; }
     catch (error) { return out('failed', { stage: 'node_modules', path, detail: String(error.message).slice(0, 300), next: 'o worktree existe; crie a junção à mão' }, 3); }
   }
-  return out('created', { path, branch, base: `origin/${base}`, node_modules: modules, next: `cd ${path}; ao terminar: node ${join(main, 'scripts', 'ship.mjs')} -m "assunto" -b "descrição" <arquivos>` }, 0);
+  return out('created', { path, branch, base: `origin/${base}`, node_modules: modules, next: `cd ${path}; ao terminar: node ${join(dirname(fileURLToPath(import.meta.url)), 'ship.mjs')} -m "assunto" -b "descrição" <arquivos>` }, 0);
 }
 
 process.exitCode = createWorktree(process.argv.slice(2));
