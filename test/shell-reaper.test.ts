@@ -64,6 +64,31 @@ test('abort during the cwd check never starts a Windows shell', { skip: process.
   }
 });
 
+test('abort during the cwd check never starts a Windows shell', { skip: process.platform !== 'win32', timeout: 60_000 }, async t => {
+  let entered!: () => void, release!: () => void;
+  const checking = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const access = fs.access, spawn = childProcess.spawn;
+  let spawned = 0;
+  const accessMock = t.mock.method(fs, 'access', async (...args: Parameters<typeof fs.access>) => {
+    entered(); await gate; return access(...args);
+  });
+  const spawnMock = t.mock.method(childProcess, 'spawn', ((...args: Parameters<typeof spawn>) => {
+    spawned++; return spawn(...args);
+  }) as typeof spawn);
+  syncBuiltinESMExports();
+  try {
+    const controller = new AbortController();
+    const result = reapingBashOperations().exec('node -e "setInterval(() => {}, 1000)"', process.cwd(), { onData: () => {}, signal: controller.signal });
+    await checking;
+    controller.abort(); release();
+    await assert.rejects(result, /aborted/);
+    assert.equal(spawned, 0, 'cancellation before spawn must not create a shell');
+  } finally {
+    release(); accessMock.mock.restore(); spawnMock.mock.restore(); syncBuiltinESMExports();
+  }
+});
+
 const MARKER = `reaperprobe${process.pid}`;
 const survivors = () => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
   `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${MARKER}*' -and $_.Name -notin 'powershell.exe','node.exe' } | ForEach-Object { $_.ProcessId }`],
