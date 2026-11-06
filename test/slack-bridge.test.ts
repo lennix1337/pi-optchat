@@ -992,3 +992,28 @@ test('clipWords: cuts at a word with an ellipsis, never mid-word', () => {
   assert.equal(clipWords('o vigia marcava como "loop" sem motivo', 24), 'o vigia marcava como\u2026');
   assert.equal(clipWords('x'.repeat(30), 10), `${'x'.repeat(9)}\u2026`);
 });
+
+test('a wake cut short by a provider error and resumed by the failover prompt is logged as one wake, from its first start', async () => {
+  const f = fixture([], {}, ['wakes']);
+  const sends = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string; channel?: string });
+  const edit = [['edit', { path: 'C:/projetos/pi-optchat/src/x.ts' }]] as [string, unknown][];
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    f.advance(60_000);
+    await f.bridge.runEnded([]);
+    f.advance(1_000);
+    f.bridge.sawUserMessage('Provider failover activated: switched to anthropic/claude-sonnet-5-5 after openai/gpt-6.1 hit a quota or rate limit. Continue the interrupted task from where it stopped.');
+    f.advance(120_000);
+    await f.bridge.runEnded(calling(edit, 'Corrigi.'));
+    assert.equal(sends().length, 2);
+    assert.match(sends()[1]!.text, /^\*Wake\* \d\d:\d\d→\d\d:\d\d \(3 min, 0 passos\)\n\*Efeitos:\*\n• pi-optchat: edição de x\.ts não confirmada/, sends()[1]!.text);
+    assert.equal(sends()[1]!.channel, 'wakes');
+
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded([]);
+    f.advance(45 * 60_000);
+    f.bridge.sawUserMessage('Provider failover activated: switched to a/b after c/d hit a quota or rate limit. Continue the interrupted task.');
+    await f.bridge.runEnded(calling(edit, 'ok'));
+    assert.equal(sends().length, 3, 'only the idle wake log; a continuation long after is not that wake');
+  } finally { f.close(); }
+});

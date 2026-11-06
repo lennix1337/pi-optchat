@@ -54,6 +54,8 @@ const LONG_POLL_MS = 15_000;
 const HELD_MS = 1_000;
 /** How long a remote command that needs approval (an account switch) waits for the tap. */
 const COMMAND_APPROVAL_MS = 10 * 60_000;
+/** The prompts pi-multi-account injects to resume a run after a quota, rate-limit or transient provider error; resumed within this window, a wake run stays that wake. */
+const PROVIDER_RESUME = /^Provider (?:failover|retry|quota recovery) activated:/, RESUME_WINDOW_MS = 30 * 60_000;
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 /** A DM steered into a working run: a text-only reply would end the run and stop the work. */
 
@@ -186,6 +188,8 @@ export class SlackBridge {
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
   private work: { since: number; origin: string; about: string; step: string; steps: number; shown: number } | undefined;
+  /** The wake whose run a provider error cut short: pi-multi-account resumes it with a user message that is no wake prompt. */
+  private cutWake: { since: number; endedAt: number } | undefined;
   private waiting: () => readonly (string | WaitingItem)[] = () => [];
   private homeText = '';
   /** The Home's Ver tudo: every PR, commitment and job instead of the first few; Ver menos folds them again. */
@@ -430,11 +434,13 @@ export class SlackBridge {
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
   sawUserMessage(text: string): void {
     const match = FROM_SLACK.exec(text);
-    const wake = wakeTask(text) !== undefined;
+    const resumed = this.cutWake && !wakeTask(text) && PROVIDER_RESUME.test(text) && this.options.now() - this.cutWake.endedAt <= RESUME_WINDOW_MS ? this.cutWake : undefined;
+    this.cutWake = undefined;
+    const wake = wakeTask(text) !== undefined || resumed !== undefined;
     const about = wake ? 'turno automático (wake)' : text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
     // The first message of a run names it, wherever it came from; a later Slack message renames it, a gitwatch notice does not.
     if (!this.work || match) {
-      this.work = { since: this.work?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: '', steps: this.work?.steps ?? 0, shown: 0 };
+      this.work = { since: this.work?.since ?? resumed?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: '', steps: this.work?.steps ?? 0, shown: 0 };
       this.showWork();
     }
     if (wake) { this.waking = true; return; }
@@ -486,6 +492,7 @@ export class SlackBridge {
     this.running = false;
     const steps = this.work?.steps ?? 0, work = this.work, owner = this.owner();
     this.work = undefined;
+    this.cutWake = waking ? { since: work?.since ?? this.options.now(), endedAt: this.options.now() } : undefined;
     if (work && steps && owner) try { recordRun(owner.dir, { start: work.since, end: this.options.now(), about: work.about, origin: work.origin, steps }); } catch { /* the Home's day is a courtesy */ }
     const last = finalText(messages);
     this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta: ${replyLead(last)}` : ''}`);
