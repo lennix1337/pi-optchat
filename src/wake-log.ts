@@ -85,7 +85,9 @@ const clock = (at: number) => { const d = new Date(at); return `${String(d.getHo
 
 /** The #wakes post of one wake: when and how long, the effects found in its calls, and its own report. */
 export function wakeLogPost(run: { start: number; end: number; steps: number; messages: readonly Message[]; report: string }): string {
+  const last = run.messages[run.messages.length - 1] as { role?: string; stopReason?: string } | undefined;
+  const cut = last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted');
   const effects = wakeEffects(run.messages), minutes = Math.max(0, Math.round((run.end - run.start) / 60_000));
-  const head = `*Wake* ${clock(run.start)}\u2192${clock(run.end)} (${minutes} min, ${run.steps} passo${run.steps === 1 ? '' : 's'})${effects.length ? '' : ' \u00b7 sem entrega'}`;
+  const head = `*Wake* ${clock(run.start)}\u2192${clock(run.end)} (${minutes} min, ${run.steps} passo${run.steps === 1 ? '' : 's'})${effects.length ? '' : cut ? ' \u00b7 interrompido pelo provedor, retomado em outro post' : ' \u00b7 sem entrega'}`;
   return [head, ...effects.length ? ['*Efeitos:*', ...effects.map(e => `\u2022 ${e}`)] : [], ...run.report ? [`*Relato:* ${run.report}`] : []].join('\n');
 }

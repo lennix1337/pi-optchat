@@ -31,3 +31,12 @@ test('wake report links a merged PR when the command names its repository', () =
   ];
   assert.ok(wakeEffects(messages).includes('merge da <https://github.com/lennix1337/example/pull/12|PR #12>'));
 });
+
+test('a wake cut by a provider error is labelled as interrupted, not as having delivered nothing', () => {
+  const cut = [{ role: 'assistant', content: [], stopReason: 'error', errorMessage: 'You have hit your ChatGPT usage limit (team plan).' }];
+  const post = wakeLogPost({ start: 0, end: 0, steps: 1, messages: cut, report: '' });
+  assert.match(post, /interrompido pelo provedor/);
+  assert.doesNotMatch(post, /sem entrega/);
+  const idle = [{ role: 'assistant', content: [{ type: 'text', text: 'nada' }], stopReason: 'stop' }];
+  assert.match(wakeLogPost({ start: 0, end: 0, steps: 1, messages: idle, report: '' }), /sem entrega/);
+});
