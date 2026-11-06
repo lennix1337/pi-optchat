@@ -107,6 +107,21 @@ test('an aborted run fails; wakes are labelled and never wait for an answer', as
   } finally { await f.close(); }
 });
 
+test('a wake the operator types into ends as his turn, so its end reaches him; reports steered in do not', async () => {
+  const f = await fixture();
+  try {
+    f.tracker.userMessage(wakeText('', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar'));
+    f.tracker.userMessage('[gitwatch] lennix1337/x · PR #1 merged');
+    f.tracker.runEnded(answer('Mesclei.'));
+    f.tracker.userMessage(wakeText('', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar'));
+    f.tracker.userMessage('verifica as notificações');
+    f.tracker.runEnded(answer('Corrigido.'));
+    await f.tracker.idle();
+    const ends = f.store.events(0, 100).filter(e => e.task.status === 'ready_for_review').map(e => e.event.channelId);
+    assert.deepEqual(ends, ['Wake', 'OptChat']);
+  } finally { await f.close(); }
+});
+
 test('background shells and subagents each get a task from start to end', async () => {
   const f = await fixture();
   try {

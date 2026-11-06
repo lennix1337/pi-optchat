@@ -67,7 +67,11 @@ export class WorkTracker {
 
   /** The first user message of a run opens its task. */
   userMessage(text: string): void {
-    if (this.started) return;
+    if (this.started) {
+      // The operator typing into a wake makes it his turn: its end is the answer he waits for, not background work.
+      if (this.run?.channel === 'Wake' && classify(text).channel === 'OptChat') this.run.channel = 'OptChat';
+      return;
+    }
     this.started = true;
     const { channel, title } = classify(text);
     const waiting = this.waiting;
