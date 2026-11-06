@@ -3,10 +3,11 @@
 // node_modules junction to the main checkout, so the first test run needs no manual setup.
 // Usage: node scripts/worktree.mjs <name> [--branch NOME] [--base BRANCH]
 //        node scripts/worktree.mjs --remove <name>   (drops the junction first, refuses a dirty worktree, deletes the branch only if merged)
+//        node scripts/worktree.mjs --list   (one row per worktree: name | branch | dirty | unique commits vs origin/<base> | removable or keep: reason)
 // Output is a flat key: value block ending in `rc:`; exit 0 created, 2 refused, 3 failed.
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, rmSync, symlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const out = (status, fields, code) => {
@@ -45,7 +46,29 @@ function removeWorktree(name, cwd) {
   return out('removed', { path, branch: !branch ? 'none' : deleted ? 'deleted' : 'kept', next: branch && !deleted ? `branch ${branch} tem commits não mesclados` : undefined }, 0);
 }
 
+function listWorktrees(cwd) {
+  const main = mainOf(cwd);
+  if (!main) return out('refused', { error: 'not_a_repo' }, 2);
+  const base = git(main, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out || 'origin/main';
+  const root = join(main, '.worktrees');
+  const lines = (text) => text.split(/\r?\n/).filter(Boolean);
+  const rows = [];
+  for (const block of git(main, ['worktree', 'list', '--porcelain']).out.split(/\r?\n\r?\n/)) {
+    const path = /^worktree (.+)$/m.exec(block)?.[1];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+    const name = path && relative(root, path);
+    if (!name || name.startsWith('..') || /[\\/]/.test(name)) continue;
+    const dirty = lines(git(path, ['status', '--porcelain']).out).length;
+    const unique = branch ? lines(git(main, ['cherry', base, branch]).out).filter((l) => l.startsWith('+')).length : 0;
+    const verdict = !branch ? 'keep: detached' : dirty ? 'keep: dirty' : unique ? 'keep: unmerged' : 'removable';
+    rows.push(`${name} | ${branch ?? '-'} | dirty=${dirty} | unique=${unique} | ${verdict}`);
+  }
+  process.stdout.write(`status: listed\ncount: ${rows.length}\n${rows.join('\n')}${rows.length ? '\n' : ''}rc: 0\n`);
+  return 0;
+}
+
 function createWorktree(argv, cwd = process.cwd()) {
+  if (argv[0] === '--list') return listWorktrees(cwd);
   if (argv[0] === '--remove') return removeWorktree(argv[1] ?? '', cwd);
   const opts = { name: '', branch: '', base: '' };
   for (let i = 0; i < argv.length; i++) {

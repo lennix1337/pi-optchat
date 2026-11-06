@@ -108,3 +108,20 @@ test('the next-step hint names the ship.mjs next to this script, also for a repo
   const hint = flat(r.out.split('\n').find((l) => l.startsWith('next:')) ?? '');
   assert.ok(hint.includes(flat(fileURLToPath(new URL('../scripts/ship.mjs', import.meta.url)))), hint);
 } finally { f.close(); } });
+
+test('--list classifies each worktree in one call: removable, dirty, unmerged', () => {
+  const f = fixture(false); try {
+  for (const n of ['clean', 'dirty', 'ahead']) assert.equal(f.run([n]).code, 0);
+  writeFileSync(join(f.work, '.worktrees', 'dirty', 'a.txt'), 'changed\n');
+  const ahead = join(f.work, '.worktrees', 'ahead');
+  writeFileSync(join(ahead, 'b.txt'), 'b\n');
+  git(ahead, ['add', '.']);
+  git(ahead, ['commit', '-m', 'unique work']);
+  const r = f.run(['--list']);
+  assert.equal(r.code, 0, r.out);
+  const rows = Object.fromEntries(r.out.split('\n').filter((l) => l.includes('|')).map((l) => { const c = l.split('|').map((s) => s.trim()); return [c[0], c.slice(1)]; }));
+  assert.deepEqual(rows.clean, ['wt/clean', 'dirty=0', 'unique=0', 'removable']);
+  assert.deepEqual(rows.dirty, ['wt/dirty', 'dirty=1', 'unique=0', 'keep: dirty']);
+  assert.deepEqual(rows.ahead, ['wt/ahead', 'dirty=0', 'unique=1', 'keep: unmerged']);
+  assert.match(r.out, /status: listed/);
+} finally { f.close(); } });
