@@ -14,6 +14,7 @@ interface Block { type?: string; text?: string; id?: string; name?: string; argu
 
 const blocks = (content: unknown): Block[] => Array.isArray(content) ? content.filter((b): b is Block => !!b && typeof b === 'object') : [];
 const textOf = (content: unknown) => typeof content === 'string' ? content : blocks(content).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n');
+const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const repoIn = (text: string) => /projetos[\\/]+([\w.-]+)/i.exec(text)?.[1];
 
@@ -72,7 +73,7 @@ export function wakeEffects(messages: readonly Message[]): string[] {
         for (const segment of segments(args.command, ''))
           lines.push(...shellEffects(segment.command, result?.text ?? '').map(effect => `${repo ? `${repo}: ` : ''}${effect}${failed}`));
       } else if (call.name === 'slack_send') lines.push(`Slack: mensagem para ${typeof args.channel === 'string' ? `#${args.channel}` : 'o canal do trabalho'}${failed}`);
-      else if (call.name === 'commitments' && args.action === 'add') lines.push(`compromisso aberto: ${String(args.text ?? '').slice(0, 80)}${failed}`);
+      else if (call.name === 'commitments' && args.action === 'add') lines.push(`compromisso aberto: ${clip(String(args.text ?? ''), 80)}${failed}`);
       else if (call.name === 'commitments' && args.action === 'update' && args.status === 'done') lines.push(`compromisso ${String(args.id ?? '')} fechado${failed}`);
       else if (call.name === 'self_reload') lines.push(`pediu reload do Pi${failed}`);
     }

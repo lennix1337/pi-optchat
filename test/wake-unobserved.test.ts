@@ -40,3 +40,19 @@ test('a wake cut by a provider error is labelled as interrupted, not as having d
   const idle = [{ role: 'assistant', content: [{ type: 'text', text: 'nada' }], stopReason: 'stop' }];
   assert.match(wakeLogPost({ start: 0, end: 0, steps: 1, messages: idle, report: '' }), /sem entrega/);
 });
+
+test('wake report marks a truncated commitment text with an ellipsis', () => {
+  const long = 'Corrigir relatório #wakes que afirma edição sem resultado de ferramenta; distinguir efeitos';
+  const messages = [
+    { role: 'assistant', content: [
+      { type: 'toolCall', id: 'long', name: 'commitments', arguments: { action: 'add', text: long } },
+      { type: 'toolCall', id: 'short', name: 'commitments', arguments: { action: 'add', text: 'Curto' } },
+    ] },
+    { role: 'toolResult', toolCallId: 'long', content: 'ok' },
+    { role: 'toolResult', toolCallId: 'short', content: 'ok' },
+  ];
+  const effects = wakeEffects(messages);
+  const cut = effects.find(e => e.startsWith('compromisso aberto: Corrigir'));
+  assert.ok(cut?.endsWith('…'), cut);
+  assert.ok(effects.includes('compromisso aberto: Curto'));
+});
