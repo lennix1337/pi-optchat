@@ -2,9 +2,10 @@
 // Creates a task worktree in one command: fetch, `.worktrees/<name>` on a new branch from origin/<base>, and a
 // node_modules junction to the main checkout, so the first test run needs no manual setup.
 // Usage: node scripts/worktree.mjs <name> [--branch NOME] [--base BRANCH]
+//        node scripts/worktree.mjs --remove <name>   (drops the junction first, refuses a dirty worktree, deletes the branch only if merged)
 // Output is a flat key: value block ending in `rc:`; exit 0 created, 2 refused, 3 failed.
 import { spawnSync } from 'node:child_process';
-import { existsSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, rmSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const out = (status, fields, code) => {
@@ -17,7 +18,34 @@ const git = (cwd, args) => {
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr || r.stdout || r.error?.message || '').trim() };
 };
 
+function mainOf(cwd) {
+  const common = git(cwd, ['rev-parse', '--git-common-dir']);
+  return common.ok ? resolve(cwd, common.out, '..') : '';
+}
+
+function removeWorktree(name, cwd) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return out('refused', { error: 'bad_name', hint: 'uso: node scripts/worktree.mjs --remove <nome>' }, 2);
+  const main = mainOf(cwd);
+  if (!main) return out('refused', { error: 'not_a_repo' }, 2);
+  const path = join(main, '.worktrees', name);
+  if (!existsSync(path)) return out('refused', { error: 'not_found', path }, 2);
+  const branch = git(path, ['branch', '--show-current']).out;
+  const link = join(path, 'node_modules');
+  const linked = existsSync(link) && lstatSync(link).isSymbolicLink();
+  if (linked) rmSync(link, { recursive: false, force: true }); // the link itself, never the main node_modules behind it
+  const removed = git(main, ['worktree', 'remove', path]);
+  if (!removed.ok) {
+    if (linked) symlinkSync(join(main, 'node_modules'), link, 'junction');
+    return out('refused', { error: 'dirty', path, detail: removed.err.slice(0, 300), hint: 'commite ou descarte as alterações antes de remover' }, 2);
+  }
+  rmSync(path, { recursive: false, force: true });
+  git(main, ['worktree', 'prune']);
+  const deleted = branch && git(main, ['branch', '-d', branch]).ok;
+  return out('removed', { path, branch: !branch ? 'none' : deleted ? 'deleted' : 'kept', next: branch && !deleted ? `branch ${branch} tem commits não mesclados` : undefined }, 0);
+}
+
 function createWorktree(argv, cwd = process.cwd()) {
+  if (argv[0] === '--remove') return removeWorktree(argv[1] ?? '', cwd);
   const opts = { name: '', branch: '', base: '' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
