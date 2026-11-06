@@ -1,3 +1,5 @@
+import { commandWords, segments } from './effect-classifier.ts';
+
 /**
  * The #wakes channel: one post per heartbeat wake, idle ones included, so the operator can follow what the agent did on
  * its own. The list of effects comes from the run's tool calls and their results, not from the model's report: edits,
@@ -15,31 +17,33 @@ const textOf = (content: unknown) => typeof content === 'string' ? content : blo
 const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const repoIn = (text: string) => /projetos[\\/]+([\w.-]+)/i.exec(text)?.[1];
 
-/** What one shell command changed, read from the command and, for ship.mjs and git, from what it printed. */
-function shellEffects(command: string, output: string): string[] {
-  const found: string[] = [];
-  if (/\bship\.mjs\b/.test(command)) {
+/** What one executable segment attempted, with ship.mjs and git receipts when present. */
+function shellEffects(segment: string, output: string): string[] {
+  const words = commandWords(segment), command = words.join(' '), found: string[] = [];
+  if (words[0] === 'node' && /(?:^|[/\\])ship\.mjs["']?$/.test(words[1] ?? '')) {
     const status = /^status: (\w+)/m.exec(output)?.[1], commit = /^commit: "?([0-9a-f]{7,40})/m.exec(output)?.[1], pr = /^pr: (\d+)/m.exec(output)?.[1];
     const url = /^url: "?(https:\/\/github\.com\/[^"\s]+\/pull\/\d+)/m.exec(output)?.[1];
     if (/--pr\s+\d+/.test(command) && !commit) found.push(`auto-merge na PR #${/--pr\s+(\d+)/.exec(command)![1]}${status ? ` (${status})` : ''}`);
     else found.push(`ship: ${[commit && `commit ${commit}`, pr && (url ? `<${url}|PR #${pr}>` : `PR #${pr}`)].filter(Boolean).join(', ') || 'sem commit'}${status && status !== 'queued' ? ` (${status})` : status ? ' (auto-merge na fila)' : ''}`);
     return found;
   }
-  for (const m of command.matchAll(/\bgh\s+pr\s+(merge|close|comment|review)\s+(\d+)([^;&|\n]*)/g))
+  for (const m of command.matchAll(/^gh\s+pr\s+(merge|close|comment|review)\s+(\d+)([^;&|\n]*)/g))
     found.push(m[1] === 'merge' ? `${/--auto\b/.test(m[3]!) ? 'auto-merge na fila' : 'merge'} da PR #${m[2]}` : m[1] === 'close' ? `fechou a PR #${m[2]}` : m[1] === 'review' ? `revisou a PR #${m[2]}` : `comentou na PR #${m[2]}`);
   const opened = /(https:\/\/github\.com\/\S+\/pull\/(\d+))/.exec(output);
-  if (/\bgh\s+pr\s+create\b/.test(command)) found.push(`abriu ${opened ? `<${opened[1]}|PR #${opened[2]}>` : 'PR'}`);
-  for (const m of command.matchAll(/\bgh\s+issue\s+(comment|close|reopen)\s+(\d+)/g))
+  if (/^gh\s+pr\s+create\b/.test(command)) found.push(`abriu ${opened ? `<${opened[1]}|PR #${opened[2]}>` : 'PR'}`);
+  for (const m of command.matchAll(/^gh\s+issue\s+(comment|close|reopen)\s+(\d+)/g))
     found.push(m[1] === 'comment' ? `comentou na issue #${m[2]}` : m[1] === 'close' ? `fechou a issue #${m[2]}` : `reabriu a issue #${m[2]}`);
-  if (/\bgh\s+issue\s+create\b/.test(command)) found.push(`abriu issue${/\/issues\/(\d+)/.exec(output) ? ` #${/\/issues\/(\d+)/.exec(output)![1]}` : ''}`);
-  if (/\bgh\s+release\s+create\b/.test(command)) found.push('criou release');
-  if (/\bnpm\s+publish\b/.test(command)) found.push('npm publish');
-  const deleted = /\bgit\s+push\b[^;&|\n]*--delete\s+(\S+)/.exec(command);
+  if (/^gh\s+issue\s+create\b/.test(command)) found.push(`abriu issue${/\/issues\/(\d+)/.exec(output) ? ` #${/\/issues\/(\d+)/.exec(output)![1]}` : ''}`);
+  if (/^gh\s+release\s+create\b/.test(command)) found.push('criou release');
+  if (/^npm\s+publish\b/.test(command)) found.push('npm publish');
+  const deleted = /^git\s+push\b[^;&|\n]*--delete\s+(\S+)/.exec(command);
   if (deleted) found.push(`apagou a branch remota ${deleted[1]}`);
   else {
-    for (const m of output.matchAll(/^\[(.+?) ([0-9a-f]{7,40})\]/gm)) found.push(`commit ${m[2]} em ${m[1]!.replace(/ \(root-commit\)$/, '')}`);
-    if (/\bgit\s+(?:-[cC]\s+\S+\s+)*commit\b/.test(command) && !found.some(f => f.startsWith('commit'))) found.push('commit');
-    if (/\bgit\s+(?:-[cC]\s+\S+\s+)*push\b/.test(command)) found.push(`push${/\[new branch\]\s+(\S+)/.exec(output) ? ` (branch nova ${/\[new branch\]\s+(\S+)/.exec(output)![1]})` : ''}`);
+    if (/^git\s+(?:-[cC]\s+\S+\s+)*commit\b/.test(command)) {
+      for (const m of output.matchAll(/^\[(.+?) ([0-9a-f]{7,40})\]/gm)) found.push(`commit ${m[2]} em ${m[1]!.replace(/ \(root-commit\)$/, '')}`);
+      if (!found.length) found.push('commit');
+    }
+    if (/^git\s+(?:-[cC]\s+\S+\s+)*push\b/.test(command)) found.push(`push${/\[new branch\]\s+(\S+)/.exec(output) ? ` (branch nova ${/\[new branch\]\s+(\S+)/.exec(output)![1]})` : ''}`);
   }
   return found;
 }
@@ -61,7 +65,8 @@ export function wakeEffects(messages: readonly Message[]): string[] {
         (edited.get(repo) ?? edited.set(repo, new Set()).get(repo)!).add(base(args.path));
       } else if ((call.name === 'bash' || call.name === 'powershell') && typeof args.command === 'string') {
         const repo = repoIn(args.command);
-        for (const effect of shellEffects(args.command, result?.text ?? '')) lines.push(`${repo ? `${repo}: ` : ''}${effect}${failed}`);
+        for (const segment of segments(args.command, ''))
+          lines.push(...shellEffects(segment.command, result?.text ?? '').map(effect => `${repo ? `${repo}: ` : ''}${effect}${failed}`));
       } else if (call.name === 'slack_send') lines.push(`Slack: mensagem para ${typeof args.channel === 'string' ? `#${args.channel}` : 'o canal do trabalho'}${failed}`);
       else if (call.name === 'commitments' && args.action === 'add') lines.push(`compromisso aberto: ${String(args.text ?? '').slice(0, 80)}`);
       else if (call.name === 'commitments' && args.action === 'update' && args.status === 'done') lines.push(`compromisso ${String(args.id ?? '')} fechado`);
