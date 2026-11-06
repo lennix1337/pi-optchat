@@ -208,12 +208,12 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
       { type: 'toolCall', id: 'r', name: 'read', arguments: { path: 'C:/projetos/Genexus18MCP/b.cs' } },
       { type: 'toolCall', id: 'k', name: 'commitments', arguments: { action: 'update', id: 'c_a0ae29', status: 'done' } },
     ] },
-    { role: 'toolResult', toolCallId: 's', content: [{ type: 'text', text: 'status: queued\nbranch: fix/889\ncommit: "1004742"\npush: sent\npr: 895\n' }] },
+    { role: 'toolResult', toolCallId: 's', content: [{ type: 'text', text: 'status: queued\nbranch: fix/889\ncommit: "1004742"\npush: sent\npr: 895\nurl: "https://github.com/lennix1337/Genexus18MCP/pull/895"\n' }] },
     { role: 'toolResult', toolCallId: 'd', isError: true, content: [{ type: 'text', text: 'refused' }] },
   ];
   assert.deepEqual(wakeEffects(messages), [
     'fora dos projetos: editou pr.md',
-    'Genexus18MCP: ship: commit 1004742, PR #895 (auto-merge na fila)',
+    'Genexus18MCP: ship: commit 1004742, <https://github.com/lennix1337/Genexus18MCP/pull/895|PR #895> (auto-merge na fila)',
     'Genexus18MCP: comentou na issue #886',
     'Genexus18MCP: apagou a branch remota fix/888 (falhou)',
     'compromisso c_a0ae29 fechado',

@@ -20,13 +20,15 @@ function shellEffects(command: string, output: string): string[] {
   const found: string[] = [];
   if (/\bship\.mjs\b/.test(command)) {
     const status = /^status: (\w+)/m.exec(output)?.[1], commit = /^commit: "?([0-9a-f]{7,40})/m.exec(output)?.[1], pr = /^pr: (\d+)/m.exec(output)?.[1];
+    const url = /^url: "?(https:\/\/github\.com\/[^"\s]+\/pull\/\d+)/m.exec(output)?.[1];
     if (/--pr\s+\d+/.test(command) && !commit) found.push(`auto-merge na PR #${/--pr\s+(\d+)/.exec(command)![1]}${status ? ` (${status})` : ''}`);
-    else found.push(`ship: ${[commit && `commit ${commit}`, pr && `PR #${pr}`].filter(Boolean).join(', ') || 'sem commit'}${status && status !== 'queued' ? ` (${status})` : status ? ' (auto-merge na fila)' : ''}`);
+    else found.push(`ship: ${[commit && `commit ${commit}`, pr && (url ? `<${url}|PR #${pr}>` : `PR #${pr}`)].filter(Boolean).join(', ') || 'sem commit'}${status && status !== 'queued' ? ` (${status})` : status ? ' (auto-merge na fila)' : ''}`);
     return found;
   }
   for (const m of command.matchAll(/\bgh\s+pr\s+(merge|close|comment|review)\s+(\d+)([^;&|\n]*)/g))
     found.push(m[1] === 'merge' ? `${/--auto\b/.test(m[3]!) ? 'auto-merge na fila' : 'merge'} da PR #${m[2]}` : m[1] === 'close' ? `fechou a PR #${m[2]}` : m[1] === 'review' ? `revisou a PR #${m[2]}` : `comentou na PR #${m[2]}`);
-  if (/\bgh\s+pr\s+create\b/.test(command)) found.push(`abriu PR${/\/pull\/(\d+)/.exec(output) ? ` #${/\/pull\/(\d+)/.exec(output)![1]}` : ''}`);
+  const opened = /(https:\/\/github\.com\/\S+\/pull\/(\d+))/.exec(output);
+  if (/\bgh\s+pr\s+create\b/.test(command)) found.push(`abriu ${opened ? `<${opened[1]}|PR #${opened[2]}>` : 'PR'}`);
   for (const m of command.matchAll(/\bgh\s+issue\s+(comment|close|reopen)\s+(\d+)/g))
     found.push(m[1] === 'comment' ? `comentou na issue #${m[2]}` : m[1] === 'close' ? `fechou a issue #${m[2]}` : `reabriu a issue #${m[2]}`);
   if (/\bgh\s+issue\s+create\b/.test(command)) found.push(`abriu issue${/\/issues\/(\d+)/.exec(output) ? ` #${/\/issues\/(\d+)/.exec(output)![1]}` : ''}`);
