@@ -185,8 +185,10 @@ test('with a #wakes channel every wake is logged there, idle ones too, with the 
     assert.match(sends()[0]!.text, /^\*Wake\* \d\d:\d\d→\d\d:\d\d \(0 min, 0 passos\) · sem entrega\n\*Relato:\* Nada novo\.$/);
 
     f.bridge.sawUserMessage(WAKE);
-    await f.bridge.runEnded(calling([['edit', { path: 'C:\\projetos\\Genexus18MCP\\src\\x.cs' }], ['bash', { command: 'cd C:/projetos/Genexus18MCP && gh pr merge 12 --squash' }],
-      ['slack_send', { text: 'pronto', channel: 'genexus18mcp' }]], 'Corrigi.'));
+    const wakeCalls = calling([['edit', { path: 'C:\\projetos\\Genexus18MCP\\src\\x.cs' }], ['bash', { command: 'cd C:/projetos/Genexus18MCP && gh pr merge 12 --squash' }],
+      ['slack_send', { text: 'pronto', channel: 'genexus18mcp' }]], 'Corrigi.');
+    wakeCalls.push(...['c0', 'c1', 'c2'].map(toolCallId => ({ role: 'toolResult', toolCallId, content: 'ok' } as unknown as AgentMessage)));
+    await f.bridge.runEnded(wakeCalls);
     const log = sends().at(-1)!;
     assert.equal(sends().length, 2, 'one post per wake, and not in the repo channel as well');
     assert.equal(log.channel, 'wakes', 'logged even when the wake already used slack_send');
@@ -210,6 +212,9 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
     ] },
     { role: 'toolResult', toolCallId: 's', content: [{ type: 'text', text: 'status: queued\nbranch: fix/889\ncommit: "1004742"\npush: sent\npr: 895\nurl: "https://github.com/lennix1337/Genexus18MCP/pull/895"\n' }] },
     { role: 'toolResult', toolCallId: 'd', isError: true, content: [{ type: 'text', text: 'refused' }] },
+    { role: 'toolResult', toolCallId: 'c', content: 'ok' },
+    { role: 'toolResult', toolCallId: 'w', content: 'ok' },
+    { role: 'toolResult', toolCallId: 'k', content: 'ok' },
   ];
   assert.deepEqual(wakeEffects(messages), [
     'fora dos projetos: editou pr.md',
