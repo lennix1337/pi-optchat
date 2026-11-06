@@ -125,6 +125,38 @@ test('--sync keeps a branch git does not call merged, and refuses a dirty tree b
   assert.equal(git(fx.work, ['branch', '--show-current']), 'feat/x');
 });
 
+function linkedWorktree(fx: Fixture) {
+  git(fx.work, ['switch', '-q', 'main']);
+  const wt = join(fx.dir, 'wt');
+  git(fx.work, ['worktree', 'add', '-q', wt, '-b', 'feat/wt']);
+  writeFileSync(join(wt, 'b.txt'), 'b\n');
+  git(wt, ['add', '-A']); git(wt, ['commit', '-q', '-m', 'feat in worktree']);
+  git(wt, ['push', '-q', 'origin', 'feat/wt:main']);
+  return wt;
+}
+
+test('--sync from a linked worktree fast-forwards the main checkout and leaves the worktree alone', t => {
+  const fx = fixture(); t.after(fx.close);
+  const wt = linkedWorktree(fx);
+  const r = ship(fx, ['--sync'], {}, wt);
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.out.status, 'synced');
+  assert.equal(r.out.main_checkout, 'fast-forwarded');
+  assert.equal(git(fx.work, ['rev-parse', 'HEAD']), git(fx.work, ['rev-parse', 'origin/main']));
+  assert.equal(git(wt, ['branch', '--show-current']), 'feat/wt');
+  assert.match(r.out.next, /worktree/);
+});
+
+test('--sync from a linked worktree reports a dirty main checkout instead of failing', t => {
+  const fx = fixture(); t.after(fx.close);
+  const wt = linkedWorktree(fx);
+  writeFileSync(join(fx.work, 'dirty.txt'), 'x\n');
+  const r = ship(fx, ['--sync'], {}, wt);
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.out.main_checkout, '"skipped: dirty"');
+  assert.notEqual(git(fx.work, ['rev-parse', 'HEAD']), git(fx.work, ['rev-parse', 'origin/main']));
+});
+
 test('--sync does not combine with commit or PR options', t => {
   const fx = fixture(); t.after(fx.close);
   for (const extra of [['--all', '-m', 'x'], ['--pr', '3'], ['--direct-main'], ['--branch', 'feat/y']]) {
