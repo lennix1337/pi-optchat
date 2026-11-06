@@ -6,8 +6,10 @@
 export const DEFAULT_WORD_BUDGET = 100;
 /** Budgets of project channels by name; a channel without one uses the default. The DM is never overridden. */
 export type WordBudgets = Readonly<Record<string, number>>;
+/** Channels whose posts are logs, not conversation: a wake's list of effects reads better whole than split into a thread. */
+const BUILT_IN: WordBudgets = { wakes: 300 };
 export const wordBudget = (channel: string | null, budgets: WordBudgets = {}): number =>
-  channel !== null && budgets[channel] !== undefined ? budgets[channel] : DEFAULT_WORD_BUDGET;
+  channel === null ? DEFAULT_WORD_BUDGET : budgets[channel] ?? BUILT_IN[channel] ?? DEFAULT_WORD_BUDGET;
 
 /** The instruction the model reads with each Slack message: the budget of the channel it answers in. */
 export const budgetNote = (budget: number): string => `(Responda em até ${budget} palavras; o que passar disso vai para a thread.)`;
