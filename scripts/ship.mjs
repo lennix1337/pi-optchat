@@ -31,7 +31,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --base BRANCH        base da PR (padrão: branch padrão do origin)
   --wait S             espera até S segundos pelos checks (padrão 20)
   --dry-run            mostra o plano, sem efeitos
-  --sync               depois do merge: vai para a branch padrão, puxa só com fast-forward e apaga a branch local anterior se o git a considera mesclada
+  --sync               depois do merge: vai para a branch padrão, puxa só com fast-forward e apaga a branch local anterior se o git a considera mesclada; num worktree, atualiza o checkout principal e deixa o worktree
 saída: "status" final. exit 0 feito · 1 falhou · 2 recusado antes de qualquer efeito · 3 PR aberta sem auto-merge · 4 efeito incerto: reconcilie, não repita`;
 
 /** A stop with a final status and its fields. Refusals stop before any effect; uncertain stops name the stage to reconcile. */
@@ -259,6 +259,30 @@ async function autoMergeOnly(opts, ctx) {
   return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait));
 }
 
+// A linked worktree cannot switch to the default branch: the main checkout holds it. Returns that checkout's path when cwd is a linked worktree.
+async function mainCheckoutOf() {
+  const [dir, common, list] = await Promise.all([
+    git(['rev-parse', '--path-format=absolute', '--git-dir']),
+    git(['rev-parse', '--path-format=absolute', '--git-common-dir']),
+    git(['worktree', 'list', '--porcelain']),
+  ]);
+  if (dir.code || common.code || dir.out.trim() === common.out.trim()) return undefined;
+  return /^worktree (.+)$/m.exec(list.out)?.[1]?.trim();
+}
+
+// Brings the default branch of the main checkout up to date without touching this worktree; a busy main checkout is reported, never forced.
+async function syncMainCheckout(main, branch, base) {
+  const next = `este worktree (${branch}) continua: remova-o a partir do checkout principal (skill worktree-cleanup)`;
+  const [onR, dirtyR] = await Promise.all([git(['-C', main, 'symbolic-ref', '--quiet', '--short', 'HEAD']), git(['-C', main, 'status', '--porcelain'])]);
+  const on = onR.out.trim();
+  const skip = on !== base ? `skipped: on ${on || 'detached HEAD'}` : dirtyR.out.trim() ? 'skipped: dirty' : undefined;
+  if (skip) return emit('synced', { branch, main_checkout: skip, next });
+  const pull = await git(['-C', main, 'pull', '-q', '--ff-only'], 'push');
+  if (pull.code) return emit('synced', { branch, main_checkout: 'skipped: diverged', detail: firstLine(pull.err), next });
+  const head = (await git(['-C', main, 'log', '--oneline', '-1'])).out.trim();
+  return emit('synced', { branch, head, main_checkout: 'fast-forwarded', local_branch: `kept ${branch}`, next });
+}
+
 // After a merge: back on the default branch, fast-forwarded, and the finished branch removed only when git itself calls it merged (-d, never -D).
 async function syncAfterMerge(opts, ctx) {
   const [branchR, originR, dirtyR] = await Promise.all([
@@ -272,9 +296,11 @@ async function syncAfterMerge(opts, ctx) {
   const base = opts.base ?? (originR.code === 0 ? originR.out.trim().replace(/^origin\//, '') : 'main');
   ctx.branch = branch;
   if (dirtyR.out.trim()) throw refuse('dirty_tree', 'há mudanças não commitadas: commite ou guarde antes de --sync');
-  if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `switch ${base} > pull --ff-only > branch -d ${branch === base ? '(nada)' : branch}` });
+  const main = await mainCheckoutOf();
+  if (opts.dryRun) return emit('dry_run', { ...ctx, plan: main ? `fetch > pull --ff-only no checkout principal (${main}); este worktree fica` : `switch ${base} > pull --ff-only > branch -d ${branch === base ? '(nada)' : branch}` });
   const fetched = await git(['fetch', '-q', 'origin'], 'push');
   if (fetched.code) throw failed('fetch', fetched, 'git fetch falhou: confira a conexão e rode de novo');
+  if (main) return syncMainCheckout(main, branch, base);
   if (branch !== base) {
     const sw = await git(['switch', '-q', base]);
     if (sw.code) throw failed('switch', sw, `não consegui trocar para ${base}`);
