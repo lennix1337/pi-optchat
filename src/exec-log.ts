@@ -11,6 +11,8 @@ export const EXEC_LOG = 'exec-log.jsonl';
 export const EXEC_LOG_MAX_BYTES = 1_000_000;
 
 const clip = (text: string, max: number) => { const one = text.replace(/\s+/g, ' ').trim(); return one.length > max ? `${one.slice(0, max - 1)}…` : one; };
+/** A failure's reason (the error line, the exit code) is at the end of its output: keep the tail. */
+const clipTail = (text: string, max: number) => { const one = text.replace(/\s+/g, ' ').trim(); return one.length > max ? `…${one.slice(one.length - max + 1)}` : one; };
 
 /** Classifies from the error text; order matters: a gate refusal or timeout also carries a non-zero exit. */
 export function classify(failed: boolean, text: string, code?: number | string): ExecClass {
@@ -74,7 +76,7 @@ export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined)
     const kind = classify(!answered && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
       ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
-      ...(kind === 'ok' ? {} : { detail: clip(text.slice(-600), 300) }) });
+      ...(kind === 'ok' ? {} : { detail: clipTail(text, 300) }) });
   });
   pi.on('agent_settled', () => started.clear());
 }
