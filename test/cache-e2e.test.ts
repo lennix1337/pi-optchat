@@ -143,8 +143,24 @@ async function simulatedAnthropic() {
   });
   server.on('clientError', (error: NodeJS.ErrnoException) => transport.events.push(`clientError ${error.code ?? error.message}`));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { cache, transport, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-    close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  // The SDK wraps a rejected fetch as "Connection error." and drops its cause: record the client side's reason too.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const started = Date.now();
+    try {
+      return await realFetch(input, init);
+    } catch (error) {
+      if (String(input instanceof Request ? input.url : input).startsWith(url)) {
+        const causes: string[] = [];
+        for (let e: any = error; e && causes.length < 4; e = e.cause) causes.push(`${e.name ?? ''} ${e.code ?? ''} ${String(e.message ?? '').slice(0, 100)}`.trim());
+        transport.events.push(`fetch rejected after ${Date.now() - started} ms: ${causes.join(' <- ')}`);
+      }
+      throw error;
+    }
+  };
+  return { cache, transport, url,
+    close: () => new Promise(resolve => { globalThis.fetch = realFetch; server.close(resolve); server.closeAllConnections(); }) };
 }
 
 /** `enable_web` turns on a tool that was registered inactive, as pi-web-access's web_enable does. */
@@ -437,7 +453,7 @@ test('real Pi + OptChat on Anthropic\'s wire: a tool enabled mid-turn and a turn
     // A provider call that fails ends a busy turn early without a simulated rejection: keep Pi's own reason for it (CI run 42008145755 stopped short with errors []).
     const turnErrors = session.messages.flatMap(m => m.role === 'assistant' && m.stopReason !== 'toolUse' && m.stopReason !== 'stop'
       ? [`${m.stopReason}: ${String(m.errorMessage ?? '').slice(0, 200)}`] : []);
-    assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}; errors ${JSON.stringify(errors)}; turnErrors ${JSON.stringify(turnErrors)}; non-200 ${JSON.stringify(requests.filter(r => r.status !== 200).map(r => r.status))}`);
+    assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}; errors ${JSON.stringify(errors)}; turnErrors ${JSON.stringify(turnErrors)}; non-200 ${JSON.stringify(requests.filter(r => r.status !== 200).map(r => r.status))}; transport ${JSON.stringify({ connections: anthropic.transport.connections, events: anthropic.transport.events.slice(-12) })}`);
     from = requests.length;
     await session.prompt('next question');
     const next = requests[from], start = busy[0];

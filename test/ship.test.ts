@@ -387,9 +387,15 @@ test('a slow pre-commit hook is not killed by the short local timeout', t => {
 });
 
 test('a commit that outlives its own timeout stays uncertain', t => {
-  const fx = fixture(); t.after(fx.close);
+  const fx = fixture();
   const hook = join(fx.work, '.git', 'hooks', 'pre-commit');
-  writeFileSync(hook, '#!/bin/sh\nsleep 5\n');
+  const finished = join(fx.work, '.git', 'hook-finished');
+  // The killed commit leaves the hook's `sleep` running inside the work tree; on Windows that holds the directory (EBUSY on cleanup in CI), so cleanup waits for the hook to end first.
+  t.after(() => {
+    for (let i = 0; i < 100 && !existsSync(finished); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    fx.close();
+  });
+  writeFileSync(hook, '#!/bin/sh\nsleep 5\ntouch "$(git rev-parse --git-dir)/hook-finished"\n');
   chmodSync(hook, 0o755);
   commitFile(fx, 'a.txt');
   const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_COMMIT_TIMEOUT_MS: '1500' });
