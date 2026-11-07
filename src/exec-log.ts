@@ -28,6 +28,13 @@ export function classify(failed: boolean, text: string, code?: number | string):
   return 'error';
 }
 
+/** `grep`/`rg` exit 1 with nothing printed means "no match": the answer to the question, not a failed call. */
+export function isNoMatch(command: string | undefined, text: string): boolean {
+  const last = (command ?? '').split(/&&|\||;|\n/).map(x => x.trim()).filter(Boolean).pop() ?? '';
+  if (!/^(?:grep|egrep|fgrep|rg)\s/.test(last)) return false;
+  return text.replace(/\n*Command exited with code \d+\s*$/, '').replace(/^\(no output\)$/i, '').trim() === '';
+}
+
 export function appendExecLog(dir: string, entry: ExecEntry, maxBytes = EXEC_LOG_MAX_BYTES): void {
   try {
     mkdirSync(dir, { recursive: true });
@@ -58,7 +65,8 @@ export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined)
     const text = resultText(event.result);
     // Only bash's own trailer is this call's exit code; shell_status, zoom or a grep that quote someone else's exit are not failures.
     const exit = event.toolName === 'bash' ? /\n*Command exited with code (\d+)\s*$/.exec(text) : null;
-    const kind = classify(event.isError === true || (exit !== null && exit[1] !== '0'), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
+    const noMatch = exit?.[1] === '1' && isNoMatch(target, text);
+    const kind = classify(!noMatch && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
       ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
       ...(kind === 'ok' ? {} : { detail: clip(text.slice(-600), 300) }) });

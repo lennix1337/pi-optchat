@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appendExecLog, classify, EXEC_LOG, logBackgroundFailure, registerExecLog } from '../src/exec-log.ts';
+import { appendExecLog, classify, EXEC_LOG, isNoMatch, logBackgroundFailure, registerExecLog } from '../src/exec-log.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, EXEC_LOG), 'utf8').trim().split('\n').map(l => JSON.parse(l));
 
@@ -76,4 +76,24 @@ test('an exit code quoted in another tool\'s output is not this call failing', (
   call('2', 'bash', 'grep hit: "Command exited with code 1" in the log\nmore lines');
   call('3', 'bash', 'boom\nCommand exited with code 1');
   assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'ok', 'exit_nonzero']);
+});
+
+test('grep or rg that finds nothing is an answer, not a failed call; any other exit 1 still is', () => {
+  assert.equal(isNoMatch('grep -n foo src/a.ts', '(no output)\n\nCommand exited with code 1'), true);
+  assert.equal(isNoMatch('cd repo && rg -l foo | head', '\n\nCommand exited with code 1'), false);
+  assert.equal(isNoMatch('cd repo && rg -l foo', 'Command exited with code 1'), true);
+  assert.equal(isNoMatch('grep foo missing.txt', 'grep: missing.txt: No such file or directory\n\nCommand exited with code 2'), false);
+  assert.equal(isNoMatch('node test.mjs', '(no output)\n\nCommand exited with code 1'), false);
+  assert.equal(isNoMatch('grep -c x f; echo $?', 'Command exited with code 1'), false);
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  const call = (id: string, command: string, text: string) => {
+    handlers.tool_execution_start({ toolCallId: id, toolName: 'bash', args: { command } });
+    handlers.tool_execution_end({ toolCallId: id, toolName: 'bash', isError: true, result: { content: [{ type: 'text', text }] } });
+  };
+  call('1', 'grep -n zzz src/a.ts', '(no output)\n\nCommand exited with code 1');
+  call('2', 'grep -n zzz missing.ts', 'grep: missing.ts: No such file or directory\n\nCommand exited with code 2');
+  call('3', 'node check.mjs', '(no output)\n\nCommand exited with code 1');
+  assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero', 'exit_nonzero']);
 });
