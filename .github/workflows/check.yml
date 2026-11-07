@@ -94,7 +94,10 @@ jobs:
       - if: matrix.shard == 1
         run: npm run check
       # npm test's file list, split by node's own --test-shard (node expands the quoted glob itself on Windows).
-      - run: node --experimental-transform-types --import ./test/support.ts --test --test-shard=${{ matrix.shard }}/2 "test/*.test.ts"
+      # A hung test fails by name after 3 min; a file whose handle never closes fails at the step limit,
+      # which keeps the log (a job-level cancel lost it, PR #179). No --test-force-exit: it would pass the leak.
+      - run: node --experimental-transform-types --import ./test/support.ts --test --test-shard=${{ matrix.shard }}/2 --test-timeout=180000 "test/*.test.ts"
+        timeout-minutes: 10
       - if: matrix.shard == 2
         run: npm run test:pi-compat
   # The one check branch protection requires: green when every job this change needed passed.
