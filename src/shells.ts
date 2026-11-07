@@ -33,8 +33,8 @@ export interface ShellReporter {
 }
 export interface ShellOptions { notify?: ShellNotify; alert?: string }
 const outputLimit = 32_000;
-/** CSI, OSC (hyperlinks, titles) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
-const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-_]/g;
+/** CSI, OSC (hyperlinks, titles), charset designations (`tput sgr0` prints ESC ( B) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
+const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()*+][ -~]|\u001b[@-_]/g;
 export const plainText = (text: string) => text.replace(TERMINAL_ESCAPES, '');
 /** `build_exit=1`, `rc=2`: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
 export function innerExitFailures(output: string): string[] {
@@ -267,7 +267,9 @@ export function readShell(job: ShellJob, reads: Map<string, { output: string; at
   const since = `${Math.round((now - last.at) / 1000)} s`;
   const ending = job.state === 'running' ? ' Its end arrives as a "[shell ID]" message: go on with other work or end the turn instead of reading again.' : '';
   if (output === last.output) return `${head}\nNo new output since the last read ${since} ago.${ending}`;
-  // The kept output is a sliding tail, so the previous read is found by its end, not by its start.
+  // While the output still holds what was read, the new part is what follows it; a repeated line must not be taken for the old end.
+  if (output.startsWith(last.output)) return `${head}\nNew output since the last read ${since} ago:\n${output.slice(last.output.length).replace(/^\n/, '')}`;
+  // Once over the limit the kept output is a sliding tail, so the previous read is found by its end, not by its start.
   const seen = last.output.slice(-500), at = seen ? output.lastIndexOf(seen) : -1;
   if (at >= 0) return `${head}\nNew output since the last read ${since} ago:\n${output.slice(at + seen.length).replace(/^\n/, '')}`;
   return `${head}\n${output || '(No output yet)'}`;
