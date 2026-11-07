@@ -35,6 +35,11 @@ export function isNoMatch(command: string | undefined, text: string): boolean {
   return text.replace(/\n*Command exited with code \d+\s*$/, '').replace(/^\(no output\)$/i, '').trim() === '';
 }
 
+/** `ship.mjs` exits 3 (`not_queued`) when it opened the PR but its checks are still pending: the work is shipped and gitwatch reports the rest, so it is not a failed call. */
+export function isShipWait(command: string | undefined, text: string): boolean {
+  return /ship\.mjs/.test(command ?? '') && /^status: not_queued$/m.test(text) && /^pr: \d+$/m.test(text);
+}
+
 export function appendExecLog(dir: string, entry: ExecEntry, maxBytes = EXEC_LOG_MAX_BYTES): void {
   try {
     mkdirSync(dir, { recursive: true });
@@ -65,8 +70,8 @@ export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined)
     const text = resultText(event.result);
     // Only bash's own trailer is this call's exit code; shell_status, zoom or a grep that quote someone else's exit are not failures.
     const exit = event.toolName === 'bash' ? /\n*Command exited with code (\d+)\s*$/.exec(text) : null;
-    const noMatch = exit?.[1] === '1' && isNoMatch(target, text);
-    const kind = classify(!noMatch && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
+    const answered = (exit?.[1] === '1' && isNoMatch(target, text)) || (event.toolName === 'bash' && isShipWait(target, text));
+    const kind = classify(!answered && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
       ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
       ...(kind === 'ok' ? {} : { detail: clip(text.slice(-600), 300) }) });
