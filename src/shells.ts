@@ -268,6 +268,11 @@ export function readShell(job: ShellJob, reads: Map<string, { output: string; at
   return `${head}\n${output || '(No output yet)'}`;
 }
 
+function unknownShell(id: string, jobs: ShellJobs): Error {
+  const ids = jobs.list().map(j => j.id);
+  return new Error(`Unknown shell ID "${id}". ${ids.length ? `Known shells: ${ids.join(', ')}.` : 'No shells this session; start one with shell_start.'} Only shell_start IDs work here; a subagent run ID does not.`);
+}
+
 export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () => void = () => {}, settings: ShellSettings = {}) {
   const shell = (name: string) => name === 'bash' || name === 'powershell';
   const reads = new Map<string, { output: string; at: number }>();
@@ -291,13 +296,14 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
     parameters: Type.Object({ id: Type.Optional(Type.String()) }, { additionalProperties: false }),
     async execute(_id, args) {
       const list = jobs.list(), job = args.id ? list.find(j => j.id === args.id) : undefined;
-      if (args.id && !job) throw new Error('Unknown shell ID');
+      if (args.id && !job) throw unknownShell(args.id, jobs);
       return { content: [{ type: 'text', text: job ? readShell(job, reads) : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
     },
   });
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',
     parameters: Type.Object({ id: Type.String() }, { additionalProperties: false }),
     async execute(_id, args) {
+      if (!jobs.list().some(j => j.id === args.id)) throw unknownShell(args.id, jobs);
       if (!jobs.stop(args.id)) throw new Error('Shell is not a running managed background job');
       return { content: [{ type: 'text', text: 'Stop requested; check shell_status for completion.' }], details: {} };
     },

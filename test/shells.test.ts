@@ -553,3 +553,14 @@ test('shell_status returns the whole output once, then only what is new, and one
   assert.doesNotMatch(readShell(job, reads, 14_000), /end the turn/, 'an ended shell has no end to wait for');
   assert.match(readShell({ ...job, id: 's2' }, reads, 15_000), /line 4$/, 'each shell has its own first read');
 });
+
+// exec-log: shell_status/shell_stop with an id that is not a shell (subagent run, expired shell) answered a bare error.
+test('shell_status and shell_stop name the known shells when the id matches none', async () => {
+  const jobs = new ShellJobs(), tools = new Map<string, any>();
+  registerShells(fakePi(tools), jobs);
+  await assert.rejects(tools.get('shell_status').execute('s', { id: 'ghost' }, undefined, undefined, { cwd: '.' }), /Unknown shell ID "ghost".*No shells this session.*shell_start/s);
+  const id = jobs.start('server A', '.', async (signal, update) => { update('up'); await new Promise<void>(r => signal.addEventListener('abort', () => r(), { once: true })); return { output: '', failed: false }; });
+  await assert.rejects(tools.get('shell_status').execute('s', { id: 'ghost' }, undefined, undefined, { cwd: '.' }), new RegExp(`Known shells: ${id}`));
+  await assert.rejects(tools.get('shell_stop').execute('s', { id: 'ghost' }), new RegExp(`Unknown shell ID "ghost".*${id}`, 's'));
+  await jobs.close();
+});
