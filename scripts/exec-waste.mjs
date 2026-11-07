@@ -13,11 +13,29 @@ import { pathToFileURL } from 'node:url';
 export const RETRY_WINDOW_MS = 10 * 60_000;
 const TOP = 8;
 
-/** The part of a call that says what it tried to do, so a retry with a different flag or path still matches. */
+/** A segment that only prepares the command that follows (cd, a heredoc or redirect that writes a file, an in-place sed). */
+const PREPARES = /^(cd|mkdir|export|set|cat\s*>>?|tee|printf|echo|sed\s+(-\S+\s+)*-i\S*)(\s|$)/;
+
+/** The segments of a bash command in order, without heredoc bodies. */
+const bashSegments = (command) => {
+  const out = []; let end = null;
+  for (const line of command.split(/\r?\n/)) {
+    if (end !== null) { if (line.trim() === end) end = null; continue; }
+    const here = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/.exec(line);
+    if (here) end = here[2];
+    out.push(...line.split(/&&|;|\|\|/).map(x => x.trim()).filter(Boolean));
+  }
+  return out;
+};
+
+/** The part of a call that says what it tried to do, so a retry with a different flag or path still matches.
+ * For bash it is the first segment that does the work, not the cd, heredoc or in-place edit that prepared it. */
 export const intentOf = row => {
   const target = String(row.target ?? '').trim();
-  const head = row.name === 'bash' ? target.replace(/^cd [^&;]+(&&|;)\s*/, '').split(/\s+/).slice(0, 2).join(' ') : target.slice(0, 60);
-  return `${row.name} ${head}`.trim();
+  if (row.name !== 'bash') return `${row.name} ${target.slice(0, 60)}`.trim();
+  const segments = bashSegments(target);
+  const work = segments.find(x => !PREPARES.test(x)) ?? segments[0] ?? '';
+  return `bash ${work.split(/\s+/).slice(0, 2).join(' ')}`.trim();
 };
 
 const rank = (map, limit = TOP) => [...map.entries()].sort((a, b) => b[1].calls - a[1].calls || b[1].ms - a[1].ms).slice(0, limit)

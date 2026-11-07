@@ -11,6 +11,13 @@ test('intent ignores the cd prefix and everything after the second word', () => 
   assert.equal(intentOf(row(0, 'read', 'C:/x/a.ts')), 'read C:/x/a.ts');
 });
 
+test('bash intent is the command that does the work, not the heredoc, cd or in-place edit before it', () => {
+  const cmd = ["cd C:/x && cat > $TEMP/body.md <<'EOF'", '## Problema', 'node not a command; gh pr merge', 'EOF', 'node scripts/ship.mjs -m a -b $TEMP/body.md'].join('\n');
+  assert.equal(intentOf(row(0, 'bash', cmd)), 'bash node scripts/ship.mjs');
+  assert.equal(intentOf(row(0, 'bash', "cd C:/x && sed -i 's/a/b/' f.ts && npx tsc --noEmit")), 'bash npx tsc');
+  assert.equal(intentOf(row(0, 'bash', 'cat > f.ts')), 'bash cat >');
+});
+
 test('a failure and the retry of the same intent are waste; an unrelated call is not', () => {
   const s = summarize([
     row(0, 'bash', 'node scripts/ship.mjs -m a', 'error', 800, { detail: 'default_branch' }),
