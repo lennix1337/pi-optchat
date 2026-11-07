@@ -239,6 +239,20 @@ test('everyday inspections seen refused behind an uncertain barrier are read-onl
   ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
 });
 
+// A CI log is read through `sed 's/^.*Z //'` to drop the timestamps; that one-substitution stream filter touches no file.
+test('a single s/// stream filter behind a pipe is read-only; sed that can write, run or edit in place is not', () => {
+  for (const command of [
+    "gh run view 1 --repo a/b --log-failed 2>&1 | sed 's/^.*Z //' | grep -E '^not ok' | cut -c1-140",
+    "gh run view 1 --log-failed | sed 's/[0-9]*m//g' | head -20", "git log --oneline | sed -E 's/^([a-f0-9]{7}) /X /'",
+    "cat a.log | sed 's/a.b/c&d/gI' | head", "cat a.log | sed 's/a/b/' | sed 's/c/d/'",
+  ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
+  for (const command of [
+    "sed 's/a/b/' file", "cat a | sed 's/a/b/w out'", "cat a | sed 's/a/b/e'", "cat a | sed 's/a/b/;w out'", "cat a | sed -i 's/a/b/'", "cat a | sed -i 's/a/b/' file",
+    "cat a | sed 's/a/b/' file", "cat a | sed -s 's/a/b/'", "cat a | sed 'e touch x'", "cat a | sed 's/a/b/' > out", "cat a | sed -f script", "cat a | sed --in-place 's/a/b/'", "cat a | sed \"s/a/$(touch x)/\"",
+    "cat a | sed 's/a/b/g;s/c/d/'", "cat a | sed 's/a/b/ ; w out'",
+  ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
+});
+
 test('the wider inspections still refuse anything that writes, runs a helper or reaches an unknown expansion', () => {
   for (const command of [
     'echo $?x', 'echo $??', '$? file', 'echo \\$?', 'FOO=$? cat file',

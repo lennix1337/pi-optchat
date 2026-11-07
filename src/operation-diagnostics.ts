@@ -76,9 +76,19 @@ function readOnlyRipgrep(words: Word[]): boolean {
 
 // Only `sed -n <line>[,<line>]p <files>`: other scripts may write (`w`) or execute (`e`), and an
 // unquoted glob could expand to a file named `-i`, which GNU sed would accept as in-place editing.
-function readOnlySed(words: Word[]): boolean {
-  return words.length >= 3 && words[1].value === '-n' && /^\d+(?:,\d+)?p$/.test(words[2].value)
+function readOnlySed(words: Word[], piped: boolean): boolean {
+  return piped && streamSubstitution(words) || words.length >= 3 && words[1].value === '-n' && /^\d+(?:,\d+)?p$/.test(words[2].value)
     && words.slice(3).every(word => !word.value.startsWith('-') && (word.quoted || !/[*?\[\]]/.test(word.value)));
+}
+
+// `... | sed [-E] 's/old/new/[gI]'` rewrites its standard input (how CI logs lose their timestamps) and
+// names no file. Any other flag could write (`w`) or run (`e`); a second command or an operand would add a file.
+const SUBSTITUTION = /^s\/(?:[^\/\\]|\\.)*\/(?:[^\/\\]|\\.)*\/[gIi]*$/;
+function streamSubstitution(words: Word[]): boolean {
+  const script = words[words.length - 1];
+  const options = words.slice(1, -1);
+  return words.length >= 2 && script.quoted && SUBSTITUTION.test(script.value)
+    && options.every(word => word.value === '-E' || word.value === '-r');
 }
 
 const hasGlob = (words: Word[]) => words.some(word => !word.quoted && /[*?\[\]]/.test(word.value));
@@ -254,7 +264,7 @@ function readOnlyWords({ words, piped }: Command): boolean {
   if (!['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'rg', 'sed', 'cd'].includes(name) && hasGlob(words)) return false;
   switch (name) {
     case 'rg': return readOnlyRipgrep(words);
-    case 'sed': return readOnlySed(words);
+    case 'sed': return readOnlySed(words, piped);
     // `cd` only changes this shell's working directory; it is how most inspections start.
     case 'cd': return words.length === 2;
     case 'git': return readOnlyGit(words);
