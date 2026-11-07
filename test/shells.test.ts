@@ -564,3 +564,16 @@ test('shell_status and shell_stop name the known shells when the id matches none
   await assert.rejects(tools.get('shell_stop').execute('s', { id: 'ghost' }), new RegExp(`Unknown shell ID "ghost".*${id}`, 's'));
   await jobs.close();
 });
+
+test('shell_status and shell_stop accept the short id that notices and summaries quote, only when it picks one shell', async () => {
+  const jobs = new ShellJobs(), tools = new Map<string, any>();
+  registerShells(fakePi(tools), jobs);
+  const hold = async (signal: AbortSignal, update: (s: string) => void) => { update('up'); await new Promise<void>(r => signal.addEventListener('abort', () => r(), { once: true })); return { output: '', failed: false }; };
+  const id = jobs.start('server A', '.', hold as any);
+  const status = (arg: string) => tools.get('shell_status').execute('s', { id: arg }, undefined, undefined, { cwd: '.' });
+  const out = await status(id.slice(0, 8));
+  assert.match(out.content[0].text, /running/);
+  await assert.rejects(status(id.slice(0, 3)), /Unknown shell ID/);
+  await tools.get('shell_stop').execute('s', { id: id.slice(0, 8) });
+  await jobs.close();
+});

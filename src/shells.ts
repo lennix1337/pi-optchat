@@ -53,6 +53,8 @@ export class ShellJobs {
   /** End notices that came while no profile listened (between a /reload's shutdown and the reloaded profile), delivered by the next setReporter. */
   private unreported: ShellJob[] = [];
   list() { return [...this.jobs.values()].reverse().sort((a, b) => Number(b.state === 'running' || b.state === 'stopping') - Number(a.state === 'running' || a.state === 'stopping') || b.started - a.started); }
+  /** A job by its full id, or by the short prefix (6+ characters) that notices and summaries quote, when that prefix picks exactly one. */
+  find(id: string) { const all = this.list(), exact = all.find(j => j.id === id); if (exact || id.length < 6) return exact; const hits = all.filter(j => j.id.startsWith(id)); return hits.length === 1 ? hits[0] : undefined; }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   /** The open profile's reporter for managed background shells: each one's end (when its notify mode wants it) and its alerts. Foreground bash
    * calls are not reported: Pi shows their results. It must not throw: it runs inside the job's own completion, as `subscribe` listeners do. */
@@ -295,7 +297,7 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
   pi.registerTool({ name: 'shell_status', label: 'Inspect background shell', description: 'Read managed shell state and bounded output, or list session shells. Reading never waits; shell completion is reported automatically. Read only when you need more output.',
     parameters: Type.Object({ id: Type.Optional(Type.String()) }, { additionalProperties: false }),
     async execute(_id, args) {
-      const list = jobs.list(), job = args.id ? list.find(j => j.id === args.id) : undefined;
+      const list = jobs.list(), job = args.id ? jobs.find(args.id) : undefined;
       if (args.id && !job) throw unknownShell(args.id, jobs);
       return { content: [{ type: 'text', text: job ? readShell(job, reads) : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
     },
@@ -303,8 +305,9 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',
     parameters: Type.Object({ id: Type.String() }, { additionalProperties: false }),
     async execute(_id, args) {
-      if (!jobs.list().some(j => j.id === args.id)) throw unknownShell(args.id, jobs);
-      if (!jobs.stop(args.id)) throw new Error('Shell is not a running managed background job');
+      const job = jobs.find(args.id);
+      if (!job) throw unknownShell(args.id, jobs);
+      if (!jobs.stop(job.id)) throw new Error('Shell is not a running managed background job');
       return { content: [{ type: 'text', text: 'Stop requested; check shell_status for completion.' }], details: {} };
     },
   });
