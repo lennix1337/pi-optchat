@@ -1,4 +1,4 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { classifyCacheMisses } from '../src/cache-misses.ts';
@@ -19,7 +19,10 @@ if (!values.usage) {
     }
     return rows;
   };
-  const diagnostics = values.diag ? await read(values.diag) : undefined;
+  // The diagnostics stream rotates at 1 MB into PATH.1 (compactor-diagnostics.ts); read the older file first.
+  const diagnostics = values.diag
+    ? (await Promise.all([`${values.diag}.1`, values.diag].filter(existsSync).map(read))).flat()
+    : undefined;
   const round = (b) => ({ ...b, cacheWriteUsd: +b.cacheWriteUsd.toFixed(2) });
   const r = classifyCacheMisses(records, { model: values.model, since: values.since, diagnostics });
   console.log(JSON.stringify({
