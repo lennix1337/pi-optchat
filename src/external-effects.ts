@@ -106,6 +106,8 @@ export function commandExternalEffects(w: string[]): ExternalEffect[] {
 }
 
 // ---- Page scripts: fetch, XMLHttpRequest and axios calls in a browser evaluate or a shell command that runs one. ----
+/** Input on a page: a click, a form submit, a dispatched event, a field set, or CDP mouse/key/text input. */
+const PAGE_INPUT = /\.(?:click|submit|requestSubmit)\s*\(|dispatchEvent|\.(?:value|checked)\s*=[^=]|\bInput\.(?:dispatch\w+|insertText)\b/;
 const WRITE_VERB = /^(?:post|put|patch|delete)$/i;
 const PAGE_CALLS = [
   // fetch(url, { ...method: 'PUT'... })
@@ -161,7 +163,7 @@ export function browserConsentEffect(input: unknown): { action: 'consent'; targe
   const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown };
   // Looking at a page (open, navigate, inspect, screenshot, a reading script) is not consenting.
   const acts = args.action === 'click' || args.action === 'type'
-    || (args.action === 'evaluate' && typeof args.expression === 'string' && /\.(?:click|submit|requestSubmit)\s*\(|dispatchEvent|\.(?:value|checked)\s*=[^=]/.test(args.expression));
+    || (args.action === 'evaluate' && typeof args.expression === 'string' && PAGE_INPUT.test(args.expression));
   if (!acts) return undefined;
   const page = typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined;
   return page && sensitivePage(page) ? { action: 'consent', targets: [parse(page)!.hostname.toLowerCase()] } : undefined;
@@ -172,6 +174,33 @@ export function browserScriptEffects(input: unknown): ExternalEffect[] {
   const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown };
   if (args.action !== 'evaluate' || typeof args.expression !== 'string') return [];
   return pageScriptEffects(args.expression, typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined);
+}
+
+/** The page of an owned tab named by its id or an id prefix of 8+ characters. */
+function tabPage(id: string) {
+  const exact = tabPages.get(id);
+  if (exact || id.length < 8) return exact;
+  return [...tabPages].find(([tab]) => tab.length >= 8 && (tab.startsWith(id) || id.startsWith(tab)))?.[1];
+}
+
+/**
+ * The production writes and messages of a script file run from the shell (06/11: a CDP script filled and submitted the
+ * live Odontoclinic form, a fake lead). Its fetch/XHR calls count like a page script's; its page input (a click, a
+ * submit, a value set, CDP input) counts as a production write when the script names a production page, or is handed
+ * a URL or an owned tab last seen on one.
+ */
+export function scriptFileEffects(source: string, args: string[]): ExternalEffect[] {
+  const effects = pageScriptEffects(source);
+  if (PAGE_INPUT.test(source)) {
+    const pages = [...source.matchAll(/https?:\/\/[\w.-]+/gi)].map(m => m[0]);
+    for (const arg of args.map(unquote)) pages.push(...(/^https?:\/\//i.test(arg) ? [arg] : []), ...(tabPage(arg) ? [tabPage(arg)!] : []));
+    for (const page of pages) {
+      const host = parse(page)?.hostname.toLowerCase();
+      if (host && productionHost(host)) effects.push({ action: 'production-write', targets: [`https:${host}`] });
+    }
+  }
+  const seen = new Set<string>();
+  return effects.filter(effect => { const key = `${effect.action} ${effect.targets}`; return !seen.has(key) && !!seen.add(key); });
 }
 
 /** Test seam: forget every tab. */

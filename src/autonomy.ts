@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isStrings, record } from './cache.ts';
 import { ACTIONS, classifyEffects as classify, IRREVERSIBLE, type Action, type Effect, type Repo } from './effect-classifier.ts';
@@ -86,7 +87,9 @@ export const gitRepo: Repo = {
   slug: (path, remote = 'origin') => { const url = quiet(path, ['remote', 'get-url', remote]); return url && slugOf(url); },
   branch: path => quiet(path, ['rev-parse', '--abbrev-ref', 'HEAD']),
   script: path => {
-    try { return statSync(path).size <= 512 * 1024 ? readFileSync(path, 'utf8') : undefined; } catch { return undefined; }
+    // Git Bash `/tmp` is the user's temp folder, not `C:\tmp`.
+    const file = /^\/tmp(?:\/|$)/.test(path) ? join(tmpdir(), path.slice(4)) : path;
+    try { return statSync(file).size <= 512 * 1024 ? readFileSync(file, 'utf8') : undefined; } catch { return undefined; }
   },
 };
 

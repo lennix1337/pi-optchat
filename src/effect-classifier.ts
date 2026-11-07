@@ -1,5 +1,5 @@
 import { record } from './cache.ts';
-import { browserConsentEffect, browserScriptEffects, commandExternalEffects, pageScriptEffects } from './external-effects.ts';
+import { browserConsentEffect, browserScriptEffects, commandExternalEffects, pageScriptEffects, scriptFileEffects } from './external-effects.ts';
 
 /** High-impact effects the autonomy contract decides on. */
 export const ACTIONS = ['push', 'push-main', 'force-push', 'merge', 'publish', 'deploy', 'production-write', 'paid',
@@ -172,11 +172,17 @@ function pushEffect(args: string[], path: string, repo: Repo): Effect {
   return { action: toMain ? 'push-main' : 'push', targets };
 }
 
-/** A script run (not a test run) whose source calls a model provider. */
-function runsModelScript(w: string[], script: string, dir: string, repo: Repo) {
-  if (!repo.script || w.some(arg => /^(?:--test|-e|--eval|-c|--check|-p|--print|-h|--help)$/.test(arg)) || !/\.(?:[cm]?[jt]s|py)$/i.test(unquote(script))) return false;
-  const source = repo.script(normalPath(script, dir));
-  return source !== undefined && modelClient.test(source);
+/** The source of a script run (not a test run, a check or an inline body), when it can be read. */
+function scriptSource(w: string[], script: string, dir: string, repo: Repo) {
+  if (!repo.script || w.some(arg => /^(?:--test|-e|--eval|-c|--check|-p|--print|-h|--help)$/.test(arg)) || !/\.(?:[cm]?[jt]s|py)$/i.test(unquote(script))) return;
+  return repo.script(normalPath(script, dir));
+}
+
+/** A script run whose source calls a model provider is paid; its writes to production and messages count as well. */
+function scriptRunEffects(w: string[], script: string, dir: string, repo: Repo): Effect[] {
+  const source = scriptSource(w, script, dir, repo);
+  if (source === undefined) return [];
+  return [...modelClient.test(source) ? [{ action: 'paid' as const, targets: ['model-run'] }] : [], ...scriptFileEffects(source, w.slice(w.indexOf(script) + 1))];
 }
 
 const maintenanceTarget = (name: string) => /pcmaintenance/i.test(name) ? 'pc-maintenance' : 'worktree-cleanup';
@@ -194,7 +200,7 @@ function interpreterEffects(w: string[], lower: string, dir: string, repo: Repo,
   if (lower === 'node' && script && /(?:^|[/\\])bench\.mjs$/.test(unquote(script)) && w.includes('run')) return [...effects, { action: 'paid', targets: ['model-run'] }];
   // `node --import tsx file.ts`: the first argument that names a file is the script.
   const file = w.slice(1).find(arg => !arg.startsWith('-') && /\.(?:[cm]?[jt]s|py)$/i.test(unquote(arg)));
-  if (file && runsModelScript(w, file, dir, repo)) effects.push({ action: 'paid', targets: ['model-run'] });
+  if (file) effects.push(...scriptRunEffects(w, file, dir, repo));
   return effects;
 }
 
@@ -269,7 +275,7 @@ function segmentEffects(command: string, dir: string, repo: Repo, depth: number)
   if (interpreters.test(lower)) return interpreterEffects(w, lower, dir, repo, depth);
   if (lower === 'npx' && /^(?:tsx|ts-node)$/.test(unquote(w[1] ?? ''))) {
     const script = w.slice(2).find(arg => !arg.startsWith('-'));
-    return script && runsModelScript(w, script, dir, repo) ? [{ action: 'paid', targets: ['model-run'] }] : [];
+    return script ? scriptRunEffects(w, script, dir, repo) : [];
   }
   const named = namedScriptEffects(head, w, dir, repo);
   if (named.length) return named;
