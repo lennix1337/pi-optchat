@@ -64,8 +64,8 @@ test('zoom takes a run id: the transcript in pages that say where to go on; an u
     assert.ok(recovered.includes(`echo|bash: ${largeOutput}`), 'the child tool result retains its complete middle');
     assert.ok(!recovered.includes('characters omitted'), 'child tool results are not irreversibly capped before paging');
     assert.equal(await text({ id: '12345678' }), '\n[characters 0-0 of 0]', 'an all-digit run id is a run, even before it has said anything');
-    await assert.rejects(zoom.execute('call', { id: 'gone0000' }), /^Error: No run gone0000\.$/);
-    await assert.rejects(zoom.execute('call', { id: '87654321' }), /^Error: No run 87654321\.$/, 'eight digits is a run id, even one that is gone');
+    await assert.rejects(zoom.execute('call', { id: 'gone0000' }), /^Error: No run gone0000\. .*shell_status.*zoom \{id: number, n\}\.$/, 'the error says where a shell or a message is read');
+    await assert.rejects(zoom.execute('call', { id: '87654321' }), /^Error: No run 87654321\. /, 'eight digits is a run id, even one that is gone');
     assert.equal(await text({ id: '0', n: 1 }), '0+1|user: hello', 'a message id sent as a string still opens the message');
     assert.equal(await text({ id: 0 }), '0+1|user: hello', 'n defaults to 1');
   } finally { await memory.close(); removeDir(dir); }
