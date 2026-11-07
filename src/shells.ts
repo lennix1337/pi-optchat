@@ -15,6 +15,8 @@ export interface ShellJob {
   started: number; ended?: number; output: string; owner?: string;
   /** The command's exit code, when it exited on its own. */
   exitCode?: number;
+  /** The shell itself failed (non-zero exit, error), as opposed to output that merely echoes an earlier stage's rc. */
+  failedItself?: boolean;
   /** The bash tool's full-output file, when its output was truncated. */
   log?: string;
   /** Which ends the main agent hears about: every end, failures only, or none. */
@@ -77,6 +79,7 @@ export class ShellJobs {
     this.update(id, output, outcome.log);
     job.state = job.state === 'stopping' ? 'stopped' : failed || (job.mode === 'background' && innerExitFailures(output).length > 0) ? 'failed' : 'completed';
     job.ended = Date.now();
+    job.failedItself = failed;
     if (outcome.exitCode !== undefined) job.exitCode = outcome.exitCode;
     // Never evict an active execution, even when many jobs finish together.
     for (const finished of this.list().filter(j => j.ended !== undefined).slice(50)) this.jobs.delete(finished.id);
@@ -245,7 +248,7 @@ export function longCommandMover(jobs: ShellJobs, settings: ShellSettings, canMo
       if (job) {
         const output = plainText(job.output).trimEnd() || '(no output)';
         const stopped = job.state === 'stopped' ? '\n\nCommand aborted' : '';
-        return { content: [{ type: 'text' as const, text: `${output}${stopped}${job.log ? `\n\n[Full output: ${job.log}]` : ''}` }], isError: job.state !== 'completed' };
+        return { content: [{ type: 'text' as const, text: `${output}${stopped}${job.log ? `\n\n[Full output: ${job.log}]` : ''}` }], isError: job.state === 'stopped' || job.failedItself === true };
       }
       const text = `Long command still running after ${graceMs / 1000} s (${reason}): moved to background shell ${id}. Its outcome arrives as a "[shell ${id}]" message with exit code and the end of its output. Do not poll or sleep; go on with other work or end the turn. shell_status reads more output while it runs.`;
       return { content: [{ type: 'text' as const, text }] };

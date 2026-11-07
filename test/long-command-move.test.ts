@@ -55,6 +55,17 @@ test('a failing long command that ends within the grace is an error result with 
   assert.deepEqual(reports, []);
 });
 
+// A command that echoes the exit code of an earlier stage (`...; echo rc=${PIPESTATUS[0]}`) exits 0 itself. Over 14 days
+// 25 such inline results came back flagged as errors and counted as wasted calls; the model had asked to read that rc.
+test('a long command that exits 0 after echoing a non-zero rc is not an error result', { timeout: 20_000 }, async () => {
+  const jobs = new ShellJobs(), reports = recorder(jobs);
+  const result = await longCommandMover(jobs, {}, () => true, 10_000)({ command: `node -e "console.log('1 failed'); console.log('rc=1')"`, timeout: 121 }, process.cwd());
+  assert.ok(result);
+  assert.match(text(result), /rc=1/);
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(reports, []);
+});
+
 test('an aborted call stops the shell it started instead of leaving it running', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs), abort = new AbortController();
   const pending = longCommandMover(jobs, {}, () => true, 10_000)({ command: `node -e "setTimeout(() => {}, 20000)"`, timeout: 121 }, process.cwd(), abort.signal);
