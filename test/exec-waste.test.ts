@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 // @ts-expect-error plain .mjs script without types
-import { intentOf, summarize } from '../scripts/exec-waste.mjs';
+import { intentOf, parseArgs, summarize } from '../scripts/exec-waste.mjs';
 
 const row = (min: number, name: string, target: string, cls = 'ok', ms = 100, extra = {}) =>
   ({ at: new Date(Date.UTC(2026, 10, 7, 3, min)).toISOString(), source: 'tool', name, target, class: cls, ms, ...extra });
@@ -49,4 +50,20 @@ test('a retry after the window, background rows and rows before since are ignore
 test('tools rank by failures with their failure rate', () => {
   const s = summarize([row(0, 'zoom', '1', 'error'), row(1, 'zoom', '2', 'ok'), row(2, 'bash', 'ls', 'ok')]);
   assert.deepEqual(s.tools, [{ name: 'zoom', calls: 2, bad: 1, badPct: 50, seconds: 0.2 }]);
+});
+
+test('exec-waste takes --since and --dir and refuses what it would otherwise read as a path', () => {
+  const home = '/h', now = Date.parse('2026-11-08T00:00:00Z');
+  assert.equal(parseArgs(['--since=2026-11-07T12:00Z'], home, now).since, Date.parse('2026-11-07T12:00Z'));
+  assert.equal(parseArgs(['--since', '2026-11-07T12:00Z', '--dir=/x'], home, now).dir, '/x');
+  assert.deepEqual(parseArgs(['', '2026-11-07T12:00Z'], home, now), { dir: parseArgs([], home, now).dir, since: Date.parse('2026-11-07T12:00Z') });
+  assert.throws(() => parseArgs(['--sinse=2026-11-07'], home, now), /unknown option --sinse/);
+  assert.throws(() => parseArgs(['--since=ontem'], home, now), /not a date: ontem/);
+});
+
+test('exec-waste exits 2 with the usage instead of printing zeros for a directory with no log', () => {
+  const run = spawnSync(process.execPath, ['scripts/exec-waste.mjs', '--dir=' + process.cwd() + '/does-not-exist'], { encoding: 'utf8' });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /no exec-log rows in .*usage: exec-waste.mjs/);
+  assert.equal(run.stdout, '');
 });

@@ -77,9 +77,33 @@ export function readRows(dir) {
     .flatMap(f => readFileSync(f, 'utf8').split('\n').filter(Boolean).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } }));
 }
 
+const USAGE = 'usage: exec-waste.mjs [logDir] [sinceISO] | --dir=LOGDIR --since=ISO';
+
+/** Positional `[logDir] [sinceISO]` (an empty logDir keeps the default) or `--dir`/`--since`; anything else is refused, never read as a path. */
+export function parseArgs(argv, home = homedir(), now = Date.now()) {
+  const named = {}, positional = [];
+  for (let k = 0; k < argv.length; k++) {
+    const arg = argv[k], flag = /^--(dir|since)(?:=(.*))?$/.exec(arg);
+    if (flag) named[flag[1]] = flag[2] ?? argv[++k];
+    else if (arg.startsWith('--')) throw new Error(`unknown option ${arg}. ${USAGE}`);
+    else positional.push(arg);
+  }
+  if (positional.length > 2) throw new Error(`too many arguments. ${USAGE}`);
+  const dir = named.dir || positional[0] || join(home, '.optchat', 'profiles', 'swlucas05');
+  const sinceText = named.since ?? positional[1];
+  const since = sinceText ? Date.parse(sinceText) : now - 7 * 86_400_000;
+  if (Number.isNaN(since)) throw new Error(`not a date: ${sinceText}. ${USAGE}`);
+  return { dir, since };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const dir = process.argv[2] || join(homedir(), '.optchat', 'profiles', 'swlucas05');
-  const since = process.argv[3] ? Date.parse(process.argv[3]) : Date.now() - 7 * 86_400_000;
-  if (Number.isNaN(since)) throw new Error('usage: exec-waste.mjs [logDir] [sinceISO]');
-  console.log(JSON.stringify(summarize(readRows(dir), since), null, 1));
+  try {
+    const { dir, since } = parseArgs(process.argv.slice(2));
+    const rows = readRows(dir);
+    if (!rows.length) throw new Error(`no exec-log rows in ${dir}. ${USAGE}`);
+    console.log(JSON.stringify(summarize(rows, since), null, 1));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  }
 }
