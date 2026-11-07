@@ -60,10 +60,11 @@ async function readMemory(m: Memory, id: number, { n = 1, offset, limit, findTex
   return { ...page, content: [...page.content, ...images] };
 }
 
-/** `runs` gives a subagent's messages by run id, live or finished; undefined for no such run.
- * `onRead` hears each successful memory read, never a failed one nor an agent transcript; a findText read reports its excerpts, not the whole range. */
 /** A zoom target that is no run: say where each kind of id is read, so the next call is the right one. */
 const noRun = (id: string) => `No run ${id}. Subagent run ids come from spawn/subagent; a background shell is read with shell_status; a memory message is zoom {id: number, n}.`;
+
+/** `runs` gives a subagent's messages by run id, live or finished; undefined for no such run.
+ * `onRead` hears each successful memory read, never a failed one nor an agent transcript; a findText read reports its excerpts, not the whole range. */
 export function memoryTools(memory: () => Memory, runs?: (id: string) => readonly AgentMessage[] | undefined, onRead?: (read: MemoryRead) => void) {
   return [
     { name: 'zoom', label: 'Zoom memory', description: `Open id+n into halves; n=1: original with images. agent:"id" or string id: subagent chat. offset/limit page characters (max ${PAGE}). findText: case-insensitive literal in id..id+n-1 only, newest first; bounded excerpts and exact follow-ups for hits/unsearched regions. n=1 offset starts search; no limit/agent. Prefer direct zoom for a single read, dependent tree navigation, or images. Code Mode is optional for independent text-only reads: await calls, emit every result with its id; Promise.allSettled retains partial successes. Bound output without unnecessary paging. Pi 1.1.0 drops zoom's image attachments in Code Mode.`,
