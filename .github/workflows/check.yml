@@ -94,9 +94,12 @@ jobs:
       - if: matrix.shard == 1
         run: npm run check
       # npm test's file list, split by node's own --test-shard (node expands the quoted glob itself on Windows).
-      # A hung test fails by name after 3 min; a file whose handle never closes fails at the step limit,
-      # which keeps the log (a job-level cancel lost it, PR #179). No --test-force-exit: it would pass the leak.
-      - run: node --experimental-transform-types --import ./test/support.ts --test --test-shard=${{ matrix.shard }}/2 --test-timeout=180000 "test/*.test.ts"
+      # On Node 22 --test-timeout also bounds each whole file, over its tests' own timeouts (Node 24 does not):
+      # cache-e2e.test.ts takes ~110 s on a normal runner and passed 180 s on a slow one (PR #181), so the cap
+      # is 7 min, under the 10-min step limit. A hung file fails by name;
+      # one whose handle never closes fails at the step limit, which keeps the log (a job-level cancel lost it,
+      # PR #179). No --test-force-exit: it would pass the leak.
+      - run: node --experimental-transform-types --import ./test/support.ts --test --test-shard=${{ matrix.shard }}/2 --test-timeout=420000 "test/*.test.ts"
         timeout-minutes: 10
       - if: matrix.shard == 2
         run: npm run test:pi-compat
