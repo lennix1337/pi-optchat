@@ -78,6 +78,10 @@ test('refuses the default branch without --direct-main, before any effect', t =>
   assert.equal(r.code, 2);
   assert.equal(r.out.status, 'refused');
   assert.equal(r.out.error, 'default_branch');
+  // 06/11: the retry with --branch was refused again for the missing description; one refusal names both.
+  assert.equal(r.out.also, 'body_required');
+  assert.match(String(r.out.hint), /--branch NOME.*--body-file ARQ/);
+  assert.equal(ship(fx, ['-m', 'mexe no main', '-b', 'corpo', 'a.txt']).out.also, undefined, 'with a description only the branch is missing');
   assert.equal(git(fx.work, ['diff', '--cached', '--name-only']), '');
   assert.equal(git(fx.work, ['rev-parse', 'origin/main']), before);
   assert.deepEqual(fx.ghCalls(), []);
