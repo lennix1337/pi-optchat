@@ -13,7 +13,16 @@ export interface UsageRecord {
 export type MissClass = 'small' | 'first' | 'cold' | 'headChange' | 'growth';
 export interface MissBucket { turns: number; cacheWriteUsd: number; cacheWriteTokens: number }
 /** modelSwitch: the head changes whose previous main turn ran on another model, a subset of byClass.headChange (the provider caches per model). */
-export interface MissReport { byClass: Record<MissClass, MissBucket>; byDay: Record<string, MissBucket>; modelSwitch: MissBucket; totalUsd: number }
+export interface MissReport {
+  byClass: Record<MissClass, MissBucket>; byDay: Record<string, MissBucket>; modelSwitch: MissBucket; totalUsd: number;
+  /** headChange turns by the cause cache-diagnostics.jsonl recorded for the same request: the changed head parts joined with '+', `earlyView` (a view block before its tail changed), `unmatched`. Empty without diagnostics. */
+  headCause: Record<string, MissBucket>;
+}
+/** One cache-diagnostics.jsonl row (cache.ts ViewReport). */
+export interface HeadDiagnostic { date: string; headChanged?: boolean; headParts?: readonly string[]; changedAt?: number | null }
+
+/** The diagnostic row and the usage record of one request are written seconds apart. */
+export const DIAGNOSTIC_JOIN_MS = 120_000;
 
 /** Writes below this are normal per-turn growth (new tool output), not a miss. */
 export const SMALL_WRITE_TOKENS = 8000;
@@ -29,10 +38,12 @@ const add = (b: MissBucket, tokens: number, usd: number) => { b.turns++; b.cache
  * the cached prefix changed (view rewrite, tool-set change, model/account switch).
  * growth: a large write with a warm, kept prefix (the conversation simply grew).
  */
-export function classifyCacheMisses(records: readonly UsageRecord[], filter: { model?: string; since?: string } = {}): MissReport {
+export function classifyCacheMisses(records: readonly UsageRecord[], filter: { model?: string; since?: string; diagnostics?: readonly HeadDiagnostic[] } = {}): MissReport {
   const byClass: Record<MissClass, MissBucket> = { small: emptyBucket(), first: emptyBucket(), cold: emptyBucket(), headChange: emptyBucket(), growth: emptyBucket() };
   const byDay: Record<string, MissBucket> = {};
   const modelSwitch = emptyBucket();
+  const headCause: Record<string, MissBucket> = {};
+  const timed = filter.diagnostics?.map((d) => ({ d, t: Date.parse(d.date) }));
   const last = new Map<string, { t: number; read: number; model?: string }>();
   let totalUsd = 0;
   for (const r of records) {
@@ -52,7 +63,19 @@ export function classifyCacheMisses(records: readonly UsageRecord[], filter: { m
     if (cls === 'headChange') {
       add(byDay[r.date.slice(0, 10)] ??= emptyBucket(), cacheWrite, cost.cacheWrite);
       if (prev?.model && prev.model !== r.model) add(modelSwitch, cacheWrite, cost.cacheWrite);
+      if (timed) add(headCause[causeOf(timed, t)] ??= emptyBucket(), cacheWrite, cost.cacheWrite);
     }
   }
-  return { byClass, byDay, modelSwitch, totalUsd };
+  return { byClass, byDay, modelSwitch, totalUsd, headCause };
+}
+
+function causeOf(diagnostics: readonly { d: HeadDiagnostic; t: number }[], t: number): string {
+  let best: HeadDiagnostic | undefined, distance = DIAGNOSTIC_JOIN_MS + 1;
+  for (const item of diagnostics) {
+    const gap = Math.abs(item.t - t);
+    if (gap < distance) { distance = gap; best = item.d; }
+  }
+  if (!best || distance > DIAGNOSTIC_JOIN_MS) return 'unmatched';
+  if (best.headChanged) return best.headParts?.length ? best.headParts.join('+') : 'head';
+  return best.changedAt != null ? 'earlyView' : 'unmatched';
 }

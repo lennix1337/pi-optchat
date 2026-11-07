@@ -55,3 +55,23 @@ test('an idle gap whose cached prefix survived (1-hour entry) is growth, not a c
   assert.equal(r.byClass.cold.cacheWriteTokens, 110000);
   assert.equal(r.byClass.growth.turns, 1);
 });
+
+test('head changes are attributed to the cause the cache diagnostics recorded at the same moment', () => {
+  const at = (minute: number, extra: object) => ({ date: new Date(Date.UTC(2026, 9, 31, 12, minute, 5)).toISOString(), ...extra });
+  const r = classifyCacheMisses([
+    rec(0, 90000, 90000), rec(1, 30000, 70000),  // head change: model part changed
+    rec(2, 90000, 500), rec(3, 30000, 60000),    // head change: only an early view block changed
+    rec(6, 90000, 500), rec(8, 30000, 50000),    // head change: no diagnostic within two minutes
+  ], { diagnostics: [
+    at(1, { headChanged: true, headParts: ['model'] }),
+    at(3, { headChanged: false, changedAt: 4 }),
+    at(20, { headChanged: true, headParts: ['tools'] }),
+  ] });
+  assert.deepEqual(Object.fromEntries(Object.entries(r.headCause).map(([k, v]) => [k, v.turns])), { model: 1, earlyView: 1, unmatched: 1 });
+  assert.equal(r.headCause.model.cacheWriteTokens, 70000);
+});
+
+test('without diagnostics no cause is claimed', () => {
+  const r = classifyCacheMisses([rec(0, 0, 90000), rec(1, 30000, 70000)]);
+  assert.deepEqual(r.headCause, {});
+});
