@@ -47,9 +47,28 @@ const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
 export const labeled = (kind: Kind, text: string) => `${kind}: ${text.replace(KIND_HEAD, '')}`;
 export const flat = (s: string) => s.replace(/[\r\n]+/g, ' ');
 const messageScope = (count: number) => count === 0 ? 'Memory has no messages yet.' : `Messages run 0-${count - 1}`;
+/** The aligned blocks id+n (n a power of two, as zoom requires) that tile messages from..to-1, oldest first. */
+export function alignedBlocks(from: number, to: number) {
+  const tiles: { id: number; n: number }[] = [];
+  for (let at = from; at < to;) {
+    let n = 1;
+    while (at % (n * 2) === 0 && at + n * 2 <= to) n *= 2;
+    tiles.push({ id: at, n }); at += n;
+  }
+  return tiles;
+}
+const HINT_BLOCKS = 6;
+/** The aligned lines that read the messages a bad id+n asked for, or '' when it started past the end or was not whole numbers. */
+function alignedHint(id: number, n: number, count: number) {
+  if (!Number.isSafeInteger(id) || !Number.isSafeInteger(n) || id < 0 || n < 1 || id >= count) return '';
+  const to = Math.min(id + n, count);
+  const tiles = alignedBlocks(id, to);
+  const shown = tiles.slice(0, HINT_BLOCKS).map(t => `${t.id}+${t.n}`).join(', ');
+  return ` To read messages ${id}-${to - 1} zoom: ${shown}${tiles.length > HINT_BLOCKS ? `, and ${tiles.length - HINT_BLOCKS} more` : ''}.`;
+}
 /** The error for a zoom range that does not exist, naming the ranges that do. */
 export const noLine = (id: number, n: number, count: number) => new Error(`No line ${id}+${n}. ${count === 0 ? messageScope(count)
-  : `${messageScope(count)}; n is a power of two, id a multiple of n, id+n at most ${count}.`}`);
+  : `${messageScope(count)}; n is a power of two, id a multiple of n, id+n at most ${count}.${alignedHint(id, n, count)}`}`);
 const lineBytes = (s: string) => bytes(flat(s));
 const notice = (omitted: number) => `\n[${omitted} characters omitted; head and tail retained. Zoom can recover the full output only when the original is durable.]\n`;
 const VIEW_OPEN = '<chat>\n';

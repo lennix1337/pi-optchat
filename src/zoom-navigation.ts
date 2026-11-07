@@ -1,4 +1,4 @@
-import { flat, noLine, type Memory } from './memory.ts';
+import { alignedBlocks, flat, noLine, type Memory } from './memory.ts';
 
 /** One successful read of memory, as the arguments that reopen what the caller saw. */
 export interface MemoryRead { id: number; n: number; offset?: number; limit?: number }
@@ -39,16 +39,8 @@ function fold(text: string): Folded {
   };
 }
 
-/** The aligned blocks id+n (n a power of two, as zoom requires) that tile messages from..to-1, newest first. */
-function blocks(from: number, to: number) {
-  const tiles: { id: number; n: number }[] = [];
-  for (let at = from; at < to;) {
-    let n = 1;
-    while (at % (n * 2) === 0 && at + n * 2 <= to) n *= 2;
-    tiles.push({ id: at, n }); at += n;
-  }
-  return tiles.reverse();
-}
+/** The aligned blocks that tile messages from..to-1, newest first. */
+const blocks = (from: number, to: number) => alignedBlocks(from, to).reverse();
 
 /** Logged zoom/search results only copy memory, so a range search skips them as Memory.search does. */
 const COPY_KINDS = new Set<string>(['tool', 'echo']);
