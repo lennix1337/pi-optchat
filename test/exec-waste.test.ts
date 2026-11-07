@@ -18,6 +18,13 @@ test('bash intent is the command that does the work, not the heredoc, cd or in-p
   assert.equal(intentOf(row(0, 'bash', 'cat > f.ts')), 'bash cat >');
 });
 
+test('bash intent skips the account and status preflights that come before the real work', () => {
+  assert.equal(intentOf(row(0, 'bash', 'cd C:/x && gh auth status --hostname github.com 2>&1 | grep Active; gh pr merge 9 --squash')), 'bash gh pr');
+  assert.equal(intentOf(row(0, 'bash', 'gh auth status --hostname github.com && gh run download 1')), 'bash gh run');
+  assert.equal(intentOf(row(0, 'bash', 'git status -sb | head -3; git switch main')), 'bash git switch');
+  assert.equal(intentOf(row(0, 'bash', 'gh auth status')), 'bash gh auth');
+});
+
 test('a failure and the retry of the same intent are waste; an unrelated call is not', () => {
   const s = summarize([
     row(0, 'bash', 'node scripts/ship.mjs -m a', 'error', 800, { detail: 'default_branch' }),
