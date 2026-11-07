@@ -12,6 +12,7 @@ test('classifies outcomes in plain categories', () => {
   assert.equal(classify(true, 'Command exited with code 2'), 'exit_nonzero');
   assert.equal(classify(true, 'Command timed out after 60 seconds'), 'timeout');
   assert.equal(classify(true, 'Not executed: external outcome uncertain'), 'refused');
+  assert.equal(classify(true, 'Not run: bash expands $x inside the double quotes before PowerShell starts'), 'refused');
   assert.equal(classify(true, 'spawn gh ENOENT', 'ENOENT'), 'not_found');
   assert.equal(classify(true, 'gh: API rate limit exceeded'), 'rate_limited');
   assert.equal(classify(true, 'read ECONNRESET'), 'network');

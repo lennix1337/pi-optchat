@@ -19,7 +19,7 @@ export function classify(failed: boolean, text: string, code?: number | string):
   // A command that ran to its own exit code is judged by that code; 124/137/143 are timeout/SIGKILL/SIGTERM inside it.
   const exit = typeof code === 'number' ? code : /exited with code (\d+)\s*$/.exec(text)?.[1];
   if (exit !== undefined && Number(exit) !== 0) return [124, 137, 143].includes(Number(exit)) ? 'timeout' : 'exit_nonzero';
-  if (/^Not executed:|refused by|autonomy gate|blocked by/i.test(text)) return 'refused';
+  if (/^Not (executed|run):|refused by|autonomy gate|blocked by/i.test(text)) return 'refused';
   if (/timed? ?out|ETIMEDOUT|SIGTERM/i.test(text) || code === 'ETIMEDOUT') return 'timeout';
   if (/aborted|AbortError|cancell?ed by/i.test(text)) return 'aborted';
   if (/ENOENT|command not found|not recognized as/i.test(text) || code === 'ENOENT') return 'not_found';
