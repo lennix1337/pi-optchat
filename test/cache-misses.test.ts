@@ -44,3 +44,14 @@ test('a head change right after the model changed is counted as a model switch',
   assert.equal(r.modelSwitch.turns, 1);
   assert.equal(r.modelSwitch.cacheWriteTokens, 100000);
 });
+
+test('an idle gap whose cached prefix survived (1-hour entry) is growth, not a cold miss', () => {
+  const r = classifyCacheMisses([
+    rec(0, 0, 90000),          // first
+    rec(15, 90000, 20000),     // 15 min later the prefix was still read in full: growth
+    rec(40, 0, 110000),        // 25 min later the read is gone: cold
+  ]);
+  assert.equal(r.byClass.cold.turns, 1);
+  assert.equal(r.byClass.cold.cacheWriteTokens, 110000);
+  assert.equal(r.byClass.growth.turns, 1);
+});
