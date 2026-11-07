@@ -62,6 +62,8 @@ async function readMemory(m: Memory, id: number, { n = 1, offset, limit, findTex
 
 /** `runs` gives a subagent's messages by run id, live or finished; undefined for no such run.
  * `onRead` hears each successful memory read, never a failed one nor an agent transcript; a findText read reports its excerpts, not the whole range. */
+/** A zoom target that is no run: say where each kind of id is read, so the next call is the right one. */
+const noRun = (id: string) => `No run ${id}. Subagent run ids come from spawn/subagent; a background shell is read with shell_status; a memory message is zoom {id: number, n}.`;
 export function memoryTools(memory: () => Memory, runs?: (id: string) => readonly AgentMessage[] | undefined, onRead?: (read: MemoryRead) => void) {
   return [
     { name: 'zoom', label: 'Zoom memory', description: `Open id+n into halves; n=1: original with images. agent:"id" or string id: subagent chat. offset/limit page characters (max ${PAGE}). findText: case-insensitive literal in id..id+n-1 only, newest first; bounded excerpts and exact follow-ups for hits/unsearched regions. n=1 offset starts search; no limit/agent. Prefer direct zoom for a single read, dependent tree navigation, or images. Code Mode is optional for independent text-only reads: await calls, emit every result with its id; Promise.allSettled retains partial successes. Bound output without unnecessary paging. Pi 1.1.0 drops zoom's image attachments in Code Mode.`,
@@ -72,10 +74,10 @@ export function memoryTools(memory: () => Memory, runs?: (id: string) => readonl
         const run = agent ?? (typeof id === 'string' ? id : undefined), messages = run === undefined ? undefined : runs?.(run);
         if (findText !== undefined && (agent !== undefined || messages)) throw new Error(FIND_AGENT);
         if (messages) return result(runPage(runTranscript(messages), offset, limit));
-        if (agent !== undefined) throw new Error(`No run ${agent}.`);
+        if (agent !== undefined) throw new Error(noRun(agent));
         if (id === undefined) throw new Error('zoom takes id and n, or agent.');
         // A model may quote a message id; eight digits can be a run id, so those never open a message.
-        if (typeof id === 'string' && (!/^\d+$/.test(id) || id.length === 8)) throw new Error(`No run ${id}.`);
+        if (typeof id === 'string' && (!/^\d+$/.test(id) || id.length === 8)) throw new Error(noRun(id));
         return readMemory(memory(), Number(id), args, onRead);
       } },
     { name: 'date', label: 'Memory date', description: 'The date and time of message id.',
