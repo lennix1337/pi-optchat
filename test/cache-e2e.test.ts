@@ -151,11 +151,12 @@ async function simulatedAnthropic() {
     try {
       return await realFetch(input, init);
     } catch (error) {
-      if (String(input instanceof Request ? input.url : input).startsWith(url)) {
-        const causes: string[] = [];
-        for (let e: any = error; e && causes.length < 4; e = e.cause) causes.push(`${e.name ?? ''} ${e.code ?? ''} ${String(e.message ?? '').slice(0, 100)}`.trim());
-        transport.events.push(`fetch rejected after ${Date.now() - started} ms: ${causes.join(' <- ')}`);
-      }
+      // Any host counts: a call that reaches a provider other than the simulated one (the fixture compactor's invalid.local) is
+      // what a bare "Connection error." in the extension's notices would hide.
+      const target = String(input instanceof Request ? input.url : input);
+      const causes: string[] = [];
+      for (let e: any = error; e && causes.length < 4; e = e.cause) causes.push(`${e.name ?? ''} ${e.code ?? ''} ${String(e.message ?? '').slice(0, 100)}`.trim());
+      transport.events.push(`fetch to ${target.startsWith(url) ? 'the simulated server' : target.slice(0, 80)} rejected after ${Date.now() - started} ms: ${causes.join(' <- ')}`);
       throw error;
     }
   };
@@ -229,7 +230,7 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
     assert.equal(first.tools, last.tools, 'the request keeps the tool list its cache entry was written with');
     assert.ok(first.read > 0, `the first request after /reload read ${first.read} and wrote ${first.write}; the one before it read ${last.read} and wrote ${last.write}`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
     // Every request leaves one line saying how its view compares with the last one's, so a miss in usage.jsonl can be explained.
     const diagnostics = readFileSync(join(profilePath('cache-reload'), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.equal(diagnostics.length, requests.length);
@@ -306,7 +307,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     assert.ok(next.read > start.read + start.write / 2, `after /reload the next turn read ${next.read} and wrote ${next.write}; the busy turn had cached ${start.read} + ${start.write} at its start ` +
       `(evidence ${evidence})`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
@@ -354,7 +355,7 @@ for (const restore of [true, false]) test(`real Pi + OptChat: controlled view gr
     assert.equal(next.read > halfView, restore, `read ${next.read}, wrote ${next.write}; prefix ${start.prefix}, half-view threshold ${halfView}`);
     assert.equal(anthropic.cache.requests.length, 2, 'no extra request can warm a competing entry');
     assert.deepEqual(anthropic.cache.requests.filter(r => r.status !== 200), []);
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
@@ -385,7 +386,7 @@ test('real Pi + OptChat: an operational_state record mid-turn keeps the cached r
       .find(text => text.includes('<chat>'));
     assert.match(withView ?? '', /Operational state \(records[\s\S]*Recorded mid-turn/, 'the next turn shows the record after the view');
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
@@ -405,7 +406,7 @@ test('real Pi + OptChat: a long bash call that ends within the grace returns its
     assert.doesNotMatch(text, /moved to background shell/);
     await new Promise(resolve => setTimeout(resolve, 500));
     assert.doesNotMatch(JSON.stringify(session.messages), /\[shell [0-9a-f-]{36}\]/, 'no end notice follows a result the call already returned');
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
@@ -423,7 +424,7 @@ test('real Pi + OptChat: a foreground sleep in bash runs instead of being refuse
     const text = JSON.stringify(result.content);
     assert.match(text, /waited/, 'the wait ran and its output is the result');
     assert.doesNotMatch(text, /shell_start|moved to background shell/);
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
   } finally {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
@@ -462,7 +463,7 @@ test('real Pi + OptChat on Anthropic\'s wire: a tool enabled mid-turn and a turn
     const cached = start.read + start.write;
     assert.ok(next.read > cached / 2 + start.read / 2, `the next turn read ${next.read} and wrote ${next.write} of the ${cached} the busy turn had cached at its start`);
     assert.deepEqual(requests.filter(r => r.status !== 200), [], 'every request was valid under Anthropic\'s mark rules');
-    assert.deepEqual(errors, []);
+    assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
     const total = requests.reduce((sum, r) => ({ read: sum.read + r.read, write: sum.write + r.write }), { read: 0, write: 0 });
     console.log(JSON.stringify({ e2e: 'cache', requests: requests.length, ...total, enable: enable.map(r => [r.read, r.write]), busyStart: [start.read, start.write], nextTurn: [next.read, next.write] }));
   } finally {
