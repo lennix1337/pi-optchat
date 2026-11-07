@@ -98,6 +98,25 @@ test('the edit hint wins over the read hint and ripwire hint', () => {
   assert.equal(bashHint('sed -i s/a/b/ src/a.ts', true), 'edit');
 });
 
+test('an inline node -e / python -c script that fails to parse suggests a script file', () => {
+  const syntax = raw`[eval]:1
+SyntaxError: missing ) after argument list`;
+  assert.equal(bashHint(raw`node -e "console.log(1"`, false, syntax), 'script');
+  assert.equal(bashHint(raw`python3 -c "print("`, false, 'SyntaxError: unexpected EOF while parsing'), 'script');
+  assert.equal(bashHint(raw`cd x && node -e 'a b'`, false, 'ERR_INVALID_TYPESCRIPT_SYNTAX'), 'script');
+  // Only a parse failure of an inline script: a clean run, a runtime error or a file script gets nothing.
+  assert.equal(bashHint(raw`node -e "console.log(1)"`, false, '1'), undefined);
+  assert.equal(bashHint(raw`node -e "null.x"`, false, 'TypeError: Cannot read properties of null'), undefined);
+  assert.equal(bashHint('node build.mjs', false, syntax), undefined);
+  assert.equal(bashHint(raw`node -e "console.log(1"`, false), undefined);
+});
+
+test('the script hint reaches a failing inline run through the tool_result hook', () => {
+  const { result } = harness();
+  const patched = result('s', raw`node -e "console.log(1"`, 'SyntaxError: missing ) after argument list\n\nCommand exited with code 1', true)!;
+  assert.match(patched.content[0].text, /^SyntaxError: .*\nHint: inline node -e .*temp file.*\n\nCommand exited with code 1$/s);
+});
+
 function harness(tools: string[] = []) {
   const hooks = new Map<string, (...args: unknown[]) => unknown>();
   const pi = {
