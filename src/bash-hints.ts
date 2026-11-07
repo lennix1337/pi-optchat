@@ -4,10 +4,11 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 // files 15.3% (13.6% Python tracebacks), and text-mode Python on Windows turned LF files into CRLF.
 // A bash result for such a command gets one short hint line; it never changes isError or the exit code.
 
-type HintKind = 'edit' | 'read' | 'ripwire';
+type HintKind = 'edit' | 'read' | 'ripwire' | 'script';
 const HINTS: Record<HintKind, string> = {
   edit: 'Hint: use the native edit/write tools for source changes; fewer errors, line endings kept.',
   read: 'Hint: use the native read tool with offset/limit instead of bash sed/cat/head.',
+  script: 'Hint: inline node -e / python -c broke on quoting; write the script to a temp file with the write tool, then run it.',
   ripwire: 'Hint: use the native ripwire tool (map/task/search/symbol/callers/callees/impact/exemplar/edit_check/quality/test_gate); CLI only for other flags.',
 };
 /** The same hint is shown at most once per this many bash calls in a session. */
@@ -41,11 +42,16 @@ const readsOneFile = (command: string) => {
   return PLAIN_READ.some(pattern => pattern.test(rest));
 };
 
+// An inline script whose own source failed to parse: shell quoting mangled it, so a retry with other escapes repeats the error.
+const INLINE_SCRIPT = /(?:^|[\s;&|(])(?:python[\d.]*|py|node)(?:\.exe)?\s+-[ce]\s/i;
+const PARSE_FAILURE = /SyntaxError|ERR_(?:UNSUPPORTED|INVALID)_TYPESCRIPT_SYNTAX|unexpected EOF while parsing|IndentationError/;
+
 const RIPWIRE_FLAGS = /(?:^|[;&|(]\s*)ripwire\b[^\n]*\s--(?:for|grep|callers|callees|impact|edit-check|quality-delta|test-gate)(?=[\s=]|$)/;
 
 /** First applicable hint, or undefined. Pure so patterns are testable without a session. */
-export function bashHint(command: string, ripwireTool: boolean): HintKind | undefined {
+export function bashHint(command: string, ripwireTool: boolean, output = ''): HintKind | undefined {
   if (patchesSourceWithScript(command) || editsInPlace(command)) return 'edit';
+  if (INLINE_SCRIPT.test(command) && PARSE_FAILURE.test(output)) return 'script';
   if (ripwireTool && RIPWIRE_FLAGS.test(command)) return 'ripwire';
   if (readsOneFile(command)) return 'read';
   return undefined;
@@ -68,7 +74,8 @@ export function registerBashHints(pi: ExtensionAPI) {
     let state = sessions.get(session);
     if (!state) sessions.set(session, state = { calls: 0, shown: new Map() });
     const call = ++state.calls;
-    const kind = bashHint(command, pi.getAllTools().some(tool => tool.name === 'ripwire'));
+    const output = event.content.map(part => part.type === 'text' ? (part as { text: string }).text : '').join('\n');
+    const kind = bashHint(command, pi.getAllTools().some(tool => tool.name === 'ripwire'), output);
     if (!kind) return;
     const last = state.shown.get(kind);
     if (last !== undefined && call - last < HINT_INTERVAL) return;
