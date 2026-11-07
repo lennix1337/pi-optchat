@@ -112,10 +112,22 @@ function sse(response: ServerResponse, usage: Usage, answer: ReturnType<typeof r
 async function simulatedAnthropic() {
   const cache = new SimulatedCache();
   let id = 0;
+  // Pi reports a failed provider call only as "Connection error." (twice on CI, a busy turn ended early). Record what the
+  // server side saw, so the next failure names who closed the connection.
+  const transport = { connections: 0, events: [] as string[] };
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+    const n = id + 1;
+    response.on('close', () => { if (!response.writableFinished) transport.events.push(`response ${n} closed before it finished`); });
     const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(chunk as Buffer);
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    let body;
+    try {
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch (error) {
+      transport.events.push(`request ${n} body failed after ${chunks.reduce((sum, c) => sum + c.length, 0)} bytes: ${String(error).slice(0, 120)}`);
+      response.destroy();
+      return;
+    }
     const usage = cache.answer(body);
     if (usage.status !== 200) {
       response.writeHead(400, { 'content-type': 'application/json' });
@@ -124,8 +136,15 @@ async function simulatedAnthropic() {
     }
     sse(response, usage, reply(body), ++id);
   });
+  server.on('connection', socket => {
+    const n = ++transport.connections, opened = Date.now();
+    socket.on('error', error => transport.events.push(`socket ${n} error ${(error as NodeJS.ErrnoException).code ?? error.message}`));
+    socket.on('close', hadError => { if (hadError) transport.events.push(`socket ${n} closed with an error after ${Date.now() - opened} ms`); });
+  });
+  server.on('clientError', (error: NodeJS.ErrnoException) => transport.events.push(`clientError ${error.code ?? error.message}`));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { cache, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => new Promise(resolve => server.close(resolve)) };
+  return { cache, transport, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
 }
 
 /** `enable_web` turns on a tool that was registered inactive, as pi-web-access's web_enable does. */
@@ -257,7 +276,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const before = beforeReload.previous?.chain ?? [], afterChain = afterReload.previous?.chain ?? [];
     let commonPrefix = 0;
     while (commonPrefix < Math.min(before.length, afterChain.length) && before[commonPrefix] === afterChain[commonPrefix]) commonPrefix++;
-    const evidence = JSON.stringify({ busyRequests, turnErrors, errors, memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
+    const evidence = JSON.stringify({ busyRequests, turnErrors, errors, transport: { connections: anthropic.transport.connections, events: anthropic.transport.events.slice(-12) }, memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
       liveBefore: at(afterReload, liveBefore), matchingAfter: at(afterReload, matchingAfter), beforeEntries: at(beforeReload, beforeReload.entries),
       afterEntries: at(afterReload, afterReload.entries), chainLengths: [before.length, afterChain.length], commonPrefix });
     // The scenario itself: the busy turn's ~320 messages must reach the post-reload view as ~80 more blocks. On that CI run they

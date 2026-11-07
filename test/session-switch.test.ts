@@ -125,13 +125,15 @@ test('a blocked /new, /resume, /fork or /clone says why and what lets it through
 
     agent = /[0-9a-f]{8}/.exec((await owner.blocked({ type: 'session_before_switch', reason: 'new' })).notes[0])![0];
     const newSession = { type: 'session_before_switch', reason: 'new' } as const;
+    // A wall-clock deadline, not a count of polls: stopping a child on a loaded Windows runner outlasted 200 polls (~2 s).
     const waitFor = async (done: (note: string | undefined) => boolean) => {
+      const deadline = Date.now() + 15_000;
       let note: string | undefined;
-      for (let i = 0; i < 200; i++) {
+      do {
         note = (await owner.blocked(newSession)).notes[0];
         if (done(note)) break;
-        await new Promise(r => setTimeout(r, 10));
-      }
+        await new Promise(r => setTimeout(r, 25));
+      } while (Date.now() < deadline);
       return note;
     };
     await agents(['\x03']);
