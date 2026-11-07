@@ -94,7 +94,6 @@ test('bad or conflicting findText parameters fail explicitly and report no read'
   await bad({ id: 0, n: 1, findText: 'x'.repeat(FIND.maxText + 1) }, /1 to 200 characters/);
   await bad({ id: 0, n: 1, findText: 'a\ud83d' }, /well-formed/);
   await bad({ id: 0, n: 1, findText: '\ude00a' }, /well-formed/);
-  await bad({ id: 0, n: 1, findText: 'alpha', limit: 5 }, /does not take limit/);
   await bad({ id: 0, n: 2, findText: 'alpha', offset: 1 }, /offset .* needs n = 1/);
   await bad({ id: 0, n: 1, findText: 'alpha', offset: 10 }, /Message 0 has 10 characters; offset must be 0 to 9/);
   await bad({ agent: 'run', findText: 'alpha' }, /not an agent transcript/);
@@ -105,7 +104,6 @@ test('bad or conflicting findText parameters fail explicitly and report no read'
     assert.ok(expected, `${id}+${n} is invalid for zoom`);
     await bad({ id, n, findText: 'alpha' }, new RegExp(expected.replace(/[+]/g, '\\+')));
   }
-  assert.throws(() => findInRange(memory, { id: 0, n: 1, findText: 'alpha', limit: 1 }), /does not take limit/);
   assert.deepEqual(reads, []);
 }));
 
@@ -266,7 +264,7 @@ test('a find read reports its excerpts only, and an absent or failed find report
   }
   reads.length = 0;
   await zoom({ id: 0, n: 8, findText: 'absent' });
-  await assert.rejects(() => zoom({ id: 0, n: 8, findText: 'marker', limit: 3 }), /limit/);
+  assert.match(textOf(await zoom({ id: 0, n: 8, findText: 'absent', limit: 3 })), /limit was ignored/);
   assert.deepEqual(reads, []);
 }));
 
@@ -285,4 +283,14 @@ test('images stay with the page that names them: finds are text, the suggested z
   assert.deepEqual(whole.content.slice(1), [image]);
   const page = await zoom({ id: 1, n: 1, offset: memory.root[1].text.indexOf(ref) - FIND.context, limit: FIND.nextLimit });
   assert.deepEqual(page.content.slice(1), [image]);
+}));
+
+test('findText with a limit still searches and says the limit was ignored (07/11: 7 refusals, each a retry)', () => withZoom(async (memory, zoom) => {
+  add(memory, [['user', 'alpha beta'], ['user', 'gamma']]);
+  const plain = textOf(await zoom({ id: 0, n: 2, findText: 'alpha' }));
+  const limited = textOf(await zoom({ id: 0, n: 2, findText: 'alpha', limit: 5 }));
+  assert.match(limited, /1 match of "alpha"/);
+  assert.match(limited, /limit was ignored: findText already returns bounded excerpts/);
+  assert.ok(limited.includes(plain.split(/\r?\n/)[0]), 'same result as without limit');
+  assert.doesNotMatch(plain, /limit was ignored/);
 }));

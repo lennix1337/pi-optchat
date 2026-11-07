@@ -57,10 +57,9 @@ function checkRange(memory: Memory, id: number, n: number) {
     throw noLine(id, n, memory.root.length);
 }
 
-function checkFind(memory: Memory, { id, n, findText, offset, limit }: FindArgs) {
+function checkFind(memory: Memory, { id, n, findText, offset }: FindArgs) {
   if (typeof findText !== 'string' || !findText.length || findText.length > FIND.maxText || LONE_SURROGATE.test(findText))
     throw new Error(`findText must be 1 to ${FIND.maxText} characters of well-formed text.`);
-  if (limit !== undefined) throw new Error('findText does not take limit: it returns bounded excerpts.');
   checkRange(memory, id, n);
   if (offset === undefined) return;
   if (n !== 1) throw new Error('With findText, offset (where the search starts) needs n = 1.');
@@ -136,7 +135,9 @@ function render(memory: Memory, scan: Scan, args: FindArgs) {
   const head = hits.length
     ? `${hits.length}${more ? '+' : ''} ${hits.length === 1 && !more ? 'match' : 'matches'} of "${findText}" in ${where}, newest message first (${coverage}).${more ? ` Only the first ${FIND.excerpts} are shown.` : ''}`
     : `No match of "${findText}" (any case, literal) in the part of ${where} that was searched (${coverage}).`;
-  return [head, ...hits.map(hit => renderHit(memory, hit))].join('\n') + renderNotSearched(scan, args);
+  // A caller that adds limit wants a short answer, which findText already gives: say so instead of refusing.
+  const ignored = args.limit === undefined ? '' : '\n[limit was ignored: findText already returns bounded excerpts.]';
+  return [head, ...hits.map(hit => renderHit(memory, hit))].join('\n') + renderNotSearched(scan, args) + ignored;
 }
 
 /**
