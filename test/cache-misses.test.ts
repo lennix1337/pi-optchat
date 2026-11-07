@@ -31,3 +31,16 @@ test('only main turns of the requested model are counted', () => {
   const r = classifyCacheMisses([rec(0, 0, 90000), rec(1, 0, 90000, { role: 'compactor' }), rec(2, 0, 90000, { model: 'other' })], { model: 'm' });
   assert.equal(r.byClass.first.turns, 1);
 });
+
+test('a head change right after the model changed is counted as a model switch', () => {
+  const r = classifyCacheMisses([
+    rec(0, 0, 90000, { model: 'opus' }),
+    rec(1, 90000, 12000, { model: 'opus' }),
+    rec(2, 0, 100000, { model: 'sonnet' }),   // switch while warm: the other model's cache is cold
+    rec(3, 100000, 500, { model: 'sonnet' }),
+    rec(4, 20000, 80000, { model: 'sonnet' }),   // not a switch: same model, prefix rewritten
+  ]);
+  assert.equal(r.byClass.headChange.turns, 2);
+  assert.equal(r.modelSwitch.turns, 1);
+  assert.equal(r.modelSwitch.cacheWriteTokens, 100000);
+});

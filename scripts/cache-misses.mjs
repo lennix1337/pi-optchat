@@ -17,6 +17,7 @@ if (!values.usage) {
   console.log(JSON.stringify({
     totalUsd: +r.totalUsd.toFixed(2),
     byClass: Object.fromEntries(Object.entries(r.byClass).map(([k, v]) => [k, round(v)])),
+    headChangeModelSwitch: round(r.modelSwitch),
     headChangeByDay: Object.fromEntries(Object.entries(r.byDay).sort().map(([k, v]) => [k, round(v)])),
   }, null, 2));
 }

@@ -12,7 +12,8 @@ export interface UsageRecord {
 
 export type MissClass = 'small' | 'first' | 'cold' | 'headChange' | 'growth';
 export interface MissBucket { turns: number; cacheWriteUsd: number; cacheWriteTokens: number }
-export interface MissReport { byClass: Record<MissClass, MissBucket>; byDay: Record<string, MissBucket>; totalUsd: number }
+/** modelSwitch: the head changes whose previous main turn ran on another model, a subset of byClass.headChange (the provider caches per model). */
+export interface MissReport { byClass: Record<MissClass, MissBucket>; byDay: Record<string, MissBucket>; modelSwitch: MissBucket; totalUsd: number }
 
 /** Writes below this are normal per-turn growth (new tool output), not a miss. */
 export const SMALL_WRITE_TOKENS = 8000;
@@ -30,14 +31,15 @@ const add = (b: MissBucket, tokens: number, usd: number) => { b.turns++; b.cache
 export function classifyCacheMisses(records: readonly UsageRecord[], filter: { model?: string; since?: string } = {}): MissReport {
   const byClass: Record<MissClass, MissBucket> = { small: emptyBucket(), first: emptyBucket(), cold: emptyBucket(), headChange: emptyBucket(), growth: emptyBucket() };
   const byDay: Record<string, MissBucket> = {};
-  const last = new Map<string, { t: number; read: number }>();
+  const modelSwitch = emptyBucket();
+  const last = new Map<string, { t: number; read: number; model?: string }>();
   let totalUsd = 0;
   for (const r of records) {
     if (r.role !== 'main' || !r.usage || (filter.model && r.model !== filter.model) || (filter.since && r.date < filter.since)) continue;
     const key = r.session ?? '';
     const t = Date.parse(r.date);
     const prev = last.get(key);
-    last.set(key, { t, read: r.usage.cacheRead });
+    last.set(key, { t, read: r.usage.cacheRead, model: r.model });
     const { cacheWrite, cacheRead, cost } = r.usage;
     totalUsd += cost.total;
     let cls: MissClass;
@@ -46,7 +48,10 @@ export function classifyCacheMisses(records: readonly UsageRecord[], filter: { m
     else if ((t - prev.t) / 60000 > COLD_GAP_MINUTES) cls = 'cold';
     else cls = cacheRead < prev.read * 0.5 && cacheRead < cacheWrite ? 'headChange' : 'growth';
     add(byClass[cls], cacheWrite, cost.cacheWrite);
-    if (cls === 'headChange') add(byDay[r.date.slice(0, 10)] ??= emptyBucket(), cacheWrite, cost.cacheWrite);
+    if (cls === 'headChange') {
+      add(byDay[r.date.slice(0, 10)] ??= emptyBucket(), cacheWrite, cost.cacheWrite);
+      if (prev?.model && prev.model !== r.model) add(modelSwitch, cacheWrite, cost.cacheWrite);
+    }
   }
-  return { byClass, byDay, totalUsd };
+  return { byClass, byDay, modelSwitch, totalUsd };
 }
