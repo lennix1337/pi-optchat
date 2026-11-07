@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Memory, cap, CAP, start, end, bytes, mostDue, COLD_LONG_MS, COLD_MS, HOT_TEXTS, type Compression, type Part } from '../src/memory.ts';
+import { Memory, noLine, cap, CAP, start, end, bytes, mostDue, COLD_LONG_MS, COLD_MS, HOT_TEXTS, type Compression, type Part } from '../src/memory.ts';
 import { appendJson, FileStore, localDay } from '../src/store.ts';
 import { lockProfile } from '../src/profiles.ts';
 import { splitView, cachePayload, coldAfter, prefixRetention, ViewEntries } from '../src/cache.ts';
@@ -1186,4 +1186,17 @@ test('old summarized messages keep their text on disk, not in RAM, and still zoo
     assert.equal(held(total - HOT_TEXTS), false);
     assert.equal(memory.root[total - HOT_TEXTS].text, text(total - HOT_TEXTS));
   } finally { await memory.close(); removeDir(dir); }
+});
+
+test('a zoom range that is not aligned names the aligned lines that read the same messages', () => {
+  // Real misses: id not a multiple of n (122912+64), n not a power of two (125177+6), a block past the end.
+  assert.match(noLine(122912, 64, 123461).message, /To read messages 122912-122975 zoom: 122912\+32, 122944\+32\./);
+  assert.match(noLine(125177, 6, 128426).message, /To read messages 125177-125182 zoom: 125177\+1, 125178\+2, 125180\+2, 125182\+1\./);
+  assert.match(noLine(8, 8, 11).message, /To read messages 8-10 zoom: 8\+2, 10\+1\./);
+  // Nothing to suggest when the start is past the end, or the arguments are not whole numbers.
+  assert.doesNotMatch(noLine(3, 1, 3).message, /To read/);
+  assert.doesNotMatch(noLine(1.5, 2, 9).message, /To read/);
+  assert.doesNotMatch(noLine(-1, 2, 9).message, /To read/);
+  // A very long range lists a bounded number of lines.
+  assert.ok(noLine(1, 1000, 5000).message.length < 400);
 });
