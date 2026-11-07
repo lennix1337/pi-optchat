@@ -13,8 +13,9 @@ import { pathToFileURL } from 'node:url';
 export const RETRY_WINDOW_MS = 10 * 60_000;
 const TOP = 8;
 
-/** A segment that only prepares the command that follows (cd, a heredoc or redirect that writes a file, an in-place sed). */
-const PREPARES = /^(cd|mkdir|export|set|cat\s*>>?|tee|printf|echo|sed\s+(-\S+\s+)*-i\S*)(\s|$)/;
+/** A segment that only prepares the command that follows (cd, a heredoc or redirect that writes a file, an in-place sed,
+ * the account and status look every GitHub or Git action starts with). */
+const PREPARES = /^(cd|mkdir|export|set|cat\s*>>?|tee|printf|echo|sed\s+(-\S+\s+)*-i\S*|gh\s+auth\s+status|git\s+(-C\s+\S+\s+)?status)(\s|$)/;
 
 /** The segments of a bash command in order, without heredoc bodies. */
 const bashSegments = (command) => {
