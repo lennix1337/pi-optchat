@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { classifyEffects, decide, parseContract, type Effect, type Repo } from '../src/autonomy.ts';
+import { classifyEffects, decide, gitRepo, parseContract, type Effect, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { EffectApprovals } from '../src/authorization.ts';
 import { forgetBrowserPages, observeBrowser, sensitivePage } from '../src/external-effects.ts';
@@ -61,6 +61,37 @@ test('incidents 05/11: a page script that writes to production and a Stripe API 
   for (const read of ['curl -s https://api.stripe.com/v1/account -u "$K:"', `node x.mjs eval $T "fetch('https://dentai.com.br/robots.txt').then(r=>r.text())"`,
     `node x.mjs eval $T "fetch('http://localhost:3000/api/x',{method:'POST'})"`])
     assert.deepEqual(kinds(read), [], read);
+});
+
+test('incident 06/11: a script file that submits a form on a production page, or writes to production, is a production write', () => {
+  forgetBrowserPages();
+  // 128900: a CDP script in the temp folder filled and submitted the live Odontoclinic form (a fake lead) on an owned tab.
+  const cdp = "const ws = new WebSocket(tab.webSocketDebuggerUrl);\nawait send('Runtime.evaluate', { expression: `document.getElementById('sim-nome').value = 'Teste'; f.requestSubmit()` });";
+  const scripts: Record<string, string> = {
+    '/tmp/odo-e2e.mjs': cdp,
+    '/tmp/odo-url.mjs': `${cdp}\nconst origin = 'https://dentai.com.br';`,
+    '/tmp/lead.mjs': "await fetch('https://api.dentai.com.br/leads', { method: 'POST', body })",
+    '/tmp/read.mjs': "const r = await fetch('https://api.dentai.com.br/health'); console.log(await r.text())",
+    '/tmp/local.mjs': `${cdp}\nconst page = 'http://localhost:3100/odontoclinic';`,
+  };
+  const scriptRepo: Repo = { ...repo, script: path => scripts[path] };
+  const run = (command: string) => lines(classifyEffects({ tool: 'bash', input: { command }, cwd: 'C:/projetos/pi-optchat' }, scriptRepo));
+  observeBrowser({ action: 'navigate', tab: 'B28A5503AB0400E9C87DA330EFA164E1', url: 'https://dentai.com.br/odontoclinic' }, '{"status":"ok"}');
+  observeBrowser({ action: 'open', url: 'http://localhost:3100/' }, '{"status":"ok","tab":"LOCAL0001"}');
+  assert.deepEqual(run('sleep 3; cd /tmp && timeout 60 node odo-e2e.mjs B28A5503AB0400E9C87DA330EFA164E1; echo rc=$?'), ['production-write https:dentai.com.br'], 'the owned tab it drives is on production');
+  assert.deepEqual(run('node /tmp/odo-e2e.mjs B28A5503'), ['production-write https:dentai.com.br'], 'a tab id prefix names the same tab');
+  assert.deepEqual(run('node /tmp/odo-url.mjs'), ['production-write https:dentai.com.br'], 'the script names the production page itself');
+  assert.deepEqual(run('node /tmp/lead.mjs'), ['production-write https:api.dentai.com.br'], 'a fetch write in the file');
+  for (const free of ['node /tmp/read.mjs', 'node /tmp/local.mjs LOCAL0001', 'node /tmp/odo-e2e.mjs LOCAL0001', 'node --test /tmp/odo-url.mjs', 'node /tmp/missing.mjs'])
+    assert.deepEqual(run(free), [], free);
+  forgetBrowserPages();
+});
+
+test('a Git Bash /tmp script is read from the temp folder it names', () => {
+  const name = `pi-optchat-script-${process.pid}.mjs`;
+  writeFileSync(join(tmpdir(), name), 'console.log(1)');
+  try { assert.equal(gitRepo.script!(`/tmp/${name}`), 'console.log(1)'); }
+  finally { rmSync(join(tmpdir(), name), { force: true }); }
 });
 
 test('without a rule of the operator, an irreversible effect asks; the default and the advisor no longer decide it', () => {
