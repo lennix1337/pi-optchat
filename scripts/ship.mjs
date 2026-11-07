@@ -334,7 +334,12 @@ async function shipBranch(opts, ctx) {
     if ((await git(['rev-parse', '--verify', '--quiet', `refs/heads/${opts.branch}`])).code === 0) throw refuse('branch_exists', `a branch ${opts.branch} já existe: troque para ela e rode sem --branch`);
     branch = opts.branch;
   }
-  if (!creating && !opts.directMain && branch === base) throw refuse('default_branch', `a branch é ${base}: passe --branch NOME para criar uma, ou --direct-main para enviar direto`);
+  if (!creating && !opts.directMain && branch === base) {
+    const hint = `a branch é ${base}: passe --branch NOME para criar uma, ou --direct-main para enviar direto`;
+    // A new branch always opens a new PR: name the missing description now, not on the retry.
+    if (opts.body !== undefined) throw refuse('default_branch', hint);
+    throw new Stop('refused', { error: 'default_branch', also: 'body_required', hint: `${hint}; com --branch, a PR nova também precisa de -b "problema, mudança, pendências e evidência" ou --body-file ARQ` });
+  }
   if (opts.directMain && branch !== base) throw refuse('direct_main_not_default', `--direct-main só vale na branch padrão (${base}); você está em ${branch}`);
   if (!opts.directMain && !SAFE_REF.test(branch)) throw refuse('branch_name_unsupported', `nome de branch fora do formato aceito pelo gh: ${branch}`);
   if (!selecting && staged && opts.message === undefined) throw refuse('message_required', 'há mudanças staged: passe -m "assunto"');
