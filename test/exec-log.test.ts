@@ -115,3 +115,14 @@ test('ship.mjs opening a PR whose checks are still pending is a normal wait, not
   call('2', 'node scripts/ship.mjs --all', 'status: refused\nerror: default_branch\nrc: 2\n\nCommand exited with code 2');
   assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero']);
 });
+
+test('a failure keeps the end of a long output, where the error and the exit code are', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  handlers.tool_execution_start({ toolCallId: 'l', toolName: 'bash', args: { command: 'dotnet test' } });
+  handlers.tool_execution_end({ toolCallId: 'l', toolName: 'bash', isError: true, result: { content: [{ type: 'text', text: `${'passed line\n'.repeat(80)}Assert.Equal() Failure at Foo.cs:240\nCommand exited with code 2` }] } });
+  const [row] = lines(dir);
+  assert.match(row.detail, /Failure at Foo\.cs:240 Command exited with code 2$/);
+  assert.ok(row.detail.length <= 300);
+});
