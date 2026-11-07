@@ -455,3 +455,15 @@ test('--branch is refused off the default branch and when the name exists', t =>
   assert.equal(dup.out.error, 'branch_exists');
   assert.equal(git(fx.work, ['branch', '--show-current']), 'main');
 });
+
+test('a leftover .git/index.lock is reported as a lock, not as bad paths', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  writeFileSync(join(fx.work, '.git', 'index.lock'), '');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
+  assert.equal(r.code, 1);
+  assert.equal(r.out.stage, 'stage');
+  assert.match(r.out.next, /index\.lock/);
+  assert.match(r.out.next, /nenhum processo git|processo git/i);
+  assert.doesNotMatch(r.out.next, /confira os nomes/);
+});

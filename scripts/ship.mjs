@@ -374,7 +374,12 @@ async function shipBranch(opts, ctx) {
   let commitNeeded = !selecting && staged !== '';
   if (selecting) {
     const add = await git(opts.all ? ['add', '-A'] : ['add', '--', ...opts.paths]);
-    if (add.code) throw failed('stage', add, 'git add recusou os caminhos: nada foi commitado; confira os nomes');
+    if (add.code) {
+      const locked = /index\.lock/.test(`${add.err}${add.out}`);
+      throw failed('stage', add, locked
+        ? 'o git está com .git/index.lock: um git ou hook interrompido o deixou. Nada foi commitado. Confira que nenhum processo git/pre-commit está vivo; só então remova o index.lock e rode de novo'
+        : 'git add recusou os caminhos: nada foi commitado; confira os nomes');
+    }
     commitNeeded = (await git(['diff', '--cached', '--name-only', ...(opts.all ? [] : ['--', ...opts.paths])])).out.trim() !== '';
   }
   if (commitNeeded) {
