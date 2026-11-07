@@ -63,3 +63,17 @@ test('a background failure keeps the program stderr, not only the truncated comm
   assert.equal(entry.class, 'exit_nonzero');
   assert.match(entry.detail, /HTTP 502/);
 });
+
+test('an exit code quoted in another tool\'s output is not this call failing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  const call = (id: string, toolName: string, text: string, isError = false) => {
+    handlers.tool_execution_start({ toolCallId: id, toolName, args: {} });
+    handlers.tool_execution_end({ toolCallId: id, toolName, isError, result: { content: [{ type: 'text', text }] } });
+  };
+  call('1', 'shell_status', 'shell abc: finished\nbuild output\nCommand exited with code 1');
+  call('2', 'bash', 'grep hit: "Command exited with code 1" in the log\nmore lines');
+  call('3', 'bash', 'boom\nCommand exited with code 1');
+  assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'ok', 'exit_nonzero']);
+});
