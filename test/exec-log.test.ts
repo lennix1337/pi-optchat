@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { appendExecLog, classify, EXEC_LOG, isNoMatch, logBackgroundFailure, registerExecLog } from '../src/exec-log.ts';
+import { appendExecLog, classify, EXEC_LOG, isNoMatch, isShipWait, logBackgroundFailure, registerExecLog } from '../src/exec-log.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, EXEC_LOG), 'utf8').trim().split('\n').map(l => JSON.parse(l));
 
@@ -96,4 +96,22 @@ test('grep or rg that finds nothing is an answer, not a failed call; any other e
   call('2', 'grep -n zzz missing.ts', 'grep: missing.ts: No such file or directory\n\nCommand exited with code 2');
   call('3', 'node check.mjs', '(no output)\n\nCommand exited with code 1');
   assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero', 'exit_nonzero']);
+});
+
+test('ship.mjs opening a PR whose checks are still pending is a normal wait, not a failed call; refusals still are', () => {
+  const opened = 'status: not_queued\nbranch: fix/x\npr: 7\nchecks: 0 pass / 2 pending / 0 fail\nauto_merge: not_queued\nrc: 3\n\nCommand exited with code 3';
+  assert.equal(isShipWait('node C:/projetos/pi-optchat/scripts/ship.mjs -m x --all', opened), true);
+  assert.equal(isShipWait('node scripts/ship.mjs --all', 'status: refused\nerror: default_branch\nrc: 2\n\nCommand exited with code 2'), false);
+  assert.equal(isShipWait('node scripts/ship.mjs --all', 'status: not_queued\nrc: 3'), false, 'no PR was opened');
+  assert.equal(isShipWait('echo "status: not_queued pr: 7"', opened), false, 'only ship.mjs speaks for itself');
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  const call = (id: string, command: string, text: string) => {
+    handlers.tool_execution_start({ toolCallId: id, toolName: 'bash', args: { command } });
+    handlers.tool_execution_end({ toolCallId: id, toolName: 'bash', isError: true, result: { content: [{ type: 'text', text }] } });
+  };
+  call('1', 'node scripts/ship.mjs --all -b body', opened);
+  call('2', 'node scripts/ship.mjs --all', 'status: refused\nerror: default_branch\nrc: 2\n\nCommand exited with code 2');
+  assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero']);
 });
