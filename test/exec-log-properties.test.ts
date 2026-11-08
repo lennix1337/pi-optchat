@@ -45,13 +45,14 @@ test('classify: a call that did not fail is ok; a failed one is never ok, whatev
   }
 });
 
-test('isNoMatch: only a final grep/rg with empty output is a no-match, whatever precedes it', () => {
+test('isNoMatch: a final grep/rg is a no-match when empty; with earlier output only if its exit code is surely grep\'s', () => {
   const heads = ['cd x', 'git status', 'echo hi', 'cat f', 'ls'], seps = [' && ', ' | ', '; ', '\n'];
   for (let seed = 1; seed <= CASES; seed++) {
     const next = rng(seed), head = heads[Math.floor(next() * heads.length)], sep = seps[Math.floor(next() * seps.length)];
     const grep = next() < 0.5 ? 'grep -n foo f' : 'rg foo';
     assert.equal(isNoMatch(`${head}${sep}${grep}`, '\n\nCommand exited with code 1'), true, `seed ${seed}`);
-    assert.equal(isNoMatch(`${head}${sep}${grep}`, 'f:1: foo\nCommand exited with code 1'), false, `seed ${seed}: output present`);
+    // After `;`, a newline or a pipe the exit code is grep's, so exit 1 is a miss whatever printed before; after `&&` it may be the head's.
+    assert.equal(isNoMatch(`${head}${sep}${grep}`, 'f:1: foo\nCommand exited with code 1'), sep !== ' && ', `seed ${seed}: output present after ${JSON.stringify(sep)}`);
     assert.equal(isNoMatch(`${grep}${sep}echo done`, '\nCommand exited with code 1'), false, `seed ${seed}: grep is not last`);
   }
 });
