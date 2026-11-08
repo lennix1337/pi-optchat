@@ -152,6 +152,17 @@ test('gh auth status used to read the active account points at the local config 
   assert.equal(bashHint('gh pr view 3', false), undefined);
 });
 
+test('a du that timed out on a Windows tree points at counting with find or git instead', () => {
+  // 08/11: `du -sh` over a worktree with node_modules ran into the 90 s bash timeout and returned nothing.
+  const timedOut = 'Command timed out after 90 seconds';
+  assert.equal(bashHint('cd C:/projetos/x/worktrees/w && ls -A | wc -l; du -sh . 2>/dev/null | tail -1', false, timedOut), 'du');
+  assert.equal(bashHint('du -sh node_modules', false, timedOut), 'du');
+  assert.equal(bashHint('du -s .', false, 'timed out after 120 seconds'), 'du');
+  // A du that finished, other commands that timed out and a plain `du -h` summary of a small file get nothing.
+  assert.equal(bashHint('du -sh .', false, '4.0K	.'), undefined);
+  assert.equal(bashHint('find . -name x', false, timedOut), undefined);
+});
+
 test('the script hint reaches a failing inline run through the tool_result hook', () => {
   const { result } = harness();
   const patched = result('s', raw`node -e "console.log(1"`, 'SyntaxError: missing ) after argument list\n\nCommand exited with code 1', true)!;
