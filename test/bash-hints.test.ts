@@ -111,6 +111,26 @@ SyntaxError: missing ) after argument list`;
   assert.equal(bashHint(raw`node -e "console.log(1"`, false), undefined);
 });
 
+test('a Windows program that missed a Git Bash /tmp file suggests cygpath', () => {
+  // 05-07/11: five runs wrote /tmp/x from bash, then node or python looked for C:\tmp\x and failed with ENOENT.
+  const node = raw`node:fs:573
+Error: ENOENT: no such file or directory, open 'C:\tmp\v.json'`;
+  assert.equal(bashHint('pnpm exec vitest run --outputFile=/tmp/v.json; node -e "require(\'/tmp/v.json\')"', false, node), 'tmp');
+  assert.equal(bashHint('gh pr diff 894 > /tmp/pr894.diff; python3 - <<EOF', false,
+    "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/pr894.diff'"), 'tmp');
+  // A file that is really missing for bash itself, or a /tmp run that worked, gets nothing.
+  assert.equal(bashHint('wc -l /tmp/x.log', false, 'wc: /tmp/x.log: No such file or directory'), undefined);
+  assert.equal(bashHint('node a.mjs /tmp/x', false, 'ok'), undefined);
+  assert.equal(bashHint('node a.mjs', false, raw`ENOENT: no such file or directory, open 'C:\tmp\v.json'`), undefined);
+});
+
+test('the tmp hint reaches the result through the tool_result hook', () => {
+  const { result } = harness();
+  const patched = result('t', "node -e \"require('fs').readFileSync('/tmp/a')\"", raw`Error: ENOENT: no such file or directory, open 'C:\tmp\a'` + '\n\nCommand exited with code 1', true)!;
+  assert.match(patched.content[0].text, /\nHint: .*cygpath -w.*\n\nCommand exited with code 1$/s);
+  assert.ok(patched.content[0].text.split('\n').at(-3)!.length <= 170);
+});
+
 test('the script hint reaches a failing inline run through the tool_result hook', () => {
   const { result } = harness();
   const patched = result('s', raw`node -e "console.log(1"`, 'SyntaxError: missing ) after argument list\n\nCommand exited with code 1', true)!;
