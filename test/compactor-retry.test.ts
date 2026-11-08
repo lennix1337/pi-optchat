@@ -102,6 +102,15 @@ test('authentication, quota, aborted, unknown and post-response interrupted fail
   }
 });
 
+test('the SDK\'s bare "Connection error." (a reset before any response) is retried like a refused connection', async () => {
+  const f = await fixture(['Connection error.']);
+  try {
+    assert.equal(await f.compress(input, f.controller.signal), 'user: retained decision');
+    assert.equal(f.requests.length, 2);
+    assert.equal(f.diagnostics[0].errorCategory, 'connection_failure');
+  } finally { f.clean(); }
+});
+
 test('a pre-response 503 is retried with bounded backoff', async () => {
   const f = await fixture(['503 service unavailable']);
   try {
