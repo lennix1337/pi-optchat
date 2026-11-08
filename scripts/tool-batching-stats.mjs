@@ -4,6 +4,10 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 // Usage: node tool-batching-stats.mjs [sessionsDir] [sinceISO]; the dir defaults to ~/.pi/agent/sessions.
+if (process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
+  console.log('usage: tool-batching-stats.mjs [sessionsDir] [sinceISO]  (dir defaults to ~/.pi/agent/sessions)');
+  process.exit(0);
+}
 const root = process.argv[2] ?? join(homedir(), '.pi', 'agent', 'sessions'), sinceMs = Date.parse(process.argv[3] ?? '1970-01-01');
 const READS = new Set(['read', 'zoom', 'output_read', 'project_evidence', 'ripwire', 'date']);
 const isRead = c => READS.has(c.name) || (c.name === 'bash' && /^\s*(cd [^&;]+(&&|;)\s*)?(grep|rg|sed -n|cat|ls|git (status|log|diff|show)|head|wc)\b/.test(String(c.arguments?.command ?? '')));

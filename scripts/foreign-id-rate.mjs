@@ -6,6 +6,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { foreignIds } from '../src/carried-ids.ts';
 
+if (process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
+  console.log('usage: foreign-id-rate.mjs [profileDir] [fromId] [splitId]  (run with node --experimental-transform-types)');
+  process.exit(0);
+}
 const [d, f, split = ''] = process.argv.slice(2);
 const dir = d || join(homedir(), '.optchat', 'profiles', 'swlucas05');
 const from = f || '104200';

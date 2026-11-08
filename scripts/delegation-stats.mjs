@@ -10,9 +10,17 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+const USAGE = 'usage: delegation-stats.mjs <sessionsDir> [sinceISO]';
+if (process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
 const root = process.argv[2];
 const sinceMs = Date.parse(process.argv[3] ?? '1970-01-01');
-if (!root) throw new Error('usage: delegation-stats.mjs <sessionsDir> [sinceISO]');
+if (!root) {
+  console.error(USAGE);
+  process.exit(2);
+}
 const LONG_MS = 60_000;
 const DELEGATED = new Set(['spawn', 'tell', 'shell_start', 'shell_status', 'shell_stop']);
 // Commands that only inspect: the same reading the batching measurement uses, plus GitHub/Git views.
