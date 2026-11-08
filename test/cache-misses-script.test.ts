@@ -73,3 +73,16 @@ test('headChangeByDay keeps only the last --days days (default 14), 0 keeps all'
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a --diag path that does not exist is an error, not an all-unmatched report', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cache-misses-nodiag-'));
+  try {
+    writeFileSync(join(dir, 'usage.jsonl'), [usage(0, 90000, 90000), usage(1, 30000, 70000)].join('\n') + '\n');
+    const result = run(['--usage', join(dir, 'usage.jsonl'), '--diag', 'headCause']);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /no diagnostics file at headCause.*Usage:/s);
+    assert.equal(result.stdout, '');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
