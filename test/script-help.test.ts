@@ -40,3 +40,10 @@ test('turn-start-benchmark --help prints the usage and exits 0 without running t
   assert.match(run.stdout, /^usage: turn-start-benchmark\.ts/i);
   assert.doesNotMatch(run.stdout, /wholeTurn/);
 });
+
+test('worktree --help prints the usage and exits 0 without creating a worktree', () => {
+  const run = spawnSync(process.execPath, ['scripts/worktree.mjs', '--help'], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(run.status, 0, `${run.error?.message ?? ''}${run.stderr}`);
+  assert.match(run.stdout, /^usage: worktree\.mjs/i);
+  assert.doesNotMatch(run.stdout, /status: refused/);
+});
