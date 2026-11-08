@@ -104,6 +104,23 @@ test('grep or rg that finds nothing is an answer, not a failed call; any other e
   assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero', 'exit_nonzero']);
 });
 
+test('a long command is judged by its whole text, not by the clipped target kept in the log', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  const call = (id: string, command: string, text: string) => {
+    handlers.tool_execution_start({ toolCallId: id, toolName: 'bash', args: { command } });
+    handlers.tool_execution_end({ toolCallId: id, toolName: 'bash', isError: true, result: { content: [{ type: 'text', text }] } });
+  };
+  const long = `cd /p && ${'echo step; '.repeat(30)}cat out.txt | grep -B2 needle | grep Path`;
+  call('1', long, '---\n\nCommand exited with code 1');
+  call('2', `${'echo step; '.repeat(30)}node check.mjs`, '---\n\nCommand exited with code 1');
+  const opened = 'status: not_queued\nbranch: fix/x\npr: 7\nrc: 3\n\nCommand exited with code 3';
+  call('3', `${'echo step; '.repeat(30)}node scripts/ship.mjs -m x --all`, opened);
+  assert.ok(long.length > 200);
+  assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero', 'ok']);
+});
+
 test('ship.mjs opening a PR whose checks are still pending is a normal wait, not a failed call; refusals still are', () => {
   const opened = 'status: not_queued\nbranch: fix/x\npr: 7\nchecks: 0 pass / 2 pending / 0 fail\nauto_merge: not_queued\nrc: 3\n\nCommand exited with code 3';
   assert.equal(isShipWait('node C:/projetos/pi-optchat/scripts/ship.mjs -m x --all', opened), true);

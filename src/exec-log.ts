@@ -62,24 +62,25 @@ const resultText = (result: unknown): string => {
   const content = (result as { content?: { type: string; text?: string }[] } | undefined)?.content;
   return Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n') : typeof result === 'string' ? result : '';
 };
-const targetOf = (args: unknown): string | undefined => {
+/** The raw value is what isNoMatch/isShipWait read: the logged target is clipped to 200 characters on one line, which hides a trailing grep and newlines. */
+const targetOf = (args: unknown): { raw: string; target: string } | undefined => {
   if (!args || typeof args !== 'object') return undefined;
   const a = args as Record<string, unknown>;
   const value = a.command ?? a.path ?? a.action ?? a.url ?? a.name;
-  return typeof value === 'string' ? clip(value, 200) : undefined;
+  return typeof value === 'string' ? { raw: value, target: clip(value, 200) } : undefined;
 };
 
 /** One entry per tool call: everything the agent runs, its outcome class and, on failure, the reason. */
 export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined) {
-  const started = new Map<string, string | undefined>();
+  const started = new Map<string, { raw: string; target: string } | undefined>();
   pi.on('tool_execution_start', event => { started.set(event.toolCallId, targetOf(event.args)); });
   pi.on('tool_execution_end', event => {
-    const where = dir(); const target = started.get(event.toolCallId); started.delete(event.toolCallId);
+    const where = dir(); const call = started.get(event.toolCallId), target = call?.target, raw = call?.raw; started.delete(event.toolCallId);
     if (!where) return;
     const text = resultText(event.result);
     // Only bash's own trailer is this call's exit code; shell_status, zoom or a grep that quote someone else's exit are not failures.
     const exit = event.toolName === 'bash' ? /\n*Command exited with code (\d+)\s*$/.exec(text) : null;
-    const answered = (exit?.[1] === '1' && isNoMatch(target, text)) || (event.toolName === 'bash' && isShipWait(target, text));
+    const answered = (exit?.[1] === '1' && isNoMatch(raw, text)) || (event.toolName === 'bash' && isShipWait(raw, text));
     const kind = classify(!answered && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
       ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
