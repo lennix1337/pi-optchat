@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { commandWords, segments } from './effect-classifier.ts';
 
 const unquote = (word: string) => word.replace(/^(['"])([^]*)\1$/, '$2');
@@ -39,14 +40,22 @@ function mergedPr(branch: string, repo: string) {
   try { const prs: unknown = JSON.parse(output ?? ''); return Array.isArray(prs) && prs.length > 0; } catch { return false; }
 }
 
+const key = (path: string) => resolve(path).toLowerCase();
+const within = (path: string, dir: string) => key(path) === key(dir) || key(path).startsWith(key(dir).replace(/[\\/]$/, '') + sep);
+
 /** Refuse a registered worktree unless its tip is proven merged into origin's default or a merged PR. */
 export function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr = mergedPr): string | undefined {
   for (const target of worktreeRemovalTargets(text, cwd)) {
     const list = run('git', ['worktree', 'list', '--porcelain'], target.repo);
-    if (!list) continue;
-    for (const entry of list.split(/\r?\n\r?\n/)) {
+    if (!list) {
+      // A linked worktree keeps a `.git` file; when Git cannot list it, its merge state is unknown, so refuse.
+      if (existsSync(join(target.path, '.git'))) return `Blocked removal of ${target.path}: Git could not list its worktrees, so its merge state is unknown.`;
+      continue;
+    }
+    // The first entry is the main checkout; `rm -rf .worktrees` removes every linked worktree below the target.
+    for (const entry of list.split(/\r?\n\r?\n/).slice(1)) {
       const path = /^worktree (.+)$/m.exec(entry)?.[1]?.trim();
-      if (!path || resolve(path).toLowerCase() !== resolve(target.path).toLowerCase()) continue;
+      if (!path || !within(path, target.path)) continue;
       const branch = /^branch refs\/heads\/(.+)$/m.exec(entry)?.[1]?.trim();
       const head = /^HEAD ([a-f0-9]+)$/m.exec(entry)?.[1];
       const base = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], target.repo);

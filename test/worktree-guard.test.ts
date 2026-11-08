@@ -46,3 +46,24 @@ test('unmerged forced worktree removal is blocked, ancestor and squash merge are
     assert.equal(worktreeRemovalTargets('git worktree remove tree', f.repo).length, 0);
   } finally { f.cleanup(); }
 });
+
+test('removing a folder that holds unmerged worktrees is blocked', () => {
+  const f = fixture();
+  try {
+    const nested = join(f.repo, '.worktrees', 'nested');
+    f.git('worktree', 'add', '-b', 'nested', nested);
+    writeFileSync(join(nested, 'file'), 'nested');
+    execFileSync('git', ['-C', nested, 'commit', '-am', 'nested'], { stdio: 'pipe' });
+    assert.match(worktreeRemovalRefusal('rm -rf .worktrees', f.repo, () => false)!, /nested/);
+  } finally { f.cleanup(); }
+});
+
+test('a worktree Git cannot inspect is refused, not waved through', () => {
+  const root = mkdtempSync(join(tmpdir(), 'worktree-guard-broken-'));
+  try {
+    const tree = join(root, 'orphan');
+    mkdirSync(tree);
+    writeFileSync(join(tree, '.git'), `gitdir: ${join(root, 'missing', '.git', 'worktrees', 'orphan')}\n`);
+    assert.match(worktreeRemovalRefusal(`rm -rf "${tree}"`, root, () => false)!, /merge state is unknown/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
