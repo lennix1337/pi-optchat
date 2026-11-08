@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { brasiliaTime } from './heartbeat.ts';
+import { IssueStateCache } from './commitment-issues.ts';
 import { atomicWrite } from './store.ts';
 import { stringEnum } from './string-enum.ts';
 import { result } from './tools.ts';
@@ -189,12 +190,13 @@ export function openCommitments(items: readonly Commitment[], now: number) {
 }
 
 /** The block every turn reads; empty when nothing is open. Times in Brasília (UTC-3). */
-export function commitmentsContext(items: readonly Commitment[], now = Date.now()): string {
+export function commitmentsContext(items: readonly Commitment[], now = Date.now(), issueHint: (c: Commitment) => string | undefined = () => undefined): string {
   const open = openCommitments(items, now);
   if (!open.length) return '';
   const lines = [`Open commitments (${open.length}; ages now, times UTC-3; keep them current with the commitments tool: progress, next step, close with evidence):`];
   for (const [index, c] of open.entries()) {
-    const line = `- ${describe(c, now)}`;
+    const hint = issueHint(c);
+    const line = `- ${describe(c, now)}${hint ? ` · ${hint}` : ''}`;
     if ([...lines, line].join('\n').length > CONTEXT_MAX) { lines.push(`- … ${open.length - index} more: commitments {action:"list"}`); break; }
     lines.push(line);
   }
@@ -306,6 +308,8 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
 /** Registers the tool and the presence nudges of a running turn. */
 export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undefined, now: () => number = Date.now) {
   const presence = new Presence();
+  const issues = new IssueStateCache();
+  const issueText = (c: Commitment) => `${c.text} ${c.next ?? ''}`;
   const required = () => {
     const o = owner();
     if (!o) throw new Error('Open an OptChat profile first.');
@@ -323,8 +327,12 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
   });
   return {
     context(dir: string) {
-      try { return commitmentsContext(readCommitments(dir), now()); }
-      catch (error) { return `Commitments unreadable: ${error instanceof Error ? error.message : String(error)}`; }
+      try {
+        const items = readCommitments(dir);
+        const texts = openCommitments(items, now()).map(issueText);
+        setImmediate(() => { for (const text of texts) void issues.refresh(text); });
+        return commitmentsContext(items, now(), c => issues.hint(issueText(c)));
+      } catch (error) { return `Commitments unreadable: ${error instanceof Error ? error.message : String(error)}`; }
     },
   };
 }
