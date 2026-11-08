@@ -200,6 +200,10 @@ async function startProfiler(): Promise<Profiler> {
 }
 
 if (process.argv[1]?.replaceAll('\\', '/').endsWith('/turn-start-benchmark.ts')) {
+  if (process.argv.some(a => a === '--help' || a === '-h')) {
+    console.log('usage: turn-start-benchmark.ts [--messages=20000] [--turns=40] [--warmup=5] [--gap=0] [--cpu-profile=FILE]  (run with node --experimental-transform-types; offline)');
+    process.exit(0);
+  }
   const arg = (name: string, fallback: number) => Number(process.argv.find(a => a.startsWith(`--${name}=`))?.split('=')[1] ?? fallback);
   const cpuProfile = process.argv.find(a => a.startsWith('--cpu-profile='))?.slice('--cpu-profile='.length);
   const result = await runTurnStartBenchmark({ messages: arg('messages', 20_000), turns: arg('turns', 40), warmup: arg('warmup', 5), gapMs: arg('gap', 0), cpuProfile });
