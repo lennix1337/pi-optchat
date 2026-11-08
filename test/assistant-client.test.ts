@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -164,6 +164,9 @@ test('read errors name timeouts and unreachable services instead of calling them
   assert.equal(readErrorMessage(timeoutError), 'Assistant did not answer in time; no data displayed.');
   const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }) });
   assert.equal(readErrorMessage(refused), 'Assistant unreachable (ECONNREFUSED); no data displayed.');
+  const slow = Object.assign(new TypeError('fetch failed', { cause: Object.assign(new Error('read'), { code: 'ECONNRESET' }) }), { elapsedMs: 6040, attempts: 2 });
+  assert.equal(readErrorMessage(slow), 'Assistant unreachable (ECONNRESET after 6.0 s, retried once); no data displayed.');
+  assert.equal(readErrorMessage(Object.assign(refused, { elapsedMs: 40, attempts: 1 })), 'Assistant unreachable (ECONNREFUSED); no data displayed.');
   const redirect = new TypeError('fetch failed', { cause: new Error('unexpected redirect') });
   assert.equal(readErrorMessage(redirect), 'Assistant request or response invalid; no data displayed.');
   assert.equal(readErrorMessage(new Error('Invalid task')), 'Assistant request or response invalid; no data displayed.');
@@ -181,7 +184,9 @@ test('a read retries once when the server dropped the idle socket; a write never
     const c = { endpoint: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token: 't' };
     assert.deepEqual(await assistantRequest(c, '/v1/tasks'), { ok: true });
     assert.equal(hits, 2);
-    await assert.rejects(assistantRequest(c, '/v1/tasks', { x: 1 }));
+    await assert.rejects(assistantRequest(c, '/v1/tasks', { x: 1 }), error => (error as { attempts?: number }).attempts === 1);
     assert.equal(hits, 3, 'a write whose effect may have landed is not sent twice');
+    hits = 1; server.removeAllListeners('request'); server.on('request', (req: IncomingMessage) => { req.socket.destroy(); });
+    await assert.rejects(assistantRequest(c, '/v1/tasks'), error => (error as { attempts?: number; elapsedMs?: number }).attempts === 2 && typeof (error as { elapsedMs?: number }).elapsedMs === 'number');
   } finally { server.close(); }
 });

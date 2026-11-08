@@ -52,7 +52,9 @@ async function request(c: ReturnType<typeof config>, path: string, body?: unknow
   const send = () => fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal,
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   // Reads are idempotent, so one retry on a fresh socket is safe; writes never repeat (their effect may have landed).
-  const response = await send().catch(error => { if (body === undefined && staleSocket(error)) return send(); throw error; });
+  const began = Date.now(); let attempts = 1;
+  const response = await send().catch(error => { if (body === undefined && staleSocket(error)) { attempts = 2; return send(); } throw error; })
+    .catch(error => { if (error instanceof Error) Object.assign(error, { elapsedMs: Date.now() - began, attempts }); throw error; });
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status); }
   if (!response.body) throw new Error('Invalid response');
   const reader = response.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
@@ -147,11 +149,17 @@ async function briefingPage(c: ReturnType<typeof config>, owner: AssistantOwner,
     `${value.distractions} low-priority messages hidden.`].join('\n');
 }
 
+/** A slow failure (hang, then reset) differs from an instant refusal; say how long it took and whether the read was retried. */
+function slowDetail(error: unknown): string {
+  const { elapsedMs, attempts } = error as { elapsedMs?: unknown; attempts?: unknown };
+  if (typeof elapsedMs !== 'number' || elapsedMs < 1000) return '';
+  return ` after ${(elapsedMs / 1000).toFixed(1)} s${attempts === 2 ? ', retried once' : ''}`;
+}
 /** Names the failure class (timeout, unreachable, bad data) so a red run shows its cause; never echoes response bodies. */
 export function readErrorMessage(error: unknown): string {
   if (error instanceof Error && error.name === 'TimeoutError') return 'Assistant did not answer in time; no data displayed.';
   const code = error instanceof TypeError && error.message === 'fetch failed' ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
-  if (typeof code === 'string' && /^[A-Z_]+$/.test(code)) return `Assistant unreachable (${code}); no data displayed.`;
+  if (typeof code === 'string' && /^[A-Z_]+$/.test(code)) return `Assistant unreachable (${code}${slowDetail(error)}); no data displayed.`;
   if (error instanceof ResponseTooLarge) return 'Assistant item exceeds the safe response size; inspect it with another bounded client.';
   if (error instanceof HttpError) return 'Assistant request failed.';
   if (error instanceof Error && (error.message.startsWith('Assistant disabled.') || error.message.startsWith('Invalid assistant.json') || error.message === 'Assistant configuration unavailable.')) return error.message;
