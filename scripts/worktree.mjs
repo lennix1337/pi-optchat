@@ -69,6 +69,10 @@ function listWorktrees(cwd, all = false) {
 }
 
 function createWorktree(argv, cwd = process.cwd()) {
+  if (argv.some((a) => a === '--help' || a === '-h')) {
+    process.stdout.write('usage: worktree.mjs <name> [--branch NOME] [--base BRANCH] | --remove <name> | --list [--all]\n');
+    return 0;
+  }
   if (argv[0] === '--list') return listWorktrees(cwd, argv[1] === '--all');
   if (argv[0] === '--remove') return removeWorktree(argv[1] ?? '', cwd);
   const opts = { name: '', branch: '', base: '' };
