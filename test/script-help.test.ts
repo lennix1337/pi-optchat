@@ -21,7 +21,7 @@ test('delegation-stats without a sessions dir exits 2 with the usage line, not a
 });
 
 test('repair-ai-memory --help prints the usage on stdout and exits 0, with no stack trace', () => {
-  const run = spawnSync(process.execPath, ['--experimental-transform-types', '--no-warnings', 'scripts/repair-ai-memory.mjs', '--help'], { encoding: 'utf8' });
+  const run = spawnSync(process.execPath, ['scripts/repair-ai-memory.mjs', '--help'], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /^usage: .*repair-ai-memory\.mjs/i);
   assert.equal(run.stderr, '');
