@@ -53,7 +53,11 @@ const defaultFetch: Fetcher = async (url, timeoutMs) => {
   return { status: response.status, body: (await response.text()).slice(0, 1_000_000) };
 };
 
-const reason = (error: unknown) => error instanceof Error ? error.message.slice(0, 120) : String(error);
+const reason = (error: unknown) => {
+  if (!(error instanceof Error)) return String(error);
+  const cause = (error.cause as { code?: unknown } | undefined)?.code;
+  return `${error.message.slice(0, 120)}${typeof cause === 'string' ? ` (${cause})` : ''}`;
+};
 
 export function runProbe(probe: Probe | LocalProbe, fetcher: Fetcher, now: () => number = Date.now): Promise<ProbeResult> {
   return 'check' in probe ? runLocal(probe) : runRemote(probe, fetcher, now);

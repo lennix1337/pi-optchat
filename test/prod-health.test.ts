@@ -125,3 +125,12 @@ test('each monitor transition maps to its own signal kind, severity and occurren
   assert.notEqual(healthSignals('prod-health.json', [{ probe: 'API', kind: 'down', text: 'x', at }])[0].dedupeKey,
     healthSignals('prod-health.json', [{ probe: 'API', kind: 'down', text: 'x', at: at + 1 }])[0].dedupeKey, 'a later outage is a new event');
 });
+
+test('a network failure names the underlying cause, not just undici\'s "fetch failed"', async () => {
+  const cause = Object.assign(new Error('connect ECONNRESET 172.67.1.1:443'), { code: 'ECONNRESET' });
+  const failed = Object.assign(new TypeError('fetch failed'), { cause });
+  const result = await runProbe(web, async () => { throw failed; }, () => T0);
+  assert.equal(result.ok, false);
+  assert.match(result.problem!, /falha de rede: fetch failed \(ECONNRESET\)/);
+  assert.match((await runProbe(web, async () => { throw new TypeError('fetch failed'); }, () => T0)).problem!, /^falha de rede: fetch failed$/);
+});
