@@ -151,3 +151,15 @@ test('a slow probe says where the time went: waiting for the server to answer, o
     assert.equal(row.waitMs, 90, 'the history keeps the wait so a past slow stretch can be explained');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a probe keeps the CDN edge (colo and cache status) so a slow stretch can be tied to a path', async () => {
+  const fetcher: Fetcher = async () => ({ status: 200, body: WEB_OK, headersMs: 700, edge: 'GRU DYNAMIC' });
+  assert.equal((await runProbe(web, fetcher, () => T0)).edge, 'GRU DYNAMIC');
+  assert.equal((await runProbe(web, async () => ({ status: 200, body: WEB_OK }), () => T0)).edge, undefined);
+  const dir = mkdtempSync(join(tmpdir(), 'health-'));
+  try {
+    await new ProdHealth({ fetcher, now: () => T0, probes: [web] }).round(dir);
+    const row = JSON.parse(readFileSync(join(dir, 'prod-health.history.jsonl'), 'utf8').trim()) as { edge?: string };
+    assert.equal(row.edge, 'GRU DYNAMIC');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
