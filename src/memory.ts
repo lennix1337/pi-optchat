@@ -614,8 +614,8 @@ export class Memory {
     if (!Number.isSafeInteger(id) || !this.root[id]) throw new Error(`No message ${id}. ${messageScope(this.root.length)}${this.root.length ? '.' : ''}`);
     return new Date(this.root[id].date).toString();
   }
-  async close() {
-    this.stopped = true; this.controller.abort(); clearTimeout(this.retryTimer);
+  async close(reason: 'reload' | 'shutdown' | 'import' | 'memory_close' = 'memory_close') {
+    this.stopped = true; this.controller.abort(reason); clearTimeout(this.retryTimer);
     this.events.emit('change'); await Promise.allSettled(this.busy.values()); await this.writing;
   }
 }

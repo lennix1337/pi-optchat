@@ -15,7 +15,7 @@ export interface CompactorDiagnostic {
   nativeContentTypes?: string[]; nativeTextBytes?: number;
   stopReason?: string; rawStopReason?: string; blocks?: { type: string; bytes?: number; name?: string }[];
   usage?: AssistantMessage['usage']; outcome?: UsageOutcome; errorCategory?: UsageErrorCategory;
-  transportCode?: string; aborted?: boolean; lastEventElapsedMs?: number;
+  transportCode?: string; aborted?: boolean; abortSource?: 'reload' | 'shutdown' | 'import' | 'memory_close' | 'unknown'; lastEventElapsedMs?: number;
   /** Local correlation ID shared by recovery and all attempts in one compaction operation. */
   incidentId?: string; recoveryIncidentId?: string; sessionId?: string; kind?: 'compaction'; failed?: boolean;
 }
@@ -36,6 +36,7 @@ const thinkings = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', '
 const outcomes = new Set(['stop', 'toolUse', 'error', 'aborted', 'length', 'text', 'tool_call', 'empty', 'exception']);
 const categories = new Set(['cancelled', 'timeout', 'connection_failure', 'stream_interrupted', 'rate_or_usage_limit', 'authentication', 'policy_refusal', 'unavailable', 'context_limit', 'other']);
 const choices = new Set(['none', 'auto', 'required', 'any']);
+const abortSources = new Set(['reload', 'shutdown', 'import', 'memory_close', 'unknown']);
 export const createCompactorIncidentId = () => randomUUID();
 const transportCodes = new Set(['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND',
   'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ABORT_ERR']);
@@ -105,6 +106,7 @@ export function sanitizeCompactorDiagnostic(value: CompactorDiagnostic): Compact
   if (Number.isInteger(value.httpStatus) && value.httpStatus! >= 100 && value.httpStatus! <= 599) diagnostic.httpStatus = value.httpStatus;
   if (typeof value.toolChoice === 'string' && choices.has(value.toolChoice)) diagnostic.toolChoice = value.toolChoice;
   if (typeof value.aborted === 'boolean') diagnostic.aborted = value.aborted;
+  if (typeof value.abortSource === 'string' && abortSources.has(value.abortSource)) diagnostic.abortSource = value.abortSource;
   if (typeof value.failed === 'boolean') diagnostic.failed = value.failed;
   if (identifier(value.requestId)) diagnostic.requestId = value.requestId;
   if (identifier(value.responseId)) diagnostic.responseId = value.responseId;
@@ -188,6 +190,7 @@ export class CompactorTrace {
   finish(signal: AbortSignal) {
     this.diagnostic.elapsedMs = Date.now() - this.began;
     this.diagnostic.aborted = signal.aborted;
+    if (signal.aborted) this.diagnostic.abortSource = abortSources.has(signal.reason) ? signal.reason : 'unknown';
     return sanitizeCompactorDiagnostic(this.diagnostic) ?? this.diagnostic;
   }
 }

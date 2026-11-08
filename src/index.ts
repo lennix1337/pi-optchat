@@ -407,7 +407,7 @@ export default function optchat(pi: ExtensionAPI) {
       await closeWindows?.(); closeWindows = undefined;
       await recovery;
       await old.children.close(); if (!handOff) shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
-      await old.sync.close(); await old.memory.close(); await checkpoints;
+      await old.sync.close(); await old.memory.close(reason === 'reload' ? 'reload' : reason ? 'shutdown' : 'memory_close'); await checkpoints;
       await checkpoint(old.dir);
     } finally {
       await old.memory.close(); await old.unlock(); active = undefined;
@@ -1070,12 +1070,12 @@ export default function optchat(pi: ExtensionAPI) {
           const plan = await chooseImport(ctx, a.name, a.memory, `${a.config.compactor.provider}/${a.config.compactor.model} (${a.config.compactor.thinking})`, signal);
           if (!plan) return;
           signal.throwIfAborted();
-          flush(); a.inbox.recover(a.memory); await checkpoints; await a.memory.close(); closed = true;
+          flush(); a.inbox.recover(a.memory); await checkpoints; await a.memory.close('import'); closed = true;
           signal.throwIfAborted();
           job = prepareImport(a.dir, a.memory, plan.entries, plan.mode);
           if (!job) return;
         }
-        if (!closed) { await a.memory.close(); closed = true; }
+        if (!closed) { await a.memory.close('import'); closed = true; }
         const compress = createCompressor(ctx.modelRegistry, () => modelFor(a.config, 'compactor', main), message => {
           a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
         }, () => a.config.summaryAcceptBytes, shared);
