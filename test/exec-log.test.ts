@@ -104,6 +104,14 @@ test('grep or rg that finds nothing is an answer, not a failed call; any other e
   assert.deepEqual(lines(dir).map(l => l.class), ['ok', 'exit_nonzero', 'exit_nonzero']);
 });
 
+test('separators inside quotes do not hide the final grep', () => {
+  const miss = 'Command exited with code 1';
+  assert.equal(isNoMatch('cd r; ls test | grep -i "assistant-server\\|http"', miss), true);
+  assert.equal(isNoMatch("cd r; ls test | grep 'a;b|c'", miss), true);
+  assert.equal(isNoMatch('cd r && echo "x && y" && grep z f', 'x && y\n\n' + miss), false);
+  assert.equal(isNoMatch('echo "a | grep b"', miss), false);
+});
+
 test('a long command is judged by its whole text, not by the clipped target kept in the log', () => {
   const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
   const handlers: Record<string, (e: any) => void> = {};
