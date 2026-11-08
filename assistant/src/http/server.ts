@@ -225,5 +225,6 @@ export function createAssistantServer({ store, token, profileId, web = false, we
   const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal }).catch(error => { reportError(onError, error); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
+  server.keepAliveTimeout = 10_000; // above Node's 5 s: a client stalled past it would write into a socket the server already closed (ECONNRESET)
   return server;
 }
