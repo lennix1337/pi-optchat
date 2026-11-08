@@ -85,6 +85,12 @@ test('grep or rg that finds nothing is an answer, not a failed call; any other e
   assert.equal(isNoMatch('grep foo missing.txt', 'grep: missing.txt: No such file or directory\n\nCommand exited with code 2'), false);
   assert.equal(isNoMatch('node test.mjs', '(no output)\n\nCommand exited with code 1'), false);
   assert.equal(isNoMatch('grep -c x f; echo $?', 'Command exited with code 1'), false);
+  // After `;` or a pipe the exit code is the last command's, so output printed earlier does not hide a grep miss.
+  assert.equal(isNoMatch('git status -sb | head; grep -n foo src/a.ts', '## main...origin/main\n\nCommand exited with code 1'), true);
+  assert.equal(isNoMatch('ls src | grep -i pipe', 'Command exited with code 1'), true);
+  // After `&&` or `||` the exit code may come from the earlier command, so only an empty output proves a miss.
+  assert.equal(isNoMatch('make test && grep -n foo log', 'tests failed\n\nCommand exited with code 1'), false);
+  assert.equal(isNoMatch('make test || grep -n foo log', 'tests failed\n\nCommand exited with code 1'), false);
   const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
   const handlers: Record<string, (e: any) => void> = {};
   registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);

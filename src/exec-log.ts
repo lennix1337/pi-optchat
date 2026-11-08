@@ -32,8 +32,15 @@ export function classify(failed: boolean, text: string, code?: number | string):
 
 /** `grep`/`rg` exit 1 with nothing printed means "no match": the answer to the question, not a failed call. */
 export function isNoMatch(command: string | undefined, text: string): boolean {
-  const last = (command ?? '').split(/&&|\||;|\n/).map(x => x.trim()).filter(Boolean).pop() ?? '';
+  // split() with a capture group alternates command, separator, command, ...; a trailing blank (final newline) carries no command.
+  const tokens = (command ?? '').split(/(&&|\|\||\||;|\n)/);
+  while (tokens.length > 1 && tokens[tokens.length - 1].trim() === '') tokens.length -= 2;
+  const last = (tokens.pop() ?? '').trim();
   if (!/^(?:grep|egrep|fgrep|rg)\s/.test(last)) return false;
+  // After `;`, a newline or a single pipe the exit code is the last command's, so earlier output proves nothing;
+  // after `&&` or `||` it may be an earlier command's exit, so only an empty output shows a miss.
+  const before = tokens.pop();
+  if (before === ';' || before === '|' || before === '\n') return true;
   return text.replace(/\n*Command exited with code \d+\s*$/, '').replace(/^\(no output\)$/i, '').trim() === '';
 }
 
