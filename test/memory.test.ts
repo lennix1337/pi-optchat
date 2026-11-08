@@ -179,6 +179,36 @@ test('a successful summary that mentions policy refusal is not terminal', async 
   } finally { await memory.close(); removeDir(dir); }
 });
 
+test('reload close identifies the abort source and reopening retries the same original node', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-abort-source-'));
+  let started!: () => void;
+  const running = new Promise<void>(resolve => { started = resolve; });
+  let source: unknown;
+  const memory = new Memory(dir, async (_input, signal) => {
+    started();
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => { source = signal.reason; resolve(); }, { once: true }));
+    throw new Error('aborted');
+  });
+  try {
+    const original = 'original evidence '.repeat(100);
+    memory.append('user', original);
+    await running;
+    await memory.close('reload');
+    assert.ok(source instanceof DOMException);
+    assert.equal(source.name, 'AbortError');
+    assert.equal(source.message, 'reload');
+    const reopened = new Memory(dir, async input => {
+      assert.match(input.source, /original evidence/);
+      return 'user: recovered original evidence';
+    });
+    try {
+      await reopened.settle(AbortSignal.timeout(5000), 'tree');
+      assert.equal(reopened.root[0].text, original);
+      assert.match(reopened.node({ l: 0, i: 0 })!.text, /recovered original evidence/);
+    } finally { await reopened.close(); }
+  } finally { await memory.close(); removeDir(dir); }
+});
+
 test('a turn waits for pending summaries, goes on once they have all failed, and failures keep retrying', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-')); let attempts = 0;
   let release = () => {};

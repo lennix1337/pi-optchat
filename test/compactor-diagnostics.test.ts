@@ -151,6 +151,23 @@ test('policy refusals retain their category even when their text contains auth o
   assert.doesNotMatch(JSON.stringify(result.diagnostics), /authentication 401|timeout/);
 });
 
+test('abort source is allowlisted and persisted without arbitrary signal reasons', () => {
+  const model = { provider: 'fixture', id: 'fixture', api: 'openai-codex-responses' } as Model<Api>;
+  for (const [reason, expected] of [['reload', 'reload'], ['shutdown', 'shutdown'], ['import', 'import'], ['memory_close', 'memory_close'], ['SECRET REASON', 'unknown']] as const) {
+    const trace = new CompactorTrace({ context: '', source: '', part: { l: 0, i: 0 } }, model, 'high', 'high', 1, 0);
+    const controller = new AbortController(); controller.abort(new DOMException(reason, 'AbortError'));
+    const diagnostic = trace.finish(controller.signal);
+    assert.equal(diagnostic.abortSource, expected);
+    const dir = mkdtempSync(join(tmpdir(), 'oc-abort-diag-'));
+    try {
+      writeCompactorDiagnostic(dir, diagnostic);
+      const saved = readFileSync(join(dir, 'compactor-diagnostics.jsonl'), 'utf8');
+      assert.equal(JSON.parse(saved).abortSource, expected);
+      assert.doesNotMatch(saved, /SECRET/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
 test('transport diagnostics allowlist observable nested codes and record abort state and last-event timing', async () => {
   const model = { provider: 'fixture', id: 'fixture', api: 'openai-codex-responses' } as Model<Api>;
   const trace = new CompactorTrace({ context: '', source: '', part: { l: 1, i: 57 } }, model, 'high', 'high', 0, 0);
@@ -176,6 +193,7 @@ test('transport diagnostics allowlist observable nested codes and record abort s
 
   const cancelled = await run([], 'aborted', { message: 'operation aborted', abort: true });
   assert.equal(cancelled.diagnostics[0].aborted, true);
+  assert.equal(cancelled.diagnostics[0].abortSource, 'unknown');
   assert.ok(cancelled.diagnostics[0].lastEventElapsedMs! >= 0);
   assert.ok(cancelled.diagnostics[0].lastEventElapsedMs! <= cancelled.diagnostics[0].elapsedMs);
   assert.doesNotMatch(JSON.stringify(cancelled.diagnostics), /SECRET/);
