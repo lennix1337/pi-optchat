@@ -98,6 +98,10 @@ export function parseArgs(argv, home = homedir(), now = Date.now()) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   try {
+    if (process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
+      console.log(USAGE);
+      process.exit(0);
+    }
     const { dir, since } = parseArgs(process.argv.slice(2));
     const rows = readRows(dir);
     if (!rows.length) throw new Error(`no exec-log rows in ${dir}. ${USAGE}`);

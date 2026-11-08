@@ -67,3 +67,10 @@ test('exec-waste exits 2 with the usage instead of printing zeros for a director
   assert.match(run.stderr, /no exec-log rows in .*usage: exec-waste.mjs/);
   assert.equal(run.stdout, '');
 });
+
+test('exec-waste --help prints the usage on stdout and exits 0', () => {
+  const run = spawnSync(process.execPath, ['scripts/exec-waste.mjs', '--help'], { encoding: 'utf8' });
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /usage: exec-waste.mjs/);
+  assert.equal(run.stderr, '');
+});
