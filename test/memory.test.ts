@@ -194,7 +194,9 @@ test('reload close identifies the abort source and reopening retries the same or
     memory.append('user', original);
     await running;
     await memory.close('reload');
-    assert.equal(source, 'reload');
+    assert.ok(source instanceof DOMException);
+    assert.equal(source.name, 'AbortError');
+    assert.equal(source.message, 'reload');
     const reopened = new Memory(dir, async input => {
       assert.match(input.source, /original evidence/);
       return 'user: recovered original evidence';

@@ -155,7 +155,7 @@ test('abort source is allowlisted and persisted without arbitrary signal reasons
   const model = { provider: 'fixture', id: 'fixture', api: 'openai-codex-responses' } as Model<Api>;
   for (const [reason, expected] of [['reload', 'reload'], ['shutdown', 'shutdown'], ['import', 'import'], ['memory_close', 'memory_close'], ['SECRET REASON', 'unknown']] as const) {
     const trace = new CompactorTrace({ context: '', source: '', part: { l: 0, i: 0 } }, model, 'high', 'high', 1, 0);
-    const controller = new AbortController(); controller.abort(reason);
+    const controller = new AbortController(); controller.abort(new DOMException(reason, 'AbortError'));
     const diagnostic = trace.finish(controller.signal);
     assert.equal(diagnostic.abortSource, expected);
     const dir = mkdtempSync(join(tmpdir(), 'oc-abort-diag-'));

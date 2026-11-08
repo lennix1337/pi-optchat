@@ -190,7 +190,11 @@ export class CompactorTrace {
   finish(signal: AbortSignal) {
     this.diagnostic.elapsedMs = Date.now() - this.began;
     this.diagnostic.aborted = signal.aborted;
-    if (signal.aborted) this.diagnostic.abortSource = abortSources.has(signal.reason) ? signal.reason : 'unknown';
+    if (signal.aborted) {
+      // Memory.close aborts with an AbortError whose message names the source; other reasons stay 'unknown'.
+      const reason: unknown = signal.reason instanceof DOMException ? signal.reason.message : signal.reason;
+      this.diagnostic.abortSource = typeof reason === 'string' && abortSources.has(reason) ? reason as CompactorDiagnostic['abortSource'] : 'unknown';
+    }
     return sanitizeCompactorDiagnostic(this.diagnostic) ?? this.diagnostic;
   }
 }
