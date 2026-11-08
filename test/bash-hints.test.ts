@@ -142,6 +142,16 @@ test('a long sleep before a gh/git/curl status check points at gitwatch instead 
   assert.equal(bashHint('gh run view 1 --json status', false), undefined);
 });
 
+test('gh auth status used to read the active account points at the local config read', () => {
+  // 07-08/11: 68 calls, p50 2.4 s, p90 11.8 s, 410 s in total; `gh config get -h github.com user` answers in ~50 ms without the network.
+  assert.equal(bashHint('cd /c/p/x && gh auth status --hostname github.com 2>&1 | grep -B1 "Active account: true"', false), 'ghauth');
+  assert.equal(bashHint('gh auth status', false), 'ghauth');
+  // Switching accounts, other gh calls and the config read itself get nothing.
+  assert.equal(bashHint('gh auth switch --hostname github.com --user x; gh auth status', false), undefined);
+  assert.equal(bashHint('gh config get -h github.com user', false), undefined);
+  assert.equal(bashHint('gh pr view 3', false), undefined);
+});
+
 test('the script hint reaches a failing inline run through the tool_result hook', () => {
   const { result } = harness();
   const patched = result('s', raw`node -e "console.log(1"`, 'SyntaxError: missing ) after argument list\n\nCommand exited with code 1', true)!;
