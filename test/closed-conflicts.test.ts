@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
@@ -19,6 +19,30 @@ const GIT = [
   { id: 'git-ok-87165', match: '\\b(w/o|without|no)\\s+(specific\\s+)?OK\\b', with: 'merg|push|commit|\\bPR\\b|squash', say: 'Git actions need no OK since 87165.' },
 ];
 const list = fromRecords(GIT);
+const gitwatch = fromRecords([JSON.parse(readFileSync(new URL('./fixtures/closed-conflicts-gitwatch.json', import.meta.url), 'utf8'))]);
+
+test('gitwatch closed authority claims are flagged without suppressing real gates', () => {
+  const positives = [
+    '134272-399 OptChat: #201 316464c auto-merged via gitwatch: UNRESOLVED (user 131799/132648)',
+    'pi-optchat #207, #208 merged via self-queued auto-merge on gitwatch notices (order vs 131799 UNRESOLVED)',
+    '#213 abe9d67 turn-start --help merged 135539 (order vs 131799 UNRESOLVED)',
+    'dotfiles #58 squash-merged b95cf000 (136081) on gitwatch CLEAN notice (machine), no operator OK; order vs user 131799 UNRESOLVED',
+    'Merge order (131799) UNRESOLVED.',
+    'PR #42 self-merged w/o order.',
+    'PR #42 auto-merged via gitwatch notice UNRESOLVED.',
+    'PR #42 self-merged on gitwatch CLEAN, no operator OK.',
+  ];
+  const negatives = [
+    'DentAI #136 deploy 96fdb84e asked, NOT done',
+    'prod writes w/o OK UNRESOLVED',
+    'PR #944 merged b0a741cf',
+    'PR #42 merged; deploy order vs 131799 UNRESOLVED',
+    'PR #42 merged with CI not green UNRESOLVED',
+    'PR #42 merged; a separate database conflict is UNRESOLVED',
+  ];
+  for (const line of positives) assert.equal(cited(line, gitwatch).length, 1, line);
+  for (const line of negatives) assert.equal(cited(line, gitwatch).length, 0, line);
+});
 // Real lines from the 31/10 view.
 const LINE = 'OptChat 97144-51: gh pr merge 46 --squash returned rc=0 after a gitwatch CLEAN notice, with no specific OK; 90167 no-Git vs pushes UNRESOLVED. ILSpy: KBObject.cs:1134 stub; cap UNVERIFIED (96451). KB-write auth 88064 vs user 95899 UNVERIFIED.';
 
@@ -51,7 +75,7 @@ test('a superseded operational record closes its source id', () => {
   } finally { removeDir(dir); }
 });
 
-async function compressorWith(replies: string[]) {
+async function compressorWith(replies: string[], conflicts = list) {
   const dir = mkdtempSync(join(tmpdir(), 'oc-closed-c-'));
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   const sent: string[] = [];
@@ -70,7 +94,7 @@ async function compressorWith(replies: string[]) {
     },
   });
   const compress = createCompressor(new ModelRegistry(runtime), () => ({ provider: 'fixture', model: 'fixture', thinking: 'off' }), undefined, undefined, [0, 0],
-    undefined, undefined, undefined, () => list);
+    undefined, undefined, undefined, () => conflicts);
   return { dir, sent, calls: () => calls, compress };
 }
 
@@ -91,6 +115,16 @@ test('a model that keeps citing it gets the citation stripped after three tries'
     assert.equal(line, 'user: merged #46;');
     assert.equal(calls(), 3);
   } finally { removeDir(dir); }
+});
+
+test('gitwatch output is retried with the profile correction', async () => {
+  const stale = 'PR #42 auto-merged via gitwatch notice UNRESOLVED.';
+  const fixture = await compressorWith([stale, 'PR #42 auto-merged via gitwatch notice.'], gitwatch);
+  try {
+    const input = { context: '', source: 'source '.repeat(100), part: { l: 1, i: 0 } };
+    assert.equal(await fixture.compress(input, new AbortController().signal), 'PR #42 auto-merged via gitwatch notice.');
+    assert.match(fixture.sent[1], /watcher notices, not the operator/);
+  } finally { removeDir(fixture.dir); }
 });
 
 test('shown lines citing a closed conflict are rewritten once, and the rewrite survives a reopen', async () => {

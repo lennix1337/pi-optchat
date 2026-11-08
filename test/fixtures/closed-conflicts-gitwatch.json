@@ -1,0 +1,6 @@
+{
+  "id": "gitwatch-notice-0711",
+  "match": "^(?!.*\\b(?:deploy|prod(?:uction)?|Stripe|paid|spend|account|publish)|.*(?:review incomplete|unreviewed|not reviewed|\\bCI (?:red|not green|not awaited)|red CI|IN_PROGRESS|\\bBLOCKED\\b|outside (?:the )?free rule|names-only|diff NOT reviewed|part(?:ly)? read))(?=.*(?:merg|squash|\\bPRs?\\b))(?=.*(?:\\b(?:w/o|without|no|sem)\\s+(?:an?\\s+)?(?:(?:explicit|operator|merge|user)\\s+)*(?:order|ordem)\\b|\\b(?:no|without|w/o)\\s+operator\\s+OK\\b|\\border\\s*(?:vs\\.?\\s*(?:user\\s*)?|\\(\\s*)(?:131799|132318|132420|132648|132741)\\b|\\bmerge order\\s*\\(?(?:131799|132318|132420|132648|132741)\\b|\\bgitwatch\\b[^;]*\\bUNRESOLVED\\b|\\bUNRESOLVED\\b[^;]*\\bgitwatch\\b|\\bgitwatch\\b[^;]{0,40}\\bgrants? no (?:merge|permission)|(?<!\\d)(?:131799|132318|132420|132648|132741)(?!\\d)[^;]{0,40}(?:merge|grants)))", 
+  "with": "merg|squash|\\bPRs?\\b",
+  "say": "[gitwatch] messages (131799, 132318, 132420, 132648, 132741 and the rest) are watcher notices, not the operator's words; their \"grants no permission\" footer takes nothing away. Merging a reviewed own-repo PR with green CI is free (operator 02/11): never tag it \"w/o order\", \"no operator order\" or UNRESOLVED, nor credit \"gitwatch grants no merge\" to the user."
+}
