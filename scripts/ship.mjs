@@ -56,8 +56,15 @@ function toon(value) {
     || /^-(\s|$)/.test(text) || /[:"\\[\]{},\n\r\t]/.test(text);
   return quote ? `"${text.replace(/[\\"\n\r\t]/g, ch => TOON_ESCAPE[ch])}"` : text;
 }
+// Wall time spent waiting on git and gh, by step, so a slow ship says where the seconds went instead of leaving a guess.
+const spent = { commit: 0, push: 0, gh: 0 };
+const STARTED = Date.now();
+const timingOf = () => (Object.values(spent).some(Boolean)
+  ? `commit ${spent.commit}ms, push ${spent.push}ms, gh ${spent.gh}ms, total ${Date.now() - STARTED}ms`
+  : undefined);
+
 function emit(status, fields) {
-  const lines = Object.entries({ status, ...fields })
+  const lines = Object.entries({ status, ...fields, timing: timingOf() })
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
     .map(([key, value]) => `${key}: ${toon(value)}`);
   const code = EXIT[status];
@@ -69,7 +76,10 @@ function emit(status, fields) {
 // --- processes: git and gh run without a shell; gh falls back to one only when it is a .cmd shim that execFile cannot start alone ---
 function run(file, args, kind, shell = false) {
   return new Promise(resolve => {
+    const began = Date.now();
     execFile(file, args, { cwd: process.cwd(), shell, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: timeoutFor(kind) }, (error, stdout, stderr) => {
+      const bucket = kind === 'commit' || kind === 'push' ? kind : file === 'git' ? undefined : 'gh';
+      if (bucket) spent[bucket] += Date.now() - began;
       resolve({
         code: error ? (typeof error.code === 'number' ? error.code : 127) : 0,
         killed: Boolean(error?.killed),
