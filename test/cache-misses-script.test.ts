@@ -27,3 +27,18 @@ test('--diag also reads the rotated diagnostics file, where the older causes liv
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('--dir supplies usage.jsonl, and a bare --diag reads cache-diagnostics.jsonl from it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cache-misses-dir-'));
+  try {
+    writeFileSync(join(dir, 'usage.jsonl'), [usage(0, 90000, 90000), usage(1, 30000, 70000)].join('\n') + '\n');
+    writeFileSync(join(dir, 'cache-diagnostics.jsonl'), JSON.stringify({ date: at(1), headChanged: true, headParts: ['tools'] }) + '\n');
+    const out = execFileSync(process.execPath, ['scripts/cache-misses.mjs', '--dir', dir, '--diag'], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 30000,
+    });
+    const causes = JSON.parse(out).headChangeByCause;
+    assert.deepEqual(Object.keys(causes), ['tools']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

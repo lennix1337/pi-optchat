@@ -1,11 +1,18 @@
 import { createReadStream, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { classifyCacheMisses } from '../src/cache-misses.ts';
 
-const { values } = parseArgs({ options: { usage: { type: 'string' }, model: { type: 'string' }, since: { type: 'string' }, diag: { type: 'string' } } });
-if (!values.usage) {
-  console.error('Usage: node --import tsx scripts/cache-misses.mjs --usage PATH/usage.jsonl [--model claude-opus-5-5] [--since 2026-10-28] [--diag PATH/cache-diagnostics.jsonl]  (read-only; money = cacheWrite cost)');
+// A bare --diag means "the diagnostics file next to usage.jsonl"; parseArgs cannot take an optional value.
+const argv = process.argv.slice(2).flatMap((a, i, all) => (a === '--diag' && (i === all.length - 1 || all[i + 1].startsWith('--')) ? ['--diag=auto'] : [a]));
+const { values } = parseArgs({ args: argv, options: { dir: { type: 'string' }, usage: { type: 'string' }, model: { type: 'string' }, since: { type: 'string' }, diag: { type: 'string' } } });
+const dir = values.dir ?? join(homedir(), '.optchat', 'profiles', 'swlucas05');
+values.usage ??= join(dir, 'usage.jsonl');
+if (values.diag === 'auto') values.diag = join(dir, 'cache-diagnostics.jsonl');
+if (!existsSync(values.usage)) {
+  console.error(`No usage file at ${values.usage}. Usage: node --import tsx scripts/cache-misses.mjs [--dir PROFILE_DIR | --usage PATH/usage.jsonl] [--model claude-opus-5-5] [--since 2026-10-28] [--diag [PATH/cache-diagnostics.jsonl]]  (read-only; money = cacheWrite cost; dir defaults to the swlucas05 profile)`);
   process.exitCode = 2;
 } else {
   const records = [];
