@@ -440,10 +440,10 @@ test('OPTCHAT_EFFECT_APPROVALS=risk gates git push and recursive delete through 
   }
 });
 
-test('gate is opt-in and disabled registration has no hooks or prompt effects', () => {
-  let registered = 0;
-  registerEffectApprovals({ on() { registered++; } } as unknown as ExtensionAPI, { enabled: false });
-  assert.equal(registered, 0);
+test('disabled approvals retain only the worktree safety hook', () => {
+  const registered: string[] = [];
+  registerEffectApprovals({ on(name: string) { registered.push(name); } } as unknown as ExtensionAPI, { enabled: false });
+  assert.deepEqual(registered, ['tool_call']);
 });
 
 test('every way a waiting call stops waiting is reported once, so its Slack post can stop saying pendente', () => {

@@ -7,6 +7,7 @@ import { judgeSelfEdit } from './autonomy-self-edit.ts';
 import { operatorWords } from './operator-words.ts';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { worktreeRemovalRefusal } from './worktree-guard.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
@@ -224,7 +225,15 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   /** Longest a pending call is held back from `onPending` while the run goes on. */
   holdMs = 3 * 60_000 } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
-  if (!(enabled ?? (env === '1' || env === 'risk'))) return;
+  const guard = (event: { toolName: string; input: unknown }, cwd: string) => {
+    if (event.toolName !== 'bash' || !event.input || typeof event.input !== 'object' || !('command' in event.input) || typeof event.input.command !== 'string') return;
+    const reason = worktreeRemovalRefusal(event.input.command, cwd);
+    if (reason) return { block: true as const, reason };
+  };
+  if (!(enabled ?? (env === '1' || env === 'risk'))) {
+    pi.on('tool_call', (event, ctx) => guard(event, ctx.cwd));
+    return;
+  }
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), onSettled: (token, outcome) => onSettled?.(token, outcome) });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
@@ -242,6 +251,8 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     return RESULTS[result];
   });
   pi.on('tool_call', async (event, ctx) => {
+    const blocked = guard(event, ctx.cwd);
+    if (blocked) return blocked;
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };
     if (!grant) return gate.admit(call) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
