@@ -13,6 +13,10 @@ const NEEDS_MACHINE = {
   'assistant-installed': 'an installed Pi SDK',
   'assistant-executor-tools-journey': 'Docker engine and the prebuilt browser image',
 };
+if (process.argv.slice(2).some((a) => a === '--help' || a === '-h')) {
+  console.log('usage: assistant-checks.mjs [--mutations]  (runs the hermetic assistant-* checks of .pi/checks.json in sequence)');
+  process.exit(0);
+}
 const withMutations = process.argv.includes('--mutations');
 const { checks } = JSON.parse(readFileSync(new URL('../.pi/checks.json', import.meta.url), 'utf8'));
 const selected = Object.entries(checks).filter(([name]) => name.startsWith('assistant-') && !NEEDS_MACHINE[name] &&
