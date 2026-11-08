@@ -59,6 +59,8 @@ export function errorCategory(error: unknown): UsageErrorCategory {
   if (/auth|api.key|401|403/i.test(text)) return 'authentication';
   if (/overload|unavailable|\b502\b|\b503\b|\b504\b|\b529\b/i.test(text)) return 'unavailable';
   if (/upstream connect error|disconnect\/reset before headers|connection refused|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|fetch failed/i.test(text)) return 'connection_failure';
+  // The Anthropic SDK reports a rejected fetch (a reset before any response) as a bare "Connection error." and drops the cause.
+  if (/^connection error\.?$/i.test(text.trim())) return 'connection_failure';
   if (/timeout|timed.out/i.test(text)) return 'timeout';
   if (/context|too.long|token.limit/i.test(text)) return 'context_limit';
   if (/\bterminated\b|stream ended without a stop reason|ECONNRESET|UND_ERR_SOCKET/i.test(text)) return 'stream_interrupted';
