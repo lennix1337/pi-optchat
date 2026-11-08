@@ -28,7 +28,10 @@ if (!Number.isInteger(days) || days < 0) {
 const dir = values.dir ?? join(homedir(), '.optchat', 'profiles', 'swlucas05');
 values.usage ??= join(dir, 'usage.jsonl');
 if (values.diag === 'auto') values.diag = join(dir, 'cache-diagnostics.jsonl');
-if (!existsSync(values.usage)) {
+if (values.diag && !existsSync(values.diag) && !existsSync(`${values.diag}.1`)) {
+  console.error(`no diagnostics file at ${values.diag}; --diag takes an optional path, not a mode name. ${USAGE}`);
+  process.exitCode = 2;
+} else if (!existsSync(values.usage)) {
   console.error(`No usage file at ${values.usage}. ${USAGE}`);
   process.exitCode = 2;
 } else {
