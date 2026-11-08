@@ -20,6 +20,9 @@ if (verb === 'view') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for branch "${rest[0]}"`);
   const fields = (flag('--json') ?? '').split(',').filter(Boolean);
+  state.viewTimes = [...(state.viewTimes ?? []), Date.now()];
+  if (state.settleAfterViews && state.viewTimes.length > state.settleAfterViews.count) Object.assign(pr, state.settleAfterViews.patch); // GitHub settles the PR (checks appear, BLOCKED) some views after it opens
+  save();
   process.stdout.write(JSON.stringify(Object.fromEntries(fields.map(f => [f, pr[f] ?? null]))) + '\n');
 } else if (verb === 'create') {
   if (state.createHangs) { sleepSync(3000); process.exit(0); }
