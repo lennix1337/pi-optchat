@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { advance, DEFAULT_PROBES, healthSignals, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState } from '../src/prod-health.ts';
@@ -53,6 +53,28 @@ test('a round probes in parallel, keeps state per profile and feeds the 07:00 su
     const lines = healthLines(readHealth(dir));
     assert.deepEqual(lines, ['✅ API DentAI (0 ms)', '✅ Site dentai.com.br (0 ms) · build 9781524f', '✅ Site usdentai.com (0 ms)']);
     assert.match(composeSummary({ day: [], waiting: [], prs: [], approvals: 0, health: lines }), /\*Produção agora\*\n• ✅ API DentAI \(0 ms\)\n• ✅ Site dentai\.com\.br/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('every round leaves a history line per probe, so a slow episode can be dated afterwards; the file stays bounded', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'health-'));
+  try {
+    let clock = T0, delay = 0;
+    const bodies: Record<string, string> = { [api.url]: API_OK, [web.url]: WEB_OK, [us.url]: US_OK };
+    const health = new ProdHealth({ fetcher: async url => { clock += url === web.url ? delay : 0; return { status: 200, body: bodies[url]! }; }, now: () => clock });
+    await health.round(dir);
+    delay = 8000; clock += 300_000;
+    await health.round(dir);
+    const lines = () => readFileSync(join(dir, 'prod-health.history.jsonl'), 'utf8').trim().split(/\r?\n/);
+    const rows = lines().map(l => JSON.parse(l) as { at: number; probe: string; ms: number; ok: boolean; problem?: string });
+    assert.equal(rows.length, 6);
+    const slow = rows.filter(r => !r.ok && r.probe === web.name);
+    assert.deepEqual(slow.map(r => [r.probe, r.ms, r.at, r.problem]), [['Site dentai.com.br', 8000, T0 + 300_000 + 8000, 'lento: 8.0s']]);
+    appendFileSync(join(dir, 'prod-health.history.jsonl'), Array.from({ length: 3000 }, () => '{"at":1,"probe":"x","ms":1,"ok":true}').join('\n') + '\n');
+    await health.round(dir);
+    const kept = lines();
+    assert.equal(kept.length, 2000);
+    assert.equal((JSON.parse(kept.at(-1)!) as { probe: string }).probe, us.name, 'the newest rows survive the trim');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
