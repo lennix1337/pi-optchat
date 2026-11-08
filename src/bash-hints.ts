@@ -4,13 +4,14 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 // files 15.3% (13.6% Python tracebacks), and text-mode Python on Windows turned LF files into CRLF.
 // A bash result for such a command gets one short hint line; it never changes isError or the exit code.
 
-type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll';
+type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth';
 const HINTS: Record<HintKind, string> = {
   edit: 'Hint: use the native edit/write tools for source changes; fewer errors, line endings kept.',
   read: 'Hint: use the native read tool with offset/limit instead of bash sed/cat/head.',
   script: 'Hint: inline node -e / python -c broke on quoting; write the script to a temp file with the write tool, then run it.',
   tmp: String.raw`Hint: Windows node/python read /tmp as C:\tmp, not Git Bash's /tmp; pass $(cygpath -w /tmp/FILE) or a project-relative path.`,
   poll: 'Hint: do not sleep-poll CI or a PR; gitwatch wakes you on its result (watch the repo, PR or branch), so keep working instead.',
+  ghauth: 'Hint: to confirm the active gh account, `gh config get -h github.com user` reads it locally in ~50 ms; `gh auth status` calls the network (0.6 s, up to 12 s).',
   ripwire: 'Hint: use the native ripwire tool (map/task/search/symbol/callers/callees/impact/exemplar/edit_check/quality/test_gate); CLI only for other flags.',
 };
 /** The same hint is shown at most once per this many bash calls in a session. */
@@ -55,6 +56,10 @@ const WINDOWS_TMP_MISS = /ENOENT[^\n]*[A-Za-z]:\\tmp\\|(?:FileNotFoundError|No s
 // A sleep of 15 s or more followed by a remote status check is a poll: gitwatch already delivers CI and PR results.
 const SLEEP_POLL = /(?:^|[;&|(]\s*)sleep\s+(?:1[5-9]|[2-9]\d|\d{3,})\b[^\n]*?\b(?:gh\s+(?:run|pr|api)|git\s+fetch|curl)\b/;
 
+// `gh auth status` validates tokens over the network; the active account is a local config value.
+const GH_AUTH_STATUS = /(?:^|[;&|(]\s*)gh\s+auth\s+status\b/;
+const GH_AUTH_SWITCH = /(?:^|[;&|(]\s*)gh\s+auth\s+(?:switch|login|refresh)\b/;
+
 const RIPWIRE_FLAGS = /(?:^|[;&|(]\s*)ripwire\b[^\n]*\s--(?:for|grep|callers|callees|impact|edit-check|quality-delta|test-gate)(?=[\s=]|$)/;
 
 /** First applicable hint, or undefined. Pure so patterns are testable without a session. */
@@ -63,6 +68,7 @@ export function bashHint(command: string, ripwireTool: boolean, output = ''): Hi
   if (INLINE_SCRIPT.test(command) && PARSE_FAILURE.test(output)) return 'script';
   if (command.includes('/tmp/') && WINDOWS_TMP_MISS.test(output)) return 'tmp';
   if (SLEEP_POLL.test(command)) return 'poll';
+  if (GH_AUTH_STATUS.test(command) && !GH_AUTH_SWITCH.test(command)) return 'ghauth';
   if (ripwireTool && RIPWIRE_FLAGS.test(command)) return 'ripwire';
   if (readsOneFile(command)) return 'read';
   return undefined;
