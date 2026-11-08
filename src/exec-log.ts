@@ -33,7 +33,9 @@ export function classify(failed: boolean, text: string, code?: number | string):
 /** `grep`/`rg` exit 1 with nothing printed means "no match": the answer to the question, not a failed call. */
 export function isNoMatch(command: string | undefined, text: string): boolean {
   // split() with a capture group alternates command, separator, command, ...; a trailing blank (final newline) carries no command.
-  const tokens = (command ?? '').split(/(&&|\|\||\||;|\n)/);
+  // Quoted text (a grep pattern like "a\|b", an echoed "x && y") holds no separators: mask it before splitting.
+  const masked = (command ?? '').replace(/"(?:\\[^]|[^"\\])*"|'[^']*'/g, quoted => 'x'.repeat(quoted.length));
+  const tokens = masked.split(/(&&|\|\||\||;|\n)/);
   while (tokens.length > 1 && tokens[tokens.length - 1].trim() === '') tokens.length -= 2;
   const last = (tokens.pop() ?? '').trim();
   if (!/^(?:grep|egrep|fgrep|rg)\s/.test(last)) return false;
