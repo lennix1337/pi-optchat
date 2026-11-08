@@ -134,3 +134,20 @@ test('a network failure names the underlying cause, not just undici\'s "fetch fa
   assert.match(result.problem!, /falha de rede: fetch failed \(ECONNRESET\)/);
   assert.match((await runProbe(web, async () => { throw new TypeError('fetch failed'); }, () => T0)).problem!, /^falha de rede: fetch failed$/);
 });
+
+test('a slow probe says where the time went: waiting for the server to answer, or reading the body', async () => {
+  let clock = T0;
+  const now = () => clock;
+  const slowServer: Fetcher = async () => { clock += 4500; return { status: 200, body: WEB_OK, headersMs: 4300 }; };
+  const slowBody: Fetcher = async () => { clock += 4500; return { status: 200, body: WEB_OK, headersMs: 300 }; };
+  const server = await runProbe(web, slowServer, now), body = await runProbe(web, slowBody, now);
+  assert.equal(server.waitMs, 4300);
+  assert.equal(server.problem, 'lento: 4.5s (4.3s até o servidor responder, 0.2s lendo a página)');
+  assert.equal(body.problem, 'lento: 4.5s (0.3s até o servidor responder, 4.2s lendo a página)');
+  const dir = mkdtempSync(join(tmpdir(), 'health-'));
+  try {
+    await new ProdHealth({ fetcher: async () => ({ status: 200, body: API_OK, headersMs: 90 }), now: () => clock, probes: [api] }).round(dir);
+    const row = JSON.parse(readFileSync(join(dir, 'prod-health.history.jsonl'), 'utf8').trim()) as { waitMs?: number };
+    assert.equal(row.waitMs, 90, 'the history keeps the wait so a past slow stretch can be explained');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

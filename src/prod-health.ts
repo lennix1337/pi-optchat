@@ -15,12 +15,13 @@ import { atomicWrite, readJsonOr } from './store.ts';
  * woken turn; its recovery is posted without a turn. Steady state (healthy or still down) costs no model call.
  */
 /** `detail` replaces the latency in status lines for probes that measure something else (free disk, memory). */
-export interface ProbeResult { ok: boolean; problem?: string; ms: number; build?: string; detail?: string }
+/** `waitMs`: time until the server answered (response headers); `ms - waitMs` is reading the body. Only remote probes have it. */
+export interface ProbeResult { ok: boolean; problem?: string; ms: number; build?: string; detail?: string; waitMs?: number }
 export interface Probe { name: string; url: string; slowMs: number; judge(status: number, body: string): { problem?: string; build?: string } }
 /** A probe of this machine rather than a URL. */
 /** `remedy` runs once when the probe goes down (see self-fix.ts). */
 export interface LocalProbe { name: string; check(): ProbeResult | Promise<ProbeResult>; remedy?: Remedy }
-export type Fetcher = (url: string, timeoutMs: number) => Promise<{ status: number; body: string }>;
+export type Fetcher = (url: string, timeoutMs: number) => Promise<{ status: number; body: string; headersMs?: number }>;
 
 const api: Probe = {
   name: 'API DentAI', url: 'https://api.dentai.com.br/health', slowMs: 3000,
@@ -49,8 +50,10 @@ const us: Probe = {
 export const DEFAULT_PROBES: Probe[] = [api, web, us];
 
 const defaultFetch: Fetcher = async (url, timeoutMs) => {
+  const started = performance.now();
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'follow', headers: { 'user-agent': 'optchat-health/1' } });
-  return { status: response.status, body: (await response.text()).slice(0, 1_000_000) };
+  const headersMs = Math.round(performance.now() - started);
+  return { status: response.status, body: (await response.text()).slice(0, 1_000_000), headersMs };
 };
 
 const reason = (error: unknown) => {
@@ -70,10 +73,12 @@ async function runLocal(probe: LocalProbe): Promise<ProbeResult> {
 async function runRemote(probe: Probe, fetcher: Fetcher, now: () => number): Promise<ProbeResult> {
   const started = now();
   try {
-    const { status, body } = await fetcher(probe.url, 15_000);
+    const { status, body, headersMs } = await fetcher(probe.url, 15_000);
     const ms = now() - started, { problem, build } = probe.judge(status, body);
-    const slow = !problem && ms > probe.slowMs ? `lento: ${(ms / 1000).toFixed(1)}s` : undefined;
-    return { ok: !problem && !slow, ms, ...(problem ?? slow ? { problem: problem ?? slow } : {}), ...(build ? { build } : {}) };
+    const seconds = (n: number) => (n / 1000).toFixed(1);
+    const split = headersMs === undefined ? '' : ` (${seconds(headersMs)}s até o servidor responder, ${seconds(Math.max(0, ms - headersMs))}s lendo a página)`;
+    const slow = !problem && ms > probe.slowMs ? `lento: ${seconds(ms)}s${split}` : undefined;
+    return { ok: !problem && !slow, ms, ...(problem ?? slow ? { problem: problem ?? slow } : {}), ...(build ? { build } : {}), ...(headersMs === undefined ? {} : { waitMs: headersMs }) };
   } catch (error) {
     return { ok: false, ms: now() - started, problem: error instanceof Error && error.name === 'TimeoutError' ? 'sem resposta em 15s' : `falha de rede: ${reason(error)}` };
   }
@@ -123,7 +128,7 @@ const HISTORY_MAX = 3000, HISTORY_KEEP = 2000;
 function appendHistory(file: string, at: number, results: Map<string, ProbeResult>): void {
   try {
     mkdirSync(join(file, '..'), { recursive: true });
-    const row = ([probe, r]: [string, ProbeResult]) => JSON.stringify({ at, probe, ms: r.ms, ok: r.ok, ...(r.problem ? { problem: r.problem } : {}) });
+    const row = ([probe, r]: [string, ProbeResult]) => JSON.stringify({ at, probe, ms: r.ms, ok: r.ok, ...(r.waitMs === undefined ? {} : { waitMs: r.waitMs }), ...(r.problem ? { problem: r.problem } : {}) });
     appendFileSync(file, [...results].map(row).join(NL) + NL);
     const rows = readFileSync(file, 'utf8').split(NL).filter(Boolean);
     if (rows.length > HISTORY_MAX) atomicWrite(file, rows.slice(-HISTORY_KEEP).join(NL) + NL);
