@@ -477,3 +477,12 @@ test('a leftover .git/index.lock is reported as a lock, not as bad paths', t => 
   assert.match(r.out.next, /nenhum processo git|processo git/i);
   assert.doesNotMatch(r.out.next, /confira os nomes/);
 });
+
+test('a shipped branch reports where the time went: commit, push, gh', t => {
+  const fx = fixture(); t.after(fx.close);
+  git(fx.work, ['switch', '-c', 'feat/timing']);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out.timing ?? '', /^"?commit \d+ms, push \d+ms, gh \d+ms, total \d+ms"?$/, r.raw);
+});
