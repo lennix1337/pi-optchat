@@ -131,6 +131,17 @@ test('the tmp hint reaches the result through the tool_result hook', () => {
   assert.ok(patched.content[0].text.split('\n').at(-3)!.length <= 170);
 });
 
+test('a long sleep before a gh/git/curl status check points at gitwatch instead of polling', () => {
+  // 05-07/11: 13 calls (242 s) chained `sleep 20-40` with gh run view / gh pr view / git fetch to wait for CI.
+  assert.equal(bashHint('sleep 40; gh run view 42356367236 --json status', false), 'poll');
+  assert.equal(bashHint('sleep 25 && gh pr view 3 --json state', false), 'poll');
+  assert.equal(bashHint('cd /c/p/x && sleep 120 && curl -s https://x.test/health', false), 'poll');
+  // Short settle sleeps, sleeps without a remote check, and a check without a sleep get nothing.
+  assert.equal(bashHint('sleep 5; gh pr view 3', false), undefined);
+  assert.equal(bashHint('sleep 30; ls build', false), undefined);
+  assert.equal(bashHint('gh run view 1 --json status', false), undefined);
+});
+
 test('the script hint reaches a failing inline run through the tool_result hook', () => {
   const { result } = harness();
   const patched = result('s', raw`node -e "console.log(1"`, 'SyntaxError: missing ) after argument list\n\nCommand exited with code 1', true)!;
