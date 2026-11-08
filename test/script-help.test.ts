@@ -33,3 +33,10 @@ test('assistant-checks --help prints the usage and exits 0 without running any c
   assert.match(run.stdout, /^usage: assistant-checks\.mjs/i);
   assert.doesNotMatch(run.stdout, /=== assistant-/);
 });
+
+test('turn-start-benchmark --help prints the usage and exits 0 without running the benchmark', () => {
+  const run = spawnSync(process.execPath, ['--experimental-transform-types', '--no-warnings', 'scripts/turn-start-benchmark.ts', '--help'], { encoding: 'utf8', timeout: 8_000 });
+  assert.equal(run.status, 0, `${run.error?.message ?? ''}${run.stderr}`);
+  assert.match(run.stdout, /^usage: turn-start-benchmark\.ts/i);
+  assert.doesNotMatch(run.stdout, /wholeTurn/);
+});
