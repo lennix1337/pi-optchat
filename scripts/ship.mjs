@@ -170,7 +170,7 @@ async function settle(number, waitSeconds) {
       && (pr.mergeStateStatus === 'UNKNOWN' || (pr.mergeStateStatus === 'CLEAN' && !pr.statusCheckRollup?.length));
     const left = deadline - Date.now();
     if (!unsettled || left <= 0) return view;
-    await sleep(Math.min(3000, left));
+    await sleep(Math.min(1000, left)); // a view costs ~0.6 s; 1 s keeps the wait short without hammering the API
   }
 }
 

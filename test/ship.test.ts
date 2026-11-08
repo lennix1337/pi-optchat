@@ -269,6 +269,17 @@ test('checks not reported yet, and a merge that would land at once: reported, no
   assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'), 'no merge request is sent');
 });
 
+test('a PR whose checks show up a moment after it opens is re-read within a second, not after a long pause', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ defaults: { mergeStateStatus: 'CLEAN', checks: [] }, settleAfterViews: { count: 1, patch: { mergeStateStatus: 'BLOCKED', statusCheckRollup: PENDING_CI } } });
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
+  assert.equal(r.out.status, 'queued', r.err);
+  const times: number[] = JSON.parse(readFileSync(fx.statePath, 'utf8')).viewTimes;
+  assert.ok(times.length >= 2, 'the PR was read again');
+  assert.ok(times[1] - times[0] < 1800, `second read came ${times[1] - times[0]} ms after the first`);
+});
+
 test('CLEAN with checks still running would merge at once, so it is not queued', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ defaults: { mergeStateStatus: 'CLEAN', checks: PENDING_CI } });
