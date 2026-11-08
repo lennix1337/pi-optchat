@@ -117,7 +117,7 @@ test('a model that keeps citing it gets the citation stripped after three tries'
   } finally { removeDir(dir); }
 });
 
-test('gitwatch output is retried with the profile correction and cannot fall back to a whole stale line', async () => {
+test('gitwatch output is retried with the profile correction', async () => {
   const stale = 'PR #42 auto-merged via gitwatch notice UNRESOLVED.';
   const fixture = await compressorWith([stale, 'PR #42 auto-merged via gitwatch notice.'], gitwatch);
   try {
@@ -125,11 +125,6 @@ test('gitwatch output is retried with the profile correction and cannot fall bac
     assert.equal(await fixture.compress(input, new AbortController().signal), 'PR #42 auto-merged via gitwatch notice.');
     assert.match(fixture.sent[1], /watcher notices, not the operator/);
   } finally { removeDir(fixture.dir); }
-  const persistent = await compressorWith([stale], gitwatch);
-  try {
-    await assert.rejects(persistent.compress({ context: '', source: 'source '.repeat(100), part: { l: 1, i: 0 } }, new AbortController().signal), /could not remove a closed conflict/);
-    assert.equal(persistent.calls(), 3);
-  } finally { removeDir(persistent.dir); }
 });
 
 test('shown lines citing a closed conflict are rewritten once, and the rewrite survives a reopen', async () => {

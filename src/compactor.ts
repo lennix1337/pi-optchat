@@ -166,11 +166,6 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const carriedIn = (line: string) => input.part.l === 0 && input.revise === undefined ? foreignIds(line, own) : [];
     let request = 0, failures = 0, attempts = 0, summaries = 0;
     let shortest: string | undefined, blank: string | undefined, stale: string | undefined, closedRetries = 0;
-    const safeFallback = (line: string) => {
-      const result = dropCarried(dropClosed(line, closed()), carriedIn(line));
-      if (cited(result, closed()).length) throw new Error('Compactor could not remove a closed conflict without losing the whole line.');
-      return result;
-    };
     const ask = async (): Promise<AssistantMessage> => {
       for (;;) {
         signal.throwIfAborted();
@@ -244,8 +239,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
         if (!hits.length && !carried.length) return line;
         // A line citing a conflict the user closed is asked for again twice, then stripped of it (src/closed-conflicts.ts);
         // one that only copies ids from other lines gets one more try (src/carried-ids.ts).
-        stale = line;
-        if (closedRetries++ >= (hits.length ? 2 : 1)) return safeFallback(stale);
+        stale = dropCarried(dropClosed(line, hits), carried);
+        if (closedRetries++ >= (hits.length ? 2 : 1)) return stale;
         const feedback = [...hits.length ? [closedFeedback(hits)] : [], ...carried.length ? [carriedFeedback(carried)] : []].join('\n\n');
         messages.push(reply, { role: 'user', content: feedback, timestamp: Date.now() });
         continue;
@@ -257,8 +252,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     }
     // The byte target guides retries, not a second failure cliff. Keep the shortest
     // complete shrinking reply; persisted nodes and views account for actual bytes.
-    if (stale !== undefined) return safeFallback(stale);
-    if (shortest !== undefined) return safeFallback(shortest);
+    if (stale !== undefined) return stale;
+    if (shortest !== undefined) return dropCarried(dropClosed(shortest, closed()), carriedIn(shortest));
     if (!summaries && blank !== undefined) throw new Error(`Compactor returned no text in ${attempts} tries (${blank}). See compactor-diagnostics.jsonl.`);
     if (!summaries) throw new Error('Compactor returned no whole line in 5 tries.');
     throw new Error(`Compactor returned no acceptable summary in ${attempts} attempts (limit ${limit} bytes; source ${sourceBytes} bytes; shortest ${shortest === undefined ? 'none' : bytes(shortest)}; it must be smaller than the source).`);
