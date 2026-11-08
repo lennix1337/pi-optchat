@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { AddressInfo } from 'node:net';
+import { connect, type AddressInfo } from 'node:net';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -142,6 +142,8 @@ async function simulatedAnthropic() {
     socket.on('close', hadError => { if (hadError) transport.events.push(`socket ${n} closed with an error after ${Date.now() - opened} ms`); });
   });
   server.on('clientError', (error: NodeJS.ErrnoException) => transport.events.push(`clientError ${error.code ?? error.message}`));
+  // Idle connections close only from the client side; a server idle timer races clients whose timers lag (see the keep-alive test).
+  server.keepAliveTimeout = 0;
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   // The SDK wraps a rejected fetch as "Connection error." and drops its cause: record the client side's reason too.
@@ -208,6 +210,27 @@ async function piSession(anthropic: { url: string }, name: string, extra: (pi: E
   await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), notify: (message: string, type?: string) => { if (type === 'error') errors.push(`notify: ${message}`); } }, mode: 'print', onError: error => { errors.push(error.error); } });
   return { session, errors };
 }
+
+// After an event loop blocked past Node's keep-alive timeout, the server's idle timer can fire before the client's: the
+// client then reuses a socket the server is closing and the SDK reports "Connection error." (ECONNRESET a few ms in).
+test('the simulated server never closes an idle keep-alive connection itself, so a busy turn cannot reuse a socket it is closing', { timeout: 30_000 }, async () => {
+  const anthropic = await simulatedAnthropic();
+  const socket = connect(Number(new URL(anthropic.url).port), '127.0.0.1');
+  try {
+    let closedByServer = false;
+    socket.on('end', () => { closedByServer = true; });
+    let received = '';
+    const answered = new Promise<void>(resolve => socket.on('data', chunk => { received += chunk; if (received.includes('message_stop')) resolve(); }));
+    const body = JSON.stringify({ model: 'claude-sim', messages: [{ role: 'user', content: 'hi' }] });
+    socket.write(`POST /v1/messages HTTP/1.1\r\nHost: sim\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    await answered;
+    await new Promise(resolve => setTimeout(resolve, 7_000)); // past Node's default keepAliveTimeout: 5 s, plus a 1 s buffer on Node 24
+    assert.equal(closedByServer, false, 'the server closed an idle keep-alive connection');
+  } finally {
+    socket.destroy();
+    await anthropic.close();
+  }
+});
 
 test('real Pi + OptChat: /reload with a tool redefined reads the cached head and sends the change after the view', { timeout: 120_000 }, async () => {
   const anthropic = await simulatedAnthropic();
