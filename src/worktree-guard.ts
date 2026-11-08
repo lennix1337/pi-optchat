@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { commandWords, segments } from './effect-classifier.ts';
 
@@ -40,7 +40,8 @@ function mergedPr(branch: string, repo: string) {
   try { const prs: unknown = JSON.parse(output ?? ''); return Array.isArray(prs) && prs.length > 0; } catch { return false; }
 }
 
-const key = (path: string) => resolve(path).toLowerCase();
+// realpath expands Windows 8.3 short names (RUNNER~1) that Git lists in long form.
+const key = (path: string) => { try { return realpathSync.native(path).toLowerCase(); } catch { return resolve(path).toLowerCase(); } };
 const within = (path: string, dir: string) => key(path) === key(dir) || key(path).startsWith(key(dir).replace(/[\\/]$/, '') + sep);
 
 /** Refuse a registered worktree unless its tip is proven merged into origin's default or a merged PR. */
