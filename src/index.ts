@@ -3,6 +3,7 @@ import { registerAssistantMemory } from './assistant-memory.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
 import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
+import { registerLiveResources } from './live-resources.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { readManyTool } from './read-many.ts';
 import { logSent, registerSlackReports } from './slack-reports.ts';
@@ -981,6 +982,7 @@ export default function optchat(pi: ExtensionAPI) {
   pi.registerTool(readManyTool(process.cwd()));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
   registerToolInventory(pi);
+  registerLiveResources(pi);
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
     handler: async (args, ctx) => {
       const a = required(), option = args.trim();

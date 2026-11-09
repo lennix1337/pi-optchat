@@ -20,7 +20,7 @@ const validInputs: Record<string, Record<string, unknown>> = {
   shell_start: { command: 'not executed', timeout: 1, notify: 'none' }, shell_status: {}, shell_stop: { id: 'fixture' },
   operation_state: {}, operational_state: {}, context_metrics: {}, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
   tell: { id: 'fixture', message: 'not sent' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
-  slack_send: { text: 'not sent' }, tool_inventory: {}, commitments: { action: 'list' },
+  slack_send: { text: 'not sent' }, tool_inventory: {}, skills_on_disk: { name: 'fixture' }, commitments: { action: 'list' },
   crew: { action: 'read', project: 'harness', part: 'memory' },
 };
 test('spawn accepts a worker kind and a project specialist', () => {
