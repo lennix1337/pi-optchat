@@ -17,6 +17,8 @@ export interface MissReport {
   byClass: Record<MissClass, MissBucket>; byDay: Record<string, MissBucket>; modelSwitch: MissBucket; totalUsd: number;
   /** headChange turns by the cause cache-diagnostics.jsonl recorded for the same request: the changed head parts joined with '+', `earlyView` (a view block before its tail changed), `unmatched`. Empty without diagnostics. */
   headCause: Record<string, MissBucket>;
+  /** Per day, the first main call of a session after more than IDLE_GAP_MINUTES of silence (or its very first call): what a wake pays to start. */
+  afterIdle: Record<string, MissBucket & { medianWriteTokens: number }>;
 }
 /** One cache-diagnostics.jsonl row (cache.ts ViewReport). */
 export interface HeadDiagnostic { date: string; headChanged?: boolean; headParts?: readonly string[]; changedAt?: number | null }
@@ -28,6 +30,9 @@ export const DIAGNOSTIC_JOIN_MS = 120_000;
 export const SMALL_WRITE_TOKENS = 8000;
 /** Idle minutes after which the previous turn's cache may be gone; it counts as gone only when the read really fell (a 1-hour entry survives the wait). */
 export const COLD_GAP_MINUTES = 5;
+
+/** Silence after which a call counts as the start of a wake or a resumed session. */
+export const IDLE_GAP_MINUTES = 10;
 
 const emptyBucket = (): MissBucket => ({ turns: 0, cacheWriteUsd: 0, cacheWriteTokens: 0 });
 const add = (b: MissBucket, tokens: number, usd: number) => { b.turns++; b.cacheWriteTokens += tokens; b.cacheWriteUsd += usd; };
@@ -43,6 +48,8 @@ export function classifyCacheMisses(records: readonly UsageRecord[], filter: { m
   const byDay: Record<string, MissBucket> = {};
   const modelSwitch = emptyBucket();
   const headCause: Record<string, MissBucket> = {};
+  const idleWrites: Record<string, number[]> = {};
+  const afterIdle: MissReport['afterIdle'] = {};
   const timed = filter.diagnostics?.map((d) => ({ d, t: Date.parse(d.date) }));
   const last = new Map<string, { t: number; read: number; model?: string }>();
   let totalUsd = 0;
@@ -54,6 +61,11 @@ export function classifyCacheMisses(records: readonly UsageRecord[], filter: { m
     last.set(key, { t, read: r.usage.cacheRead, model: r.model });
     const { cacheWrite, cacheRead, cost } = r.usage;
     totalUsd += cost.total;
+    if (!prev || (t - prev.t) / 60000 > IDLE_GAP_MINUTES) {
+      const day = r.date.slice(0, 10);
+      add(afterIdle[day] ??= { ...emptyBucket(), medianWriteTokens: 0 }, cacheWrite, cost.cacheWrite);
+      (idleWrites[day] ??= []).push(cacheWrite);
+    }
     let cls: MissClass;
     if (cacheWrite < SMALL_WRITE_TOKENS) cls = 'small';
     else if (!prev) cls = 'first';
@@ -66,7 +78,13 @@ export function classifyCacheMisses(records: readonly UsageRecord[], filter: { m
       if (timed) add(headCause[causeOf(timed, t)] ??= emptyBucket(), cacheWrite, cost.cacheWrite);
     }
   }
-  return { byClass, byDay, modelSwitch, totalUsd, headCause };
+  for (const [day, writes] of Object.entries(idleWrites)) {
+    writes.sort((a, b) => a - b);
+    const mid = writes.length >> 1;
+    afterIdle[day].medianWriteTokens = writes.length % 2 ? writes[mid] : Math.round((writes[mid - 1] + writes[mid]) / 2);
+    afterIdle[day].cacheWriteUsd = Math.round(afterIdle[day].cacheWriteUsd * 1e6) / 1e6;
+  }
+  return { byClass, byDay, modelSwitch, totalUsd, headCause, afterIdle };
 }
 
 function causeOf(diagnostics: readonly { d: HeadDiagnostic; t: number }[], t: number): string {
