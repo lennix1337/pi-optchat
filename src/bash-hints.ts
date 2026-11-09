@@ -88,7 +88,7 @@ function withHint(text: string, hint: string): string {
 
 /** Register after registerOperationSafety so it classifies the unmodified result. */
 export function registerBashHints(pi: ExtensionAPI) {
-  const sessions = new Map<string, { calls: number; shown: Map<HintKind, number> }>();
+  const sessions = new Map<string, { calls: number; shown: Map<HintKind, number>; previous?: HintKind }>();
   pi.on('tool_result', (event, ctx) => {
     if (event.toolName !== 'bash') return;
     const command = (event.input as { command?: unknown } | undefined)?.command;
@@ -99,9 +99,13 @@ export function registerBashHints(pi: ExtensionAPI) {
     const call = ++state.calls;
     const output = event.content.map(part => part.type === 'text' ? (part as { text: string }).text : '').join('\n');
     const kind = bashHint(command, pi.getAllTools().some(tool => tool.name === 'ripwire'), output);
+    const previous = state.previous;
+    state.previous = kind;
     if (!kind) return;
     const last = state.shown.get(kind);
-    if (last !== undefined && call - last < HINT_INTERVAL) return;
+    // A patch script retried straight after another one is the loop the hint exists for: repeat it.
+    const retryLoop = kind === previous && (kind === 'edit' || kind === 'script');
+    if (!retryLoop && last !== undefined && call - last < HINT_INTERVAL) return;
     state.shown.set(kind, call);
     const content = [...event.content];
     const at = content.map(part => part.type).lastIndexOf('text');

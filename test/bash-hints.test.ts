@@ -212,6 +212,7 @@ test('the same hint is shown at most once per interval of bash calls, per sessio
   // Other sessions have their own counters, and a different hint kind is limited independently.
   assert.ok(result('other', 'cat a.ts'));
   assert.ok(result('s', 'sed -i s/a/b/ src/a.ts'));
+  assert.equal(result('s', 'echo hi'), undefined);
   assert.equal(result('s', 'sed -i s/a/b/ src/b.ts'), undefined);
 });
 
@@ -238,4 +239,18 @@ test('shutdown clears the session counter', () => {
   assert.equal(result('s', 'cat a.ts'), undefined);
   hooks.get('session_shutdown')!({}, ctx('s'));
   assert.ok(result('s', 'cat a.ts'));
+});
+
+test('a scripted source patch retried right after another one repeats the edit hint despite the interval', () => {
+  const { result } = harness();
+  const patch = (file: string) => raw`node -e "require('fs').writeFileSync('${file}', 'x')"`;
+  assert.ok(result('loop', patch('src/a.ts')), 'first patch');
+  assert.ok(result('loop', patch('src/a.ts'), 'SyntaxError', true), 'immediate retry of the same habit');
+  assert.ok(result('loop', patch('src/a.ts')), 'and again');
+  // A different call in between ends the streak, so the interval applies again.
+  assert.equal(result('loop', 'echo hi'), undefined);
+  assert.equal(result('loop', patch('src/a.ts')), undefined);
+  // Reads are not a retry loop: they stay throttled.
+  assert.ok(result('r', 'cat a.ts'));
+  assert.equal(result('r', 'cat a.ts'), undefined);
 });
