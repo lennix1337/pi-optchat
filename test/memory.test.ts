@@ -458,19 +458,21 @@ test('with a prefix mark, the system prompt keeps its own entry, for an hour on 
   assert.equal(prefixRetention({ provider: 'some-proxy', compat: { supportsLongCacheRetention: true } }), 'long', 'a model may declare it');
 });
 
-test('under long retention the view\'s older mark takes the 1-hour entry too, after the system prompt and before the 5-minute marks, and a merge waits as long', () => {
+test('under long retention both view marks take the 1-hour entry, after the system prompt and before the request end\'s 5-minute mark, and a merge waits as long', () => {
   const line = '0+1|summary of a decision\n', view = '<chat>\n' + line.repeat(1000) + '</chat>', pieces = splitView(view);
   type Marked = { cache_control?: { type: string; ttl?: string } };
   type Output = { system: Marked[]; messages: { content: Marked[] }[] } & Marked;
   const request = (prefix: 'short' | 'long') => cachePayload({ system: 'system', tools: [{ name: 'zoom' }],
     messages: [{ role: 'user', content: [{ type: 'text', text: view }, { type: 'text', text: 'new question' }] }] }, { prefix }) as Output;
   // Anthropic needs every 1-hour entry before a 5-minute one in request order: system prompt, older view mark, newer view mark, request end.
+  // The newer view mark lives an hour as well: a wake 15 minutes after the last call found only the older one and rewrote the
+  // 20 blocks between them (2026-11-08, 48 wakes: the first call wrote 34K tokens on average, 27% of the wakes' cost).
   const ttls = (output: Output) => [...output.system, ...output.messages[0].content, output].flatMap(item => item.cache_control ? [item.cache_control.ttl ?? '5m'] : []);
-  assert.deepEqual(ttls(request('long')), ['1h', '1h', '5m', '5m']);
+  assert.deepEqual(ttls(request('long')), ['1h', '1h', '1h', '5m']);
   assert.deepEqual(ttls(request('short')), ['5m', '5m', '5m', '5m']);
   const blocks = request('long').messages[0].content;
   assert.deepEqual(blocks[pieces.length - 22].cache_control, { type: 'ephemeral', ttl: '1h' });
-  assert.deepEqual(blocks[pieces.length - 2].cache_control, { type: 'ephemeral' });
+  assert.deepEqual(blocks[pieces.length - 2].cache_control, { type: 'ephemeral', ttl: '1h' });
   assert.equal(coldAfter({ provider: 'anthropic' }), COLD_LONG_MS, 'the chat view merges once the 1-hour entry has had its time');
   assert.equal(coldAfter({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), COLD_MS);
   assert.equal(coldAfter({ provider: 'some-proxy' }), COLD_MS, 'other endpoints keep the 4.5-minute merge');
@@ -507,11 +509,14 @@ test('a view that jumps past the 20-block lookback still reads the last call\'s 
   assert.ok(reaches(second, first), `marks ${second} reach none of ${first}`);
   assert.ok(second.includes(first.at(-1)!), 'the newest block the last call marked is marked again');
   assert.equal(second.at(-1), splitView('<chat>\n' + line.repeat(1640) + '</chat>').length - 2, 'the newest mark stays on the last whole block');
-  // A turn later, after 10 quiet minutes: the 5-minute entries are gone, the 1-hour one still answers.
+  // A turn later, after 10 quiet minutes: the request's 5-minute entry is gone, the newest view mark's 1-hour entry still answers.
   clock += 10 * 60_000;
   const third = call(2400);
-  assert.ok(third.includes(second[0]), 'the 1-hour entry of the older mark is used after a 10-minute gap');
-  assert.ok(!third.includes(second.at(-1)!), 'an expired 5-minute entry is not chosen');
+  assert.ok(third.includes(second.at(-1)!), 'the 1-hour entry of the newest mark is used after a 10-minute gap');
+  // Past the hour every entry is gone: the usual marks again.
+  clock += 61 * 60_000;
+  const late = splitView('<chat>\n' + line.repeat(2480) + '</chat>').length;
+  assert.deepEqual(call(2480), [late - 22, late - 2], 'an expired entry is not chosen');
   // Nothing to reuse: another model, or a view rewritten from its top, keeps the usual marks 0 and 20 blocks back.
   const usual = (lines: number) => { const n = splitView('<chat>\n' + line.repeat(lines) + '</chat>').length; return [n - 22, n - 2]; };
   assert.deepEqual(call(3200, { model: 'claude-fable-5-1' }), usual(3200));
@@ -541,12 +546,15 @@ test('a mark before the entry a call reads writes nothing, so the next turn goes
   call(1100);
   clock += 30 * 60_000;
   const next = call(1120);
-  assert.ok(next.includes(read), `marks ${next} go back on the entry the last turn read (${read})`);
-  // A quick next turn whose view grew a little reads the last call's 5-minute entry at its end: the mark before it writes nothing either.
+  const newest = splitView('<chat>\n' + line.repeat(1100) + '</chat>').length - 2;
+  assert.ok(!next.includes(read) && reaches(next, [newest]), `marks ${next} reach the 1-hour entry the last turn wrote at its newest mark (${newest}), past the one it read (${read})`);
+  // A quick next turn whose view grew a little reads the last call's entry: the mark it puts 20 blocks back, before that entry, writes
+  // nothing, so the turn after a long gap must reach the quick turn's newest mark, the one entry it wrote.
   clock += 60_000;
-  call(1140);
+  const quick = call(1140);
   clock += 30 * 60_000;
-  assert.ok(call(1160).includes(read), 'still the 1-hour entry that was read, not the mark the quick turn put before its read');
+  const after = call(1160);
+  assert.ok(reaches(after, [quick.at(-1)!]) && !after.includes(quick[0]), `marks ${after} reach the quick turn's written entry ${quick.at(-1)}, not its unwritten mark ${quick[0]}`);
 });
 
 test('each call reports where its view first differs from the last call\'s, so a cache miss can be told apart: rewrite, head change or lookback', () => {

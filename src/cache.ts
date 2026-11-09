@@ -25,10 +25,11 @@ export function splitView(text: string) {
 const MARKS = [0, 20, 40];
 /** With a prefix mark, the view keeps two: a turn can then add up to 40 blocks (160 lines) and still find the last call's entry. */
 const PREFIX_MARKS = [0, 20];
-/** With `long`, the older of those (20 blocks back) takes the 1-hour entry as well. Its prefix changes only when a batch merge rewrites
- * the view from near its top, so it can outlive a 5-minute gap. A 1-hour write costs 2x input against 1.25x for 5 minutes, and the
- * extra pays off when the entry is read after such a gap (a read costs 0.1x). The newer view mark and the request's end stay at 5 minutes. */
-const LONG_VIEW_BACK = 20;
+/** With `long`, both view marks take the 1-hour entry. The older one (20 blocks back) changes only when a batch merge rewrites the
+ * view from near its top. The newer one changes only when the view grows, between turns: within a turn its entry is read, not
+ * written, so the 1-hour premium (2x input against 1.25x for 5 minutes) is paid on the blocks a turn adds. A turn that starts after
+ * a 5-minute gap (a wake 15 minutes after the last) then reads the view to its newest mark instead of rewriting its last 20 blocks.
+ * The request's end stays at 5 minutes: it moves with every call. */
 /** `prefix` also marks the system prompt, and with it the tools before it, at the cost of the view's oldest mark. They change
  * only with the session's setup, while the view's batch merges rewrite it from near its top every ~150 messages: replayed
  * over the profile's log, a quarter of turn starts found no view entry, and with no mark before the view each rewrote the
@@ -174,8 +175,8 @@ function lastBlock(message: Record<string, unknown>) {
   return record(block) ? block : undefined;
 }
 
-const viewMark = (back: number, options: CacheOptions): { type: 'ephemeral'; ttl?: '1h' } =>
-  ({ type: 'ephemeral', ...(options.prefix === 'long' && back === LONG_VIEW_BACK ? { ttl: '1h' as const } : {}) });
+const viewMark = (options: CacheOptions): { type: 'ephemeral'; ttl?: '1h' } =>
+  ({ type: 'ephemeral', ...(options.prefix === 'long' ? { ttl: '1h' as const } : {}) });
 
 /** Where the view's marks go: block -> how far back from the last whole block the mark was meant to be, which sets its TTL.
  * With `chain`, a live entry an earlier call wrote that no usual mark reaches takes the oldest mark's place (keeping its TTL),
@@ -207,12 +208,12 @@ export function cachePayload(payload: unknown, options: CacheOptions = {}): unkn
     const chain = digests?.chain;
     const marks = viewMarks(pieces, offsets, options.entries, chain);
     if (digests) {
-      options.entries!.record(digests.chain, new Map([...marks].map(([block, back]) => [block, viewMark(back, options).ttl ?? '5m'])));
+      options.entries!.record(digests.chain, new Map([...marks.keys()].map(block => [block, viewMark(options).ttl ?? '5m'])));
       options.entries!.observe(digests.base, digests.chain, marks.keys(), payload.model, digests.parts);
     }
     const blocks = pieces.map((text, j) => {
       const back = marks.get(j);
-      return { type: 'text', text, ...(back === undefined ? {} : { cache_control: viewMark(back, options) }) };
+      return { type: 'text', text, ...(back === undefined ? {} : { cache_control: viewMark(options) }) };
     });
     message.content.splice(at, 1, ...blocks);
     for (const block of blocks) view.add(block);
