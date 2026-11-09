@@ -149,3 +149,29 @@ test('each measured assistant response reports its latency once, keyed by messag
   assert.deepEqual(reported.map(([t, l]) => [t, Object.keys(l).sort()]), [[42, ['firstMs', 'responseMs']], [44, ['responseMs']]]);
   for (const [, latency] of reported) for (const value of Object.values(latency)) assert.ok(Number.isFinite(value) && value >= 0);
 });
+test("Pi's own work around a request is timed: turn start to the context hook, and the last message to turn end", async () => {
+  const handlers = new Map<string, Function[]>(), metrics = new PerformanceMetrics();
+  let clock = 0;
+  const now = performance.now;
+  performance.now = () => clock;
+  try {
+    registerPerformance({ on: (name: string, fn: Function) => { handlers.set(name, [...handlers.get(name) ?? [], fn]); } } as unknown as ExtensionAPI, () => metrics);
+    const emit = async (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event); };
+    await emit('context_with_system'); // a request nobody announced (a summary call) records nothing
+    assert.equal(metrics.snapshot().stages.pi_pre_request, undefined);
+    await emit('turn_start'); clock += 40;
+    await emit('context_with_system'); clock += 500; // the provider answers
+    await emit('message_end', { message: { role: 'assistant' } }); clock += 7;
+    await emit('turn_end');
+    // A tool turn: the boundary starts at the last message, not at the assistant message the tool ran after.
+    await emit('tool_execution_start', { toolCallId: 'a', toolName: 'read' }); clock += 9000;
+    await emit('tool_execution_end', { toolCallId: 'a', toolName: 'read' }); clock += 12;
+    await emit('context_with_system');
+    await emit('message_end', { message: { role: 'assistant' } }); clock += 5;
+    await emit('message_end', { message: { role: 'toolResult' } }); clock += 3;
+    await emit('turn_end');
+    const { stages } = metrics.snapshot();
+    assert.deepEqual([stages.pi_pre_request!.count, stages.pi_pre_request!.maxMs, stages.pi_pre_request!.lastMs], [2, 40, 12]);
+    assert.deepEqual([stages.pi_boundary!.count, stages.pi_boundary!.maxMs, stages.pi_boundary!.lastMs], [2, 7, 3]);
+  } finally { performance.now = now; }
+});
