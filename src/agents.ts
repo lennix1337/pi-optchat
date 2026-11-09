@@ -21,7 +21,7 @@ import type { HandoffEvidence } from './handoff.ts';
 import { recordSubagentSignal } from './journal-spool.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { inputTokenBudget, priceTierBudget } from './run-context.ts';
-import type { ShellJobs } from './shells.ts';
+import { registerShellTools, type ShellJobs } from './shells.ts';
 import { registerOperationSafety, type OperationJournal } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
@@ -504,6 +504,8 @@ export class Children {
           return { messages };
         });
         registerEffectApprovals(pi, { grant: false });
+        // A shell the child starts reports into the child's own session (shellNotice), so it can run a long gate and be woken with the outcome.
+        if (this.options.shells) registerShellTools(pi, this.options.shells, () => { if (this.closing || !this.running.has(id)) throw new Error('Agent is closing'); }, {}, id);
         if (this.options.operations) {
           registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
           registerBashHints(pi);
@@ -706,9 +708,9 @@ export class Children {
     if (batch && batch.ids.length > 1) this.options.hold?.(batch.ids[0], []);
   }
   /** `caller` is the agent sending a manager message: undefined for the main agent, else the parent subagent's ID. */
-  async tell(id: string, message: string, source: 'manager' | 'user' = 'manager', caller?: string) {
+  async tell(id: string, message: string, source: 'manager' | 'user' = 'manager', caller?: string, notice = false) {
     if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
-    if (this.settings.routerMode && source === 'manager') checkHandoffSummary(message, HANDOFF_MAX_BYTES, 'Guidance');
+    if (this.settings.routerMode && source === 'manager' && !notice) checkHandoffSummary(message, HANDOFF_MAX_BYTES, 'Guidance');
     if (this.externalRun(id)) {
       if (source !== 'user') throw new Error(`${id} belongs to pi-subagents; only the user can steer it from this panel.`);
       await this.steerExternal(id, message);
@@ -730,6 +732,27 @@ export class Children {
     catch (error) { guidance.state = 'undelivered'; this.save(live.info); throw error; }
     if (guidance.state === 'undelivered') throw new Error(`${id} finished before it read the message. Tell it again to resume it.`);
     return 'Message queued for the next tool boundary.';
+  }
+  /**
+   * Puts the end (or an alert) of a shell that agent `id` started into that agent's own session: steered in between tool calls while it
+   * runs, queued for its next turn while it waits or is paused, and resumed with it, as tell does, once it has finished. False when the
+   * agent cannot take it (stopped by the user, cut off, deleted, connected, profile closing): the caller then tells the main agent.
+   */
+  async shellNotice(id: string, text: string, afterCompletion = false): Promise<boolean> {
+    if (this.closing || this.deleting.has(id)) return false;
+    try {
+      const live = this.running.get(id);
+      // Its last turn is over but it is not recorded as finished yet: once it is, the notice resumes it.
+      if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) {
+        if (afterCompletion || !live.completion) return false;
+        await live.completion;
+        return this.shellNotice(id, text, true);
+      }
+      const record = live?.info ?? this.history.records.get(id);
+      if (!record || record.connected || !live && !['completed', 'failed'].includes(record.state)) return false;
+      await this.tell(id, text, 'manager', record.parentId, true);
+      return true;
+    } catch (error) { this.warn(`Could not put a shell notice into ${id}: ${String(error)}`); return false; }
   }
   /**
    * The user's Ctrl+C, never destructive: aborts the current step. With guidance queued, the run continues at once with it;
