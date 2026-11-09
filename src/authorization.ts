@@ -77,7 +77,8 @@ const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerC
  */
 const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor', 'spawn', 'subagent', 'tell',
   // Messages and records: a Slack report or a commitment that names the file only tells about it (false positive 2026-10-30).
-  'slack_send', 'commitments', 'update_goal']);
+  // The crew store is written only by the crew tool, which cannot reach autonomy.json: its memory and mission text is prose (false positive 09/11, crew memory write).
+  'slack_send', 'commitments', 'update_goal', 'crew']);
 // `find` reads unless it deletes, runs or writes (`-delete`, `-exec`, `-fprint`); `sed -n` without `-i` prints.
 // `git add/commit/push` record the working-tree file without writing it (03/11: the dotfiles mirror commit waited);
 // `ship.mjs` is that same commit/push/PR flow, and its `-m`/`--body` text only tells about the file (04/11: 3 refusals).
