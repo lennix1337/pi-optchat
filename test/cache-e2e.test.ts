@@ -2,7 +2,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { connect, type AddressInfo } from 'node:net';
@@ -265,6 +265,74 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     await anthropic.close();
   }
+});
+
+/** A session whose first request writes a head, then `change` runs before /reload; the first request after it must read the head the cache holds. */
+async function headAcrossReload(name: string, change: (session: Awaited<ReturnType<typeof piSession>>['session'], headFile: string) => void) {
+  const anthropic = await simulatedAnthropic();
+  let version = 'v1';
+  const docs = (pi: ExtensionAPI) => pi.registerTool({ name: 'docs', label: 'docs', description: `Project docs ${version}. `.repeat(40), parameters: Type.Object({}),
+    async execute() { return { content: [{ type: 'text', text: 'docs' }], details: {} }; } });
+  const { session, errors } = await piSession(anthropic, name, docs);
+  const requests = anthropic.cache.requests;
+  try {
+    await session.prompt('first question');
+    await session.prompt('second question');
+    const last = requests.at(-1)!;
+    change(session, join(profilePath(name), 'head.json'));
+    version = 'v2';
+    await session.reload();
+    const from = requests.length;
+    await session.prompt('third question');
+    return { first: requests[from], last, errors, session, requests };
+  } finally {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+    await anthropic.close();
+  }
+}
+
+const headEntries = (session: { sessionManager: { getEntries(): { type: string; customType?: string }[] } }) =>
+  session.sessionManager.getEntries().filter(e => e.type === 'custom' && e.customType === 'optchat.head');
+
+test('real Pi + OptChat: the stable head is kept in head.json, not appended to the session on each change, and /reload restores it from there', { timeout: 120_000 }, async () => {
+  const name = 'head-file';
+  let bytesBefore = 0;
+  const { first, last, errors, session } = await headAcrossReload(name, (s, headFile) => {
+    assert.deepEqual(headEntries(s), [], 'a head change was appended to the session');
+    const saved = JSON.parse(readFileSync(headFile, 'utf8'));
+    assert.equal(saved.sessionId, s.sessionManager.getSessionId());
+    assert.ok(saved.head && typeof saved.head.model === 'string', JSON.stringify(saved));
+    // What each change used to add to the session file: the head as a custom entry line.
+    bytesBefore = JSON.stringify({ type: 'custom', customType: 'optchat.head', data: saved.head, id: 'xxxxxxxx', parentId: 'xxxxxxxx', timestamp: new Date().toISOString() }).length + 1;
+  });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(headEntries(session), [], 'a head change after /reload was appended to the session');
+  assert.equal(first.tools, last.tools, 'the request keeps the tool list its cache entry was written with');
+  assert.ok(first.read > 0, `the first request after /reload read ${first.read} and wrote ${first.write}`);
+  console.log(JSON.stringify({ e2e: 'head-file', sessionBytesPerHeadChange: { before: bytesBefore, after: 0 } }));
+});
+
+test('real Pi + OptChat: a session with only an old optchat.head entry and no head.json still restores its head', { timeout: 120_000 }, async () => {
+  const name = 'head-legacy';
+  const { first, last, errors } = await headAcrossReload(name, (s, headFile) => {
+    // The head as a session written before head.json holds it: a custom entry, and no file.
+    const head = existsSync(headFile) ? JSON.parse(readFileSync(headFile, 'utf8')).head : (headEntries(s).at(-1) as unknown as { data: unknown }).data;
+    s.sessionManager.appendCustomEntry('optchat.head', head);
+    if (existsSync(headFile)) unlinkSync(headFile);
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(first.tools, last.tools, 'the request keeps the tool list its cache entry was written with');
+  assert.ok(first.read > 0, `the first request after /reload read ${first.read} and wrote ${first.write}`);
+});
+
+test('real Pi + OptChat: a head.json written for another session is not restored', { timeout: 120_000 }, async () => {
+  const name = 'head-other-session';
+  const { first, last, errors } = await headAcrossReload(name, (_s, headFile) => {
+    const saved = JSON.parse(readFileSync(headFile, 'utf8'));
+    writeFileSync(headFile, JSON.stringify({ ...saved, sessionId: 'another-session' }));
+  });
+  assert.deepEqual(errors, []);
+  assert.notEqual(first.tools, last.tools, 'the head of another session was restored');
 });
 
 /** Lines in the profile's memory log (`main/`) and summary nodes (`tree/`): how much of the chat has a built line. */

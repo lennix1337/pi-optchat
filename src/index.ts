@@ -92,8 +92,10 @@ import { registerSelfReload } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
 
 const binding = 'optchat.profile';
-/** The request head the prompt cache holds (StableHead), kept in the session so /reload sends it again. */
+/** The request head the prompt cache holds (StableHead) is kept in `HEAD_FILE` of the profile, keyed by session, so /reload sends it again.
+ * Sessions written before that hold it as custom entries of this type: the last one is read when the file is not the session's. */
 const HEAD_ENTRY = 'optchat.head';
+const HEAD_FILE = 'head.json';
 const VIEW_ENTRIES_FILE = 'cache-entries.json';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
 /** Print mode routes `process.stdout` to stderr so only the answer reaches stdout; the joined reply goes to fd 1 itself. */
@@ -103,6 +105,16 @@ async function printReply(text: string) {
     try { at += writeSync(1, bytes, at); }
     catch (error) { if (!record(error) || error.code !== 'EAGAIN') throw error; await new Promise(resolve => setTimeout(resolve, 10)); }
   }
+}
+function readHeadFile(dir: string, sessionId: string): unknown {
+  try {
+    const saved = JSON.parse(readFileSync(join(dir, HEAD_FILE), 'utf8')) as { sessionId?: unknown; head?: unknown } | null;
+    return saved?.sessionId === sessionId ? saved.head : undefined;
+  } catch { return undefined; }
+}
+function writeHeadFile(dir: string, sessionId: string, head: SavedHead) {
+  try { atomicWrite(join(dir, HEAD_FILE), JSON.stringify({ sessionId, head })); }
+  catch { console.error(`OptChat could not write ${HEAD_FILE}; after /reload the request head is built again.`); }
 }
 const toggle = (prompt: string, line: string, on: boolean, after: string) => on === prompt.includes(line) ? prompt : on ? prompt.replace(after, after + line) : prompt.replace(line, '');
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
@@ -602,8 +614,8 @@ export default function optchat(pi: ExtensionAPI) {
       if (active) {
         // After /reload the prompt cache is still warm: keep the head it holds and the time of the last request.
         const branch = ctx.sessionManager.getBranch();
-        const head = branch.findLast(e => e.type === 'custom' && e.customType === HEAD_ENTRY);
-        stableHead.restore(head?.type === 'custom' ? head.data : undefined);
+        const entry = branch.findLast(e => e.type === 'custom' && e.customType === HEAD_ENTRY);
+        stableHead.restore(readHeadFile(active.dir, active.sessionId) ?? (entry?.type === 'custom' ? entry.data : undefined));
         savedHead = stableHead.saved();
         // And the view entries it holds: without them the first call marks only its last blocks, and a view that grew by more
         // than their lookback since is written again whole.
@@ -882,7 +894,7 @@ export default function optchat(pi: ExtensionAPI) {
       const head = stableHead.saved();
       // Written when the head is rewritten with other content; a cold rewrite of the same head adds nothing.
       if (head && head !== savedHead) {
-        if (!savedHead || JSON.stringify(head) !== JSON.stringify(savedHead)) pi.appendEntry(HEAD_ENTRY, head);
+        if (!savedHead || JSON.stringify(head) !== JSON.stringify(savedHead)) writeHeadFile(a.dir, a.sessionId, head);
         savedHead = head;
       }
       a.metrics.record('assemble', performance.now() - assembleStarted);
