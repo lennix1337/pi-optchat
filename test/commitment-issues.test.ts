@@ -28,11 +28,19 @@ test('fake gh receives explicit issue API paths and failures stay unknown', asyn
   const fakeGh = async (command: string, args: string[]) => { calls.push([command, args]); return { stdout: 'closed\n' }; };
   assert.equal(await ghIssueState({ repo: 'org/repo', number: 42 }, fakeGh), 'closed');
   assert.deepEqual(calls, [['gh', ['api', 'repos/org/repo/issues/42', '--jq', '.state']]]);
-  const errors: unknown[] = [], old = console.error;
-  console.error = (...args) => { errors.push(args); };
-  try { assert.equal(await ghIssueState({ repo: 'org/repo', number: 42 }, async () => { throw new Error('missing gh'); }), undefined); }
-  finally { console.error = old; }
-  assert.equal(errors.length, 1);
+  await assert.rejects(ghIssueState({ repo: 'org/repo', number: 42 }, async () => { throw new Error('missing gh'); }), /missing gh/);
+});
+
+test('a failed background lookup goes to the failure sink, never to the terminal the TUI draws on', async () => {
+  const printed: unknown[] = [], old = { error: console.error, warn: console.warn, log: console.log };
+  console.error = console.warn = console.log = (...args: unknown[]) => { printed.push(args); };
+  const failures: [string, unknown][] = [];
+  const cache = new IssueStateCache(async () => { throw new Error('dial tcp 4.228.31.149:443: connectex'); }, () => 0, (key, error) => failures.push([key, error]));
+  try { await cache.refresh('Genexus18MCP #889 #887'); }
+  finally { Object.assign(console, old); }
+  assert.deepEqual(printed, []);
+  assert.deepEqual(failures.map(([key]) => key), ['lennix1337/genexus18mcp#889', 'lennix1337/genexus18mcp#887']);
+  assert.equal(cache.hint('Genexus18MCP #889 #887'), undefined);
 });
 
 test('open, unknown, and ambiguous citations do not flag', async () => {
