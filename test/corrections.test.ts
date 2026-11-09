@@ -15,6 +15,16 @@ test('correction cues match the operator chasing a mistake, not an ordinary requ
     assert.ok(!isCorrection(t), t);
 });
 
+test('colloquial reprimands (deveria ter, era pra, pq parou) match; questions and plain requests do not', () => {
+  for (const t of ['vc deveria ter continuado', 'isso n deveria ficar pendente', 'era pra fazer tudo no PR 126 mesmo', 'era pra todos os meus estarem ligados',
+    'pq parou?', 'pq vc n fez nada', 'ficou green e vc n fez nada', 'se terminou pq tu ficou parado ai agora?', 'quem pediu pra rodar isso agora?',
+    'eu não pedi isso', 'nao mandei vc fazer isso', 'nao quero desculpas', 'cara pq ta pedindo approve pra grep? ta de sacanagem ne'])
+    assert.ok(isCorrection(t), t);
+  for (const t of ['689 e 638 estao abertas ainda pq?', 'tinha que sumir dps de um tempo', 'pode fazer essas 4 melhorias, ta tudo aprovado', 'o PR deveria passar amanhã no CI',
+    'faz o item 5 e investiga o pq do 6', 'pq o card do plane ficou assim?'])
+    assert.ok(!isCorrection(t), t);
+});
+
 test('only the operator\'s own words count: TUI input and [Slack] messages, not wakes or reports', () => {
   assert.deepEqual(operatorText('já falei', 'interactive'), { text: 'já falei', origin: 'tui' });
   assert.deepEqual(operatorText('[Slack #dentai] não era isso', 'extension'), { text: 'não era isso', origin: 'slack' });
