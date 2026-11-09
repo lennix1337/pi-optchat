@@ -527,6 +527,17 @@ test('a heartbeat.json with a damaged skip streak or digest reads as no state, s
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('every wake names the end goal and asks for a new capability toward it, not upkeep alone', () => {
+  const wake = wakeTurn(wakeText('', 'haiku', 15, plan), undefined, true);
+  for (const text of [DELIVERY_RULE, NEW_WORK_NOTE]) {
+    assert.match(text, /living assistant/);
+    assert.match(text, /through his day/);
+    assert.match(text, /new capability/);
+  }
+  assert.match(wake, /ambitious/);
+  assert.match(wake, /Clearing the queue is the floor/);
+});
+
 test('every wake is told to deliver a change, and one after an empty wake is told it was empty', () => {
   const wake = wakeText('', 'haiku', 15, plan);
   assert.ok(wake.includes(DELIVERY_RULE));
