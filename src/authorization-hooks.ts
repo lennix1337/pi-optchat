@@ -189,8 +189,8 @@ function advisedAdmission(gate: EffectApprovals, pi: ExtensionAPI, { advisor, gr
 }
 
 /**
- * Holds each new pending call until the run ends (or `holdMs` passes), then passes on the ones still waiting: a call
- * the agent withdrew by taking another route is never announced.
+ * Holds each new pending call until the run ends (or `holdMs` passes), then passes on the ones still waiting: one the
+ * operator already decided in the meantime is never announced.
  */
 function heldUntilRunEnds(gate: EffectApprovals, announce: (pending: PendingApproval, session: string) => void, holdMs: number) {
   const held = new Map<string, { session: string; timer: ReturnType<typeof setTimeout> }>();
@@ -268,8 +268,8 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     }
     return { block: true, reason: note + refusal.reason };
   });
-  // The phone hears only of calls still waiting once the run ends: one the agent replaced by another route meanwhile
-  // never reaches it (operator 03/11: asked to approve, then the next call did it anyway).
+  // The phone hears only of calls still waiting once the run ends: one the operator already decided meanwhile
+  // never reaches it. Later calls of the agent do not retire a pending call: only a decision, a newer approval or expiry does.
   pi.on('agent_end', () => phone.flush());
   const reset = (ctx: UiContext) => { gate.clear(); alerted.clear(); advised.clear(); phone.clear(); if (grant) display.hide(ctx); };
   pi.on('session_start', (_event, ctx) => reset(ctx));

@@ -486,13 +486,25 @@ test('a phone decision binds one exact pending token and session, once; deny dro
   assert.equal(gate.pendingFor('owner').some(p => p.token === publish), false);
 });
 
-test('a waiting call is withdrawn once the agent takes another route that runs, so the operator is not asked for something already solved', () => {
+test('a waiting call survives the agent\'s later harmless calls and stays approvable: an unrelated call says nothing about what the operator was asked', () => {
   const settled: [string, string][] = [];
   const gate = new EffectApprovals({ mode: 'risk', onSettled: (t, outcome) => settled.push([t, outcome]) });
-  const force = token(gate, invocation('bash', { command: 'git push --force-with-lease' }));
+  const forced = invocation('bash', { command: 'git push --force-with-lease' });
+  const force = token(gate, forced);
   assert.equal(gate.admit(invocation('read', { path: 'x' })), undefined);
-  assert.equal(gate.pendingFor('owner').length, 1, 'a read-only check keeps the request waiting');
   assert.equal(gate.admit(invocation('bash', { command: 'git cherry-pick abc' })), undefined);
-  assert.deepEqual(gate.pendingFor('owner'), [], 'the ungated route withdrew it');
-  assert.deepEqual(settled, [[force, 'withdrawn']]);
+  assert.deepEqual(gate.pendingFor('owner').map(p => p.token), [force], 'harmless calls leave the request waiting');
+  assert.deepEqual(settled, []);
+  assert.equal(gate.approveLatest('owner', 'interactive')?.token, force, 'the operator still approves that exact call');
+  assert.equal(gate.admit(forced), undefined, 'and it runs once');
+  assert.equal(gate.admit(forced)?.block, true);
+  assert.deepEqual(settled, [[force, 'approved']]);
+});
+
+test('a call under a standing grant leaves another waiting call pending', () => {
+  const gate = new EffectApprovals();
+  assert.equal(gate.approve('owner', 'interactive', 'approve-standing paid-subagents'), 'standing');
+  const waiting = token(gate, invocation('bash', { command: 'npm publish' }));
+  assert.equal(gate.admit(invocation('subagent', { task: 'x' })), undefined, 'the grant admits the launch');
+  assert.deepEqual(gate.pendingFor('owner').map(p => p.token), [waiting]);
 });

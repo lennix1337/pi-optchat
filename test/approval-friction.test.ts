@@ -89,15 +89,17 @@ test('the phone hears only of a call still waiting when the run ends', async () 
   const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', input: { command } }, ctx);
   assert.equal((await call('git push origin --delete candidate/v1')).block, true);
   assert.deepEqual(announced, [], 'not announced while the run goes on');
-  assert.equal(await call('npm run build'), undefined, 'another route: the request is withdrawn');
-  hooks.get('agent_end')!({ messages: [] }, ctx);
-  assert.deepEqual(announced, [], 'a withdrawn request never reaches the phone');
-  assert.equal((await call('git push --force origin main')).block, true);
+  assert.equal(await call('npm run build'), undefined, 'a harmless call in between');
+  assert.deepEqual(announced, []);
   hooks.get('agent_end')!({ messages: [] }, ctx);
   assert.equal(announced.length, 1, 'still waiting at the end of the run: announced once');
-  assert.match(announced[0], /--force/);
+  assert.match(announced[0], /--delete/);
+  assert.equal((await call('git push --force origin main')).block, true);
   hooks.get('agent_end')!({ messages: [] }, ctx);
-  assert.equal(announced.length, 1);
+  assert.equal(announced.length, 2, 'a call that arrives later waits for its own run end');
+  assert.match(announced[1], /--force/);
+  hooks.get('agent_end')!({ messages: [] }, ctx);
+  assert.equal(announced.length, 2, 'each is announced once');
   await hooks.get('session_shutdown')!({}, ctx);
 });
 
