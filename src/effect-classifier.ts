@@ -17,6 +17,10 @@ export interface Repo {
   slug(path: string, remote?: string): string | undefined; branch(path: string): string | undefined;
   /** A local script's source (bounded), to tell a script that calls models from one that does not. */
   script?(path: string): string | undefined;
+  /** Whether the branch of the checkout at `path` is already merged into the default branch (so deleting it loses nothing). Unknown or failing: false. */
+  merged?(path: string, branch: string): boolean;
+  /** The branch a worktree has checked out and whether it has no modified or untracked files; undefined when it cannot tell. */
+  worktree?(path: string): { branch: string; clean: boolean } | undefined;
 }
 
 /** Source markers of a script that talks to a model provider: SDK runtimes, provider clients, provider endpoints. */
@@ -226,7 +230,24 @@ function gitEffects(w: string[], dir: string, repo: Repo): Effect[] {
   const discards = (sub === 'reset' && /(?:^|\s)--hard\b/.test(rest)) || (sub === 'clean' && /(?:^|\s)-[a-z]*f/i.test(rest))
     || (sub === 'worktree' && /^remove\b/.test(rest) && /--force|-f\b/.test(rest)) || (sub === 'branch' && /(?:^|\s)-D\b/.test(rest))
     || (sub === 'stash' && /^(?:drop|clear)\b/.test(rest)) || ((sub === 'checkout' || sub === 'restore') && args.some(arg => arg === '.'));
-  return discards ? [{ action: 'discard', targets: [path] }] : [];
+  // Work that already went forward is recreatable: say so in the targets, so the operator's rules can free it.
+  return discards ? [{ action: 'discard', targets: [path, ...mergedWork(sub, args, path, repo)] }] : [];
+}
+
+/** `merged-branch` when every branch `git branch -D` deletes is merged; `worktree-cleanup` when `git worktree remove --force` removes a clean worktree whose branch is merged. */
+function mergedWork(sub: string, args: string[], path: string, repo: Repo): string[] {
+  const operands = args.slice(sub === 'worktree' ? 1 : 0).map(unquote);
+  // A lookup that throws or cannot tell leaves the discard as strict as before; the default branch is never "merged".
+  const isMerged = (name: string) => { try { return !/^(?:main|master|HEAD)$/i.test(name) && repo.merged?.(path, name) === true; } catch { return false; } };
+  if (sub === 'branch') {
+    const names = operands.filter(arg => !arg.startsWith('-'));
+    // Only `-D` with branch names: `-r` and friends delete something else.
+    return operands.some(arg => arg.startsWith('-') && arg !== '-D') || !names.length || !names.every(isMerged) ? [] : ['merged-branch'];
+  }
+  const [folder, ...extra] = operands.filter(arg => !arg.startsWith('-'));
+  let state: ReturnType<NonNullable<Repo['worktree']>>;
+  try { state = sub === 'worktree' && folder !== undefined && !extra.length ? repo.worktree?.(normalPath(folder, path)) : undefined; } catch { state = undefined; }
+  return state?.clean && isMerged(state.branch) ? ['worktree-cleanup'] : [];
 }
 
 /** `gh`: merges, releases and repository creation/deletion, deploy workflows. */

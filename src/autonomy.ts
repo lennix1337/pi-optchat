@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isStrings, record } from './cache.ts';
 import { ACTIONS, classifyEffects as classify, IRREVERSIBLE, type Action, type Effect, type Repo } from './effect-classifier.ts';
+import { branchMerged, worktreeState } from './merged-branch.ts';
 import { parseWhenChanged } from './mtime-cache.ts';
 
 export { ACTIONS, IRREVERSIBLE, productionWriteHost, segments, normalPath, type Action, type Effect, type Repo } from './effect-classifier.ts';
@@ -86,6 +87,8 @@ export const slugOf = (url: string) => /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.g
 export const gitRepo: Repo = {
   slug: (path, remote = 'origin') => { const url = quiet(path, ['remote', 'get-url', remote]); return url && slugOf(url); },
   branch: path => quiet(path, ['rev-parse', '--abbrev-ref', 'HEAD']),
+  merged: (path, branch) => branchMerged(path, branch),
+  worktree: path => worktreeState(path),
   script: path => {
     // Git Bash `/tmp` is the user's temp folder, not `C:\tmp`.
     const file = /^\/tmp(?:\/|$)/.test(path) ? join(tmpdir(), path.slice(4)) : path;
