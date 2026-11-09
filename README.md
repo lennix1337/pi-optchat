@@ -231,6 +231,10 @@ Numbers must be whole numbers of at least 1; the refresh threshold is 0–90%. M
 
 ![Settings page](docs/screenshots/settings.png)
 
+## Production deploys
+
+A production deploy runs in the foreground of the main session, never through a worker, and the machine stays quiet while it runs. OptChat knows when one is in flight (src/deploy.ts): a `bash`, `powershell` or `shell_start` command that runs `deploy-web.ps1`, `deploy-prod.ps1`, `deploy-all.ps1`, `deploy-changed.ps1` or `run-rollout*.ps1` (a `-PlanOnly`/`-WhatIf` run does not count) marks it until that call or shell ends. The profile's `deployCommands` in `config.json` adds entry points: script names with `*`, or a command prefix such as `"fly deploy"`. While one is in flight, and for the rest of a turn that ran one, the manager-mode delegation reminder is not appended; `spawn` and `subagent` launches are refused ("Deploy em andamento desde HH:MM…"); the workers already running get one message to hold heavy local work (suites, builds, hooks) and one when the deploy is over; and the `[OptChat status]` note shows the deploy line.
+
 ## Subagents
 
 Ask in plain words, for example: "Spawn an agent to investigate this repository and report back."

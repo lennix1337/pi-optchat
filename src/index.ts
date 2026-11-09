@@ -43,6 +43,7 @@ import { registerWhatsAppBridge } from './whatsapp-bridge.ts';
 import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
+import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
 import { Crew, MANAGER_DOC, crewTool, crewWakeNote, registerDelegationNudge, routeFor } from './crew.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
@@ -207,7 +208,10 @@ export default function optchat(pi: ExtensionAPI) {
   onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
-  registerDelegationNudge(pi, () => active?.config.delegateAfter ?? 0, () => active?.config.managerMode === true);
+  // A production deploy in flight (src/deploy.ts): the delegation reminder is quiet, launches are refused, running workers hold heavy work.
+  const deploy = new DeployWatch({ shells: () => runningShells(shells), extra: () => active?.config.deployCommands ?? [] }, workerHooks(() => active?.children));
+  registerDeployGuard(pi, deploy, listener => shells.subscribe(listener));
+  registerDelegationNudge(pi, () => active?.config.delegateAfter ?? 0, () => active?.config.managerMode === true, () => deploy.quiet());
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
@@ -859,7 +863,7 @@ export default function optchat(pi: ExtensionAPI) {
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
-      const statusLine = atWork(a.children.working, runningShells(shells));
+      const statusLine = atWork(a.children.working, runningShells(shells), deploy.active());
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);
