@@ -104,7 +104,7 @@ The advisor is a cheap filter, not a boundary: a model can be talked into approv
    or arbitrary script contents.
 3. The blocked call stays on screen above the editor (kind, command or tool, and
    working folder) with a warning notice and one terminal bell, until it is approved,
-   denied or expires. Type `/approve` to approve the newest pending call once, or
+   denied or expires; the agent's later calls, harmless or not, never retire it. Type `/approve` to approve the newest pending call once, or
    `/deny` to drop every pending call (the model is told not to retry). Both are read
    by the input hook with its source, not registered as commands, so only typed
    interactive input counts. `approve-effect <token>` as the entire input still
