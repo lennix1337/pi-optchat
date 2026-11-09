@@ -200,12 +200,13 @@ export function onlyReads(command: string) {
   return segments.length > 0 && segments.every(part => READ_ONLY.some(pattern => pattern.test(part)));
 }
 export const NUDGE = (count: number) => `[crew] ${count} execution calls in this turn. You are the manager: hand edits, builds and tests to a worker (spawn with kind "code", or "mechanical" for rote work) with a contract, and review its report.`;
-/** Appends one reminder to the result of the Nth execution call of a turn, then every N calls after it. */
-export function registerDelegationNudge(pi: ExtensionAPI, after: () => number, enabled: () => boolean) {
+/** Appends one reminder to the result of the Nth execution call of a turn, then every N calls after it. `quiet` silences it (a production
+ * deploy runs in this session, never through a worker: src/deploy.ts). */
+export function registerDelegationNudge(pi: ExtensionAPI, after: () => number, enabled: () => boolean, quiet: () => boolean = () => false) {
   let count = 0;
   pi.on('agent_start', () => { count = 0; });
   pi.on('tool_result', event => {
-    if (!enabled() || !EXECUTION.has(event.toolName)) return;
+    if (!enabled() || !EXECUTION.has(event.toolName) || quiet()) return;
     if (event.toolName === 'bash' && typeof event.input?.command === 'string' && onlyReads(event.input.command)) return;
     const limit = after();
     if (limit <= 0 || ++count % limit !== 0) return;
@@ -220,6 +221,7 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 - A contract has lines starting with Goal:, Acceptance:, Evidence: and Authority: (what the worker may and may not do; my authority map caps it). A worker gets the contract and its project's charter and memory, not this chat: put every fact it needs in the contract.
 - Review a report like a code review: check its evidence (diff, test output, CI) before you believe it; send it back with tell when it falls short. Push, PRs and merges stay with you.
 - Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "write"); reject the rest. Audit each project memory weekly.
+- A production deploy (deploy-web.ps1, deploy-prod.ps1...) is not delegated: run it yourself, in the foreground of this session, and keep the machine quiet (no workers, no suites) until the swap is verified.
 - Open missions that span wakes live in the crew's missions.md: keep each one with its goal, acceptance and next step until accepted.`;
 
 const CREW_PARAMS = Type.Object({

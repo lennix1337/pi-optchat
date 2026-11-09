@@ -20,7 +20,9 @@ export type Role = 'compactor' | 'subagent';
 /** wakeModel: the model a heartbeat wake runs on instead of the main one, the main model coming back when the wake settles;
  * a list holds one per provider family (Anthropic, Codex...), so the wake gets cheaper on whichever the main model is on. */
 /** workerModels: manager mode's routes, one list per worker kind with one entry per provider family (see `routeFor`). */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes }
+export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes;
+  /** Extra deploy entry points beyond the built-in ones (script names with `*`, or a command prefix such as `fly deploy`): see src/deploy.ts. */
+  deployCommands?: string[] }
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
@@ -101,12 +103,13 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands'] as const;
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
     || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))
-    || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)) throw new Error(`Invalid profile config: ${dir}/config.json`);
+    || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)
+    || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar);
     if (problem) throw new Error(problem);
