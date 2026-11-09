@@ -35,21 +35,19 @@ export function issueReferences(text: string): IssueReference[] | undefined {
 
 const execFileAsync = promisify(execFile);
 export async function ghIssueState(ref: IssueReference, run: (command: string, args: string[], options: { timeout: number; windowsHide: boolean }) => Promise<{ stdout: string }> = execFileAsync): Promise<'open' | 'closed' | undefined> {
-  try {
-    const { stdout } = await run('gh', ['api', `repos/${ref.repo}/issues/${ref.number}`, '--jq', '.state'], { timeout: 10_000, windowsHide: true });
-    const state = stdout.trim();
-    if (state === 'open' || state === 'closed') return state;
-    throw new Error('unexpected GitHub issue state');
-  } catch (error) {
-    console.error(`[commitment issues] ${ref.repo}#${ref.number}: ${error instanceof Error ? error.message : String(error)}`);
-    return undefined;
-  }
+  const { stdout } = await run('gh', ['api', `repos/${ref.repo}/issues/${ref.number}`, '--jq', '.state'], { timeout: 10_000, windowsHide: true });
+  const state = stdout.trim();
+  if (state === 'open' || state === 'closed') return state;
+  throw new Error('unexpected GitHub issue state');
 }
+
+/** Where a failed lookup goes: it runs in the background while the TUI owns the terminal, so it must never print. */
+export type LookupFailure = (key: string, error: unknown) => void;
 
 export class IssueStateCache {
   private entries = new Map<string, { state: 'open' | 'closed' | undefined; at: number }>();
   private pending = new Map<string, Promise<void>>();
-  constructor(private resolve: (ref: IssueReference) => Promise<'open' | 'closed' | undefined> = ghIssueState, private now = Date.now) {}
+  constructor(private resolve: (ref: IssueReference) => Promise<'open' | 'closed' | undefined> = ghIssueState, private now = Date.now, private failed: LookupFailure = () => {}) {}
   private key(ref: IssueReference) { return `${ref.repo.toLowerCase()}#${ref.number}`; }
   async refresh(text: string): Promise<void> {
     const refs = issueReferences(text);
@@ -62,7 +60,7 @@ export class IssueStateCache {
         pending = (async () => {
           try { this.entries.set(key, { state: await this.resolve(ref), at: this.now() }); }
           catch (error) {
-            console.error(`[commitment issues] ${key}: ${error instanceof Error ? error.message : String(error)}`);
+            this.failed(key, error);
             this.entries.set(key, { state: undefined, at: this.now() });
           }
         })().finally(() => this.pending.delete(key));

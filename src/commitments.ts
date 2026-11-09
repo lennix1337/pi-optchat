@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { brasiliaTime } from './heartbeat.ts';
-import { IssueStateCache } from './commitment-issues.ts';
+import { ghIssueState, IssueStateCache } from './commitment-issues.ts';
+import { logBackgroundFailure } from './exec-log.ts';
 import { atomicWrite } from './store.ts';
 import { stringEnum } from './string-enum.ts';
 import { result } from './tools.ts';
@@ -308,7 +309,7 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
 /** Registers the tool and the presence nudges of a running turn. */
 export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undefined, now: () => number = Date.now) {
   const presence = new Presence();
-  const issues = new IssueStateCache();
+  const issues = new IssueStateCache(ghIssueState, Date.now, (key, error) => logBackgroundFailure(owner()?.dir, `commitment issues ${key}`, error));
   const issueText = (c: Commitment) => `${c.text} ${c.next ?? ''}`;
   const required = () => {
     const o = owner();
