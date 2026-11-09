@@ -186,8 +186,28 @@ test('a merge runs only over green CI; --auto may wait only where GitHub itself 
   const exec = (view: object | Error): Exec => async (_c, args) => { calls.push(args); if (view instanceof Error) throw view; return { code: 0, stdout: JSON.stringify(view), stderr: '' }; };
   assert.match((await mergeRefusal('gh pr merge 31 --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }] })))!, /Not run: PR 31 .*failing checks: unit/);
   assert.match((await mergeRefusal('gh pr merge 31 --auto --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }], mergeStateStatus: 'BLOCKED' })))!, /failing checks/, 'red CI stops --auto too');
-  assert.deepEqual(calls.at(-1), ['pr', 'view', '31', '--json', 'statusCheckRollup,mergeStateStatus']);
+  assert.deepEqual(calls.at(-1), ['pr', 'view', '31', '--json', 'statusCheckRollup,mergeStateStatus,headRefOid,headRepository']);
   assert.equal(await mergeRefusal('gh pr merge 31 --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }] })), undefined);
   assert.match((await mergeRefusal('gh pr merge 31', 'C:/', exec(new Error('gh not found'))))!, /could not read its checks/, 'unknown CI is not green CI');
   assert.equal(await mergeRefusal('gh pr merge 31 --auto --squash', 'C:/', exec({ ...running, mergeStateStatus: 'BLOCKED' })), undefined);
+});
+
+test('09/11 billing block: a red check whose job never ran a step is covered by a passing local gate on the same head commit', async () => {
+  const sha = '6b02a198341438d5e800cbfdcce9de7874e47d0d';
+  const neverRan = { statusCheckRollup: [
+    { name: 'changes', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/lennix1337/dotfiles/actions/runs/1/job/11' },
+    { name: 'instruction-guard', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/lennix1337/dotfiles/actions/runs/1/job/12' },
+    { name: 'offline-suites', status: 'COMPLETED', conclusion: 'SKIPPED' }], mergeStateStatus: 'UNSTABLE', headRefOid: sha, headRepository: { name: 'dotfiles' } };
+  const gh = (view: object, steps: Record<string, string>): Exec => async (_c, args) =>
+    args[0] === 'api' ? { code: 0, stdout: steps[args[1]!] ?? '', stderr: '' } : { code: 0, stdout: JSON.stringify(view), stderr: '' };
+  const zero = { 'repos/lennix1337/dotfiles/actions/jobs/11': '0', 'repos/lennix1337/dotfiles/actions/jobs/12': '0' };
+  const gate = (verdict?: object) => ({ dir: () => 'G', read: (file: string) => { assert.match(file, /^G[\\/]dotfiles\.json$/); if (!verdict) throw new Error('ENOENT'); return JSON.stringify(verdict); } });
+  assert.equal(await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero), gate({ sha, ok: true })), undefined);
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero), gate({ sha, ok: false })))!, /failing checks: changes/, 'a failed local gate covers nothing');
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero), gate({ sha: 'abc', ok: true })))!, /failing checks/, 'a verdict for another commit covers nothing');
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero), gate()))!, /failing checks/, 'no verdict, no cover');
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, { ...zero, 'repos/lennix1337/dotfiles/actions/jobs/12': '4' }), gate({ sha, ok: true })))!, /failing checks/, 'a job that ran steps failed for real');
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero)))!, /failing checks/, 'without a gate directory the rule is unchanged');
+  const legacy = { ...neverRan, statusCheckRollup: [{ context: 'ci/legacy', state: 'FAILURE' }] };
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(legacy, zero), gate({ sha, ok: true })))!, /failing checks: ci\/legacy/, 'a status without an Actions job is not covered');
 });
