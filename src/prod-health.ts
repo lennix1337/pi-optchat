@@ -223,12 +223,14 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
     });
     busy = false;
   };
+  let first: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => { if (timer) clearInterval(timer); clearTimeout(first); timer = first = undefined; };
   pi.on('session_start', () => {
-    if (timer) clearInterval(timer);
+    stop();
     timer = setInterval(() => void round(), intervalMs); timer.unref?.();
-    const first = setTimeout(() => void round(), 60_000); first.unref?.();
+    first = setTimeout(() => void round(), 60_000); first.unref?.();
   });
-  pi.on('session_shutdown', () => { if (timer) clearInterval(timer); timer = undefined; });
+  pi.on('session_shutdown', stop);
   pi.registerCommand('optchat-health', {
     description: 'Production health probes (read-only): state now; "test" injects a synthetic failure through the alert path',
     handler: async (args, ctx) => {

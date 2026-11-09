@@ -98,13 +98,21 @@ function timeoutMs(timeout: number | undefined): number | undefined {
   return timeout * 1000;
 }
 
-/** Shells still running when Pi exits get what Pi gives its own: a detached `taskkill /T`, since nothing async runs at exit. */
-const live = new Set<number>();
-process.once('exit', () => {
-  for (const pid of live) {
-    try { spawn(taskkill(), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true }).once('error', () => {}); } catch { /* best effort */ }
-  }
-});
+/**
+ * Shells still running when Pi exits get what Pi gives its own: a detached `taskkill /T`, since nothing async runs at exit.
+ * A /reload evaluates this module again in the same process, so the set of live shells and the exit hook belong to the
+ * process: every copy shares them, and the hook is registered once instead of once per reload.
+ */
+const SHARED = Symbol.for('pi-optchat.shell-reaper.v1');
+const live = ((globalThis as Record<symbol, Set<number> | undefined>)[SHARED] ??= (() => {
+  const pids = new Set<number>();
+  process.once('exit', () => {
+    for (const pid of pids) {
+      try { spawn(taskkill(), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true }).once('error', () => {}); } catch { /* best effort */ }
+    }
+  });
+  return pids;
+})());
 
 /**
  * Pi's local bash backend with a kill that reaches Git Bash pipeline stages. Outside Windows it is Pi's own,

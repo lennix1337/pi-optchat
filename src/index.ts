@@ -628,7 +628,8 @@ export default function optchat(pi: ExtensionAPI) {
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
   pi.on('session_shutdown', async event => {
     try { await stop(event.reason); }
-    finally { unsubscribeRecovery(); recoveryIncidents.clear(); }
+    // The shells outlive a /reload in this process: they must not keep this instance's closure alive, nor report into it.
+    finally { unsubscribeRecovery(); recoveryIncidents.clear(); shells.setEndObserver(undefined); }
   });
   // Pi shows nothing when a switch is cancelled, so say why and what lets it through.
   const blockSwitch = (command: string, ctx: ExtensionContext) => {
