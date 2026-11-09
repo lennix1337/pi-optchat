@@ -226,7 +226,8 @@ export default function optchat(pi: ExtensionAPI) {
     if (!active || !prompt) return undefined;
     const on = new Set(pi.getActiveTools());
     return { systemPrompt: stateless(promptFor(prompt, active.config)).prompt,
-      tools: pi.getAllTools().filter(tool => on.has(tool.name)).map(({ name, description, parameters }) => ({ name, description, parameters })) };
+      tools: pi.getAllTools().filter(tool => on.has(tool.name)).map(({ name, description, parameters }) => ({ name, description, parameters })),
+      ...(main ? { model: main } : {}) };
   };
   let runStarted = false;
   let fault: string | undefined;

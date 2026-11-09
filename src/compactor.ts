@@ -87,8 +87,11 @@ function primeFirst() {
     };
   };
 }
-/** What a compaction shares with the turns: the same system prompt and tools (never called) once available. */
-export interface Shared { systemPrompt: string; tools?: Tool[] }
+/** What a compaction shares with the turns: the same system prompt and tools (never called) once available. `model`: the turns'
+ * model; a compactor on another one has no cached prefix to share with them, so it leaves their tools out. */
+export interface Shared { systemPrompt: string; tools?: Tool[]; model?: { provider: string; model: string } }
+const forModel = (shared: Shared, model: { provider: string; id: string }): Shared =>
+  shared.model && (shared.model.provider !== model.provider || shared.model.model !== model.id) ? { systemPrompt: shared.systemPrompt } : shared;
 type IncidentContext = { sessionId?: string; recoveryIncidentId?: string };
 function compactorError(error: unknown, detail: string) {
   if (errorCategory(error) !== 'stream_interrupted') return error;
@@ -160,7 +163,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
-    const base = shared() ?? { systemPrompt: PROMPT };
+    const turns = shared(), base = turns ? forModel(turns, model) : { systemPrompt: PROMPT };
     // Only a one-message line is held to its own message; a merge may take details from the messages it covers.
     const own = [input.source, input.call?.text ?? '', input.result ?? '', String(input.part.i), String(input.call?.i ?? '')];
     const carriedIn = (line: string) => input.part.l === 0 && input.revise === undefined ? foreignIds(line, own) : [];
