@@ -41,3 +41,17 @@ test('open, unknown, and ambiguous citations do not flag', async () => {
   await cache.refresh('pi-optchat #1 #2');
   assert.equal(cache.hint('pi-optchat #1 #2'), undefined);
 });
+
+test('every project the operator tracks resolves to its real GitHub repo, not only three', () => {
+  const cases: [string, string][] = [
+    ['dotfiles #52', 'lennix1337/dotfiles'],
+    ['pi-gitwatch PR #23', 'lennix1337/pi-gitwatch'],
+    ['pi-subagents #28', 'lennix1337/pi-subagents'],
+    ['pi-ripwire #12', 'lennix1337/pi-ripwire-but-better'],
+    ['dentai-mono #136', 'tecnologia-ai/dentai'],
+    ['pi-goal-x #9', 'lennix1337/pi-goal-x'],
+    ['pi-vault #3', 'lennix1337/pi-vault'],
+  ];
+  for (const [text, repo] of cases) assert.deepEqual(issueReferences(text), [{ repo, number: Number(text.match(/\d+/)![0]) }], text);
+  assert.equal(issueReferences('pi-gitwatch and dotfiles #5'), undefined);
+});

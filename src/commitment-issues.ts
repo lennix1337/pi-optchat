@@ -7,6 +7,13 @@ const aliases: readonly [RegExp, string][] = [
   [/\b(?:Genexus18MCP|GX18MCP)\b/i, 'lennix1337/Genexus18MCP'],
   [/\bpi-optchat\b/i, 'lennix1337/pi-optchat'],
   [/\bpi-multi-account\b/i, 'lennix1337/pi-multi-account'],
+  [/\bdotfiles\b/i, 'lennix1337/dotfiles'],
+  [/\bpi-gitwatch\b/i, 'lennix1337/pi-gitwatch'],
+  [/\bpi-subagents\b/i, 'lennix1337/pi-subagents'],
+  [/\bpi-goal-x\b/i, 'lennix1337/pi-goal-x'],
+  [/\bpi-vault\b/i, 'lennix1337/pi-vault'],
+  [/\bpi-ripwire\b/i, 'lennix1337/pi-ripwire-but-better'],
+  [/\bdentai-mono\b/i, 'tecnologia-ai/dentai'],
 ];
 const ttl = 15 * 60_000;
 
