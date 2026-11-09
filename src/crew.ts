@@ -90,7 +90,7 @@ export class Crew {
   }
   /** Days since a specialist's memory was last written, or undefined with no memory yet. */
   age(specialist: Specialist, now = Date.now()) {
-    try { return (now - statSync(this.file(specialist, 'memory')).mtimeMs) / 86_400_000; } catch { return undefined; }
+    try { return Math.max(0, now - statSync(this.file(specialist, 'memory')).mtimeMs) / 86_400_000; } catch { return undefined; }
   }
   /** Specialists whose memory exists and is due for the weekly audit. */
   auditDue(now = Date.now()) { return SPECIALISTS.filter(s => (this.age(s, now) ?? 0) >= AUDIT_DAYS); }

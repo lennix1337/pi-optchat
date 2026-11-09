@@ -85,6 +85,17 @@ test('the crew tool lists, reads and replaces parts, and refuses a write without
   } finally { removeDir(dir); }
 });
 
+test('a memory file stamped slightly ahead of the clock reads as 0.0 days old, never negative', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-age-'));
+  try {
+    const crew = new Crew(dir);
+    crew.write('harness', 'memory', '- x');
+    const ahead = new Date(Date.now() + 5_000);
+    utimesSync(join(dir, 'harness', 'memory.md'), ahead, ahead);
+    assert.equal(crew.age('harness'), 0);
+  } finally { removeDir(dir); }
+});
+
 test('the delegation nudge appears on every Nth execution call of a turn, only in manager mode', async () => {
   const handlers = new Map<string, (event: any) => any>();
   const pi = { on: (name: string, handler: (event: any) => any) => { handlers.set(name, handler); } };
