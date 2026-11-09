@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beatSnapshot, type WakeRecord } from '../src/heartbeat.ts';
-import { heartbeatCommand, memoryShapedIdle, renderReport, summarizeTurn } from '../src/heartbeat-report.ts';
+import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedIdle, renderReport, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
 import { queueFile } from '../src/heartbeat-queue.ts';
 
 const call = (id: string, name: string, args: unknown) => ({ type: 'toolCall', id, name, arguments: args });
@@ -123,4 +123,29 @@ test('a wake that only wrote a memory line is caught (03/11 16:35); a real repor
   assert.equal(memoryShapedIdle({ reply: memoryLine, tools: 3, commits: [] }), false, 'it worked, only the report is odd');
   assert.equal(memoryShapedIdle({ reply: 'Abri a PR #97 e o merge automático está programado.', tools: 0, commits: [] }), false);
   assert.equal(memoryShapedIdle({ reply: '2 PRs mergeadas às 15:30.', tools: 0, commits: [] }), false);
+});
+
+test('a wake that settles with no commit, push, PR or merge is sent back once to build something new (operator 08/11: "não quero que um wake não faça nada")', () => {
+  const readOnly = summarizeTurn([
+    assistant([call('1', 'bash', { command: 'gh pr list' })]), result('1', 'bash', ''),
+    assistant([{ type: 'text', text: 'Nesta rodada não entreguei mudança de código; medi a economia de tokens.' }]),
+  ]);
+  assert.equal(wakeRetry(readOnly), EMPTY_WAKE_RETRY);
+  assert.match(EMPTY_WAKE_RETRY, /new capability/);
+  assert.match(EMPTY_WAKE_RETRY, /living assistant/);
+  assert.equal(wakeRetry({ reply: '104704-112 OptChat read-only', tools: 0, commits: [] }), MEMORY_REPLY_RETRY);
+  assert.equal(wakeRetry({ reply: 'PR #97 aberta.', tools: 3, commits: ['pr https://github.com/x/y/pull/97'] }), undefined);
+  assert.equal(wakeRetry({ reply: '', tools: 1, commits: [], stopReason: 'aborted' }), undefined, 'an abort is the operator or a fault, not idleness');
+  assert.equal(wakeRetry({ reply: '429', tools: 1, commits: [], stopReason: 'error' }), undefined);
+});
+
+test('a quiet commit and a gh pr merge count as delivery even when git prints no ref line', () => {
+  const summary = summarizeTurn([
+    assistant([call('1', 'bash', { command: 'git add -A && git commit -q -m "x" && git push -q; echo rc=$?' }), call('2', 'bash', { command: 'gh pr merge 62 --squash --delete-branch; echo rc=$?' })]),
+    result('1', 'bash', 'rc=0'),
+    result('2', 'bash', 'rc=0'),
+  ]);
+  assert.equal(summary.commits.length, 2);
+  assert.match(summary.commits[1], /^ran gh pr merge 62/);
+  assert.equal(wakeRetry(summary), undefined);
 });
