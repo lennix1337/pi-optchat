@@ -102,6 +102,8 @@ function afterTimeout(words: string[], at: number) {
 const isDeployScript = (word: string) => /(?:^|[/\\])deploy[-\w]*\.(?:ps1|sh|mjs|js|ts|cmd|bat)$/i.test(unquote(word));
 const isReleaseScript = (word: string) => /(?:^|[/\\])(?:release|publish)\.(?:ps1|sh|mjs|js|cmd|bat)$/i.test(unquote(word));
 /** Flags that make a deploy script only plan or print what it would do. */
+/** `--dry-run` (or `-n` for git push) before any `--`: the command reports what it would do and writes nothing. */
+const dryRunFlag = (args: string[], short = false) => args.slice(0, args.includes('--') ? args.indexOf('--') : undefined).some(arg => arg === '--dry-run' || (short && arg === '-n'));
 const isDryRun = (word: string) => /^-{1,2}(?:PlanOnly|WhatIf|DryRun|dry-run|plan|help|h)$/i.test(word);
 const interpreters = /^(?:pwsh|powershell|bash|sh|node|tsx|bun|deno|python3?|cmd)(?:\.exe)?$/i;
 const sqlWrite = /\b(?:update\s+[\w."]+(?:\s+(?:as\s+)?\w+)?\s+set|insert\s+into|delete\s+from|drop\s+(?:table|database|schema|index)|truncate\s+(?:table\s+)?[\w."]+|alter\s+table)\b/i;
@@ -219,7 +221,7 @@ function gitEffects(w: string[], dir: string, repo: Repo): Effect[] {
   let at = 1, path = dir;
   while (at < w.length && w[at].startsWith('-')) { if (w[at] === '-C' && w[at + 1] !== undefined) path = normalPath(w[++at], dir); else if (w[at] === '-c') at++; at++; }
   const [sub, ...args] = w.slice(at);
-  if (sub === 'push') return [pushEffect(args, path, repo)];
+  if (sub === 'push') return dryRunFlag(args, true) ? [] : [pushEffect(args, path, repo)];
   const rest = args.join(' ');
   const discards = (sub === 'reset' && /(?:^|\s)--hard\b/.test(rest)) || (sub === 'clean' && /(?:^|\s)-[a-z]*f/i.test(rest))
     || (sub === 'worktree' && /^remove\b/.test(rest) && /--force|-f\b/.test(rest)) || (sub === 'branch' && /(?:^|\s)-D\b/.test(rest))
@@ -244,7 +246,7 @@ function toolEffects(w: string[], lower: string, dir: string, repo: Repo): Effec
   const args = w.slice(1).map(unquote);
   if (/^(?:npm|pnpm|yarn|cargo|vsce)$/.test(lower)) {
     const effects: Effect[] = [];
-    if (args[0] === 'publish') effects.push({ action: 'publish', targets: repoTargets(dir, repo, w) });
+    if (args[0] === 'publish' && !dryRunFlag(args)) effects.push({ action: 'publish', targets: repoTargets(dir, repo, w) });
     if (/^(?:i|install|add|link)$/.test(args[0] ?? '') && args.some(arg => arg === '-g' || arg === '--global') || (lower === 'cargo' && args[0] === 'install'))
       effects.push({ action: 'global-install', targets: ['machine'] });
     return effects;

@@ -415,3 +415,16 @@ test('the advisor weighs a kill against what the operator asked', () => {
   assert.match(ADVISOR_PROMPT, /stops a process the agent did not start/);
   assert.match(ADVISOR_PROMPT, /only asked what it is or why it uses CPU or memory/);
 });
+
+test('a dry run writes nothing, so it needs no approval, as the release scripts already do', () => {
+  assert.deepEqual(effects('git push --dry-run origin main', 'C:/projetos/pi-optchat'), []);
+  assert.deepEqual(effects('git push -n origin main', 'C:/projetos/pi-optchat'), []);
+  assert.deepEqual(effects('git push --dry-run --force origin feat/x', 'C:/projetos/pi-optchat'), []);
+  assert.deepEqual(effects('npm publish --dry-run', 'C:/projetos/pi-optchat'), []);
+  assert.deepEqual(effects('pnpm publish --dry-run --access public', 'C:/projetos/pi-optchat'), []);
+  assert.deepEqual(effects('cargo publish --dry-run', 'C:/projetos/pi-optchat'), []);
+  // The real thing still waits.
+  assert.deepEqual(effects('git push origin main', 'C:/projetos/pi-optchat'), ['push-main c:/projetos/pi-optchat,lennix1337/pi-optchat']);
+  assert.deepEqual(effects('npm publish --access public', 'C:/projetos/pi-optchat'), ['publish c:/projetos/pi-optchat,lennix1337/pi-optchat']);
+  assert.deepEqual(effects('git push --force origin feat/x -- --dry-run', 'C:/projetos/pi-optchat').length, 1, 'a flag after -- is a ref, not a dry run');
+});

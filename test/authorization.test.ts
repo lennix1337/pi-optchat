@@ -166,12 +166,12 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   registerEffectApprovals(pi, { enabled: true, bell: () => { bells++; } });
   const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner' },
     ui: { notify: (message: string, type?: string) => notices.push([message, type]), setWidget: (_key: string, lines?: string[]) => widgets.push(lines) } };
-  const event = { toolName: 'bash', toolCallId: 'call', input: { command: 'git push --dry-run origin main' } };
+  const event = { toolName: 'bash', toolCallId: 'call', input: { command: 'git push origin main' } };
   const blocked = await hooks.get('tool_call')!(event, ctx);
   assert.equal(blocked.block, true);
   assert.match(blocked.reason, /\/approve/, 'the model can tell the operator the short way to approve');
   const shown = widgets.at(-1)!.join('\n');
-  assert.match(shown, /push/); assert.match(shown, /git push --dry-run origin main/); assert.match(shown, /\/approve/); assert.match(shown, /\/deny/);
+  assert.match(shown, /push/); assert.match(shown, /git push origin main/); assert.match(shown, /\/approve/); assert.match(shown, /\/deny/);
   assert.equal(notices.filter(([, type]) => type === 'warning').length, 1);
   assert.equal(bells, 1, 'the terminal is alerted once per new pending call');
   await hooks.get('tool_call')!(event, ctx);
@@ -193,7 +193,7 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   assert.ok(widgets.at(-1));
   const denied = await hooks.get('input')!({ text: '/deny', source: 'interactive' }, ctx);
   assert.equal(denied.action, 'transform');
-  assert.match(denied.text, /denied/i); assert.match(denied.text, /git push --dry-run origin main/);
+  assert.match(denied.text, /denied/i); assert.match(denied.text, /git push origin main/);
   assert.equal(widgets.at(-1), undefined);
   assert.deepEqual(await hooks.get('input')!({ text: '/approve', source: 'interactive' }, ctx), { action: 'handled' });
   assert.ok(notices.some(([text]) => /nothing.*pending/i.test(text)));
