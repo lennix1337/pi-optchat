@@ -19,6 +19,9 @@ const CUE = new RegExp([
   String.raw`j[aá]\s+(?:te\s+)?(?:falei|disse|pedi|avisei|expliquei)`, String.raw`eu\s+(?:te\s+)?(?:falei|disse|pedi)\s+(?:pra|para|que|n[aã]o)`,
   String.raw`(?:para|pare)\s+de\s+\p{L}`, String.raw`n[aã]o\s+(?:fa[cç]a|faz|fazer)\s+(?:isso|mais)`, String.raw`nunca\s+(?:mais\s+)?(?:fa[cç]a|faz)`,
   String.raw`de\s+novo\s+(?:isso|esse|essa|o\s+mesmo)`, String.raw`sem\s+(?:eu\s+)?(?:pedir|autoriza[cç][aã]o|permiss[aã]o)`,
+  String.raw`(?:deveria|devia)\s+ter\s+\p{L}`, String.raw`n(?:[aã]o)?\s+(?:deveria|devia)\s+\p{L}`, String.raw`era\s+(?:pra|para)\s+\p{L}`,
+  String.raw`pq\s+(?:parou|paro)\b`, String.raw`pq\s+(?:vc|voc[eê]|tu)\s+(?:n(?:[aã]o)?\s+(?:fez|fiz|consegue|fica)|ficou\s+parad)`, String.raw`n(?:[aã]o)?\s+fez\s+nada`,
+  String.raw`quem\s+pediu\s+(?:pra|para)`, String.raw`n(?:[aã]o)?\s+(?:pedi|mandei|autorizei)\s+\p{L}`, String.raw`n[aã]o\s+quero\s+desculpa`, String.raw`de\s+sacanagem`,
   String.raw`that'?s\s+(?:wrong|not\s+what)`, String.raw`not\s+what\s+i\s+(?:asked|said|meant)`, String.raw`i\s+(?:already\s+)?(?:told|said)\s+(?:you|to|not)`,
   String.raw`stop\s+(?:doing|\w+ing)`, String.raw`don'?t\s+do\s+that`,
 ].map(p => `(?<![\\p{L}\\p{N}])(?:${p})`).join('|'), 'iu');
