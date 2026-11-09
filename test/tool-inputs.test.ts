@@ -26,6 +26,10 @@ const validInputs: Record<string, Record<string, unknown>> = {
 test('spawn accepts a worker kind and a project specialist', () => {
   const args = { tasks: [{ task: 'not launched', cwd: '.', kind: 'code', project: 'dentai' }] };
   assert.deepEqual(validate(tools.get('spawn')!, args), args);
+  const created = { tasks: [{ task: 'not launched', kind: 'code', project: 'lolidle-save-editor' }] };
+  assert.deepEqual(validate(tools.get('spawn')!, created), created, 'a project outside the known four is a new specialist');
+  const crewCall = { action: 'read', project: 'lolidle-save-editor', part: 'proposals' };
+  assert.deepEqual(validate(tools.get('crew')!, crewCall), crewCall);
 });
 // Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
 const nativeOverrides = ['bash'];

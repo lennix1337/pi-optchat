@@ -375,7 +375,7 @@ export default function optchat(pi: ExtensionAPI) {
       wake: (beat, radar) => {
         wakeRetried = false;
         const dream = briefDream(ctx);
-        const crew = profile.config.managerMode ? `\n${crewWakeNote(profile.crew.missions(), profile.crew.auditDue())}` : '';
+        const crew = profile.config.managerMode ? `\n${crewWakeNote(profile.crew.missions(), profile.crew.auditDue(), profile.crew.pendingCounts())}` : '';
         const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + crew, previousWake(profile.dir), beat.unchanged);
         wakeOn(profile.dir, wakeModelFor(profile.config, main), wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))

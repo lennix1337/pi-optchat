@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { accountGroup } from './account.ts';
@@ -11,9 +11,13 @@ import { result } from './tools.ts';
 /** What a worker is for, and so which model runs it (see `routeFor`). `plan` is a read-only scout that returns contracts. */
 export const WORKER_KINDS = ['code', 'mechanical', 'hard', 'plan'] as const;
 export type WorkerKind = typeof WORKER_KINDS[number];
-/** The projects with a standing specialist: a charter and a short, capped memory on disk. */
-export const SPECIALISTS = ['dentai', 'genexus18mcp', 'harness', 'dotfiles'] as const;
-export type Specialist = typeof SPECIALISTS[number];
+/** The kinds that change files; `plan` only reads. */
+export const WRITER_KINDS: readonly WorkerKind[] = ['code', 'mechanical', 'hard'];
+/** The projects with a standing specialist from the start; every other project gets one when its first contract worker runs. */
+export const KNOWN_SPECIALISTS = ['dentai', 'genexus18mcp', 'harness', 'dotfiles'] as const;
+/** A specialist is a slug: the name of its folder in the crew dir. */
+export type Specialist = string;
+export const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
 export type WorkerRoutes = Partial<Record<WorkerKind, ModelChoice[]>>;
 
 /** One entry per provider family; the one for the family the main model is on wins (see `routeFor`). */
@@ -38,15 +42,19 @@ export function routeFor(kind: WorkerKind, main: { provider: string } | undefine
   return match ? { ...match, provider: accountGroup(match.provider) === accountGroup(main.provider) ? main.provider : match.provider } : choices[0];
 }
 
-/** The specialist of a working directory: `C:/projetos/<repo>/...`; undefined outside the operator's projects. */
+/** The repo folder of a working directory under `C:/projetos`: its name and its path up to it. */
+export const projectOf = (cwd: string) => { const found = /^(.*?projetos[\\/]+([\w.-]+))/i.exec(cwd); return found ? { path: found[1], repo: found[2] } : undefined; };
+/** The specialist of a working directory: `C:/projetos/<repo>/...`, worktrees inside it included; undefined outside the operator's projects.
+ * The harness repos and the other known projects share a specialist; any other repo is its own, named by the slug of its folder. */
 export function specialistOf(cwd: string): Specialist | undefined {
-  const repo = /projetos[\\/]+([\w.-]+)/i.exec(cwd)?.[1];
+  const repo = projectOf(cwd)?.repo;
   if (!repo) return undefined;
   if (/^dotfiles$/i.test(repo)) return 'dotfiles';
   if (/^dentai/i.test(repo)) return 'dentai';
   if (/^genexus18mcp/i.test(repo)) return 'genexus18mcp';
-  if (/^(?:pi-|ripwire$)/i.test(repo)) return 'harness';
-  return undefined;
+  if (/^(?:pi-|ripwire$|ai-memory$|PiG$|deepseek-harness$|optmem$)/i.test(repo)) return 'harness';
+  const slug = repo.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+/, '').slice(0, 41);
+  return SLUG.test(slug) ? slug : undefined;
 }
 
 /** The four parts a worker contract names, each as a heading or a leading `Label:`; Portuguese labels count too. */
@@ -76,9 +84,76 @@ function writeCapped(path: string, label: string, cap: number, text: string, fix
   return size;
 }
 
+/** The root of the git checkout holding a directory (a worktree is its own root): the nearest ancestor with a `.git`; undefined outside any. */
+export function repoRoot(directory: string) {
+  for (let dir = resolve(directory); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) return dir.replace(/\\/g, '/');
+    if (dirname(dir) === dir) return undefined;
+  }
+}
+
+/** What a new specialist's charter starts as: the project, where to read its rules, and what a worker may and may not do. */
+const charterFor = (specialist: Specialist, path: string) => `# ${specialist} specialist
+Project: ${specialist}, at ${path}.
+Read the repository's AGENTS.md (and README) first: its rules win over this charter.
+Worker authority: edit, build, test and commit locally, in a git worktree inside the project. Push, PRs, merges, releases, deploys, paid runs, production data and stopping processes you did not start go back to the manager.
+Method: red test first for a fix, then green; run the project's own check before reporting.
+`;
+
+/** A memory proposal a worker ended its report with, waiting for the manager to apply or reject it. */
+export interface Proposal { specialist: Specialist; runId: string; date: string; text: string }
+export const PROPOSAL_BYTES = 2048;
+const NONE = /^(?:none|nenhum[a-z]*|n\/a)\W*$/i;
+/** The "## Memory proposal" section of a worker report, capped; undefined when it has none or says "none". */
+export function proposalOf(report: string): string | undefined {
+  const heading = /^(#{1,6})[ \t]*memory proposal[ \t]*:?[ \t]*$/im.exec(report);
+  if (!heading) return undefined;
+  const rest = report.slice(heading.index + heading[0].length);
+  const next = new RegExp(`^#{1,${heading[1].length}}[ \\t]+\\S`, 'm').exec(rest);
+  let text = (next ? rest.slice(0, next.index) : rest).trim();
+  if (!text || NONE.test(text.replace(/^[-*]\s*/, ''))) return undefined;
+  while (Buffer.byteLength(text) > PROPOSAL_BYTES) text = text.slice(0, -64);
+  return text;
+}
+
 export class Crew {
   constructor(readonly dir: string) {}
   private file(specialist: Specialist, part: 'charter' | 'memory') { return join(this.dir, specialist, `${part}.md`); }
+  /** The known specialists plus every folder of the crew dir. */
+  specialists(): Specialist[] {
+    const folders = existsSync(this.dir) ? readdirSync(this.dir, { withFileTypes: true }).filter(e => e.isDirectory() && SLUG.test(e.name)).map(e => e.name) : [];
+    return [...new Set([...KNOWN_SPECIALISTS, ...folders])];
+  }
+  /** Throws, naming the existing specialists, unless `project` is a valid slug. */
+  check(project: string) {
+    if (!SLUG.test(project)) throw new Error(`"${project}" is not a valid project: use a slug (lowercase letters, digits and hyphens, at most 41 characters). Specialists: ${this.specialists().join(', ')}.`);
+    return project;
+  }
+  /** Writes the charter of a specialist that has none, from the template; true when it did. */
+  ensure(specialist: Specialist, path: string) {
+    if (existsSync(this.file(specialist, 'charter'))) return false;
+    this.write(specialist, 'charter', charterFor(specialist, path));
+    return true;
+  }
+  private pendingFile() { return join(this.dir, 'pending.json'); }
+  /** Memory proposals not yet applied, oldest first. */
+  pending(): Proposal[] {
+    try {
+      const list: unknown = JSON.parse(readFileSync(this.pendingFile(), 'utf8'));
+      return Array.isArray(list) ? list.filter((p): p is Proposal => typeof p?.specialist === 'string' && typeof p.text === 'string') : [];
+    } catch { return []; }
+  }
+  private savePending(list: Proposal[]) { mkdirSync(this.dir, { recursive: true }); atomicWrite(this.pendingFile(), `${JSON.stringify(list, null, 1)}\n`); }
+  /** Records a run's proposal; a run reporting again replaces its earlier one. */
+  propose(specialist: Specialist, runId: string, text: string, date = new Date().toISOString()) {
+    this.savePending([...this.pending().filter(p => p.runId !== runId), { specialist, runId, date, text }]);
+  }
+  /** How many proposals wait for each specialist. */
+  pendingCounts() {
+    const counts = new Map<Specialist, number>();
+    for (const p of this.pending()) counts.set(p.specialist, (counts.get(p.specialist) ?? 0) + 1);
+    return [...counts].map(([specialist, count]) => ({ specialist, count }));
+  }
   /** Replaces missions.md whole; capped like a memory, since every wake reads it. */
   writeMissions(text: string) { return writeCapped(join(this.dir, 'missions.md'), 'missions.md', MEMORY_BYTES, text, 'close accepted missions'); }
   read(specialist: Specialist, part: 'charter' | 'memory') {
@@ -86,14 +161,17 @@ export class Crew {
   }
   /** Replaces a charter or memory whole. */
   write(specialist: Specialist, part: 'charter' | 'memory', text: string) {
-    return writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, text, 'trim stale or duplicated lines');
+    const size = writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, text, 'trim stale or duplicated lines');
+    // Writing the memory is the manager's answer to what the workers proposed.
+    if (part === 'memory' && this.pending().some(p => p.specialist === specialist)) this.savePending(this.pending().filter(p => p.specialist !== specialist));
+    return size;
   }
   /** Days since a specialist's memory was last written, or undefined with no memory yet. */
   age(specialist: Specialist, now = Date.now()) {
     try { return Math.max(0, now - statSync(this.file(specialist, 'memory')).mtimeMs) / 86_400_000; } catch { return undefined; }
   }
   /** Specialists whose memory exists and is due for the weekly audit. */
-  auditDue(now = Date.now()) { return SPECIALISTS.filter(s => (this.age(s, now) ?? 0) >= AUDIT_DAYS); }
+  auditDue(now = Date.now()) { return this.specialists().filter(s => (this.age(s, now) ?? 0) >= AUDIT_DAYS); }
   /** Open missions that carry work across wakes: `missions.md`, capped like a memory. */
   missions() { try { return readFileSync(join(this.dir, 'missions.md'), 'utf8').trim(); } catch { return ''; } }
 
@@ -111,6 +189,16 @@ export class Crew {
 
 /** Tool calls that execute or edit; a manager that makes many of them in one turn is doing a worker's job. */
 const EXECUTION = new Set(['bash', 'powershell', 'edit', 'write', 'shell_start']);
+/** One simple command that only reads: cat/head/tail/sed -n/grep/rg/ls/wc, git status|log|diff|show, gh <noun> view|list. */
+const READ_ONLY = [/^(?:cat|head|tail|grep|rg|ls|wc)(?:\s|$)/, /^sed\s+-n\s(?!(?:.*\s)?-[a-z]*i\b)/, /^git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show)(?:\s|$)/, /^gh\s+\S+\s+(?:view|list)(?:\s|$)/];
+/** Whether a shell command is made only of reading commands. Doubtful commands (redirections, substitutions, in-place or output flags,
+ * anything not on the list) are not: a quoted separator can split a segment wrongly, which only ever counts a read as execution. */
+export function onlyReads(command: string) {
+  const text = command.replace(/\s2>&1|\s2>\/dev\/null/g, '');
+  if (/[<>`]|\$\(|--output|--pre\b|--in-place/.test(text)) return false;
+  const segments = text.split(/&&|\|\||[;|\n]/).map(part => part.trim()).filter(Boolean);
+  return segments.length > 0 && segments.every(part => READ_ONLY.some(pattern => pattern.test(part)));
+}
 export const NUDGE = (count: number) => `[crew] ${count} execution calls in this turn. You are the manager: hand edits, builds and tests to a worker (spawn with kind "code", or "mechanical" for rote work) with a contract, and review its report.`;
 /** Appends one reminder to the result of the Nth execution call of a turn, then every N calls after it. */
 export function registerDelegationNudge(pi: ExtensionAPI, after: () => number, enabled: () => boolean) {
@@ -118,6 +206,7 @@ export function registerDelegationNudge(pi: ExtensionAPI, after: () => number, e
   pi.on('agent_start', () => { count = 0; });
   pi.on('tool_result', event => {
     if (!enabled() || !EXECUTION.has(event.toolName)) return;
+    if (event.toolName === 'bash' && typeof event.input?.command === 'string' && onlyReads(event.input.command)) return;
     const limit = after();
     if (limit <= 0 || ++count % limit !== 0) return;
     return { content: [...event.content, { type: 'text' as const, text: `\n${NUDGE(count)}` }] };
@@ -135,25 +224,44 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 
 const CREW_PARAMS = Type.Object({
   action: stringEnum(['list', 'read', 'write'] as const),
-  project: Type.Optional(stringEnum(SPECIALISTS)),
-  part: Type.Optional(stringEnum(['charter', 'memory', 'missions'] as const)),
+  project: Type.Optional(Type.String({ description: 'Specialist slug (lowercase letters, digits, hyphens); list shows the existing ones. A new slug starts a new specialist.' })),
+  part: Type.Optional(stringEnum(['charter', 'memory', 'missions', 'proposals'] as const)),
   text: Type.Optional(Type.String({ description: 'write: the whole new text; it replaces the old one.' })),
 }, { additionalProperties: false });
+
+/** "dentai (2), harness (1)" */
+function counts(list: readonly { specialist: string; count: number }[]) {
+  const parts: string[] = [];
+  for (const { specialist, count } of list) parts.push(`${specialist} (${count})`);
+  return parts.join(', ');
+}
+/** `crew list`: each specialist's sizes and memory age, the missions size, the audit due and the proposals pending. */
+function listCrew(c: Crew) {
+  const rows = c.specialists().map(s => { const age = c.age(s); return `${s}: charter ${Buffer.byteLength(c.read(s, 'charter'))} B, memory ${Buffer.byteLength(c.read(s, 'memory'))} B${age === undefined ? '' : `, written ${age.toFixed(1)} d ago`}`; });
+  const due = c.auditDue(), pending = c.pendingCounts();
+  return [...rows, `missions: ${Buffer.byteLength(c.missions())} B`, due.length ? `Audit due: ${due.join(', ')}` : 'No audit due.', pending.length ? `proposals pending: ${counts(pending)}` : ''].filter(Boolean).join('\n');
+}
+/** `crew read` of the proposals: the pending ones of a project, or of all. */
+function proposalsText(c: Crew, project: string | undefined) {
+  const list = c.pending().filter(p => !project || p.specialist === project);
+  return list.map(p => `[${p.specialist}] run ${p.runId}, ${p.date}\n${p.text}`).join('\n\n') || '(none pending)';
+}
 
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
 export const crewTool = (crew: () => Crew) => ({
   name: 'crew', label: 'Crew memory',
-  description: `Read or replace the crew's disk state: each project specialist's charter (${CHARTER_BYTES} B cap) and memory (${MEMORY_BYTES} B cap), and missions.md (open work across wakes). list shows sizes and memory age; read and write take project+part (part "missions" needs no project); write replaces the whole text and is refused over the cap. Apply the lines of a worker's memory proposal you verified; never paste a report whole.`,
+  description: `Read or replace the crew's disk state: each project specialist's charter (${CHARTER_BYTES} B cap) and memory (${MEMORY_BYTES} B cap), and missions.md (open work across wakes). list shows sizes and memory age; read and write take project+part (part "missions" needs no project; part "proposals" is read-only: the pending memory proposals of project, or of all); list also shows the proposals still pending. Write replaces the whole text and is refused over the cap, and writing a memory clears that project's pending proposals. Apply the lines of a worker's memory proposal you verified; never paste a report whole.`,
   parameters: CREW_PARAMS,
-  async execute(_id: string, args: { action: 'list' | 'read' | 'write'; project?: Specialist; part?: 'charter' | 'memory' | 'missions'; text?: string }) {
+  async execute(_id: string, args: { action: 'list' | 'read' | 'write'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string }) {
     const c = crew();
-    if (args.action === 'list') {
-      const rows = SPECIALISTS.map(s => { const age = c.age(s); return `${s}: charter ${Buffer.byteLength(c.read(s, 'charter'))} B, memory ${Buffer.byteLength(c.read(s, 'memory'))} B${age === undefined ? '' : `, written ${age.toFixed(1)} d ago`}`; });
-      const due = c.auditDue();
-      return result([...rows, `missions: ${Buffer.byteLength(c.missions())} B`, due.length ? `Audit due: ${due.join(', ')}` : 'No audit due.'].join('\n'));
-    }
+    if (args.action === 'list') return result(listCrew(c));
     const part = args.part ?? 'memory';
-    if (part !== 'missions' && !args.project) throw new Error(`${args.action} of a ${part} needs project (one of ${SPECIALISTS.join(', ')}).`);
+    if (args.project !== undefined) c.check(args.project);
+    if (part === 'proposals') {
+      if (args.action === 'write') throw new Error('Proposals are read-only: apply the true lines with write of the project memory, which clears them.');
+      return result(proposalsText(c, args.project));
+    }
+    if (part !== 'missions' && !args.project) throw new Error(`${args.action} of a ${part} needs project (a slug; existing: ${c.specialists().join(', ')}).`);
     if (args.action === 'read') return result((part === 'missions' ? c.missions() : c.read(args.project!, part).trim()) || '(empty)');
     if (args.text === undefined) throw new Error('write needs text: the whole new content.');
     const size = part === 'missions' ? c.writeMissions(args.text) : c.write(args.project!, part, args.text);
@@ -161,8 +269,9 @@ export const crewTool = (crew: () => Crew) => ({
   },
 });
 
-export const crewWakeNote = (missions: string, auditDue: readonly string[]) => [
+export const crewWakeNote = (missions: string, auditDue: readonly string[], pending: readonly { specialist: string; count: number }[] = []) => [
   'Crew: triage here, on the cheap model. For something to build, spawn a "plan" worker for the contracts, then "code" workers to execute; review their reports before you merge. Work continues across wakes through missions.md.',
   missions ? `Open missions (crew missions.md):\n${missions.slice(0, 2048)}` : '',
   auditDue.length ? `Weekly audit due for the memory of: ${auditDue.join(', ')}. Read each, drop stale or wrong lines, write it back.` : '',
+  pending.length ? `Memory proposals pending (crew read, part "proposals"; apply the true lines with write, which clears them): ${counts(pending)}.` : '',
 ].filter(Boolean).join('\n');

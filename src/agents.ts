@@ -32,7 +32,7 @@ import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { routerReport } from './router-mode.ts';
-import { checkContract, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
+import { WRITER_KINDS, checkContract, projectOf, proposalOf, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
 
 export interface LiveRun {
@@ -326,8 +326,9 @@ export class Children {
   }
   /** The spawn tools' answer, saying how this spawn's reports will come back. */
   async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string) {
-    const { ids, grouped } = await this.launch(tasks, cwd, signal, parentId);
-    return `Started: ${ids.join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}`;
+    const { ids, grouped, specialists } = await this.launch(tasks, cwd, signal, parentId);
+    const created = specialists.map(slug => ` Note: new specialist ${slug} created; its charter is a template, so add what its workers need to know with the crew tool.`).join('');
+    return `Started: ${ids.join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${created}`;
   }
   private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false) {
     // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
@@ -345,9 +346,10 @@ export class Children {
     if (depth > subagentLevels) throw new Error(`Delegation depth limit reached: this profile allows ${subagentLevels} level${subagentLevels === 1 ? '' : 's'} of subagents.`);
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
-    for (const task of tasks) if (task.kind) checkContract(task.task);
+    this.checkWorkers(tasks, cwd);
     const renderingAt = performance.now();
     const models = tasks.map(task => this.modelOf(task));
+    const specialists = connected ? [] : this.ensureSpecialists(tasks, cwd);
     const views = this.viewsOf(tasks, models, cwd, connected);
     this.timed('view', undefined, renderingAt, views.reduce((sum, view) => sum + view.length, 0));
     const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }));
@@ -362,7 +364,50 @@ export class Children {
     }
     this.changed();
     this.watch();
-    return { ids: launched.map(c => c.info.id), grouped: batch !== undefined };
+    return { ids: launched.map(c => c.info.id), grouped: batch !== undefined, specialists };
+  }
+  /** What a contract worker's task must satisfy before anything starts: a contract, a valid project and a repo no other writer holds. */
+  private checkWorkers(tasks: SpawnTask[], cwd: string) {
+    for (const task of tasks) {
+      if (!task.kind) continue;
+      checkContract(task.task);
+      if (task.project !== undefined) this.options.crew?.check(task.project);
+    }
+    this.checkWriters(tasks, cwd);
+  }
+  /** One writer per repo: a code, mechanical or hard worker may not start where another already works (nor twice in one spawn),
+   * since two of them in one checkout overwrite each other. Plan workers only read. Refused before anything starts. */
+  private checkWriters(tasks: SpawnTask[], cwd: string) {
+    const holders = new Map<string, string>();
+    for (const { info } of this.running.values()) {
+      const top = info.kind && (WRITER_KINDS as readonly string[]).includes(info.kind) ? repoRoot(info.cwd) : undefined;
+      if (top) holders.set(top.toLowerCase(), `worker ${info.id}`);
+    }
+    for (const task of tasks) {
+      if (!task.kind || !WRITER_KINDS.includes(task.kind as never)) continue;
+      const directory = taskDirectory(cwd, task.cwd), top = repoRoot(directory);
+      if (!top) continue;
+      const holder = holders.get(top.toLowerCase());
+      if (holder) throw new Error(`One writer per repo: ${directory} is in the repo ${top}, where ${holder} is already working. Give this ${task.kind} worker its own git worktree inside the project as cwd (git worktree add worktrees/<name> -b <branch>), or wait for the other. Nothing was started.`);
+      holders.set(top.toLowerCase(), 'another task of this spawn');
+    }
+  }
+  /** Gives each contract worker's specialist a charter when it has none; returns the specialists created. */
+  private ensureSpecialists(tasks: SpawnTask[], cwd: string) {
+    const created: Specialist[] = [];
+    for (const task of tasks) {
+      if (!task.kind || !this.options.crew) continue;
+      const directory = taskDirectory(cwd, task.cwd), slug = task.project ?? specialistOf(directory);
+      if (slug && !created.includes(slug) && this.options.crew.ensure(slug, projectOf(directory)?.path ?? directory)) created.push(slug);
+    }
+    return created;
+  }
+  /** Keeps the "## Memory proposal" of a contract worker's report for the manager to apply or reject. */
+  private proposeMemory(info: RunInfo) {
+    if (!info.kind || !info.project || info.state !== 'completed' || this.deleting.has(info.id) || !this.options.crew) return;
+    const text = proposalOf(info.report ?? '');
+    if (!text) return;
+    try { this.options.crew.propose(info.project, info.id, text); } catch (error) { this.warn(`Could not keep the memory proposal of ${info.id}: ${String(error)}`); }
   }
   /** A task's model: its kind's route in manager mode, else the subagent role's model. */
   private modelOf(task: SpawnTask) {
@@ -631,6 +676,7 @@ export class Children {
     if (this.deleting.has(info.id)) info.report = 'Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.';
     // A metadata failure must not suppress delivery of the actual result.
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
+    this.proposeMemory(info);
     // Router mode: the main agent gets the report bounded, with pointers to the run and its transcript, not the whole chat.
     // A deleted run's transcript is gone.
     const text = this.settings.routerMode && !info.parentId ? routerReport(info)
