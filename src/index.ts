@@ -53,7 +53,7 @@ import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
-import { heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedIdle, summarizeTurn } from './heartbeat-report.ts';
+import { heartbeatCommand, summarizeTurn, wakeRetry } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
@@ -934,9 +934,10 @@ export default function optchat(pi: ExtensionAPI) {
     working = false; showTitle(ctx);
     settledAt = Date.now();
     const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
-    // A memory-line reply with no tool run is sent back once; the wake stays open (same model, same record) for the run that works.
-    const retry = !!wake && !wakeRetried && !fault && !stopping && memoryShapedIdle(wake);
-    if (retry) { wakeRetried = true; void deliverReport(MEMORY_REPLY_RETRY); }
+    // A wake that did not work (a memory-line reply, or no commit, push, PR or merge) is sent back once; the wake stays open
+    // (same model, same record) for the run that delivers.
+    const retry = wake && !wakeRetried && !fault && !stopping ? wakeRetry(wake) : undefined;
+    if (retry) { wakeRetried = true; void deliverReport(retry); }
     else {
       heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));

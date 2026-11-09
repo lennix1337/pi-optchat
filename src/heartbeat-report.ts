@@ -11,7 +11,8 @@ const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
 
 // `git commit`, `git -C dir push`, `git -c k=v commit`, anywhere in a shell command.
 // `scripts/ship.mjs` commits and pushes too: its wakes were logged as "committed nothing" (03/11 15:50, PR #97).
-const gitEffect = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:commit|push)\b|\bship\.mjs\b/;
+// `gh pr merge` delivers too: a wake that merged a ready PR was logged as "committed nothing".
+const gitEffect = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:commit|push)\b|\bship\.mjs\b|\bgh\s+pr\s+merge\b/;
 const MAX_COMMITS = 20;
 
 /** `commit <sha> <branch>`, `push <old>..<new> <branch>` or `push new <branch>` for each one git printed. */
@@ -27,15 +28,18 @@ function gitLines(output: string): string[] {
 /** The last reply, the number of tool calls and the commits and pushes (from successful bash/powershell git commands) of one turn. */
 export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
   let tools = 0;
-  const gitCalls = new Set<string>(), commits: string[] = [];
+  const gitCalls = new Map<string, string>(), commits: string[] = [];
   for (const message of messages) {
     if (message.role === 'assistant') for (const block of blocks(message.content)) {
       if (block.type !== 'toolCall') continue;
       tools++;
       const command = block.arguments?.command;
-      if (block.id && ['bash', 'powershell'].includes(block.name ?? '') && typeof command === 'string' && gitEffect.test(command)) gitCalls.add(block.id);
-    } else if (message.role === 'toolResult' && message.toolCallId && gitCalls.has(message.toolCallId) && !message.isError)
-      for (const line of gitLines(textOf(message.content))) if (!commits.includes(line) && commits.length < MAX_COMMITS) commits.push(line);
+      if (block.id && ['bash', 'powershell'].includes(block.name ?? '') && typeof command === 'string' && gitEffect.test(command)) gitCalls.set(block.id, command.slice(command.search(gitEffect)));
+    } else if (message.role === 'toolResult' && message.toolCallId && gitCalls.has(message.toolCallId) && !message.isError) {
+      // `git commit -q`, `git push -q` and `gh pr merge` print no ref line: the successful command itself is the record.
+      const lines = gitLines(textOf(message.content)), command = gitCalls.get(message.toolCallId) ?? '';
+      for (const line of lines.length ? lines : [`ran ${oneLine(command).slice(0, 80)}`]) if (!commits.includes(line) && commits.length < MAX_COMMITS) commits.push(line);
+    }
   }
   const last = messages.findLast(m => m.role === 'assistant');
   return { reply: last ? oneLine(textOf(last.content)) || oneLine(last.errorMessage ?? '') : '', tools, commits, ...last?.stopReason ? { stopReason: last.stopReason } : {} };
@@ -53,6 +57,16 @@ export function memoryShapedIdle(summary: WakeSummary): boolean {
 
 /** Sent once into the same wake when its reply was a memory line and nothing ran. */
 export const MEMORY_REPLY_RETRY = '[OptChat heartbeat] Your wake reply was a memory summary line and you ran no tool: that is not a wake, and the operator reads it as "did nothing". Do the wake now: close what the previous wake left open, then deliver a change with your tools, and end with a short report in Portuguese (pt-BR) in plain sentences, never in memory-line format.';
+
+/** Sent once into the same wake when it settled having committed, pushed, opened or merged nothing (operator 08/11: "não quero que um wake não faça nada"). */
+export const EMPTY_WAKE_RETRY = '[OptChat heartbeat] This wake is about to end without delivering a change: no commit, push, PR or merge. Measuring, re-reading state and reporting "nothing new" is not a wake (operator, 08/11: "não quero que um wake não faça nada"; explore new horizons). Keep going in this same wake: pick a new capability toward the end goal, a living assistant that helps the operator through his day on its own (notices what he needs, decides and acts without being asked), in the harness or a new package. Name its user-visible result and evidence, write the red test, build it, ship it as a PR with auto-merge, then report in Portuguese (pt-BR) what it does and how it was validated.';
+
+/** The nudge a settled wake gets once, if it did not work: a memory-line reply, or no delivered change. Aborts and errors are not idleness. */
+export function wakeRetry(summary: WakeSummary): string | undefined {
+  if (memoryShapedIdle(summary)) return MEMORY_REPLY_RETRY;
+  if (summary.stopReason === 'aborted' || summary.stopReason === 'error') return undefined;
+  return summary.commits.length ? undefined : EMPTY_WAKE_RETRY;
+}
 
 export interface ReportContext { now: number; cap: number; minutes: number; /** Every wake of the daily cap's count; without it the report counts the logged wakes. */ wakes?: number[] }
 
