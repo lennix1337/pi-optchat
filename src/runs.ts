@@ -16,6 +16,8 @@ export interface RunInfo {
   parentId?: string; depth: number;
   state: RunState; report?: string;
   connected?: boolean;
+  /** A contract worker's kind and project (manager mode); absent for a plain subagent. */
+  kind?: string; project?: string;
   handoff?: { reason: FinishReason; text?: string; delivered?: boolean };
   /** Working when Pi closed or crashed: the next start resumes it (see `Children.resumeCutOff`). */
   cutOff?: boolean;

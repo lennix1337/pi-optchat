@@ -8,6 +8,8 @@ import { record } from './cache.ts';
 import { atomicWrite, type Store } from './store.ts';
 import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
 import { invalidPlan, invalidRadar, type HeartbeatPlan } from './heartbeat.ts';
+import { validRoutes, type WorkerRoutes } from './crew.ts';
+import { accountGroup } from './account.ts';
 
 export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
@@ -17,7 +19,8 @@ export type Role = 'compactor' | 'subagent';
 /** alternates: per-provider models a role uses while the main model is on that provider, e.g. a Codex model on a Codex account. */
 /** wakeModel: the model a heartbeat wake runs on instead of the main one, the main model coming back when the wake settles;
  * a list holds one per provider family (Anthropic, Codex...), so the wake gets cheaper on whichever the main model is on. */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[] }
+/** workerModels: manager mode's routes, one list per worker kind with one entry per provider family (see `routeFor`). */
+export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes }
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
@@ -58,7 +61,7 @@ function modelChoice(value: unknown): value is ModelChoice {
 const alternates = (value: unknown): value is ProfileConfig['alternates'] => value === undefined
   || record(value) && Object.entries(value).every(([role, list]) => (role === 'compactor' || role === 'subagent') && Array.isArray(list) && list.every(modelChoice));
 /** Multi-account rotates a provider by publishing numbered accounts as their own providers (`openai-codex-account-2`); the base id is their shared family. */
-export const accountGroup = (provider: string) => provider.replace(/-account-\d+$/, '');
+export { accountGroup };
 /** The role's model for the account the main model is on: the matching alternate, the role's own choice when it is on that provider's family, all addressed at the live account — and, with neither, the main model itself at the lowest effort it takes. */
 export function modelFor(config: ProfileConfig, role: Role, main: MainModel | undefined): ModelChoice {
   const own = config[role];
@@ -98,17 +101,18 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels'] as const;
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
-    || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))) throw new Error(`Invalid profile config: ${dir}/config.json`);
+    || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))
+    || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar);
     if (problem) throw new Error(problem);
-    return { compactor: value.compactor, subagent: value.subagent, ...(value.alternates ? { alternates: value.alternates } : {}),
-      ...(value.heartbeat ? { heartbeat: value.heartbeat as HeartbeatPlan } : {}),
-      ...(value.heartbeatRadar ? { heartbeatRadar: value.heartbeatRadar as string[] } : {}),
-      ...(value.wakeModel ? { wakeModel: value.wakeModel as ModelChoice | ModelChoice[] } : {}), ...readSettings(value) };
+    // The optional fields were validated above; an absent or empty one stays out of the config.
+    const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;
+    return { compactor: value.compactor, subagent: value.subagent, ...present, ...readSettings(value) };
   }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }

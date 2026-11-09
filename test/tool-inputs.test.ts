@@ -21,7 +21,12 @@ const validInputs: Record<string, Record<string, unknown>> = {
   operation_state: {}, operational_state: {}, context_metrics: {}, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
   tell: { id: 'fixture', message: 'not sent' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
   slack_send: { text: 'not sent' }, tool_inventory: {}, commitments: { action: 'list' },
+  crew: { action: 'read', project: 'harness', part: 'memory' },
 };
+test('spawn accepts a worker kind and a project specialist', () => {
+  const args = { tasks: [{ task: 'not launched', cwd: '.', kind: 'code', project: 'dentai' }] };
+  assert.deepEqual(validate(tools.get('spawn')!, args), args);
+});
 // Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
 const nativeOverrides = ['bash'];
 const tools = registeredTools();
