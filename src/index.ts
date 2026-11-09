@@ -71,7 +71,7 @@ import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
-import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells, runningShells, shellReport } from './shells.ts';
+import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells, runningShells, shellReporter } from './shells.ts';
 import { ROUTER_DOC, syncRouterTools } from './router-mode.ts';
 import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
@@ -510,22 +510,18 @@ export default function optchat(pi: ExtensionAPI) {
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
-      // A background shell's end (shellReport) and its pattern alerts (alertReport) reach the main agent as messages. Closing the profile stops shells silently; a /reload hands them to the reloaded profile, which hears the ends it missed.
+      // A background shell's end (shellReporter) and its pattern alerts reach the main agent as messages. Closing the profile stops shells silently; a /reload hands them to the reloaded profile, which hears the ends it missed.
       if (adoptedProfile !== undefined && adoptedProfile !== name) {
         ctx.ui.notify(`Stopped ${runningShells(shells).length} background shells that ${adoptedProfile} left running across the reload.`, 'warning');
         await shells.close(); shells.clear();
       }
       adoptedProfile = undefined;
-      shells.setReporter({
-        finished: job => {
-          if (stopping || active?.memory !== memory) return;
-          deliverReport(shellReport(job), { once: true }).catch(error => ctx.ui.notify(`Could not report shell ${job.id}: ${errorText(error)}`, 'error'));
-        },
-        alerted: (job, text) => {
-          if (stopping || active?.memory !== memory) return;
-          deliverReport(text).catch(error => ctx.ui.notify(`Could not report an alert from shell ${job.id}: ${errorText(error)}`, 'error'));
-        },
-      });
+      shells.setReporter(shellReporter({
+        live: () => !stopping && active?.memory === memory,
+        main: (text, once) => deliverReport(text, { once }),
+        agent: (id, text) => children.shellNotice(id, text),
+        failed: (what, job, error) => ctx.ui.notify(`Could not ${what} ${job.id}: ${errorText(error)}`, 'error'),
+      }));
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));

@@ -13,6 +13,8 @@ export interface ShellJob {
   id: string; command: string; cwd: string; mode: 'foreground' | 'background';
   state: 'running' | 'stopping' | 'completed' | 'failed' | 'stopped';
   started: number; ended?: number; output: string; owner?: string;
+  /** The subagent that started it with its own shell_start: its end and alerts go into that agent's session, not the main agent's. */
+  agent?: string;
   /** The command's exit code, when it exited on its own. */
   exitCode?: number;
   /** The shell itself failed (non-zero exit, error), as opposed to output that merely echoes an earlier stage's rc. */
@@ -31,7 +33,7 @@ export interface ShellReporter {
   finished(job: ShellJob): void;
   alerted(job: ShellJob, text: string, alert: ShellAlert): void;
 }
-export interface ShellOptions { notify?: ShellNotify; alert?: string }
+export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string }
 const outputLimit = 32_000;
 /** CSI, OSC (hyperlinks, titles), charset designations (`tput sgr0` prints ESC ( B) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
 const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()*+][ -~]|\u001b[@-_]/g;
@@ -65,7 +67,7 @@ export class ShellJobs {
   setEndObserver(observer: ((job: ShellJob) => void) | undefined) { this.endObserver = observer; }
   private changed() { for (const listener of this.listeners) listener(); }
   begin(id: string, command: string, cwd: string, mode: ShellJob['mode'], owner = 'main', options: ShellOptions = {}) {
-    this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert });
+    this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert, ...options.agent === undefined ? {} : { agent: options.agent } });
     this.changed();
   }
   update(id: string, output: string, log?: string) {
@@ -113,7 +115,7 @@ export class ShellJobs {
   }
   start(command: string, cwd: string, execute: (signal: AbortSignal, update: (output: string, log?: string) => void) => Promise<{ output: string; failed: boolean; exitCode?: number; log?: string }>, options: ShellOptions = {}) {
     const id = randomUUID(), controller = new AbortController();
-    this.controllers.set(id, controller); this.begin(id, command, cwd, 'background', 'main', options);
+    this.controllers.set(id, controller); this.begin(id, command, cwd, 'background', options.agent === undefined ? 'main' : `agent ${options.agent.slice(0, 8)}`, options);
     const task = Promise.resolve().then(() => {
       controller.signal.throwIfAborted();
       return execute(controller.signal, (output, log) => this.update(id, output, log));
@@ -201,6 +203,25 @@ export function alertReport(id: string, pattern: string, alert: ShellAlert): str
   return [head, ...blocks].join('\n');
 }
 
+/** What routes a shell's notices: the main agent's inbox, and each subagent's own session (false: it cannot take the message). */
+export interface ShellRoutes {
+  /** Whether the profile is still the one that owns the shells. */
+  live(): boolean;
+  main(text: string, once: boolean): Promise<void>;
+  agent(id: string, text: string): Promise<boolean>;
+  failed(what: string, job: ShellJob, error: unknown): void;
+}
+/** The reporter of a profile's shells: a subagent's go into its own session, so it can run a long gate and be woken with the outcome. The main agent hears them only when the subagent could not take it. */
+export function shellReporter(routes: ShellRoutes): ShellReporter {
+  const send = (job: ShellJob, text: string, once: boolean) => job.agent === undefined ? routes.main(text, once)
+    : routes.agent(job.agent, text).then(taken => taken ? undefined : routes.main(`${text}
+Started by subagent ${job.agent}, which could not take it.`, once));
+  return {
+    finished: job => { if (routes.live()) send(job, shellReport(job), true).catch(error => routes.failed('report shell', job, error)); },
+    alerted: (job, text) => { if (routes.live()) send(job, text, false).catch(error => routes.failed('report an alert from shell', job, error)); },
+  };
+}
+
 /** The profile's defaults for shell_start: the notify mode a call without one gets, and the alert interval. */
 export interface ShellSettings {
   notifyDefault?: () => ShellNotify;
@@ -221,13 +242,13 @@ async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSi
   } finally { watch?.end(); }
 }
 /** Starts a managed background shell for shell_start. A bad alert pattern is refused before anything starts. */
-function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, cwd: string): string {
+function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, cwd: string, agent?: string): string {
   const pattern = args.alert === undefined ? undefined : alertPattern(args.alert);
   const notify = args.notify ?? settings.notifyDefault?.() ?? 'end';
   const id: string = jobs.start(args.command, cwd, (abort, update) => {
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(id, alert) });
     return runShell(id, cwd, args, abort, update, watch);
-  }, { notify, alert: args.alert });
+  }, { notify, alert: args.alert, agent });
   return id;
 }
 
@@ -275,19 +296,30 @@ export function readShell(job: ShellJob, reads: Map<string, { output: string; at
   return `${head}\n${output || '(No output yet)'}`;
 }
 
-function unknownShell(id: string, jobs: ShellJobs): Error {
-  const ids = jobs.list().map(j => j.id);
+function unknownShell(id: string, known: ShellJob[]): Error {
+  const ids = known.map(j => j.id);
   return new Error(`Unknown shell ID "${id}". ${ids.length ? `Known shells: ${ids.join(', ')}.` : 'No shells this session; start one with shell_start.'} Only shell_start IDs work here; a subagent run ID does not.`);
 }
 
 export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () => void = () => {}, settings: ShellSettings = {}) {
   const shell = (name: string) => name === 'bash' || name === 'powershell';
-  const reads = new Map<string, { output: string; at: number }>();
   pi.on('tool_execution_start', (event, ctx) => {
     if (shell(event.toolName) && typeof event.args?.command === 'string') jobs.begin(event.toolCallId, event.args.command, ctx.cwd, 'foreground');
   });
   pi.on('tool_execution_update', event => { if (shell(event.toolName)) jobs.update(event.toolCallId, textContent(event.partialResult?.content, false)); });
   pi.on('tool_execution_end', event => { if (shell(event.toolName)) jobs.end(event.toolCallId, textContent(event.result?.content, false), event.isError); });
+  registerShellTools(pi, jobs, canStart, settings);
+}
+
+/**
+ * shell_start, shell_status and shell_stop. The main agent's see every shell of the session. A subagent's (`agent` set) start shells
+ * whose end and alerts go into its own session, and see only those: they are not the main agent's to read or stop.
+ */
+export function registerShellTools(pi: ExtensionAPI, jobs: ShellJobs, canStart: () => void = () => {}, settings: ShellSettings = {}, agent?: string) {
+  const reads = new Map<string, { output: string; at: number }>();
+  const mine = (job: ShellJob) => agent === undefined || job.agent === agent;
+  const findMine = (id: string) => { const job = jobs.find(id); return job && mine(job) ? job : undefined; };
+  const listMine = () => jobs.list().filter(mine);
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
     description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs keep running across /reload and are stopped when the profile closes or Pi quits; detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
@@ -295,23 +327,23 @@ export function registerShells(pi: ExtensionAPI, jobs: ShellJobs, canStart: () =
     async execute(_id, args, signal, _update, ctx) {
       canStart();
       if (signal?.aborted) throw new Error('Shell start cancelled');
-      const id = startShell(jobs, settings, args, ctx.cwd);
+      const id = startShell(jobs, settings, args, ctx.cwd, agent);
       return { content: [{ type: 'text', text: `Background shell ${id} started. Inspect with shell_status or /optchat shells.` }], details: { id } };
     },
   });
   pi.registerTool({ name: 'shell_status', label: 'Inspect background shell', description: 'Read managed shell state and bounded output, or list session shells. Reading never waits; shell completion is reported automatically. Read only when you need more output.',
     parameters: Type.Object({ id: Type.Optional(Type.String()) }, { additionalProperties: false }),
     async execute(_id, args) {
-      const list = jobs.list(), job = args.id ? jobs.find(args.id) : undefined;
-      if (args.id && !job) throw unknownShell(args.id, jobs);
+      const list = listMine(), job = args.id ? findMine(args.id) : undefined;
+      if (args.id && !job) throw unknownShell(args.id, list);
       return { content: [{ type: 'text', text: job ? readShell(job, reads) : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
     },
   });
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',
     parameters: Type.Object({ id: Type.String() }, { additionalProperties: false }),
     async execute(_id, args) {
-      const job = jobs.find(args.id);
-      if (!job) throw unknownShell(args.id, jobs);
+      const job = findMine(args.id);
+      if (!job) throw unknownShell(args.id, listMine());
       if (!jobs.stop(job.id)) throw new Error('Shell is not a running managed background job');
       return { content: [{ type: 'text', text: 'Stop requested; check shell_status for completion.' }], details: {} };
     },
