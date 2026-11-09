@@ -42,6 +42,7 @@ import { registerWhatsAppBridge } from './whatsapp-bridge.ts';
 import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
+import { Crew, MANAGER_DOC, crewTool, crewWakeNote, registerDelegationNudge, routeFor } from './crew.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
 import { registerRecursiveGrepNarrowing } from './bash-recursive-grep.ts';
@@ -106,7 +107,7 @@ const toggle = (prompt: string, line: string, on: boolean, after: string) => on 
 /** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, PROMPT), SEARCH_DOC, memorySearch, previousExchange ? PROMPT + CONTINUITY : PROMPT), memorySearch);
-interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; focus: Focus; inbox: Inbox; children: Children; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; outputs: OutputContext; metrics: PerformanceMetrics; unlock: () => Promise<void> }
+interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; focus: Focus; inbox: Inbox; children: Children; crew: Crew; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; outputs: OutputContext; metrics: PerformanceMetrics; unlock: () => Promise<void> }
 
 /** OptChat's own version, read from the package.json beside src/ (in the checkout and the npm package alike); none if unreadable. */
 export const version = ((): string | undefined => {
@@ -192,6 +193,7 @@ export default function optchat(pi: ExtensionAPI) {
   onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
+  registerDelegationNudge(pi, () => active?.config.delegateAfter ?? 0, () => active?.config.managerMode === true);
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
@@ -373,7 +375,8 @@ export default function optchat(pi: ExtensionAPI) {
       wake: (beat, radar) => {
         wakeRetried = false;
         const dream = briefDream(ctx);
-        const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar), previousWake(profile.dir), beat.unchanged);
+        const crew = profile.config.managerMode ? `\n${crewWakeNote(profile.crew.missions(), profile.crew.auditDue())}` : '';
+        const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + crew, previousWake(profile.dir), beat.unchanged);
         wakeOn(profile.dir, wakeModelFor(profile.config, main), wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
           .catch(error => { void wakeOff(profile.dir, wakeHost(ctx)).catch(() => undefined); ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error'); }); },
@@ -467,10 +470,12 @@ export default function optchat(pi: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
+      const crew = new Crew(join(dir, 'crew'));
       const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
-          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)) });
+          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
+          route: kind => routeFor(kind, main, config.workerModels), crew });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -479,7 +484,7 @@ export default function optchat(pi: ExtensionAPI) {
       rememberProfile(name);
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
         status: () => config.syncStatus, optmem: () => config.syncOptMem, aimemory: () => config.syncAiMemory, warn: text => ctx.ui.notify(text, 'warning') });
-      active = { name, dir, config, memory, focus: new Focus(), inbox, children, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
+      active = { name, dir, config, memory, focus: new Focus(), inbox, children, crew, usage, operations, sessionId, sync, outputs, metrics, unlock }; fault = undefined; idle = () => ctx.isIdle();
       for (const unwatch of unwatchWork.splice(0)) unwatch();
       const shellSource = { subscribe: (l: () => void) => shells.subscribe(l), snapshot: () => shells.list() };
       const agentSource = { subscribe: (l: () => void) => children.subscribe(l), snapshot: () => children.working };
@@ -747,7 +752,7 @@ export default function optchat(pi: ExtensionAPI) {
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
     syncRouterTools(pi, a.config.routerMode);
-    const router = a.config.routerMode ? `\n\n${ROUTER_DOC}` : '';
+    const router = `${a.config.routerMode ? `\n\n${ROUTER_DOC}` : ''}${a.config.managerMode ? `\n\n${MANAGER_DOC}` : ''}`;
     event.systemPromptOptions.customPrompt = allowSearch(`${PROMPT}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}${NAVIGATION_DOC}${router}`, a.config.memorySearch);
     const lessons = dreamLessons.get();
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}${lessons ? `\n\n${lessons}` : ''}`;
@@ -987,12 +992,16 @@ export default function optchat(pi: ExtensionAPI) {
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
   // The tool and its prompt line change together, once per toggle, so the cached prefix is otherwise stable.
   // Synced on save too: a report turn started while idle reuses the tool set without before_agent_start.
-  const syncSearch = ({ memorySearch }: ProfileConfig) => {
-    const tools = pi.getActiveTools();
-    if (tools.includes('search') !== memorySearch) pi.setActiveTools(memorySearch ? [...tools, 'search'] : tools.filter(name => name !== 'search'));
+  const syncSearch = ({ memorySearch, managerMode }: ProfileConfig) => {
+    let tools = pi.getActiveTools();
+    const toggle = (name: string, on: boolean) => { if (tools.includes(name) !== on) tools = on ? [...tools, name] : tools.filter(t => t !== name); };
+    const before = tools;
+    toggle('search', memorySearch); toggle('crew', managerMode); // The crew tool is declared only in manager mode.
+    if (tools !== before) pi.setActiveTools(tools);
   };
+  pi.registerTool({ ...crewTool(() => required().crew), defaultActive: false });
   pi.registerTool({ name: 'spawn', label: 'Spawn background agents',
-    description: 'Start background subagents, returning IDs immediately. Use only when the user asks. Give each task the cwd of the project it works on, so the subagent starts there with that project\'s AGENTS.md. Each receives the current memory view and read-only zoom/date. Whether children may delegate further, and how many agents may run at once, is set per profile. Completion reports arrive automatically; never poll or sleep waiting for them.',
+    description: 'Start background subagents, returning IDs immediately. Use only when the user asks, or in manager mode for a worker: a task with `kind` must be a contract (lines Goal:, Acceptance:, Evidence:, Authority:) and gets its project\'s charter and memory instead of the chat. Give each task the cwd of the project it works on, so the subagent starts there with that project\'s AGENTS.md. Each receives the current memory view and read-only zoom/date. Whether children may delegate further, and how many agents may run at once, is set per profile. Completion reports arrive automatically; never poll or sleep waiting for them.',
     parameters: childToolSchemas.spawn,
     async execute(_id, args, signal, _update, ctx) {
       const text = await required().children.start(args.tasks, ctx.cwd, signal); status(ctx);

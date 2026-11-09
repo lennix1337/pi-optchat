@@ -1,4 +1,6 @@
 import { Type } from 'typebox';
+import { stringEnum } from './string-enum.ts';
+import { SPECIALISTS, WORKER_KINDS } from './crew.ts';
 
 export const CWD_DOC = 'Project directory the subagent works in (~ allowed); its AGENTS.md files load from there. Defaults to your current directory.';
 
@@ -12,7 +14,9 @@ const freezeTree = <T>(value: T): T => {
 
 /** Static tool schemas are shared; each child still gets fresh tools and session-bound closures. */
 export const childToolSchemas = freezeTree({
-  spawn: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })) }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
+  spawn: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })),
+    kind: Type.Optional(stringEnum(WORKER_KINDS, { description: 'Manager mode worker: code (Sonnet), mechanical (Haiku), hard (Opus), plan (read-only scout). The task must then be a contract.' })),
+    project: Type.Optional(stringEnum(SPECIALISTS, { description: 'Specialist whose charter and memory brief the worker; default from cwd.' })) }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
   tell: Type.Object({ id: Type.String(), message: Type.String() }, { additionalProperties: false }),
   parent: Type.Object({ message: Type.String() }, { additionalProperties: false }),
 });

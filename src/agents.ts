@@ -32,6 +32,7 @@ import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { routerReport } from './router-mode.ts';
+import { checkContract, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
 
 export interface LiveRun {
@@ -73,7 +74,11 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   settings?: () => Partial<Settings>;
   /** Pi's extension event bus, used for the documented pi-subagents control RPC. */
   events?: SubagentEvents;
-  summarizeHandoff?: (run: RunInfo, messages: AgentMessage[], descendants?: HandoffEvidence[]) => Promise<string> }
+  summarizeHandoff?: (run: RunInfo, messages: AgentMessage[], descendants?: HandoffEvidence[]) => Promise<string>;
+  /** Manager mode: the model for a worker kind, and the crew whose project memory briefs contract workers. */
+  route?: (kind: WorkerKind) => ModelChoice; crew?: Crew }
+/** One spawn task: a plain subagent, or with `kind` a contract worker that gets its project's brief instead of the chat. */
+export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist }
 
 // Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
 const packageName = (path: string): string | undefined => {
@@ -316,15 +321,15 @@ export class Children {
     live.firstActivity = true;
     this.timed('first_activity', live.info.id);
   }
-  async spawn(tasks: { task: string; cwd?: string }[], cwd: string, signal?: AbortSignal, parentId?: string, connected = false) {
+  async spawn(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string, connected = false) {
     return (await this.launch(tasks, cwd, signal, parentId, connected)).ids;
   }
   /** The spawn tools' answer, saying how this spawn's reports will come back. */
-  async start(tasks: { task: string; cwd?: string }[], cwd: string, signal?: AbortSignal, parentId?: string) {
+  async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string) {
     const { ids, grouped } = await this.launch(tasks, cwd, signal, parentId);
     return `Started: ${ids.join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}`;
   }
-  private async launch(tasks: { task: string; cwd?: string }[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false) {
+  private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false) {
     // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
     if (this.settings.routerMode) for (const { task } of tasks) checkHandoffSummary(task, HANDOFF_MAX_BYTES, 'Task');
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
@@ -340,28 +345,42 @@ export class Children {
     if (depth > subagentLevels) throw new Error(`Delegation depth limit reached: this profile allows ${subagentLevels} level${subagentLevels === 1 ? '' : 's'} of subagents.`);
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
+    for (const task of tasks) if (task.kind) checkContract(task.task);
     const renderingAt = performance.now();
-    const chosen = this.choice();
-    const resolved = resolveModel(this.registry, chosen);
-    if (!resolved) throw new Error(`Subagent model unavailable: ${chosen.provider}/${chosen.model}`);
-    const selected = { ...chosen, provider: resolved.provider }, model = resolved.model;
-    const fullView = this.memory.render();
-    // A model whose price tier binds gets the focused history too: the full view alone can take most of its base-price prompt.
-    const tierBudget = bindingTierBudget(model, refreshFraction(this.settings.refreshAt));
-    const view = (this.settings.focusedSubagents || tierBudget !== undefined) && !connected ? focusedChildView(fullView) : fullView;
-    this.timed('view', undefined, renderingAt, view.length);
-    const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, selected, model, signal, cancelled }));
+    const models = tasks.map(task => this.modelOf(task));
+    const views = this.viewsOf(tasks, models, cwd, connected);
+    this.timed('view', undefined, renderingAt, views.reduce((sum, view) => sum + view.length, 0));
+    const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }));
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;
-    for (const live of launched) {
+    for (const [i, live] of launched.entries()) {
       live.batch = batch;
-      const work = this.execute(live, `${view}\n\nYour task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
+      const work = this.execute(live, `${views[i]}\n\nYour task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
         .finally(() => { this.completions.delete(work); this.changed(); });
       this.completions.add(work);
       live.completion = work;
     }
     this.changed();
+    this.watch();
     return { ids: launched.map(c => c.info.id), grouped: batch !== undefined };
+  }
+  /** A task's model: its kind's route in manager mode, else the subagent role's model. */
+  private modelOf(task: SpawnTask) {
+    const chosen = task.kind && this.options.route ? this.options.route(task.kind) : this.choice();
+    const resolved = resolveModel(this.registry, chosen);
+    if (!resolved) throw new Error(`${task.kind ? `Worker model for "${task.kind}"` : 'Subagent model'} unavailable: ${chosen.provider}/${chosen.model}`);
+    return { selected: { ...chosen, provider: resolved.provider }, model: resolved.model };
+  }
+  /** What each task starts from: a contract worker its project's brief, never the manager's chat (most of a worker's prompt
+   * saved); any other child the chat, focused when asked or when its model's price tier binds. */
+  private viewsOf(tasks: SpawnTask[], models: { model: Model<Api> }[], cwd: string, connected: boolean) {
+    let fullView: string | undefined;
+    return tasks.map((task, i) => {
+      if (task.kind && this.options.crew && !connected) return this.options.crew.brief(task.kind, task.project ?? specialistOf(taskDirectory(cwd, task.cwd)));
+      fullView ??= this.memory.render();
+      const tierBudget = bindingTierBudget(models[i].model, refreshFraction(this.settings.refreshAt));
+      return (this.settings.focusedSubagents || tierBudget !== undefined) && !connected ? focusedChildView(fullView) : fullView;
+    });
   }
   /** close() waits for launches, so shutdown never unlocks the profile under a child that is still opening. */
   private track<T>(launch: Promise<T>) {
@@ -370,13 +389,14 @@ export class Children {
     launch.then(done, done);
     return launch;
   }
-  private async launchBatch({ tasks, cwd, depth, parentId, connected, selected, model, signal, cancelled }: { tasks: { task: string; cwd?: string }[]; cwd: string; depth: number; parentId?: string; connected: boolean;
-    selected: ModelChoice; model: Model<Api>; signal?: AbortSignal; cancelled: () => boolean }) {
+  private async launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }: { tasks: SpawnTask[]; cwd: string; depth: number; parentId?: string; connected: boolean;
+    models: { selected: ModelChoice; model: Model<Api> }[]; signal?: AbortSignal; cancelled: () => boolean }) {
     const launched: LiveRun[] = [];
     let reserved = tasks.length;
     this.launching += reserved;
     try {
-      for (const task of tasks) {
+      for (const [index, task] of tasks.entries()) {
+        const { selected, model } = models[index];
         signal?.throwIfAborted();
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd);
@@ -385,7 +405,8 @@ export class Children {
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
-          parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [], ...(connected ? { connected: true } : {}) };
+          parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [], ...(connected ? { connected: true } : {}),
+          ...(task.kind ? { kind: task.kind, project: task.project ?? specialistOf(directory) } : {}) };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
         launched.push(live); this.save(info); this.running.set(id, live);
         this.launching--; reserved--;
@@ -470,7 +491,7 @@ export class Children {
   private delegationTools(parentId: string, cwd: string, levels: number, maxAgents: number) {
     return [{ name: 'spawn', label: 'Delegate task', description: `Delegate parts of your task. Results arrive automatically after this run; never poll or sleep waiting. Maximum depth ${levels} and ${maxAgents} active agents per profile.`,
       parameters: childToolSchemas.spawn,
-      execute: async (_id: string, args: { tasks: { task: string; cwd?: string }[] }, signal?: AbortSignal) => result(await this.start(args.tasks, cwd, signal, parentId)),
+      execute: async (_id: string, args: { tasks: SpawnTask[] }, signal?: AbortSignal) => result(await this.start(args.tasks, cwd, signal, parentId)),
     }, { name: 'tell', label: 'Guide child', description: 'Send guidance to one of your direct children. A finished child is resumed with its earlier conversation, and its new report arrives automatically.',
       parameters: childToolSchemas.tell,
       execute: async (_id: string, args: { id: string; message: string }) => {
@@ -891,8 +912,31 @@ export class Children {
       if (!reports) this.memory.append('work', `[${id}] deleted by the user`);
     } finally { for (const run of marked) this.deleting.delete(run); this.changed(); }
   }
+  private watcher?: ReturnType<typeof setInterval>;
+  private readonly stalled = new Set<string>();
+  private watch() {
+    if (this.watcher || this.settings.stallMinutes <= 0) return;
+    this.watcher = setInterval(() => { this.checkStalls().catch(error => this.warn(`Watcher failed: ${String(error)}`)); }, 60_000);
+    this.watcher.unref?.();
+  }
+  /** The free watcher: no model call. A running child silent for `stallMinutes` is reported to its parent once, until it shows
+   * activity again; a long tool with no output is named, since it may be working rather than stuck. Returns the ids reported. */
+  async checkStalls(now = Date.now()) {
+    const limit = this.settings.stallMinutes * 60_000, reported: string[] = [];
+    for (const [id, live] of this.running) {
+      if (limit <= 0 || live.info.state !== 'running' || now - live.updated < limit) { this.stalled.delete(id); continue; }
+      if (this.stalled.has(id)) continue;
+      this.stalled.add(id);
+      const tool = [...live.tools.values()][0];
+      const text = `[${id}] Watcher: no activity for ${Math.round((now - live.updated) / 60_000)} min${tool ? ` while its ${tool.name} call runs` : ''} (${live.info.model}${live.info.kind ? `, ${live.info.kind} worker` : ''}). It may be stuck: tell it what to do, or stop it.`;
+      if (await this.toParent(live.info.parentId, text)) reported.push(id);
+    }
+    if (!this.running.size && this.watcher) { clearInterval(this.watcher); this.watcher = undefined; }
+    return reported;
+  }
   async close() {
     this.closing = true;
+    if (this.watcher) { clearInterval(this.watcher); this.watcher = undefined; }
     // Only work in progress is picked up at the next start: not paused runs waiting for the user, runs being stopped, or connected windows (they hand off).
     for (const { info } of this.running.values()) if (!info.connected && (info.state === 'running' || info.state === 'waiting')) info.cutOff = true;
     await Promise.allSettled([...this.running.keys()].map(id => this.stop(id, 'pi')));
