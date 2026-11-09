@@ -86,6 +86,7 @@ import { Sync } from './sync.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
+import { heapReportTool, noteReload, reloadCount } from './heap-report.ts';
 import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { registerSelfReload } from './self-reload.ts';
@@ -628,6 +629,7 @@ export default function optchat(pi: ExtensionAPI) {
   pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; active?.sync.schedule(); });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
   pi.on('session_shutdown', async event => {
+    if (event.reason === 'reload') noteReload();
     try { await stop(event.reason); }
     // The shells outlive a /reload in this process: they must not keep this instance's closure alive, nor report into it.
     finally { unsubscribeRecovery(); recoveryIncidents.clear(); shells.setEndObserver(undefined); }
@@ -982,6 +984,7 @@ export default function optchat(pi: ExtensionAPI) {
   pi.registerTool(outputReadTool(() => required().outputs));
   pi.registerTool(readManyTool(process.cwd()));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
+  pi.registerTool({ ...heapReportTool(() => active && { memory: active.memory.stats(), run: run.length, reloads: reloadCount() }), defaultActive: false });
   registerToolInventory(pi);
   registerLiveResources(pi);
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',

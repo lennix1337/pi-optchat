@@ -180,6 +180,17 @@ export class Memory {
   private readonly compaction: Sawtooth;
   /** Hit indexes per lowercased query, extended as messages arrive; `before` pages filter this bounded result. */
   private readonly searchCache = new Map<string, HitIndex>();
+  /** What this memory holds in RAM, for diagnostics only: counts and byte sizes, never text. */
+  stats() {
+    let liveTexts = 0, liveTextBytes = 0;
+    for (const entry of this.root) if (Object.getOwnPropertyDescriptor(entry, 'text')?.writable) { liveTexts++; liveTextBytes += Buffer.byteLength(entry.text); }
+    let treeTextBytes = 0;
+    for (const node of this.tree.values()) treeTextBytes += node.size;
+    let searchCacheHits = 0;
+    for (const held of this.searchCache.values()) searchCacheHits += held.hits.length;
+    return { root: this.root.length, liveTexts, liveTextBytes, treeNodes: this.tree.size, treeTextBytes, storeLines: this.store.lineIndexSize?.() ?? 0,
+      searchCacheQueries: this.searchCache.size, searchCacheHits, unbuilt: this.unbuilt.size };
+  }
   /** Messages examined by search so far; tests read it to prove a repeated query does not rescan history. */
   private scans = 0;
   get searchScans() { return this.scans; }

@@ -5,6 +5,8 @@ import { Type } from 'typebox';
 import { estimatedContextTokens } from './run-context.ts';
 
 export type Stage = 'context' | 'projection' | 'tool' | 'provider_headers' | 'first_content' | 'response' | 'persistence' | 'settle' | 'child_open' | 'compaction'
+  // Pi's own time around a request, outside OptChat's hooks: from turn start (or the last tool's end) to the context hook, and from the last message to turn end.
+  | 'pi_pre_request' | 'pi_boundary'
   // Turn start and settle, in the hooks' own order: input, before_agent_start, the context hook's parts, the provider hook; then the settle work.
   | 'input' | 'start' | 'memory' | 'operational' | 'budget' | 'assemble' | 'telemetry' | 'provider_hook' | 'settled' | 'checkpoint' | 'status' | 'usage';
 interface Timing { count: number; totalMs: number; maxMs: number; lastMs: number; samples: number[] }
@@ -99,10 +101,22 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
   onLatency?: (messageTimestamp: number, latency: { firstMs?: number; responseMs: number }) => void) {
   const tools = new Map<string, { name: string; start: number }>();
   let request: number | undefined, first = false, firstMs: number | undefined;
+  // Pi builds the request's messages (projection, structuredClone) between these two marks, and persists and previews the turn between the other two.
+  let beforeRequest: number | undefined, lastMessage: number | undefined;
+  pi.on('turn_start', () => { beforeRequest = performance.now(); });
+  pi.on('context_with_system', () => {
+    if (beforeRequest !== undefined) metrics()?.record('pi_pre_request', performance.now() - beforeRequest);
+    beforeRequest = undefined;
+  });
+  pi.on('turn_end', () => {
+    if (lastMessage !== undefined) metrics()?.record('pi_boundary', performance.now() - lastMessage);
+    lastMessage = undefined;
+  });
   pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now() }); });
   pi.on('tool_execution_end', event => {
     const started = tools.get(event.toolCallId); tools.delete(event.toolCallId);
     if (started) metrics()?.recordTool(started.name, performance.now() - started.start, event.isError === true);
+    beforeRequest = performance.now();
   });
   pi.on('before_provider_request', event => {
     const current = metrics();
@@ -117,13 +131,14 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
     metrics()?.record('first_content', firstMs); first = true;
   });
   pi.on('message_end', event => {
+    lastMessage = performance.now();
     if (request !== undefined && event.message.role === 'assistant') {
       const responseMs = performance.now() - request;
       metrics()?.record('response', responseMs); request = undefined;
       onLatency?.(event.message.timestamp, { ...(firstMs === undefined ? {} : { firstMs }), responseMs });
     }
   });
-  pi.on('agent_settled', () => { tools.clear(); request = undefined; });
+  pi.on('agent_settled', () => { tools.clear(); request = undefined; beforeRequest = undefined; lastMessage = undefined; });
 }
 export const performanceTool = (metrics: () => PerformanceMetrics, outputs: () => object) => ({
   name: 'context_metrics', label: 'Context performance', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
