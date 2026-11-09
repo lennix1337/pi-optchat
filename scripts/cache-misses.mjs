@@ -63,6 +63,7 @@ if (values.diag && !existsSync(values.diag) && !existsSync(`${values.diag}.1`)) 
     byClass: Object.fromEntries(Object.entries(r.byClass).map(([k, v]) => [k, round(v)])),
     headChangeModelSwitch: round(r.modelSwitch),
     headChangeByCause: Object.fromEntries(Object.entries(r.headCause).map(([k, v]) => [k, round(v)])),
+    afterIdleByDay: Object.fromEntries(lastDays(Object.entries(r.afterIdle).sort(), days).map(([k, v]) => [k, round(v)])),
     headChangeByDay: Object.fromEntries(lastDays(Object.entries(r.byDay).sort(), days).map(([k, v]) => [k, round(v)])),
   }, null, 2));
 }

@@ -75,3 +75,16 @@ test('without diagnostics no cause is claimed', () => {
   const r = classifyCacheMisses([rec(0, 0, 90000), rec(1, 30000, 70000)]);
   assert.deepEqual(r.headCause, {});
 });
+
+test('afterIdle reports the first call after an idle gap per day, with its median write (the cost a wake pays)', () => {
+  const day = (d: number, minute: number, read: number, write: number) => rec(minute, read, write, { date: new Date(Date.UTC(2026, 9, d, 12, minute)).toISOString() });
+  const r = classifyCacheMisses([
+    day(30, 0, 0, 30000),          // first call ever: idle by definition
+    day(30, 1, 30000, 500),        // 1 min later: not idle
+    day(30, 40, 0, 20000),         // 39 min gap: idle call
+    day(31, 0, 0, 10000),          // next day, idle call
+    day(31, 3, 10000, 400),
+  ]);
+  assert.deepEqual(r.afterIdle['2026-10-30'], { turns: 2, cacheWriteUsd: 0.05, cacheWriteTokens: 50000, medianWriteTokens: 25000 });
+  assert.deepEqual(r.afterIdle['2026-10-31'], { turns: 1, cacheWriteUsd: 0.01, cacheWriteTokens: 10000, medianWriteTokens: 10000 });
+});
