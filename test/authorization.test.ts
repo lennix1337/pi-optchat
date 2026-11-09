@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EffectApprovals } from '../src/authorization.ts';
+import { EffectApprovals, touchesContract } from '../src/authorization.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { OperationJournal, registerOperationSafety } from '../src/operations.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -507,4 +507,13 @@ test('a call under a standing grant leaves another waiting call pending', () => 
   const waiting = token(gate, invocation('bash', { command: 'npm publish' }));
   assert.equal(gate.admit(invocation('subagent', { task: 'x' })), undefined, 'the grant admits the launch');
   assert.deepEqual(gate.pendingFor('owner').map(p => p.token), [waiting]);
+});
+
+test('a crew memory write that names the contract file is prose, not a contract change', () => {
+  // 09/11 ~19:52 BRT: a crew memory write about "autonomy.json scope names" was refused as a contract change.
+  const text = 'Regra: o escopo novo de autonomy.json precisa de um emissor em effect-classifier.ts';
+  assert.equal(touchesContract({ tool: 'crew', input: { action: 'write', project: 'harness', part: 'memory', text } }), false);
+  assert.equal(touchesContract({ tool: 'crew', input: { action: 'write', project: 'harness', part: 'missions', text } }), false);
+  // The contract itself stays guarded: an edit of the file is still a contract change.
+  assert.equal(touchesContract({ tool: 'edit', input: { path: '~/.optchat/profiles/swlucas05/autonomy.json', edits: [] } }), true);
 });
