@@ -423,12 +423,12 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 
 const CREW_PARAMS = Type.Object({
   action: stringEnum(['list', 'read', 'write', 'audit', 'view', 'zoom'] as const),
-  project: Type.Optional(Type.String({ description: 'Specialist slug (lowercase letters, digits, hyphens); list shows the existing ones. A new slug starts a new specialist.' })),
+  project: Type.Optional(Type.String()),
   part: Type.Optional(stringEnum(['charter', 'memory', 'missions', 'proposals'] as const)),
-  text: Type.Optional(Type.String({ description: 'write: the whole new text; it replaces the old one.' })),
-  id: Type.Optional(Type.Integer({ minimum: 0, description: 'zoom: a line of the project tree\'s view (id+n), as zoom of the chat.' })),
+  text: Type.Optional(Type.String()),
+  id: Type.Optional(Type.Integer({ minimum: 0 })),
   n: Type.Optional(Type.Integer({ minimum: 1 })),
-  findText: Type.Optional(Type.String({ minLength: 1, description: 'zoom: a literal searched in the runs id..id+n-1.' })),
+  findText: Type.Optional(Type.String({ minLength: 1 })),
 }, { additionalProperties: false });
 
 /** "dentai (2), harness (1)" */
@@ -467,7 +467,7 @@ function readCrewTree(c: Crew, args: { action: 'view' | 'zoom'; project?: Specia
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
 export const crewTool = (crew: () => Crew) => ({
   name: 'crew', label: 'Crew memory',
-  description: `View a specialist's memory tree (one leaf per finished worker run, summarized like the chat) with action "view" (project), and open its lines with "zoom" (project, id, n, findText). Mark a specialist's memory audited with action "audit" (needs project; it reports the memory size, what made it due and the proposals pending; writing the memory does the same). Read or replace the crew's disk state: each project specialist's charter (${CHARTER_BYTES} B cap) and memory (${MEMORY_BYTES} B cap), and missions.md (open work across wakes). list shows sizes and memory age; read and write take project+part (part "missions" needs no project; part "proposals" is read-only: the pending memory proposals of project, or of all); list also shows the proposals still pending. Write replaces the whole text and is refused over the cap, and writing a memory clears that project's pending proposals. Apply the lines of a worker's memory proposal you verified; never paste a report whole.`,
+  description: `Specialist disk state, by project slug (a new slug starts one). list: sizes, memory age, pending proposals. read/write: part charter (${CHARTER_BYTES} B cap), memory (${MEMORY_BYTES} B cap), missions (across wakes, no project) or proposals (read-only). write: text replaces all, refused over the cap; a memory write clears the project's proposals. audit: marks the memory audited. view: memory tree; zoom: id, n, findText open its lines. Never paste a report whole; write only verified proposal lines.`,
   parameters: CREW_PARAMS,
   async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'audit' | 'view' | 'zoom'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
     id?: number; n?: number; findText?: string }) {

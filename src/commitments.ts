@@ -38,8 +38,13 @@ export interface Commitment {
   supersedes?: string;
   /** While it waits on the operator: the answers he can tap on the App Home (each becomes his DM reply). */
   choices?: string[];
+  /** Events the extension records on it by itself (see `LinkEvent`). */
+  links?: Links;
   notes: { at: string; text: string }[];
 }
+/** `prs` are `owner/repo#N`, `runs` worker run ids; `reload` waits for one reload resume; `next` becomes the next step when a linked PR ends or a linked run or the reload arrives. `seen` holds the events already recorded. */
+export interface Links { prs?: string[]; runs?: string[]; reload?: boolean; next?: string; seen?: string[] }
+export type LinksInput = Omit<Links, 'seen'>;
 interface Document { version: 1; items: Commitment[] }
 
 const MAX_ITEMS = 200;
@@ -50,11 +55,21 @@ export const STALE_MS = 24 * 3_600_000;
 const CONTEXT_MAX = 2_000;
 export const MAX_CHOICES = 4;
 export const CHOICE_MAX = 40;
+const MAX_LINKED = 5;
+const MAX_SEEN = 20;
+const PR_REF = /^[\w.-]+\/[\w.-]+#[1-9]\d*$/;
 export const closed = (s: CommitmentStatus) => s === 'done' || s === 'dropped';
 const clip = (s: string, max = MAX_TEXT) => clean(s, max);
 
 const isText = (value: unknown): value is string => typeof value === 'string';
 const isTime = (value: unknown): value is string => isText(value) && Number.isFinite(Date.parse(value));
+const isTexts = (value: unknown): value is string[] => Array.isArray(value) && value.every(isText);
+function isLinks(value: unknown): value is Links {
+  if (typeof value !== 'object' || value === null) return false;
+  const l = value as Record<string, unknown>;
+  return (l.prs === undefined || isTexts(l.prs)) && (l.runs === undefined || isTexts(l.runs)) && (l.seen === undefined || isTexts(l.seen))
+    && (l.reload === undefined || typeof l.reload === 'boolean') && (l.next === undefined || isText(l.next));
+}
 /** A stored item whose status is not one of STATUSES would read as open forever (`closed` is false for anything else), and one without notes or times breaks every list. */
 function isCommitment(value: unknown): value is Commitment {
   if (typeof value !== 'object' || value === null) return false;
@@ -62,7 +77,7 @@ function isCommitment(value: unknown): value is Commitment {
   return isText(c.id) && isText(c.text) && isText(c.source) && (c.owner === 'optchat' || c.owner === 'operator')
     && STATUSES.some(status => status === c.status) && isTime(c.createdAt) && isTime(c.updatedAt) && isTime(c.progressAt)
     && (c.due === undefined || isTime(c.due)) && (c.next === undefined || isText(c.next)) && (c.evidence === undefined || isText(c.evidence)) && (c.supersedes === undefined || isText(c.supersedes))
-    && (c.choices === undefined || (Array.isArray(c.choices) && c.choices.every(isText)))
+    && (c.choices === undefined || (Array.isArray(c.choices) && c.choices.every(isText))) && (c.links === undefined || isLinks(c.links))
     && Array.isArray(c.notes) && c.notes.every(note => typeof note === 'object' && note !== null && isTime((note as { at?: unknown }).at) && isText((note as { text?: unknown }).text));
 }
 
@@ -100,7 +115,20 @@ function choicesOf(choices: readonly string[] | undefined): string[] | undefined
   return kept;
 }
 
-export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[] };
+/** The links after `given` is applied over `old`: a list replaces its list, `reload: false` or an empty list clears it; nothing left means no links. Rejects what no event can match. */
+function linksOf(given: LinksInput | undefined, old?: Links): Links | undefined {
+  if (given === undefined) return old;
+  const merged: Links = { ...old, ...given.prs !== undefined ? { prs: given.prs } : {}, ...given.runs !== undefined ? { runs: given.runs } : {} };
+  const prs = [...new Set((merged.prs ?? []).map(p => p.trim()))], runs = [...new Set((merged.runs ?? []).map(r => r.trim()))];
+  for (const pr of prs) if (!PR_REF.test(pr)) throw new Error(`links.prs wants owner/repo#N, got "${pr}"`);
+  if (runs.some(r => !r || r.length > 40)) throw new Error('links.runs wants worker run ids');
+  if (prs.length > MAX_LINKED || runs.length > MAX_LINKED) throw new Error(`At most ${MAX_LINKED} linked PRs and ${MAX_LINKED} runs.`);
+  const reload = given.reload ?? merged.reload, next = given.next === undefined ? merged.next : given.next ? clip(given.next) : undefined;
+  if (!prs.length && !runs.length && !reload) return undefined;
+  return { ...prs.length ? { prs } : {}, ...runs.length ? { runs } : {}, ...reload ? { reload } : {}, ...next ? { next } : {}, ...merged.seen?.length ? { seen: merged.seen } : {} };
+}
+
+export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; links?: LinksInput };
 export function addCommitment(dir: string, input: AddInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
   const at = iso(now);
@@ -116,6 +144,7 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
     ...(dueAt(input, now) ? { due: dueAt(input, now) } : {}),
     ...(input.supersedes ? { supersedes: input.supersedes } : {}),
     ...(choicesOf(input.choices)?.length ? { choices: choicesOf(input.choices) } : {}),
+    ...(linksOf(input.links) ? { links: linksOf(input.links) } : {}),
   };
   const next = items.map(c => c.id === input.supersedes
     ? { ...c, status: 'dropped' as const, updatedAt: at, notes: [...c.notes, { at, text: `superseded by ${item.id}` }].slice(-MAX_NOTES) } : c);
@@ -123,17 +152,18 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
   return item;
 }
 
-export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; choices?: string[] };
+export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; choices?: string[]; links?: LinksInput };
 export function updateCommitment(dir: string, input: UpdateInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
   const old = items.find(c => c.id === input.id);
   if (!old) throw new Error(`No commitment ${input.id}`);
   if (input.status === 'done' && !input.evidence && !old.evidence) throw new Error('Closing as done needs evidence: what was observed that proves it.');
-  const at = iso(now), due = dueAt(input, now), choices = choicesOf(input.choices);
-  const { choices: _old, ...rest } = old;
+  const at = iso(now), due = dueAt(input, now), choices = choicesOf(input.choices), links = linksOf(input.links, old.links);
+  const { choices: oldChoices, links: _links, ...rest } = old;
   const updated: Commitment = {
-    ...(choices === undefined ? old : rest), updatedAt: at,
+    ...rest, ...(choices === undefined && oldChoices ? { choices: oldChoices } : {}), updatedAt: at,
     ...(choices?.length ? { choices } : {}),
+    ...(links ? { links } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.next ? { next: clip(input.next) } : {}),
     ...(input.evidence ? { evidence: clip(input.evidence) } : {}),
@@ -143,6 +173,53 @@ export function updateCommitment(dir: string, input: UpdateInput, now = Date.now
   };
   write(dir, items.map(c => c.id === old.id ? updated : c), now);
   return updated;
+}
+
+/** What the extension sees that a commitment may be linked to: a gitwatch event of a PR, the end of a worker run, the reload resume. */
+export type LinkEvent =
+  | { type: 'pr'; repo: string; pr: number; kind: string; text: string }
+  | { type: 'run'; id: string; state: string }
+  | { type: 'reload'; id: string };
+/** Gitwatch kinds worth a progress line (a pending-checks update is not); `merged` and `closed` end the PR. */
+const PR_KINDS = new Set(['merged', 'closed', 'reopened', 'checks', 'mergeState', 'review', 'stall']);
+const PR_ENDS = new Set(['merged', 'closed']);
+
+/** The note an event writes, the key that makes a repeat of it a no-op, whether the commitment's `next` applies, and whether the item is linked to it. */
+function linkNote(event: LinkEvent): { key: string; text: string; ends: boolean; linked: (l: Links) => boolean } | undefined {
+  if (event.type === 'pr') {
+    if (event.pr <= 0 || !PR_KINDS.has(event.kind) || /^checks running/.test(event.text)) return undefined;
+    const ref = `${event.repo}#${event.pr}`.toLowerCase();
+    return { key: `pr:${ref}:${event.kind}:${event.text}`, text: `gitwatch ${event.repo}#${event.pr}: ${event.text}`, ends: PR_ENDS.has(event.kind),
+      linked: l => l.prs?.some(p => p.toLowerCase() === ref) === true };
+  }
+  if (event.type === 'run') return { key: `run:${event.id}:${event.state}`, text: `worker run ${event.id} ${event.state}`, ends: true, linked: l => l.runs?.includes(event.id) === true };
+  return { key: `reload:${event.id}`, text: 'reload done; continuation started', ends: true, linked: l => l.reload === true };
+}
+
+/**
+ * Appends one progress line to every open commitment linked to `event` and resets its stall clock: no model call. A
+ * repeat of an event it already recorded adds nothing. It never changes the status (done needs evidence); `next` is
+ * set only from the link's own `next`, when the PR ends or the run or reload arrives. A reload link is used up by its resume.
+ * Returns the commitments it changed.
+ */
+export function recordLinkEvent(dir: string, event: LinkEvent, now = Date.now()): Commitment[] {
+  const note = linkNote(event);
+  if (!note || !existsSync(join(dir, COMMITMENTS_FILE))) return [];
+  const items = readCommitments(dir), at = iso(now), changed: Commitment[] = [];
+  const next = items.map(c => {
+    const links = c.links;
+    if (closed(c.status) || !links || !note.linked(links) || links.seen?.includes(note.key)) return c;
+    const { reload: _used, ...kept } = links;
+    const left: Links = event.type === 'reload' ? kept : { ...links, seen: [...(links.seen ?? []), note.key].slice(-MAX_SEEN) };
+    const { links: _old, ...rest } = c;
+    const updated: Commitment = { ...rest, updatedAt: at, progressAt: at, notes: [...c.notes, { at, text: clip(note.text, 240) }].slice(-MAX_NOTES),
+      ...(note.ends && links.next ? { next: links.next } : {}),
+      ...(left.prs?.length || left.runs?.length || left.reload ? { links: left } : {}) };
+    changed.push(updated);
+    return updated;
+  });
+  if (changed.length) write(dir, next, now);
+  return changed;
 }
 
 const span = (ms: number) => {
@@ -251,29 +328,33 @@ export class Presence {
 // ---- The tool and the hooks. ----
 const params = Type.Object({
   action: stringEnum(['list', 'add', 'update']),
-  id: Type.Optional(Type.String({ description: 'update: the commitment id (c_xxxxxx)' })),
-  text: Type.Optional(Type.String({ maxLength: 2000, description: 'add: what is promised or awaited, one line' })),
-  source: Type.Optional(Type.String({ description: 'add: memory message id of his request, or "latest" (his last message)' })),
+  id: Type.Optional(Type.String({ description: 'update: c_xxxxxx' })),
+  text: Type.Optional(Type.String({ maxLength: 2000, description: 'add: the promise, one line' })),
+  source: Type.Optional(Type.String({ description: 'add: his message id, or "latest"' })),
   owner: Type.Optional(stringEnum(['optchat', 'operator'])),
   status: Type.Optional(stringEnum(STATUSES)),
-  next: Type.Optional(Type.String({ maxLength: 1000, description: 'the next concrete step' })),
-  progress: Type.Optional(Type.String({ maxLength: 1000, description: 'update: what moved, observed (resets the 30-min stall clock)' })),
-  evidence: Type.Optional(Type.String({ maxLength: 1000, description: 'what was observed; required to close as done' })),
-  due: Type.Optional(Type.String({ description: 'ISO deadline' })),
-  dueInMinutes: Type.Optional(Type.Number({ description: 'deadline as minutes from now' })),
-  supersedes: Type.Optional(Type.String({ description: 'add: id of an older commitment this replaces (it is dropped)' })),
-  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'waiting on the operator: up to 4 short answers he can tap on the Slack Home (e.g. ["chegou","não chegou"]); [] clears' })),
-  all: Type.Optional(Type.Boolean({ description: 'list: include closed ones (last 14 days)' })),
+  next: Type.Optional(Type.String({ description: 'next step' })),
+  progress: Type.Optional(Type.String({ description: 'update: what moved; resets the stall clock' })),
+  evidence: Type.Optional(Type.String()),
+  due: Type.Optional(Type.String()),
+  dueInMinutes: Type.Optional(Type.Number()),
+  supersedes: Type.Optional(Type.String({ description: 'add: id it replaces' })),
+  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'his answers, tapped on Slack Home; [] clears' })),
+  links: Type.Optional(Type.Object({
+    prs: Type.Optional(Type.Array(Type.String())), runs: Type.Optional(Type.Array(Type.String())), reload: Type.Optional(Type.Boolean()), next: Type.Optional(Type.String()),
+  }, { additionalProperties: false, description: 'notes progress by itself, never done: prs owner/repo#N, run ids, reload; next = the next step once it ends' })),
+  all: Type.Optional(Type.Boolean({ description: 'list: include closed' })),
 }, { additionalProperties: false });
 type Params = { action: 'list' | 'add' | 'update'; id?: string; text?: string; source?: string; owner?: CommitmentOwner; status?: CommitmentStatus;
-  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; all?: boolean };
+  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; links?: LinksInput; all?: boolean };
 
 function listText(dir: string, all: boolean, now: number) {
   const items = readCommitments(dir), shown = all ? items : openCommitments(items, now);
   if (!shown.length) return 'No open commitments.';
   return shown.map(c => {
     const last = c.notes.at(-1);
-    return `${describe(c, now)}${c.evidence ? ` · evidence: ${c.evidence}` : ''}${last ? ` · last: ${brasiliaTime(Date.parse(last.at))} ${last.text}` : ''}`;
+    const l = c.links, linked = l ? [...l.prs ?? [], ...(l.runs ?? []).map(r => `run ${r}`), ...l.reload ? ['reload'] : []] : [];
+    return `${describe(c, now)}${c.evidence ? ` · evidence: ${c.evidence}` : ''}${linked.length ? ` · linked: ${linked.join(', ')}` : ''}${last ? ` · last: ${brasiliaTime(Date.parse(last.at))} ${last.text}` : ''}`;
   }).join('\n');
 }
 
@@ -282,7 +363,7 @@ type Owner = { dir: string; sourceExists(id: string): boolean; latestSource?(): 
 export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
   return {
     name: 'commitments', label: 'Commitments',
-    description: 'Track what you promised the operator and what waits on him, so nothing rots: add (text, source, owner, next step, deadline), update (progress, next, status open/waiting_operator/blocked/done/dropped; done needs evidence), list. Open ones appear in every turn with age and deadline; a new operator decision supersedes the old item.',
+    description: 'Promises to the operator and what waits on him: add, update, list. Open items show every turn; done needs evidence; a new decision supersedes the old.',
     parameters: params,
     async execute(_id: string, args: Params) {
       const { dir, sourceExists, latestSource } = owner(), now = Date.now();
@@ -317,6 +398,20 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
     return o;
   };
   pi.registerTool(commitmentsTool(required, () => presence.progressed(now())));
+  /** An event the extension saw: linked commitments get their progress line (no model call), and the running turn counts it as progress. */
+  const linked = (event: LinkEvent) => {
+    const dir = owner()?.dir;
+    if (!dir) return;
+    try { if (recordLinkEvent(dir, event, now()).length) presence.progressed(now()); }
+    catch (error) { logBackgroundFailure(dir, `commitment link ${event.type}`, error); }
+  };
+  pi.on('message_end', ({ message }) => {
+    if (message.role !== 'custom' || message.customType !== 'gitwatch') return;
+    const { repo, events } = (message.details ?? {}) as { repo?: unknown; events?: unknown };
+    if (typeof repo !== 'string' || !Array.isArray(events)) return;
+    for (const e of events as { pr?: unknown; kind?: unknown; text?: unknown }[])
+      if (typeof e?.pr === 'number' && typeof e.kind === 'string' && typeof e.text === 'string') linked({ type: 'pr', repo, pr: e.pr, kind: e.kind, text: e.text });
+  });
   pi.on('agent_start', () => presence.start(now()));
   pi.on('tool_result', event => {
     if (!owner()) return;
@@ -327,6 +422,10 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
     return { content: [...event.content, { type: 'text' as const, text: `\n${notice}` }] };
   });
   return {
+    /** A worker run reached an end state. */
+    runEnded: (run: { id: string; state: string }) => linked({ type: 'run', id: run.id, state: run.state }),
+    /** The continuation of reload ticket `id` started. */
+    reloadResumed: (id: string) => linked({ type: 'reload', id }),
     context(dir: string) {
       try {
         const items = readCommitments(dir);

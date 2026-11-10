@@ -85,7 +85,9 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   /** A finished peer was resumed by a message from `partner`, so whoever awaits `partner` (a wake) awaits it too. */
   peerResumed?: (resumed: string, partner: string) => void;
   /** The profile's own instructions, without the import note and the operational records `instructions` adds: a contract worker keeps only its named sections. */
-  profileInstructions?: () => string }
+  profileInstructions?: () => string;
+  /** A run ended on its own or by a stop (completed, failed, stopped), before its report is delivered. */
+  onRunEnd?: (run: RunInfo) => void }
 /** A contract worker's read of its own specialist's memory tree and of its project's runs; another project's are out of its reach. */
 export function specialistMemoryTool(crew: () => Crew, project: Specialist, transcript: (run: string) => readonly AgentMessage[] | undefined) {
   return { name: 'specialist_memory', label: 'Specialist memory',
@@ -654,7 +656,7 @@ export class Children {
     return [{ name: 'spawn', label: 'Delegate task', description: `Delegate parts of your task. Results arrive automatically after this run; never poll or sleep waiting. Maximum depth ${levels} and ${maxAgents} active agents per profile.`,
       parameters: childToolSchemas.spawn,
       execute: async (_id: string, args: { tasks: SpawnTask[] }, signal?: AbortSignal) => result(await this.start(args.tasks, cwd, signal, parentId)),
-    }, { name: 'tell', label: 'Guide child', description: 'Send guidance to one of your direct children. A finished child is resumed with its earlier conversation, and its new report arrives automatically.',
+    }, { name: 'tell', label: 'Guide child', description: 'Guide a direct child; a finished one resumes with its conversation and reports again.',
       parameters: childToolSchemas.tell,
       execute: async (_id: string, args: { id: string; message: string }) => {
         if (this.history.records.get(args.id)?.parentId !== parentId) throw new Error('You can only guide your own children.');
@@ -847,6 +849,7 @@ export class Children {
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
     this.proposeMemory(info);
     this.recordRun(info);
+    try { this.options.onRunEnd?.(info); } catch (error) { this.warn(`Run-end hook failed for ${info.id}: ${String(error)}`); }
     // Router mode: the main agent gets the report bounded, with pointers to the run and its transcript, not the whole chat.
     // A deleted run's transcript is gone.
     const text = this.settings.routerMode && !info.parentId ? routerReport(info)
