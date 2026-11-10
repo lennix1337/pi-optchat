@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
@@ -68,9 +68,10 @@ test('the crew keeps charters and memories under their caps, briefs workers from
     assert.deepEqual(crew.auditDue(), []);
     const old = (Date.now() - (AUDIT_DAYS + 1) * 86_400_000) / 1000;
     utimesSync(join(dir, 'dentai', 'memory.md'), old, old);
-    assert.deepEqual(crew.auditDue(), ['dentai']);
+    crew.markAudited('dentai', new Date(old * 1000));
+    assert.deepEqual([...crew.auditDue()], ['dentai']);
     crew.writeMissions('- GX18MCP sem issues abertas: próximo #955');
-    const note = crewWakeNote(crew.missions(), crew.auditDue());
+    const note = crewWakeNote(crew.missions(), crew.auditReasons());
     assert.match(note, /Open missions \(crew missions\.md\):\n- GX18MCP sem issues abertas/);
     assert.match(note, /Weekly audit due for the memory of: dentai/);
     assert.doesNotMatch(crewWakeNote('', []), /Open missions|audit/);
@@ -87,6 +88,68 @@ test('the crew tool lists, reads and replaces parts, and refuses a write without
     assert.equal(await text({ action: 'read', part: 'missions' }), '(empty)');
     assert.match(await text({ action: 'list' }), /harness: charter 0 B, memory 24 B, written 0\.0 d ago[\s\S]*No audit due\./);
     await assert.rejects(tool.execute('id', { action: 'write', part: 'memory', text: 'x' }), /needs project/);
+  } finally { removeDir(dir); }
+});
+
+test('a specialist with no memory or a thin memory is due for the audit, until audited or until its memory is written', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-audit-'));
+  try {
+    const crewDir = join(dir, 'crew'), crew = new Crew(crewDir), tool = crewTool(() => crew);
+    const text = async (args: Parameters<typeof tool.execute>[1]) => (await tool.execute('id', args)).content[0].text;
+    const day = 86_400_000, now = Date.now();
+    const stamp = (specialist: string, days: number) => { const at = (now - days * day) / 1000; utimesSync(join(crewDir, specialist, 'memory.md'), at, at); };
+    for (const specialist of ['dentai', 'harness', 'lolidle', 'orphan']) crew.write(specialist, 'charter', `# ${specialist}`);
+    // Memories that predate audit.json: a thin one and a full one, both last written 8 days ago.
+    writeFileSync(join(crewDir, 'dentai', 'memory.md'), 'x'.repeat(272) + '\n');
+    writeFileSync(join(crewDir, 'harness', 'memory.md'), 'y'.repeat(5 * 1024));
+    stamp('dentai', 8); stamp('harness', 8);
+    const reasons = (at: number) => crew.auditReasons(at).map(({ specialist, reasons }) => `${specialist}: ${reasons.join('+')}`);
+    assert.deepEqual(reasons(now), ['dentai: aged+thin', 'harness: aged', 'lolidle: missing', 'orphan: missing']);
+    assert.equal(crew.auditReasons(now)[0].memoryBytes, 273);
+    assert.deepEqual([...crew.auditDue(now)], ['dentai', 'harness', 'lolidle', 'orphan']);
+    assert.equal(crew.auditDue(now).includes('genexus18mcp'), false, 'no charter, so nothing to audit');
+
+    const note = crewWakeNote('', crew.auditReasons(now), crew.pendingCounts());
+    assert.match(note, /Weekly audit due for the memory of: dentai, harness, lolidle, orphan/);
+    assert.match(note, /thin: dentai 273 B/);
+    assert.match(note, /missing: lolidle, orphan/);
+    assert.match(note, /aged: dentai, harness/);
+    assert.match(await text({ action: 'list' }), /^Audit due: dentai \(aged, thin\), harness \(aged\), lolidle \(missing\), orphan \(missing\)$/m);
+
+    assert.equal(await text({ action: 'audit', project: 'dentai' }), 'dentai audited: memory 273 B, reasons aged, thin, proposals pending 0');
+    assert.equal(await text({ action: 'audit', project: 'lolidle' }), 'lolidle audited: memory 0 B, reasons missing, proposals pending 0');
+    assert.deepEqual(reasons(now + 6 * day), ['harness: aged', 'orphan: missing'], 'audited ones rest for the audit window');
+    assert.deepEqual([...crew.auditDue(now + 6 * day)], ['harness', 'orphan']);
+    assert.deepEqual([...crew.auditDue(now + 8 * day)], ['dentai', 'harness', 'lolidle', 'orphan'], 'and come back after it');
+    await assert.rejects(tool.execute('id', { action: 'audit' }), /needs project/);
+    assert.match(await text({ action: 'list' }), /^dentai: charter 9 B, memory 273 B, written 8\.0 d ago, audited \d{4}-\d\d-\d\d$/m);
+
+    crew.write('harness', 'memory', 'z'.repeat(5 * 1024));
+    assert.ok(JSON.parse(readFileSync(join(crewDir, 'audit.json'), 'utf8')).harness, 'writing a memory stamps its audit');
+    assert.equal(crew.auditDue(now + 6 * day).includes('harness'), false, 'writing the memory counts as the audit');
+    writeFileSync(join(crewDir, 'orphan', 'memory.md'), 'w'.repeat(5 * 1024));
+    stamp('orphan', 1);
+    assert.equal(crew.auditDue(now).includes('orphan'), false, 'a 5 KB memory written a day ago is not due');
+
+    assert.deepEqual(readdirSync(crewDir, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort(), ['dentai', 'harness', 'lolidle', 'orphan'], 'no folder is made for the audit stamps');
+  } finally { removeDir(dir); }
+});
+
+test('a memory proposal older than two days is flagged in the wake note and the list', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-stale-'));
+  try {
+    const crew = new Crew(join(dir, 'crew')), tool = crewTool(() => crew);
+    const day = 86_400_000, now = Date.now();
+    crew.propose('dentai', 'run-old', '- trap: raw body', new Date(now - 3 * day).toISOString());
+    crew.propose('dentai', 'run-new', '- build: pnpm', new Date(now - 0.5 * day).toISOString());
+    crew.propose('harness', 'run-fresh', '- gate: npm run check', new Date(now).toISOString());
+    const counts = crew.pendingCounts(now);
+    assert.deepEqual(counts, [{ specialist: 'dentai', count: 2, oldestDays: 3 }, { specialist: 'harness', count: 1, oldestDays: 0 }]);
+    const note = crewWakeNote('', [], counts);
+    assert.match(note, /Memory proposals pending.*dentai \(2\), harness \(1\)/);
+    assert.match(note, /Proposals waiting more than 2 days.*dentai 3 d/);
+    assert.doesNotMatch(note, /waiting more than 2 days[^\n]*harness/);
+    assert.doesNotMatch(crewWakeNote('', [], crew.pendingCounts(now - 3 * day)), /waiting more than 2 days/, 'nothing is stale when every proposal is recent');
   } finally { removeDir(dir); }
 });
 
@@ -205,7 +268,7 @@ test('specialists are the known four plus every folder of the crew dir; a projec
     assert.equal(await text({ action: 'write', project: 'lolidle', part: 'charter', text: '# lolidle' }), 'Wrote lolidle charter: 9 B.');
     assert.deepEqual(crew.specialists(), ['dentai', 'genexus18mcp', 'harness', 'dotfiles', 'lolidle']);
     assert.match(await text({ action: 'list' }), /^lolidle: charter 10 B, memory 0 B$/m);
-    assert.deepEqual(crew.auditDue(), [], 'a specialist without a memory is not due');
+    assert.deepEqual([...crew.auditDue()], ['lolidle'], 'a specialist with a charter and no memory is due, as missing');
     assert.throws(() => crew.check('Bad Slug'), /"Bad Slug" is not a valid project.*Specialists: dentai, genexus18mcp, harness, dotfiles, lolidle\./);
     await assert.rejects(tool.execute('id', { action: 'read', project: '../x', part: 'memory' }), /not a valid project/);
     await assert.rejects(tool.execute('id', { action: 'write', project: 'a'.repeat(42), part: 'memory', text: 'x' }), /not a valid project/);
@@ -270,7 +333,7 @@ test('a worker report\'s "## Memory proposal" is kept for the manager until its 
     assert.match(crewWakeNote('', [], crew.pendingCounts()), /Memory proposals pending.*dentai \(1\), harness \(1\)/);
     assert.doesNotMatch(crewWakeNote('', []), /proposals/);
     await text({ action: 'write', project: 'dentai', part: 'memory', text: '- trap: Stripe needs the raw body' });
-    assert.deepEqual(crew.pendingCounts(), [{ specialist: 'harness', count: 1 }], 'writing the memory clears that specialist\'s proposals only');
+    assert.deepEqual(crew.pendingCounts(), [{ specialist: 'harness', count: 1, oldestDays: 0 }], 'writing the memory clears that specialist\'s proposals only');
   } finally { await close(); }
 });
 
