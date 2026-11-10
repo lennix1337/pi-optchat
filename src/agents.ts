@@ -6,6 +6,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Api, Model } from '@earendil-works/pi-ai';
+import { leanProfile, leanSkill, WORKER, WORKER_TOOLS } from './lean-worker.ts';
 import { allowSearch, CONNECTED, cutOffChildren, delegation, NO_DELEGATION, NOT_CONNECTED, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, VIEW_DOC } from './prompts.ts';
 import { memoryTools, runPage, searchTool } from './tools.ts';
 import { DEFER, VIEW, type Memory } from './memory.ts';
@@ -32,7 +33,7 @@ import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { routerReport } from './router-mode.ts';
-import { PEER_MESSAGES, WRITER_KINDS, checkContract, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
+import { PEER_MESSAGES, WORKER_KINDS, WRITER_KINDS, checkContract, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
 export { PEER_MESSAGES } from './crew.ts';
 export const PEER_LIMIT = 'Peer limit reached: send the rest to the manager with tell_parent.';
@@ -82,7 +83,9 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   /** The manager's copy of each delivered peer message, `[from → to] text`: kept in memory, never a report (no manager turn). Default: appended to memory. */
   peerCopy?: (text: string) => void;
   /** A finished peer was resumed by a message from `partner`, so whoever awaits `partner` (a wake) awaits it too. */
-  peerResumed?: (resumed: string, partner: string) => void }
+  peerResumed?: (resumed: string, partner: string) => void;
+  /** The profile's own instructions, without the import note and the operational records `instructions` adds: a contract worker keeps only its named sections. */
+  profileInstructions?: () => string }
 /** A contract worker's read of its own specialist's memory tree and of its project's runs; another project's are out of its reach. */
 export function specialistMemoryTool(crew: () => Crew, project: Specialist, transcript: (run: string) => readonly AgentMessage[] | undefined) {
   return { name: 'specialist_memory', label: 'Specialist memory',
@@ -544,7 +547,7 @@ export class Children {
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
-        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, contract: task.kind !== undefined,
+        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
@@ -574,20 +577,23 @@ export class Children {
   /** `project`: a contract worker's specialist, whose memory tree it may read with specialist_memory. `peer`: it is paired, so it gets tell_peer now;
    * an unpaired worker gets it when a later spawn pairs it (peerTools). `contract`: the child has a worker kind. */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; connected: boolean; provider: string; model: Model<Api>;
-    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; contract?: boolean }) {
-    const { id, directory, depth, parentId, connected } = o;
+    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind; contract?: boolean }) {
+    const { id, directory, depth, parentId, connected, kind } = o;
     const crew = this.options.crew;
     const specialist = crew && o.project ? [specialistMemoryTool(() => crew, o.project, run => this.transcript(run))] : [];
     const outputs = new OutputContext(new OutputStore(this.profileDirectory, o.sessionManager.getSessionId()));
     const metrics = new PerformanceMetrics();
-    const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels;
-    const instructions = [this.instructions(), delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
+    const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels && !kind;
+    // A contract worker gets the profile's named sections only: no chat-view doc, no operational records, no skill catalog.
+    const profile = kind ? leanProfile(this.options.profileInstructions?.() ?? this.instructions()) : this.instructions();
+    const instructions = [profile, delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const fraction = refreshFraction(this.settings.refreshAt);
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
       compaction: childCompaction(o.model, fraction, o.contract ? this.settings.workerCompactAtTokens : 0), cacheWarming: 'off' });
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
+      ...(kind ? { skillsOverride: <T extends { name: string }, D>(base: { skills: T[]; diagnostics: D[] }) => ({ ...base, skills: base.skills.filter(skill => leanSkill(skill.name)) }) } : {}),
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),
       extensionFactories: [...builtinExtensions(this.options.builtins?.() ?? []), pi => {
         registerPerformance(pi, () => metrics);
@@ -626,7 +632,7 @@ export class Children {
         if (provider) pi.registerProvider(o.provider, provider);
         // Same prompt as the main agent (AGENTS.md files, skills, cwd); only the OptChat preamble differs.
         pi.on('before_agent_start', event => {
-          event.systemPromptOptions.customPrompt = allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch);
+          event.systemPromptOptions.customPrompt = kind ? WORKER : allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch);
           event.systemPromptOptions.sections.instructions = instructions;
         });
         pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload);
@@ -636,6 +642,7 @@ export class Children {
     const { session } = await (this.options.createSession ?? createAgentSession)({ cwd: directory, resourceLoader: loader, settingsManager,
       model: o.model, thinkingLevel: o.thinking, sessionManager: o.sessionManager,
       customTools: [outputReadTool(() => outputs), performanceTool(() => metrics, () => outputs.stats()), ...memoryTools(() => this.memory, run => this.transcript(run, id)), ...(memorySearch ? [searchTool(() => this.memory)] : []), ...(delegates ? this.delegationTools(id, directory, subagentLevels, maxAgents) : []), this.parentTool(id, parentId, connected), ...specialist],
+      ...(kind ? { tools: [...WORKER_TOOLS[kind]] } : {}),
       excludeTools: delegates ? [] : ['spawn', 'tell'],
     });
     // Callers track the session only after this returns: clean up here if its extensions fail to start.
@@ -990,7 +997,7 @@ export class Children {
     let reserved = true;
     try {
       // No thinking level: the session restores the one it ran with.
-      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, contract: run.kind !== undefined });
+      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
       const parent = run.parentId ? this.running.get(run.parentId) : undefined;
       if (this.closing || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {
