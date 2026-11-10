@@ -33,6 +33,7 @@ import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { routerReport } from './router-mode.ts';
+import { PARK_MARGIN_MS, PARK_MAX, parkUntil, quotaError, untilText } from './quota-hold.ts';
 import { PEER_MESSAGES, WORKER_KINDS, WRITER_KINDS, checkContract, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
 export { PEER_MESSAGES } from './crew.ts';
@@ -87,7 +88,26 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   /** The profile's own instructions, without the import note and the operational records `instructions` adds: a contract worker keeps only its named sections. */
   profileInstructions?: () => string;
   /** A run ended on its own or by a stop (completed, failed, stopped), before its report is delivered. */
-  onRunEnd?: (run: RunInfo) => void }
+  onRunEnd?: (run: RunInfo) => void;
+  /** The cached quota: when `provider/model` comes back (epoch ms); undefined when it is free or nothing is known. Never calls a model. */
+  quotaBlock?: (provider: string, model: string) => number | undefined;
+  /** Clock and timers of quota parking; tests replace them. */
+  clock?: { now(): number; setTimer(run: () => void, ms: number): unknown; clearTimer(handle: unknown): void };
+  /** Workers just parked for quota: they report nothing until they resume, so nobody should keep waiting for them (a wake). */
+  onPark?: (ids: string[]) => void }
+/** What a parked worker is resumed with once its account's quota is back. */
+export const QUOTA_BACK = 'Your model account was out of quota and is available again. Continue your task from where you stopped; do not start over.';
+/** Parked workers of one account are reported together once no new one has parked for this long. */
+export const PARK_NOTE_MS = 2000;
+/** A task of a spawn that waits for its account's quota instead of starting. */
+interface QueuedTask { id: string; model: string; until: number }
+interface QuotaHit { retryAt?: number; message: string }
+const queuedText = (queued: QueuedTask[], now: number) => {
+  const groups = new Map<number, QueuedTask[]>();
+  for (const item of queued) groups.set(item.until, [...groups.get(item.until) ?? [], item]);
+  return [...groups].map(([until, items]) => `Queued until ${untilText(until, now)}: ${items.map(item => `${item.id} on ${item.model}`).join(', ')} (that account is out of quota). ${items.length > 1 ? 'They start' : 'It starts'} by itself then and report${items.length > 1 ? '' : 's'} as usual; do not spawn ${items.length > 1 ? 'them' : 'it'} again.`).join(' ');
+};
+const oneLine = (text: string, max = 200) => text.replace(/\s+/g, ' ').trim().slice(0, max);
 /** A contract worker's read of its own specialist's memory tree and of its project's runs; another project's are out of its reach. */
 export function specialistMemoryTool(crew: () => Crew, project: Specialist, transcript: (run: string) => readonly AgentMessage[] | undefined) {
   return { name: 'specialist_memory', label: 'Specialist memory',
@@ -200,6 +220,11 @@ export class Children {
   private readonly peerTools = new Map<string, () => void>();
   /** Peers named by spawns still launching, so two concurrent spawns cannot pair the same worker. */
   private readonly pairing = new Set<string>();
+  /** Workers waiting for their account's quota: when each is tried again. */
+  private readonly parkTimers = new Map<string, unknown>();
+  /** Workers that parked for one account, to be reported together (provider -> ids and the latest retry). */
+  private readonly parkNotes = new Map<string, { ids: string[]; until: number }>();
+  private parkNoteTimer: unknown;
   constructor(private readonly memory: Memory, private readonly registry: ModelRegistry,
     private readonly choice: () => ModelChoice, private readonly instructions: () => string,
     private readonly report: (text: string, options?: { once?: boolean; count?: number; runIds?: string[] }) => Promise<void>, private readonly warn: (text: string) => void,
@@ -218,6 +243,13 @@ export class Children {
     }
   }
   private get settings(): Settings { return { ...DEFAULT_SETTINGS, ...this.options.settings?.() }; }
+  private now() { return this.options.clock?.now() ?? Date.now(); }
+  private later(run: () => void, ms: number): unknown {
+    if (this.options.clock) return this.options.clock.setTimer(run, ms);
+    const handle = setTimeout(run, Math.min(ms, 2 ** 31 - 1)); handle.unref?.();
+    return handle;
+  }
+  private cancel(handle: unknown) { if (this.options.clock) this.options.clock.clearTimer(handle); else clearTimeout(handle as ReturnType<typeof setTimeout>); }
   private full(extra: number) { return this.running.size + this.launching + extra > this.settings.maxAgents; }
   get ids() { return [...this.running.keys()]; }
   get active() { return this.completions.size > 0 || this.launching > 0 || this.settling > 0; }
@@ -368,6 +400,7 @@ export class Children {
     if (event.type === 'message_end') {
       live.streaming = undefined;
       if (event.message.role === 'assistant') {
+        if (event.message.stopReason !== 'error' && live.info.parks) delete live.info.parks;
         const model = `${event.message.provider}/${event.message.model}`;
         if (model !== live.info.model || live.info.thinking !== live.session.thinkingLevel) {
           live.info.model = model; live.info.thinking = live.session.thinkingLevel; this.save(live.info);
@@ -381,15 +414,18 @@ export class Children {
     this.timed('first_activity', live.info.id);
   }
   async spawn(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string, connected = false) {
-    return (await this.launch(tasks, cwd, signal, parentId, connected)).ids;
+    const { ids, queued } = await this.launch(tasks, cwd, signal, parentId, connected);
+    return [...ids, ...queued.map(item => item.id)];
   }
   /** The spawn tools' answer, saying how this spawn's reports will come back. */
   async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string, launched?: (ids: string[]) => void) {
-    const { ids, grouped, specialists, models } = await this.launch(tasks, cwd, signal, parentId, false, launched);
+    const { ids, grouped, specialists, models, queued } = await this.launch(tasks, cwd, signal, parentId, false, launched);
     const created = specialists.map(slug => ` Note: new specialist ${slug} created; its charter is a template, so add what its workers need to know with the crew tool.`).join('');
-    return `Started: ${ids.join(', ')}. Model${ids.length > 1 ? 's' : ''}: ${ids.map((id, i) => `${id} on ${models[i]}`).join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${created}`;
+    const waiting = queued.length ? `${ids.length ? ' ' : ''}${queuedText(queued, this.now())}` : '';
+    if (!ids.length) return `${waiting}${created}`;
+    return `Started: ${ids.join(', ')}. Model${ids.length > 1 ? 's' : ''}: ${ids.map((id, i) => `${id} on ${models[i]}`).join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${waiting}${created}`;
   }
-  private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false, onLaunch?: (ids: string[]) => void) {
+  private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false, onLaunch?: (ids: string[]) => void, replay?: string) {
     // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
     if (this.settings.routerMode) for (const { task } of tasks) checkHandoffSummary(task, HANDOFF_MAX_BYTES, 'Task');
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
@@ -405,17 +441,22 @@ export class Children {
     if (depth > subagentLevels) throw new Error(`Delegation depth limit reached: this profile allows ${subagentLevels} level${subagentLevels === 1 ? '' : 's'} of subagents.`);
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
-    this.checkWorkers(tasks, cwd, parentId);
+    this.checkWorkers(tasks, cwd, parentId, replay);
     const peers = tasks.flatMap(task => task.peer ?? []);
     for (const peer of peers) this.pairing.add(peer);
-    let launched: LiveRun[], views: string[], specialists: Specialist[];
+    let launched: LiveRun[], views: string[], specialists: Specialist[], queued: QueuedTask[] = [];
     try {
       const renderingAt = performance.now();
-      const models = tasks.map(task => this.modelOf(task));
+      const allModels = tasks.map(task => this.modelOf(task));
       specialists = connected ? [] : this.ensureSpecialists(tasks, cwd);
-      views = this.viewsOf(tasks, models, cwd, connected);
+      // A task whose account is known to be out of quota would die on its first request: it waits for the reset instead (never for a child of an agent, whose parent would wait on it).
+      const resets = allModels.map((chosen, i) => replay !== undefined || parentId !== undefined || connected || tasks[i].peer !== undefined ? undefined : this.options.quotaBlock?.(chosen.selected.provider, chosen.selected.model));
+      const ready = tasks.flatMap((task, i) => resets[i] === undefined ? [i] : []);
+      queued = tasks.flatMap((task, i) => resets[i] === undefined ? [] : [this.queue(task, allModels[i].selected, cwd, depth, parkUntil(this.now(), 0, resets[i]))]);
+      const run = ready.map(i => tasks[i]), models = ready.map(i => allModels[i]);
+      views = this.viewsOf(run, models, cwd, connected);
       this.timed('view', undefined, renderingAt, views.reduce((sum, view) => sum + view.length, 0));
-      launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }));
+      launched = run.length ? await this.track(this.launchBatch({ tasks: run, cwd, depth, parentId, connected, models, signal, cancelled, ids: replay === undefined ? undefined : [replay] })) : [];
       for (const live of launched) if (live.info.peer) this.pair(live.info.id, live.info.peer.id);
     } finally { for (const peer of peers) this.pairing.delete(peer); }
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
@@ -430,10 +471,11 @@ export class Children {
     }
     this.changed();
     this.watch();
-    return { ids: launched.map(c => c.info.id), grouped: batch !== undefined, specialists, models: launched.map(c => c.info.model) };
+    for (const item of queued) this.arm(item.id);
+    return { ids: launched.map(c => c.info.id), grouped: batch !== undefined, specialists, models: launched.map(c => c.info.model), queued };
   }
   /** What a contract worker's task must satisfy before anything starts: a contract, a valid project and a repo no other writer holds. */
-  private checkWorkers(tasks: SpawnTask[], cwd: string, parentId?: string) {
+  private checkWorkers(tasks: SpawnTask[], cwd: string, parentId?: string, except?: string) {
     const claimed = new Set<string>();
     for (const task of tasks) {
       if (task.peer !== undefined) {
@@ -447,7 +489,7 @@ export class Children {
       checkContract(task.task);
       if (task.project !== undefined) this.options.crew?.check(task.project);
     }
-    this.checkWriters(tasks, cwd);
+    this.checkWriters(tasks, cwd, except);
   }
   /** Names `id` as its new partner's peer, and gives an open partner its tell_peer. */
   private pair(id: string, partner: string) {
@@ -459,10 +501,11 @@ export class Children {
   }
   /** One writer per repo: a code, mechanical or hard worker may not start where another already works (nor twice in one spawn),
    * since two of them in one checkout overwrite each other. Plan workers only read. Refused before anything starts. */
-  private checkWriters(tasks: SpawnTask[], cwd: string) {
+  private checkWriters(tasks: SpawnTask[], cwd: string, except?: string) {
     const holders = new Map<string, string>();
-    // A run being resumed holds its repo already, before it is registered as running.
-    for (const info of [...[...this.running.values()].map(live => live.info), ...[...this.resuming].flatMap(id => this.history.records.get(id) ?? [])]) {
+    // A run being resumed holds its repo already, before it is registered as running; so does one parked for quota, which comes back to it.
+    const parked = [...this.history.records.values()].filter(info => info.parked && info.id !== except);
+    for (const info of [...[...this.running.values()].map(live => live.info), ...[...this.resuming].flatMap(id => this.history.records.get(id) ?? []), ...parked]) {
       const top = info.kind && (WRITER_KINDS as readonly string[]).includes(info.kind) ? repoRoot(info.cwd) : undefined;
       if (top) holders.set(top.toLowerCase(), `worker ${info.id}`);
     }
@@ -537,8 +580,8 @@ export class Children {
     launch.then(done, done);
     return launch;
   }
-  private async launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }: { tasks: SpawnTask[]; cwd: string; depth: number; parentId?: string; connected: boolean;
-    models: { selected: ModelChoice; model: Model<Api> }[]; signal?: AbortSignal; cancelled: () => boolean }) {
+  private async launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled, ids }: { tasks: SpawnTask[]; cwd: string; depth: number; parentId?: string; connected: boolean;
+    models: { selected: ModelChoice; model: Model<Api> }[]; signal?: AbortSignal; cancelled: () => boolean; ids?: string[] }) {
     const launched: LiveRun[] = [];
     let reserved = tasks.length;
     this.launching += reserved;
@@ -547,7 +590,7 @@ export class Children {
         const { selected, model } = models[index];
         signal?.throwIfAborted();
         if (cancelled()) throw new Error('Parent or profile is stopping.');
-        const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
+        const id = ids?.[index] ?? randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
         const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
@@ -749,6 +792,7 @@ export class Children {
   private directChildren(id: string) { return [...this.running.values()].filter(c => c.info.parentId === id); }
   private async execute(live: LiveRun, prompt: string) {
     const { session, info } = live;
+    let parking: QuotaHit | undefined;
     try {
       if (info.connected) await this.report(`[${info.id}] User started a connected conversation in ${info.cwd}. That agent is handling this request with the user directly; don't do it yourself. Initial message: ${info.task}\n\nUse tell with this agent ID only if you know something it needs. It stays open between replies and sends a final handoff on completion or disconnect.`);
       // A stop that lands before the first prompt has no turn to abort, so it is honoured here.
@@ -809,14 +853,21 @@ export class Children {
         await Promise.race([...children, wake]); live.wake = undefined;
       }
       const last = session.messages.findLast(m => m.role === 'assistant');
-      transition(info, info.state === 'stopping' || last?.role === 'assistant' && last.stopReason === 'aborted' ? 'stopped'
-        : last?.role === 'assistant' && last.stopReason === 'error' ? 'failed' : 'completed');
-      const text = session.getLastAssistantText();
-      info.report = info.state === 'stopped' && live.stoppedBy ? stoppedReport(live.stoppedBy, text)
-        : last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted') ? `Task ${last.stopReason}: ${last.errorMessage ?? 'No details'}` : text || 'Finished without a text report.';
+      // Out of quota is not a result: the run waits for the reset (park) instead of ending with a failure nobody can act on.
+      parking = this.quotaHit(info, last?.role === 'assistant' && last.stopReason === 'error' ? last.errorMessage : undefined);
+      if (!parking) {
+        transition(info, info.state === 'stopping' || last?.role === 'assistant' && last.stopReason === 'aborted' ? 'stopped'
+          : last?.role === 'assistant' && last.stopReason === 'error' ? 'failed' : 'completed');
+        const text = session.getLastAssistantText();
+        info.report = info.state === 'stopped' && live.stoppedBy ? stoppedReport(live.stoppedBy, text)
+          : last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted') ? `Task ${last.stopReason}: ${last.errorMessage ?? 'No details'}` : text || 'Finished without a text report.';
+      }
     } catch (error) {
-      transition(info, info.state === 'stopping' ? 'stopped' : 'failed');
-      info.report = info.state === 'stopped' && live.stoppedBy ? stoppedReport(live.stoppedBy, session.getLastAssistantText()) : `${info.state}: ${String(error)}`;
+      parking = this.quotaHit(info, String(error));
+      if (!parking) {
+        transition(info, info.state === 'stopping' ? 'stopped' : 'failed');
+        info.report = info.state === 'stopped' && live.stoppedBy ? stoppedReport(live.stoppedBy, session.getLastAssistantText()) : `${info.state}: ${String(error)}`;
+      }
     } finally {
       const children = this.directChildren(info.id);
       await Promise.allSettled(children.map(child => this.stop(child.info.id, 'parent')));
@@ -828,6 +879,8 @@ export class Children {
       // A failed dispose must neither keep the slot taken nor drop the report below.
       this.dispose(session); this.running.delete(info.id);
     }
+    if (parking) { this.park(live, parking); return; }
+    delete info.parks;
     if (info.cutOff) {
       // Aborted by Pi closing, not by anyone's choice: no report now, the next start resumes it.
       if (info.state === 'stopped' && transition(info, 'interrupted')) { info.report = CUT_OFF; this.save(info); return; }
@@ -856,15 +909,132 @@ export class Children {
       : `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`;
     await this.deliver(info, live.batch, text);
   }
+  /** An end of a run that says its account is out of quota, when the run may wait for it: not a connected conversation, a child of an agent (its parent waits on it), a run being stopped or deleted, or one that parked too often in a row. */
+  private quotaHit(info: RunInfo, message: string | undefined): QuotaHit | undefined {
+    if (!message || this.closing || info.connected || info.parentId || info.peer !== undefined || info.state === 'stopping' || this.deleting.has(info.id) || (info.parks ?? 0) >= PARK_MAX) return undefined;
+    const hit = quotaError(message, this.now());
+    return hit && { ...hit, message: oneLine(message) };
+  }
+  /** When the cached quota says the run's model account is back; undefined when it is free or unknown. */
+  private resetOf(info: RunInfo) {
+    const slash = info.model.indexOf('/');
+    return slash > 0 ? this.options.quotaBlock?.(info.model.slice(0, slash), info.model.slice(slash + 1)) : undefined;
+  }
+  /** The run ends here without a report: it keeps its record and transcript, and tries again once its account's quota is back. */
+  private park(live: LiveRun, hit: QuotaHit) {
+    const { info } = live, now = this.now(), attempts = (info.parks ?? 0) + 1, provider = info.model.slice(0, Math.max(0, info.model.indexOf('/')));
+    const until = parkUntil(now, attempts - 1, this.resetOf(info), hit.retryAt);
+    info.parks = attempts;
+    info.parked = { until, reason: hit.message, provider, attempts };
+    transition(info, 'interrupted');
+    info.report = `Waiting for the quota of ${provider} (${hit.message}). It resumes by itself at ${untilText(until, now)} (Brasília), with its conversation.`;
+    try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
+    // Its siblings of a grouped spawn report without it; it reports on its own once it has run again.
+    const batch = live.batch;
+    live.batch = undefined;
+    if (batch) {
+      const first = batch.ids[0];
+      batch.ids = batch.ids.filter(id => id !== info.id); batch.reports.delete(info.id);
+      if (first !== batch.ids[0] && !info.parentId) this.options.hold?.(first, []);
+      void this.deliver(info, batch, undefined).catch(error => this.warn(`Could not release the grouped reports of ${info.id}'s spawn: ${String(error)}`));
+    }
+    this.arm(info.id);
+    this.noteParked(info);
+    this.options.onPark?.([info.id]);
+    this.changed();
+  }
+  /** A task of a spawn whose account is out of quota: recorded now (so tell, zoom and the panel know it), started by arm()'s timer. */
+  private queue(task: SpawnTask, selected: ModelChoice, cwd: string, depth: number, until: number): QueuedTask {
+    const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined, now = this.now();
+    const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: selected.thinking, parentSession: this.options.parentSession ?? '', depth,
+      started: now, ended: now, state: 'interrupted', guidance: [], ...(task.kind ? { kind: task.kind, project } : {}),
+      parked: { until, reason: 'its account is out of quota', provider: selected.provider, attempts: 0, queued: true },
+      report: `Queued: ${selected.provider} is out of quota. It starts by itself at ${untilText(until, now)} (Brasília).` };
+    this.save(info);
+    return { id, model: info.model, until };
+  }
+  /** Starts the timer that tries a parked run again at its time. */
+  private arm(id: string) {
+    const run = this.history.records.get(id);
+    if (!run?.parked || this.closing) return;
+    this.cancelPark(id);
+    this.parkTimers.set(id, this.later(() => { this.parkTimers.delete(id); void this.unpark(id); }, Math.max(0, run.parked.until - this.now())));
+  }
+  private cancelPark(id: string) {
+    const timer = this.parkTimers.get(id);
+    if (timer !== undefined) this.cancel(timer);
+    this.parkTimers.delete(id);
+  }
+  /** Re-arms the parked runs a closed Pi left in the history; call once the profile is open. */
+  resumeParked() { for (const run of this.history.records.values()) if (run.parked && !this.parkTimers.has(run.id)) this.arm(run.id); }
+  /** The time has come: still out of quota by the cache, wait on; else start a queued task, or resume a parked run with its conversation. */
+  private async unpark(id: string) {
+    const run = this.history.records.get(id);
+    if (!run?.parked || this.closing || this.running.has(id) || this.resuming.has(id)) return;
+    const block = this.resetOf(run);
+    if (block !== undefined && block > this.now()) { run.parked.until = block + PARK_MARGIN_MS; this.save(run); this.arm(id); return; }
+    try {
+      // Never started, or its request failed before anything reached the transcript: it starts again from its task, under the same id.
+      if (run.parked.queued || !this.transcribed(run)) {
+        const task: SpawnTask = { task: run.task, model: run.model, ...run.kind && (WORKER_KINDS as readonly string[]).includes(run.kind) ? { kind: run.kind as WorkerKind, project: run.project } : {} };
+        await this.track(this.launch([task], run.cwd, undefined, undefined, false, undefined, id));
+      } else await this.track(this.resume(id, QUOTA_BACK, undefined));
+    } catch (error) { await this.retryPark(id, error); }
+  }
+  private transcribed(run: RunInfo) {
+    try { return !!run.sessionFile && existsSync(run.sessionFile) && SessionManager.open(run.sessionFile).getEntries().some(e => e.type === 'message'); } catch { return false; }
+  }
+  /** A parked run could not be started or resumed: try later with a growing wait, and after PARK_MAX tries report it as failed. */
+  private async retryPark(id: string, error: unknown) {
+    const run = this.history.records.get(id), why = error instanceof Error ? error.message : String(error);
+    if (!run || this.running.has(id) || this.closing) return;
+    if (run.parked) {
+      const attempts = run.parked.attempts + 1;
+      if (attempts < PARK_MAX) {
+        run.parked = { ...run.parked, attempts, until: parkUntil(this.now(), attempts), reason: oneLine(why) };
+        try { this.save(run); } catch (saveError) { this.warn(`Could not save run metadata: ${String(saveError)}`); }
+        this.arm(id);
+        return;
+      }
+      delete run.parked;
+      transition(run, 'failed'); run.ended = this.now(); run.report = `Task error: could not start again after the quota came back: ${why}`;
+    } else if (run.state !== 'failed') return;
+    // A launch that failed halfway already recorded itself as failed; either way the parent learns it now.
+    try { this.save(run); } catch (saveError) { this.warn(`Could not save run metadata: ${String(saveError)}`); }
+    await this.deliver(run, undefined, `[${id}] ${run.report ?? why}`);
+    this.changed();
+  }
+  /** Parked workers of one account are told to the manager together: one message for the outage, not one per worker. */
+  private noteParked(info: RunInfo) {
+    const parked = info.parked;
+    if (!parked) return;
+    const note = this.parkNotes.get(parked.provider) ?? { ids: [], until: 0 };
+    note.ids.push(info.id); note.until = Math.max(note.until, parked.until);
+    this.parkNotes.set(parked.provider, note);
+    if (this.parkNoteTimer !== undefined) this.cancel(this.parkNoteTimer);
+    this.parkNoteTimer = this.later(() => { void this.flushParkNotes(); }, PARK_NOTE_MS);
+  }
+  private async flushParkNotes() {
+    this.parkNoteTimer = undefined;
+    // A worker stopped or resumed in the meantime is no longer waiting.
+    const notes = [...this.parkNotes].map(([provider, note]) => [provider, { ...note, ids: note.ids.filter(id => this.history.records.get(id)?.parked) }] as const).filter(([, note]) => note.ids.length), now = this.now();
+    this.parkNotes.clear();
+    if (!notes.length || this.closing) return;
+    const lines = notes.map(([provider, { ids, until }]) => `${ids.length > 1 ? `Workers ${ids.join(', ')} are` : `Worker ${ids[0]} is`} paused because ${provider} is out of quota until about ${untilText(until, now)} (Brasília).`);
+    await this.report(`[quota] ${lines.join(' ')} This is not a failure: they resume by themselves with their conversation and report when they finish. Do not redo, respawn or stop them.`)
+      .catch(error => this.warn(`Could not tell the main agent about the parked workers: ${String(error)}`));
+  }
   /** Sends a run's report to its parent; in a grouped spawn, only once every child of the spawn has one. */
-  private async deliver(info: RunInfo, batch: LiveRun['batch'], text: string) {
+  private async deliver(info: RunInfo, batch: LiveRun['batch'], text: string | undefined) {
     let count: number | undefined;
     if (batch) {
-      batch.reports.set(info.id, text);
+      if (text !== undefined) batch.reports.set(info.id, text);
       const texts = batch.ids.flatMap(id => batch.reports.get(id) ?? []);
+      if (!batch.ids.length) return;
       if (texts.length < batch.ids.length) { if (!info.parentId) this.options.hold?.(batch.ids[0], texts); return; }
       text = texts.join('\n\n'); count = texts.length;
     }
+    if (text === undefined) return;
     if (info.parentId) {
       const parent = this.running.get(info.parentId);
       if (parent && parent.info.state !== 'stopping') { parent.pendingReports.push(text); parent.wake?.(); this.changed(); }
@@ -986,6 +1156,7 @@ export class Children {
         : `Only ${id}'s parent ${run.parentId} can resume it, and that parent is no longer running. Resume ${run.parentId} instead, or spawn a new subagent.`);
     }
     if (this.closing) throw new Error('Profile is closing.');
+    if (run.parked?.queued) throw new Error(`${id} is queued until ${untilText(run.parked.until, this.now())} (Brasília) because ${run.parked.provider} is out of quota; it has not started, so there is nothing to resume. It starts by itself.`);
     // One writer per repo holds for a resumed writer as for a new one.
     if (run.kind && (WRITER_KINDS as readonly string[]).includes(run.kind)) this.checkWriters([{ task: run.task, kind: run.kind as WorkerKind, cwd: run.cwd }], run.cwd);
     if (this.full(1)) throw new Error(`Profile limit: at most ${this.settings.maxAgents} active agents, including parents and descendants. ${id} can be resumed when one finishes.`);
@@ -1007,7 +1178,8 @@ export class Children {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping.');
       }
       // The finished record stays untouched (and resumable) unless the new one is saved.
-      const { ended: _ended, cutOff: _cutOff, ...rest } = run;
+      const { ended: _ended, cutOff: _cutOff, parked: _parked, ...rest } = run;
+      this.cancelPark(id);
       const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
       const prompt = cutOffChildren(text, cut);
       const info: RunInfo = { ...rest, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
@@ -1108,6 +1280,14 @@ export class Children {
   async stop(id: string, cause: StopCause = 'user') {
     if (this.externalRun(id)) { await this.stopExternal(id); return; }
     const live = this.running.get(id);
+    const parked = this.history.records.get(id);
+    if (!live && parked?.parked) {
+      // Waiting for quota: nothing runs, so ending it is only a record.
+      this.cancelPark(id); delete parked.parked; delete parked.parks;
+      transition(parked, 'stopped'); parked.ended = this.now(); parked.report = stoppedReport(cause, '');
+      this.save(parked); this.changed();
+      return;
+    }
     if (!live) throw new Error(`No running subagent ${id}.`);
     const descendants: LiveRun[] = [];
     const collect = (run: LiveRun) => { descendants.push(run); for (const child of this.directChildren(run.info.id)) collect(child); };
@@ -1136,6 +1316,7 @@ export class Children {
     // An overlapping delete of a descendant keeps its own marks, so neither delete clears the other's.
     const mark = () => { for (const run of runs()) if (!this.deleting.has(run)) { marked.add(run); this.deleting.add(run); } };
     mark(); this.changed();
+    for (const run of runs()) this.cancelPark(run);
     try {
       // Launches and resumes register their runs before they settle, and a stopped parent can still have children launching.
       for (;;) {
@@ -1178,6 +1359,9 @@ export class Children {
   }
   async close() {
     this.closing = true;
+    for (const id of [...this.parkTimers.keys()]) this.cancelPark(id);
+    if (this.parkNoteTimer !== undefined) { this.cancel(this.parkNoteTimer); this.parkNoteTimer = undefined; }
+    this.parkNotes.clear();
     if (this.watcher) { clearInterval(this.watcher); this.watcher = undefined; }
     // Only work in progress is picked up at the next start: not paused runs waiting for the user, runs being stopped, or connected windows (they hand off).
     for (const { info } of this.running.values()) if (!info.connected && (info.state === 'running' || info.state === 'waiting')) info.cutOff = true;

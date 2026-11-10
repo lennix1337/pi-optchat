@@ -21,7 +21,8 @@ import { Type } from 'typebox';
 import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
 import { atomicWrite, readJsonOr, storeFor } from './store.ts';
-import { QUOTA_FILE, quotaPlan } from './quota-health.ts';
+import { QUOTA_FILE, quotaPlan, routeBlock } from './quota-health.ts';
+import { QuotaOutage } from './quota-hold.ts';
 import { knownProviders, pickWakeRoute } from './wake-route.ts';
 import { createCompressor, resolveModel } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
@@ -260,6 +261,8 @@ export default function optchat(pi: ExtensionAPI) {
    * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
   let reports: { text: string; count?: number; batch?: string; steered?: boolean; runIds?: string[]; workerRecovery?: boolean; awaitingProcessing?: boolean; observed?: boolean; responded?: boolean }[] = [];
   type Report = (typeof reports)[number];
+  /** While every model the main agent could run on is out of quota, reports wait here instead of starting turns that would fail (see quota-hold.ts). */
+  let outage: QuotaOutage<Report> | undefined;
   let idle = () => true;
   const receipts = new Map<AgentMessage, string>();
   /** Keep the original result for durable memory; `run` retains the bounded copy sent back to the model. */
@@ -374,7 +377,8 @@ export default function optchat(pi: ExtensionAPI) {
   };
   // Shown as a dark background box, not as the user's own message. Before this profile has run once there is no
   // built system prompt to reuse, so that rare case still goes through Pi's normal prompt path as a user message.
-  const sendReport = (report: Report) => {
+  const sendReport = (report: Report) => { if (!outage?.offer(report)) dispatchReport(report); };
+  const dispatchReport = (report: Report) => {
     const { text, count } = report;
     report.steered = !idle();
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
@@ -482,6 +486,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   const stop = async (reason?: string) => {
     heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();
+    outage?.close(); outage = undefined;
     if (wakeReloadTimer) clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
     if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
@@ -567,6 +572,8 @@ export default function optchat(pi: ExtensionAPI) {
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports, profileInstructions: () => instructions(dir),
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
           route: kind => routeFor(kind, main, config.workerModels), crew, onRunEnd: run => commitments.runEnded(run),
+          quotaBlock: (provider, model) => routeBlock(readJsonOr<unknown>(QUOTA_FILE, {}), provider, model, Date.now()),
+          onPark: ids => wakeWorkers.release(ids),
           // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.
           peerCopy: text => { if (active?.memory === memory && !idle()) peerCopies.push(text); else memory.append('work', text); },
           peerResumed: (resumed, partner) => {
@@ -574,6 +581,21 @@ export default function optchat(pi: ExtensionAPI) {
             wakeWorkers.adopt(resumed, partner);
             if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);
           } });
+      outage?.close();
+      outage = new QuotaOutage<Report>({ now: () => Date.now(),
+        // Cached quota only, across the accounts of the main model's family: undefined when one of them is usable or nothing is known.
+        until: () => {
+          const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id }), own = active?.config;
+          if (!model || !own) return undefined;
+          const state = readJsonOr<unknown>(QUOTA_FILE, {});
+          const routes = wakeRoutes({ ...own, wakeModel: undefined, wakeRouteAcrossFamilies: false }, model, knownProviders(state), pi.getThinkingLevel());
+          const decision = pickWakeRoute(routes, state, {}, Date.now(), choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
+          return decision?.choice ? undefined : decision?.until;
+        },
+        notice: text => ctx.ui.notify(text, 'warning'),
+        send: items => { if (active?.memory === memory && !stopping) for (const item of items) if (reports.includes(item)) dispatchReport(item); },
+        setTimer: (run, ms) => setTimeout(run, Math.min(ms, 2 ** 31 - 1)).unref(),
+        clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count, awaitingProcessing: s.awaitingProcessing })
@@ -610,7 +632,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
         // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
-        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents')] : []]).then(() => {});
+        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
       }
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r); });
       // A reload or crash in the middle of a wake left the wake model on: put the main one back.
@@ -870,6 +892,7 @@ export default function optchat(pi: ExtensionAPI) {
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
     turn.push(event.message);
+    if (event.message.role === 'assistant' && event.message.stopReason === 'error') outage?.note(event.message.errorMessage);
     if (heartbeat?.waking) {
       const original = event.message;
       if (original.role === 'assistant') {

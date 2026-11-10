@@ -23,6 +23,10 @@ export interface RunInfo {
   handoff?: { reason: FinishReason; text?: string; delivered?: boolean };
   /** Working when Pi closed or crashed: the next start resumes it (see `Children.resumeCutOff`). */
   cutOff?: boolean;
+  /** Waiting for its model account's quota (state `interrupted`): resumed by itself at `until`. `queued`: it never started, so it starts fresh instead of resuming a conversation. */
+  parked?: { until: number; reason: string; provider: string; attempts: number; queued?: boolean };
+  /** Quota parks in a row since it last made progress; the run is reported as failed past `PARK_MAX`. */
+  parks?: number;
   /** `from` is missing on runs saved before senders were recorded. */
   guidance: { text: string; date: number; state: 'queued' | 'delivered' | 'undelivered'; from?: 'user' | 'manager' }[];
   /** Set on rows projected from another runtime (currently pi-subagents); never persisted by RunHistory. */
@@ -43,7 +47,7 @@ const moves: Record<RunState, readonly RunState[]> = {
   paused: ['running', 'stopping', 'failed', 'stopped', 'interrupted'],
   stopping: ['stopped', 'failed', 'interrupted'],
   // A finished run only takes the outcome of a connected handoff.
-  completed: ['interrupted'], failed: ['completed', 'interrupted'], stopped: ['completed', 'interrupted'], interrupted: ['completed'],
+  completed: ['interrupted'], failed: ['completed', 'interrupted'], stopped: ['completed', 'interrupted'], interrupted: ['completed', 'failed', 'stopped'],
 };
 /** Every run state change goes through here, so a late stop cannot rewrite a finished run. Returns whether the run is now in `to` (true for a repeat, so a second stop can still abort a child that ignored the first). */
 export function transition(run: RunInfo, to: RunState) {
@@ -65,6 +69,9 @@ function isRun(value: unknown): value is RunInfo {
     && (value.report === undefined || typeof value.report === 'string')
     && (value.connected === undefined || typeof value.connected === 'boolean')
     && (value.cutOff === undefined || typeof value.cutOff === 'boolean')
+    && (value.parks === undefined || typeof value.parks === 'number' && Number.isInteger(value.parks) && value.parks >= 0)
+    && (value.parked === undefined || record(value.parked) && typeof value.parked.until === 'number' && Number.isFinite(value.parked.until) && typeof value.parked.reason === 'string'
+      && typeof value.parked.provider === 'string' && typeof value.parked.attempts === 'number' && (value.parked.queued === undefined || typeof value.parked.queued === 'boolean'))
     && (value.peer === undefined || record(value.peer) && typeof value.peer.id === 'string' && typeof value.peer.sent === 'number' && Number.isInteger(value.peer.sent) && value.peer.sent >= 0)
     && (value.handoff === undefined || record(value.handoff) && ['complete', 'disconnected', 'owner-stopped', 'failed'].includes(String(value.handoff.reason))
       && (value.handoff.text === undefined || typeof value.handoff.text === 'string')

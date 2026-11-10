@@ -83,6 +83,11 @@ export class WakeWorkers {
     for (const [id, pending] of this.owned) if (pending.reviewed) this.owned.delete(id);
     if (this.recovery?.reviewed) this.recovery = undefined;
   }
+  /** Runs that wait for model quota report nothing for hours: this wake no longer awaits them. */
+  release(ids: string[]) {
+    for (const id of ids) this.owned.delete(id);
+    for (const [call, launched] of this.launches) if (launched.every(id => ids.includes(id))) this.launches.delete(call);
+  }
   hasReport(text: string) { return [...this.owned.values()].some(pending => pending.report === text); }
   completedReports() {
     return [...[...this.reports].filter(([, report]) => report.reviewed).map(([text]) => text),
