@@ -6,6 +6,8 @@ import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ModelChoice } from './compactor.ts';
 import { isStrings } from './cache.ts';
+import { errorCategory } from './compactor-diagnostics.ts';
+import type { RouteDecision } from './wake-route.ts';
 import { askOneLine } from './one-line.ts';
 import { atomicWrite } from './store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -232,7 +234,11 @@ export interface HeartbeatDeps {
   /** Whether the work queue has an open item; a queued item is never skipped as an unchanged radar. */
   queued?: () => boolean;
   check: (radar?: string) => Promise<Beat>;
-  wake: (beat: Beat, radar?: string) => void;
+  /** What a wake may run on, asked before any radar or check so a blocked heartbeat costs nothing. `blocks` are the providers whose last wake
+   * died on a usage limit (provider -> until). A decision with no `choice` but an `until` means every route is out: no wake until then.
+   * No `route`, or a decision with neither, wakes as before. */
+  route?: (blocks: Readonly<Record<string, number>>) => RouteDecision | undefined;
+  wake: (beat: Beat, radar?: string, choice?: ModelChoice) => void;
   note: (text: string) => void;
   setTimer: (run: () => void, ms: number) => unknown;
   clearTimer: (handle: unknown) => void;
@@ -243,26 +249,54 @@ const boundedReply = (reply: string) => reply.length > REPLY_MAX ? `${reply.slic
 type Check = { at: number; verdict: 'WAKE' | 'SLEEP' | 'FAILED'; text: string };
 
 /** What a woken turn did, read from its messages when the chat settles. */
-export interface WakeSummary { reply: string; tools: number; commits: string[]; stopReason?: string }
+export interface WakeSummary { reply: string; tools: number; commits: string[]; stopReason?: string; /** `provider/model` the turn ended on. */ model?: string }
 /** One wake in heartbeat.json: why it fired and how its turn ended. `running` and `unsettled` have no end; `interrupted` is the operator speaking or aborting. */
 export interface WakeRecord {
   at: number; trigger: 'schedule' | 'check'; reason: string; outcome: 'running' | 'done' | 'interrupted' | 'error' | 'unsettled';
   endedAt?: number; reply?: string; tools?: number; commits?: string[];
+  /** `provider/model` the wake was routed to, then the one its turn ended on. */
+  model?: string;
   reloadTicket?: string;
   reloadDeadline?: number;
   continuation?: 'started' | 'not-verified';
 }
-interface Saved { wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string }
+/** One Brasília day of what the heartbeat did: wakes started, wakes that ended in an error, ticks skipped for quota, ticks the cheap check put back to sleep. */
+export interface DailyCount { day: string; wakes: number; errors: number; skippedQuota: number; skippedIdle: number }
+type Counter = Exclude<keyof DailyCount, 'day'>;
+interface Saved {
+  wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string;
+  /** provider -> when a wake that died on its usage limit may be tried again; learned from failed wakes, cleared by a wake that ends well. */
+  routeBlocks: Record<string, number>;
+  /** provider -> consecutive failed wakes, for the backoff when the error names no time. */
+  routeFailures: Record<string, number>;
+  daily: DailyCount[];
+}
 
+const KEPT_DAILY_DAYS = 30, BACKOFF_MINUTES = [30, 60, 120, 240], LIMIT_MAX_MINUTES = 6 * 60;
+const emptySaved = (): Saved => ({ wakes: [], checks: [], wakeLog: [], routeBlocks: {}, routeFailures: {}, daily: [] });
+const numbers = (value: unknown): Record<string, number> => value !== null && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))) : {};
+const dailyCounts = (value: unknown): DailyCount[] => !Array.isArray(value) ? [] : value.flatMap(item => {
+  const day = item as Partial<Record<keyof DailyCount, unknown>> | null;
+  if (typeof day?.day !== 'string') return [];
+  const count = (field: Counter) => typeof day[field] === 'number' && Number.isFinite(day[field]) ? day[field] as number : 0;
+  return [{ day: day.day, wakes: count('wakes'), errors: count('errors'), skippedQuota: count('skippedQuota'), skippedIdle: count('skippedIdle') }];
+});
+/** The minutes a usage-limit error says to wait ("Try again in ~2136 min."), capped; undefined when it names none. */
+function limitMinutes(reply: string): number | undefined {
+  const minutes = Number(/try again in\s*~?\s*(\d+)\s*min/i.exec(reply)?.[1]);
+  return minutes > 0 ? Math.min(minutes, LIMIT_MAX_MINUTES) : undefined;
+}
 function readSaved(file: string): Saved {
-  if (!existsSync(file)) return { wakes: [], checks: [], wakeLog: [] };
+  if (!existsSync(file)) return emptySaved();
   try {
-    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown } | null;
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown; routeBlocks?: unknown; routeFailures?: unknown; daily?: unknown } | null;
     const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
     const timed = <T>(items: unknown) => Array.isArray(items) ? items.filter((c): c is T => !!c && typeof c === 'object' && typeof (c as { at?: unknown }).at === 'number') : [];
     return { wakes, checks: timed<Check>(saved?.checks), wakeLog: timed<WakeRecord>(saved?.wakeLog),
+      routeBlocks: numbers(saved?.routeBlocks), routeFailures: numbers(saved?.routeFailures), daily: dailyCounts(saved?.daily),
       ...typeof saved?.radarDigest === 'string' ? { radarDigest: saved.radarDigest } : {} };
-  } catch { return { wakes: [], checks: [], wakeLog: [] }; }
+  } catch { return emptySaved(); }
 }
 /** The profile's saved wakes and checks, for the /heartbeat report. */
 export const readHeartbeat = (dir: string) => readSaved(join(dir, 'heartbeat.json'));
@@ -276,6 +310,8 @@ export class Heartbeat {
   nextAt: number | undefined;
   private running = Promise.resolve();
   private failed = false;
+  /** Set while the last tick found every route out of quota, so the note is made once per blocked stretch. */
+  private quotaOut = false;
   private readonly file: string;
   /** The wake whose turn has not settled yet (its `at`). */
   private open: number | undefined;
@@ -336,11 +372,41 @@ export class Heartbeat {
   get waking() { return this.open !== undefined; }
   turnSettled(summary: WakeSummary) {
     if (this.open === undefined) return;
-    const reply = boundedReply(summary.reply);
-    this.amend(log => log.map(wake => wake.at !== this.open ? wake : {
-      ...wake, endedAt: this.deps.now(), reply, tools: summary.tools, commits: summary.commits,
-      outcome: wake.outcome === 'interrupted' || summary.stopReason === 'aborted' ? 'interrupted' : summary.stopReason === 'error' ? 'error' : 'done' }));
+    const reply = boundedReply(summary.reply), saved = this.saved();
+    let ended: WakeRecord['outcome'] | undefined, model: string | undefined;
+    const wakeLog = saved.wakeLog.map((wake): WakeRecord => {
+      if (wake.at !== this.open) return wake;
+      ended = wake.outcome === 'interrupted' || summary.stopReason === 'aborted' ? 'interrupted' : summary.stopReason === 'error' ? 'error' : 'done';
+      model = summary.model ?? wake.model;
+      return { ...wake, endedAt: this.deps.now(), reply, tools: summary.tools, commits: summary.commits, outcome: ended, ...model ? { model } : {} };
+    });
+    atomicWrite(this.file, JSON.stringify({ ...saved, ...ended && this.learnRoute(saved, ended, model, summary.reply), wakeLog,
+      daily: ended === 'error' ? this.tally(saved.daily, 'errors') : saved.daily }));
     this.open = undefined;
+  }
+  /** The providers a wake may not start on yet, and until when. */
+  blocks(): Record<string, number> {
+    const at = this.deps.now();
+    return Object.fromEntries(Object.entries(this.saved().routeBlocks).filter(([, until]) => until > at));
+  }
+  /** What a settled wake teaches about its provider: a usage-limit error blocks it (until the time the error names, else a doubling backoff),
+   * a wake that ends well clears it, anything else (a context error, an abort) leaves it as it was. */
+  private learnRoute(saved: Saved, outcome: WakeRecord['outcome'], model: string | undefined, reply: string): Pick<Saved, 'routeBlocks' | 'routeFailures'> | undefined {
+    const provider = model?.includes('/') ? model.slice(0, model.indexOf('/')) : undefined;
+    if (!provider) return undefined;
+    const at = this.deps.now(), { [provider]: _until, ...others } = saved.routeBlocks, { [provider]: failed = 0, ...otherFailures } = saved.routeFailures;
+    const live = Object.fromEntries(Object.entries(others).filter(([, until]) => until > at));
+    if (outcome === 'done') return { routeBlocks: live, routeFailures: otherFailures };
+    if (outcome !== 'error' || errorCategory(reply) !== 'rate_or_usage_limit') return undefined;
+    const minutes = limitMinutes(reply) ?? BACKOFF_MINUTES[Math.min(failed, BACKOFF_MINUTES.length - 1)];
+    return { routeBlocks: { ...live, [provider]: at + minutes * 60_000 }, routeFailures: { ...otherFailures, [provider]: failed + 1 } };
+  }
+  /** Adds one to today's count (Brasília day) and keeps 30 days. */
+  private tally(daily: DailyCount[], field: Counter): DailyCount[] {
+    const at = this.deps.now(), day = new Date(at - UTC_MINUS_3).toISOString().slice(0, 10);
+    const today = daily.find(entry => entry.day === day) ?? { day, wakes: 0, errors: 0, skippedQuota: 0, skippedIdle: 0 };
+    const oldest = new Date(at - UTC_MINUS_3 - KEPT_DAILY_DAYS * DAY).toISOString().slice(0, 10);
+    return [...daily.filter(entry => entry.day !== day && entry.day > oldest), { ...today, [field]: today[field] + 1 }];
   }
   /** Resolves once the current check, if any, has finished. */
   settled() { return this.running; }
@@ -363,6 +429,13 @@ export class Heartbeat {
     const radar = this.deps.radar ? await this.deps.radar() : undefined;
     if (spoke()) return;
     if (this.deps.busy() !== undefined) { this.arm(); return; }
+    const route = this.deps.route?.(this.blocks());
+    if (route && !route.choice && route.until !== undefined) {
+      const text = `quota: every route out until ${brasiliaTime(route.until)} (UTC-3)`;
+      if (!this.quotaOut) this.deps.note(route.why ? `${text}: ${route.why}` : text);
+      this.quotaOut = true; this.save({ verdict: 'SLEEP', text }, undefined, undefined, 'skippedQuota'); this.arm(); return;
+    }
+    this.quotaOut = false;
     let beat: Beat = { wake: true, text: '' };
     const scheduled = this.deps.always();
     if (!scheduled) try { beat = await this.deps.check(radar); this.failed = false; }
@@ -373,7 +446,7 @@ export class Heartbeat {
       this.failed = true; this.save({ verdict: 'FAILED', text: message }); this.arm(); return;
     }
     if (spoke()) return;
-    if (!beat.wake) { this.save({ verdict: 'SLEEP', text: beat.text }); this.arm(); return; }
+    if (!beat.wake) { this.save({ verdict: 'SLEEP', text: beat.text }, undefined, undefined, 'skippedIdle'); this.arm(); return; }
     const at = this.deps.now(), recent = this.saved().wakes.filter(wake => at - wake < DAY), cap = this.deps.maxWakes();
     if (recent.length >= cap) {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);
@@ -381,21 +454,22 @@ export class Heartbeat {
     }
     // One reading of the clock: the save takes milliseconds, and turnSettled finds the wake by this exact `at`.
     this.save({ verdict: 'WAKE', text: beat.text || 'fixed schedule' }, [...recent, at],
-      { at, trigger: scheduled ? 'schedule' : 'check', reason: scheduled ? '' : beat.text, outcome: 'running' });
+      { at, trigger: scheduled ? 'schedule' : 'check', reason: scheduled ? '' : beat.text, outcome: 'running', ...route?.choice ? { model: `${route.choice.provider}/${route.choice.model}` } : {} }, 'wakes');
     // Every scheduled interval wakes (operator, 02/11: "volta o wake em 15"); an unchanged radar only tells the turn to start something new.
     // An unavailable or absent radar never counts as unchanged.
     const digest = radarDigest(radar), last = this.saved().radarDigest;
     this.keep({ radarDigest: digest });
     this.open = at;
-    this.deps.wake(digest !== undefined && digest === last ? { ...beat, unchanged: true } : beat, radar);
+    this.deps.wake(digest !== undefined && digest === last ? { ...beat, unchanged: true } : beat, radar, route?.choice);
   }
   /** Sets the radar digest; save() carries it over, and the next wake compares against it. */
   private keep(fields: Partial<Pick<Saved, 'radarDigest'>>) { atomicWrite(this.file, JSON.stringify({ ...this.saved(), ...fields })); }
   /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */
-  private save(check: Omit<Check, 'at'>, wakes?: number[], wake?: WakeRecord) {
+  private save(check: Omit<Check, 'at'>, wakes?: number[], wake?: WakeRecord, count?: Counter) {
     const saved = this.saved();
     const wakeLog = wake ? [...this.unsettled(saved.wakeLog), wake].filter(w => this.deps.now() - w.at < KEPT_WAKE_DAYS * DAY).slice(-KEPT_WAKES) : saved.wakeLog;
-    atomicWrite(this.file, JSON.stringify({ ...saved, wakes: wakes ?? saved.wakes, checks: [...saved.checks, { at: this.deps.now(), ...check }].slice(-KEPT_CHECKS), wakeLog }));
+    atomicWrite(this.file, JSON.stringify({ ...saved, wakes: wakes ?? saved.wakes, checks: [...saved.checks, { at: this.deps.now(), ...check }].slice(-KEPT_CHECKS), wakeLog,
+      daily: count ? this.tally(saved.daily, count) : saved.daily }));
   }
   private amend(change: (log: WakeRecord[]) => WakeRecord[]) {
     const saved = this.saved();

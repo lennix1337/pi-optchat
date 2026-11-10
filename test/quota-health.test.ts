@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accounts, quotaProbe, quotaRisks, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
+import { accounts, quotaProbe, quotaRisks, routeBlock, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { defaultMonitors, ProdHealth, readHealth, registerProdHealth } from '../src/prod-health.ts';
 import { DailySummary, localDate } from '../src/slack-reports.ts';
 
@@ -76,4 +76,23 @@ test('registered quota monitor persists, alerts once without model wake, and rea
   assert.ok(registered, 'default registered monitor must include quota');
   assert.equal(registered.channel, null);
   assert.equal(registered.wakes, false);
+});
+
+test('a route is blocked by what pi-multi-account cached, with its own freshness rules, and free or unknown otherwise', () => {
+  const MIN = 60_000, spent = { primary: window(100, 3) };
+  assert.equal(routeBlock({}, 'p', 'm', NOW), undefined, 'nothing cached: unknown, not blocked');
+  assert.equal(routeBlock(null, 'p', 'm', NOW), undefined);
+  assert.equal(routeBlock({ usageByProvider: { p: { primary: window(60) } } }, 'p', 'm', NOW), undefined);
+  assert.equal(routeBlock({ usageByProvider: { p: { fetchedAt: NOW - 3 * MIN, serviceable: false } } }, 'p', 'm', NOW), NOW + 7 * MIN, 'a fresh "spent" verdict lasts ten minutes from its snapshot');
+  assert.equal(routeBlock({ usageByProvider: { p: { fetchedAt: NOW - 11 * MIN, serviceable: false } } }, 'p', 'm', NOW), undefined, 'a stale verdict blocks nothing');
+  assert.equal(routeBlock({ usageByProvider: { p: { fetchedAt: NOW - 3 * MIN, serviceable: false, ...spent } } }, 'p', 'm', NOW), NOW + 3 * HOUR, 'a full window that resets later wins');
+  assert.equal(routeBlock({ usageByProvider: { p: { fetchedAt: NOW - HOUR, ...spent } } }, 'p', 'm', NOW), NOW + 3 * HOUR, 'a full window blocks even from a stale snapshot');
+  assert.equal(routeBlock({ usageByProvider: { p: { fetchedAt: NOW - 3 * MIN, serviceable: true, ...spent }, }, exhaustedUntilByProvider: { p: NOW + HOUR } }, 'p', 'm', NOW), undefined, 'a fresh "serviceable" frees the provider');
+  assert.equal(routeBlock({ usageByProvider: { p: { fetchedAt: NOW - 11 * MIN, serviceable: true, ...spent } } }, 'p', 'm', NOW), NOW + 3 * HOUR, 'a stale "serviceable" frees nothing');
+  assert.equal(routeBlock({ exhaustedUntilByProvider: { p: NOW + HOUR, q: NOW - 1 } }, 'p', 'm', NOW), NOW + HOUR);
+  assert.equal(routeBlock({ exhaustedUntilByProvider: { q: NOW - 1 } }, 'q', 'm', NOW), undefined, 'a cooldown that ended blocks nothing');
+  assert.equal(routeBlock({ exhaustedUntilByModel: { 'p/m': NOW + 2 * HOUR } }, 'p', 'm', NOW), NOW + 2 * HOUR);
+  assert.equal(routeBlock({ exhaustedUntilByModel: { 'p/m': NOW + 2 * HOUR } }, 'p', 'other', NOW), undefined, 'a model cooldown stays on its model');
+  assert.equal(routeBlock({ usageByProvider: { p: { primary: window(100, 1) } }, exhaustedUntilByProvider: { p: NOW + 4 * HOUR } }, 'p', 'm', NOW), NOW + 4 * HOUR, 'the latest end wins');
+  assert.equal(routeBlock({ usageByProvider: { p: { primary: { usedPercent: 100, resetAt: NOW - 1 } } } }, 'p', 'm', NOW), undefined, 'a window that already reset blocks nothing');
 });

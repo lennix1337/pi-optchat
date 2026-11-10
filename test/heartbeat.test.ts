@@ -6,20 +6,23 @@ import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
+import type { ModelChoice } from '../src/compactor.ts';
 
 const MIN = 60_000;
 
 /** A clock and one timer slot the test advances by hand. */
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
-  radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean } = {}) {
+  radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
+  route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
-  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [];
+  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [];
   const beat = new Heartbeat({
     dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy, radar, queued,
+    ...route ? { route: (blocks: Record<string, number>) => route(now, blocks) } : {},
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
-    wake: (beat, seen) => { woken.push(beat.text); wakeRadars.push(seen); unchanged.push(beat.unchanged ?? false); },
+    wake: (beat, seen, choice) => { woken.push(beat.text); wakeRadars.push(seen); unchanged.push(beat.unchanged ?? false); choices.push(choice); },
     note: text => { notes.push(text); },
   });
   const advance = async (ms: number) => {
@@ -27,7 +30,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     while (timer && timer.at <= until) { const t = timer; timer = undefined; now = t.at; t.run(); await beat.settled(); }
     now = until;
   };
-  return { beat, checks, woken, notes, checkRadars, wakeRadars, unchanged, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
+  return { beat, checks, woken, notes, choices, checkRadars, wakeRadars, unchanged, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
 }
 
 test('the radar runs before each check, and its snapshot reaches both the check and the woken turn', async () => {
@@ -593,4 +596,98 @@ test('runRadarFresh runs the command now in config.json when the loaded one is u
   let reads = 0;
   assert.equal(await runRadarFresh(good, () => { reads++; return bad; }), '# Wake radar ok');
   assert.equal(reads, 0);
+});
+
+const free: ModelChoice = { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'low' };
+
+test('every route out of quota: no wake until a route returns', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, route: at => at < 50 * MIN ? { until: 50 * MIN, why: 'openai-codex' } : { choice: free } });
+  h.beat.arm(); await h.advance(45 * MIN);
+  assert.deepEqual(h.woken, [], 'no wake while every route is out');
+  assert.deepEqual(h.checks, [], 'no probing model call');
+  assert.notEqual(h.pending(), undefined, 'still armed');
+  assert.deepEqual(saved(h.dir).checks.map((c: any) => [c.verdict, c.text]), Array(3).fill(['SLEEP', 'quota: every route out until 21:50 (UTC-3)']));
+  assert.equal(h.notes.length, 1, 'noted once per blocked stretch');
+  await h.advance(15 * MIN);
+  assert.deepEqual(h.woken, ['']);
+  assert.deepEqual(h.choices, [free]);
+  assert.deepEqual(h.checks, []);
+  assert.equal(saved(h.dir).wakeLog[0].model, 'anthropic/claude-haiku-5-5');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+const codex: ModelChoice = { provider: 'openai-codex', model: 'gpt-5.5', thinking: 'low' };
+const usageLimit = 'You have hit your ChatGPT usage limit (team plan). Try again in ~120 min.';
+const failedOn = (model: string, reply: string) => ({ reply, tools: 0, commits: [], stopReason: 'error', model });
+/** A route that follows what the heartbeat learned from failed wakes. */
+const followsBlocks = (at: number, blocks: Record<string, number>) => (blocks[codex.provider] ?? 0) > at ? { until: blocks[codex.provider] } : { choice: codex };
+async function failedWake(h: ReturnType<typeof harness>, reply: string, model = 'openai-codex/gpt-5.5') {
+  h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled(failedOn(model, reply));
+}
+
+test('a usage-limit reply blocks its provider for the minutes it names, and the next tick after them wakes again', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, route: followsBlocks });
+  await failedWake(h, usageLimit);
+  assert.deepEqual(saved(h.dir).routeBlocks, { 'openai-codex': 135 * MIN });
+  h.beat.arm(); await h.advance(105 * MIN);
+  assert.equal(h.woken.length, 1, 'ticks at 30 min to 120 min start nothing');
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 2, 'the tick at 135 min wakes');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a block named by the error is capped at six hours', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, route: followsBlocks });
+  await failedWake(h, 'You have hit your ChatGPT usage limit (team plan). Try again in ~2136 min.');
+  assert.deepEqual(saved(h.dir).routeBlocks, { 'openai-codex': 15 * MIN + 360 * MIN });
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a limit error that names no time backs off 30, 60, 120, 240 minutes and stays at 240; a wake that ends well clears it', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, route: () => ({ choice: codex }) });
+  const billing = '402 {"code":"insufficient_credits","message":"Billing account is not in good standing"}';
+  const waits: number[] = [];
+  for (let n = 0; n < 5; n++) {
+    const before = h.woken.length;
+    h.beat.arm(); await h.advance(15 * MIN);
+    assert.equal(h.woken.length, before + 1);
+    const at = (saved(h.dir).wakeLog.at(-1) as WakeRecord).at;
+    h.beat.turnSettled(failedOn('openai-codex/gpt-5.5', billing));
+    waits.push((saved(h.dir).routeBlocks['openai-codex'] - at) / MIN);
+  }
+  assert.deepEqual(waits, [30, 60, 120, 240, 240]);
+  h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled({ reply: 'merged', tools: 1, commits: ['x'], model: 'openai-codex/gpt-5.5' });
+  assert.deepEqual([saved(h.dir).routeBlocks, saved(h.dir).routeFailures], [{}, {}]);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('an error that is not a usage limit blocks nothing, and a block on one provider survives a good wake on another', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, route: () => ({ choice: codex }) });
+  await failedWake(h, 'context too long: 300000 tokens exceed the 272000 window');
+  assert.deepEqual(saved(h.dir).routeBlocks, {});
+  h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled(failedOn('openai-codex/gpt-5.5', usageLimit));
+  h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled({ reply: 'ok', tools: 1, commits: ['x'], model: 'anthropic/claude-haiku-5-5' });
+  assert.deepEqual(Object.keys(saved(h.dir).routeBlocks), ['openai-codex']);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('34 ticks with the only provider blocked start no wake and are counted as skipped for quota', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, route: () => ({ until: 40_000 * MIN, why: 'openai-codex' }) });
+  h.beat.arm(); await h.advance(34 * 15 * MIN);
+  assert.equal(h.woken.length, 0);
+  assert.deepEqual(saved(h.dir).daily, [
+    { day: '1969-12-31', wakes: 0, errors: 0, skippedQuota: 11, skippedIdle: 0 },
+    { day: '1970-01-01', wakes: 0, errors: 0, skippedQuota: 23, skippedIdle: 0 }]);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('daily counters tell wakes, errors and quiet check verdicts apart, and keep 30 days', async () => {
+  const h = harness({ minutes: 15, wakes: 100, verdicts: [{ wake: false, text: 'quiet' }, { wake: true, text: 'fix' }] });
+  h.beat.arm(); await h.advance(30 * MIN); h.beat.turnSettled(failedOn('openai-codex/gpt-5.5', 'boom'));
+  assert.deepEqual(saved(h.dir).daily, [{ day: '1969-12-31', wakes: 1, errors: 1, skippedQuota: 0, skippedIdle: 1 }]);
+  const stale = { day: '1969-11-01', wakes: 9, errors: 0, skippedQuota: 0, skippedIdle: 0 };
+  writeFileSync(join(h.dir, 'heartbeat.json'), JSON.stringify({ ...saved(h.dir), daily: [stale, ...saved(h.dir).daily] }));
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.deepEqual(saved(h.dir).daily.map((d: any) => d.day), ['1969-12-31']);
+  rmSync(h.dir, { recursive: true, force: true });
 });
