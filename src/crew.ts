@@ -30,8 +30,16 @@ export const DEFAULT_ROUTES: Record<WorkerKind, ModelChoice[]> = {
 /** A specialist's memory stays small enough to load whole into every worker brief. */
 export const MEMORY_BYTES = 6 * 1024;
 export const CHARTER_BYTES = 4 * 1024;
-/** A memory not reviewed for this long is due for the manager's weekly audit. */
+/** A specialist is audited at most this often; a memory not rewritten for this long counts as aged. */
 export const AUDIT_DAYS = 7;
+/** A memory smaller than this has not been filled from what workers learned yet. */
+export const THIN_BYTES = 1024;
+/** A memory proposal waiting longer than this is flagged to the manager. */
+export const STALE_PROPOSAL_DAYS = 2;
+const DAY_MS = 86_400_000;
+/** Why a memory is worth the manager's audit: not rewritten for a week, under THIN_BYTES, or absent. */
+export type AuditReason = 'aged' | 'thin' | 'missing';
+export interface AuditEntry { specialist: Specialist; reasons: AuditReason[]; memoryBytes: number; lastAudit?: string }
 
 /** The worker model for a kind on the account the main model is serving: the route for that provider family, addressed at the live
  * account; with no route for that family, the first route. */
@@ -148,11 +156,14 @@ export class Crew {
   propose(specialist: Specialist, runId: string, text: string, date = new Date().toISOString()) {
     this.savePending([...this.pending().filter(p => p.runId !== runId), { specialist, runId, date, text }]);
   }
-  /** How many proposals wait for each specialist. */
-  pendingCounts() {
-    const counts = new Map<Specialist, number>();
-    for (const p of this.pending()) counts.set(p.specialist, (counts.get(p.specialist) ?? 0) + 1);
-    return [...counts].map(([specialist, count]) => ({ specialist, count }));
+  /** How many proposals wait for each specialist, and how many days (one decimal) the oldest has waited. */
+  pendingCounts(now = Date.now()) {
+    const counts = new Map<Specialist, { count: number; oldest: number }>();
+    for (const p of this.pending()) {
+      const at = Date.parse(p.date), entry = counts.get(p.specialist) ?? { count: 0, oldest: 0 };
+      counts.set(p.specialist, { count: entry.count + 1, oldest: Number.isNaN(at) ? entry.oldest : Math.max(entry.oldest, now - at) });
+    }
+    return [...counts].map(([specialist, { count, oldest }]) => ({ specialist, count, oldestDays: Math.round(Math.max(0, oldest) / DAY_MS * 10) / 10 }));
   }
   /** Replaces missions.md whole; capped like a memory, since every wake reads it. */
   writeMissions(text: string) { return writeCapped(join(this.dir, 'missions.md'), 'missions.md', MEMORY_BYTES, text, 'close accepted missions'); }
@@ -164,14 +175,53 @@ export class Crew {
     const size = writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, text, 'trim stale or duplicated lines');
     // Writing the memory is the manager's answer to what the workers proposed.
     if (part === 'memory' && this.pending().some(p => p.specialist === specialist)) this.savePending(this.pending().filter(p => p.specialist !== specialist));
+    // A rewritten memory is a reviewed one.
+    if (part === 'memory') this.markAudited(specialist);
     return size;
+  }
+  private auditFile() { return join(this.dir, 'audit.json'); }
+  /** When each specialist was last audited: `{slug: ISO}`. */
+  audits(): Record<Specialist, string> {
+    try {
+      const map: unknown = JSON.parse(readFileSync(this.auditFile(), 'utf8'));
+      return typeof map === 'object' && map !== null && !Array.isArray(map) ? Object.fromEntries(Object.entries(map).filter((e): e is [string, string] => typeof e[1] === 'string')) : {};
+    } catch { return {}; }
+  }
+  /** Records that the manager reviewed a specialist's memory (it read it, or rewrote it). */
+  markAudited(specialist: Specialist, at = new Date()) {
+    mkdirSync(this.dir, { recursive: true });
+    atomicWrite(this.auditFile(), `${JSON.stringify({ ...this.audits(), [specialist]: at.toISOString() }, null, 1)}\n`);
+  }
+  /** The last audit in ms: the recorded one, else the memory's last write, else never. */
+  lastAudit(specialist: Specialist) {
+    const stamp = Date.parse(this.audits()[specialist] ?? '');
+    if (!Number.isNaN(stamp)) return stamp;
+    try { return statSync(this.file(specialist, 'memory')).mtimeMs; } catch { return undefined; }
+  }
+  /** What is wrong with a memory right now, whether or not it is due: aged, thin or missing. */
+  reasonsOf(specialist: Specialist, now = Date.now()): AuditEntry {
+    const memory = this.read(specialist, 'memory'), memoryBytes = Buffer.byteLength(memory), age = this.age(specialist, now);
+    const reasons: AuditReason[] = [];
+    if (age !== undefined && age >= AUDIT_DAYS) reasons.push('aged');
+    if (!memory.trim()) reasons.push('missing');
+    else if (memoryBytes < THIN_BYTES) reasons.push('thin');
+    const last = this.lastAudit(specialist);
+    return { specialist, reasons, memoryBytes, ...(last === undefined ? {} : { lastAudit: new Date(last).toISOString() }) };
   }
   /** Days since a specialist's memory was last written, or undefined with no memory yet. */
   age(specialist: Specialist, now = Date.now()) {
     try { return Math.max(0, now - statSync(this.file(specialist, 'memory')).mtimeMs) / 86_400_000; } catch { return undefined; }
   }
-  /** Specialists whose memory exists and is due for the weekly audit. */
-  auditDue(now = Date.now()) { return this.specialists().filter(s => (this.age(s, now) ?? 0) >= AUDIT_DAYS); }
+  /** Specialists with a charter, not audited for a week, whose memory is aged, thin or missing. */
+  auditReasons(now = Date.now()): AuditEntry[] {
+    return this.specialists().filter(s => existsSync(this.file(s, 'charter'))).map(s => this.reasonsOf(s, now)).filter(entry => {
+      if (!entry.reasons.length) return false;
+      const last = this.lastAudit(entry.specialist);
+      return last === undefined || (now - last) / DAY_MS >= AUDIT_DAYS;
+    });
+  }
+  /** The slugs of `auditReasons`. */
+  auditDue(now = Date.now()) { return this.auditReasons(now).map(entry => entry.specialist); }
   /** Open missions that carry work across wakes: `missions.md`, capped like a memory. */
   missions() { try { return readFileSync(join(this.dir, 'missions.md'), 'utf8').trim(); } catch { return ''; } }
 
@@ -220,12 +270,12 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 - Kinds: "code" (Sonnet, code changes), "mechanical" (Haiku, rote edits, renames, data gathering), "hard" (Opus, the hardest design or SDK work), "plan" (Opus scout, read-only, returns contracts).
 - A contract has lines starting with Goal:, Acceptance:, Evidence: and Authority: (what the worker may and may not do; my authority map caps it). A worker gets the contract and its project's charter and memory, not this chat: put every fact it needs in the contract.
 - Review a report like a code review: check its evidence (diff, test output, CI) before you believe it; send it back with tell when it falls short. Push, PRs and merges stay with you.
-- Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "write"); reject the rest. Audit each project memory weekly.
+- Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "write"); reject the rest. Audit each project memory weekly: read the memory, its proposals and the recent runs, fill a thin memory from verified facts, drop stale lines, then write it, or call action "audit" when nothing changed.
 - A production deploy (deploy-web.ps1, deploy-prod.ps1...) is not delegated: run it yourself, in the foreground of this session, and keep the machine quiet (no workers, no suites) until the swap is verified.
 - Open missions that span wakes live in the crew's missions.md: keep each one with its goal, acceptance and next step until accepted.`;
 
 const CREW_PARAMS = Type.Object({
-  action: stringEnum(['list', 'read', 'write'] as const),
+  action: stringEnum(['list', 'read', 'write', 'audit'] as const),
   project: Type.Optional(Type.String({ description: 'Specialist slug (lowercase letters, digits, hyphens); list shows the existing ones. A new slug starts a new specialist.' })),
   part: Type.Optional(stringEnum(['charter', 'memory', 'missions', 'proposals'] as const)),
   text: Type.Optional(Type.String({ description: 'write: the whole new text; it replaces the old one.' })),
@@ -237,11 +287,17 @@ function counts(list: readonly { specialist: string; count: number }[]) {
   for (const { specialist, count } of list) parts.push(`${specialist} (${count})`);
   return parts.join(', ');
 }
-/** `crew list`: each specialist's sizes and memory age, the missions size, the audit due and the proposals pending. */
+type Pending = readonly { specialist: string; count: number; oldestDays?: number }[];
+const staleOf = (pending: Pending) => pending.filter(p => (p.oldestDays ?? 0) > STALE_PROPOSAL_DAYS).map(p => `${p.specialist} ${p.oldestDays} d`);
+/** `crew list`: each specialist's sizes, memory age and last audit, the missions size, the audit due with its reasons and the proposals pending. */
 function listCrew(c: Crew) {
-  const rows = c.specialists().map(s => { const age = c.age(s); return `${s}: charter ${Buffer.byteLength(c.read(s, 'charter'))} B, memory ${Buffer.byteLength(c.read(s, 'memory'))} B${age === undefined ? '' : `, written ${age.toFixed(1)} d ago`}`; });
-  const due = c.auditDue(), pending = c.pendingCounts();
-  return [...rows, `missions: ${Buffer.byteLength(c.missions())} B`, due.length ? `Audit due: ${due.join(', ')}` : 'No audit due.', pending.length ? `proposals pending: ${counts(pending)}` : ''].filter(Boolean).join('\n');
+  const rows = c.specialists().map(s => {
+    const age = c.age(s), last = c.lastAudit(s);
+    return `${s}: charter ${Buffer.byteLength(c.read(s, 'charter'))} B, memory ${Buffer.byteLength(c.read(s, 'memory'))} B${age === undefined ? '' : `, written ${age.toFixed(1)} d ago`}${last === undefined ? '' : `, audited ${new Date(last).toISOString().slice(0, 10)}`}`;
+  });
+  const due = c.auditReasons(), pending = c.pendingCounts(), stale = staleOf(pending);
+  return [...rows, `missions: ${Buffer.byteLength(c.missions())} B`, due.length ? `Audit due: ${due.map(e => `${e.specialist} (${e.reasons.join(', ')})`).join(', ')}` : 'No audit due.',
+    pending.length ? `proposals pending: ${counts(pending)}` : '', stale.length ? `stale proposals (over ${STALE_PROPOSAL_DAYS} days): ${stale.join(', ')}` : ''].filter(Boolean).join('\n');
 }
 /** `crew read` of the proposals: the pending ones of a project, or of all. */
 function proposalsText(c: Crew, project: string | undefined) {
@@ -252,13 +308,19 @@ function proposalsText(c: Crew, project: string | undefined) {
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
 export const crewTool = (crew: () => Crew) => ({
   name: 'crew', label: 'Crew memory',
-  description: `Read or replace the crew's disk state: each project specialist's charter (${CHARTER_BYTES} B cap) and memory (${MEMORY_BYTES} B cap), and missions.md (open work across wakes). list shows sizes and memory age; read and write take project+part (part "missions" needs no project; part "proposals" is read-only: the pending memory proposals of project, or of all); list also shows the proposals still pending. Write replaces the whole text and is refused over the cap, and writing a memory clears that project's pending proposals. Apply the lines of a worker's memory proposal you verified; never paste a report whole.`,
+  description: `Mark a specialist's memory audited with action "audit" (needs project; it reports the memory size, what made it due and the proposals pending; writing the memory does the same). Read or replace the crew's disk state: each project specialist's charter (${CHARTER_BYTES} B cap) and memory (${MEMORY_BYTES} B cap), and missions.md (open work across wakes). list shows sizes and memory age; read and write take project+part (part "missions" needs no project; part "proposals" is read-only: the pending memory proposals of project, or of all); list also shows the proposals still pending. Write replaces the whole text and is refused over the cap, and writing a memory clears that project's pending proposals. Apply the lines of a worker's memory proposal you verified; never paste a report whole.`,
   parameters: CREW_PARAMS,
-  async execute(_id: string, args: { action: 'list' | 'read' | 'write'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string }) {
+  async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'audit'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string }) {
     const c = crew();
     if (args.action === 'list') return result(listCrew(c));
     const part = args.part ?? 'memory';
     if (args.project !== undefined) c.check(args.project);
+    if (args.action === 'audit') {
+      if (!args.project) throw new Error(`audit needs project (a slug; existing: ${c.specialists().join(', ')}).`);
+      const found = c.reasonsOf(args.project), waiting = c.pending().filter(p => p.specialist === args.project).length;
+      c.markAudited(args.project);
+      return result(`${args.project} audited: memory ${found.memoryBytes} B, reasons ${found.reasons.join(', ') || 'none'}, proposals pending ${waiting}`);
+    }
     if (part === 'proposals') {
       if (args.action === 'write') throw new Error('Proposals are read-only: apply the true lines with write of the project memory, which clears them.');
       return result(proposalsText(c, args.project));
@@ -271,9 +333,15 @@ export const crewTool = (crew: () => Crew) => ({
   },
 });
 
-export const crewWakeNote = (missions: string, auditDue: readonly string[], pending: readonly { specialist: string; count: number }[] = []) => [
+/** "thin: dentai 273 B; missing: lolidle; aged: harness": why each due specialist is due; every due entry has at least one reason. */
+function auditWhy(audit: readonly AuditEntry[]) {
+  const groups: [AuditReason, (entry: AuditEntry) => string][] = [['thin', e => `${e.specialist} ${e.memoryBytes} B`], ['missing', e => e.specialist], ['aged', e => e.specialist]];
+  return groups.map(([reason, show]) => ({ reason, items: audit.filter(e => e.reasons.includes(reason)).map(show) })).filter(g => g.items.length).map(g => `${g.reason}: ${g.items.join(', ')}`).join('; ');
+}
+export const crewWakeNote = (missions: string, audit: readonly AuditEntry[], pending: Pending = []) => [
   'Crew: triage here, on the cheap model. For something to build, spawn a "plan" worker for the contracts, then "code" workers to execute; review their reports before you merge. Work continues across wakes through missions.md.',
   missions ? `Open missions (crew missions.md):\n${missions.slice(0, 2048)}` : '',
-  auditDue.length ? `Weekly audit due for the memory of: ${auditDue.join(', ')}. Read each, drop stale or wrong lines, write it back.` : '',
+  audit.length ? `Weekly audit due for the memory of: ${audit.map(e => e.specialist).join(', ')} (${auditWhy(audit)}). Read each with its proposals and recent runs, fill a thin or missing memory from verified facts, drop stale lines, then write it back, or crew audit when nothing changed.` : '',
   pending.length ? `Memory proposals pending (crew read, part "proposals"; apply the true lines with write, which clears them): ${counts(pending)}.` : '',
+  staleOf(pending).length ? `Proposals waiting more than ${STALE_PROPOSAL_DAYS} days (apply or reject): ${staleOf(pending).join(', ')}.` : '',
 ].filter(Boolean).join('\n');

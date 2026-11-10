@@ -33,6 +33,8 @@ test('spawn accepts a worker kind and a project specialist', () => {
   assert.match(JSON.stringify(tools.get('spawn')!.parameters), /Explicit model as provider\/model/, 'the schema documents it');
   const crewCall = { action: 'read', project: 'lolidle-save-editor', part: 'proposals' };
   assert.deepEqual(validate(tools.get('crew')!, crewCall), crewCall);
+  const auditCall = { action: 'audit', project: 'harness' };
+  assert.deepEqual(validate(tools.get('crew')!, auditCall), auditCall);
 });
 // Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
 const nativeOverrides = ['bash'];
