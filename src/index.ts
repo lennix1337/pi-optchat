@@ -20,10 +20,12 @@ import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type Extensi
 import { Type } from 'typebox';
 import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
-import { atomicWrite, storeFor } from './store.ts';
+import { atomicWrite, readJsonOr, storeFor } from './store.ts';
+import { QUOTA_FILE } from './quota-health.ts';
+import { knownProviders, pickWakeRoute } from './wake-route.ts';
 import { createCompressor } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
-import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, wakeModelFor, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
+import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, wakeModelFor, wakeRoutes, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, TURN_REFRESHED } from './prompts.ts';
 import { cachePayload, coldAfter, prefixRetention, record, ViewEntries } from './cache.ts';
@@ -425,12 +427,22 @@ export default function optchat(pi: ExtensionAPI) {
       },
       check: radar => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile, radar),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
-      wake: (beat, radar) => {
+      // Cached quota only (pi-multi-account keeps the file): a wake never starts on a provider known to be out, and never probes one.
+      route: blocks => {
+        const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
+        const config = own()?.config;
+        if (!config) return undefined;
+        const state = readJsonOr<unknown>(QUOTA_FILE, {});
+        return pickWakeRoute(wakeRoutes(config, model, knownProviders(state, blocks), pi.getThinkingLevel()), state, blocks, Date.now(),
+          choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
+      },
+      wake: (beat, radar, choice) => {
         wakeRetried = false; clearWakeWorkers();
         const dream = briefDream(ctx);
         const crew = profile.config.managerMode ? `\n${crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts())}` : '';
         const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + crew, previousWake(profile.dir), beat.unchanged);
-        wakeOn(profile.dir, wakeModelFor(profile.config, main), wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
+        const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
+        wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
           .catch(error => { void wakeOff(profile.dir, wakeHost(ctx)).catch(() => undefined); ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error'); }); },
       note: text => ctx.ui.notify(text, 'warning'),
@@ -1076,7 +1088,7 @@ export default function optchat(pi: ExtensionAPI) {
     else if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
     else if (retry) { wakeRetried = true; void deliverReport(retry); }
     else {
-      heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
+      heartbeat?.turnSettled({ ...wake ?? summarizeTurn(turn), ...ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}` } });
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (active && !fault && !stopping) heartbeat?.arm();
       await slack.runEnded(messages, wakeWorkers.notVerified ? WORKER_UNVERIFIED : undefined);

@@ -21,6 +21,8 @@ export type Role = 'compactor' | 'subagent';
  * a list holds one per provider family (Anthropic, Codex...), so the wake gets cheaper on whichever the main model is on. */
 /** workerModels: manager mode's routes, one list per worker kind with one entry per provider family (see `routeFor`). */
 export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes;
+  /** Whether a wake whose main-model family is out of quota may run on another family's wakeModel (default true; see wakeRoutes). */
+  wakeRouteAcrossFamilies?: boolean;
   /** Extra deploy entry points beyond the built-in ones (script names with `*`, or a command prefix such as `fly deploy`): see src/deploy.ts. */
   deployCommands?: string[] }
 /** The main model the roles follow, as Pi's model_select reports it. */
@@ -86,6 +88,27 @@ export function wakeModelFor(config: ProfileConfig, main: MainModel | undefined)
   if (!wake) return undefined;
   return wake.model === main.model ? undefined : { ...wake, provider: main.provider };
 }
+/** The numbered accounts a provider family is published under, base provider first, then `-account-N` in numeric order. */
+const familyAccounts = (group: string, providers: string[]) => [...new Set(providers.filter(provider => accountGroup(provider) === group))]
+  .sort((a, b) => (a === group ? -1 : b === group ? 1 : a.localeCompare(b, undefined, { numeric: true })));
+/**
+ * Every route a heartbeat wake may run on, best first: the account the main model is serving (its wake model, else the main
+ * model itself), the other accounts of its family, then the other families' `wakeModel` entries and their accounts (not
+ * when `wakeRouteAcrossFamilies` is false). `accounts` are the provider ids known to be published; `thinking` is the main
+ * model's, kept on a family without a wake model. wakeModelFor stays the answer for the main account alone.
+ */
+export function wakeRoutes(config: ProfileConfig, main: MainModel | undefined, accounts: string[], thinking: ModelChoice['thinking'] = 'off'): ModelChoice[] {
+  const choices = config.wakeModel ? [config.wakeModel].flat() : [];
+  const group = main && accountGroup(main.provider);
+  const home = (provider: string, wake: ModelChoice | undefined): ModelChoice =>
+    wake ? { ...wake, provider } : { provider, model: main!.model, thinking };
+  const sameFamily = main ? [main.provider, ...familyAccounts(group!, [group!, ...accounts]).filter(provider => provider !== main.provider)] : [];
+  const mainWake = choices.find(choice => accountGroup(choice.provider) === group);
+  const own = sameFamily.map(provider => home(provider, mainWake));
+  const others = config.wakeRouteAcrossFamilies === false ? [] : choices.filter(choice => accountGroup(choice.provider) !== group)
+    .flatMap(choice => familyAccounts(accountGroup(choice.provider), [choice.provider, ...accounts]).map(provider => ({ ...choice, provider })));
+  return [...own, ...others].filter((choice, index, all) => all.findIndex(other => other.provider === choice.provider && other.model === choice.model) === index);
+}
 /** What a role will use right now: its configured model, and the effective one when the main model changes it. */
 export function roleModel(config: ProfileConfig, role: Role, main: MainModel | undefined) {
   const show = (choice: ModelChoice) => `${choice.provider}/${choice.model} (${choice.thinking})`;
@@ -108,6 +131,7 @@ export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
     || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))
+    || value.wakeRouteAcrossFamilies !== undefined && typeof value.wakeRouteAcrossFamilies !== 'boolean'
     || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
@@ -115,7 +139,7 @@ export function loadConfig(dir: string): ProfileConfig {
     if (problem) throw new Error(problem);
     // The optional fields were validated above; an absent or empty one stays out of the config.
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;
-    return { compactor: value.compactor, subagent: value.subagent, ...present, ...readSettings(value) };
+    return { compactor: value.compactor, subagent: value.subagent, ...present, ...value.wakeRouteAcrossFamilies === false ? { wakeRouteAcrossFamilies: false } : {}, ...readSettings(value) };
   }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }

@@ -39,6 +39,29 @@ export function accounts(state: unknown, now: number): Account[] {
   });
 }
 
+/** How long a provider's own "usable right now" verdict (`serviceable`) is believed; the same ten minutes pi-multi-account uses. */
+export const SERVICEABLE_FRESH_MS = 10 * 60_000;
+
+/**
+ * Until when a model route is out of quota, from the cached file alone (undefined when it is free or nothing is known).
+ * Mirrors pi-multi-account: a fresh `serviceable: true` frees the provider whatever else is recorded; a fresh `serviceable: false`
+ * blocks it for the recheck interval; a window at 100% with a future reset blocks even when the snapshot is stale; a recorded
+ * cooldown (per provider, or per `provider/model`) blocks until it ends. Never fetches anything.
+ */
+export function routeBlock(state: unknown, provider: string, model: string, now: number): number | undefined {
+  const data = record(state), usage = record(record(data.usageByProvider)[provider]);
+  const fresh = nonnegative(usage.fetchedAt) && now - usage.fetchedAt < SERVICEABLE_FRESH_MS;
+  const ends = (...at: unknown[]) => at.filter((value): value is number => future(value, now));
+  const byModel = ends(record(data.exhaustedUntilByModel)[`${provider}/${model}`]);
+  const byProvider = fresh && usage.serviceable === true ? [] : [
+    ...ends(record(data.exhaustedUntilByProvider)[provider]),
+    ...windows(usage, now).filter(w => w.usedPercent >= 100).map(w => w.resetAt),
+    ...fresh && usage.serviceable === false ? [(usage.fetchedAt as number) + SERVICEABLE_FRESH_MS] : [],
+  ];
+  const blocked = [...byModel, ...byProvider];
+  return blocked.length ? Math.max(...blocked) : undefined;
+}
+
 const describe = (a: Account) => a.blockedUntil ? `${a.id} esgotada até ${brasiliaDayTime(a.blockedUntil)}`
   : `${a.id} ${a.used}% (renova ${brasiliaDayTime(a.resetAt!)})`;
 
