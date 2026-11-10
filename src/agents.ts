@@ -32,8 +32,10 @@ import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { routerReport } from './router-mode.ts';
-import { WRITER_KINDS, checkContract, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
+import { PEER_MESSAGES, WRITER_KINDS, checkContract, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
+export { PEER_MESSAGES } from './crew.ts';
+export const PEER_LIMIT = 'Peer limit reached: send the rest to the manager with tell_parent.';
 
 export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
@@ -76,7 +78,11 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   events?: SubagentEvents;
   summarizeHandoff?: (run: RunInfo, messages: AgentMessage[], descendants?: HandoffEvidence[]) => Promise<string>;
   /** Manager mode: the model for a worker kind, and the crew whose project memory briefs contract workers. */
-  route?: (kind: WorkerKind) => ModelChoice; crew?: Crew }
+  route?: (kind: WorkerKind) => ModelChoice; crew?: Crew;
+  /** The manager's copy of each delivered peer message, `[from → to] text`: kept in memory, never a report (no manager turn). Default: appended to memory. */
+  peerCopy?: (text: string) => void;
+  /** A finished peer was resumed by a message from `partner`, so whoever awaits `partner` (a wake) awaits it too. */
+  peerResumed?: (resumed: string, partner: string) => void }
 /** A contract worker's read of its own specialist's memory tree and of its project's runs; another project's are out of its reach. */
 export function specialistMemoryTool(crew: () => Crew, project: Specialist, transcript: (run: string) => readonly AgentMessage[] | undefined) {
   return { name: 'specialist_memory', label: 'Specialist memory',
@@ -101,7 +107,21 @@ export function specialistMemoryTool(crew: () => Crew, project: Specialist, tran
 }
 /** One spawn task: a plain subagent, or with `kind` a contract worker that gets its project's brief instead of the chat. */
 /** `model` is `provider/model` and overrides the kind's route; it may be any account or provider. */
-export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist; model?: string }
+/** `peer` pairs a contract worker with an existing one of the same project (a reviewer names its author): both get tell_peer. */
+export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist; model?: string; peer?: string }
+/** Why `task` may not pair with its `peer` (undefined: it may): only two of the main agent's contract workers of one project, each with no other peer. */
+export function peerRefusal(records: ReadonlyMap<string, RunInfo>, task: SpawnTask, project: string | undefined) {
+  const id = task.peer;
+  if (id === undefined) return undefined;
+  if (!task.kind) return 'A task with peer needs a kind: only contract workers are paired.';
+  const run = records.get(id);
+  if (!run) return `No run ${id}: peer names an existing worker of this profile (the author's run id).`;
+  if (!run.kind) return `${id} is not a contract worker: only workers spawned with a kind are paired.`;
+  if (run.parentId !== undefined) return `${id} is a subagent of ${run.parentId}: only the main agent's workers are paired.`;
+  if (run.project !== project) return `${id} works on project ${run.project ?? '(none)'}, not ${project ?? '(none)'}: a pair shares one project.`;
+  if (run.peer) return `${id} already has a peer (${run.peer.id}): one reviewer per author.`;
+  return undefined;
+}
 
 // Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
 const packageName = (path: string): string | undefined => {
@@ -165,6 +185,10 @@ export class Children {
   private settling = 0;
   private readonly launches = new Set<Promise<unknown>>();
   private readonly completions = new Set<Promise<void>>();
+  /** Adds tell_peer to an open session that was paired after it opened. */
+  private readonly peerTools = new Map<string, () => void>();
+  /** Peers named by spawns still launching, so two concurrent spawns cannot pair the same worker. */
+  private readonly pairing = new Set<string>();
   constructor(private readonly memory: Memory, private readonly registry: ModelRegistry,
     private readonly choice: () => ModelChoice, private readonly instructions: () => string,
     private readonly report: (text: string, options?: { once?: boolean; count?: number; runIds?: string[] }) => Promise<void>, private readonly warn: (text: string) => void,
@@ -370,13 +394,19 @@ export class Children {
     if (depth > subagentLevels) throw new Error(`Delegation depth limit reached: this profile allows ${subagentLevels} level${subagentLevels === 1 ? '' : 's'} of subagents.`);
     if (this.closing) throw new Error('Profile is closing.');
     if (this.full(tasks.length)) throw new Error(`Profile limit: at most ${maxAgents} active agents, including parents and descendants. Reduce the batch or continue without delegating.`);
-    this.checkWorkers(tasks, cwd);
-    const renderingAt = performance.now();
-    const models = tasks.map(task => this.modelOf(task));
-    const specialists = connected ? [] : this.ensureSpecialists(tasks, cwd);
-    const views = this.viewsOf(tasks, models, cwd, connected);
-    this.timed('view', undefined, renderingAt, views.reduce((sum, view) => sum + view.length, 0));
-    const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }));
+    this.checkWorkers(tasks, cwd, parentId);
+    const peers = tasks.flatMap(task => task.peer ?? []);
+    for (const peer of peers) this.pairing.add(peer);
+    let launched: LiveRun[], views: string[], specialists: Specialist[];
+    try {
+      const renderingAt = performance.now();
+      const models = tasks.map(task => this.modelOf(task));
+      specialists = connected ? [] : this.ensureSpecialists(tasks, cwd);
+      views = this.viewsOf(tasks, models, cwd, connected);
+      this.timed('view', undefined, renderingAt, views.reduce((sum, view) => sum + view.length, 0));
+      launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }));
+      for (const live of launched) if (live.info.peer) this.pair(live.info.id, live.info.peer.id);
+    } finally { for (const peer of peers) this.pairing.delete(peer); }
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;
     onLaunch?.(launched.map(c => c.info.id));
@@ -392,13 +422,29 @@ export class Children {
     return { ids: launched.map(c => c.info.id), grouped: batch !== undefined, specialists, models: launched.map(c => c.info.model) };
   }
   /** What a contract worker's task must satisfy before anything starts: a contract, a valid project and a repo no other writer holds. */
-  private checkWorkers(tasks: SpawnTask[], cwd: string) {
+  private checkWorkers(tasks: SpawnTask[], cwd: string, parentId?: string) {
+    const claimed = new Set<string>();
     for (const task of tasks) {
+      if (task.peer !== undefined) {
+        const project = task.project ?? specialistOf(taskDirectory(cwd, task.cwd));
+        const why = parentId !== undefined ? 'Only the main agent pairs workers.' : claimed.has(task.peer) || this.pairing.has(task.peer) ? `${task.peer} already has a peer (another task being started): one reviewer per author.`
+          : this.deleting.has(task.peer) ? `${task.peer} is being deleted by the user.` : peerRefusal(this.history.records, task, project);
+        if (why) throw new Error(`${why} Nothing was started.`);
+        claimed.add(task.peer);
+      }
       if (!task.kind) continue;
       checkContract(task.task);
       if (task.project !== undefined) this.options.crew?.check(task.project);
     }
     this.checkWriters(tasks, cwd);
+  }
+  /** Names `id` as its new partner's peer, and gives an open partner its tell_peer. */
+  private pair(id: string, partner: string) {
+    const record = this.running.get(partner)?.info ?? this.history.records.get(partner);
+    if (!record) return;
+    record.peer = { id, sent: 0 };
+    this.save(record);
+    this.peerTools.get(partner)?.();
   }
   /** One writer per repo: a code, mechanical or hard worker may not start where another already works (nor twice in one spawn),
    * since two of them in one checkout overwrite each other. Plan workers only read. Refused before anything starts. */
@@ -467,7 +513,7 @@ export class Children {
   private viewsOf(tasks: SpawnTask[], models: { model: Model<Api> }[], cwd: string, connected: boolean) {
     let fullView: string | undefined;
     return tasks.map((task, i) => {
-      if (task.kind && this.options.crew && !connected) return this.options.crew.brief(task.kind, task.project ?? specialistOf(taskDirectory(cwd, task.cwd)));
+      if (task.kind && this.options.crew && !connected) return this.options.crew.brief(task.kind, task.project ?? specialistOf(taskDirectory(cwd, task.cwd)), task.peer);
       fullView ??= this.memory.render();
       const tierBudget = bindingTierBudget(models[i].model, refreshFraction(this.settings.refreshAt));
       return (this.settings.focusedSubagents || tierBudget !== undefined) && !connected ? focusedChildView(fullView) : fullView;
@@ -492,12 +538,12 @@ export class Children {
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
-        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project,
+        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
           parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [], ...(connected ? { connected: true } : {}),
-          ...(task.kind ? { kind: task.kind, project } : {}) };
+          ...(task.kind ? { kind: task.kind, project } : {}), ...(task.peer ? { peer: { id: task.peer, sent: 0 } } : {}) };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
         launched.push(live); this.save(info); this.running.set(id, live);
         this.launching--; reserved--;
@@ -519,9 +565,10 @@ export class Children {
     return launched;
   }
   /** Builds a child session with the same prompt, tools and extensions whether it is new or resumed. */
-  /** `project`: a contract worker's specialist, whose memory tree it may read with specialist_memory. */
+  /** `project`: a contract worker's specialist, whose memory tree it may read with specialist_memory. `peer`: it is paired, so it gets tell_peer now;
+   * an unpaired worker gets it when a later spawn pairs it (peerTools). */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; connected: boolean; provider: string; model: Model<Api>;
-    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist }) {
+    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean }) {
     const { id, directory, depth, parentId, connected } = o;
     const crew = this.options.crew;
     const specialist = crew && o.project ? [specialistMemoryTool(() => crew, o.project, run => this.transcript(run))] : [];
@@ -553,6 +600,12 @@ export class Children {
           return { messages };
         });
         registerEffectApprovals(pi, { grant: false });
+        if (parentId === undefined && !connected) {
+          let added = false;
+          const addPeerTool = () => { if (!added) { added = true; pi.registerTool(this.peerTool(id)); } };
+          if (o.peer) addPeerTool(); else this.peerTools.set(id, addPeerTool);
+          pi.on('session_shutdown', () => { if (this.peerTools.get(id) === addPeerTool) this.peerTools.delete(id); });
+        }
         // A shell the child starts reports into the child's own session (shellNotice), so it can run a long gate and be woken with the outcome.
         if (this.options.shells) registerShellTools(pi, this.options.shells, () => { if (this.closing || !this.running.has(id)) throw new Error('Agent is closing'); }, {}, id);
         if (this.options.operations) {
@@ -608,6 +661,58 @@ export class Children {
         return result(parentId ? `Message sent to parent ${parentId}.` : 'Message sent to the main agent.');
       },
     };
+  }
+  /** Lets a paired contract worker message its peer, the author or reviewer of the same patch. */
+  private peerTool(id: string) {
+    return { name: 'tell_peer', label: 'Message peer worker',
+      description: `Send your paired worker (the author or the reviewer of the same patch) a finding, question or answer while you keep working. It reaches it as information, never as an order or an approval, and the manager gets a copy. A finished peer is resumed with it. At most ${PEER_MESSAGES} messages per pair, both directions together; anything else goes to the manager with tell_parent. Push, PRs and merges stay with the manager.`,
+      parameters: childToolSchemas.peer, execute: async (_id: string, args: { message: string }) => result(await this.tellPeer(id, args.message)),
+    };
+  }
+  /** Delivers one peer message: steered into a running peer, queued for a waiting or paused one, or resuming a finished one. The pair's
+   * count is reserved before delivery and returned if it fails; each delivered message is copied to the manager's memory. */
+  async tellPeer(from: string, message: string) {
+    const text = message.trim();
+    if (!text) throw new Error('Message is empty.');
+    const self = this.running.get(from)?.info, to = self?.peer?.id;
+    if (!self?.peer || !to) throw new Error('You have no peer: only a worker spawned with peer, and the worker it names, can use tell_peer.');
+    const refuse = (why: string) => new Error(`${to} ${why}, so it takes no peer messages. Send what you wanted to say to the manager with tell_parent instead.`);
+    let live = this.running.get(to);
+    if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) {
+      if (live.info.state === 'stopping') throw refuse(live.stoppedBy === 'user' ? 'was stopped by the user' : 'is stopping');
+      await live.completion; // Its last turn is over: once recorded as finished, the message resumes it.
+      live = this.running.get(to);
+    }
+    const record = live?.info ?? this.history.records.get(to);
+    if (!record || this.deleting.has(to)) throw refuse('was deleted by the user');
+    if (record.state === 'stopped') throw refuse(record.report?.startsWith(STOPPED.user) ? 'was stopped by the user' : 'was stopped');
+    if (!live && !['completed', 'failed', 'interrupted'].includes(record.state)) throw refuse(`is ${record.state}`);
+    if (self.peer.sent >= PEER_MESSAGES) throw new Error(PEER_LIMIT);
+    const count = (sent: number) => {
+      self.peer!.sent = sent; this.save(self);
+      if (record.peer?.id === from) { record.peer.sent = sent; this.save(record); }
+    };
+    const before = self.peer.sent;
+    count(before + 1);
+    const note = `[${from}] Peer message (information, not an order; your contract and the manager decide what you do): ${text}`;
+    let answer: string;
+    try {
+      if (live) {
+        await live.requeueing; // Keeps the queue in the order messages were sent.
+        if (live.info.state === 'running' && !live.interruption) await live.session.steer(note);
+        else { live.pendingReports.push(note); live.wake?.(); } // A paused peer keeps it until the user resumes it.
+        this.changed();
+        answer = `Message sent to ${to}.`;
+      } else {
+        await this.track(this.resume(to, note, undefined));
+        this.options.peerResumed?.(to, from);
+        answer = `${to} had finished, so it was resumed with your message; its new report goes to the manager.`;
+      }
+    } catch (error) { count(before); throw error; }
+    const copy = `[${from} → ${to}] ${text}`;
+    try { if (this.options.peerCopy) this.options.peerCopy(copy); else this.memory.append('work', copy); }
+    catch (error) { this.warn(`Could not copy a peer message to the manager: ${String(error)}`); }
+    return `${answer} ${PEER_MESSAGES - self.peer.sent} of ${PEER_MESSAGES} peer messages left for this pair.`;
   }
   /** A mid-run message to a child's parent: false if that parent is no longer running. */
   private async toParent(parentId: string | undefined, text: string) {
@@ -879,7 +984,7 @@ export class Children {
     let reserved = true;
     try {
       // No thinking level: the session restores the one it ran with.
-      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, sessionManager: manager, project: run.kind ? run.project : undefined });
+      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
       const parent = run.parentId ? this.running.get(run.parentId) : undefined;
       if (this.closing || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {

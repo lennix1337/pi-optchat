@@ -290,6 +290,9 @@ export default function optchat(pi: ExtensionAPI) {
   /** The open wake was already sent back once for a memory-line reply; a second one settles as it is. */
   let wakeRetried = false;
   const wakeWorkers = new WakeWorkers();
+  /** Peer-message copies that arrived while a manager run was in progress (see `peerCopy`). */
+  let peerCopies: string[] = [];
+  const appendPeerCopies = () => { for (const text of peerCopies.splice(0)) active?.memory.append('work', text); };
   let wakeWorkerTimer: ReturnType<typeof setTimeout> | undefined;
   let wakeWorkerContext: ExtensionContext | undefined;
   let heldWakeMessages: AgentMessage[] = [];
@@ -493,7 +496,7 @@ export default function optchat(pi: ExtensionAPI) {
     try {
       await closeWindows?.(); closeWindows = undefined;
       await recovery;
-      await old.children.close(); await old.crew.closeAll(); if (!handOff) shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
+      await old.children.close(); await old.crew.closeAll(); if (!handOff) shells.clear(); flush(); for (const text of peerCopies.splice(0)) old.memory.append('work', text); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
       await old.sync.close(); await old.memory.close(reason === 'reload' ? 'reload' : reason ? 'shutdown' : 'memory_close'); await checkpoints;
       await checkpoint(old.dir);
     } finally {
@@ -563,7 +566,14 @@ export default function optchat(pi: ExtensionAPI) {
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
-          route: kind => routeFor(kind, main, config.workerModels), crew });
+          route: kind => routeFor(kind, main, config.workerModels), crew,
+          // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.
+          peerCopy: text => { if (active?.memory === memory && !idle()) peerCopies.push(text); else memory.append('work', text); },
+          peerResumed: (resumed, partner) => {
+            if (!heartbeat?.waking) return;
+            wakeWorkers.adopt(resumed, partner);
+            if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);
+          } });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count, awaitingProcessing: s.awaitingProcessing })
@@ -1076,7 +1086,7 @@ export default function optchat(pi: ExtensionAPI) {
     const settledStarted = performance.now();
     collectUsage(ctx);
     const persistenceStarted = performance.now();
-    try { flush(); active?.inbox.dropReturned(); } catch (error) { fault = errorText(error); ctx.ui.notify(fault, 'error'); }
+    try { flush(); appendPeerCopies(); active?.inbox.dropReturned(); } catch (error) { fault = errorText(error); ctx.ui.notify(fault, 'error'); }
     finally { active?.metrics.record('persistence', performance.now() - persistenceStarted); }
     const retryReports = reports.filter(r => !r.batch && !r.workerRecovery &&
       (r.steered && !wakeWorkers.hasReport(r.text) || _event.aborted && r.awaitingProcessing && (r.steered || r.observed)));

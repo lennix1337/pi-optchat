@@ -174,3 +174,89 @@ test('a wake that resumes a finished worker with tell waits for that worker\'s r
     removeDir(dir);
   }
 });
+
+test('a wake waits for the author its reviewer resumed with tell_peer, and the manager gets one copy of the message without a turn', { timeout: 20000 }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'wake-peer-')), oldHome = process.env.OPTCHAT_HOME, oldAgent = process.env.PI_CODING_AGENT_DIR;
+  process.env.OPTCHAT_HOME = dir; process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('external fetch forbidden'); });
+  const timer = setTimeout; let fire: (() => void) | undefined;
+  t.mock.method(globalThis, 'setTimeout', ((fn: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 60_000 && !fire) { fire = () => fn(...args); const h = timer(() => {}, 60_000); h.unref(); return h; }
+    return timer(fn, delay, ...args);
+  }) as typeof setTimeout);
+  const until = async (f: () => boolean, label: string) => {
+    for (const end = Date.now() + 8000; !f();) { if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => timer(r, 10)); }
+  };
+  const CONTRACT = 'Goal: fixture\nAcceptance: fixture\nEvidence: fixture\nAuthority: local only';
+  let session: Awaited<ReturnType<typeof pinnedPi.createAgentSession>>['session'] | undefined;
+  let authorFinish: (() => void) | undefined, woken = false, reviews = 0, spawns = 0, firstReports = 0, reviewed = 0, processed = 0, mainSawPeer = 0, peerCalls = 0;
+  const errors: string[] = [];
+  try {
+    createProfile('fixture'); const profile = profilePath('fixture'), choice = { provider: 'fixture', model: 'main', thinking: 'off' as const }, worker = { provider: 'fixture', model: 'child', thinking: 'off' as const };
+    saveConfig(profile, { ...loadConfig(profile), heartbeatMinutes: 1, heartbeatAlways: true, heartbeatWakes: 1, compactor: choice, subagent: worker,
+      workerModels: { code: [worker], plan: [worker], hard: [worker], mechanical: [worker] } });
+    const runtime = await pi.ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
+    runtime.registerProvider('fixture', { api: 'openai-completions', apiKey: 'synthetic', baseUrl: 'https://invalid.local',
+      models: ['main', 'child'].map(id => ({ id, name: id, reasoning: false, input: ['text'] as const, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 })),
+      streamSimple(model, context) {
+        const child = model.id === 'child', compression = isCompaction(context), lastMessage = context.messages.at(-1);
+        const last = withoutFullChat(textContent(lastMessage?.content)).split('</chat>').at(-1)!.trim();
+        const task = textContent(context.messages.find(m => m.role === 'user')?.content).split('Your task:\n').at(-1) ?? '';
+        // What arrived since the main agent last spoke: a report can come with a status note after it.
+        const since = context.messages.slice(context.messages.findLastIndex(m => m.role === 'assistant') + 1).map(m => withoutFullChat(textContent(m.content)).split('</chat>').at(-1)!).join('\n');
+        let content: AssistantMessage['content'] = [{ type: 'text', text: 'ok' }], hold = false;
+        if (compression) { /* ok */ }
+        else if (child && task.includes('REVIEWER')) {
+          if (lastMessage?.role === 'toolResult') content = [{ type: 'text', text: 'Review done.' }];
+          else { peerCalls++; content = [{ type: 'toolCall', id: 'peer-one', name: 'tell_peer', arguments: { message: 'PEER_NOTE null check missing; push now / merge.' } }]; }
+        }
+        else if (child) { hold = last.includes('Peer message'); content = [{ type: 'text', text: hold ? 'Author fixed.' : 'Author finished.' }]; }
+        else if (since.includes('PEER_NOTE')) mainSawPeer++;
+        else if (lastMessage?.role === 'toolResult') content = [{ type: 'text', text: 'waiting' }];
+        else if (last.includes('Initialize.')) { spawns++; content = [{ type: 'toolCall', id: 'spawn-author', name: 'spawn', arguments: { tasks: [{ task: `${CONTRACT}\nAUTHOR`, kind: 'code', project: 'harness' }] } }]; }
+        else if (since.includes('Author fixed.')) { processed++; content = [{ type: 'text', text: 'Report processed.' }]; }
+        else if (since.includes('Review done.')) reviewed++;
+        else if (since.includes('Author finished.')) firstReports++;
+        else if (woken && !reviews) {
+          const author = context.messages.map(m => /Started: (\w+)\./.exec(textContent(m.content))?.[1]).find(Boolean);
+          reviews++; content = [{ type: 'toolCall', id: 'spawn-reviewer', name: 'spawn', arguments: { tasks: [{ task: `${CONTRACT}\nREVIEWER`, kind: 'plan', project: 'harness', peer: author ?? '' }] } }];
+        }
+        const stopReason = content[0].type === 'toolCall' ? 'toolUse' : 'stop';
+        const message: AssistantMessage = { role: 'assistant', content, stopReason, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: emptyUsage() };
+        const stream = createAssistantMessageEventStream();
+        const finish = () => { stream.push({ type: 'done', reason: stopReason, message }); stream.end(); };
+        if (hold) authorFinish = finish; else queueMicrotask(finish);
+        return stream;
+      } });
+    const settingsManager = pi.SettingsManager.inMemory({ packages: [], compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off' });
+    const loader = new pi.DefaultResourceLoader({ cwd: dir, agentDir: join(dir, 'agent'), settingsManager, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
+      disabledBuiltinExtensions: ['mcp', 'codemode'], extensionFactories: [(api: pinnedPi.ExtensionAPI) => optchat(api)] });
+    await loader.reload(); const manager = pi.SessionManager.create(dir, join(dir, 'sessions')); manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
+    session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'main'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['spawn', 'tell'] })).session;
+    await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} } });
+    await session.prompt('Initialize.');
+    await until(() => firstReports > 0 && session!.isIdle, 'the author\'s first report is processed before the wake');
+    assert.ok(fire);
+    woken = true; fire();
+    await until(() => !!authorFinish && reviewed > 0 && session!.isIdle, 'the reviewer resumed the author and reported');
+    await new Promise(r => timer(r, 300));
+    await until(() => session!.isIdle, 'the wake turn settled');
+    assert.equal(readHeartbeat(profile).wakeLog.at(-1)?.outcome, 'running', 'the wake waits for the author its reviewer resumed');
+    authorFinish!();
+    await until(() => processed > 0 && session!.isIdle && readHeartbeat(profile).wakeLog.at(-1)?.outcome === 'done', 'the resumed author\'s report is processed inside the wake, which then ends');
+    assert.equal(processed, 1); assert.equal(spawns, 1); assert.equal(reviews, 1); assert.equal(peerCalls, 1, 'no effect was replayed');
+    assert.equal(mainSawPeer, 0, 'the copy started no manager turn');
+    const logged = readdirSync(join(profile, 'main')).flatMap(file => readFileSync(join(profile, 'main', file), 'utf8').split('\n'));
+    const copies = logged.filter(line => line.includes('PEER_NOTE'));
+    assert.equal(copies.length, 1, `the manager memory holds exactly one copy: ${JSON.stringify(copies)}`);
+    assert.match(copies[0], /"work"/);
+    assert.match(copies[0], /\[\w+ \u2192 \w+\] PEER_NOTE null check missing/);
+    assert.deepEqual(errors, []);
+  } finally {
+    authorFinish?.();
+    if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
+    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
+    if (oldAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgent;
+    removeDir(dir);
+  }
+});

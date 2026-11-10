@@ -10,8 +10,10 @@ export class WakeWorkers {
   private calls = new Set<string>();
   private launches = new Map<string, string[]>();
   private owned = new Map<string, Pending>();
-  private reports = new Map<string, { ids: string[]; observed: boolean; reviewed: boolean; limit: number }>();
+  private reports = new Map<string, { ids: string[]; observed: boolean; reviewed: boolean; limit: number; at: number }>();
   private recovery: Pending | undefined;
+  /** Peers resumed (at `since`) by a run whose launch is not confirmed yet: owned once it is. */
+  private adoptions = new Map<string, { run: string; since: number }[]>();
   notVerified = false;
   constructor(private readonly now: () => number = Date.now) {}
   called(id: string) { this.calls.add(id); }
@@ -21,16 +23,28 @@ export class WakeWorkers {
     if (error || !launched || !Array.isArray(ids) || ids.length !== launched.length || ids.some((value, i) => value !== launched[i])) return;
     this.launches.delete(id);
     for (const run of launched) {
-      const report = [...this.reports].find(([, value]) => value.ids.includes(run));
-      const limit = report?.[1].limit ?? this.now() + WORKER_WAIT_MS;
-      this.owned.set(run, { deadline: report?.[1].observed ? Infinity : limit, limit,
-        ...report ? { report: report[0], observed: report[1].observed, reviewed: report[1].reviewed } : {} });
+      this.own(run);
+      for (const peer of this.adoptions.get(run) ?? []) this.own(peer.run, peer.since);
+      this.adoptions.delete(run);
     }
+  }
+  /** `since`: when a finished run was resumed; a report it gave before that is not the one awaited now. */
+  private own(run: string, since = -Infinity) {
+    const report = [...this.reports].find(([, value]) => value.ids.includes(run) && value.at >= since);
+    const limit = report?.[1].limit ?? this.now() + WORKER_WAIT_MS;
+    this.owned.set(run, { deadline: report?.[1].observed ? Infinity : limit, limit,
+      ...report ? { report: report[0], observed: report[1].observed, reviewed: report[1].reviewed } : {} });
+  }
+  /** A peer that `partner` resumed (tell_peer) is awaited like a worker of this wake when the wake owns that partner, or will once its launch is confirmed. */
+  adopt(run: string, partner: string) {
+    const since = this.now();
+    if (this.owned.has(partner)) { this.own(run, since); return; }
+    if ([...this.launches.values()].some(ids => ids.includes(partner))) this.adoptions.set(partner, [...this.adoptions.get(partner) ?? [], { run, since }]);
   }
   queued(report: string, ids: string[]) {
     if (this.reports.has(report)) return;
     const limit = this.now() + WORKER_DELIVERY_MS;
-    this.reports.set(report, { ids, observed: false, reviewed: false, limit });
+    this.reports.set(report, { ids, observed: false, reviewed: false, limit, at: this.now() });
     for (const id of ids) {
       const pending = this.owned.get(id);
       if (pending) { pending.report = report; pending.limit = limit; pending.deadline = limit; }
@@ -85,5 +99,5 @@ export class WakeWorkers {
     this.recovery = { deadline: limit, limit };
     return 'recover';
   }
-  clear() { this.calls.clear(); this.launches.clear(); this.owned.clear(); this.reports.clear(); this.recovery = undefined; this.notVerified = false; }
+  clear() { this.calls.clear(); this.launches.clear(); this.adoptions.clear(); this.owned.clear(); this.reports.clear(); this.recovery = undefined; this.notVerified = false; }
 }

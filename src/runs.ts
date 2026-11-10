@@ -18,6 +18,8 @@ export interface RunInfo {
   connected?: boolean;
   /** A contract worker's kind and project (manager mode); absent for a plain subagent. */
   kind?: string; project?: string;
+  /** The other contract worker of an author-reviewer pair (set on both records) and the messages the pair has sent, both ways. */
+  peer?: { id: string; sent: number };
   handoff?: { reason: FinishReason; text?: string; delivered?: boolean };
   /** Working when Pi closed or crashed: the next start resumes it (see `Children.resumeCutOff`). */
   cutOff?: boolean;
@@ -63,6 +65,7 @@ function isRun(value: unknown): value is RunInfo {
     && (value.report === undefined || typeof value.report === 'string')
     && (value.connected === undefined || typeof value.connected === 'boolean')
     && (value.cutOff === undefined || typeof value.cutOff === 'boolean')
+    && (value.peer === undefined || record(value.peer) && typeof value.peer.id === 'string' && typeof value.peer.sent === 'number' && Number.isInteger(value.peer.sent) && value.peer.sent >= 0)
     && (value.handoff === undefined || record(value.handoff) && ['complete', 'disconnected', 'owner-stopped', 'failed'].includes(String(value.handoff.reason))
       && (value.handoff.text === undefined || typeof value.handoff.text === 'string')
       && (value.handoff.delivered === undefined || typeof value.handoff.delivered === 'boolean'))

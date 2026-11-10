@@ -49,3 +49,18 @@ test('observed report is not treated as lost during a long processing turn', () 
   assert.equal(w.expire(), undefined);
   w.replied(); w.settled(false); assert.equal(w.holding, false);
 });
+
+test('a peer resumed by a wake-owned partner is owned too, whether the partner\'s launch is confirmed yet or not', () => {
+  const w = new WakeWorkers(() => 0);
+  w.adopt('author', 'stranger'); assert.equal(w.holding, false, 'a partner the wake does not own adopts nothing');
+  w.called('c'); w.launched('c', ['reviewer']);
+  w.adopt('author', 'reviewer'); assert.equal(w.holding, false, 'pending until the launch is confirmed');
+  w.result('c', ['reviewer']); assert.equal(w.holding, true);
+  w.queued('review', ['reviewer']); w.observed('review'); w.replied(); w.settled(false);
+  assert.equal(w.holding, true, 'the reviewer is done, the resumed author is still awaited');
+  w.queued('fixed', ['author']); w.observed('fixed'); w.replied(); w.settled(false);
+  assert.equal(w.holding, false);
+  w.called('d'); w.launched('d', ['r2']); w.result('d', ['r2']); w.adopt('a2', 'r2');
+  w.queued('r2 done', ['r2']); w.observed('r2 done'); w.replied(); w.settled(false);
+  assert.equal(w.holding, true, 'adopted after the partner was owned');
+});
