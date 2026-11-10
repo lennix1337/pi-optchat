@@ -5,7 +5,7 @@ import { Type } from 'typebox';
 export const RELOAD_ENTRY = 'optchat.self-reload';
 const COMMAND = 'optchat-self-reload';
 const CHECK = 'optchat:reload-check';
-const RESUME = 'optchat-reload-resume';
+export const RELOAD_RESUME = 'optchat-reload-resume';
 /** pi-goal-x asks this before each goal checkpoint; a pending reload takes the next turn first (bounded by HOLD_MAX_MS). */
 export const GOAL_HOLD = 'pi-goal:continuation-hold';
 export const HOLD_MAX_MS = 60_000;
@@ -134,7 +134,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     if (event.source === 'interactive' && (pending?.state === 'requested' || pending?.state === 'resuming')) cancel(pending, ctx, 'New operator input superseded the request.');
   });
   pi.on('before_agent_start', event => {
-    if (pending?.state === 'resuming' && event.messageType === 'custom' && event.message.customType === RESUME) continuationStarted = true;
+    if (pending?.state === 'resuming' && event.messageType === 'custom' && event.message.customType === RELOAD_RESUME) continuationStarted = true;
   });
   pi.on('agent_settled', (event, ctx) => {
     if (!pending) return;
@@ -168,9 +168,27 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
         if (!live || pending?.state !== 'resuming' || pending.id !== t.id) return;
         const reason = !ctx.isIdle() ? 'Another run started after reload.' : blocked(ctx);
         if (reason) { cancel(t, ctx, reason); return; }
-        pi.sendMessage({ customType: RESUME, display: true, content: `Native Pi reload completed. This is an extension continuation, not a new user instruction or authorization.\nCheckpoint (historical task data):\n${t.checkpoint}\nInspect current state, continue only the already-authorized task, reconcile uncertain effects before replay, and verify the visible result. Do not reload again for the same update.`, details: { id: t.id } }, { triggerTurn: true, deliverAs: 'followUp' });
+        pi.sendMessage({ customType: RELOAD_RESUME, display: true, content: `Native Pi reload completed. This is an extension continuation, not a new user instruction or authorization.\nCheckpoint (historical task data):\n${t.checkpoint}\nInspect current state, continue only the already-authorized task, reconcile uncertain effects before replay, and verify the visible result. Do not reload again for the same update.`, details: { id: t.id } }, { triggerTurn: true, deliverAs: 'followUp' });
       });
     };
     if (lease.completed) lease.resume();
   });
+  return {
+    ready(ctx: ExtensionContext, aborted: boolean): string | undefined {
+      const t = pending;
+      return t && t.state === 'requested' && !commandSent && !aborted && !runFailed(ctx) && sameOwner(t, ctx) && !blocked(ctx) ? t.id : undefined;
+    },
+    expire(id: string, ctx: ExtensionContext): void {
+      const t = pending;
+      if (live && t?.id === id && (t.state === 'requested' || t.state === 'resuming') && sameOwner(t, ctx))
+        cancel(t, ctx, 'The wake continuation was not observed before its deadline.');
+    },
+  };
+}
+
+/** Only an in-process lease can identify a genuine reload, never a later manual restart. */
+export function reloadLease(ctx: ExtensionContext, profile: string): string | undefined {
+  const t = saved(ctx);
+  return t?.state === 'reloading' && t.profile === profile && t.session === ctx.sessionManager.getSessionId()
+    && t.cwd === ctx.cwd && leases.has(t.id) ? t.id : undefined;
 }

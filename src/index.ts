@@ -90,7 +90,7 @@ import { PerformanceMetrics, registerPerformance, performanceTool } from './perf
 import { heapReportTool, noteReload, reloadCount } from './heap-report.ts';
 import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
-import { registerSelfReload } from './self-reload.ts';
+import { HOLD_MAX_MS, RELOAD_RESUME, registerSelfReload, reloadLease } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
 
 const binding = 'optchat.profile';
@@ -374,8 +374,23 @@ export default function optchat(pi: ExtensionAPI) {
   const wakeHost = (ctx: ExtensionContext): WakeHost<Model<Api>> => ({
     current: () => ctx.model, find: (provider, model) => ctx.modelRegistry.find(provider, model), setModel: model => pi.setModel(model),
     thinking: () => pi.getThinkingLevel(), setThinking: level => pi.setThinkingLevel(level), notify: (text, level) => ctx.ui.notify(text, level) });
+  let wakeReloadTimer: ReturnType<typeof setTimeout> | undefined;
+  const watchWakeReload = (ticket: string, ctx: ExtensionContext, profile: Active) => {
+    if (wakeReloadTimer) clearTimeout(wakeReloadTimer);
+    const deadline = heartbeat?.reloadDeadline(ticket) ?? Date.now();
+    wakeReloadTimer = setTimeout(() => {
+      wakeReloadTimer = undefined;
+      if (active !== profile || stopping || !heartbeat?.releaseReload(ticket, 'not-verified')) return;
+      selfReload.expire(ticket, ctx);
+      const note = '[OptChat heartbeat] The self-reload continuation was not observed within its deadline. Inspect the persisted ticket and current state; do not repeat the reload or any other effect. Continue the same wake only after reconciling its outcome.';
+      ctx.ui.notify('Wake continuation not verified; recovering the same wake without replaying reload.', 'warning');
+      void deliverReport(note).catch(error => ctx.ui.notify(`Wake recovery could not be delivered: ${errorText(error)}`, 'error'));
+    }, Math.max(0, deadline - Date.now()));
+    wakeReloadTimer.unref?.();
+  };
   const startHeartbeat = (ctx: ExtensionContext, profile: Active) => {
     const own = () => active === profile ? profile : undefined;
+    const reloadTicket = reloadLease(ctx, profile.name);
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
       minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
@@ -400,7 +415,8 @@ export default function optchat(pi: ExtensionAPI) {
           .catch(error => { void wakeOff(profile.dir, wakeHost(ctx)).catch(() => undefined); ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error'); }); },
       note: text => ctx.ui.notify(text, 'warning'),
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
-      clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
+      clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) }, reloadTicket);
+    if (reloadTicket && heartbeat.waking) watchWakeReload(reloadTicket, ctx, profile);
     settledAt = Date.now(); heartbeat.arm();
     // The daily retro (operator 03/11): once a day after the configured time, on an idle chat.
     if (retroTimer) clearInterval(retroTimer);
@@ -416,6 +432,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   const stop = async (reason?: string) => {
     heartbeat?.disarm(); heartbeat = undefined;
+    if (wakeReloadTimer) clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
     if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
@@ -761,6 +778,12 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_agent_start', (event, ctx) => {
     if (!active) return; // Plain Pi run: leave Pi's own prompt untouched.
+    if (event.messageType === 'custom' && event.message.customType === RELOAD_RESUME) {
+      const id = (event.message.details as { id?: unknown } | undefined)?.id;
+      if (typeof id === 'string' && heartbeat?.releaseReload(id) && wakeReloadTimer) {
+        clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
+      }
+    }
     const started = performance.now();
     startRun(ctx);
     const a = required();
@@ -955,11 +978,15 @@ export default function optchat(pi: ExtensionAPI) {
     runStarted = false; status(ctx);
     working = false; showTitle(ctx);
     settledAt = Date.now();
-    const wake = heartbeat?.waking ? summarizeTurn(turn) : undefined;
+    const wake = heartbeat?.waking ? heartbeat.combine(summarizeTurn(turn)) : undefined;
     // A wake that did not work (a memory-line reply, or no commit, push, PR or merge) is sent back once; the wake stays open
     // (same model, same record) for the run that delivers.
-    const retry = wake && !wakeRetried && !fault && !stopping ? wakeRetry(wake) : undefined;
-    if (retry) { wakeRetried = true; void deliverReport(retry); }
+    const reload = wake && active && !fault && !stopping ? selfReload.ready(ctx, _event.aborted) : undefined;
+    if (reload && active) { heartbeat?.holdReload(reload, Date.now() + HOLD_MAX_MS, wake); watchWakeReload(reload, ctx, active); }
+    const waitingReload = wake && !fault && !stopping && !_event.aborted && wake.stopReason !== 'error' && heartbeat?.awaitingReload;
+    const retry = wake && !waitingReload && !wakeRetried && !fault && !stopping ? wakeRetry(wake) : undefined;
+    if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
+    else if (retry) { wakeRetried = true; void deliverReport(retry); }
     else {
       heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
@@ -977,7 +1004,7 @@ export default function optchat(pi: ExtensionAPI) {
     }
     active?.metrics.record('settled', performance.now() - settledStarted);
   });
-  registerSelfReload(pi, () => {
+  const selfReload = registerSelfReload(pi, () => {
     if (!active) return undefined;
     const blockers = [
       (stopping || fault) && 'Profile is closing or has a persistence fault.',
