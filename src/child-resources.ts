@@ -15,7 +15,8 @@ const freezeTree = <T>(value: T): T => {
 /** Static tool schemas are shared; each child still gets fresh tools and session-bound closures. */
 export const childToolSchemas = freezeTree({
   spawn: Type.Object({ tasks: Type.Array(Type.Object({ task: Type.String(), cwd: Type.Optional(Type.String({ description: CWD_DOC })),
-    kind: Type.Optional(stringEnum(WORKER_KINDS, { description: 'Manager mode worker: code (Sonnet), mechanical (Haiku), hard (Opus), plan (read-only scout). The task must then be a contract.' })),
+    kind: Type.Optional(stringEnum(WORKER_KINDS, { description: 'Manager mode worker: code (mid tier), mechanical (small), hard (top), plan (read-only scout, top). Its model is that tier in your own provider family and account, unless `model` is given. The task must then be a contract.' })),
+    model: Type.Optional(Type.String({ description: 'Explicit model as provider/model, e.g. anthropic-account-2/claude-sonnet-5-5 or openai-codex-account-2/gpt-6.1-terra. Overrides the kind\'s tier and may use any account or provider; one that does not exist fails the spawn instead of being replaced. Omit it to spend your own quota.' })),
     project: Type.Optional(Type.String({ description: 'Specialist slug (lowercase letters, digits, hyphens) whose charter and memory brief the worker; default from cwd. A new slug starts a new specialist.' })) }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
   tell: Type.Object({ id: Type.String(), message: Type.String() }, { additionalProperties: false }),
   parent: Type.Object({ message: Type.String() }, { additionalProperties: false }),
