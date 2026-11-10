@@ -1,6 +1,8 @@
 import { Type } from 'typebox';
 import { stringEnum } from './string-enum.ts';
 import { WORKER_KINDS } from './crew.ts';
+import { PAGE } from './memory.ts';
+import { FIND } from './zoom-navigation.ts';
 
 export const CWD_DOC = 'Project directory the subagent works in (~ allowed); its AGENTS.md files load from there. Defaults to your current directory.';
 
@@ -20,4 +22,7 @@ export const childToolSchemas = freezeTree({
     project: Type.Optional(Type.String({ description: 'Specialist slug (lowercase letters, digits, hyphens) whose charter and memory brief the worker; default from cwd. A new slug starts a new specialist.' })) }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
   tell: Type.Object({ id: Type.String(), message: Type.String() }, { additionalProperties: false }),
   parent: Type.Object({ message: Type.String() }, { additionalProperties: false }),
+  specialistMemory: Type.Object({ id: Type.Optional(Type.Integer({ minimum: 0 })), n: Type.Optional(Type.Integer({ minimum: 1 })),
+    findText: Type.Optional(Type.String({ minLength: 1, maxLength: FIND.maxText })), offset: Type.Optional(Type.Integer({ minimum: 0 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: PAGE })), run: Type.Optional(Type.String({ minLength: 1, description: 'A run id of your own project: opens its transcript.' })) }, { additionalProperties: false }),
 });

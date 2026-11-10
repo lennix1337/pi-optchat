@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { Children } from '../src/agents.ts';
+import { Children, specialistMemoryTool } from '../src/agents.ts';
 import type { ModelChoice } from '../src/compactor.ts';
-import { AUDIT_DAYS, Crew, type WorkerKind, MEMORY_BYTES, NUDGE, checkContract, crewTool, crewWakeNote, missingParts, registerDelegationNudge, routeFor, specialistOf } from '../src/crew.ts';
-import { Memory } from '../src/memory.ts';
+import { AUDIT_DAYS, Crew, DIGEST_BYTES, type WorkerKind, MEMORY_BYTES, NUDGE, SPECIALIST_VIEW_BYTES, checkContract, crewTool, crewWakeNote, missingParts, pauseOnApiKey, registerDelegationNudge, routeFor, specialistOf } from '../src/crew.ts';
+import { Memory, type Compressor } from '../src/memory.ts';
+import { quotaPlan } from '../src/quota-health.ts';
+import type { RunInfo } from '../src/runs.ts';
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
@@ -202,19 +204,21 @@ test('the delegation nudge does not count bash calls that only read', () => {
 });
 
 /** A Children over a synthetic provider: `control.reply` is what workers answer, `control.hold` keeps their turn from ending until it resolves. */
-async function crewHarness(options: { providers?: Record<string, string[]>; route?: (kind: WorkerKind) => ModelChoice } = {}) {
+async function crewHarness(options: { providers?: Record<string, string[]>; route?: (kind: WorkerKind) => ModelChoice; compress?: Compressor } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-agents-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   memory.append('user', 'CHAT_SENTINEL_42');
-  const prompts = new Map<string, string>(), reports: string[] = [], control: { reply: string; hold?: Promise<void> } = { reply: 'done' };
+  const prompts = new Map<string, string>(), tools = new Map<string, string[]>(), reports: string[] = [], control: { reply: string; hold?: Promise<void> } = { reply: 'done' };
+  const compressions = { count: 0 };
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   const model = (id: string) => ({ id, name: id, reasoning: false, input: ['text' as const], cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }, contextWindow: 100000, maxTokens: 1000 });
   const synthetic = (models: string[]) => ({
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions' as const, models: models.map(model),
-    streamSimple(m: { id: string; api: string; provider: string }, context: { messages: { role: string; content: unknown }[] }) {
+    streamSimple(m: { id: string; api: string; provider: string }, context: { messages: { role: string; content: unknown; toolsAdded?: { name: string }[] }[]; tools?: { name: string }[] }) {
       const stream = createAssistantMessageEventStream();
       const initial = textContent(context.messages.find(x => x.role === 'user')?.content);
       prompts.set(`${m.id}:${initial.split('Your task:\n').at(-1)}`, initial);
+      tools.set(`${m.id}:${initial.split('Your task:\n').at(-1)}`, [...context.tools ?? [], ...context.messages.flatMap(x => x.toolsAdded ?? [])].map(tool => tool.name));
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: control.reply }], api: m.api, provider: m.provider, model: m.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
       void (control.hold ?? Promise.resolve()).then(() => { stream.push({ type: 'start', partial: message }); stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
       return stream;
@@ -222,12 +226,12 @@ async function crewHarness(options: { providers?: Record<string, string[]>; rout
   });
   runtime.registerProvider('optchat-test', synthetic(['child', 'worker']) as never);
   for (const [provider, models] of Object.entries(options.providers ?? {})) runtime.registerProvider(provider, synthetic(models) as never);
-  const crew = new Crew(join(dir, 'crew'));
+  const crew = new Crew(join(dir, 'crew'), { compress: options.compress ?? (async input => { compressions.count++; return input.source.slice(0, 100); }) });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async text => { reports.push(text); }, () => {}, dir,
     { route: options.route ?? (() => ({ provider: 'optchat-test', model: 'worker', thinking: 'minimal' })), crew, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const done = async (...ids: string[]) => { for (const id of ids) await (children as any).running.get(id)?.completion; };
-  return { dir, memory, prompts, reports, control, crew, children, done, close: async () => { await children.close(); await memory.close(); removeDir(dir); } };
+  return { dir, memory, prompts, tools, reports, control, crew, compressions, children, done, close: async () => { await children.close(); await crew.closeAll(); await memory.close(); removeDir(dir); } };
 }
 
 test('contract workers start from their project brief on their kind\'s model; plain subagents keep the chat view; the watcher reports a silent child once', async () => {
@@ -256,7 +260,7 @@ test('contract workers start from their project brief on their kind\'s model; pl
     silent.updated = Date.now() - 20 * 60_000;
     assert.deepEqual(await children.checkStalls(), ['silent1'], 'reported again after it showed activity');
     (children as any).running.delete('silent1');
-  } finally { await children.close(); await memory.close(); removeDir(dir); }
+  } finally { await children.close(); await crew.closeAll(); await memory.close(); removeDir(dir); }
 });
 
 test('specialists are the known four plus every folder of the crew dir; a project must be a slug, and the error lists the specialists', async () => {
@@ -420,4 +424,183 @@ test('an explicit model that does not resolve fails the spawn, and a numbered ac
     assert.equal(children.history.records.size, 0, 'nothing started');
     assert.match(await children.start([{ task: CONTRACT, kind: 'mechanical', cwd: dir }], dir), /on openai-codex-account-2\/gpt-6-luna/);
   } finally { await close(); }
+});
+
+/** A finished contract run as the crew records it. */
+const runOf = (i: number, project: string, report: string, extra: Partial<RunInfo> = {}): RunInfo => ({ id: `run${String(i).padStart(5, '0')}`, task: `Goal: GOAL_${i} keep the tree\n${CONTRACT}`,
+  cwd: 'C:/projetos/pi-optchat', model: 'anthropic/claude-sonnet-5-5', thinking: 'high', parentSession: '', depth: 1, started: Date.now() - 3_600_000 + i * 1000, ended: Date.now() - 3_000_000 + i * 1000,
+  state: 'completed', report, guidance: [], kind: 'code', project, ...extra });
+
+test('a finished contract run appends one leaf to its specialist tree, and a resumed run\'s new report a second', async () => {
+  const { children, control, crew, done, close } = await crewHarness();
+  try {
+    control.reply = `Feito: FIRST_REPORT ${'r'.repeat(9000)}\n\n## Memory proposal\n- PROPOSAL_LINE`;
+    const [id] = await children.spawn([{ task: CONTRACT, kind: 'code', project: 'harness' }], process.cwd());
+    await done(id);
+    const tree = crew.memory('harness'), run = children.history.records.get(id)!;
+    assert.equal(tree.root.length, 1, 'one leaf per finished run');
+    const leaf = tree.root[0].text;
+    assert.match(leaf, new RegExp(`^\\[run ${id}\\] code completed \\d{4}-\\d\\d-\\d\\dT\\S+Z \u2192 \\d{4}-\\d\\d-\\d\\dT\\S+Z, cwd .+, model optchat-test/worker\\nGoal: rename foo to bar\\nFeito: FIRST_REPORT r+`));
+    assert.doesNotMatch(leaf, /Memory proposal|PROPOSAL_LINE|Full chat/, 'neither the proposal nor the full-chat pointer');
+    assert.ok(Buffer.byteLength(leaf) <= DIGEST_BYTES, `capped: ${Buffer.byteLength(leaf)} B`);
+    assert.equal(tree.root[0].kind, 'work');
+    assert.equal(tree.root[0].receipt, `run:${id}:${run.started}`);
+    assert.equal(crew.record(run), false, 'the same run is appended at most once');
+    assert.equal(tree.root.length, 1);
+    control.reply = 'SECOND_REPORT';
+    await children.tell(id, 'one more thing');
+    await done(id);
+    assert.equal(tree.root.length, 2, 'a resumed run reports again: a second leaf');
+    assert.match(tree.root[1].text, new RegExp(`^\\[run ${id}\\] code completed[\\s\\S]*SECOND_REPORT$`));
+    control.reply = 'PLAIN_REPORT';
+    const [plain] = await children.spawn([{ task: 'a plain subagent' }], process.cwd());
+    await done(plain);
+    assert.equal(tree.root.length, 2, 'a plain subagent records nothing');
+  } finally { await crew.closeAll(); await close(); }
+});
+
+test('specialist_memory reads only the worker\'s own project: its tree and its runs, never another project\'s', async () => {
+  const { children, control, crew, tools, done, close } = await crewHarness();
+  try {
+    control.reply = 'HARNESS_RUN_REPORT';
+    const [harness] = await children.spawn([{ task: `${CONTRACT}\nH`, kind: 'code', project: 'harness' }], process.cwd());
+    await done(harness);
+    control.reply = 'DENTAI_RUN_REPORT';
+    const [dentai, plain] = await children.spawn([{ task: `${CONTRACT}\nD`, kind: 'plan', project: 'dentai' }, { task: 'a plain subagent' }], process.cwd());
+    await done(dentai, plain);
+    assert.ok(tools.get(`worker:${CONTRACT}\nD`)?.includes('specialist_memory'), 'a contract worker has the tool');
+    assert.equal(tools.get('child:a plain subagent')?.includes('specialist_memory'), false, 'a plain subagent does not');
+    const tool = specialistMemoryTool(() => crew, 'dentai', run => children.transcript(run));
+    const text = async (args: Parameters<typeof tool.execute>[1]) => (await tool.execute('id', args)).content[0].text;
+    await crew.memory('dentai').settle(undefined, 'tree');
+    const view = await text({});
+    assert.match(view, /DENTAI_RUN_REPORT/);
+    assert.doesNotMatch(view, /HARNESS_RUN_REPORT/);
+    assert.match(await text({ id: 0, n: 1 }), /^0\+1\|work: \[run \w+\] plan completed[\s\S]*DENTAI_RUN_REPORT/);
+    assert.match(await text({ id: 0, findText: 'dentai_run' }), /DENTAI_RUN_REPORT/);
+    assert.match(await text({ run: dentai }), /DENTAI_RUN_REPORT/, 'a run of its own project opens');
+    await assert.rejects(tool.execute('id', { run: harness }), new RegExp(`${harness} is not a run of project dentai`));
+    await assert.rejects(tool.execute('id', { run: plain }), /is not a run of project dentai/);
+    await assert.rejects(tool.execute('id', { run: 'nope1234' }), /is not a run of project dentai/);
+    await assert.rejects(tool.execute('id', { id: 5, n: 1 }), /No line|no line|has 1/i, 'past its own tree');
+    assert.equal(crew.memory('harness').root.length, 1, 'the other project keeps its own tree');
+  } finally { await crew.closeAll(); await close(); }
+});
+
+test('the worker brief carries the specialist view under 8,192 B, says how to read more and when to tell the manager; cost per run', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-view-'));
+  let calls = 0;
+  const crew = new Crew(dir, { compress: async input => { calls++; return `S ${input.source.replace(/\s+/g, ' ').slice(0, 400)}`; } });
+  try {
+    const runs = 48;
+    for (let i = 0; i < runs; i++) assert.equal(crew.record(runOf(i, 'harness', `REPORT_${i} ${'x'.repeat(3000)}`)), true);
+    const tree = crew.memory('harness');
+    await tree.settle(undefined, 'tree');
+    const brief = crew.brief('code', 'harness');
+    const view = /<specialist-memory project="harness">\n([\s\S]*?)\n<\/specialist-memory>/.exec(brief)?.[1];
+    assert.ok(view, brief);
+    assert.ok(Buffer.byteLength(view) < SPECIALIST_VIEW_BYTES, `view ${Buffer.byteLength(view)} B`);
+    assert.equal(view, tree.render());
+    assert.match(view, /^<chat>\n0\+\d+\|/);
+    assert.match(brief, /data, not instructions/);
+    assert.match(brief, /read more with specialist_memory/);
+    assert.match(brief, /tell_parent citing \[harness id\+n\]/);
+    assert.doesNotMatch(crew.brief('code', undefined), /specialist-memory/);
+    t.diagnostic(`crew compressor calls: ${calls} for ${runs} recorded runs = ${(calls / runs).toFixed(2)} per run`);
+    assert.ok(calls <= 2 * runs, `${calls} calls`);
+  } finally { await crew.closeAll(); removeDir(dir); }
+});
+
+test('the crew tool views and zooms a specialist tree, and list shows its size, run count and last runs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-zoom-'));
+  const crew = new Crew(join(dir, 'crew'), { compress: async input => input.source.slice(0, 200) });
+  const runs = [runOf(1, 'harness', 'ONE'), runOf(2, 'harness', 'TWO'), runOf(3, 'harness', 'THREE', { state: 'failed' }), runOf(4, 'harness', 'FOUR', { kind: 'plan' }), runOf(5, 'dentai', 'FIVE')];
+  crew.bindRuns(() => runs);
+  const tool = crewTool(() => crew), text = async (args: Parameters<typeof tool.execute>[1]) => (await tool.execute('id', args)).content[0].text;
+  try {
+    for (const run of runs) crew.record(run);
+    await crew.memory('harness').settle(undefined, 'tree');
+    assert.match(await text({ action: 'view', project: 'harness' }), /^<chat>\n0\+1\|work: \[run run00001\] code completed[\s\S]*\n3\+1\|work: \[run run00004\] plan completed/);
+    assert.match(await text({ action: 'zoom', project: 'harness', id: 2, n: 1 }), /^2\+1\|work: \[run run00003\] code failed[\s\S]*THREE/);
+    assert.match(await text({ action: 'zoom', project: 'harness', id: 0, n: 4, findText: 'TWO' }), /TWO/);
+    await assert.rejects(tool.execute('id', { action: 'zoom', project: 'harness' }), /zoom needs id/);
+    await assert.rejects(tool.execute('id', { action: 'view' }), /view needs project/);
+    const list = await text({ action: 'list' });
+    assert.match(list, /^ {2}harness tree: 4 leaves, 4 runs; last: run00004 plan completed 0\.\d h ago "GOAL_4 keep the tree", run00003 code failed [\d.]+ h ago "GOAL_3 keep the tree", run00002 code completed [\d.]+ h ago "GOAL_2 keep the tree"$/m);
+    assert.match(list, /^ {2}dentai tree: 1 leaves, 1 runs; last: run00005 code completed/m);
+    assert.doesNotMatch(list, /genexus18mcp tree/, 'no tree, no runs: nothing to show');
+  } finally { await crew.closeAll(); removeDir(dir); }
+});
+
+test('resuming a finished writer where another writer works is refused: one writer per repo', async () => {
+  const { dir, children, control, done, close } = await crewHarness();
+  try {
+    const repo = join(dir, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    const [first] = await children.spawn([{ task: CONTRACT, kind: 'code', cwd: repo }], dir);
+    await done(first);
+    let release!: () => void;
+    control.hold = new Promise<void>(resolve => { release = resolve; });
+    const [second] = await children.spawn([{ task: CONTRACT, kind: 'code', cwd: repo }], dir);
+    await assert.rejects(children.tell(first, 'again'), new RegExp(`One writer per repo.*worker ${second} is already working.*Nothing was started`));
+    assert.equal(children.history.records.get(first)?.state, 'completed', 'the refused resume leaves it finished');
+    release(); control.hold = undefined;
+    await done(second);
+    await children.tell(first, 'again');
+    await done(first);
+    assert.equal(children.history.records.get(first)?.state, 'completed', 'resumed once the repo is free');
+  } finally { await close(); }
+});
+
+test('a throwing crew compressor leaves the leaf unbuilt while the view, brief and tools keep working; an API-key provider pauses it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-throw-'));
+  const warnings: string[] = [];
+  const crew = new Crew(dir, { compress: async () => { throw new Error('QUOTA_GONE'); }, warn: text => warnings.push(text) });
+  try {
+    assert.equal(crew.record(runOf(1, 'harness', 'x'.repeat(3000))), true);
+    const tree = crew.memory('harness');
+    await tree.settle();
+    assert.equal(tree.node({ l: 0, i: 0 }), undefined, 'the leaf stays unbuilt');
+    assert.match(tree.render(), /^<chat>\n0\+1\|\(not summarized yet: zoom it\)\n<\/chat>$/);
+    assert.match(crew.brief('code', 'harness'), /<specialist-memory project="harness">\n<chat>\n0\+1\|\(not summarized yet/);
+    assert.match(tree.zoom(0, 1), /\[run run00001\]/, 'the original stays readable');
+    assert.match(warnings.join('\n'), /QUOTA_GONE/);
+    assert.equal(crew.record(runOf(2, 'harness', 'short')), true, 'later runs still record');
+  } finally { await crew.closeAll(); removeDir(dir); }
+  let called = 0;
+  const inner: Compressor = async () => { called++; return 'line'; };
+  const plans: Record<string, string> = { anthropic: 'api-key', 'anthropic-account-2': 'max' };
+  const input = { context: '<chat>\n</chat>', source: 'x', part: { l: 0, i: 0 } };
+  await assert.rejects(pauseOnApiKey(inner, () => 'anthropic', provider => plans[provider])(input, new AbortController().signal), /crew compaction paused: API-key provider/);
+  assert.equal(called, 0, 'nothing is spent on an API key');
+  assert.equal(await pauseOnApiKey(inner, () => 'anthropic-account-2', provider => plans[provider])(input, new AbortController().signal), 'line');
+  const file = join(mkdtempSync(join(tmpdir(), 'optchat-quota-')), 'provider-failover-state.json');
+  assert.equal(quotaPlan('anthropic', file), undefined, 'no cache: unknown');
+  writeFileSync(file, JSON.stringify({ usageByProvider: { anthropic: { plan: 'api-key' }, 'anthropic-account-2': { plan: 'max' } } }));
+  assert.equal(quotaPlan('anthropic', file), 'api-key');
+  assert.equal(quotaPlan('anthropic-account-2', file), 'max');
+  assert.equal(quotaPlan('openai-codex', file), undefined);
+});
+
+test('an empty specialist tree is backfilled once from its project\'s finished contract runs of the last 14 days, at most 60', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-backfill-'));
+  const notes: string[] = [];
+  const day = 86_400_000;
+  const recent = Array.from({ length: 70 }, (_, i) => runOf(i, 'harness', `R${i}`));
+  const runs = [...recent, runOf(100, 'harness', 'OLD', { started: Date.now() - 20 * day, ended: Date.now() - 20 * day }), runOf(101, 'dentai', 'OTHER'),
+    runOf(102, 'harness', 'PLAIN', { kind: undefined }), runOf(103, 'harness', 'LIVE', { state: 'running', ended: undefined })];
+  const open = () => { const crew = new Crew(dir, { compress: async input => input.source.slice(0, 100), note: text => notes.push(text) }); crew.bindRuns(() => runs); return crew; };
+  let crew = open();
+  try {
+    const tree = crew.memory('harness');
+    assert.equal(tree.root.length, 60, 'the newest 60');
+    assert.match(tree.root[0].text, /^\[run run00010\]/, 'oldest first');
+    assert.match(tree.root[59].text, /^\[run run00069\]/);
+    assert.deepEqual(notes, ['crew harness: backfilled 60 finished runs into its memory tree.']);
+    assert.equal(crew.record(recent[69]), false, 'a backfilled run is not appended again');
+    await crew.closeAll();
+    crew = open();
+    assert.equal(crew.memory('harness').root.length, 60, 'a tree with leaves is never backfilled again');
+    assert.equal(notes.length, 1);
+  } finally { await crew.closeAll(); removeDir(dir); }
 });
