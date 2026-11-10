@@ -28,6 +28,9 @@ test('spawn accepts a worker kind and a project specialist', () => {
   assert.deepEqual(validate(tools.get('spawn')!, args), args);
   const created = { tasks: [{ task: 'not launched', kind: 'code', project: 'lolidle-save-editor' }] };
   assert.deepEqual(validate(tools.get('spawn')!, created), created, 'a project outside the known four is a new specialist');
+  const explicit = { tasks: [{ task: 'not launched', kind: 'code', model: 'anthropic-account-2/claude-sonnet-5-5' }] };
+  assert.deepEqual(validate(tools.get('spawn')!, explicit), explicit, 'a task may carry an explicit provider/model');
+  assert.match(JSON.stringify(tools.get('spawn')!.parameters), /Explicit model as provider\/model/, 'the schema documents it');
   const crewCall = { action: 'read', project: 'lolidle-save-editor', part: 'proposals' };
   assert.deepEqual(validate(tools.get('crew')!, crewCall), crewCall);
 });

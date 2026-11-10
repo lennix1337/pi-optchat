@@ -78,7 +78,8 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   /** Manager mode: the model for a worker kind, and the crew whose project memory briefs contract workers. */
   route?: (kind: WorkerKind) => ModelChoice; crew?: Crew }
 /** One spawn task: a plain subagent, or with `kind` a contract worker that gets its project's brief instead of the chat. */
-export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist }
+/** `model` is `provider/model` and overrides the kind's route; it may be any account or provider. */
+export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist; model?: string }
 
 // Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
 const packageName = (path: string): string | undefined => {
@@ -326,9 +327,9 @@ export class Children {
   }
   /** The spawn tools' answer, saying how this spawn's reports will come back. */
   async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string) {
-    const { ids, grouped, specialists } = await this.launch(tasks, cwd, signal, parentId);
+    const { ids, grouped, specialists, models } = await this.launch(tasks, cwd, signal, parentId);
     const created = specialists.map(slug => ` Note: new specialist ${slug} created; its charter is a template, so add what its workers need to know with the crew tool.`).join('');
-    return `Started: ${ids.join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${created}`;
+    return `Started: ${ids.join(', ')}. Model${ids.length > 1 ? 's' : ''}: ${ids.map((id, i) => `${id} on ${models[i]}`).join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${created}`;
   }
   private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false) {
     // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
@@ -357,14 +358,14 @@ export class Children {
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;
     for (const [i, live] of launched.entries()) {
       live.batch = batch;
-      const work = this.execute(live, `${views[i]}\n\nYour task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
+      const work = this.execute(live, `${views[i]}\n\n${live.info.kind ? `Your model: ${live.info.model} (thinking ${live.info.thinking}).\n\n` : ''}Your task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
         .finally(() => { this.completions.delete(work); this.changed(); });
       this.completions.add(work);
       live.completion = work;
     }
     this.changed();
     this.watch();
-    return { ids: launched.map(c => c.info.id), grouped: batch !== undefined, specialists };
+    return { ids: launched.map(c => c.info.id), grouped: batch !== undefined, specialists, models: launched.map(c => c.info.model) };
   }
   /** What a contract worker's task must satisfy before anything starts: a contract, a valid project and a repo no other writer holds. */
   private checkWorkers(tasks: SpawnTask[], cwd: string) {
@@ -409,12 +410,27 @@ export class Children {
     if (!text) return;
     try { this.options.crew.propose(info.project, info.id, text); } catch (error) { this.warn(`Could not keep the memory proposal of ${info.id}: ${String(error)}`); }
   }
-  /** A task's model: its kind's route in manager mode, else the subagent role's model. */
+  /** A task's model: its explicit `provider/model`, else its kind's route in manager mode, else the subagent role's model. Only the role's
+   * model may fall back from a numbered account to its base provider; a route or an explicit model runs exactly where it says, since another
+   * account is another bill, and one that does not resolve refuses the spawn. */
   private modelOf(task: SpawnTask) {
-    const chosen = task.kind && this.options.route ? this.options.route(task.kind) : this.choice();
-    const resolved = resolveModel(this.registry, chosen);
-    if (!resolved) throw new Error(`${task.kind ? `Worker model for "${task.kind}"` : 'Subagent model'} unavailable: ${chosen.provider}/${chosen.model}`);
-    return { selected: { ...chosen, provider: resolved.provider }, model: resolved.model };
+    const route = task.kind && this.options.route ? this.options.route(task.kind) : undefined;
+    const base = route ?? this.choice();
+    if (!route && task.model === undefined) {
+      const resolved = resolveModel(this.registry, base);
+      if (!resolved) throw new Error(`Subagent model unavailable: ${base.provider}/${base.model}. Nothing was started.`);
+      return { selected: { ...base, provider: resolved.provider }, model: resolved.model };
+    }
+    const explicit = task.model === undefined ? undefined : /^([^/\s]+)\/(\S+)$/.exec(task.model.trim());
+    if (task.model !== undefined && !explicit) throw new Error(`The model "${task.model}" is not provider/model (for example anthropic-account-2/claude-sonnet-5-5). Nothing was started.`);
+    const selected = explicit ? { ...base, provider: explicit[1], model: explicit[2] } : base;
+    const model = this.registry.find(selected.provider, selected.model);
+    if (!model) {
+      const whose = task.model !== undefined ? `The model ${selected.provider}/${selected.model} you asked for` : `Worker model for "${task.kind}"`;
+      const why = this.registry.getAll().some(candidate => candidate.provider === selected.provider) ? `${selected.provider} has no model ${selected.model}` : `${selected.provider} is not a provider available now`;
+      throw new Error(`${whose} is unavailable: ${selected.provider}/${selected.model} (${why}). Nothing was started.`);
+    }
+    return { selected, model };
   }
   /** What each task starts from: a contract worker its project's brief, never the manager's chat (most of a worker's prompt
    * saved); any other child the chat, focused when asked or when its model's price tier binds. */

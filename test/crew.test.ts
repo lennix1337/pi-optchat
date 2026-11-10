@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Children } from '../src/agents.ts';
-import { AUDIT_DAYS, Crew, MEMORY_BYTES, NUDGE, checkContract, crewTool, crewWakeNote, missingParts, registerDelegationNudge, routeFor, specialistOf } from '../src/crew.ts';
+import type { ModelChoice } from '../src/compactor.ts';
+import { AUDIT_DAYS, Crew, type WorkerKind, MEMORY_BYTES, NUDGE, checkContract, crewTool, crewWakeNote, missingParts, registerDelegationNudge, routeFor, specialistOf } from '../src/crew.ts';
 import { Memory } from '../src/memory.ts';
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
@@ -22,6 +23,8 @@ test('routeFor follows the main model\'s provider family and live account, and f
   assert.equal(routeFor('hard', { provider: 'anthropic' }).model, 'claude-opus-5-5');
   assert.equal(routeFor('code', { provider: 'google' }).provider, 'anthropic', 'no route for the family: the first one');
   assert.equal(routeFor('code', undefined).model, 'claude-sonnet-5-5');
+  assert.deepEqual(routeFor('code', { provider: 'openai-codex-account-2' }), { provider: 'openai-codex-account-2', model: 'gpt-6.1-terra', thinking: 'high' }, 'a Codex manager on a numbered account keeps that account');
+  assert.deepEqual(routeFor('code', { provider: 'anthropic' }), { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'high' });
   const custom = { code: [{ provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'low' as const }] };
   assert.equal(routeFor('code', { provider: 'anthropic' }, custom).model, 'claude-haiku-5-5', 'a profile route replaces the default');
   assert.equal(routeFor('plan', { provider: 'anthropic' }, custom).model, 'claude-opus-5-5', 'kinds it leaves out keep the default');
@@ -136,16 +139,16 @@ test('the delegation nudge does not count bash calls that only read', () => {
 });
 
 /** A Children over a synthetic provider: `control.reply` is what workers answer, `control.hold` keeps their turn from ending until it resolves. */
-async function crewHarness() {
+async function crewHarness(options: { providers?: Record<string, string[]>; route?: (kind: WorkerKind) => ModelChoice } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-agents-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   memory.append('user', 'CHAT_SENTINEL_42');
   const prompts = new Map<string, string>(), reports: string[] = [], control: { reply: string; hold?: Promise<void> } = { reply: 'done' };
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   const model = (id: string) => ({ id, name: id, reasoning: false, input: ['text' as const], cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }, contextWindow: 100000, maxTokens: 1000 });
-  runtime.registerProvider('optchat-test', {
-    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions', models: [model('child'), model('worker')],
-    streamSimple(m, context) {
+  const synthetic = (models: string[]) => ({
+    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions' as const, models: models.map(model),
+    streamSimple(m: { id: string; api: string; provider: string }, context: { messages: { role: string; content: unknown }[] }) {
       const stream = createAssistantMessageEventStream();
       const initial = textContent(context.messages.find(x => x.role === 'user')?.content);
       prompts.set(`${m.id}:${initial.split('Your task:\n').at(-1)}`, initial);
@@ -154,10 +157,12 @@ async function crewHarness() {
       return stream;
     },
   });
+  runtime.registerProvider('optchat-test', synthetic(['child', 'worker']) as never);
+  for (const [provider, models] of Object.entries(options.providers ?? {})) runtime.registerProvider(provider, synthetic(models) as never);
   const crew = new Crew(join(dir, 'crew'));
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async text => { reports.push(text); }, () => {}, dir,
-    { route: () => ({ provider: 'optchat-test', model: 'worker', thinking: 'minimal' }), crew, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    { route: options.route ?? (() => ({ provider: 'optchat-test', model: 'worker', thinking: 'minimal' })), crew, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const done = async (...ids: string[]) => { for (const id of ids) await (children as any).running.get(id)?.completion; };
   return { dir, memory, prompts, reports, control, crew, children, done, close: async () => { await children.close(); await memory.close(); removeDir(dir); } };
 }
@@ -306,4 +311,50 @@ test('a profile config keeps valid worker routes and refuses an unknown kind or 
     assert.throws(() => load({ workerModels: { review: [sonnet] } }), /Invalid profile config/);
     assert.throws(() => load({ workerModels: { code: [] } }), /Invalid profile config/);
   } finally { removeDir(dir); }
+});
+
+const FAMILIES = { anthropic: ['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'], 'anthropic-account-2': ['claude-sonnet-5-5'],
+  'openai-codex': ['gpt-6.1-terra', 'gpt-6-luna', 'gpt-6.1-sol'], 'openai-codex-account-2': ['gpt-6.1-terra', 'gpt-6-luna', 'gpt-6.1-sol'] };
+
+test('with no model given, a worker runs its kind\'s tier on the manager\'s own provider and account, and the spawn result names it', async () => {
+  for (const [main, kind, expected] of [['anthropic', 'code', 'anthropic/claude-sonnet-5-5'], ['openai-codex', 'code', 'openai-codex/gpt-6.1-terra'],
+    ['openai-codex-account-2', 'code', 'openai-codex-account-2/gpt-6.1-terra'], ['openai-codex-account-2', 'mechanical', 'openai-codex-account-2/gpt-6-luna'],
+    ['anthropic-account-2', 'code', 'anthropic-account-2/claude-sonnet-5-5']] as const) {
+    const { dir, children, prompts, done, close } = await crewHarness({ providers: FAMILIES, route: wanted => routeFor(wanted, { provider: main }) });
+    try {
+      const text = await children.start([{ task: CONTRACT, kind, cwd: dir }], dir);
+      const [id] = [...(children as any).running.keys()] as string[];
+      assert.equal(children.history.records.get(id)?.model, expected, `${main} ${kind}`);
+      assert.ok(text.includes(`${id} on ${expected}`), `the result names the model: ${text}`);
+      await done(id);
+      const prompt = [...prompts.values()].find(value => value.endsWith(CONTRACT))!;
+      assert.ok(prompt.includes(`Your model: ${expected}`), 'the worker is told its own model');
+    } finally { await close(); }
+  }
+});
+
+test('a task\'s explicit model overrides the route and may cross accounts and providers', async () => {
+  const { dir, children, done, close } = await crewHarness({ providers: FAMILIES, route: kind => routeFor(kind, { provider: 'openai-codex' }) });
+  try {
+    const text = await children.start([{ task: CONTRACT, kind: 'code', model: 'anthropic-account-2/claude-sonnet-5-5' }, { task: CONTRACT, kind: 'plan', model: 'openai-codex-account-2/gpt-6.1-terra' },
+      { task: 'plain', model: 'anthropic/claude-haiku-5-5' }], dir);
+    assert.match(text, /^Started: /, text);
+    const runs = [...(children as any).running.values()].map(live => live.info) as { model: string; kind?: string }[];
+    assert.deepEqual(runs.map(run => run.model), ['anthropic-account-2/claude-sonnet-5-5', 'openai-codex-account-2/gpt-6.1-terra', 'anthropic/claude-haiku-5-5']);
+    await done(...(children as any).running.keys());
+  } finally { await close(); }
+});
+
+test('an explicit model that does not resolve fails the spawn, and a numbered account never silently falls to its base provider', async () => {
+  const providers = { ...FAMILIES, 'openai-codex-account-2': ['gpt-6-luna'] };
+  const { dir, children, close } = await crewHarness({ providers, route: kind => routeFor(kind, { provider: 'openai-codex-account-2' }) });
+  try {
+    for (const model of ['openai-codex-account-2/gpt-6.1-terra', 'openai-codex-account-3/gpt-6.1-terra', 'anthropic/nope', 'no-slash']) {
+      await assert.rejects(children.start([{ task: CONTRACT, kind: 'code', model }], dir), /model .*(unavailable|not a model|is not provider\/model).*Nothing was started/s, model);
+    }
+    await assert.rejects(children.start([{ task: CONTRACT, kind: 'code' }], dir), /Worker model for "code" is unavailable: openai-codex-account-2\/gpt-6\.1-terra.*Nothing was started/s,
+      'the default route fails instead of running on openai-codex');
+    assert.equal(children.history.records.size, 0, 'nothing started');
+    assert.match(await children.start([{ task: CONTRACT, kind: 'mechanical', cwd: dir }], dir), /on openai-codex-account-2\/gpt-6-luna/);
+  } finally { await close(); }
 });
