@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
+import type { Triage } from '../src/wake-signals.ts';
 import type { ModelChoice } from '../src/compactor.ts';
 
 const MIN = 60_000;
@@ -13,16 +14,18 @@ const MIN = 60_000;
 /** A clock and one timer slot the test advances by hand. */
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
-  route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined } = {}) {
+  route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
+  triage = undefined as ((at: number) => Triage | undefined) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
-  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [];
+  const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [], beats: Beat[] = [];
   const beat = new Heartbeat({
     dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy, radar, queued,
     ...route ? { route: (blocks: Record<string, number>) => route(now, blocks) } : {},
+    ...triage ? { triage: () => triage(now) } : {},
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
-    wake: (beat, seen, choice) => { woken.push(beat.text); wakeRadars.push(seen); unchanged.push(beat.unchanged ?? false); choices.push(choice); },
+    wake: (beat, seen, choice) => { beats.push(beat); woken.push(beat.text); wakeRadars.push(seen); unchanged.push(beat.unchanged ?? false); choices.push(choice); },
     note: text => { notes.push(text); },
   });
   const advance = async (ms: number) => {
@@ -30,7 +33,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     while (timer && timer.at <= until) { const t = timer; timer = undefined; now = t.at; t.run(); await beat.settled(); }
     now = until;
   };
-  return { beat, checks, woken, notes, choices, checkRadars, wakeRadars, unchanged, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
+  return { beat, checks, woken, notes, choices, beats, checkRadars, wakeRadars, unchanged, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
 }
 
 test('the radar runs before each check, and its snapshot reaches both the check and the woken turn', async () => {
@@ -690,4 +693,74 @@ test('daily counters tell wakes, errors and quiet check verdicts apart, and keep
   h.beat.arm(); await h.advance(15 * MIN);
   assert.deepEqual(saved(h.dir).daily.map((d: any) => d.day), ['1969-12-31']);
   rmSync(h.dir, { recursive: true, force: true });
+});
+
+/** The radar as the triage reads it: one red CI line per repository named in `red`, the figures that change on every read varying with `n`. */
+const triageRadar = (n: number, red: string[] = []) => `# Wake radar 2026-10-30T00:${String(n % 60).padStart(2, '0')}Z\n\n## Main CI red\n${red.map(repo => `- o/${repo} main: CI failure abc1234 (${n}h ago)`).join('\n')}\n\n## Own open pull requests\n- o/pi-gitwatch#9 fix x (updated ${n}h ago): mergeable, checks failing\n\n## Disk\n- C:/ ${200 - n}.5 GiB free of 953 GiB\n`;
+const triaged = (extra: Partial<Triage> = {}): Triage => ({ buildMinutes: 120, missions: '', lastRuns: {}, ...extra });
+
+test('with wakeTriage a tick with no project signal starts no wake; the build cadence starts one', async () => {
+  let reads = 0;
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(++reads), triage: () => triaged() });
+  h.beat.arm(); await h.advance(105 * MIN);
+  assert.equal(h.woken.length, 0, '7 quiet ticks start nothing');
+  assert.deepEqual(h.checks, [], 'and ask no model');
+  assert.equal(saved(h.dir).daily[0].skippedIdle, 7);
+  assert.deepEqual(saved(h.dir).checks.map((c: any) => [c.verdict, c.text]), Array(7).fill(['SLEEP', 'no signal']));
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1, 'the 8th tick, 120 min in, is the build wake');
+  assert.equal(h.beats[0].trigger, 'build');
+  assert.deepEqual(h.beats[0].signals ?? [], []);
+  assert.equal(saved(h.dir).wakeLog[0].trigger, 'build');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('with wakeTriage a project whose lines changed wakes with its signal; the next quiet tick does not', async () => {
+  let reads = 0, red: string[] = [];
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(++reads, red), triage: () => triaged() });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 0, 'the first radar is the baseline');
+  red = ['Genexus18MCP'];
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.equal(h.beats[0].trigger, 'signal');
+  assert.deepEqual(h.beats[0].signals?.map(s => s.project), ['genexus18mcp']);
+  assert.equal(h.unchanged[0], false);
+  assert.equal(saved(h.dir).wakeLog[0].trigger, 'signal');
+  assert.match(saved(h.dir).wakeLog[0].reason, /genexus18mcp/);
+  h.beat.turnSettled(turn);
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1, 'the same radar again is quiet');
+  assert.ok(saved(h.dir).projectDigests.genexus18mcp);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('with wakeTriage a signal that could not wake (24 h cap) stays pending for the next tick', async () => {
+  let reads = 0, red: string[] = [];
+  const h = harness({ always: true, minutes: 15, wakes: 0, radar: async () => triageRadar(++reads, red), triage: () => triaged() });
+  h.beat.arm(); await h.advance(15 * MIN);
+  red = ['Genexus18MCP'];
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 0);
+  assert.equal(saved(h.dir).projectDigests.genexus18mcp, undefined, 'its digest is not recorded as seen');
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.notes.length, 2, 'it is still a signal on the next tick');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('with wakeTriage a stalled mission signals once; without it heartbeat.json gains nothing', async () => {
+  const missions = '- [dentai] fix login\n- keep the radar honest';
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: at => triaged({ missions, stallHours: 1, lastRuns: { dentai: at - 120 * MIN } }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1, 'stalled since the first tick (a baseline never hides a stall)');
+  assert.deepEqual(h.beats[0].signals?.map(s => s.project), ['dentai']);
+  h.beat.turnSettled(turn);
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1, 'once per stall, not every tick');
+  rmSync(h.dir, { recursive: true, force: true });
+  const plain = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1) });
+  plain.beat.arm(); await plain.advance(15 * MIN);
+  assert.equal(plain.woken.length, 1);
+  assert.deepEqual(Object.keys(saved(plain.dir)).sort(), ['checks', 'daily', 'radarDigest', 'routeBlocks', 'routeFailures', 'wakeLog', 'wakes']);
+  rmSync(plain.dir, { recursive: true, force: true });
 });

@@ -48,6 +48,7 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
 import { Crew, MANAGER_DOC, crewTool, crewWakeNote, registerDelegationNudge, routeFor } from './crew.ts';
+import { lastRunsOf } from './wake-signals.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
 import { registerRecursiveGrepNarrowing } from './bash-recursive-grep.ts';
@@ -56,7 +57,7 @@ import { registerMergeCiGuard } from './merge-ci-guard.ts';
 import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { adviseEffect } from './effect-advisor.ts';
-import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, wakeText, wakeTurn } from './heartbeat.ts';
+import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, summarizeTurn, wakeRetry } from './heartbeat-report.ts';
@@ -299,12 +300,16 @@ export default function optchat(pi: ExtensionAPI) {
   /** The messages of the current run, read when it settles to report what a heartbeat wake did. */
   let turn: AgentMessage[] = [];
   const idleMinutes = () => Math.round((Date.now() - settledAt) / 60_000);
+  /** How the last assistant message ended when it was not a normal stop: its stop reason, then its error. */
+  const lastStopOf = (ctx: ExtensionContext) => {
+    const last = ctx.sessionManager.getBranch().findLast(e => e.type === 'message' && e.message.role === 'assistant');
+    const message = last?.type === 'message' && last.message.role === 'assistant' ? last.message : undefined;
+    return message && message.stopReason !== 'stop' ? `${message.stopReason}${message.errorMessage ? `: ${oneLine(message.errorMessage).slice(0, 300)}` : ''}` : undefined;
+  };
   /** What the heartbeat's cheap model reads: why the chat stopped, what still runs, the state and the newest memory lines. */
   const beatState = (ctx: ExtensionContext, a: Active, radar?: string) => {
     const now = Date.now(), age = (since: number) => { const m = Math.round((now - since) / 60_000); return m < 120 ? `${m} min` : `${Math.round(m / 60)} h`; };
-    const last = ctx.sessionManager.getBranch().findLast(e => e.type === 'message' && e.message.role === 'assistant');
-    const message = last?.type === 'message' && last.message.role === 'assistant' ? last.message : undefined;
-    const lastStop = message && message.stopReason !== 'stop' ? `${message.stopReason}${message.errorMessage ? `: ${oneLine(message.errorMessage).slice(0, 300)}` : ''}` : undefined;
+    const lastStop = lastStopOf(ctx);
     const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
@@ -436,11 +441,21 @@ export default function optchat(pi: ExtensionAPI) {
         return pickWakeRoute(wakeRoutes(config, model, knownProviders(state, blocks), pi.getThinkingLevel()), state, blocks, Date.now(),
           choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
       },
+      // Event-driven wakes (config wakeTriage): the radar and the crew's runs say which projects moved; no model is asked.
+      triage: () => {
+        const triage = own()?.config.wakeTriage;
+        if (!triage) return undefined;
+        const lastRuns = Object.fromEntries(Object.entries(lastRunsOf(profile.children.runs(), Date.now())).map(([project, run]) => [project, run.at]));
+        return { buildMinutes: triage.buildMinutes, ...triage.stallHours ? { stallHours: triage.stallHours } : {}, missions: profile.crew.missions(), lastRuns, lastStop: lastStopOf(ctx) };
+      },
       wake: (beat, radar, choice) => {
         wakeRetried = false; clearWakeWorkers();
         const dream = briefDream(ctx);
-        const crew = profile.config.managerMode ? `\n${crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts())}` : '';
-        const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + crew, previousWake(profile.dir), beat.unchanged);
+        const runs = lastRunsOf(profile.children.runs(), Date.now());
+        const note = beat.signals?.length ? crewWakeNote(profile.crew.missions(), [], [], beat.signals.map(signal => ({ ...signal, lastRun: runs[signal.project]?.id })))
+          : profile.config.managerMode ? crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts()) : '';
+        const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note)
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged);
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))

@@ -8,6 +8,7 @@ import { record } from './cache.ts';
 import { atomicWrite, type Store } from './store.ts';
 import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
 import { invalidPlan, invalidRadar, type HeartbeatPlan } from './heartbeat.ts';
+import { invalidTriage } from './wake-signals.ts';
 import { validRoutes, type WorkerRoutes } from './crew.ts';
 import { accountGroup } from './account.ts';
 
@@ -23,6 +24,8 @@ export type Role = 'compactor' | 'subagent';
 export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes;
   /** Whether a wake whose main-model family is out of quota may run on another family's wakeModel (default true; see wakeRoutes). */
   wakeRouteAcrossFamilies?: boolean;
+  /** Event-driven wakes (see wake-signals.ts): a heartbeat tick wakes the agent only for a project with news, or once every `buildMinutes` to build something new. Absent: every tick wakes as before. */
+  wakeTriage?: { buildMinutes: number; stallHours?: number };
   /** Extra deploy entry points beyond the built-in ones (script names with `*`, or a command prefix such as `fly deploy`): see src/deploy.ts. */
   deployCommands?: string[] }
 /** The main model the roles follow, as Pi's model_select reports it. */
@@ -126,7 +129,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage'] as const;
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
@@ -135,7 +138,7 @@ export function loadConfig(dir: string): ProfileConfig {
     || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
-    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar);
+    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage);
     if (problem) throw new Error(problem);
     // The optional fields were validated above; an absent or empty one stays out of the config.
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;

@@ -149,3 +149,13 @@ test('a quiet commit and a gh pr merge count as delivery even when git prints no
   assert.match(summary.commits[1], /^ran gh pr merge 62/);
   assert.equal(wakeRetry(summary), undefined);
 });
+
+test('a wake started by a project signal or the build cadence says so in the listing', () => {
+  const text = renderReport([
+    wake({ at: at(9, 0), trigger: 'signal', reason: 'signal: genexus18mcp, harness' }),
+    wake({ at: at(11, 0), trigger: 'build', reason: 'build cadence' }),
+  ], { now: at(12), cap: 6, minutes: 15 });
+  assert.match(text, /09:00 signal: genexus18mcp, harness → done/);
+  assert.match(text, /11:00 build → done/);
+  assert.ok(!text.includes('fixed schedule'));
+});
