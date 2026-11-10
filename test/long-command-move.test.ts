@@ -6,17 +6,14 @@ import { registerReapingBash } from '../src/shell-reaper.ts';
 import { LONG_COMMAND_NOTE } from '../src/long-commands.ts';
 
 const printed = `node -e "console.log('moved-ok')"`;
-// The slow command also prints Git Bash's /tmp warning (below) on stderr, so the test passes the same on a machine with and without it.
-const slow = `node -e "console.error('bash.exe: warning: could not find /tmp, please create!'); setTimeout(() => console.log('slow-ok'), 1500)"`;
+const slow = `node -e "setTimeout(() => console.log('slow-ok'), 1500)"`;
 const waitEnded = async (jobs: ShellJobs) => {
   const deadline = Date.now() + 15_000;
   while (jobs.list()[0]?.ended === undefined && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
 };
-// Git Bash prints this on stderr, which the shell merges into the output, when it cannot resolve its /tmp mount (the Windows temp folder): the CI windows runner did so in one run (42917734750, shard 2) and failed the exact comparison of a report. It says nothing about the command under test.
-const MSYS_TMP_WARNING = /^bash\.exe: warning: could not find \/tmp, please create!\r?\n/;
 const recorder = (jobs: ShellJobs) => {
   const reports: string[] = [];
-  jobs.setReporter({ finished: job => reports.push(`${job.state}: ${job.output.trim().replace(MSYS_TMP_WARNING, '')}`), alerted() {} });
+  jobs.setReporter({ finished: job => reports.push(`${job.state}: ${job.output.trim()}`), alerted() {} });
   return reports;
 };
 const text = (result: { content: { text?: string }[] }) => result.content.map(part => part.text ?? '').join('\n');

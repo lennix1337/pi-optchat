@@ -6,7 +6,9 @@ import { basename, join } from 'node:path';
 // macOS's default tmpdir is ~49 chars, and the extra level would push profile lock-socket paths past the 103-byte limit, so the outermost root goes under /tmp there. A child process or worker thread nests inside its parent's root, so it goes away with it even if it never reaches 'exit'.
 const nested = basename(tmpdir()).startsWith('optchat-test-');
 const root = mkdtempSync(join(process.platform === 'darwin' && !nested ? '/tmp' : tmpdir(), 'optchat-test-'));
-for (const name of ['TMPDIR', 'TEMP', 'TMP']) process.env[name] = root;
+for (const name of ['TMPDIR', 'TEMP']) process.env[name] = root;
+// Git Bash mounts /tmp on the first process that starts it (GetTempPath: TMP before TEMP) and every Git Bash process alive at the same time shares that mount. Test files run side by side as child processes, so a /tmp on the root of the file that happened to start first is gone when that file ends, and the others' shells print "bash.exe: warning: could not find /tmp, please create!" into their output. node's tmpdir() reads TEMP, so TMP stays on the outermost root, which lives until the runner exits.
+process.env.TMP = nested && process.env.TMP ? process.env.TMP : root;
 // os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so both are sandboxed: no test may touch the user's real ~/.optchat or ~/.pi.
 for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR']) process.env[name] = mkdtempSync(join(root, `optchat-${name.toLowerCase()}-`));
 // The operator's own settings must not change test behavior; OPTCHAT_EFFECT_APPROVALS=risk would gate fixture subagent calls.
