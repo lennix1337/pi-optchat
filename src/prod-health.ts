@@ -13,6 +13,10 @@ import { atomicWrite, readJsonOr } from './store.ts';
  * checks more than the status code (the expected content, the API's own subsystem report, latency) and reads the
  * deployed web build. A probe that fails twice in a row alerts once: a line in the project's Slack channel and one
  * woken turn; its recovery is posted without a turn. Steady state (healthy or still down) costs no model call.
+ *
+ * This sense looks from outside. For the inside of the host (containers, nginx status classes, origin TTFB, Prometheus
+ * blackbox probes, disk) run `node scripts/prod-check.mjs [--host hetzner-dentai] [--since MIN] [--json]`: one read-only
+ * ssh session, exit 0 healthy, 1 problems, 3 could not check.
  */
 /** `detail` replaces the latency in status lines for probes that measure something else (free disk, memory). */
 /** `edge`: CDN colo and cache status (Cloudflare cf-ray / cf-cache-status), so a slow stretch can be tied to a path. `waitMs`: time until the server answered (response headers); `ms - waitMs` is reading the body. Only remote probes have it. */
