@@ -287,7 +287,7 @@ function readOnlyWords({ words, piped }: Command): boolean {
 const READ_TOOLS = new Set(['shell_status', 'read_many', 'get_search_content', 'project_evidence', 'get_goal']);
 /** Observing actions of tools that dispatch on an action field; every other action may change a page, an app or a record. */
 const OBSERVING: Record<string, { field: string; fallback?: string; actions: Set<string> }> = {
-  browser_harness: { field: 'action', fallback: 'status', actions: new Set(['status', 'inspect', 'screenshot', 'read']) },
+  browser_harness: { field: 'action', fallback: 'status', actions: new Set(['status', 'inspect', 'state', 'screenshot', 'read']) },
   desktop: { field: 'command', fallback: 'status', actions: new Set(['snapshot', 'find', 'get', 'is', 'screenshot', 'list-windows', 'list-displays', 'list-apps', 'list-surfaces', 'list-notifications', 'clipboard-get', 'wait', 'status', 'version', 'skills']) },
   gitwatch: { field: 'action', fallback: 'status', actions: new Set(['status']) },
   commitments: { field: 'action', actions: new Set(['list']) },
