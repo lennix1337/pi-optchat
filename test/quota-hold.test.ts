@@ -24,8 +24,8 @@ writeFileSync(join(process.env.PI_CODING_AGENT_DIR!, 'settings.json'), JSON.stri
 
 const nap = (ms = 25) => new Promise<void>(resolve => setTimeout(resolve, ms));
 async function until(condition: () => boolean, label = 'condition') {
-  const deadline = Date.now() + 10000;
-  while (!condition()) { if (Date.now() > deadline) throw new Error(`Timed out: ${label}`); await nap(10); }
+  const deadline = Date.now() + 6000;
+  while (!condition()) { if (Date.now() > deadline) assert.fail(`Timed out: ${label}`); await nap(10); }
 }
 
 /** A clock the test moves by hand: timers run, in order, as time passes. */
