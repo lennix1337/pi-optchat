@@ -153,6 +153,8 @@ export class SlackBridge {
   private itemsFailure: string | undefined;
   /** The last Home failure said, so a service that keeps refusing is reported once, not at every run end. */
   private homeFailure: string | undefined;
+  private homeInflight = false;
+  private homeNext: { owner: NonNullable<ReturnType<SlackBridge['owner']>>; body: object; old: object } | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
@@ -394,7 +396,24 @@ export class SlackBridge {
     // A service from before these fields refuses them (HTTP 400): the old 3000-character text alone still goes out,
     // and the warning says to restart it. 03/11: the check read the message, which never says "HTTP 400", so the Home froze for hours.
     const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
-    void this.options.request(owner, '/v1/slack/home', { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}) })
+    this.publishHome(owner, { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}) }, old);
+  }
+
+  /** One Home publication at a time: requests that overlap can finish out of order and leave an older view on screen.
+   *  A view requested while one is in flight replaces any earlier waiting one, so the newest always goes out last. */
+  private publishHome(owner: NonNullable<ReturnType<SlackBridge['owner']>>, body: object, old: object): void {
+    if (this.homeInflight) { this.homeNext = { owner, body, old }; return; }
+    this.homeInflight = true;
+    void this.sendHome(owner, body, old).finally(() => {
+      this.homeInflight = false;
+      const next = this.homeNext;
+      this.homeNext = undefined;
+      if (next) this.publishHome(next.owner, next.body, next.old);
+    });
+  }
+
+  private sendHome(owner: NonNullable<ReturnType<SlackBridge['owner']>>, body: object, old: object): Promise<void> {
+    return this.options.request(owner, '/v1/slack/home', body)
       .then(() => { this.homeFailure = undefined; }, async error => {
         if (!refused(error)) throw error;
         await this.options.request(owner, '/v1/slack/home', old);
