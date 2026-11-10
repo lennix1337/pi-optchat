@@ -76,7 +76,7 @@ const cut = (text: string, max: number) => text.length > max ? `${text.slice(0, 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 function wakeLine(wake: WakeRecord) {
-  const trigger = wake.trigger === 'check' ? `check: ${cut(wake.reason, 80)}` : 'fixed schedule';
+  const trigger = wake.trigger === 'check' ? `check: ${cut(wake.reason, 80)}` : wake.trigger === 'signal' ? cut(wake.reason, 80) : wake.trigger === 'build' ? 'build' : 'fixed schedule';
   const took = wake.endedAt === undefined ? '' : ` after ${Math.round((wake.endedAt - wake.at) / 60_000)} min, ${plural(wake.tools ?? 0, 'tool')}`;
   const outcome = wake.outcome === 'running' ? 'still running' : wake.outcome === 'unsettled' ? 'never settled' : wake.outcome === 'error' ? `ended on an error${took}` : `${wake.outcome}${took}`;
   const reply = wake.reply ? `: ${cut(wake.reply, SHOWN_REPLY)}` : '';
