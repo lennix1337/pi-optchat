@@ -189,7 +189,7 @@ test('a report steered into a running turn reaches the main agent once, even whe
   process.env.PI_CODING_AGENT_DIR = join(dir, 'agent'); // Children load installed extensions from here.
   const until = async (predicate: () => boolean, what: string) => {
     for (const deadline = Date.now() + 10000; !predicate();) {
-      if (Date.now() > deadline) throw new Error(`Timed out: ${what}`);
+      if (Date.now() > deadline) assert.fail(`Timed out: ${what}`);
       await new Promise(r => setTimeout(r, 10));
     }
   };
