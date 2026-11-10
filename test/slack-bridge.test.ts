@@ -14,6 +14,9 @@ import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 import { wakeEffects } from '../src/wake-log.ts';
 
 /** `channels`: the service's configured Slack channels besides the projects; without `wakes` a wake falls back to its repo channel. */
+/** Lets the Home publication chain (one request at a time, the newest view last) run to its end. */
+const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+
 function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null; channel?: string }[] = [], extra: Record<string, unknown> = {}, channels: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const owner = { dir, name: 'p' };
@@ -119,10 +122,11 @@ test('a run without a Slack message posts nothing; an empty run still answers th
   try {
     f.bridge.sawUserMessage('typed at the terminal');
     await f.bridge.runEnded(replies('ok'));
+    await settle();
     assert.equal(f.requests.filter(r => r.path === '/v1/slack/send').length, 0);
     f.bridge.sawUserMessage(`${SLACK_PREFIX}oi`);
     await f.bridge.runEnded([]);
-    assert.match(String((f.requests.at(-1)?.body as { text: string }).text), /sem resposta/);
+    assert.match(String((f.requests.filter(r => r.path === '/v1/slack/send').at(-1)?.body as { text: string }).text), /sem resposta/);
   } finally { f.close(); }
 });
 
@@ -568,22 +572,28 @@ test('App Home: a run typed in the terminal shows working too, with the live ste
     f.bridge.setWaiting(() => ['Rotacionar a chave rk_live do DentAI']);
     f.bridge.runStarted();
     f.bridge.sawUserMessage('melhora a home do optchat');
+    await settle();
     assert.match(homes().at(-1)!, /Trabalhando[\s\S]*terminal[\s\S]*melhora a home/);
     f.bridge.toolStarted('bash', { command: 'cd C:/projetos/pi-optchat && git push -u origin HEAD' });
+    await settle();
     assert.match(homes().at(-1)!, /Agora: .*git push[\s\S]*1 passo/);
     f.advance(5_000);
     f.bridge.toolStarted('read', { path: 'C:/projetos/pi-optchat/src/slack-bridge.ts' });
     assert.equal(homes().length, 2, 'steps closer than the throttle are not published');
     f.advance(30_000);
     f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/slack-bridge.ts' });
+    await settle();
     assert.match(homes().at(-1)!, /há 0 min[\s\S]*Agora: editando slack-bridge\.ts · 3 passos/);
+    await settle();
     assert.match(homes().at(-1)!, /Esperando você[\s\S]*rk_live/);
     await f.bridge.runEnded(replies('Pronto.'));
+    await settle();
     assert.match(homes().at(-1)!, /Livre[\s\S]*Pronto\.[\s\S]*Esperando você/);
   } finally { f.close(); }
 });
 
 /** The bodies the bridge posted to one service path, in order: `bodiesFor<T>(path)(f)`. */
+await settle();
 const bodiesFor = <T,>(path: string) => (f: ReturnType<typeof fixture>) => f.requests.filter(r => r.path === path).map(r => r.body as T);
 const homeBodies = bodiesFor<{ text: string; working?: boolean; approval?: string }>('/v1/slack/home');
 
@@ -629,6 +639,7 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
     f.bridge.toolStarted('bash', { command: 'npm test' });
     now += 25 * 60_000;
     await f.bridge.runEnded(replies('CI verde.'));
+    await settle();
     const text = homeBodies(f).at(-1)!.text;
     assert.match(text, /\*Hoje\* · 1 trabalho · 25 min trabalhando · último agora há pouco/);
     assert.doesNotMatch(text, /`09h/, 'no hour bar: it could not be read on the phone (03/11)');
@@ -658,6 +669,31 @@ test('App Home: a service from before the buttons refuses the new fields; the te
     f.bridge.sawUserMessage('[Slack] de novo');
     await new Promise(done => setTimeout(done, 10));
     assert.equal(warnings.filter(w => /Restart the service/.test(w)).length, 1, 'said once, with what to do');
+  } finally { f.close(); }
+});
+
+test('App Home keeps the newest visible state when an older publication is delayed', async () => {
+  const pending: { text: string; finish: (error?: Error) => void }[] = [];
+  let visible = '';
+  const warnings: string[] = [];
+  const f = fixture([], { warn: (m: string) => warnings.push(m), request: async (_owner: unknown, path: string, body: { text: string }) => {
+    if (path !== '/v1/slack/home') return { parts: 1, ts: '1.1', channel: 'D1' };
+    return new Promise((resolve, reject) => pending.push({ text: body.text, finish: error => { if (error) return reject(error); visible = body.text; resolve({}); } }));
+  } });
+  try {
+    await f.bridge.runEnded(replies('anterior concluído'));
+    f.bridge.sawUserMessage('novo trabalho');
+    await f.bridge.runEnded(replies('segundo concluído'));
+    assert.equal(pending.length, 1, 'a later publication waits for the one in flight');
+    assert.match(pending[0]!.text, /Livre/);
+    pending[0]!.finish(new Error('Slack timeout'));
+    await settle();
+    assert.equal(pending.length, 2, 'the newest view goes out after the first ends, even a failed one; the middle one is dropped');
+    pending[1]!.finish();
+    await settle();
+    assert.equal(pending.length, 2);
+    assert.match(visible, /Livre[\s\S]*segundo concluído/);
+    assert.equal(warnings.length, 1);
   } finally { f.close(); }
 });
 
@@ -804,6 +840,7 @@ test('App Home: a work reader that throws leaves the Home to go out without the 
     f.bridge.runStarted();
     f.bridge.sawUserMessage('arruma o CI');
     await f.bridge.runEnded(replies('CI verde.'));
+    await settle();
     const text = homeBodies(f).at(-1)!.text;
     assert.match(text, /\u2705 \*Livre\*/);
     assert.doesNotMatch(text, /PRs abertas/);
@@ -911,6 +948,7 @@ test('App Home: idle in the chat with a shell or a subagent still running says s
     f.bridge.runStarted();
     f.bridge.sawUserMessage('arruma o CI');
     await f.bridge.runEnded(replies('Rodando os testes.'));
+    await settle();
     const text = homes$(f).at(-1)!.text;
     assert.match(text, /^\u23f3 \*Em segundo plano\* \(1 subagente e 1 comando rodando\) desde/);
     assert.doesNotMatch(text, /Livre\*/);
@@ -925,6 +963,7 @@ test('App Home: idle with a PR whose CI is pending says what it waits for, not "
     f.bridge.runStarted();
     f.bridge.sawUserMessage('faz a release');
     await f.bridge.runEnded(replies('Esperando o CI da #840.'));
+    await settle();
     const text = homes$(f).at(-1)!.text;
     assert.match(text, /^\u23f3 \*Parado, esperando CI de Genexus18MCP#840\* desde/);
     assert.doesNotMatch(text, /Livre\*|chat livre/);
@@ -937,6 +976,7 @@ test('App Home: "Última resposta" is the reply\'s opening paragraph, clipped, n
     f.bridge.runStarted();
     f.bridge.sawUserMessage('arruma a Home');
     await f.bridge.runEnded(replies(`Feito: a Home volta a atualizar.\n\n**Por que travou:** ${'detalhe '.repeat(200)}`));
+    await settle();
     const text = homes$(f).at(-1)!.text;
     assert.match(text, /^Última resposta: Feito: a Home volta a atualizar\.$/m);
     assert.doesNotMatch(text, /Por que travou/);
@@ -949,6 +989,7 @@ test('App Home: idle with nothing running nor pending CI still says "Livre"', as
     f.bridge.runStarted();
     f.bridge.sawUserMessage('oi');
     await f.bridge.runEnded(replies('Pronto.'));
+    await settle();
     assert.match(homes$(f).at(-1)!.text, /^\u2705 \*Livre\* desde/);
   } finally { f.close(); }
 });
@@ -975,14 +1016,17 @@ test('App Home: Ver tudo / Ver menos from the Home change the Home only: no DM, 
     await f.bridge.runEnded(replies('ok'));
     f.inbox.splice(1);
     assert.equal(await f.bridge.poll(), 0);
+    await settle();
     let body = homes$(f).at(-1)!;
     assert.equal(body.fold, 'less');
     assert.equal((body.text.match(/pi-optchat#\d/g) ?? []).length, 7, 'every PR listed');
     f.inbox.push({ seq: 2, ts: '2.0', thread: null, text: 'menos', channel: 'home' });
     await f.bridge.poll();
+    await settle();
     body = homes$(f).at(-1)!;
     assert.equal(body.fold, 'more');
     assert.equal(f.sent.length, 0, 'the chat never sees the taps');
+    await settle();
     assert.equal(f.requests.filter(r => r.path === '/v1/slack/send').length, 0);
   } finally { f.close(); }
 });
