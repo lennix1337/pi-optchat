@@ -564,7 +564,7 @@ export default function optchat(pi: ExtensionAPI) {
         warn: text => ctx.ui.notify(text, 'warning'), note: text => ctx.ui.notify(text, 'info') });
       const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
-          onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
+          onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports, profileInstructions: () => instructions(dir),
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
           route: kind => routeFor(kind, main, config.workerModels), crew,
           // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.
