@@ -9,6 +9,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from '@earen
 import * as pinnedPi from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
+import { readHeartbeat } from '../src/heartbeat.ts';
 import { textContent, withoutFullChat } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { isCompaction, removeDir } from './support.ts';
@@ -95,6 +96,75 @@ for (const mode of ['in the same wake', 'after profile reopen', 'when delivered 
     assert.equal(processed, 1, JSON.stringify(reportInputs)); assert.equal(spawns, 1, 'no worker effect was replayed'); assert.deepEqual(JSON.parse(readFileSync(join(profile, 'pending-reports.json'), 'utf8')).filter((r: { text: string }) => twice ? r.text.includes('Child finished.') : true), []);
     const logged = readdirSync(join(profile, 'main')).flatMap(file => readFileSync(join(profile, 'main', file), 'utf8').split('\n'));
     assert.equal(logged.filter(line => line.includes('Child finished.') && line.includes('report:')).length, 1, 'the report is journaled once');
+    assert.deepEqual(errors, []);
+  } finally {
+    workerFinish?.();
+    if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
+    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
+    if (oldAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgent;
+    removeDir(dir);
+  }
+});
+
+test('a wake that resumes a finished worker with tell waits for that worker\'s report before it ends', { timeout: 20000 }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'wake-tell-')), oldHome = process.env.OPTCHAT_HOME, oldAgent = process.env.PI_CODING_AGENT_DIR;
+  process.env.OPTCHAT_HOME = dir; process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('external fetch forbidden'); });
+  const timer = setTimeout; let fire: (() => void) | undefined;
+  t.mock.method(globalThis, 'setTimeout', ((fn: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay === 60_000 && !fire) { fire = () => fn(...args); const h = timer(() => {}, 60_000); h.unref(); return h; }
+    return timer(fn, delay, ...args);
+  }) as typeof setTimeout);
+  const until = async (f: () => boolean, label: string) => {
+    for (const end = Date.now() + 8000; !f();) { if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => timer(r, 10)); }
+  };
+  let session: Awaited<ReturnType<typeof pinnedPi.createAgentSession>>['session'] | undefined;
+  let workerFinish: (() => void) | undefined, woken = false, tells = 0, spawns = 0, processed = 0, firstReports = 0;
+  const errors: string[] = [];
+  try {
+    createProfile('fixture'); const profile = profilePath('fixture'), choice = { provider: 'fixture', model: 'main', thinking: 'off' as const };
+    saveConfig(profile, { ...loadConfig(profile), heartbeatMinutes: 1, heartbeatAlways: true, heartbeatWakes: 1, compactor: choice, subagent: { ...choice, model: 'child' } });
+    const runtime = await pi.ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
+    runtime.registerProvider('fixture', { api: 'openai-completions', apiKey: 'synthetic', baseUrl: 'https://invalid.local',
+      models: ['main', 'child'].map(id => ({ id, name: id, reasoning: false, input: ['text'] as const, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 })),
+      streamSimple(model, context) {
+        const child = model.id === 'child', compression = isCompaction(context), lastMessage = context.messages.at(-1);
+        const last = withoutFullChat(textContent(lastMessage?.content)).split('</chat>').at(-1)!.trim();
+        let content: AssistantMessage['content'] = [{ type: 'text', text: 'ok' }], hold = false;
+        if (compression) { /* ok */ }
+        else if (child) { hold = last.includes('Do more.'); content = [{ type: 'text', text: hold ? 'Child resumed.' : 'Child finished.' }]; }
+        else if (lastMessage?.role === 'toolResult') content = [{ type: 'text', text: 'waiting' }];
+        else if (last.includes('Initialize.')) { spawns++; content = [{ type: 'toolCall', id: 'spawn-one', name: 'spawn', arguments: { tasks: [{ task: 'SYNTHETIC CHILD TASK' }] } }]; }
+        else if (last.includes('Child resumed.')) { processed++; content = [{ type: 'text', text: 'Report processed.' }]; }
+        else if (last.includes('Child finished.')) firstReports++;
+        else if (woken && !tells) {
+          const started = context.messages.map(m => /Started: (\w+)\./.exec(textContent(m.content))?.[1]).find(Boolean);
+          tells++; content = [{ type: 'toolCall', id: 'tell-one', name: 'tell', arguments: { id: started ?? '', message: 'Do more.' } }];
+        }
+        const stopReason = content[0].type === 'toolCall' ? 'toolUse' : 'stop';
+        const message: AssistantMessage = { role: 'assistant', content, stopReason, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: emptyUsage() };
+        const stream = createAssistantMessageEventStream();
+        const finish = () => { stream.push({ type: 'done', reason: stopReason, message }); stream.end(); };
+        if (hold) workerFinish = finish; else queueMicrotask(finish);
+        return stream;
+      } });
+    const settingsManager = pi.SettingsManager.inMemory({ packages: [], compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off' });
+    const loader = new pi.DefaultResourceLoader({ cwd: dir, agentDir: join(dir, 'agent'), settingsManager, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
+      disabledBuiltinExtensions: ['mcp', 'codemode'], extensionFactories: [(api: pinnedPi.ExtensionAPI) => optchat(api)] });
+    await loader.reload(); const manager = pi.SessionManager.create(dir, join(dir, 'sessions')); manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
+    session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'main'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['spawn', 'tell'] })).session;
+    await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} } });
+    await session.prompt('Initialize.');
+    await until(() => firstReports > 0 && session!.isIdle, 'the first report is processed before the wake');
+    assert.ok(fire);
+    woken = true; fire();
+    await until(() => !!workerFinish && tells === 1 && session!.isIdle, 'the wake resumed the worker with tell');
+    await new Promise(r => timer(r, 300));
+    await until(() => session!.isIdle, 'the wake turn settled');
+    assert.equal(readHeartbeat(profile).wakeLog.at(-1)?.outcome, 'running', 'the wake waits for the worker it resumed');
+    workerFinish!();
+    await until(() => processed > 0 && session!.isIdle && readHeartbeat(profile).wakeLog.at(-1)?.outcome === 'done', 'the resumed report is processed inside the wake, which then ends');
+    assert.equal(processed, 1); assert.equal(spawns, 1); assert.equal(tells, 1, 'no effect was replayed');
     assert.deepEqual(errors, []);
   } finally {
     workerFinish?.();

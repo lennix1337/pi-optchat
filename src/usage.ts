@@ -8,7 +8,7 @@ import { record } from './cache.ts';
 import { appendJson } from './store.ts';
 import { nonnegative, safeIdentifier } from './diagnostic-metadata.ts';
 
-export type UsageRole = 'main' | 'subagent' | 'compactor' | 'import' | 'advisor' | 'heartbeat';
+export type UsageRole = 'main' | 'subagent' | 'compactor' | 'import' | 'advisor' | 'heartbeat' | 'crew';
 export type UsageKind = 'conversation' | 'subagent' | 'compaction' | 'session-overhead' | 'import' | 'approval' | 'heartbeat';
 export type UsageOutcome = 'stop' | 'toolUse' | 'length' | 'error' | 'aborted' | 'text' | 'tool_call' | 'empty' | 'exception';
 export type UsageErrorCategory = 'cancelled' | 'timeout' | 'connection_failure' | 'stream_interrupted' | 'rate_or_usage_limit' | 'authentication' | 'policy_refusal' | 'unavailable' | 'context_limit' | 'other';
@@ -28,7 +28,7 @@ export interface UsageAttribution {
 }
 const usageKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const;
 const costKeys = ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const;
-const roles: UsageRole[] = ['main', 'subagent', 'compactor', 'import', 'advisor', 'heartbeat'];
+const roles: UsageRole[] = ['main', 'subagent', 'compactor', 'import', 'advisor', 'heartbeat', 'crew'];
 const kinds: UsageKind[] = ['conversation', 'subagent', 'compaction', 'session-overhead', 'import', 'approval', 'heartbeat'];
 const outcomes: UsageOutcome[] = ['stop', 'toolUse', 'length', 'error', 'aborted', 'text', 'tool_call', 'empty', 'exception'];
 const errorCategories = ['cancelled', 'timeout', 'connection_failure', 'stream_interrupted', 'rate_or_usage_limit', 'authentication', 'policy_refusal', 'unavailable', 'context_limit', 'other'];
@@ -399,7 +399,8 @@ export class UsageLedger {
     }
     this.index.append(fresh);
   }
-  compression(message: AssistantMessage, role: 'compactor' | 'import' | 'advisor' | 'heartbeat', session: string, attribution: UsageAttribution = {}) {
+  /** `crew`: the specialists' memory trees (src/crew.ts), apart from the chat's compactor. */
+  compression(message: AssistantMessage, role: 'compactor' | 'import' | 'advisor' | 'heartbeat' | 'crew', session: string, attribution: UsageAttribution = {}) {
     const hasText = message.content.some(block => block.type === 'text' && block.text.trim());
     const hasToolCall = message.content.some(block => block.type === 'toolCall');
     const failed = attribution.failed ?? (message.stopReason === 'error' || message.stopReason === 'aborted' || message.stopReason === 'length' || !hasText || hasToolCall);

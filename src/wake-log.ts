@@ -14,7 +14,7 @@ interface Block { type?: string; text?: string; id?: string; name?: string; argu
 
 const blocks = (content: unknown): Block[] => Array.isArray(content) ? content.filter((b): b is Block => !!b && typeof b === 'object') : [];
 const textOf = (content: unknown) => typeof content === 'string' ? content : blocks(content).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n');
-const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
+export const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const repoIn = (text: string) => /projetos[\\/]+([\w.-]+)/i.exec(text)?.[1];
 

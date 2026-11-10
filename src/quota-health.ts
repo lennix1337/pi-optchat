@@ -24,6 +24,12 @@ function windows(value: unknown, now: number): UsageWindow[] {
   });
 }
 
+/** The plan pi-multi-account cached for a provider ("api-key", "max", "team"...); undefined when unknown. */
+export function quotaPlan(provider: string, file = QUOTA_FILE) {
+  const plan = record(record(record(readJsonOr<unknown>(file, {})).usageByProvider)[provider]).plan;
+  return typeof plan === 'string' ? plan : undefined;
+}
+
 /** No estimate is made for accounts without a valid, unexpired meter or a current cooldown. */
 export function accounts(state: unknown, now: number): Account[] {
   const data = record(state), usage = record(data.usageByProvider), cooldowns = record(data.exhaustedUntilByProvider);

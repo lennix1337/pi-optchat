@@ -21,9 +21,9 @@ import { Type } from 'typebox';
 import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
 import { atomicWrite, readJsonOr, storeFor } from './store.ts';
-import { QUOTA_FILE } from './quota-health.ts';
+import { QUOTA_FILE, quotaPlan } from './quota-health.ts';
 import { knownProviders, pickWakeRoute } from './wake-route.ts';
-import { createCompressor } from './compactor.ts';
+import { createCompressor, resolveModel } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, wakeModelFor, wakeRoutes, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
 import { PROMPT } from './recipe-prompt.ts';
@@ -47,7 +47,7 @@ import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
-import { Crew, MANAGER_DOC, crewTool, crewWakeNote, registerDelegationNudge, routeFor } from './crew.ts';
+import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, registerDelegationNudge, routeFor } from './crew.ts';
 import { lastRunsOf } from './wake-signals.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
@@ -493,11 +493,11 @@ export default function optchat(pi: ExtensionAPI) {
     try {
       await closeWindows?.(); closeWindows = undefined;
       await recovery;
-      await old.children.close(); if (!handOff) shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
+      await old.children.close(); await old.crew.closeAll(); if (!handOff) shells.clear(); flush(); if (!pendingImport(old.dir)) old.inbox.recover(old.memory);
       await old.sync.close(); await old.memory.close(reason === 'reload' ? 'reload' : reason ? 'shutdown' : 'memory_close'); await checkpoints;
       await checkpoint(old.dir);
     } finally {
-      await old.memory.close(); await old.unlock(); active = undefined;
+      await old.crew.closeAll(); await old.memory.close(); await old.unlock(); active = undefined;
       run = []; previous = []; logged = 0; keep = 0; view = undefined; focusView = undefined; lastRequestAt = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
       records = undefined;
       untitle?.(); untitle = undefined; title.clear(); working = false;
@@ -552,7 +552,13 @@ export default function optchat(pi: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      const crew = new Crew(join(dir, 'crew'));
+      // The specialists' trees get their own compressor, on the compactor's model, billed as "crew"; it pauses on a per-token provider.
+      const crewCompress = createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
+        usage.compression(message, 'crew', sessionId, attribution);
+      }, () => config.summaryAcceptBytes, () => undefined);
+      const crew = new Crew(join(dir, 'crew'), {
+        compress: pauseOnApiKey(crewCompress, () => resolveModel(ctx.modelRegistry, modelFor(config, 'compactor', main))?.provider, provider => quotaPlan(provider)),
+        warn: text => ctx.ui.notify(text, 'warning'), note: text => ctx.ui.notify(text, 'info') });
       const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
@@ -856,9 +862,10 @@ export default function optchat(pi: ExtensionAPI) {
     if (heartbeat?.waking) {
       const original = event.message;
       if (original.role === 'assistant') {
-        for (const block of original.content) if (block.type === 'toolCall' && block.name === 'spawn') wakeWorkers.called(block.id);
+        // A tell that resumes a finished worker launches it again, as a spawn does: the wake waits for its report too.
+        for (const block of original.content) if (block.type === 'toolCall' && (block.name === 'spawn' || block.name === 'tell')) wakeWorkers.called(block.id);
         if (original.stopReason === 'stop') wakeWorkers.replied();
-      } else if (original.role === 'toolResult' && original.toolName === 'spawn') {
+      } else if (original.role === 'toolResult' && (original.toolName === 'spawn' || original.toolName === 'tell')) {
         wakeWorkers.result(original.toolCallId, (original.details as { runIds?: unknown } | undefined)?.runIds, original.isError);
         for (const report of reports) if (wakeWorkers.hasReport(report.text) && !report.awaitingProcessing) {
           report.awaitingProcessing = true; saveReports();
@@ -1177,7 +1184,14 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Send a message to a subagent. A running one gets it at its next tool boundary. A finished one you started is resumed with its earlier conversation, and its new report arrives automatically.',
     parameters: childToolSchemas.tell,
-    async execute(_id, args) { return result(await required().children.tell(args.id, args.message)); },
+    async execute(_id, args) {
+      const children = required().children, before = children.live(args.id) ? undefined : children.info(args.id)?.started;
+      const text = await children.tell(args.id, args.message), after = children.info(args.id);
+      // Resumed: it was finished and now runs, or already ran again (a new start), so its report is owed to this turn.
+      const resumed = before !== undefined && after !== undefined && (children.live(args.id) !== undefined || after.started !== before);
+      if (resumed && heartbeat?.waking) wakeWorkers.launched(_id, [args.id]);
+      return { ...result(text), details: resumed ? { runIds: [args.id] } : {} };
+    },
   });
 
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */

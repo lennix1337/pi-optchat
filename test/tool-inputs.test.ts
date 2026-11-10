@@ -35,6 +35,11 @@ test('spawn accepts a worker kind and a project specialist', () => {
   assert.deepEqual(validate(tools.get('crew')!, crewCall), crewCall);
   const auditCall = { action: 'audit', project: 'harness' };
   assert.deepEqual(validate(tools.get('crew')!, auditCall), auditCall);
+  for (const call of [{ action: 'view', project: 'harness' }, { action: 'zoom', project: 'harness', id: 0, n: 2, findText: 'fixture' }]) {
+    assert.deepEqual(validate(tools.get('crew')!, call), call);
+    assert.throws(() => validate(tools.get('crew')!, { ...call, misspelled_option: true }), /misspelled_option/);
+  }
+  assert.throws(() => validate(tools.get('crew')!, { action: 'zoom', project: 'harness', id: -1 }), /id/);
 });
 // Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
 const nativeOverrides = ['bash'];
@@ -66,6 +71,8 @@ test('parent and child delegation share strict schemas, including nested task di
     ['spawn', childToolSchemas.spawn, validInputs.spawn],
     ['tell', childToolSchemas.tell, validInputs.tell],
     ['tell_parent', childToolSchemas.parent, { message: 'not sent' }],
+    ['specialist_memory', childToolSchemas.specialistMemory, { id: 0, n: 2, findText: 'fixture', offset: 0, limit: 100 }],
+    ['specialist_memory', childToolSchemas.specialistMemory, { run: 'abcd1234', offset: 0 }],
   ] as const) {
     const tool = { name, parameters };
     assert.deepEqual(validate(tool, args), args);
@@ -73,6 +80,8 @@ test('parent and child delegation share strict schemas, including nested task di
   }
   assert.throws(() => validate({ name: 'spawn', parameters: childToolSchemas.spawn },
     { tasks: [{ task: 'not launched', cwdd: '.' }] }), /cwdd/);
+  assert.throws(() => validate({ name: 'specialist_memory', parameters: childToolSchemas.specialistMemory }, { project: 'dentai' }), /project/,
+    'a worker cannot name another project');
 });
 
 test('native dispatch rejects a misspelled timeout before a shell body can run', async () => {

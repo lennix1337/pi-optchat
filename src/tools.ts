@@ -45,7 +45,7 @@ type ZoomArguments = Static<typeof zoomParameters>;
 const FIND_AGENT = 'findText searches memory messages, not an agent transcript: drop findText, or use id instead of agent.';
 
 /** A read of message or summary line id: a findText lookup (text excerpts only; the follow-up zoom on a hit returns the images its page names), or the page zoom opens. */
-async function readMemory(m: Memory, id: number, { n = 1, offset, limit, findText }: ZoomArguments, onRead?: (read: MemoryRead) => void) {
+export async function readMemory(m: Memory, id: number, { n = 1, offset, limit, findText }: Pick<ZoomArguments, 'n' | 'offset' | 'limit' | 'findText'>, onRead?: (read: MemoryRead) => void) {
   if (findText !== undefined) {
     const found = findInRange(m, { id, n, findText, offset, limit });
     // Touch older hits first so a bounded consumer retains the newest evidence from this batch.
