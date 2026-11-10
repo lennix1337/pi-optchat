@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import * as pinnedPi from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import { addCommitment, readCommitments } from '../src/commitments.ts';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { RELOAD_ENTRY } from '../src/self-reload.ts';
@@ -31,6 +32,7 @@ test('native self reload replaces extensions then resumes tool execution and fin
   createProfile('reload-fixture');
   const profile = profilePath('reload-fixture');
   saveConfig(profile, { ...loadConfig(profile), compactor: { provider: 'reload-fixture', model: 'fixture', thinking: 'off' } });
+  const awaiting = addCommitment(profile, { text: 'Verify after the reload', source: '0', links: { reload: true, next: 'inspect the receipt' } });
   const receipt = join(dir, 'effect-count.txt');
   let generations = 0, executions = 0, inspections = 0, calls = 0, reloads = 0;
   let continuationSeen = false, final = '';
@@ -92,6 +94,9 @@ test('native self reload replaces extensions then resumes tool execution and fin
     assert.ok(ticket?.type === 'custom'); assert.equal((ticket.data as any).state, 'completed');
     assert.equal(entries.filter(e => e.type === 'custom_message' && e.customType === 'optchat-reload-resume').length, 1);
     assert.equal(entries.filter(e => e.type === 'message' && e.message.role === 'user').length, 1, 'continuation is not fabricated human input');
+    const linked = readCommitments(profile).find(c => c.id === awaiting.id)!;
+    assert.deepEqual(linked.notes.map(n => n.text), ['reload done; continuation started'], 'the resume noted itself once on the commitment linked to the reload');
+    assert.equal(linked.status, 'open'); assert.equal(linked.next, 'inspect the receipt');
     assert.deepEqual(errors, []); assert.equal(network, 0);
     assert.equal(final, 'Resumed and verified effect-count=1.');
     await session.reload();

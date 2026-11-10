@@ -37,6 +37,9 @@ test('spawn accepts a worker kind and a project specialist', () => {
   assert.match(JSON.stringify(tools.get('spawn')!.parameters), /Explicit model as provider\/model/, 'the schema documents it');
   const crewCall = { action: 'read', project: 'lolidle-save-editor', part: 'proposals' };
   assert.deepEqual(validate(tools.get('crew')!, crewCall), crewCall);
+  const linked = { action: 'add', text: 'fixture', source: 'latest', links: { prs: ['o/r#1'], runs: ['abcd1234'], reload: true, next: 'verify' } };
+  assert.deepEqual(validate(tools.get('commitments')!, linked), linked, 'commitments accept event links');
+  assert.throws(() => validate(tools.get('commitments')!, { action: 'update', id: 'c_abcdef', links: { prs: ['o/r#1'], status: 'done' } }), /status/, 'a link cannot close an item');
   const auditCall = { action: 'audit', project: 'harness' };
   assert.deepEqual(validate(tools.get('crew')!, auditCall), auditCall);
   for (const call of [{ action: 'view', project: 'harness' }, { action: 'zoom', project: 'harness', id: 0, n: 2, findText: 'fixture' }]) {

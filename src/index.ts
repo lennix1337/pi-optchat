@@ -566,7 +566,7 @@ export default function optchat(pi: ExtensionAPI) {
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports, profileInstructions: () => instructions(dir),
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
-          route: kind => routeFor(kind, main, config.workerModels), crew,
+          route: kind => routeFor(kind, main, config.workerModels), crew, onRunEnd: run => commitments.runEnded(run),
           // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.
           peerCopy: text => { if (active?.memory === memory && !idle()) peerCopies.push(text); else memory.append('work', text); },
           peerResumed: (resumed, partner) => {
@@ -844,6 +844,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (!active) return; // Plain Pi run: leave Pi's own prompt untouched.
     if (event.messageType === 'custom' && event.message.customType === RELOAD_RESUME) {
       const id = (event.message.details as { id?: unknown } | undefined)?.id;
+      if (typeof id === 'string') commitments.reloadResumed(id);
       if (typeof id === 'string' && heartbeat?.releaseReload(id) && wakeReloadTimer) {
         clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
       }
@@ -1192,7 +1193,7 @@ export default function optchat(pi: ExtensionAPI) {
       return { ...result(text), details: { runIds } };
     },
   });
-  pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Send a message to a subagent. A running one gets it at its next tool boundary. A finished one you started is resumed with its earlier conversation, and its new report arrives automatically.',
+  pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Message a subagent: a running one gets it at its next tool boundary, a finished one resumes and reports.',
     parameters: childToolSchemas.tell,
     async execute(_id, args) {
       const children = required().children, before = children.live(args.id) ? undefined : children.info(args.id)?.started;
