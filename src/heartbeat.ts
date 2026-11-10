@@ -239,6 +239,7 @@ export interface HeartbeatDeps {
 }
 
 const DAY = 24 * 60 * 60_000, KEPT_CHECKS = 48, KEPT_WAKES = 48, KEPT_WAKE_DAYS = 7, REPLY_MAX = 300;
+const boundedReply = (reply: string) => reply.length > REPLY_MAX ? `${reply.slice(0, REPLY_MAX - 1)}…` : reply;
 type Check = { at: number; verdict: 'WAKE' | 'SLEEP' | 'FAILED'; text: string };
 
 /** What a woken turn did, read from its messages when the chat settles. */
@@ -292,7 +293,7 @@ export class Heartbeat {
   holdReload(ticket: string, deadline: number, summary?: WakeSummary) {
     if (this.open === undefined) return;
     this.amend(log => log.map(w => w.at === this.open ? { ...w, reloadTicket: ticket, reloadDeadline: deadline,
-      ...summary ? { reply: summary.reply, tools: summary.tools, commits: summary.commits } : {} } : w));
+      ...summary ? { reply: boundedReply(summary.reply), tools: summary.tools, commits: summary.commits } : {} } : w));
   }
   combine(summary: WakeSummary): WakeSummary {
     const w = this.saved().wakeLog.find(w => w.at === this.open && w.outcome === 'running');
@@ -335,7 +336,7 @@ export class Heartbeat {
   get waking() { return this.open !== undefined; }
   turnSettled(summary: WakeSummary) {
     if (this.open === undefined) return;
-    const reply = summary.reply.length > REPLY_MAX ? `${summary.reply.slice(0, REPLY_MAX - 1)}…` : summary.reply;
+    const reply = boundedReply(summary.reply);
     this.amend(log => log.map(wake => wake.at !== this.open ? wake : {
       ...wake, endedAt: this.deps.now(), reply, tools: summary.tools, commits: summary.commits,
       outcome: wake.outcome === 'interrupted' || summary.stopReason === 'aborted' ? 'interrupted' : summary.stopReason === 'error' ? 'error' : 'done' }));

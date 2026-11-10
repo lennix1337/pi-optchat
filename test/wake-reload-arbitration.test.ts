@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import * as pinnedPi from '@earendil-works/pi-coding-agent';
+import { Type } from 'typebox';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { RELOAD_ENTRY } from '../src/self-reload.ts';
@@ -17,7 +18,7 @@ import { isCompaction, removeDir } from './support.ts';
 const pi: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 
-for (const mode of ['success', 'lost'] as const) test(`a real scheduled wake arbitrates reload (${mode})`, { timeout: 15000 }, async t => {
+for (const mode of ['success', 'lost', 'partial'] as const) test(`a real scheduled wake arbitrates reload (${mode})`, { timeout: 15000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'wake-reload-')), previous = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = dir;
   let fire: (() => void) | undefined;
@@ -44,7 +45,7 @@ for (const mode of ['success', 'lost'] as const) test(`a real scheduled wake arb
     return (connect as Function).apply(this, args);
   });
   let session: Awaited<ReturnType<typeof pinnedPi.createAgentSession>>['session'] | undefined;
-  let calls = 0, reloads = 0, observedContinuation = false, wakeAt: number | undefined;
+  let calls = 0, reloads = 0, effects = 0, observedContinuation = false, wakeAt: number | undefined, shutdown = false;
   const events: { type: string; text: string }[] = [], errors: string[] = [];
   let done!: () => void, reloadAttempted!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
@@ -67,7 +68,8 @@ for (const mode of ['success', 'lost'] as const) test(`a real scheduled wake arb
           checkedLongContinuation = true;
         }
         const content: AssistantMessage['content'] = step === 1
-          ? [{ type: 'toolCall', id: 'reload', name: 'self_reload', arguments: { checkpoint: 'Continue this same synthetic wake.' } }]
+          ? [{ type: 'toolCall', id: 'effect', name: 'fixture_effect', arguments: {} }]
+          : step === 2 ? [{ type: 'toolCall', id: 'reload', name: 'self_reload', arguments: { checkpoint: 'Continue this same synthetic wake without repeating the effect.' } }]
           : [{ type: 'text', text: step === 0 ? 'Initial user response.' : 'Continuing the same work.' }];
         const stopReason = content[0].type === 'toolCall' ? 'toolUse' : 'stop';
         const message: AssistantMessage = { role: 'assistant', content, stopReason, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: emptyUsage() };
@@ -75,11 +77,41 @@ for (const mode of ['success', 'lost'] as const) test(`a real scheduled wake arb
       } });
     const settingsManager = pi.SettingsManager.inMemory({ packages: [], compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off' });
     const loader = new pi.DefaultResourceLoader({ cwd: dir, agentDir: join(dir, 'agent'), settingsManager, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
-      disabledBuiltinExtensions: ['mcp', 'codemode'], extensionFactories: [optchat] });
+      disabledBuiltinExtensions: ['mcp', 'codemode'], extensionFactories: [optchat, api => {
+        api.registerTool({ name: 'fixture_effect', label: 'Disposable effect', description: 'Write one synthetic receipt.', parameters: Type.Object({}),
+          async execute() { effects++; writeFileSync(join(dir, 'receipt.txt'), String(effects)); return { content: [{ type: 'text', text: 'receipt saved' }], details: {} }; } });
+      }] });
     await loader.reload(); const manager = pi.SessionManager.create(dir, join(dir, 'sessions')); manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
-    session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['self_reload'] })).session;
+    session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['self_reload', 'fixture_effect'] })).session;
     await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} },
-      commandContextActions: { reload: async () => { reloads++; reloadAttempted(); if (mode === 'lost') throw new Error('fixture reload lost'); await session!.reload(); } } as any });
+      commandContextActions: { reload: async () => {
+        reloads++;
+        if (mode === 'partial') { await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'reload' }); shutdown = true; }
+        reloadAttempted();
+        if (mode !== 'success') throw new Error(`fixture reload ${mode}`);
+        await session!.reload();
+      } } as any });
+    const reopen = async () => {
+      if (!shutdown) await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' });
+      session!.dispose(); await loader.reload();
+      session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['self_reload', 'fixture_effect'] })).session;
+      await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} } });
+      shutdown = false;
+      const after = manager.getBranch().findLast(e => e.type === 'custom' && e.customType === RELOAD_ENTRY);
+      assert.ok(after?.type === 'custom'); assert.equal((after.data as { state: string }).state, 'cancelled');
+      const saved = JSON.parse(readFileSync(join(profile, 'heartbeat.json'), 'utf8'));
+      assert.equal(saved.wakeLog.length, 1); assert.equal(saved.wakeLog[0].at, wakeAt);
+      assert.notEqual(saved.wakeLog[0].outcome, 'running'); assert.equal(saved.wakeLog[0].continuation, 'not-verified');
+      if (mode === 'partial') assert.equal(saved.wakeLog[0].outcome, 'unsettled');
+      assert.equal(manager.getBranch().filter(e => e.type === 'custom_message' && e.customType === 'optchat-reload-resume').length, 0);
+      assert.equal(reloads, 1); assert.equal(effects, 1); assert.equal(readFileSync(join(dir, 'receipt.txt'), 'utf8'), '1');
+      await session.prompt('Second synthetic human input.');
+      const inputs = manager.getBranch().flatMap(e => e.type === 'message' && e.message.role === 'user' ? [textContent(e.message.content)] : []);
+      assert.ok(inputs.some(text => text.includes('Initialize the synthetic session.')));
+      assert.ok(inputs.some(text => text.includes('Second synthetic human input.')));
+      assert.equal(reloads, 1, 'reopening and a human input never replay the reload');
+      assert.equal(effects, 1); assert.equal(readFileSync(join(dir, 'receipt.txt'), 'utf8'), '1');
+    };
     session.subscribe(event => {
       if (event.type === 'message_end') {
         const message = event.message;
@@ -97,8 +129,16 @@ for (const mode of ['success', 'lost'] as const) test(`a real scheduled wake arb
     });
     await session.prompt('Initialize the synthetic session.');
     assert.ok(fire, 'heartbeat must have been armed'); fire();
+    if (mode !== 'success') await reloadAttempt;
+    if (mode === 'partial') {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(shutdown, true, 'failure happens after the old runtime shuts down');
+      const before = manager.getBranch().findLast(e => e.type === 'custom' && e.customType === RELOAD_ENTRY);
+      assert.ok(before?.type === 'custom'); assert.equal((before.data as { state: string }).state, 'reloading');
+      await reopen();
+      return;
+    }
     if (mode === 'lost') {
-      await reloadAttempt;
       const active = [...recoveryTimers.values()].filter(timer => timer.active);
       assert.equal(active.length, 1, 'one bounded recovery is armed');
       active[0].active = false; active[0].fire();
@@ -118,6 +158,7 @@ for (const mode of ['success', 'lost'] as const) test(`a real scheduled wake arb
     assert.equal(saved.wakeLog.length, 1);
     assert.equal(saved.wakeLog[0].at, wakeAt, 'the continuation belongs to the original persisted wake');
     assert.equal(saved.wakeLog[0].continuation, mode === 'success' ? 'started' : 'not-verified');
+    if (mode === 'lost') { await session.agent.waitForIdle(); await reopen(); }
   } finally {
     if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (previous === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = previous;

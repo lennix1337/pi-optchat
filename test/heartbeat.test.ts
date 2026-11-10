@@ -375,6 +375,15 @@ test('a wake without its reload lease is marked unverified and never replayed on
   rmSync(h.dir, { recursive: true, force: true });
 });
 
+test('a pending reload persists a bounded wake reply just like a settled wake', async () => {
+  const h = harness({ always: true }); h.beat.arm(); await h.advance(30 * MIN);
+  h.beat.holdReload('ticket', 123, { reply: 'x'.repeat(500), tools: 1, commits: [] });
+  const reply: string = saved(h.dir).wakeLog[0].reply;
+  assert.equal(reply.length, 300);
+  assert.equal(reply, `${'x'.repeat(299)}…`);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
 test('a wake is closed when its turn settles even if the clock moves while the wake is saved', async () => {
   // Live heartbeat.json had 43 of 43 wakes `unsettled`: Date.now() read after the save no longer equalled the logged `at`.
   const dir = mkdtempSync(join(tmpdir(), 'beat-'));
