@@ -233,7 +233,7 @@ export class SlackBridge {
     this.generation++; this.cancelRead?.abort(); this.cancelRead = undefined;
     this.answering = undefined; this.waking = false; this.running = false;
   }
-  runStarted(): void { this.running = true; this.work = undefined; this.touched = []; }
+  runStarted(continuing = false): void { if (!continuing || !this.running) { this.work = undefined; this.touched = []; } this.running = true; }
   /** What waits for the operator (approvals, items blocked on him); shown on the App Home, working or free. */
   setWaiting(read: () => readonly (string | WaitingItem)[]): void { this.waiting = read; }
 
@@ -505,7 +505,14 @@ export class SlackBridge {
     catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
-  async runEnded(messages: readonly AgentMessage[]): Promise<void> {
+  async answerDuringHold(): Promise<void> {
+    const answering = this.answering, text = this.replied;
+    if (!answering || !text) return;
+    this.answering = undefined; this.replied = ''; this.delivered = '';
+    await this.answer(answering, text, true);
+  }
+
+  async runEnded(messages: readonly AgentMessage[], unverified?: string): Promise<void> {
     const answering = this.answering, waking = this.waking, delivered = this.delivered;
     this.answering = undefined; this.waking = false; this.replied = ''; this.delivered = '';
     this.running = false;
@@ -513,7 +520,7 @@ export class SlackBridge {
     this.work = undefined;
     this.cutWake = waking ? { since: work?.since ?? this.options.now(), endedAt: this.options.now() } : undefined;
     if (work && steps && owner) try { recordRun(owner.dir, { start: work.since, end: this.options.now(), about: work.about, origin: work.origin, steps }); } catch { /* the Home's day is a courtesy */ }
-    const last = finalText(messages);
+    const last = unverified ? `${unverified}${finalText(messages) ? `\n\n${finalText(messages)}` : ''}` : finalText(messages);
     this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta: ${replyLead(last)}` : ''}`);
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.
@@ -522,7 +529,7 @@ export class SlackBridge {
       return;
     }
     if (!waking) return;
-    const text = finalText(messages);
+    const text = last;
     // Every wake, idle ones too, goes to the #wakes log; a service without that channel keeps the per-repo report.
     try { await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), null, WAKE_LOG_CHANNEL); return; }
     catch (error) {
@@ -685,7 +692,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
@@ -703,9 +710,9 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('model_select', event => { model = named(event.model); });
   pi.on('session_shutdown', () => bridge.stop());
   pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); else bridge.assistantSaid(message); });
-  pi.on('agent_start', () => bridge.runStarted());
+  pi.on('agent_start', () => bridge.runStarted(options.deferEnd));
   pi.on('tool_execution_start', event => bridge.toolStarted(event.toolName, event.args));
-  pi.on('agent_end', event => bridge.runEnded(event.messages));
+  pi.on('agent_end', event => { if (!options.deferEnd) return bridge.runEnded(event.messages); });
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
     description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles), or `dm` for the DM. Omitted, it goes to the project of the topic, else of the repos this run touched, else the DM; during a run started by his DM it answers there. Pass `dm` for general matters, urgent blockers and decisions. A post under a known topic replies in its thread and also shows in the conversation. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and its full text follows in the thread.",

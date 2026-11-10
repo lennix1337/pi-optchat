@@ -1,3 +1,4 @@
+import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { registerSlackBridge } from './slack-bridge.ts';
@@ -254,7 +255,7 @@ export default function optchat(pi: ExtensionAPI) {
   let fault: string | undefined;
   /** Reports not yet in memory. `count`: how many subagent reports the text joins. `batch`: held while the rest of that spawn runs, not sent yet.
    * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
-  let reports: { text: string; count?: number; batch?: string; steered?: boolean }[] = [];
+  let reports: { text: string; count?: number; batch?: string; steered?: boolean; runIds?: string[]; workerRecovery?: boolean; awaitingProcessing?: boolean; observed?: boolean; responded?: boolean }[] = [];
   type Report = (typeof reports)[number];
   let idle = () => true;
   const receipts = new Map<AgentMessage, string>();
@@ -285,6 +286,14 @@ export default function optchat(pi: ExtensionAPI) {
   let settledAt = Date.now();
   /** The open wake was already sent back once for a memory-line reply; a second one settles as it is. */
   let wakeRetried = false;
+  const wakeWorkers = new WakeWorkers();
+  let wakeWorkerTimer: ReturnType<typeof setTimeout> | undefined;
+  let wakeWorkerContext: ExtensionContext | undefined;
+  let heldWakeMessages: AgentMessage[] = [];
+  const clearWakeWorkers = () => {
+    if (wakeWorkerTimer) clearTimeout(wakeWorkerTimer);
+    wakeWorkerTimer = undefined; wakeWorkerContext = undefined; wakeWorkers.clear(); heldWakeMessages = [];
+  };
   /** The messages of the current run, read when it settles to report what a heartbeat wake did. */
   let turn: AgentMessage[] = [];
   const idleMinutes = () => Math.round((Date.now() - settledAt) / 60_000);
@@ -304,8 +313,9 @@ export default function optchat(pi: ExtensionAPI) {
     if (a) title.show(text => ctx.ui.setTitle(text), mainTitle(a.name, working, a.children.ids.length));
   };
   /** Journals written before batches held plain strings. */
-  const isPendingReport = (s: unknown): s is string | { text: string; count?: number } =>
-    typeof s === 'string' || record(s) && typeof s.text === 'string' && (s.count === undefined || typeof s.count === 'number');
+  const isPendingReport = (s: unknown): s is string | { text: string; count?: number; awaitingProcessing?: boolean } =>
+    typeof s === 'string' || record(s) && typeof s.text === 'string' && (s.count === undefined || typeof s.count === 'number')
+      && (s.awaitingProcessing === undefined || typeof s.awaitingProcessing === 'boolean');
   const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
   pi.registerFlag('optchat-profile', { description: 'OptChat profile (required for noninteractive sessions without a saved binding)', type: 'string' });
   pi.registerFlag('optchat-connect', { description: 'pi -p on a profile open in another Pi: auto (join it if busy, default), join (only join), off (error if busy)', type: 'string', default: 'auto' });
@@ -332,18 +342,23 @@ export default function optchat(pi: ExtensionAPI) {
     ctx.ui.setStatus('optchat', `OptChat: ${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
   };
   // `steered` describes this process's Pi queue, so it is not journaled.
-  const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => key === 'steered' ? undefined : value)); };
+  const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => ['steered', 'observed', 'responded'].includes(key) ? undefined : value)); };
+  /** A report already journaled when the model first saw it: its replay is processed, not logged twice. */
+  const isReplayedReport = (message: AgentMessage, receipt: string | undefined) => !!receipt?.startsWith(REPORT_RECEIPT) && message.role === 'user'
+    && reports.some(r => r.awaitingProcessing && r.text === textContent(message.content))
+    && !!active?.memory.root.some(e => e.receipt === receipt);
   const flush = () => {
     if (!active) return;
     while (logged < run.length) {
       const message = run[logged];
       const receipt = receipts.get(message);
-      logMessage(active.memory, message, receipt, fullToolResults.get(message)); logged++;
+      if (!isReplayedReport(message, receipt)) logMessage(active.memory, message, receipt, fullToolResults.get(message));
+      logged++;
       if (receipt && !receipt.startsWith(REPORT_RECEIPT)) active.inbox.acknowledge(receipt);
       receipts.delete(message);
       if (message.role === 'user') {
         const text = textContent(message.content), index = reports.findIndex(r => !r.batch && r.text === text);
-        if (index >= 0) { reports.splice(index, 1); saveReports(); }
+        if (index >= 0 && !reports[index].awaitingProcessing && !reports[index].workerRecovery) { reports.splice(index, 1); saveReports(); }
       }
     }
   };
@@ -355,9 +370,14 @@ export default function optchat(pi: ExtensionAPI) {
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
     else pi.sendUserMessage(text, { deliverAs: 'steer', expandPromptTemplates: false });
   };
-  const deliverReport = async (text: string, { once = false, count }: { once?: boolean; count?: number } = {}) => {
+  const deliverReport = async (text: string, { once = false, count, runIds, workerRecovery }: { once?: boolean; count?: number; runIds?: string[]; workerRecovery?: boolean } = {}) => {
     if (once && (active?.memory.root.some(e => e.receipt === reportReceipt(text)) || reports.some(r => r.text === text))) return;
-    const report = { text, count };
+    if (runIds && heartbeat?.waking) {
+      wakeWorkers.queued(text, runIds);
+      if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);
+    }
+    const report = { text, count, ...runIds ? { runIds } : {}, ...workerRecovery ? { workerRecovery } : {},
+      ...wakeWorkers.hasReport(text) ? { awaitingProcessing: true } : {} };
     reports.push(report); saveReports();
     if (!stopping) sendReport(report);
   };
@@ -406,7 +426,7 @@ export default function optchat(pi: ExtensionAPI) {
       check: radar => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile, radar),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
       wake: (beat, radar) => {
-        wakeRetried = false;
+        wakeRetried = false; clearWakeWorkers();
         const dream = briefDream(ctx);
         const crew = profile.config.managerMode ? `\n${crewWakeNote(profile.crew.missions(), profile.crew.auditDue(), profile.crew.pendingCounts())}` : '';
         const text = wakeTurn(wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + crew, previousWake(profile.dir), beat.unchanged);
@@ -431,7 +451,7 @@ export default function optchat(pi: ExtensionAPI) {
     retroTimer.unref?.();
   };
   const stop = async (reason?: string) => {
-    heartbeat?.disarm(); heartbeat = undefined;
+    heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();
     if (wakeReloadTimer) clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
     if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
@@ -513,8 +533,8 @@ export default function optchat(pi: ExtensionAPI) {
           route: kind => routeFor(kind, main, config.workerModels), crew });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
-      reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
-        .filter(r => !loggedReports.has(reportReceipt(r.text)));
+      reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count, awaitingProcessing: s.awaitingProcessing })
+        .filter(r => r.awaitingProcessing || !loggedReports.has(reportReceipt(r.text)));
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,
@@ -699,7 +719,7 @@ export default function optchat(pi: ExtensionAPI) {
   // A paused import still takes the reports out, but a DM is delivered only to a profile that can run it: the input hook drops
   // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
-    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt,
+    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt, deferEnd: true,
       // The App Home's work items: read-only, from this profile's files and the shells running now (src/home-items.ts).
       items: () => {
         const a = active;
@@ -758,6 +778,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (importing || pendingImport(active.dir)) { ctx.ui.notify('This profile has an import in progress. Use /optchat import to resume or discard it, or switch profiles.', 'info'); return { action: 'handled' }; }
     if (event.source !== 'extension') {
       heartbeat?.operatorSpoke();
+      if (!wakeWorkers.holding) clearWakeWorkers();
       const journaled = performance.now();
       try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
       catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
@@ -805,6 +826,26 @@ export default function optchat(pi: ExtensionAPI) {
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
     turn.push(event.message);
+    if (heartbeat?.waking) {
+      const original = event.message;
+      if (original.role === 'assistant') {
+        for (const block of original.content) if (block.type === 'toolCall' && block.name === 'spawn') wakeWorkers.called(block.id);
+        if (original.stopReason === 'stop') wakeWorkers.replied();
+      } else if (original.role === 'toolResult' && original.toolName === 'spawn') {
+        wakeWorkers.result(original.toolCallId, (original.details as { runIds?: unknown } | undefined)?.runIds, original.isError);
+        for (const report of reports) if (wakeWorkers.hasReport(report.text) && !report.awaitingProcessing) {
+          report.awaitingProcessing = true; saveReports();
+        }
+      } else if (original.role === 'custom' && original.customType === REPORT_TYPE) {
+        const text = textContent(original.content);
+        if (reports.some(r => (r.runIds || r.workerRecovery) && r.text === text)) {
+          wakeWorkers.observed(text);
+          if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);
+        }
+      }
+    }
+    if (event.message.role === 'assistant' && event.message.stopReason === 'stop')
+      for (const report of reports) if (report.awaitingProcessing && report.observed) report.responded = true;
     if (!active || !runStarted) return;
     // Shell evidence stays exact in the session; only the provider projection is reduced.
     const shell = event.message.role === 'toolResult' && ['bash', 'powershell'].includes(event.message.toolName);
@@ -825,8 +866,11 @@ export default function optchat(pi: ExtensionAPI) {
           // A report sent again after a lost steer can still arrive twice (Pi kept the old steer after an abort): drop the extra copy.
           // Copies are counted, so a later report that happens to repeat an earlier text still arrives.
           const receipt = reportReceipt(text), copies = run.slice(logged).filter(m => receipts.get(m) === receipt).length;
-          if (reports.filter(r => !r.batch && r.text === text).length <= copies && (copies > 0 || active.memory.root.some(e => e.receipt === receipt)))
+          const pending = reports.find(r => !r.batch && r.text === text);
+          if (pending?.awaitingProcessing && pending.observed ||
+            reports.filter(r => !r.batch && r.text === text).length <= copies && (copies > 0 || !pending?.awaitingProcessing && active.memory.root.some(e => e.receipt === receipt)))
             return { message: bounded.role === 'custom' ? { ...bounded, content: DUPLICATE_REPORT, display: false } : { ...message, content: DUPLICATE_REPORT } };
+          if (pending?.awaitingProcessing) pending.observed = true;
           receipts.set(message, receipt);
         } else {
           // The inbox journaled the typed input: match without image references or Pi's image notes.
@@ -966,32 +1010,79 @@ export default function optchat(pi: ExtensionAPI) {
     finally { active?.metrics.record('usage', performance.now() - started); }
   };
   pi.on('turn_end', (_event, ctx) => collectUsage(ctx));
+  const watchWakeWorkers = (ctx: ExtensionContext) => {
+    wakeWorkerContext = ctx;
+    if (wakeWorkerTimer) clearTimeout(wakeWorkerTimer);
+    if (!wakeWorkers.holding || !Number.isFinite(wakeWorkers.deadline)) return;
+    wakeWorkerTimer = setTimeout(() => {
+      wakeWorkerTimer = undefined;
+      if (!active || stopping || !heartbeat?.waking) return;
+      const expired = wakeWorkers.expire();
+      if (!expired) { watchWakeWorkers(ctx); return; }
+      ctx.ui.notify(WORKER_UNVERIFIED, 'warning');
+      wakeRetried = true;
+      // The worker transcript retains the original. Unknown transport is not permission to replay it.
+      if (expired === 'recover') {
+        void deliverReport(WORKER_RECOVERY, { workerRecovery: true }).catch(error => ctx.ui.notify(`Worker recovery dispatch failed: ${errorText(error)}`, 'error'));
+        watchWakeWorkers(ctx);
+      } else if (idle()) {
+        reports = reports.filter(r => !r.workerRecovery); saveReports();
+        const messages = [...heldWakeMessages, ...turn];
+        const summary = heartbeat.combine(summarizeTurn(messages));
+        heartbeat.turnSettled({ ...summary, reply: WORKER_UNVERIFIED, stopReason: 'error' });
+        working = false; showTitle(ctx);
+        void slack.runEnded(messages, WORKER_UNVERIFIED);
+        void wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model: ${errorText(error)}`, 'error'));
+        clearWakeWorkers(); heartbeat.arm();
+      }
+    }, Math.max(0, wakeWorkers.deadline - Date.now()));
+    wakeWorkerTimer.unref?.();
+  };
   pi.on('agent_settled', async (_event, ctx) => {
     const settledStarted = performance.now();
     collectUsage(ctx);
     const persistenceStarted = performance.now();
     try { flush(); active?.inbox.dropReturned(); } catch (error) { fault = errorText(error); ctx.ui.notify(fault, 'error'); }
     finally { active?.metrics.record('persistence', performance.now() - persistenceStarted); }
-    // A report steered into this run that never reached it (Esc or a dequeue cleared Pi's queue) is sent again, now as its own turn.
-    if (active && !fault && !stopping) for (const r of reports) if (r.steered && !r.batch) sendReport(r);
+    const retryReports = reports.filter(r => !r.batch && !r.workerRecovery &&
+      (r.steered && !wakeWorkers.hasReport(r.text) || _event.aborted && r.awaitingProcessing && (r.steered || r.observed)));
     if (runStarted) pi.appendEntry(RUN_BOUNDARY, { state: 'end' });
     runStarted = false; status(ctx);
-    working = false; showTitle(ctx);
+    if (!_event.aborted) {
+      const completed = new Set(wakeWorkers.completedReports());
+      const remaining = reports.filter(r => !completed.has(r.text) && !(r.awaitingProcessing && r.responded));
+      if (remaining.length !== reports.length) { reports = remaining; saveReports(); }
+    }
+    wakeWorkers.settled(_event.aborted);
+    if (_event.aborted) for (const r of reports) { r.observed = false; r.responded = false; }
+    // A lost steer or an aborted processing turn may redeliver the report, never the worker's effects.
+    if (active && !fault && !stopping) for (const r of retryReports) if (reports.includes(r)) sendReport(r);
+    if (wakeWorkers.notVerified && !wakeWorkers.holding) {
+      reports = reports.filter(r => !r.workerRecovery); saveReports();
+    }
+    const waitingWorkers = heartbeat?.waking && wakeWorkers.holding && !fault && !stopping;
+    working = !!waitingWorkers; showTitle(ctx);
     settledAt = Date.now();
-    const wake = heartbeat?.waking ? heartbeat.combine(summarizeTurn(turn)) : undefined;
+    const messages = [...heldWakeMessages, ...turn];
+    const wake = heartbeat?.waking ? heartbeat.combine(summarizeTurn(messages)) : undefined;
+    if (wake && wakeWorkers.notVerified) wake.reply = `${WORKER_UNVERIFIED} ${wake.reply}`;
     // A wake that did not work (a memory-line reply, or no commit, push, PR or merge) is sent back once; the wake stays open
     // (same model, same record) for the run that delivers.
     const reload = wake && active && !fault && !stopping ? selfReload.ready(ctx, _event.aborted) : undefined;
     if (reload && active) { heartbeat?.holdReload(reload, Date.now() + HOLD_MAX_MS, wake); watchWakeReload(reload, ctx, active); }
     const waitingReload = wake && !fault && !stopping && !_event.aborted && wake.stopReason !== 'error' && heartbeat?.awaitingReload;
-    const retry = wake && !waitingReload && !wakeRetried && !fault && !stopping ? wakeRetry(wake) : undefined;
-    if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
+    const retry = wake && !waitingReload && !waitingWorkers && !wakeRetried && !fault && !stopping ? wakeRetry(wake) : undefined;
+    if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
+    else if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
     else if (retry) { wakeRetried = true; void deliverReport(retry); }
     else {
       heartbeat?.turnSettled(wake ?? summarizeTurn(turn));
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (active && !fault && !stopping) heartbeat?.arm();
+      await slack.runEnded(messages, wakeWorkers.notVerified ? WORKER_UNVERIFIED : undefined);
+      clearWakeWorkers();
     }
+    if (waitingWorkers || waitingReload || retry) heldWakeMessages = messages;
     if (active) {
       const dir = active.dir;
       const metrics = active.metrics, statusStarted = performance.now();
@@ -1049,8 +1140,12 @@ export default function optchat(pi: ExtensionAPI) {
     description: 'Start background subagents, returning IDs immediately. Use only when the user asks, or in manager mode for a worker: a task with `kind` must be a contract (lines Goal:, Acceptance:, Evidence:, Authority:) and gets its project\'s charter and memory instead of the chat. The result names the model of each worker (`kind` picks the tier in your own provider family and account; `model`, provider/model, overrides it with any account). Give each task the cwd of the project it works on, so the subagent starts there with that project\'s AGENTS.md. Each receives the current memory view and read-only zoom/date. Whether children may delegate further, and how many agents may run at once, is set per profile. Completion reports arrive automatically; never poll or sleep waiting for them.',
     parameters: childToolSchemas.spawn,
     async execute(_id, args, signal, _update, ctx) {
-      const text = await required().children.start(args.tasks, ctx.cwd, signal); status(ctx);
-      return result(text);
+      let runIds: string[] = [];
+      const text = await required().children.start(args.tasks, ctx.cwd, signal, undefined, ids => {
+        runIds = ids;
+        if (heartbeat?.waking) wakeWorkers.launched(_id, ids);
+      }); status(ctx);
+      return { ...result(text), details: { runIds } };
     },
   });
   pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Send a message to a subagent. A running one gets it at its next tool boundary. A finished one you started is resumed with its earlier conversation, and its new report arrives automatically.',

@@ -145,7 +145,7 @@ export class Children {
   private readonly completions = new Set<Promise<void>>();
   constructor(private readonly memory: Memory, private readonly registry: ModelRegistry,
     private readonly choice: () => ModelChoice, private readonly instructions: () => string,
-    private readonly report: (text: string, options?: { once?: boolean; count?: number }) => Promise<void>, private readonly warn: (text: string) => void,
+    private readonly report: (text: string, options?: { once?: boolean; count?: number; runIds?: string[] }) => Promise<void>, private readonly warn: (text: string) => void,
     private readonly profileDirectory = memory.directory, private readonly options: Options = {}) {
     this.history = new RunHistory(profileDirectory);
     this.external = new ExternalRuns(profileDirectory);
@@ -326,12 +326,12 @@ export class Children {
     return (await this.launch(tasks, cwd, signal, parentId, connected)).ids;
   }
   /** The spawn tools' answer, saying how this spawn's reports will come back. */
-  async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string) {
-    const { ids, grouped, specialists, models } = await this.launch(tasks, cwd, signal, parentId);
+  async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string, launched?: (ids: string[]) => void) {
+    const { ids, grouped, specialists, models } = await this.launch(tasks, cwd, signal, parentId, false, launched);
     const created = specialists.map(slug => ` Note: new specialist ${slug} created; its charter is a template, so add what its workers need to know with the crew tool.`).join('');
     return `Started: ${ids.join(', ')}. Model${ids.length > 1 ? 's' : ''}: ${ids.map((id, i) => `${id} on ${models[i]}`).join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${created}`;
   }
-  private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false) {
+  private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false, onLaunch?: (ids: string[]) => void) {
     // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
     if (this.settings.routerMode) for (const { task } of tasks) checkHandoffSummary(task, HANDOFF_MAX_BYTES, 'Task');
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
@@ -356,6 +356,7 @@ export class Children {
     const launched = await this.track(this.launchBatch({ tasks, cwd, depth, parentId, connected, models, signal, cancelled }));
     // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;
+    onLaunch?.(launched.map(c => c.info.id));
     for (const [i, live] of launched.entries()) {
       live.batch = batch;
       const work = this.execute(live, `${views[i]}\n\n${live.info.kind ? `Your model: ${live.info.model} (thinking ${live.info.thinking}).\n\n` : ''}Your task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
@@ -716,7 +717,7 @@ export class Children {
       return;
     }
     if (this.closing) this.memory.append('work', text);
-    else try { await this.report(text, { count }); this.timed('delivered', info.id); }
+    else try { await this.report(text, { count, runIds: batch?.ids ?? [info.id] }); this.timed('delivered', info.id); }
     catch (error) {
       this.memory.append('work', text);
       this.warn(`Subagent report saved but could not wake the parent: ${String(error)}`);
