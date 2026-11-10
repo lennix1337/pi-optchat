@@ -348,6 +348,33 @@ test('each wake is kept with when, why, how it ended, its reply, tool count and 
   rmSync(h.dir, { recursive: true, force: true });
 });
 
+test('reload continuation keeps the same wake and absolute deadline across openings; a missing lease is not replayed', async () => {
+  const h = harness({ always: true }); h.beat.arm(); await h.advance(30 * MIN);
+  const at = saved(h.dir).wakeLog[0].at, deadline = at + 60000;
+  h.beat.holdReload('ticket', deadline, turn);
+  const open = (ticket?: string) => new Heartbeat({ dir: h.dir, now: () => deadline - 1,
+    minutes: () => 0, maxWakes: () => 1, always: () => true, busy: () => undefined,
+    setTimer: () => undefined, clearTimer: () => {}, check: async () => ({ wake: false, text: '' }), wake: () => {}, note: () => {} }, ticket);
+  const first = open('ticket'); assert.equal(first.waking, true); assert.equal(first.reloadDeadline('ticket'), deadline);
+  const second = open('ticket'); assert.equal(second.reloadDeadline('ticket'), deadline);
+  assert.equal(second.releaseReload('ticket'), true);
+  assert.equal(second.releaseReload('ticket', 'not-verified'), false, 'a long continuation cannot be released as lost after it starts');
+  assert.equal(saved(h.dir).wakeLog[0].at, at); assert.equal(saved(h.dir).wakeLog[0].continuation, 'started');
+  assert.deepEqual(second.combine({ reply: 'continued', tools: 1, commits: [] }).commits, turn.commits, 'delivery before reload remains part of the same wake');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a wake without its reload lease is marked unverified and never replayed on opening', async () => {
+  const h = harness({ always: true }); h.beat.arm(); await h.advance(30 * MIN); h.beat.holdReload('ticket', 123);
+  const reopened = new Heartbeat({ dir: h.dir, now: () => 1000, minutes: () => 0, maxWakes: () => 1,
+    always: () => true, busy: () => undefined, setTimer: () => undefined, clearTimer: () => {},
+    check: async () => ({ wake: false, text: '' }), wake: () => { throw new Error('must not replay'); }, note: () => {} });
+  assert.equal(reopened.waking, false);
+  assert.equal(saved(h.dir).wakeLog[0].outcome, 'unsettled');
+  assert.equal(saved(h.dir).wakeLog[0].continuation, 'not-verified');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
 test('a wake is closed when its turn settles even if the clock moves while the wake is saved', async () => {
   // Live heartbeat.json had 43 of 43 wakes `unsettled`: Date.now() read after the save no longer equalled the logged `at`.
   const dir = mkdtempSync(join(tmpdir(), 'beat-'));

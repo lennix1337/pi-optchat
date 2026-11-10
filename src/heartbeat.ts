@@ -247,6 +247,9 @@ export interface WakeSummary { reply: string; tools: number; commits: string[]; 
 export interface WakeRecord {
   at: number; trigger: 'schedule' | 'check'; reason: string; outcome: 'running' | 'done' | 'interrupted' | 'error' | 'unsettled';
   endedAt?: number; reply?: string; tools?: number; commits?: string[];
+  reloadTicket?: string;
+  reloadDeadline?: number;
+  continuation?: 'started' | 'not-verified';
 }
 interface Saved { wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string }
 
@@ -277,10 +280,41 @@ export class Heartbeat {
   private open: number | undefined;
   /** Bumped when the operator speaks, so a radar or check still running for the old idle stretch never wakes the agent. */
   private epoch = 0;
-  constructor(private readonly deps: HeartbeatDeps) {
+  constructor(private readonly deps: HeartbeatDeps, reloadTicket?: string) {
     this.file = join(deps.dir, 'heartbeat.json');
-    // A wake still running when this profile is opened again lost its turn with the old process.
-    if (this.saved().wakeLog.some(wake => wake.outcome === 'running')) this.amend(log => this.unsettled(log));
+    const wake = reloadTicket && this.saved().wakeLog.findLast(w => w.outcome === 'running' && w.reloadTicket === reloadTicket);
+    if (wake) this.open = wake.at;
+    if (this.saved().wakeLog.some(w => w.outcome === 'running' && w.at !== this.open))
+      this.amend(log => log.map(w => w.outcome === 'running' && w.at !== this.open
+        ? { ...w, outcome: 'unsettled', ...w.reloadTicket ? { continuation: 'not-verified' } : {} } : w));
+  }
+  /** Bind the existing wake to this exact in-process reload, before dispatch. */
+  holdReload(ticket: string, deadline: number, summary?: WakeSummary) {
+    if (this.open === undefined) return;
+    this.amend(log => log.map(w => w.at === this.open ? { ...w, reloadTicket: ticket, reloadDeadline: deadline,
+      ...summary ? { reply: summary.reply, tools: summary.tools, commits: summary.commits } : {} } : w));
+  }
+  combine(summary: WakeSummary): WakeSummary {
+    const w = this.saved().wakeLog.find(w => w.at === this.open && w.outcome === 'running');
+    if (!w?.continuation && !w?.reloadTicket) return summary;
+    return { ...summary, tools: (w.tools ?? 0) + summary.tools, commits: [...new Set([...(w.commits ?? []), ...summary.commits])] };
+  }
+  reloadDeadline(ticket: string): number | undefined {
+    const w = this.saved().wakeLog.find(w => w.at === this.open && w.outcome === 'running' && w.reloadTicket === ticket);
+    return typeof w?.reloadDeadline === 'number' && Number.isFinite(w.reloadDeadline) ? w.reloadDeadline : undefined;
+  }
+  get awaitingReload(): boolean {
+    return this.saved().wakeLog.some(w => w.at === this.open && w.outcome === 'running' && typeof w.reloadTicket === 'string');
+  }
+  releaseReload(ticket: string, outcome: 'started' | 'not-verified' = 'started'): boolean {
+    const wake = this.saved().wakeLog.find(w => w.at === this.open && w.outcome === 'running' && w.reloadTicket === ticket);
+    if (!wake) return false;
+    this.amend(log => log.map(w => {
+      if (w.at !== this.open) return w;
+      const { reloadTicket: _ticket, reloadDeadline: _deadline, ...rest } = w;
+      return { ...rest, continuation: outcome };
+    }));
+    return true;
   }
 
   arm() {
