@@ -135,6 +135,12 @@ export function pageScriptEffects(script: string, page?: string): ExternalEffect
 
 // ---- The browser: which page each owned tab shows, as its results report it. ----
 const tabPages = new Map<string, string>();
+
+// An `exec` cell is Python that drives the owned tab through helpers; its text says what it will do to the page.
+const EXEC_INPUT = /(?<![.\w])(?:click|press|upload)\s*\(|(?<![.\w])type\s*\(\s*[^,()]+,|(?<![.\w])dialog\s*\(\s*(?:accept\s*=\s*)?True\b/;
+const EXEC_GOTO = /(?<![.\w])goto\s*\(\s*(?:url\s*=\s*)?(['"])([^'"\\]+)\1/g;
+const execCode = (args: { action?: unknown; code?: unknown }) => args.action === 'exec' && typeof args.code === 'string' ? args.code : undefined;
+const gotoPages = (code: string) => [...code.matchAll(EXEC_GOTO)].map(m => m[2]!);
 const MAX_TABS = 64;
 
 function remember(tab: string, url: string) {
@@ -143,9 +149,18 @@ function remember(tab: string, url: string) {
   while (tabPages.size > MAX_TABS) tabPages.delete(tabPages.keys().next().value!);
 }
 
+function resultHeader(resultText: string | undefined): { tab?: string; url?: string } {
+  try {
+    const header: unknown = JSON.parse(resultText?.split('\n', 1)[0] ?? '');
+    if (!header || typeof header !== 'object') return {};
+    const { tab, url } = header as { tab?: unknown; url?: unknown };
+    return { tab: typeof tab === 'string' ? tab : undefined, url: typeof url === 'string' ? url : undefined };
+  } catch { return {}; }
+}
+
 /** Records the page a browser_harness call reports or navigates to (open/navigate input, `url` in any result). */
 export function observeBrowser(input: unknown, resultText: string | undefined) {
-  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; url?: unknown };
+  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; url?: unknown; code?: unknown };
   let tab = typeof args.tab === 'string' ? args.tab : undefined;
   let url: string | undefined;
   if (resultText) {
@@ -153,27 +168,44 @@ export function observeBrowser(input: unknown, resultText: string | undefined) {
     tab ??= reported;
     url = /"url"\s*:\s*"([^"]+)"/.exec(resultText)?.[1];
   }
+  if (args.action === 'exec' || args.action === 'state') {
+    // Their output is the page's and the cell's: only the JSON header on the first line says where the tab is.
+    const header = resultHeader(resultText);
+    tab = typeof args.tab === 'string' ? args.tab : header.tab;
+    url = header.url;
+  }
+  const code = execCode(args);
+  if (!url && code !== undefined) url = gotoPages(code).at(-1);
   if (!url && (args.action === 'navigate' || args.action === 'open') && typeof args.url === 'string') url = args.url;
   if (tab && url) remember(tab, url);
   if (tab && args.action === 'close') tabPages.delete(tab);
 }
 
-/** The consent effect of a browser call: input (click, type, evaluate) on a tab last seen on a sensitive page. */
+/**
+ * The consent effect of a browser call: input (click, type, evaluate, an exec cell's input helpers) on a tab last seen
+ * on a sensitive page, or that the cell itself takes there with a goto.
+ */
 export function browserConsentEffect(input: unknown): { action: 'consent'; targets: string[] } | undefined {
-  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown };
-  // Looking at a page (open, navigate, inspect, screenshot, a reading script) is not consenting.
+  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown; code?: unknown };
+  const code = execCode(args);
+  // Looking at a page (open, navigate, inspect, state, screenshot, a reading script or cell) is not consenting.
   const acts = args.action === 'click' || args.action === 'type'
-    || (args.action === 'evaluate' && typeof args.expression === 'string' && PAGE_INPUT.test(args.expression));
+    || (args.action === 'evaluate' && typeof args.expression === 'string' && PAGE_INPUT.test(args.expression))
+    || (code !== undefined && (EXEC_INPUT.test(code) || PAGE_INPUT.test(code)));
   if (!acts) return undefined;
-  const page = typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined;
-  return page && sensitivePage(page) ? { action: 'consent', targets: [parse(page)!.hostname.toLowerCase()] } : undefined;
+  const known = typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined;
+  const page = [known, ...(code === undefined ? [] : gotoPages(code))].find(candidate => candidate && sensitivePage(candidate));
+  return page ? { action: 'consent', targets: [parse(page)!.hostname.toLowerCase()] } : undefined;
 }
 
-/** The production writes and messages of a browser evaluate, its relative URLs read against the tab's last known page. */
+/** The production writes and messages of a browser evaluate or exec cell, its relative URLs read against the tab's page (a goto in the cell moves it). */
 export function browserScriptEffects(input: unknown): ExternalEffect[] {
-  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown };
+  const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown; code?: unknown };
+  const known = typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined;
+  const code = execCode(args);
+  if (code !== undefined) return pageScriptEffects(code, gotoPages(code).at(-1) ?? known);
   if (args.action !== 'evaluate' || typeof args.expression !== 'string') return [];
-  return pageScriptEffects(args.expression, typeof args.tab === 'string' ? tabPages.get(args.tab) : undefined);
+  return pageScriptEffects(args.expression, known);
 }
 
 /** The page of an owned tab named by its id or an id prefix of 8+ characters. */

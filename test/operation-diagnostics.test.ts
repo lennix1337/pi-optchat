@@ -171,6 +171,7 @@ test('observing actions and loopback inspections pass the barrier; effects of th
   const observing: [string, unknown][] = [
     ['browser_harness', { action: 'status' }], ['browser_harness', {}], ['browser_harness', { action: 'screenshot', tab: 'T' }],
     ['browser_harness', { action: 'inspect', tab: 'T' }], ['browser_harness', { action: 'read', receipt: 'r', offset: 10 }],
+    ['browser_harness', { action: 'state', tab: 'T', max: 50 }], ['browser_harness', { action: 'screenshot', tab: 'T', full: true, maxWidth: 800 }],
     ['shell_status', { id: 'x' }], ['shell_status', {}], ['read_many', { files: [{ path: 'a' }] }], ['project_evidence', { id: 'x' }],
     ['desktop', { command: 'snapshot', args: ['--app', 'notepad.exe', '-i'] }], ['desktop', {}], ['desktop', { command: 'list-windows' }],
     ['commitments', { action: 'list' }], ['commitments', { action: 'list', all: true }], ['gitwatch', {}], ['gitwatch', { action: 'status' }],
@@ -184,7 +185,7 @@ test('observing actions and loopback inspections pass the barrier; effects of th
   const effects: [string, unknown][] = [
     ['browser_harness', { action: 'click', tab: 'T', node: 1 }], ['browser_harness', { action: 'evaluate', tab: 'T', expression: '1' }],
     ['browser_harness', { action: 'open' }], ['browser_harness', { action: 'close', tab: 'T' }], ['browser_harness', { action: 'navigate', tab: 'T', url: 'x' }],
-    ['browser_harness', { action: 'type', tab: 'T', node: 1, text: 'x' }], ['browser_harness', 'status'], ['browser_harness', { action: 1 }],
+    ['browser_harness', { action: 'type', tab: 'T', node: 1, text: 'x' }], ['browser_harness', { action: 'exec', tab: 'T', code: 'state()' }], ['browser_harness', 'status'], ['browser_harness', { action: 1 }],
     ['desktop', { command: 'click', args: ['@e1'] }], ['desktop', { command: 'clipboard-set' }], ['desktop', { command: 'launch' }], ['desktop', { command: 'permissions' }],
     ['commitments', { action: 'add' }], ['commitments', {}], ['commitments', { action: 'update', id: 'c_1' }], ['gitwatch', { action: 'watch', repo: 'a/b' }],
     ['bash', { command: 'git grep -O pattern' }], ['bash', { command: 'git grep -nO pattern' }], ['bash', { command: 'git grep --open-files-in-pager=vim x' }],
@@ -210,7 +211,7 @@ test('the recovery step a timed-out browser call names runs behind the barrier i
   await call('eval', 'browser_harness', { action: 'evaluate', tab: 'T', expression: 'document.title' });
   await hooks.get('tool_result')!({ toolName: 'browser_harness', toolCallId: 'eval', isError: true, content: [{ type: 'text', text: '{"status":"outcome_uncertain","message":"Runtime.evaluate timed out after 40s"}' }] }, ctx);
   assert.equal(j.pending().length, 1);
-  for (const [id, tool, input] of [['status', 'browser_harness', { action: 'status' }], ['shot', 'browser_harness', { action: 'screenshot', tab: 'T' }], ['shell', 'shell_status', { id: 'x' }]] as const) {
+  for (const [id, tool, input] of [['status', 'browser_harness', { action: 'status' }], ['shot', 'browser_harness', { action: 'screenshot', tab: 'T' }], ['state', 'browser_harness', { action: 'state', tab: 'T' }], ['shell', 'shell_status', { id: 'x' }]] as const) {
     assert.equal(await call(id, tool, input), undefined, `${tool} ${JSON.stringify(input)}`);
   }
   assert.equal((await call('again', 'browser_harness', { action: 'evaluate', tab: 'T', expression: 'document.title' }) as { block?: boolean })?.block, true);
@@ -225,6 +226,7 @@ test('a block message names each uncertain call with its tool and says read-only
   assert.match(reason, /s:slow-call \(bash\)/);
   assert.match(reason, /Read-only tools still work \(read, grep, find, ls, zoom, search/);
   assert.match(reason, /operation_state/);
+  assert.ok(reason.includes('browser_harness status/inspect/state/screenshot'), 'the recovery hint names state');
 });
 
 test('everyday inspections seen refused behind an uncertain barrier are read-only', () => {

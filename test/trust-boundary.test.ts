@@ -147,6 +147,92 @@ test('a click on a consent, account or billing page asks; browsing and other pag
   forgetBrowserPages();
 });
 
+// browser_harness v2: `exec` runs a Python cell whose helpers drive the same tab, so the gate reads the cell like it reads click/type/evaluate.
+test('an exec cell with input on a consent, account or billing page asks; reading cells and other pages do not', () => {
+  forgetBrowserPages();
+  const gate = new EffectApprovals({ mode: 'risk' });
+  const exec = (code: unknown, tab = 'T1') => ({ ...call(''), tool: 'browser_harness', input: { action: 'exec', tab, code } });
+  observeBrowser({ action: 'open', url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x' }, '{"status":"ok","tab":"T1"}');
+  observeBrowser({ action: 'open', url: 'https://example.com/' }, '{"status":"ok","tab":"T2"}');
+  const inputs = ['click(5)', 'type(5, "x")', 'type(id=5, text="x")', "press('Enter')", "upload(3, 'C:/tmp/a.pdf')", 'dialog(accept=True)', 'dialog(True)',
+    'for i in range(3):\n    click(i)', "js('document.querySelector(\"#allow\").click()')", 'js("form.requestSubmit()")'];
+  for (const code of inputs) assert.equal(riskOf(gate, exec(code)), 'consent click', code);
+  const reads = ['state()', 'screenshot()', "js('document.title')", 'scroll(0, 500)', 'dialog()', 'dialog(accept=False)', 'print(type(x))', 'x = wait_for_network_idle()', 'network({"url": "api"})'];
+  for (const code of reads) assert.equal(gate.admit(exec(code)), undefined, code);
+  for (const code of inputs) assert.equal(gate.admit(exec(code, 'T2')), undefined, `${code} on an ordinary page`);
+  assert.equal(gate.admit(exec('click(5)', 'unknown')), undefined, 'an unknown tab has no page');
+  assert.equal(gate.admit(exec(null)), undefined, 'no code, no input');
+  assert.equal(gate.admit(exec(5)), undefined, 'code that is not text has no input');
+  assert.deepEqual(classifyEffects({ tool: 'browser_harness', input: { action: 'exec', tab: 'T1', code: 'click(5)' }, cwd: '.' }, repo), [{ action: 'consent', targets: ['accounts.google.com'] }]);
+  // A cell that goes to a sensitive page and then clicks is caught before it runs.
+  assert.equal(riskOf(gate, exec("goto('https://checkout.stripe.com/c/pay')\nclick(1)", 'T2')), 'consent click');
+  assert.equal(gate.admit(exec("goto('https://example.org/')\nclick(1)", 'T2')), undefined);
+  assert.equal(gate.admit(exec("goto('https://checkout.stripe.com/c/pay')\nstate()", 'T2')), undefined, 'looking is not consenting');
+  // The old actions behave as before; an exec-shaped `code` on them is ignored.
+  assert.equal(riskOf(gate, { ...call(''), tool: 'browser_harness', input: { action: 'click', tab: 'T1', node: 5 } }), 'consent click');
+  assert.equal(gate.admit({ ...call(''), tool: 'browser_harness', input: { action: 'evaluate', tab: 'T1', expression: 'document.title', code: 'click(5)' } }), undefined);
+  assert.equal(gate.admit({ ...call(''), tool: 'browser_harness', input: { action: 'inspect', tab: 'T1', code: 'click(5)' } }), undefined);
+  assert.equal(gate.admit({ ...call(''), tool: 'browser_harness', input: { action: 'state', tab: 'T1', code: 'click(5)' } }), undefined);
+  forgetBrowserPages();
+});
+
+test('a fetch or XHR written inside an exec cell is a production write like the same text in evaluate', () => {
+  forgetBrowserPages();
+  const cell = (code: string, tab = 'P1') => lines(classifyEffects({ tool: 'browser_harness', input: { action: 'exec', tab, code }, cwd: '' }, repo));
+  observeBrowser({ action: 'open', url: 'https://dentai.com.br/admin' }, '{"status":"ok","tab":"P1"}');
+  observeBrowser({ action: 'open', url: 'http://localhost:3000/' }, '{"status":"ok","tab":"L1"}');
+  assert.deepEqual(cell("js(\"fetch('https://api.dentai.com.br/x',{method:'PATCH',body:b})\")"), ['production-write https:api.dentai.com.br']);
+  assert.deepEqual(cell("r = js('fetch(\\'/api/suppliers/1\\',{method:\"DELETE\"})')"), ['production-write https:dentai.com.br'], 'a relative URL resolves against the tab page');
+  assert.deepEqual(cell('js("axios.delete(\'https://usdentai.com/api/users/1\')")'), ['production-write https:usdentai.com']);
+  assert.deepEqual(cell('js("fetch(\'https://graph.facebook.com/v19.0/1/messages\',{method:\'POST\',body:b})")'), ['message graph.facebook.com']);
+  // goto in the same cell moves the page a relative URL is read against.
+  assert.deepEqual(cell("goto('https://usdentai.com/app')\njs(\"fetch('/api/x',{method:'PUT'})\")", 'L1'), ['production-write https:usdentai.com']);
+  for (const read of ["js(\"fetch('https://api.dentai.com.br/health')\")", "js(\"fetch('https://api.dentai.com.br/x',{method:'GET'})\")", 'state()', 'click(3)'])
+    assert.deepEqual(cell(read), [], read);
+  assert.deepEqual(cell("js(\"fetch('/api/x',{method:'POST'})\")", 'L1'), [], 'a local page is not production');
+  // An old action does not read `code`.
+  assert.deepEqual(lines(classifyEffects({ tool: 'browser_harness', input: { action: 'evaluate', tab: 'P1', code: "js(\"fetch('https://api.dentai.com.br/x',{method:'PATCH'})\")" }, cwd: '' }, repo)), []);
+  forgetBrowserPages();
+});
+
+test('exec and state results move a tab to the page their header reports; goto fills in when the header has none', () => {
+  forgetBrowserPages();
+  const consent = (tab: string) => lines(classifyEffects({ tool: 'browser_harness', input: { action: 'exec', tab, code: 'click(1)' }, cwd: '' }, repo));
+  observeBrowser({ action: 'open', url: 'https://example.com/' }, '{"status":"ok","tab":"T1"}');
+  assert.deepEqual(consent('T1'), []);
+  // The header's url is the page after the cell.
+  observeBrowser({ action: 'exec', tab: 'T1', code: 'goto(url)' }, '{"status":"ok","tab":"T1","url":"https://pay.google.com/"}\n{"ok":true}');
+  assert.deepEqual(consent('T1'), ['consent pay.google.com']);
+  observeBrowser({ action: 'state', tab: 'T1' }, '{"status":"ok","tab":"T1","url":"https://example.com/back"}\n[]');
+  assert.deepEqual(consent('T1'), [], 'state reports the page too');
+  // Only the header counts: a "url" printed by the page or the cell is not the tab address.
+  observeBrowser({ action: 'exec', tab: 'T1', code: 'print(js("JSON.stringify(location)"))' }, '{"status":"ok","tab":"T1","url":"https://example.com/back"}\n{"url":"https://pay.google.com/"}');
+  assert.deepEqual(consent('T1'), []);
+  observeBrowser({ action: 'exec', tab: 'T1', code: 'x' }, 'not a header\n{"tab":"T1","url":"https://pay.google.com/"}');
+  assert.deepEqual(consent('T1'), [], 'no header, no move');
+  // Without a header url (a timeout), the last goto of the cell is where the tab is heading.
+  observeBrowser({ action: 'exec', tab: 'T1', code: "goto('https://example.org/a')\ngoto('https://checkout.stripe.com/c/pay')" }, '{"status":"error","tab":"T1"}');
+  assert.deepEqual(consent('T1'), ['consent checkout.stripe.com']);
+  observeBrowser({ action: 'exec', tab: 'T1', code: "goto('https://example.org/a')" }, '{"status":"ok","tab":"T1","url":"https://example.com/"}');
+  assert.deepEqual(consent('T1'), [], 'the header wins over the goto text');
+  // A cell that goes to a non-literal address leaves the page as it was.
+  observeBrowser({ action: 'exec', tab: 'T1', code: 'goto(target)' }, '{"status":"error","tab":"T1"}');
+  assert.deepEqual(consent('T1'), []);
+  observeBrowser({ action: 'state', tab: 'T1' }, '{"status":"ok","tab":"T1","url":"https://example.com/back"}\n[{"url":"https://pay.google.com/"}]');
+  assert.deepEqual(consent('T1'), [], 'a url in the state body is not the tab address');
+  observeBrowser({ action: 'state', tab: 'T1' }, '{"status":"ok","tab":"T1"}\n[{"url":"https://pay.google.com/"}]');
+  assert.deepEqual(consent('T1'), [], 'no url in the header, no move');
+  observeBrowser({ action: 'exec', code: 'x' }, '{"status":"ok","url":"https://pay.google.com/"}\n{"tab":"T9"}');
+  assert.deepEqual(consent('T9'), [], 'a tab named only by the cell output is not the header');
+  // The header names the tab when the call did not.
+  observeBrowser({ action: 'exec', code: 'x' }, '{"status":"ok","tab":"T3","url":"https://github.com/settings/tokens"}');
+  assert.deepEqual(consent('T3'), ['consent github.com']);
+  // Old actions still read the url anywhere in the result, as before.
+  observeBrowser({ action: 'click', tab: 'T1', node: 5 }, 'clicked\n{"tab":"T1","url":"https://pay.google.com/"}');
+  assert.deepEqual(consent('T1'), ['consent pay.google.com']);
+  forgetBrowserPages();
+});
+
 test('the registered gate sends an irreversible effect to the operator even when the advisor would approve it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'trust-'));
   writeFileSync(join(dir, 'autonomy.json'), JSON.stringify({ version: 1, default: 'advisor', rules: [] }));
