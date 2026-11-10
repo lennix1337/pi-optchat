@@ -174,6 +174,12 @@ export function bindingTierBudget(model: { contextWindow: number; maxTokens?: nu
 export function subagentCompaction(contextWindow: number, fraction: number, maxOutputTokens?: number, tierBudget?: number) {
   return { enabled: true, reserveTokens: Math.max(0, contextWindow - Math.min(childPromptBudget(contextWindow, fraction, maxOutputTokens), tierBudget ?? Infinity)) };
 }
+/** The compaction a child's session gets. A contract worker (`workerAt` set, from the `workerCompactAtTokens` setting) compacts at that
+ * many context tokens when that is before its price tier; 0 or a child without a kind leaves the tier and prompt budget alone. */
+export function childCompaction(model: Parameters<typeof bindingTierBudget>[0], fraction: number, workerAt = 0) {
+  const tier = bindingTierBudget(model, fraction);
+  return subagentCompaction(model.contextWindow, fraction, model.maxTokens, workerAt > 0 ? Math.min(tier ?? Infinity, workerAt) : tier);
+}
 export class Children {
   private readonly running = new Map<string, LiveRun>();
   readonly history: RunHistory;
@@ -541,7 +547,7 @@ export class Children {
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
-        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind,
+        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
@@ -569,9 +575,9 @@ export class Children {
   }
   /** Builds a child session with the same prompt, tools and extensions whether it is new or resumed. */
   /** `project`: a contract worker's specialist, whose memory tree it may read with specialist_memory. `peer`: it is paired, so it gets tell_peer now;
-   * an unpaired worker gets it when a later spawn pairs it (peerTools). */
+   * an unpaired worker gets it when a later spawn pairs it (peerTools). `contract`: the child has a worker kind. */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; connected: boolean; provider: string; model: Model<Api>;
-    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind }) {
+    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind; contract?: boolean }) {
     const { id, directory, depth, parentId, connected, kind } = o;
     const crew = this.options.crew;
     const specialist = crew && o.project ? [specialistMemoryTool(() => crew, o.project, run => this.transcript(run))] : [];
@@ -584,7 +590,7 @@ export class Children {
     // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
     const fraction = refreshFraction(this.settings.refreshAt);
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
-      compaction: subagentCompaction(o.model.contextWindow, fraction, o.model.maxTokens, bindingTierBudget(o.model, fraction)), cacheWarming: 'off' });
+      compaction: childCompaction(o.model, fraction, o.contract ? this.settings.workerCompactAtTokens : 0), cacheWarming: 'off' });
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: getAgentDir(), settingsManager,
       noPromptTemplates: true,
       ...(kind ? { skillsOverride: <T extends { name: string }, D>(base: { skills: T[]; diagnostics: D[] }) => ({ ...base, skills: base.skills.filter(skill => leanSkill(skill.name)) }) } : {}),
@@ -991,7 +997,7 @@ export class Children {
     let reserved = true;
     try {
       // No thinking level: the session restores the one it ran with.
-      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined });
+      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
       const parent = run.parentId ? this.running.get(run.parentId) : undefined;
       if (this.closing || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {
