@@ -28,6 +28,10 @@ test('spawn accepts a worker kind and a project specialist', () => {
   assert.deepEqual(validate(tools.get('spawn')!, args), args);
   const created = { tasks: [{ task: 'not launched', kind: 'code', project: 'lolidle-save-editor' }] };
   assert.deepEqual(validate(tools.get('spawn')!, created), created, 'a project outside the known four is a new specialist');
+  const paired = { tasks: [{ task: 'not launched', kind: 'plan', project: 'harness', peer: 'abcd1234' }] };
+  assert.deepEqual(validate(tools.get('spawn')!, paired), paired, 'a reviewer names its author with peer');
+  assert.match(JSON.stringify(tools.get('spawn')!.parameters), /tell_peer/, 'the schema documents the pairing');
+  assert.throws(() => validate({ name: 'tell_peer', parameters: childToolSchemas.peer }, { message: 'x', id: 'abcd1234' }), /id/, 'tell_peer names no recipient: only its own peer');
   const explicit = { tasks: [{ task: 'not launched', kind: 'code', model: 'anthropic-account-2/claude-sonnet-5-5' }] };
   assert.deepEqual(validate(tools.get('spawn')!, explicit), explicit, 'a task may carry an explicit provider/model');
   assert.match(JSON.stringify(tools.get('spawn')!.parameters), /Explicit model as provider\/model/, 'the schema documents it');
@@ -71,6 +75,8 @@ test('parent and child delegation share strict schemas, including nested task di
     ['spawn', childToolSchemas.spawn, validInputs.spawn],
     ['tell', childToolSchemas.tell, validInputs.tell],
     ['tell_parent', childToolSchemas.parent, { message: 'not sent' }],
+    ['tell_peer', childToolSchemas.peer, { message: 'not sent' }],
+    ['spawn', childToolSchemas.spawn, { tasks: [{ task: 'not launched', kind: 'plan', project: 'harness', peer: 'abcd1234' }] }],
     ['specialist_memory', childToolSchemas.specialistMemory, { id: 0, n: 2, findText: 'fixture', offset: 0, limit: 100 }],
     ['specialist_memory', childToolSchemas.specialistMemory, { run: 'abcd1234', offset: 0 }],
   ] as const) {
