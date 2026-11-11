@@ -92,7 +92,7 @@ export class MachineAlerts {
     if (!shown.length) return 'No single owner stands out.';
     const parts = shown.map(g => {
       const since = this.heavySince.get(g.group);
-      return `${this.name(g)}: ${g.procs} procs, ${Math.round(g.cpuPct)}% CPU${since !== undefined && frame.t - since >= 60_000 ? `, ${minutes(frame.t - since)}` : ''}${g.kind === 'external' ? ' (not ours)' : ''}`;
+      return `${this.name(g)}: ${g.procs} procs, ${Math.round(g.cpuPct)}% CPU${since !== undefined && frame.t - since >= 60_000 ? `, ${minutes(frame.t - since)}` : ''}${g.kind === 'external' ? ' (not ours)' : g.kind === 'unattributed' ? ' (owner unknown)' : ''}`;
     });
     return `Top: ${parts.join('; ')}.`;
   }

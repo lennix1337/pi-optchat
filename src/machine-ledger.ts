@@ -94,7 +94,7 @@ export function machineInsights(rows: LedgerRow[], now: number, windowMs: number
   if (!window.length) return [];
   const centres = costCentres(window), lines: string[] = [];
   const name = (c: CostCentre) => c.detail ? `${c.owner} (${c.detail})` : c.owner;
-  const tag = (c: CostCentre) => c.kind === 'external' ? ' [not ours]' : '';
+  const tag = (c: CostCentre) => c.kind === 'external' ? ' [not ours]' : c.kind === 'unattributed' ? ' [owner unknown]' : '';
   for (const c of centres.filter(c => c.cpuS >= 60).slice(0, limit)) lines.push(`cpu: ${name(c)}: ${Math.round(c.cpuS / 60)} cpu-min over ${hours(c.wallS)} alive, up to ${c.peakProcs} procs${tag(c)}`);
   const resident = centres.filter(c => c.avgRssMb >= 150 && c.wallS >= 600).sort((a, b) => b.avgRssMb * b.wallS - a.avgRssMb * a.wallS);
   for (const c of resident.slice(0, limit)) lines.push(`memory: ${name(c)}: ~${Math.round(c.avgRssMb)} MB resident for ${hours(c.wallS)} (${Math.round(c.cpuS / 60)} cpu-min used)${tag(c)}`);

@@ -5,7 +5,9 @@
  *
  * Line: {"t":unixMs,"cpu":percent|null,"mem":[usedMb,totalMb],"idle":seconds,"pid":helperPid,"p":[[pid,ppid,startMs,"name",cpuMs,workingSetKb,priorityClass,"cmd"?],...]}
  * `cmd` rides only on the first sample of a process inside the tree that starts at the root pid given as argument 1 (the
- * command line, cut to 200 characters; never the environment). Arguments: rootPid intervalMs.
+ * command line, cut to 200 characters; never the environment), and of a process that started in the last few intervals under
+ * a parent that is already gone: Git Bash's launcher exits within milliseconds, so the tree below it never joins the root's
+ * and its command line is the only way to say which call it belongs to. Arguments: rootPid intervalMs.
  * C# 5 only: that is what the csc.exe shipped with Windows compiles.
  */
 export const HELPER_SOURCE = String.raw`
@@ -49,6 +51,8 @@ static class Sampler
 
     class Known { public long start; public long seen; }
     static Dictionary<uint, Known> tree = new Dictionary<uint, Known>();
+    // Processes whose parent had already exited when first seen, by pid and start: the command line is read once.
+    static Dictionary<uint, long> orphans = new Dictionary<uint, long>();
 
     static string CommandLine(uint pid)
     {
@@ -146,6 +150,19 @@ static class Sampler
             List<uint> gone = new List<uint>();
             foreach (KeyValuePair<uint, Known> kv in tree) if (now - kv.Value.seen > 600000) gone.Add(kv.Key);
             foreach (uint g in gone) tree.Remove(g);
+            // A fresh process whose parent is gone and never joined the tree: read its command line once.
+            long fresh = now - 3L * interval - 1500;
+            foreach (Proc p in procs)
+            {
+                long seenStart;
+                if (p.pid == root || p.pid == 0 || p.start == 0 || p.start < fresh || byPid.ContainsKey(p.ppid) || tree.ContainsKey(p.pid)) continue;
+                if (orphans.TryGetValue(p.pid, out seenStart) && seenStart == p.start) continue;
+                orphans[p.pid] = p.start;
+                if (!joined.Contains(p)) joined.Add(p);
+            }
+            List<uint> vanished = new List<uint>();
+            foreach (uint o in orphans.Keys) if (!byPid.ContainsKey(o)) vanished.Add(o);
+            foreach (uint o in vanished) orphans.Remove(o);
             foreach (Proc p in joined) { string cmd = CommandLine(p.pid); if (cmd != null) p.cmd = cmd.Length > 200 ? cmd.Substring(0, 200) : cmd; }
 
             FILETIME i1, k1, u1; GetSystemTimes(out i1, out k1, out u1);

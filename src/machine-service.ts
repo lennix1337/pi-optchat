@@ -116,7 +116,7 @@ export const machineTool = (service: () => MachineService | undefined, situation
     view: Type.Optional(Type.Union([Type.Literal('now'), Type.Literal('top'), Type.Literal('history'), Type.Literal('situation')], { description: 'Default now.' })),
     window: Type.Optional(Type.Number({ minimum: 1, maximum: 20160, description: 'Minutes back for top and history.' })),
     owner: Type.Optional(Type.String({ description: 'history: part of an owner name or command head, e.g. "sentry" or "stress.sh".' })),
-    kind: Type.Optional(Type.String({ description: 'top: only this kind (worker, shell, bash, mcp, own, external).' })),
+    kind: Type.Optional(Type.String({ description: 'top: only this kind (worker, shell, bash, mcp, own, external, unattributed).' })),
   }, { additionalProperties: false }),
   async execute(_id: string, args: { view?: 'now' | 'top' | 'history' | 'situation'; window?: number; owner?: string; kind?: string }) {
     if (args.view === 'situation') {

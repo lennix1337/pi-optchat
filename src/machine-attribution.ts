@@ -1,6 +1,6 @@
 import type { ProcRow, Sample } from './machine-sample.ts';
 
-export type OwnerKind = 'host' | 'machine' | 'bash' | 'shell' | 'worker' | 'mcp' | 'own' | 'external';
+export type OwnerKind = 'host' | 'machine' | 'bash' | 'shell' | 'worker' | 'mcp' | 'own' | 'external' | 'unattributed';
 /** Who a process belongs to. `id` names one call or server; `group` is the cost centre it rolls up into (a worker, an MCP server, a program); `detail` is the command head of the call, for alerts. */
 export interface Owner { id: string; group: string; kind: OwnerKind; detail?: string }
 export interface McpSignature { name: string; tokens: string[] }
@@ -16,9 +16,28 @@ export function commandHead(command: string, max = 50): string {
   return [...head].length > max ? `${[...head].slice(0, max - 1).join('')}…` : head;
 }
 
+/** Words that say nothing about which call a process belongs to. */
+const GENERIC_WORDS = new Set(['bash', 'sh', 'cmd', 'zsh', 'pwsh', 'powershell', 'c', '-c', '/c', '/d', '/s', 'node', 'nodejs', 'program', 'files', 'usr', 'bin', 'git', 'exec']);
+/** A command as comparable words: lower case, forward slashes, no quotes or shell operators, each path cut to its last part (`"/c/Program Files/nodejs/npm" test` reads `program files npm test`), `.exe` dropped. */
+function commandWords(command: string): string[] {
+  return command.toLowerCase().replace(/\\/g, '/').replace(/["'`]/g, ' ').split(/[\s;&|<>()]+/).filter(Boolean).map(w => w.replace(/\.exe$/, '').replace(/^.*\/(?=[^/])/, ''));
+}
+/** Whether an orphan's command line is part of `claimed`'s command: two or more consecutive words of it, not all generic, appear in a row in the claimed command (`npm test`, `cat /dev/zero`, `grep -c probe123`). */
+export function commandBelongsTo(orphan: string, claimed: string): boolean {
+  const a = commandWords(orphan), b = commandWords(claimed);
+  const inRow = (from: number, len: number) => {
+    for (let i = 0; i + len <= b.length; i++) if (a.slice(from, from + len).every((w, k) => w === b[i + k])) return true;
+    return false;
+  };
+  for (let from = 0; from + 2 <= a.length; from++) {
+    for (let len = Math.min(3, a.length - from); len >= 2; len--) if (a.slice(from, from + len).some(w => !GENERIC_WORDS.has(w)) && inRow(from, len)) return true;
+  }
+  return false;
+}
+
 /** Whether `name` is a command shell: what Pi starts for each bash call. */
 const SHELL_NAME = /^(?:bash|sh|cmd|powershell|pwsh|zsh)(?:\.exe)?$/i;
-const CLAIM_BEFORE_MS = 2_000, CLAIM_AFTER_MS = 30_000, BOUND_BEFORE_MS = 60_000, BOUND_AFTER_MS = 2_000, REMEMBER_MS = 10 * 60_000, MCP_AFTER_RUN_MS = 30_000;
+const CLAIM_BEFORE_MS = 2_000, CLAIM_AFTER_MS = 30_000, BOUND_BEFORE_MS = 60_000, BOUND_AFTER_MS = 2_000, FRESH_SLACK_MS = 1_500, REMEMBER_MS = 10 * 60_000, MCP_AFTER_RUN_MS = 30_000;
 
 interface Claim { id: number; owner: Owner; command: string; at: number; bound?: boolean }
 interface Memo { start: number; owner: Owner; seen: number }
@@ -43,6 +62,8 @@ export class Attributor {
   private memo = new Map<number, Memo>();
   private bound = new Map<number, { claim: Claim; at: number }>();
   private externals = new Map<string, Owner>();
+  private unattributed = new Map<string, Owner>();
+  private lastSample?: number;
   constructor(private options: AttributorOptions) {}
 
   /** OptChat is about to run a command (bash call, shell_start, a worker's call) for `owner`. Returns a handle for `release`. */
@@ -80,6 +101,7 @@ export class Attributor {
       result.set(p.pid, owner);
     }
     for (const [pid, memo] of this.memo) if (now - memo.seen > REMEMBER_MS) { this.memo.delete(pid); this.bound.delete(pid); }
+    this.lastSample = now;
     return result;
   }
 
@@ -92,7 +114,25 @@ export class Attributor {
     const parent = this.memo.get(p.ppid);
     if (parent && parent.start <= p.start && parent.owner.kind !== 'host' && parent.owner.kind !== 'machine') return parent.owner;
     if (p.ppid === hostPid && live.get(hostPid)) return this.directChild(p, sample.t);
+    if (!live.has(p.ppid) && this.lastSample !== undefined && p.start > this.lastSample - FRESH_SLACK_MS) return this.orphan(p);
     return this.external(p.name);
+  }
+
+  /**
+   * A process that started since the last sample under a parent no sample ever held: Git Bash's launcher forks, execs and exits within
+   * milliseconds, so the real tree hangs from a pid that is gone. It belongs to the open call whose command it runs (the latest one
+   * that began no later than it did); with no such call it is not presented as someone else's, only as unattributed.
+   */
+  private orphan(p: ProcRow): Owner {
+    if (p.cmd) {
+      const cmd = p.cmd;
+      const claim = this.claims.filter(c => p.start >= c.at - CLAIM_BEFORE_MS && commandBelongsTo(cmd, c.command)).sort((a, b) => b.at - a.at)[0];
+      if (claim) return claim.owner;
+    }
+    const name = p.name.toLowerCase();
+    let owner = this.unattributed.get(name);
+    if (!owner) this.unattributed.set(name, owner = { id: `orphan:${name}`, group: `unattributed (parent gone) ${p.name}`, kind: 'unattributed' });
+    return owner;
   }
 
   /** A process the host itself started that nothing recorded: an MCP server goes to its mcp.json entry, a shell to the call that began just before it, anything else to its program name. */
