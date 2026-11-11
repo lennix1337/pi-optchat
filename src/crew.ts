@@ -396,8 +396,8 @@ export const PEER_MESSAGES = 6;
 
 /** Tool calls that execute or edit; a manager that makes many of them in one turn is doing a worker's job. */
 const EXECUTION = new Set(['bash', 'powershell', 'edit', 'write', 'shell_start']);
-/** One simple command that only reads: cat/head/tail/sed -n/grep/rg/ls/wc, git status|log|diff|show, gh <noun> view|list. */
-const READ_ONLY = [/^(?:cat|head|tail|grep|rg|ls|wc)(?:\s|$)/, /^sed\s+-n\s(?!(?:.*\s)?-[a-z]*i\b)/, /^git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show)(?:\s|$)/, /^gh\s+\S+\s+(?:view|list)(?:\s|$)/];
+/** One simple command that only reads: cat/head/tail/sed -n/grep/rg/ls/wc, git status|log|diff|show, gh <noun> view|list|status, date, git rev-parse, git branch listing, find without -delete/-exec. */
+const READ_ONLY = [/^(?:cat|head|tail|grep|rg|ls|wc)(?:\s|$)/, /^sed\s+-n\s(?!(?:.*\s)?-[a-z]*i\b)/, /^git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show)(?:\s|$)/, /^gh\s+\S+\s+(?:view|list|status)(?:\s|$)/, /^date(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+rev-parse(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+branch(?:\s+(?:-a|-r|-v|-vv|--list|--all|--remotes))*$/, /^find\s(?!.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)/];
 /** Whether a shell command is made only of reading commands. Doubtful commands (redirections, substitutions, in-place or output flags,
  * anything not on the list) are not: a quoted separator can split a segment wrongly, which only ever counts a read as execution. */
 export function onlyReads(command: string) {
