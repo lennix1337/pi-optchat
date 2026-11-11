@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Collector, DIGEST_CAP, Situation, band, judge, renderSnapshot, situationItems, type Facts, type Sources } from '../src/situation.ts';
 import { GITWATCH_FAILURES, parseGitwatch, parseQuota, parseReboots, realSources, rebootCause } from '../src/situation-sources.ts';
 import { tempDir } from './support.ts';
@@ -220,6 +222,19 @@ test('a source that hangs forever is cut at its timeout, keeps the last good val
   await collector.refresh(500);
   assert.equal(collector.snapshot().docker, 'up', 'the stale value is served');
   assert.match(collector.health().find(h => h.key === 'docker')!.error!, /timed out after 20 ms/);
+});
+
+test('a caller waiting on a hung source keeps the event loop alive until the source is cut, in a process with nothing else running', async () => {
+  // Inside the test runner other handles hide this: with only unref'd timers pending, a process that awaits the collector exits (code 13) on the await.
+  const module = pathToFileURL(join(import.meta.dirname, '../src/situation.ts')).href;
+  const script = `import { Collector } from '${module}';
+    let call = 0;
+    const collector = new Collector({ docker: { ttlMs: 0, timeoutMs: 20, read: () => ++call === 1 ? 'up' : new Promise(() => {}) } });
+    await collector.refresh(500); await collector.refresh(500);
+    console.log(collector.snapshot().docker, collector.health()[0].error);`;
+  const ran = await new Promise<{ code: number | null; out: string }>(resolve => execFile(process.execPath, ['--experimental-transform-types', '--no-warnings', '--input-type=module', '-e', script], { timeout: 20_000 },
+    (error, stdout) => resolve({ code: error ? (error as { code?: number }).code ?? 1 : 0, out: stdout })));
+  assert.deepEqual(ran, { code: 0, out: 'up timed out after 20 ms\n' });
 });
 
 test('a source is read again only after its ttl, and a failing source does not hammer', async () => {

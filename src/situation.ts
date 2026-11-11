@@ -76,12 +76,16 @@ export class Collector {
     return facts as Facts;
   }
 
-  /** Reads what is stale and waits for it, but never longer than `maxWaitMs`. */
-  async refresh(maxWaitMs = 8_000): Promise<Facts> {
+  /**
+   * Reads what is stale and waits for it, but never longer than `maxWaitMs`. The caller is waiting, so its timer keeps the event
+   * loop alive (with only unref'd timers pending, a process with nothing else to do would exit on this await); `hold: false` is for
+   * a background warm-up that must not delay shutdown.
+   */
+  async refresh(maxWaitMs = 8_000, hold = true): Promise<Facts> {
     for (const key of Object.keys(this.sources) as FactKey[]) { const entry = this.entry(key); entry.tried = undefined; this.kick(key); }
     const pending = [...this.entries.values()].map(e => e.inflight).filter((p): p is Promise<void> => p !== undefined);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([Promise.all(pending), new Promise<void>(resolve => { timer = setTimeout(resolve, maxWaitMs); timer.unref?.(); })]);
+    await Promise.race([Promise.all(pending), new Promise<void>(resolve => { timer = setTimeout(resolve, maxWaitMs); if (!hold) timer.unref?.(); })]);
     if (timer) clearTimeout(timer);
     return this.snapshot();
   }
@@ -240,7 +244,7 @@ export class Situation {
   }
 
   /** Warms the cache so the first turn already has facts; bounded. */
-  warm(maxWaitMs = 8_000) { return this.options.collector.refresh(maxWaitMs).then(() => undefined, () => undefined); }
+  warm(maxWaitMs = 8_000) { return this.options.collector.refresh(maxWaitMs, false).then(() => undefined, () => undefined); }
 
   /**
    * The digest for the run `id`, or undefined when nothing material changed. Asked again for the same run it answers the same,
