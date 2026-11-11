@@ -24,6 +24,10 @@ It runs inside ordinary Pi, without a Pi runtime fork or separate launcher.
 | **Account-aware models** | Compactor and subagent models follow the active main-model account, with per-provider fallbacks, including numbered multi-account providers. [Details](#models) |
 | **Compactor reliability** | Metadata-only diagnostics, bounded pre-response retries, interrupted-stream classification, persisted policy-refusal stops, and measured summary-size correction. Originals are retained when summarization fails. [Details](#long-runs-and-compactor-diagnostics) |
 | **Memory beyond Pi** | Optional atomic `~/.optchat/status.md` snapshots and summary-block sync to the [Rust OptMem binary](https://github.com/lennix1337/OptMem) and history pages in a local [ai-memory](https://github.com/akitaonrails/ai-memory) server, without extra model calls for syncing. All are off by default. [Settings](#settings) |
+| **Crew (manager mode)** | Off by default. The main agent decides, plans and reviews; `spawn` with a `kind` (`code`, `mechanical`, `hard`, `plan`) starts a worker on that tier of the main model's own family, so it spends the same quota. Each worker gets a contract plus its project's charter, capped memory and run tree from the `crew` store, not the whole chat; briefs share a fixed cacheable prefix with the contract last, `tell` resumes a finished worker, and a reminder appears after N execution calls in one turn. When an account's quota runs out, workers and reports on it pause and wait instead of failing one after another. [Settings](#settings) |
+| **Commitments** | Promises to the operator and what waits on him, shown every turn until closed with evidence; linked PRs, worker runs and reloads write their own progress. |
+| **Machine and situation sense** | Samples CPU and memory per process owner, attributes load to the trees OptChat started, lowers only those when the PC is saturated and you are at the keyboard, and alerts once per episode (`machine` tool). At turn start, a short situation block appears only when something changed: a reboot or crash, Docker stopped, an account crossing 50/80/95/100% of quota with its reset time, GitHub unreachable. |
+| **Quota tracking** | Every 5 minutes, from the existing quota cache (no extra provider calls), each account's 5 h and 7 d use and reset time go to `quota-history.jsonl`; `/cota`, the Slack `cota` command and the 07:00 summary show them in local time with the API-equivalent cost per 1% and a week-over-week comparison, read from an incremental per-minute aggregate instead of the full usage log. |
 | **Native Windows** | Named-pipe profile locks and connected windows, Windows-safe storage, and Pi 1.2 runtime compatibility tests alongside the offline suite. No WSL required. |
 
 This remains a **TypeScript Pi extension**; OptMem is the separate Rust companion. Provider requests consume your existing credentials and quota. Recovery is conservative, not exactly-once execution, a sandbox, or a guarantee against process crashes.
@@ -108,6 +112,9 @@ If that profile is open in another Pi, `pi -p` joins it like a connected window:
 | `/optchat agents model` | Subagent model and effort for this profile, picked the same way. |
 | `/optchat usage` | Token usage and cost estimates. |
 | `/optchat-health` | Production, PC and cached model quota; requires a configured assistant profile. [Boundaries and validation](docs/health.md). |
+| `/cota` | Each account's quota use and when each window resets (Brasília time), US$ per 1% and the week against the one before, from the cache; never calls a model or switches accounts. |
+| `/tools` | Tools the model can reach, by package, their declaration size, and which ones the instructions never name. |
+| `/optchat-perf` | Numeric diagnostics; `payload on/off` toggles payload byte measurements (no model call). |
 | `/optchat retry-summary <start>+<size>` | Explicitly retry one policy-blocked summary with the current compactor; never retries the main request or changes providers. |
 | `/optchat activity` | Memory gauge: view size, summaries catching up, running agents. |
 | `/optchat instructions` | Edit this profile's `AGENTS.md`. |
