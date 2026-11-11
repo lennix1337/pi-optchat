@@ -308,9 +308,9 @@ export function commitmentsContext(items: readonly Commitment[], now = Date.now(
 export function summaryLines(items: readonly Commitment[], now: number) {
   const open = openCommitments(items, now);
   return {
-    waiting: open.filter(c => c.owner === 'operator' || c.status === 'waiting_operator').map(c => `${c.text}${c.next ? ` (próximo: ${c.next})` : ''}`),
-    attention: open.filter(c => c.owner === 'optchat' && c.status !== 'waiting_operator' && attention(c, now))
-      .map(c => `${c.text} — ${attention(c, now)!.replace(/^OVERDUE/, 'atrasado').replace('no next step for 24h+', 'sem próximo passo há 24h+').replace(/^no progress for/, 'sem progresso há')}`),
+    waiting: open.filter(c => (c.owner === 'operator' || c.status === 'waiting_operator') && !overdueDay(c, now)).map(c => `${c.text}${c.next ? ` (próximo: ${c.next})` : ''}`),
+    attention: open.filter(c => c.owner === 'optchat' && (c.status !== 'waiting_operator' || overdueDay(c, now)) && attention(c, now))
+      .map(c => `${c.text} — ${attention(c, now)!.replace(/^OVERDUE/, 'atrasado').replace('no next step for 24h+', 'sem próximo passo há 24h+').replace(/^no progress for/, 'sem progresso há')}${c.next ? ` (próximo: ${c.next})` : ''}`),
   };
 }
 

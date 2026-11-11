@@ -61,10 +61,24 @@ test('the 07:00 summary lists what waits on the operator and my overdue or stuck
     addCommitment(dir, { text: 'On track', source: '3', next: 'z', dueInMinutes: 600 }, T0);
     const lines = summaryLines(readCommitments(dir), T0 + 2 * 3_600_000);
     assert.deepEqual(lines.waiting, ['Approve the DentAI deploy']);
-    assert.deepEqual(lines.attention, ['Fix flaky test — atrasado 1h']);
+    assert.deepEqual(lines.attention, ['Fix flaky test — atrasado 1h (próximo: rerun)']);
     const text = composeSummary({ day: [], waiting: [], prs: [], approvals: 0, commitments: lines });
     assert.match(text, /\*Precisa de você hoje\*\n• Pendência: Approve the DentAI deploy/);
-    assert.match(text, /\*Compromissos meus atrasados ou parados \(1\)\*\n• Fix flaky test — atrasado 1h/);
+    assert.match(text, /\*Compromissos meus atrasados ou parados \(1\)\*\n• Fix flaky test — atrasado 1h \(próximo: rerun\)/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('summary routes day-overdue assistant work without choices back to the assistant, not the operator', () => {
+  const dir = temp();
+  try {
+    const mine = addCommitment(dir, { text: 'Resolve stale wait', source: '1', next: 'investigate', dueInMinutes: 1 }, T0);
+    updateCommitment(dir, { id: mine.id, status: 'waiting_operator' }, T0 + 1);
+    const question = addCommitment(dir, { text: 'Choose deployment', source: '2', next: 'Which day?', choices: ['Monday', 'Tuesday'], dueInMinutes: 1 }, T0);
+    updateCommitment(dir, { id: question.id, status: 'waiting_operator' }, T0 + 1);
+    addCommitment(dir, { text: 'Operator task', source: '3', owner: 'operator', dueInMinutes: 1 }, T0);
+    const lines = summaryLines(readCommitments(dir), T0 + STALE_MS + 60_000);
+    assert.deepEqual(lines.waiting, ['Choose deployment (próximo: Which day?)', 'Operator task']);
+    assert.deepEqual(lines.attention, ['Resolve stale wait — atrasado 24h (próximo: investigate)']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
