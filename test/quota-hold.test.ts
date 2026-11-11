@@ -221,19 +221,64 @@ test('while every manager model is out of quota, items are held, one notice is g
   assert.equal(clock.pending, 0);
 });
 
+/** The host of the manager: a route is out while its own hint (learned from a failed turn on that provider) is in the future. */
+const hintsOnly = (routes: string[]) => (learned: Readonly<Record<string, number>>) => {
+  const ends = routes.map(provider => learned[provider]);
+  return ends.every(at => at !== undefined) ? Math.min(...ends as number[]) : undefined;
+};
+
 test('an outage learned only from a failed turn holds items until the retry hint passes', async () => {
   const clock = fakeClock();
   const notices: string[] = [], sent: string[][] = [];
-  const outage = new QuotaOutage<string>({ now: clock.now, until: () => undefined, notice: text => notices.push(text), send: items => sent.push(items),
+  const outage = new QuotaOutage<string>({ now: clock.now, until: hintsOnly(['main']), notice: text => notices.push(text), send: items => sent.push(items),
     setTimer: clock.setTimer, clearTimer: clock.clearTimer });
   assert.equal(outage.offer('early'), false);
-  outage.note('Agent error: You have hit your usage limit. Try again in ~1129 min.');
+  outage.note('Agent error: You have hit your usage limit. Try again in ~1129 min.', 'main');
   assert.equal(outage.offer('report'), true);
   assert.equal(notices[0], 'cota esgotada em todas as contas; volto às 11/11 10:49 (Brasília)', 'the hint is 1129 min from 16:00, so tomorrow');
   await clock.advance(1100 * MIN);
   assert.deepEqual(sent, []);
   await clock.advance(40 * MIN);
   assert.deepEqual(sent, [['report']]);
+});
+
+test('a retry hint from another provider does not hold items while the manager\'s own account has quota', async () => {
+  const clock = fakeClock();
+  const notices: string[] = [], sent: string[][] = [];
+  let cached: number | undefined = START + 30 * MIN; // The cache says the manager's account (main) is out for 30 min.
+  const until = (learned: Readonly<Record<string, number>>) => {
+    const ends = [cached, learned.main].filter((at): at is number => at !== undefined && at > clock.now());
+    return ends.length ? Math.max(...ends) : undefined;
+  };
+  const outage = new QuotaOutage<string>({ now: clock.now, until, notice: text => notices.push(text), send: items => sent.push(items), setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+  assert.equal(outage.offer('report'), true, 'the manager\'s account is out');
+  // The failover tried another account, which answered with a 16-hour limit: it says nothing about the manager's account.
+  outage.note('You have hit your ChatGPT usage limit (team plan). Try again in ~998 min.', 'other');
+  cached = undefined;
+  await clock.advance(40 * MIN);
+  assert.deepEqual(sent, [['report']], 'released when the manager\'s own account returns');
+  assert.equal(outage.offer('next'), false, 'and new items go straight through');
+  outage.note('You have hit your usage limit. Try again in ~60 min.', 'main');
+  assert.equal(outage.offer('after its own hint'), true, 'a hint from the manager\'s own account still holds');
+});
+
+test('switching the manager to a model with quota releases what was held for the old one, without waiting for its timer', async () => {
+  const clock = fakeClock();
+  const sent: string[][] = [];
+  let returns: number | undefined = START + 10 * MIN; // The main model's account: out for 10 minutes.
+  const outage = new QuotaOutage<string>({ now: clock.now, until: () => returns, notice: () => {}, send: items => sent.push(items), setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+  assert.equal(outage.offer('report'), true);
+  returns = START + 600 * MIN; // The failover moved the main model to an account that is out for hours.
+  await clock.advance(11 * MIN);
+  assert.deepEqual(sent, [], 'the first timer found the new main model still out and re-armed for the later time');
+  outage.recheck();
+  assert.deepEqual(sent, [], 'a model switch that leaves everything out holds on');
+  returns = undefined; // The operator switches to an account that has quota.
+  outage.recheck();
+  assert.deepEqual(sent, [['report']], 'released at once');
+  assert.equal(clock.pending, 0, 'and the old timer is gone');
+  outage.recheck();
+  assert.equal(sent.length, 1, 'nothing held, nothing to do');
 });
 
 test('a parked worker survives a reload: the next profile re-arms it and it resumes at its time', async t => {
