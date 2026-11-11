@@ -262,6 +262,36 @@ test('a retargeted worker parked at restart waits for explicit continuation', as
   assert.equal(h.routes.at(-1), 'quota-test-2');
 });
 
+test('the board shows an automatic quota resume opening rather than requiring manual recovery', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'opening after quota' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'old route parked');
+  h.control.secondLimit = true;
+  await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' });
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'retarget parked');
+  let release!: () => void;
+  h.control.wait = new Promise<void>(resolve => { release = resolve; });
+  h.control.secondLimit = false;
+  const opens = h.control.opens!;
+  let openingNotice = false;
+  const unsubscribe = h.children.subscribe(() => { if (h.children.parkOpening(id)) openingNotice = true; });
+  try {
+    await h.clock.advance(62 * MIN);
+    await until(() => h.control.opens! > opens, 'automatic opening suspended');
+    const board = new WaitingBoard({ runs: () => h.children.runs(), live: () => undefined, shells: () => [], waiting: () => [], now: () => h.clock.now(),
+      requiresExplicitRecovery: id => h.children.requiresExplicitRecovery(id), parkOpening: id => h.children.parkOpening(id) });
+    const text = board.view().lines.map(line => line.text).join('\n');
+    assert.match(text, /retomando após cota/);
+    assert.doesNotMatch(text, /retomada explícita|volta às/);
+    assert.equal(h.children.requiresExplicitRecovery(id), false);
+    assert.equal(openingNotice, true, 'the board is notified of the opening state');
+    const reports = h.reports.length;
+    await h.children.reportExplicitRecovery();
+    assert.equal(h.reports.length, reports);
+  } finally { unsubscribe(); release(); }
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'automatic resume completed');
+});
+
 test('an explicit no-op route continues once with the same identity and conversation', async t => {
   const h = await rig(t, {}, () => 'ok');
   const [id] = await h.children.spawn([{ task: 'no-op' }], h.dir);

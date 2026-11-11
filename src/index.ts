@@ -708,7 +708,7 @@ export default function optchat(pi: ExtensionAPI) {
       void sync.now();
       board?.close();
       board = new WaitingBoard({
-        requiresExplicitRecovery: id => children.requiresExplicitRecovery(id),
+        requiresExplicitRecovery: id => children.requiresExplicitRecovery(id), parkOpening: id => children.parkOpening(id),
         runs: () => children.runs(), live: id => { const run = children.live(id); return run && { updated: run.updated, toolAt: run.toolAt, busy: run.tools.size > 0, lastTool: run.lastTool }; }, shells: () => shells.list(),
         waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map((p): WaitItem => ({ text: `aprovação: ${p.summary}`, id: p.token, choices: ['aprovar', 'negar'] })) ?? [], ...stillWaiting(boardWaiting(readCommitments(active.dir), Date.now()), readWatch(active.dir))] : [],
       }, pi.events);

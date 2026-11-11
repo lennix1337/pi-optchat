@@ -1047,9 +1047,12 @@ export class Children {
   }
   /** Re-arms the parked runs a closed Pi left in the history; call once the profile is open. */
   resumeParked() { for (const run of this.history.records.values()) if (run.parked && !run.explicitRecovery && !this.uncertainRuns.has(run.id) && !this.parkTimers.has(run.id)) this.arm(run.id); }
+  parkOpening(id: string) {
+    return !!this.history.records.get(id)?.parked && (this.resuming.has(id) || this.retargeting.has(id) || this.parkResumes.has(id));
+  }
   requiresExplicitRecovery(id: string) {
     const run = this.history.records.get(id);
-    return !!run?.explicitRecovery && run.state === 'interrupted' && !this.parkTimers.has(id) && !this.running.has(id);
+    return !!run?.explicitRecovery && run.state === 'interrupted' && !this.parkTimers.has(id) && !this.running.has(id) && !this.parkOpening(id);
   }
   async reportExplicitRecovery() {
     const ids = [...this.history.records.values()].filter(run => this.requiresExplicitRecovery(run.id)).map(run => run.id);
@@ -1068,8 +1071,8 @@ export class Children {
         await this.track(this.launch([task], run.cwd, undefined, undefined, false, undefined, id));
       } else {
         const work = this.resume(id, QUOTA_BACK, undefined, undefined, generation);
-        this.parkResumes.set(id, work);
-        try { await this.track(work); } finally { if (this.parkResumes.get(id) === work) this.parkResumes.delete(id); }
+        this.parkResumes.set(id, work); this.changed();
+        try { await this.track(work); } finally { if (this.parkResumes.get(id) === work) { this.parkResumes.delete(id); this.changed(); } }
       }
     } catch (error) { await this.retryPark(id, error, generation); }
   }
@@ -1286,8 +1289,21 @@ export class Children {
     }
     this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error;
   }
-  /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
-  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number): Promise<string> {
+  private assertResumeOwner(run: RunInfo, caller: string | undefined) {
+    if (run.parentId === caller) return;
+    if (!run.parentId) throw new Error(`Only the main agent can resume ${run.id}.`);
+    const parent = this.running.get(run.parentId);
+    throw new Error(parent && ['running', 'waiting', 'paused'].includes(parent.info.state) ? `Only ${run.id}'s parent ${run.parentId} can resume it. Ask ${run.parentId} with tell.`
+      : `Only ${run.id}'s parent ${run.parentId} can resume it, and that parent is no longer running. Resume ${run.parentId} instead, or spawn a new subagent.`);
+  }
+  private resumeTranscript(run: RunInfo) {
+    let manager: SessionManager | undefined;
+    try { if (run.sessionFile && existsSync(run.sessionFile)) manager = SessionManager.open(run.sessionFile); } catch { manager = undefined; }
+    if (!manager?.getEntries().some(e => e.type === 'message')) throw new Error(`The saved transcript of ${run.id} is missing or unreadable, so it cannot be resumed. Spawn a fresh subagent and give it the context it needs.`);
+    if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${run.id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
+    return manager;
+  }
+  private prepareResume(id: string, message: string, caller: string | undefined, route?: RouteOverride) {
     if (this.uncertainRuns.has(id)) throw new Error(`${id} is blocked because storage recovery is uncertain; inspect the saved worker before resuming.`);
     const run = this.history.records.get(id);
     if (!run) throw new Error(`${id} belongs to pi-subagents and cannot be resumed by OptChat's runtime. Resume it with the subagent tool.`);
@@ -1296,22 +1312,25 @@ export class Children {
     if (run.connected) throw new Error(`${id} was a connected conversation with the user. It has ended and its handoff was delivered, so it cannot be resumed. Spawn a new subagent instead.`);
     const automatic = route && !this.retargeting.has(id) ? this.parkResumes.get(id) : undefined;
     if (!['completed', 'failed', 'stopped', 'interrupted'].includes(run.state) || this.retargeting.has(id) || this.resuming.has(id) && !automatic) throw new Error(`${id} is still finishing. Its report will arrive on its own.`);
-    if (run.parentId !== caller) {
-      if (!run.parentId) throw new Error(`Only the main agent can resume ${id}.`);
-      const parent = this.running.get(run.parentId);
-      throw new Error(parent && ['running', 'waiting', 'paused'].includes(parent.info.state) ? `Only ${id}'s parent ${run.parentId} can resume it. Ask ${run.parentId} with tell.`
-        : `Only ${id}'s parent ${run.parentId} can resume it, and that parent is no longer running. Resume ${run.parentId} instead, or spawn a new subagent.`);
-    }
+    this.assertResumeOwner(run, caller);
     if (this.closing) throw new Error('Profile is closing.');
     if (run.parked?.queued) throw new Error(`${id} is queued until ${untilText(run.parked.until, this.now())} (Brasília) because ${run.parked.provider} is out of quota; it has not started, so there is nothing to resume. It starts by itself.`);
     // One writer per repo holds for a resumed writer as for a new one.
     if (run.kind && (WRITER_KINDS as readonly string[]).includes(run.kind)) this.checkWriters([{ task: run.task, kind: run.kind as WorkerKind, cwd: run.cwd }], run.cwd, id);
     if (this.full(automatic ? 0 : 1)) throw new Error(`Profile limit: at most ${this.settings.maxAgents} active agents, including parents and descendants. ${id} can be resumed when one finishes.`);
-    let manager: SessionManager | undefined;
-    try { if (run.sessionFile && existsSync(run.sessionFile)) manager = SessionManager.open(run.sessionFile); } catch { manager = undefined; }
-    if (!manager?.getEntries().some(e => e.type === 'message')) throw new Error(`The saved transcript of ${id} is missing or unreadable, so it cannot be resumed. Spawn a fresh subagent and give it the context it needs.`);
-    if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
+    const manager = this.resumeTranscript(run);
     const { provider, model, thinking } = this.resumeModel(id, run, route);
+    return { run, text, automatic, manager, provider, model, thinking };
+  }
+  private resumeOpenValid(id: string, run: RunInfo, session: AgentSession, snapshot: Parameters<Children['retargetUnchanged']>[2], route?: RouteOverride, automaticGeneration?: number) {
+    const parent = run.parentId ? this.running.get(run.parentId) : undefined;
+    return !this.closing && (automaticGeneration === undefined || this.parkGeneration.get(id) === automaticGeneration)
+      && (!route || this.retargetUnchanged(id, run, snapshot) && session.model?.provider === snapshot.provider && session.model?.id === snapshot.model && session.thinkingLevel === snapshot.thinking)
+      && (!run.parentId || !!parent && ['running', 'waiting', 'paused'].includes(parent.info.state));
+  }
+  /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
+  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number): Promise<string> {
+    const { run, text, automatic, manager, provider, model, thinking } = this.prepareResume(id, message, caller, route);
     if (automatic) return this.preemptParkResume(id, run, automatic, message, caller, route!);
     const snapshot = { generation: this.parkGeneration.get(id), state: run.state, parked: run.parked, provider, model: model.id, thinking };
     this.launching++; this.resuming.add(id);
@@ -1319,8 +1338,7 @@ export class Children {
     try {
       const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
-      const parent = run.parentId ? this.running.get(run.parentId) : undefined;
-      if (this.closing || automaticGeneration !== undefined && this.parkGeneration.get(id) !== automaticGeneration || route && (!this.retargetUnchanged(id, run, snapshot) || session.model?.provider !== provider || session.model?.id !== model.id || session.thinkingLevel !== thinking) || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {
+      if (!this.resumeOpenValid(id, run, session, snapshot, route, automaticGeneration)) {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping, or the worker or route changed while opening; nothing was started.');
       }
       // The finished record stays untouched (and resumable) unless the new one is saved.
