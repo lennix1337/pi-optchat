@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -303,6 +304,31 @@ test('a code worker report carries the git appendix after its text and before th
     const failed = reports.find(text => text.startsWith(`[${again}]`))!;
     assert.ok(failed.startsWith(`[${again}] done\n\n[git] appendix unavailable: git is gone\n\nFull chat`), `one line saying why: ${failed}`);
   } finally { await close(); }
+});
+
+test('a code worker that works in its own worktree is reported with the branch of that worktree, not of the project checkout', async () => {
+  const { dir, reports, children, done, control, close } = await crewHarness();
+  const repo = mkdtempSync(join(tmpdir(), 'optchat-crew-wt-'));
+  const git = (cwd: string, ...args: string[]) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@test.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@test.invalid' } }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); };
+  try {
+    git(repo, 'init', '-q', '-b', 'main'); writeFileSync(join(repo, 'a.txt'), 'a\n');
+    git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'seed'); git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const work = join(repo, 'wt', 'job');
+    git(repo, 'worktree', 'add', '-q', '-b', 'fix/job', work, 'HEAD');
+    writeFileSync(join(work, 'b.txt'), 'b\n'); git(work, 'add', '-A'); git(work, 'commit', '-q', '-m', 'fix: job');
+    let release!: () => void;
+    control.hold = new Promise(resolve => { release = resolve; });
+    const [worker] = await children.spawn([{ task: CONTRACT, kind: 'code', project: 'harness' }], repo);
+    const live = (children as any).running.get(worker!);
+    (children as any).observe(live, { type: 'tool_execution_start', toolName: 'bash', toolCallId: 't1', args: { command: 'ls' } });
+    assert.equal(children.history.records.get(worker!)?.worktrees, undefined, 'staying in its own checkout records nothing');
+    (children as any).observe(live, { type: 'tool_execution_start', toolName: 'edit', toolCallId: 't2', args: { path: join(work, 'b.txt') } });
+    assert.deepEqual(children.history.records.get(worker!)?.worktrees, [work.replaceAll('\\', '/')]);
+    release(); await done(worker!);
+    const report = reports.find(text => text.startsWith(`[${worker}]`))!;
+    assert.match(report, /^\[git\] branch fix\/job: 1 commit ahead of origin\/main$/m);
+    assert.doesNotMatch(report, /branch main/);
+  } finally { await close(); removeDir(repo); void dir; }
 });
 
 test('specialists are the known four plus every folder of the crew dir; a project must be a slug, and the error lists the specialists', async () => {

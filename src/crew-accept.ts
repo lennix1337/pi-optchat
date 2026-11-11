@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { closed, readCommitments, updateCommitment } from './commitments.ts';
-import type { Proposal } from './crew.ts';
+import { repoRoot, type Proposal } from './crew.ts';
 import type { RunInfo } from './runs.ts';
 
 /** What a worker's report carries after its own text, and what the manager's one-call acceptance does (see `acceptRun`). */
@@ -57,6 +58,48 @@ export async function branchState(cwd: string, git: GitRunner = runGit): Promise
   const [log, count, diff] = await Promise.all([git(cwd, ['log', '--oneline', `-${APPENDIX_COMMITS}`, `${base}..HEAD`]), git(cwd, ['rev-list', '--count', `${base}..HEAD`]), git(cwd, ['diff', '--stat=100', `${base}...HEAD`])]);
   const stat = lines(need('diff --stat', diff));
   return { branch, base, commits: lines(need('log', log)), ahead: Number(need('rev-list', count).trim()) || 0, stat: stat.slice(0, -1), summary: stat.at(-1)?.trim() ?? '', dirty };
+}
+
+const sameRoot = (a: string, b: string) => { try { return realpathSync.native(a).toLowerCase() === realpathSync.native(b).toLowerCase(); } catch { return a.toLowerCase() === b.toLowerCase(); } };
+/** A shell command's `cd`, `pushd`, `Set-Location` and `git -C` targets: where the command goes to work. */
+const CD_TARGET = /(?:\b(?:cd(?:\s+\/d)?|pushd|Set-Location(?:\s+-(?:Literal)?Path)?)|\bgit\s+-C)\s+("[^"]+"|'[^']+'|[^\s;&|]+)/g;
+const SHELLS = new Set(['bash', 'powershell']);
+
+/** The git checkout a tool call works in when it is not the one the run started in, e.g. the worktree the worker made for its change: where an
+ * edit or write puts its file, or where a shell command `cd`s (or runs `git -C`). Reading elsewhere does not count. Undefined when the call stays in
+ * the run's own checkout or outside any. Workers start in the project's directory and branch off into a worktree by themselves, so this is where
+ * the run's real checkout is learned. */
+export function worktreeOf(tool: string, args: unknown, cwd: string): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const given = args as Record<string, unknown>;
+  const targets: string[] = [];
+  if (tool === 'edit' || tool === 'write') for (const key of ['path', 'file_path']) if (typeof given[key] === 'string') targets.push(given[key] as string);
+  if (SHELLS.has(tool) && typeof given.command === 'string') for (const found of given.command.matchAll(CD_TARGET)) targets.push(found[1]!.replace(/^(["'])(.*)\1$/, '$2'));
+  const own = repoRoot(cwd);
+  let landed: string | undefined;
+  for (const target of targets) {
+    const posix = process.platform === 'win32' ? target.replace(/^\/([a-zA-Z])\//, '$1:/') : target;
+    const root = repoRoot(isAbsolute(posix) ? posix : resolve(cwd, posix));
+    if (root && !(own && sameRoot(root, own))) landed = root;
+  }
+  return landed;
+}
+
+/** The directory a run's work lives in: the most recent worktree it worked in (see `worktreeOf`) that belongs to its repository and holds commits
+ * ahead of the base or uncommitted changes, else the run's own directory. A recorded worktree that is gone, unreadable, empty or of another
+ * repository is skipped. */
+export async function workCheckout(run: Pick<RunInfo, 'cwd' | 'worktrees'>, git: GitRunner = runGit): Promise<string> {
+  const common = async (dir: string) => { const got = await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']); return got.code === 0 ? got.out.trim() : undefined; };
+  for (const dir of run.worktrees ?? []) {
+    try {
+      if (!existsSync(dir)) continue;
+      const [theirs, ours] = await Promise.all([common(dir), common(run.cwd)]);
+      if (!theirs || !ours || !sameRoot(theirs, ours)) continue;
+      const state = await branchState(dir, git);
+      if (state && (state.ahead > 0 || state.dirty.length > 0)) return dir;
+    } catch { /* an unreadable candidate is not where the work is */ }
+  }
+  return run.cwd;
 }
 
 /** The compact appendix a worker's report carries: branch, commits ahead of origin/main, the diff stat, a dirty-tree warning.
@@ -122,14 +165,15 @@ export async function acceptRun(deps: AcceptDeps, input: { runId: string; title:
   if (!run) throw new Error(`No worker run ${runId}. Nothing was shipped.`);
   if (!run.kind || run.kind === 'plan') throw new Error(`Run ${runId} is not a code worker (a plan scout changes nothing). Nothing was shipped.`);
   if (!FINISHED.has(run.state)) throw new Error(`Run ${runId} is ${run.state}: accept it once it has reported. Nothing was shipped.`);
-  const state = await branchState(run.cwd, git);
-  if (!state) throw new Error(`Run ${runId}: ${run.cwd} is not a git checkout (gone?). Nothing was shipped.`);
-  if (state.dirty.length) throw new Error(`Run ${runId}: dirty tree in ${run.cwd} (${state.dirty.length} uncommitted: ${state.dirty.slice(0, 5).map(line => line.trim()).join(', ')}). Have the worker commit or discard them. Nothing was shipped.`);
-  if (state.branch.startsWith('(')) throw new Error(`Run ${runId}: ${run.cwd} is on a detached HEAD. Nothing was shipped.`);
+  const cwd = await workCheckout(run, git);
+  const state = await branchState(cwd, git);
+  if (!state) throw new Error(`Run ${runId}: ${cwd} is not a git checkout (gone?). Nothing was shipped.`);
+  if (state.dirty.length) throw new Error(`Run ${runId}: dirty tree in ${cwd} (${state.dirty.length} uncommitted: ${state.dirty.slice(0, 5).map(line => line.trim()).join(', ')}). Have the worker commit or discard them. Nothing was shipped.`);
+  if (state.branch.startsWith('(')) throw new Error(`Run ${runId}: ${cwd} is on a detached HEAD. Nothing was shipped.`);
   if (!state.base) throw new Error(`Run ${runId}: no origin/main to compare ${state.branch} with. Nothing was shipped.`);
   if (state.ahead === 0) throw new Error(`Run ${runId}: ${state.branch} has no commits ahead of ${state.base}. Nothing was shipped.`);
 
-  const shipped = await ship(run.cwd, ['--title', title, '-b', body]);
+  const shipped = await ship(cwd, ['--title', title, '-b', body]);
   const fields = parseShip(shipped.out), status = fields.status ?? (shipped.code === null ? 'uncertain' : 'failed');
   const head = `Run ${runId}, ${state.branch}, ${state.ahead} commit${state.ahead === 1 ? '' : 's'} ahead of ${state.base}`;
   if (shipped.code === null || shipped.code === 4 || status === 'uncertain') {

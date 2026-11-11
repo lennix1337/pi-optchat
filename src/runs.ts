@@ -10,6 +10,7 @@ import { textContent } from './transcript.ts';
 export const runStates = ['running', 'waiting', 'stopping', 'completed', 'failed', 'stopped', 'interrupted', 'paused'] as const;
 export type RunState = typeof runStates[number];
 export type FinishReason = 'complete' | 'disconnected' | 'owner-stopped' | 'failed';
+export const WORKTREES_KEPT = 4;
 export interface RunInfo {
   id: string; task: string; cwd: string; model: string; thinking: string;
   parentSession: string; sessionFile?: string; started: number; ended?: number;
@@ -18,6 +19,8 @@ export interface RunInfo {
   connected?: boolean;
   /** A contract worker's kind and project (manager mode); absent for a plain subagent. */
   kind?: string; project?: string;
+  /** The other git checkouts of the project this run worked in (the worktree it made for its change), most recent first, at most `WORKTREES_KEPT`; its report and `crew accept` read the branch there, not in `cwd`. */
+  worktrees?: string[];
   /** The other contract worker of an author-reviewer pair (set on both records) and the messages the pair has sent, both ways. */
   peer?: { id: string; sent: number };
   handoff?: { reason: FinishReason; text?: string; delivered?: boolean };
@@ -69,6 +72,7 @@ function isRun(value: unknown): value is RunInfo {
     && (value.report === undefined || typeof value.report === 'string')
     && (value.connected === undefined || typeof value.connected === 'boolean')
     && (value.cutOff === undefined || typeof value.cutOff === 'boolean')
+    && (value.worktrees === undefined || Array.isArray(value.worktrees) && value.worktrees.every(dir => typeof dir === 'string'))
     && (value.parks === undefined || typeof value.parks === 'number' && Number.isInteger(value.parks) && value.parks >= 0)
     && (value.parked === undefined || record(value.parked) && typeof value.parked.until === 'number' && Number.isFinite(value.parked.until) && typeof value.parked.reason === 'string'
       && typeof value.parked.provider === 'string' && typeof value.parked.attempts === 'number' && (value.parked.queued === undefined || typeof value.parked.queued === 'boolean'))
