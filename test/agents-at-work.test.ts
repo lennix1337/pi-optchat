@@ -58,8 +58,8 @@ test('the status line goes last, and the turn\'s cache mark sits on the block be
 });
 
 test('the status line also names running background shells, alone or with agents; a shell-only line is still recognised as the status line', () => {
-  assert.equal(atWork(board([], [{ id: 'sh1xxxxxxxx', command: 'npm run build -- --watch', last: 'built in 3s' }])), '[OptChat status] 13:49 pendente:\n- sh1xxxxx npm run build -- --watch · 1m · built in 3s');
-  assert.equal(atWork(board([{}], [{}])), '[OptChat status] 13:49 pendente:\n- a1 "Fix it" 1m · 0 tools · m\n- sh1 node server.js · 1m');
+  assert.equal(atWork(board([], [{ id: 'sh1xxxxxxxx', command: 'npm run build -- --watch', last: 'built in 3s' }])), '[OptChat status] 13:49 pendente:\n- shell npm run build -- --watch · 1m · built in 3s · sh1xxxxx');
+  assert.equal(atWork(board([{}], [{}])), '[OptChat status] 13:49 pendente:\n- a1 "Fix it" 1m · 0 tools · m\n- shell node server.js · 1m · sh1');
   assert.equal(atWork(board([], [])), undefined, 'nothing running, no line');
   const line = atWork(board([], [{}]))!;
   assert.equal(isAtWork({ role: 'user', content: [{ type: 'text', text: line }] }), true, 'cache marks skip it like the agents line');
