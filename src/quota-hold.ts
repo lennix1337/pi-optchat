@@ -43,11 +43,16 @@ export function untilText(at: number, now: number) {
 /**
  * Holds what would start a manager turn while every model the manager could run on is out of quota. One notice per outage;
  * when the cached quota (or a retry hint learned from a failed turn) says the models are back, everything held is released at once.
+ * A retry hint belongs to the provider whose turn failed: the host applies it to that provider's routes only, so a limit met
+ * on an account the failover tried never keeps the manager's own account out after its quota returns.
  */
 export interface OutageHost<T> {
   now(): number;
-  /** When the manager's models come back, from the cached quota; undefined when one of them is usable (or nothing is known). */
-  until(): number | undefined;
+  /**
+   * When the manager's models come back: the cached quota plus `learned` (retry hints still in the future, by provider id);
+   * undefined when one of them is usable (or nothing is known).
+   */
+  until(learned: Readonly<Record<string, number>>): number | undefined;
   notice(text: string): void;
   send(items: T[]): void;
   setTimer(run: () => void, ms: number): unknown;
@@ -55,16 +60,17 @@ export interface OutageHost<T> {
 }
 export class QuotaOutage<T> {
   private held: T[] = [];
-  private learned: number | undefined;
+  /** Retry hints from failed turns, by the provider that failed. */
+  private learned: Record<string, number> = {};
   private lastError: string | undefined;
   private timer: unknown;
   private open = false;
   constructor(private readonly host: OutageHost<T>) {}
   private blockedUntil() {
     const now = this.host.now();
-    if (this.learned !== undefined && this.learned <= now) this.learned = undefined;
-    const ends = [this.host.until(), this.learned].filter((at): at is number => at !== undefined && at > now);
-    return ends.length ? Math.max(...ends) : undefined;
+    this.learned = Object.fromEntries(Object.entries(this.learned).filter(([, at]) => at > now));
+    const until = this.host.until(this.learned);
+    return until !== undefined && until > now ? until : undefined;
   }
   /** True while the item is held: the caller must not start a turn for it. */
   offer(item: T) {
@@ -78,12 +84,19 @@ export class QuotaOutage<T> {
     this.arm(until);
     return true;
   }
-  /** A failed turn's error: when it is a quota error with a retry hint, the models stay out until then. */
-  note(error: string | undefined) {
-    if (!error || error === this.lastError) return;
-    this.lastError = error;
+  /** A failed turn's error: when it is a quota error with a retry hint, that provider stays out until then. */
+  note(error: string | undefined, provider: string) {
+    const failure = `${provider}: ${error}`;
+    if (!error || failure === this.lastError) return;
+    this.lastError = failure;
     const retryAt = quotaError(error, this.host.now())?.retryAt;
-    if (retryAt !== undefined) this.learned = Math.max(this.learned ?? 0, retryAt);
+    if (retryAt !== undefined) this.learned[provider] = Math.max(this.learned[provider] ?? 0, retryAt);
+  }
+  /** The manager's model changed: what was armed for the old one is judged again (released at once, or re-armed for the new one's time). */
+  recheck() {
+    if (!this.open) return;
+    if (this.timer !== undefined) this.host.clearTimer(this.timer);
+    this.release();
   }
   get holding() { return this.held.length; }
   private arm(until: number) {
@@ -100,6 +113,6 @@ export class QuotaOutage<T> {
   }
   close() {
     if (this.timer !== undefined) this.host.clearTimer(this.timer);
-    this.timer = undefined; this.held = []; this.open = false; this.learned = undefined; this.lastError = undefined;
+    this.timer = undefined; this.held = []; this.open = false; this.learned = {}; this.lastError = undefined;
   }
 }

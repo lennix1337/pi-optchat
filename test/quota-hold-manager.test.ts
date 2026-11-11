@@ -20,7 +20,7 @@ const pi: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
 
 const setQuota = (state: object) => { mkdirSync(dirname(QUOTA_FILE), { recursive: true }); writeFileSync(QUOTA_FILE, JSON.stringify(state)); };
 
-test('while the main agent has no quota, worker reports start no turn and no error; when it returns, one turn carries them all, after one notice', { timeout: 30000 }, async t => {
+for (const recovery of ['its quota returns at the time it was told', 'the operator switches the main model to an account with quota'] as const) test(`while the main agent has no quota, worker reports start no turn and no error; when ${recovery}, even after another account hit a long limit, one turn carries them all, after one notice`, { timeout: 30000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'quota-manager-')), oldHome = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = dir;
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('external fetch forbidden'); });
@@ -94,8 +94,13 @@ test('while the main agent has no quota, worker reports start no turn and no err
     assert.equal(outageNotices.length, 1, `one notice: ${JSON.stringify(notices)}`);
     assert.match(outageNotices[0], /^cota esgotada em todas as contas; volto às \d\d:\d\d \(Brasília\)$/);
 
+    // The failover tried another account meanwhile and got a 16-hour limit: it says nothing about the main agent's account.
+    const failed: AssistantMessage = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'You have hit your ChatGPT usage limit (team plan). Try again in ~998 min.',
+      api: 'openai-completions', provider: 'other-account', model: 'main', timestamp: Date.now(), usage: emptyUsage() };
+    await session.extensionRunner!.emit({ type: 'message_end', message: failed } as never);
     setQuota({});
-    fire!();
+    if (recovery.startsWith('its')) fire!();
+    else await session.extensionRunner!.emit({ type: 'model_select', model: runtime.getModel('fixture', 'child'), previousModel: runtime.getModel('fixture', 'main'), source: 'set' } as never);
     await until(() => reportRequests.length > 0 && session!.isIdle, 'the held reports processed');
     await new Promise(r => timer(r, 300));
     assert.equal(turns, quiet.turns + 1, 'one turn for all the reports');

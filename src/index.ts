@@ -598,12 +598,13 @@ export default function optchat(pi: ExtensionAPI) {
       outage?.close();
       outage = new QuotaOutage<Report>({ now: () => Date.now(),
         // Cached quota only, across the accounts of the main model's family: undefined when one of them is usable or nothing is known.
-        until: () => {
+        // The hints learned from failed turns count per provider, like the failed-wake blocks of a wake.
+        until: learned => {
           const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id }), own = active?.config;
           if (!model || !own) return undefined;
           const state = readJsonOr<unknown>(QUOTA_FILE, {});
-          const routes = wakeRoutes({ ...own, wakeModel: undefined, wakeRouteAcrossFamilies: false }, model, knownProviders(state), pi.getThinkingLevel());
-          const decision = pickWakeRoute(routes, state, {}, Date.now(), choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
+          const routes = wakeRoutes({ ...own, wakeModel: undefined, wakeRouteAcrossFamilies: false }, model, knownProviders(state, learned), pi.getThinkingLevel());
+          const decision = pickWakeRoute(routes, state, learned, Date.now(), choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
           return decision?.choice ? undefined : decision?.until;
         },
         notice: text => ctx.ui.notify(text, 'warning'),
@@ -755,7 +756,7 @@ export default function optchat(pi: ExtensionAPI) {
     // Pi sets its own title once every session_start handler has finished, so put ours back afterwards.
     for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
   });
-  pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; active?.sync.schedule(); });
+  pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; outage?.recheck(); active?.sync.schedule(); });
   pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
   pi.on('session_shutdown', async event => {
     if (event.reason === 'reload') noteReload();
@@ -907,7 +908,7 @@ export default function optchat(pi: ExtensionAPI) {
   const DUPLICATE_REPORT = '(duplicate report, already delivered)';
   pi.on('message_end', async (event, ctx) => {
     turn.push(event.message);
-    if (event.message.role === 'assistant' && event.message.stopReason === 'error') outage?.note(event.message.errorMessage);
+    if (event.message.role === 'assistant' && event.message.stopReason === 'error') outage?.note(event.message.errorMessage, event.message.provider);
     if (heartbeat?.waking) {
       const original = event.message;
       if (original.role === 'assistant') {
