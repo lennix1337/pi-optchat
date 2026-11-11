@@ -16,7 +16,8 @@ const safe = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 100
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const LIMIT = 50;
 
-function config(owner: Pick<AssistantOwner, 'dir' | 'name'>) {
+/** `name` undefined (a monitor that only has the profile directory) accepts whichever profile the file names. */
+function config(owner: Pick<AssistantOwner, 'dir'> & { name?: string }) {
   let raw: string;
   try {
     const fd = openSync(join(owner.dir, 'assistant.json'), constants.O_RDONLY | constants.O_NONBLOCK);
@@ -34,7 +35,7 @@ function config(owner: Pick<AssistantOwner, 'dir' | 'name'>) {
   }
   try {
     const v: unknown = JSON.parse(raw);
-    if (!record(v) || Object.keys(v).sort().join(',') !== 'endpoint,profileId,token,version' || v.version !== 1 || v.profileId !== owner.name || typeof v.endpoint !== 'string' || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(v.endpoint) || typeof v.token !== 'string' || !v.token.trim() || !/^[\x21-\x7e]+$/.test(v.token)) throw 0;
+    if (!record(v) || Object.keys(v).sort().join(',') !== 'endpoint,profileId,token,version' || v.version !== 1 || (owner.name !== undefined && v.profileId !== owner.name) || typeof v.endpoint !== 'string' || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(v.endpoint) || typeof v.token !== 'string' || !v.token.trim() || !/^[\x21-\x7e]+$/.test(v.token)) throw 0;
     const port = Number(v.endpoint.slice(v.endpoint.lastIndexOf(':') + 1));
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw 0;
     return { endpoint: v.endpoint, token: v.token };

@@ -368,6 +368,25 @@ async function startSlack(config: Config, settings: SlackConfig, store: import('
   return { stop() { for (const c of closers) if (c) 'stop' in c ? c.stop() : c.close(); }, ...(bridge ? { bridge } : {}) };
 }
 
+/**
+ * The one log line a failed listen leaves, starting with a fixed `Listen failed: <code>` that `start.mjs` reads back.
+ * On Windows, WinNAT/Hyper-V reserves TCP ranges that change at boot (`netsh interface ipv4 show excludedportrange
+ * protocol=tcp`) and a listen inside one fails with EACCES, which looked like a bare "Listen failed." for five hours.
+ */
+export function listenFailureMessage(error: NodeJS.ErrnoException, port: number, platform: NodeJS.Platform = process.platform): string {
+  const code = typeof error.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code) ? error.code : 'UNKNOWN';
+  const where = `127.0.0.1:${port}`;
+  if (code === 'EACCES') {
+    return platform === 'win32'
+      ? `Listen failed: EACCES on ${where}. Windows reserves this port (an excluded TCP port range: netsh interface ipv4 show excludedportrange protocol=tcp). Use a port below 49152 in the endpoint.`
+      : `Listen failed: EACCES on ${where}. The port needs privileges or is not permitted; use an unprivileged port (1024-49151).`;
+  }
+  if (code === 'EADDRINUSE') {
+    return `Listen failed: EADDRINUSE on ${where} (address in use). Another process listens on this port${platform === 'win32' ? ' (or Windows reserved it); use a port below 49152' : ''}.`;
+  }
+  return `Listen failed: ${code} on ${where}.`;
+}
+
 /** Exported for the shutdown test; `main` is the only production caller. */
 export function serve(server: Server, store: { close(): void | Promise<void> }, config: Config): void {
   let closing = false;
@@ -392,12 +411,13 @@ export function serve(server: Server, store: { close(): void | Promise<void> }, 
   const stopFile = process.env.OPTCHAT_ASSISTANT_STOP_FILE;
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+  const port = Number(config.endpoint.slice(config.endpoint.lastIndexOf(':') + 1));
   server.once('error', (error: NodeJS.ErrnoException) => {
-    console.error(error.code === 'EADDRINUSE' ? 'Listen failed: address in use.' : 'Listen failed.');
+    console.error(listenFailureMessage(error, port));
     process.exitCode = 1;
     if (!closing) { closing = true; void Promise.resolve(store.close()).catch(() => { console.error('Assistant resource shutdown failed.'); process.exitCode = 1; }); }
   });
-  server.listen(Number(config.endpoint.slice(config.endpoint.lastIndexOf(':') + 1)), '127.0.0.1', () => {
+  server.listen(port, '127.0.0.1', () => {
     if (stopFile && isAbsolute(stopFile)) stopWatch = setInterval(() => { if (existsSync(stopFile)) shutdown(); }, 200);
     const profile = config.profileId.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ').slice(0, 200);
     console.log(`Assistant listening: profile ${profile} at ${config.endpoint}; database opened.`.replaceAll(config.token, '[redacted]'));
