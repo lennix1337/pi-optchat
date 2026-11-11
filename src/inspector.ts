@@ -5,7 +5,7 @@ import type { ShellJobs } from './shells.ts';
 import type { Memory } from './memory.ts';
 import { isActiveRun, isRunning, type RunInfo } from './runs.ts';
 import { externalAction } from './external-runs.ts';
-import { agentModel } from './agent-model.ts';
+import { ago, compact, modelColumn, panelOrder, runTag, stateCounts, taskLabel, toolBrief } from './agent-rows.ts';
 import type { Usage } from '@earendil-works/pi-ai';
 import { ranges, summarizeUsage, type UsageLedger, type UsageRange, type UsageRole } from './usage.ts';
 
@@ -63,25 +63,36 @@ interface Options {
   context: () => number | null | undefined;
   refreshUsage?: () => void;
   signal?: AbortSignal;
+  /** The clock the panel reads; tests set it. */
+  now?: () => number;
 }
 
 /** UI projection only: inspecting never injects child transcripts into parent memory. */
-/** One panel row: the task, the status, the model and the duration of a run. */
-function panelRow(run: RunInfo, children: Children) {
+/** One panel row: what the run is (tag and own goal), what it is doing now or when it ended, its model when unusual, and its duration. */
+function panelRow(run: RunInfo, children: Children, now: number, modelOf: (run: RunInfo) => string) {
   const external = run.source === 'pi-subagents';
-  const live = children.live(run.id), tools = live ? [...live.tools.values()].map(t => t.name).join(', ') : '';
+  const live = children.live(run.id), tools = live ? [...live.tools.values()].map((t, i) => i ? t.name : toolBrief(t.name, t.args)).join(' · ') : '';
   const queued = run.guidance.filter(g => g.state === 'queued').length, undelivered = run.guidance.filter(g => g.state === 'undelivered').length;
   const guidance = [queued && `${queued} message${queued === 1 ? '' : 's'} queued`, undelivered && `${undelivered} message${undelivered === 1 ? '' : 's'} not delivered`].filter(Boolean).join(' · ');
   const activity = external ? (run.state === 'running' ? 'running via pi-subagents' : run.state)
     : run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live?.streaming ? 'responding' : 'working');
-  const status = live ? `${guidance ? `${guidance} · ` : ''}${activity} · updated ${elapsed(Date.now() - live.updated)} ago`
-    : external ? `π ${activity}${guidance ? ` · ${guidance}` : ''}` : `${run.state}${guidance ? ` · ${guidance}` : ''}`;
+  const active = isActiveRun(run);
+  // A live run says what it does right after its label; a finished one says when it ended, in the right-hand column.
+  const tail = `${guidance ? ` · ${guidance}` : ''}${live ? ` · ${ago(now - live.updated)} ago` : ''}`;
+  const doing = external ? activity : live ? activity : run.state;
+  const duration = run.durationUnknown ? '—' : compact((run.ended ?? now) - run.started);
+  const endedAgo = run.durationUnknown ? '' : `${ago(now - (run.ended ?? run.started))} ago`;
+  const outcome = run.state === 'completed' ? '' : `${run.state} `;
   return {
     run,
-    task: `${'  '.repeat(run.depth - 1)}${external ? 'π ' : run.parentId ? '↳ ' : ''}${oneLine(run.task)}`,
-    status,
-    model: agentModel(run),
-    time: run.durationUnknown ? '—' : elapsed((run.ended ?? Date.now()) - run.started),
+    tag: runTag(run),
+    prefix: `${'  '.repeat(run.depth - 1)}${external ? 'π ' : run.parentId ? '↳ ' : ''}`,
+    label: oneLine(taskLabel(run.task)),
+    // A finished run keeps only what still needs the operator: messages that never arrived.
+    doing: active ? doing : guidance, doingTail: active ? tail : '',
+    model: modelOf(run),
+    time: active ? duration : [`${outcome}${endedAgo}`.trim(), duration].filter(Boolean).join(' · '),
+    failed: run.state === 'failed',
   };
 }
 
@@ -104,7 +115,7 @@ export class Inspector implements Component, Focusable {
   private readonly timer: ReturnType<typeof setInterval>;
   constructor(private readonly options: Options) {
     this.page = options.page;
-    this.selected = options.children.runs()[0]?.id;
+    this.selected = this.runs()[0]?.id;
     this.unsubscribe = [options.children.subscribe(() => options.redraw()), options.memory.onChange(() => options.redraw()), ...(options.shells ? [options.shells.subscribe(() => options.redraw())] : [])];
     this.timer = setInterval(() => { options.refreshUsage?.(); options.redraw(); }, 1000); this.timer.unref();
     options.signal?.addEventListener('abort', this.abort, { once: true });
@@ -118,8 +129,11 @@ export class Inspector implements Component, Focusable {
   invalidate() {}
   /** Body rows left after the rules, title, hint and spacing; the rest of the screen keeps the footer visible. */
   private get height() { return Math.max(1, Math.floor(this.options.rows() * 0.8) - 6 - (this.hintLines - 1)); }
+  /** The runs in the order the panel shows them. */
+  private runs() { return panelOrder(this.options.children.runs(), this.now()); }
+  private now() { return this.options.now?.() ?? Date.now(); }
   private select(delta: number) {
-    const list = this.options.children.runs();
+    const list = this.runs();
     const index = Math.max(0, list.findIndex(r => r.id === this.selected));
     this.selected = list[Math.max(0, Math.min(list.length - 1, index + delta))]?.id;
   }
@@ -163,7 +177,7 @@ export class Inspector implements Component, Focusable {
   }
   /** Once the run is gone, the cursor moves to the next row that is not, else the one above. */
   private remove(id: string) {
-    const { children } = this.options, list = children.runs(), run = children.info(id);
+    const { children } = this.options, list = this.runs(), run = children.info(id);
     const doomed = new Set([id, ...(run?.source === 'pi-subagents' ? [] : children.descendants(id).map(r => r.id))]);
     const index = list.findIndex(r => r.id === id), next = list.slice(index).find(r => !doomed.has(r.id)) ?? list.slice(0, index).findLast(r => !doomed.has(r.id));
     if (run?.source === 'pi-subagents') { this.removeExternal(id, run, next); return; }
@@ -312,28 +326,39 @@ export class Inspector implements Component, Focusable {
       info = this.page === 'usage' || lines.length > this.height ? `${this.scroll + 1}–${Math.min(this.scroll + this.height, lines.length)} / ${lines.length}` : '';
       hint = this.page === 'usage' ? '←→ period · ↑↓ scroll · Tab activity · Esc close' : '↑↓ scroll · Tab shells · Esc close';
     } else {
-      const list = children.runs();
+      const list = this.runs(), now = this.now();
       if (!this.selected) this.selected = list[0]?.id;
       const cursor = Math.max(0, list.findIndex(r => r.id === this.selected));
       this.top = Math.max(0, Math.min(this.top, list.length - this.height));
       if (cursor < this.top) this.top = cursor;
       if (cursor >= this.top + this.height) this.top = cursor - this.height + 1;
-      const rows = list.slice(this.top, this.top + this.height).map(run => panelRow(run, children));
-      // Task · actual model(thinking) · status · duration. Hide metadata before losing the task on narrow screens.
-      const timeWidth = Math.max(0, ...rows.map(r => r.time.length));
-      const modelWidth = inner >= 64 ? Math.min(36, Math.floor(inner * 0.3), Math.max(0, ...rows.map(r => visibleWidth(r.model)))) : 0;
-      let statusWidth = Math.min(Math.max(0, ...rows.map(r => visibleWidth(r.status))), Math.floor(inner * 0.4));
-      if (inner - 2 - statusWidth - modelWidth - timeWidth - 6 < 12) statusWidth = 0;
-      const taskWidth = Math.max(1, inner - 2 - timeWidth - 2 - (statusWidth ? statusWidth + 2 : 0) - (modelWidth ? modelWidth + 2 : 0));
-      body = rows.map(({ run, task, model, status, time }) => {
-        const selected = run.id === this.selected;
-        const name = truncateToWidth(fit(task, taskWidth), taskWidth, '', true);
-        const meta = `${modelWidth ? `${truncateToWidth(fit(model, modelWidth), modelWidth, '', true)}  ` : ''}${statusWidth ? `${truncateToWidth(fit(status, statusWidth), statusWidth, '', true)}  ` : ''}${time.padStart(timeWidth)}`;
-        return selected ? color('accent', `→ ${name}  ${meta}`) : `  ${name}  ${color('muted', meta)}`;
+      const modelOf = modelColumn(list);
+      const rows = list.slice(this.top, this.top + this.height).map(run => panelRow(run, children, now, modelOf));
+      // [tag] goal, what it is doing, then the right-hand column: model when unusual, outcome and duration. Metadata goes before the goal does.
+      const timeWidth = Math.max(0, ...rows.map(r => visibleWidth(r.time)));
+      const modelWidth = inner >= 64 ? Math.min(24, Math.max(0, ...rows.map(r => visibleWidth(r.model)))) : 0;
+      const rightWidth = (modelWidth ? modelWidth + 2 : 0) + timeWidth;
+      const leftWidth = Math.max(1, inner - 2 - rightWidth - 2);
+      body = rows.map(({ run, prefix, tag, label, doing, doingTail, model, time, failed }) => {
+        const tagText = inner >= 64 && tag ? `${fit(tag, 24)} ` : '', room = Math.max(1, leftWidth - visibleWidth(prefix) - visibleWidth(tagText));
+        // The goal keeps what it needs up to 65% of the room; what the agent does now takes the rest, its tail (queued messages, last update) kept whole.
+        const doingFull = visibleWidth(doing) + visibleWidth(doingTail);
+        const labelWidth = Math.min(visibleWidth(label), Math.max(Math.ceil(room * 0.65), room - doingFull - 2));
+        const doingRoom = room - labelWidth - 2, showDoing = doingFull > 0 && doingRoom >= 14;
+        const pad = (text: string, width: number) => truncateToWidth(fit(text, width), width, '', true);
+        const tailWidth = visibleWidth(doingTail);
+        const doingText = !showDoing ? '' : doingRoom < tailWidth + 6 ? `  ${fit(`${doing}${doingTail}`, doingRoom)}` : `  ${fit(doing, doingRoom - tailWidth)}${doingTail}`;
+        const parts = [prefix + tagText, pad(label, labelWidth), doingText];
+        const used = parts.reduce((sum, part) => sum + visibleWidth(part), 0);
+        const left = [parts[0], parts[1], parts[2], ' '.repeat(Math.max(0, leftWidth - used))];
+        const right = `${modelWidth ? `${pad(model, modelWidth)}  ` : ''}${time.padStart(timeWidth)}`;
+        if (run.id === this.selected) return color('accent', `→ ${left.join('')}  ${right}`);
+        const paint = (tone: Tone, text: string) => text && color(failed ? 'error' : tone, text);
+        return `  ${paint('dim', left[0])}${failed ? paint('muted', left[1]) : left[1]}${paint('muted', left[2])}${left[3]}  ${paint('muted', right)}`;
       });
       if (!body.length) body.push(color('muted', 'No agents yet. Ask the main agent to delegate a task.'));
-      const selectedRun = list.find(r => r.id === this.selected), piRuns = list.filter(r => r.source === 'pi-subagents').length;
-      info = `${list.filter(isActiveRun).length} active · ${list.length} saved${piRuns ? ` · ${piRuns} π` : ''}${list.length ? ` · ${cursor + 1}/${list.length}` : ''}`;
+      const selectedRun = list.find(r => r.id === this.selected);
+      info = `${stateCounts(list, now)}${list.length > this.height ? ` · ${cursor + 1}/${list.length}` : ''}`;
       hint = this.confirmDelete ? (() => {
         const target = list.find(r => r.id === this.confirmDelete);
         if (target?.source !== 'pi-subagents') {
