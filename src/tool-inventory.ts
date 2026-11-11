@@ -9,8 +9,12 @@ export interface ToolRow {
   name: string;
   source: string;
   exposure: ToolInfo['exposure'];
-  /** Declared to the model on the next request (active and not hidden). */
+  /** Declared to the model on the next request (active, not hidden, and not a lazy tool). */
   declared: boolean;
+  /** Active and callable from `codemode`, but its declaration is left out of requests (see lazy-tools.ts). */
+  lazy: boolean;
+  /** `name(arg, optional?)`: how a script calls it. */
+  signature: string;
   /** Named somewhere in the instructions, skills or project context, outside tool definitions. */
   named: boolean;
   /** UTF-8 bytes of the declaration: description, parameter schema and prompt guidelines. */
@@ -39,13 +43,21 @@ export function names(text: string, name: string): boolean {
 
 const bytes = (value: unknown) => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value ?? ''), 'utf8');
 
-export function inventory(tools: readonly ToolInfo[], active: readonly string[], systemPrompt: string): ToolRow[] {
-  const text = instructionText(systemPrompt), declared = new Set(active);
+const signatureOf = (tool: ToolInfo) => {
+  const schema = tool.parameters as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+  const required = new Set(schema?.required ?? []);
+  return `${tool.name}(${Object.keys(schema?.properties ?? {}).map(key => required.has(key) ? key : `${key}?`).join(', ')})`;
+};
+
+export function inventory(tools: readonly ToolInfo[], active: readonly string[], systemPrompt: string, lazy: ReadonlySet<string> = new Set()): ToolRow[] {
+  const text = instructionText(systemPrompt), activeNames = new Set(active);
   return tools.filter(tool => tool.exposure !== 'hidden').map(tool => ({
     name: tool.name,
     source: sourceOf(tool.sourceInfo),
     exposure: tool.exposure,
-    declared: declared.has(tool.name),
+    declared: activeNames.has(tool.name) && !lazy.has(tool.name),
+    lazy: activeNames.has(tool.name) && lazy.has(tool.name),
+    signature: signatureOf(tool),
     named: names(text, tool.name),
     bytes: bytes(tool.description) + bytes(tool.parameters) + bytes(tool.promptGuidelines ?? []),
     summary: (tool.description ?? '').split(/(?<=[.!?])\s|\n/)[0]!.slice(0, 120),
@@ -55,13 +67,13 @@ export function inventory(tools: readonly ToolInfo[], active: readonly string[],
 /** Declared tools the instructions never name; builtins are described by Pi itself. */
 export const unnamed = (rows: readonly ToolRow[]) => rows.filter(r => r.declared && !r.named && r.source !== 'builtin').map(r => r.name);
 
-/** Deferred extension tools stay out of the declarations; one line each keeps them known by name.
+/** Deferred and lazy extension tools stay out of the declarations; one line each keeps them known by name, a lazy one with its arguments.
  * MCP tools are excluded: their servers are already listed, and they can number in the dozens. */
 export function onDemandIndex(rows: readonly ToolRow[]): string {
-  const own = rows.filter(r => !r.declared && r.exposure === 'deferred' && r.source !== 'builtin' && !r.name.startsWith('mcp__'));
+  const own = rows.filter(r => !r.declared && (r.lazy || r.exposure === 'deferred') && r.source !== 'builtin' && !r.name.startsWith('mcp__'));
   if (!own.length) return '';
-  return ['Declared on demand to save tokens. Call them from `codemode` as `tools.<name>(args)`; `describeTool("<name>")` gives the arguments.',
-    ...own.map(r => `- ${r.name} (${r.source}): ${r.summary}`)].join('\n');
+  return ['Declared on demand to save tokens. Call them from `codemode` as `tools.<name>(args)`; `describeTool("<name>")` gives the arguments and the rules of use.',
+    ...own.map(r => r.lazy ? `- ${r.signature}: ${r.summary.slice(0, 80)}` : `- ${r.name} (${r.source}): ${r.summary}`)].join('\n');
 }
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
@@ -73,7 +85,7 @@ export function renderTools(rows: readonly ToolRow[]): string {
   for (const source of sources) {
     const own = rows.filter(r => r.source === source);
     const on = own.filter(r => r.declared).map(r => `${r.name}${r.named ? '' : '*'} ${kb(r.bytes)}`);
-    const off = own.filter(r => !r.declared).map(r => `${r.name} (${r.exposure})`);
+    const off = own.filter(r => !r.declared).map(r => `${r.name} (${r.lazy ? 'declaration hidden' : r.exposure})`);
     lines.push(`- ${source}: ${on.length ? on.join(', ') : 'none declared'}${off.length ? `; on demand: ${off.join(', ')}` : ''}`);
   }
   const missing = unnamed(rows);
@@ -83,8 +95,8 @@ export function renderTools(rows: readonly ToolRow[]): string {
   return lines.join('\n');
 }
 
-export function registerToolInventory(pi: ExtensionAPI) {
-  const rows = (ctx: ExtensionContext) => inventory(pi.getAllTools(), pi.getActiveTools(), ctx.getSystemPrompt());
+export function registerToolInventory(pi: ExtensionAPI, lazy: () => ReadonlySet<string> = () => new Set()) {
+  const rows = (ctx: ExtensionContext) => inventory(pi.getAllTools(), pi.getActiveTools(), ctx.getSystemPrompt(), lazy());
   pi.registerCommand('tools', {
     description: 'List the tools the model can reach by package, their declaration size, and which ones the instructions never name',
     handler: async (_args, ctx) => ctx.ui.notify(renderTools(rows(ctx)), 'info'),
@@ -101,7 +113,7 @@ export function registerToolInventory(pi: ExtensionAPI) {
   // Its own section, so other handlers that rewrite the instructions leave it alone; the text only
   // changes when the tool set does, so the cached prompt prefix survives ordinary turns.
   pi.on('before_agent_start', event => {
-    const index = onDemandIndex(inventory(pi.getAllTools(), pi.getActiveTools(), ''));
+    const index = onDemandIndex(inventory(pi.getAllTools(), pi.getActiveTools(), '', lazy()));
     if (index) event.systemPromptOptions.sections.on_demand_tools = index;
     else delete event.systemPromptOptions.sections.on_demand_tools;
   });
