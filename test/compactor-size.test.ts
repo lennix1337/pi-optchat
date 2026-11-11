@@ -262,3 +262,18 @@ test('handoffs clamp the compactor\'s thinking level too', async () => {
     assert.equal(sent, 'low', 'the fixture asks for "off"');
   } finally { removeDir(dir); }
 });
+
+/** The system prompt the compactor's request carried, read from what the provider received. */
+async function promptSent(shared: Shared) {
+  const stats = { calls: 0, prefixes: [] as string[] };
+  await attempts(1, { shared, stats, replies: ['x'.repeat(100)] });
+  return (JSON.parse(stats.prefixes[0]!) as [unknown, { content: string }])[1].content;
+}
+
+test('a compactor on another model than the turns leaves out the turns\' prompt when the shared one offers a lean one', async () => {
+  const full = 'FULL TURN PROMPT with project instructions and skills', lean = 'RECIPE ONLY';
+  assert.equal(await promptSent({ systemPrompt: full, lean, model: { provider: 'main', model: 'other' } }), lean);
+  assert.equal(await promptSent({ systemPrompt: full, model: { provider: 'main', model: 'other' } }), full, 'with no lean prompt offered, the shared one stays');
+  assert.equal(await promptSent({ systemPrompt: full, lean, model: { provider: 'optchat-test', model: 'compactor' } }), full,
+    'the same model reads the turns\' cache, so it keeps their prompt');
+});
