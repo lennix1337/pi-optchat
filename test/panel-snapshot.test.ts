@@ -34,7 +34,7 @@ const board: BoardInput = {
 const footer: FooterInput = {
   now: NOW, spend: 44.93, context: { tokens: 197_000, window: 1_000_000 },
   quota: { label: 'Claude', w5h: { used: 21, resetAt: Date.parse('2026-11-11T21:39:00Z') }, w7d: { used: 71, resetAt: Date.parse('2026-11-14T21:39:00Z') } },
-  goalStatus: 'goal: unfocused [2 open] - /goal-focus',
+  goalStatus: 'meta: 2 abertas · /goal-focus',
 };
 
 const panel = (width: number) => [...renderWaitingBoard(boardView(board), width, plain, 'F6'), ...footerRows(footer, width, plain, 'F6')];
@@ -51,7 +51,7 @@ for (const width of [80, 120]) {
 test('the footer holds today\'s spend, the context, the quota windows with their reset time and the goal state, in Portuguese, nothing else', () => {
   const [rule, line] = footerRows(footer, 200, plain);
   assert.equal(rule, '─'.repeat(200));
-  assert.equal(line, '$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71% · meta: 2 em aberto · /goal-focus');
+  assert.equal(line, '$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71% · meta: 2 abertas · /goal-focus');
   assert.doesNotMatch(line, /saved|\bR\d|\bW\d|\bCH\d|agent/i);
 });
 
