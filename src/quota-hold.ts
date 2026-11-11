@@ -99,6 +99,7 @@ export class QuotaOutage<T> {
     this.release();
   }
   get holding() { return this.held.length; }
+  holds(item: T) { return this.held.includes(item); }
   private arm(until: number) {
     if (this.timer !== undefined) this.host.clearTimer(this.timer);
     this.timer = this.host.setTimer(() => this.release(), Math.max(0, until - this.host.now()) + OUTAGE_MARGIN_MS);

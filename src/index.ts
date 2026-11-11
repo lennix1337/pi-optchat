@@ -37,6 +37,7 @@ import { saveImages } from './images.ts';
 import { wakeOff, wakeOn, type WakeHost } from './wake-model.ts';
 import { quietGhTelemetry } from './gh-quiet.ts';
 import { basicPythonRepl } from './python-repl.ts';
+import { reportsBlockReload } from './pending-reports.ts';
 import { asUser, boundedMessage, atWork, budgetContext, buildContext, coldBudget, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
@@ -267,7 +268,7 @@ export default function optchat(pi: ExtensionAPI) {
   let fault: string | undefined;
   /** Reports not yet in memory. `count`: how many subagent reports the text joins. `batch`: held while the rest of that spawn runs, not sent yet.
    * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
-  let reports: { text: string; count?: number; batch?: string; steered?: boolean; runIds?: string[]; workerRecovery?: boolean; awaitingProcessing?: boolean; observed?: boolean; responded?: boolean }[] = [];
+  let reports: { text: string; count?: number; batch?: string; steered?: boolean; sentAt?: number; runIds?: string[]; workerRecovery?: boolean; awaitingProcessing?: boolean; observed?: boolean; responded?: boolean }[] = [];
   type Report = (typeof reports)[number];
   /** While every model the main agent could run on is out of quota, reports wait here instead of starting turns that would fail (see quota-hold.ts). */
   let outage: QuotaOutage<Report> | undefined;
@@ -363,7 +364,7 @@ export default function optchat(pi: ExtensionAPI) {
     ctx.ui.setStatus('optchat', `OptChat: ${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
   };
   // `steered` describes this process's Pi queue, so it is not journaled.
-  const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => ['steered', 'observed', 'responded'].includes(key) ? undefined : value)); };
+  const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => ['steered', 'sentAt', 'observed', 'responded'].includes(key) ? undefined : value)); };
   /** A report already journaled when the model first saw it: its replay is processed, not logged twice. */
   const isReplayedReport = (message: AgentMessage, receipt: string | undefined) => !!receipt?.startsWith(REPORT_RECEIPT) && message.role === 'user'
     && reports.some(r => r.awaitingProcessing && r.text === textContent(message.content))
@@ -388,7 +389,7 @@ export default function optchat(pi: ExtensionAPI) {
   const sendReport = (report: Report) => { if (!outage?.offer(report)) dispatchReport(report); };
   const dispatchReport = (report: Report) => {
     const { text, count } = report;
-    report.steered = !idle();
+    report.steered = !idle(); report.sentAt = Date.now();
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
     else pi.sendUserMessage(text, { deliverAs: 'steer', expandPromptTemplates: false });
   };
@@ -1205,7 +1206,7 @@ export default function optchat(pi: ExtensionAPI) {
       (remote || joined) && 'Reload belongs to the original local session, not a connected window.',
       (importing || pendingImport(active.dir)) && 'Finish or close the import first.',
       active.children.active && 'OptChat subagents are active; wait for their completion.',
-      reports.length > 0 && 'Pending reports must be delivered first.',
+      reportsBlockReload(reports, Date.now(), r => !!outage?.holds(r as Report)),
       active.operations.blockReason('self_reload'),
     ];
     return { profile: active.name, blocked: blockers.find((reason): reason is string => typeof reason === 'string') };
