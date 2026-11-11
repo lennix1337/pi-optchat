@@ -4,9 +4,9 @@
 // Usage: node scripts/worktree.mjs <name> [--branch NOME] [--base BRANCH]
 //        node scripts/worktree.mjs --remove <name>   (drops the junction first, refuses a dirty worktree, deletes the branch only if merged)
 //        node scripts/worktree.mjs --list   (one row per worktree: name | branch | dirty | unique commits vs origin/<base> | removable or keep: reason)
-//        node scripts/worktree.mjs --done <name> [--base BRANCH]   (after the PR merged: removes the worktree, deletes the local branch also when GitHub SQUASH-merged it,
+//        node scripts/worktree.mjs --done <name|branch> [--base BRANCH]   (after the PR merged: removes the worktree, deletes the local branch also when GitHub SQUASH-merged it,
 //            proved by a merged PR whose head is the local tip or has its tree; otherwise keeps the branch and says why; then fast-forwards the main checkout's base branch)
-//        node scripts/worktree.mjs --update <name> [--check "<cmd>"] [--base BRANCH]   (brings the branch up to origin/<base>: rebase when not pushed, merge when pushed, never a force-push;
+//        node scripts/worktree.mjs --update <name|branch> [--check "<cmd>"] [--base BRANCH]   (brings the branch up to origin/<base>: rebase when not pushed, merge when pushed, never a force-push;
 //            only conflict hunks where both sides are solely import/require lines are resolved (union); the rest stays mid-operation and is listed; rerun the same command after resolving to continue;
 //            --check runs <cmd> in the worktree after a clean result and reports its rc; a pushed branch ends with `push: needed`, the push itself is yours)
 // Test seam: WORKTREE_GH = JSON array with the gh command (default ["gh"]).
@@ -34,6 +34,27 @@ const emit = (status, fields, code, rows = []) => {
 const fwd = (p) => p.split('\\').join('/');
 const short = (sha) => sha.slice(0, 7);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** The folder name, under .worktrees/, of the one worktree checked out on `branch`; undefined when none or more than one matches. */
+function folderOfBranch(main, branch) {
+  const real = (p) => { try { return realpathSync.native(p); } catch { return resolve(p); } };
+  const root = real(join(main, '.worktrees'));
+  const found = [];
+  for (const block of git(main, ['worktree', 'list', '--porcelain']).out.split(/\r?\n\r?\n/)) {
+    const path = /^worktree (.+)$/m.exec(block)?.[1];
+    if (!path || /^branch refs\/heads\/(.+)$/m.exec(block)?.[1] !== branch) continue;
+    const rel = relative(root, real(path)).split('\\').join('/');
+    if (NAME.test(rel)) found.push(rel);
+  }
+  return found.length === 1 ? found[0] : undefined;
+}
+
+/** A worktree argument is its folder name, or the branch checked out in that folder (`feat/x` is no folder name). */
+function worktreeName(arg, cwd) {
+  if (NAME.test(arg)) return arg;
+  const main = mainOf(cwd);
+  return main ? folderOfBranch(main, arg) : undefined;
+}
 
 function mainOf(cwd) {
   const common = git(cwd, ['rev-parse', '--git-common-dir']);
@@ -137,8 +158,9 @@ function fastForwardBase(main, base) {
   return moved.ok ? `fast-forwarded ${short(before)}..${short(target)} (checkout principal está em ${current || 'HEAD solto'})` : `skipped: ${moved.err.split('\n')[0].slice(0, 160)}`;
 }
 
-function doneWorktree(name, cwd, baseOpt) {
-  if (!NAME.test(name)) return emit('refused', { error: 'bad_name', hint: 'uso: node scripts/worktree.mjs --done <nome>' }, 2);
+function doneWorktree(arg, cwd, baseOpt) {
+  const name = worktreeName(arg, cwd);
+  if (!name) return emit('refused', { error: 'bad_name', hint: 'uso: node scripts/worktree.mjs --done <nome ou branch da worktree>' }, 2);
   const main = mainOf(cwd);
   if (!main) return emit('refused', { error: 'not_a_repo' }, 2);
   const path = join(main, '.worktrees', name);
@@ -258,8 +280,9 @@ function runCheck(path, command) {
   return { rc: r.status ?? (r.error ? 127 : 1), tail: lines(`${r.stdout ?? ''}\n${r.stderr ?? ''}`).slice(-12) };
 }
 
-function updateWorktree(name, cwd, opts) {
-  if (!NAME.test(name)) return emit('refused', { error: 'bad_name', hint: 'uso: node scripts/worktree.mjs --update <nome> [--check "<cmd>"]' }, 2);
+function updateWorktree(arg, cwd, opts) {
+  const name = worktreeName(arg, cwd);
+  if (!name) return emit('refused', { error: 'bad_name', hint: 'uso: node scripts/worktree.mjs --update <nome ou branch da worktree> [--check "<cmd>"]' }, 2);
   const main = mainOf(cwd);
   if (!main) return emit('refused', { error: 'not_a_repo' }, 2);
   const path = join(main, '.worktrees', name);
