@@ -1,11 +1,11 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { BOARD_LINES, NOTE_CHARS, WaitingBoard, boardNote, boardView, hhmm, lastLine, overflowText, span, toolBrief, type BoardInput, type BoardRun, type BoardShell } from '../src/waiting-board.ts';
+import { BOARD_LINES, NOTE_CHARS, WaitingBoard, boardNote, boardView, expandedView, hhmm, lastLine, overflowText, span, toolBrief, type BoardInput, type BoardRun, type BoardShell } from '../src/waiting-board.ts';
 import type { RunInfo } from '../src/runs.ts';
 import type { ShellJob } from '../src/shells.ts';
 import { atWork } from '../src/transcript.ts';
-import { mountWaitingBoard, renderWaitingBoard } from '../src/navigation.ts';
+import { BoardNavigation, mountWaitingBoard, renderExpandedBoard, renderWaitingBoard } from '../src/navigation.ts';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { visibleWidth } from '@earendil-works/pi-tui';
 
@@ -47,9 +47,23 @@ test('times are Brasília time, whatever the machine zone', () => {
   assert.equal(hhmm(Date.parse('2026-11-12T02:30:00Z')), '23:30', 'the day before in UTC-3');
 });
 
-test('a running shell shows its id, command, elapsed time and last output line; ANSI and blank lines are dropped', () => {
-  assert.deepEqual(texts({ shells: [shell()] }), ['3f9a1c2e npm run verify · 3m · ok 412 - wake recovers']);
+test('a running shell says it is a shell, then its command, elapsed time, last output line and short id; ANSI and blank lines are dropped', () => {
+  assert.deepEqual(texts({ shells: [shell()] }), ['shell npm run verify · 3m · ok 412 - wake recovers · 3f9a1c2e']);
   assert.equal(lastLine('first\n\u001b[32mgreen line\u001b[0m\n\n  \n'), 'green line');
+});
+
+test('a shell line drops a leading cd, names the directory instead and says how it ended', () => {
+  const cd = 'cd C:/projetos/pi-optchat && grep -n "Inspector" src/index.ts | head -5';
+  assert.deepEqual(texts({ shells: [shell({ command: cd, state: 'completed', ended: NOW - MIN, exitCode: 0, last: undefined, id: 'cd8f3ec5-0000' })] }), ['✓ 13:48 shell pi-optchat: grep -n "Inspector" src/index.ts | head… ok · cd8f3ec5']);
+  const [quoted, windows, plain, failed, noExit] = texts({ shells: [
+    shell({ id: 'aaaaaaaa', command: 'cd "C:\\Users\\x\\my repo\\" && npm test', last: undefined }), shell({ id: 'bbbbbbbb', command: 'cd /d C:\\work\\app; npm run build', last: undefined }),
+    shell({ id: 'cccccccc', command: 'cd', last: undefined }),
+    shell({ id: 'dddddddd', command: 'npm test', state: 'failed', ended: NOW - MIN, exitCode: 2, last: undefined }), shell({ id: 'eeeeeeee', command: 'npm test', state: 'failed', ended: NOW - MIN, last: undefined })] });
+  assert.equal(quoted.startsWith('shell my repo: npm test'), true, quoted);
+  assert.equal(windows.startsWith('shell app: npm run build'), true, windows);
+  assert.equal(plain.startsWith('shell cd ·'), true, 'a bare cd is left alone');
+  assert.equal(failed, '✗ 13:48 shell npm test falhou rc 2 · dddddddd');
+  assert.equal(noExit, '✗ 13:48 shell npm test falhou · eeeeeeee');
 });
 
 test('a foreground shell is not on the board (the caller filters it) and a stopped one leaves no line', () => {
@@ -101,9 +115,38 @@ test('finished work stays ten minutes, newest first after the pending lines: wor
     '✓ 13:47 pi-optchat #279 mergeado',
     '✗ 13:46 r #5 CI falhou: lint',
     '✓ 13:45 w1 "Fix the flaky wake test" concluído',
-    '✓ 13:44 3f9a1c2e npm run verify rc 0',
+    '✓ 13:44 shell npm run verify ok · 3f9a1c2e',
     '✗ 13:43 w2 "Fix the flaky wake test" falhou',
   ]);
+});
+
+test('the expanded board keeps each waiting item and each shell whole, with the shell\'s last output line', () => {
+  const waiting = ['aprovar o deploy da 1.4.1 em produção depois de conferir o changelog inteiro com a Beatriz', 'decidir X', 'responder o PR #12', 'liberar a cota'];
+  const command = 'cd C:/projetos/pi-optchat && grep -n "Inspector" src/index.ts src/navigation.ts src/waiting-board.ts test/navigation.test.ts';
+  const inp = input({ waiting, shells: [shell({ command, state: 'completed', ended: NOW - MIN, exitCode: 0, last: 'src/index.ts:93: import { x }' })] });
+  const compact = boardView(inp), full = expandedView(inp);
+  assert.equal(compact.lines.filter(l => l.tone === 'wait').length, 1, 'compact: one collapsed line');
+  assert.equal(compact.lines[0].text, 'aguarda você (4): aprovar o deploy da 1.4.1 em produção depois de c…');
+  assert.deepEqual(full.lines.filter(l => l.tone === 'wait').map(l => l.text), waiting.map(w => `aguarda você: ${w}`));
+  const sh = full.lines.at(-1)!.text;
+  assert.equal(sh, `✓ 13:48 shell pi-optchat: grep -n "Inspector" src/index.ts src/navigation.ts src/waiting-board.ts test/navigation.test.ts ok · 3f9a1c2e\nsaída: src/index.ts:93: import { x }`);
+  assert.equal(full.more, 0);
+  const many = expandedView(input({ runs: Array.from({ length: 9 }, (_, i) => run({ id: `r${i}` })) }));
+  assert.equal(many.lines.length, 9, 'no overflow in the expanded view');
+  assert.equal(new WaitingBoard({ runs: () => [], live: () => undefined, shells: () => [], waiting: () => waiting, now: () => NOW }).expanded().lines.length, 4);
+});
+
+test('the focused board draws every item wrapped to the width, a cursor on one and the keys that move it', () => {
+  const waiting = ['aprovar o deploy da 1.4.1 em produção depois de conferir o changelog inteiro com a Beatriz', 'decidir X', 'responder o PR #12', 'liberar a cota'];
+  const view = expandedView(input({ waiting }));
+  const lines = renderExpandedBoard(view.lines, 1, 40, (_t, text) => text);
+  assert.equal(lines.every(l => visibleWidth(l) <= 40), true);
+  assert.equal(lines.filter(l => l.includes('› ')).length, 1);
+  assert.equal(lines.find(l => l.includes('› '))!.endsWith('› aguarda você: decidir X'), true, 'the cursor is on the second item');
+  const text = lines.map(l => l.slice(2).trim()).join(' ');
+  for (const w of waiting) for (const word of w.split(' ')) assert.equal(text.includes(word), true, word);
+  assert.equal(lines.at(-1), '│ ↑↓ mover · Esc voltar');
+  assert.equal(lines.length > view.lines.length + 1, true, 'the long item wraps onto more rows');
 });
 
 test('over the line cap the last line counts what is left and the shortcut inspects it', () => {
@@ -133,7 +176,7 @@ test('the board gathers live state: tool counts from the run, background shells 
   events.emit('gitwatch:state:v1', 'garbage');
   assert.equal(redraws, 2, 'each valid event redraws; garbage does not');
   assert.deepEqual(board.view().lines.map(l => l.text), [
-    'aguarda você: decidir X', 'a1b2c3d4 "Fix" 1m · 7 tools · npm test · m', 'bg-1-xxx npm test · 1m · b', 'pi-optchat #280 · CI 1/2 · 4m · auto-merge', '✓ 13:48 pi-optchat #279 mergeado']);
+    'aguarda você: decidir X', 'a1b2c3d4 "Fix" 1m · 7 tools · npm test · m', 'shell npm test · 1m · b · bg-1-xxx', 'pi-optchat #280 · CI 1/2 · 4m · auto-merge', '✓ 13:48 pi-optchat #279 mergeado']);
   board.view(); board.view();
   assert.equal(waiting, 1, 'the commitments file is read at most once per few seconds');
   clock += 6_000; board.view();
@@ -195,4 +238,19 @@ test('mounting puts the board in the optchat-waiting widget, redraws on gitwatch
   assert.equal(widget!.render(80).join(''), '│ pi-optchat #280 · CI 2/5 · 4m · auto-merge');
   unmount(); board.close(); mock.timers.reset();
   assert.equal(widgets.size, 0);
+});
+
+test('mounted, the widget keeps the compact look until the board is focused, then lists every item and goes back on Esc', () => {
+  const waiting = ['aprovar o deploy', 'decidir X', 'responder o PR #12', 'liberar a cota'];
+  const board = new WaitingBoard({ runs: () => [], live: () => undefined, shells: () => [], waiting: () => waiting, now: () => NOW });
+  const nav = new BoardNavigation(board); let widget: { render(width: number): string[] } | undefined;
+  const ctx = { ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => { render(width: number): string[] }) => { if (factory) widget = factory({ requestRender: () => {} }, { fg: (_tone: string, text: string) => text }); } } };
+  mock.timers.enable({ apis: ['setInterval'] });
+  const unmount = mountWaitingBoard(ctx as unknown as ExtensionContext, board, 'f6', nav);
+  assert.deepEqual(widget!.render(80), ['│ aguarda você (4): aprovar o deploy']);
+  nav.handle('\x1b[A', true, false);
+  assert.deepEqual(widget!.render(80), ['│ › aguarda você: aprovar o deploy', '│   aguarda você: decidir X', '│   aguarda você: responder o PR #12', '│   aguarda você: liberar a cota', '│ ↑↓ mover · Esc voltar']);
+  nav.handle('\x1b', true, false);
+  assert.deepEqual(widget!.render(80), ['│ aguarda você (4): aprovar o deploy']);
+  unmount(); board.close(); mock.timers.reset();
 });

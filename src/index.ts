@@ -89,7 +89,7 @@ import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells
 import { ROUTER_DOC, syncRouterTools } from './router-mode.ts';
 import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
-import { inspectorShortcut, mountNavigation, mountWaitingBoard } from './navigation.ts';
+import { BoardNavigation, inspectorShortcut, mountNavigation, mountWaitingBoard } from './navigation.ts';
 import { WaitingBoard } from './waiting-board.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -710,8 +710,9 @@ export default function optchat(pi: ExtensionAPI) {
       }, pi.events);
       board.requestState();
       if (ctx.mode === 'tui') {
-        unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
-        unmountBoard = mountWaitingBoard(ctx, board, shortcut);
+        const boardNav = new BoardNavigation(board);
+        unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav);
+        unmountBoard = mountWaitingBoard(ctx, board, shortcut, boardNav);
       }
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => inPhase('open'), deliverReport);

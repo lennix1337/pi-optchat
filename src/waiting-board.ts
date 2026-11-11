@@ -95,14 +95,27 @@ function runLine(run: BoardRun, now: number): BoardLine | undefined {
   const state = run.state === 'stopping' ? ['parando'] : run.state === 'waiting' ? ['espera sub-agentes'] : [];
   return { text: `${head} ${[age, ...state, ...work, modelName(run.model)].join(' · ')}`, tone: 'active', at, finished: false };
 }
-function shellLine(shell: BoardShell, now: number): BoardLine | undefined {
-  const head = `${shell.id.slice(0, 8)} ${cut(shell.command, 40)}`;
+/** A leading `cd <dir> &&` (or `;`) says where the command ran, not what it is: the directory's name moves in front of the rest. */
+function splitCd(command: string): { dir?: string; rest: string } {
+  const flat = command.trim(), m = /^cd\s+(?:\/d\s+)?("[^"]*"|'[^']*'|[^\s&;]+)\s*(?:&&|;)\s*(.+)$/s.exec(flat);
+  if (!m) return { rest: flat };
+  const dir = m[1].replace(/^["']|["']$/g, '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  return dir ? { dir, rest: m[2].trim() } : { rest: flat };
+}
+/**
+ * One line: what kind of job it is, where it ran and what, how it ended or how long it has run, then its short id.
+ * Expanded (the focused board) keeps the whole command and adds the last line of its output on a second line.
+ */
+function shellLine(shell: BoardShell, now: number, expand = false): BoardLine | undefined {
+  const { dir, rest } = splitCd(shell.command), what = `shell ${dir ? `${dir}: ` : ''}${expand ? plainText(rest).replace(/\s+/g, ' ') : cut(rest, 40)}`;
+  const id = shell.id.slice(0, 8), out = shell.last ? `\nsaída: ${expand ? shell.last : cut(shell.last, 50)}` : '';
   if (shell.ended !== undefined) {
     if (now - shell.ended > KEEP_MS || shell.state === 'stopped') return undefined;
-    const ok = shell.state === 'completed';
-    return { text: `${ok ? '\u2713' : '\u2717'} ${hhmm(shell.ended)} ${head} ${shell.exitCode !== undefined ? `rc ${shell.exitCode}` : ok ? 'ok' : 'falhou'}`, tone: ok ? 'ok' : 'bad', at: shell.ended, finished: true };
+    const ok = shell.state === 'completed' && (shell.exitCode ?? 0) === 0;
+    const result = ok ? 'ok' : `falhou${shell.exitCode !== undefined ? ` rc ${shell.exitCode}` : ''}`;
+    return { text: `${ok ? '\u2713' : '\u2717'} ${hhmm(shell.ended)} ${what} ${result} · ${id}${expand ? out : ''}`, tone: ok ? 'ok' : 'bad', at: shell.ended, finished: true };
   }
-  return { text: `${head} · ${span(now - shell.started)}${shell.last ? ` · ${cut(shell.last, 50)}` : ''}`, tone: 'active', at: shell.started, finished: false };
+  return { text: expand ? `${what} · ${span(now - shell.started)} · ${id}${out}` : `${what} · ${span(now - shell.started)}${shell.last ? ` · ${cut(shell.last, 50)}` : ''} · ${id}`, tone: 'active', at: shell.started, finished: false };
 }
 
 const MERGE_STATE: Record<string, string> = { DIRTY: 'conflito', BEHIND: 'atrás da base', BLOCKED: 'bloqueado', UNSTABLE: 'CI instável', DRAFT: 'rascunho' };
@@ -155,12 +168,20 @@ function noticeLine(notice: GitwatchNotice, now: number): BoardLine | undefined 
  * The board, newest activity first: what waits on the operator, then what is running or in CI, then what finished in the last
  * ten minutes. Nothing pending means no lines. At most `max` lines, the overflow counted in `more`.
  */
-export function boardView(input: BoardInput, max = BOARD_LINES): BoardView {
+export function boardView(input: BoardInput, max = BOARD_LINES): BoardView { return build(input, max, false); }
+
+/** Every line the board has, nothing cut for room: each item the operator is waiting on has its own line with its full text. What the focused board shows. */
+export function expandedView(input: BoardInput): BoardView { return build(input, Infinity, true); }
+
+function build(input: BoardInput, max: number, expand: boolean): BoardView {
   const { now } = input;
   const waiting = input.waiting?.filter(Boolean) ?? [];
-  const operator: BoardLine[] = waiting.length ? [{ text: `aguarda você${waiting.length > 1 ? ` (${waiting.length})` : ''}: ${cut(waiting[0], 50)}`, tone: 'wait', at: now, finished: false }] : [];
+  const wait = (text: string): BoardLine => ({ text, tone: 'wait', at: now, finished: false });
+  const operator: BoardLine[] = !waiting.length ? []
+    : expand ? waiting.map(text => wait(`aguarda você: ${plainText(text).replace(/\s+/g, ' ').trim()}`))
+    : [wait(`aguarda você${waiting.length > 1 ? ` (${waiting.length})` : ''}: ${cut(waiting[0], 50)}`)];
   const rest = [
-    ...input.runs.flatMap(r => runLine(r, now) ?? []), ...input.shells.flatMap(s => shellLine(s, now) ?? []),
+    ...input.runs.flatMap(r => runLine(r, now) ?? []), ...input.shells.flatMap(s => shellLine(s, now, expand) ?? []),
     ...input.gitwatch ? gitwatchLines(input.gitwatch, now) : [], ...(input.notices ?? []).flatMap(n => noticeLine(n, now) ?? []),
   ].sort((a, b) => Number(a.finished) - Number(b.finished) || b.at - a.at);
   const all = [...operator, ...rest], pending = all.filter(l => !l.finished).length;
@@ -229,8 +250,10 @@ export class WaitingBoard {
         last: live?.lastTool ? toolBrief(live.lastTool.name, live.lastTool.args) : undefined, until: r.parked?.until };
     });
     const shells = this.sources.shells().filter(j => j.mode === 'background').map((j): BoardShell => ({ id: j.id, command: j.command, state: j.state, started: j.started, ended: j.ended, exitCode: j.exitCode,
-      last: j.ended === undefined ? lastLine(j.output) : undefined }));
+      last: lastLine(j.output) || undefined }));
     return { now, runs, shells, gitwatch: this.state, notices: this.notices, waiting: this.waitingTexts };
   }
   view(max = BOARD_LINES) { return boardView(this.input(), max); }
+  /** Every item in full, for the focused board. */
+  expanded() { return expandedView(this.input()); }
 }

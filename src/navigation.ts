@@ -1,11 +1,11 @@
 import { CustomEditor, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { matchesKey, truncateToWidth, visibleWidth, type KeyId } from '@earendil-works/pi-tui';
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type KeyId } from '@earendil-works/pi-tui';
 import type { Children } from './agents.ts';
 import type { Memory } from './memory.ts';
 import { inspectorShowing, nextPage, type InspectorPage } from './inspector.ts';
 import { isRunning } from './runs.ts';
 import type { ShellJobs } from './shells.ts';
-import { overflowText, type BoardView, type WaitingBoard } from './waiting-board.ts';
+import { overflowText, type BoardLine, type BoardView, type WaitingBoard } from './waiting-board.ts';
 
 /** Configured before extension registration; this also works in legacy terminals with F6. */
 export function inspectorShortcut(value = process.env.OPTCHAT_INSPECT_KEY ?? 'f6'): KeyId {
@@ -33,14 +33,47 @@ export class BarNavigation {
   }
 }
 
-export function mountNavigation(ctx: ExtensionContext, children: Children, memory: Pick<Memory, 'progress' | 'onChange'>, shortcut: string, open: (page: InspectorPage) => void, shells?: ShellJobs) {
+/**
+ * Keyboard focus on the waiting board above the editor, the way `BarNavigation` focuses the bar below it: Up on an empty editor
+ * enters the board, which then shows every item in full with a cursor. Up/Down move it; Esc, Down past the last item or typing leave.
+ */
+export class BoardNavigation {
+  focused = false;
+  cursor = 0;
+  constructor(private readonly board: Pick<WaitingBoard, 'expanded'>) {}
+  /** The board's items while it has focus; focus ends by itself when nothing is left to show. */
+  items(): BoardLine[] {
+    if (!this.focused) return [];
+    const lines = this.board.expanded().lines;
+    if (!lines.length) { this.focused = false; this.cursor = 0; return []; }
+    this.cursor = Math.min(this.cursor, lines.length - 1);
+    return lines;
+  }
+  /** True when the key was consumed. */
+  handle(data: string, empty: boolean, autocomplete: boolean): boolean {
+    if (!this.focused) {
+      if (!empty || autocomplete || inspectorShowing() || !matchesKey(data, 'up') || !this.board.expanded().lines.length) return false;
+      this.focused = true; this.cursor = 0; return true;
+    }
+    const count = this.items().length;
+    if (!count) return false;
+    if (matchesKey(data, 'up')) { this.cursor = Math.max(0, this.cursor - 1); return true; }
+    if (matchesKey(data, 'down')) { if (this.cursor >= count - 1) this.focused = false; else this.cursor++; return true; }
+    this.focused = false; this.cursor = 0;
+    return matchesKey(data, 'escape'); // Typing naturally resumes editing.
+  }
+}
+
+export function mountNavigation(ctx: ExtensionContext, children: Children, memory: Pick<Memory, 'progress' | 'onChange'>, shortcut: string, open: (page: InspectorPage) => void, shells?: ShellJobs, boardNav?: BoardNavigation) {
   const navigation = new BarNavigation();
   const previous = ctx.ui.getEditorComponent();
   let redraw = () => {};
   const factory: Parameters<typeof ctx.ui.setEditorComponent>[0] = (tui, theme, keys) => {
     class OptChatEditor extends CustomEditor {
       override handleInput(data: string) {
-        if (navigation.handle(data, this.getText().length === 0, this.isShowingAutocomplete(), open)) { tui.requestRender(); return; }
+        const empty = this.getText().length === 0, autocomplete = this.isShowingAutocomplete();
+        if (!navigation.selected && boardNav?.handle(data, empty, autocomplete)) { tui.requestRender(); return; }
+        if (navigation.handle(data, empty, autocomplete, open)) { tui.requestRender(); return; }
         super.handleInput(data);
       }
     }
@@ -89,13 +122,28 @@ export function renderWaitingBoard(view: BoardView, width: number, color: (tone:
   return lines;
 }
 
-/** The board above the editor: it redraws on every gitwatch event and on a tick that keeps the elapsed times moving. */
-export function mountWaitingBoard(ctx: ExtensionContext, board: WaitingBoard, shortcut: string) {
+/** The focused board: every item in full, wrapped to `width`, the cursor's item marked, and the keys that move it. */
+export function renderExpandedBoard(items: readonly BoardLine[], cursor: number, width: number, color: (tone: string, text: string) => string) {
+  const bar = color('dim', '│ '), room = Math.max(1, width - 4), out: string[] = [];
+  items.forEach((item, i) => {
+    const tone = TONES[item.tone];
+    item.text.split(/\n/).forEach((part, j) => wrapTextWithAnsi(part, room).forEach((row, k) => {
+      const lead = j === 0 && k === 0 ? (i === cursor ? color('accent', '› ') : '  ') : '  ';
+      out.push(truncateToWidth(`${bar}${lead}${color(i === cursor ? 'accent' : tone, row)}`, width));
+    }));
+  });
+  out.push(truncateToWidth(`${bar}${color('dim', '↑↓ mover · Esc voltar')}`, width));
+  return out;
+}
+
+/** The board above the editor: it redraws on every gitwatch event and on a tick that keeps the elapsed times moving. While `nav` has focus it shows every item. */
+export function mountWaitingBoard(ctx: ExtensionContext, board: WaitingBoard, shortcut: string, nav?: BoardNavigation) {
   let redraw = () => {}, shown = false;
   ctx.ui.setWidget('optchat-waiting', (tui, theme) => {
     redraw = () => tui.requestRender();
     return { invalidate() {}, render: (width: number) => {
-      const lines = inspectorShowing() ? [] : renderWaitingBoard(board.view(), width, (tone, text) => theme.fg(tone as 'accent', text), shortcut);
+      const color = (tone: string, text: string) => theme.fg(tone as 'accent', text), items = inspectorShowing() ? [] : nav?.items() ?? [];
+      const lines = inspectorShowing() ? [] : items.length && nav ? renderExpandedBoard(items, nav.cursor, width, color) : renderWaitingBoard(board.view(), width, color, shortcut);
       shown = lines.length > 0; return lines;
     } };
   });
