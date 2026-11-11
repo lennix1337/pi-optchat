@@ -135,3 +135,19 @@ test('an item overdue less than 24 h and an update with no overdue keep working 
     assert.equal(readCommitments(dir)[0]!.notes.length, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('an item with no project field belongs to the one specialist its text names; two named, or none, stay global; the field wins', () => {
+  const named = (id: string, text: string, project?: string) => item({ id, text, ...(project ? { project } : {}) });
+  const found = dueFindings([
+    named('c_000001', 'Corrigir lentidão DentAI com cache Cloudflare'),
+    named('c_000002', 'Subagente herda a conta: pi-multi-account PR #12'),
+    named('c_000003', 'Resolver as 8 issues abertas de Genexus18MCP (#854, #880)'),
+    named('c_000004', 'Retro: perfil (dotfiles #81) e deploy-web no dentai-mono'),
+    named('c_000005', 'VM Oracle jarvis: criar e entrar por SSH'),
+    named('c_000006', 'Mexer no dotfiles', 'dentai'),
+    named('c_000007', 'Espelhar config no dotfiles payload'),
+  ], fresh(), T0 + 10 * 60_000).findings;
+  assert.deepEqual(found.map(f => [f.id, f.project]), [
+    ['c_000001', 'dentai'], ['c_000002', 'harness'], ['c_000003', 'genexus18mcp'], ['c_000004', 'global'], ['c_000005', 'global'], ['c_000006', 'dentai'], ['c_000007', 'dotfiles'],
+  ]);
+});
