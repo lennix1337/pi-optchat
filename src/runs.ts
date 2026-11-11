@@ -19,6 +19,8 @@ export interface RunInfo {
   connected?: boolean;
   /** A contract worker's kind and project (manager mode); absent for a plain subagent. */
   kind?: string; project?: string;
+  /** A specialist patrol (see patrol.ts): a read-only worker whose report is recorded, not delivered, unless it fails. */
+  patrol?: boolean;
   /** The other git checkouts of the project this run worked in (the worktree it made for its change), most recent first, at most `WORKTREES_KEPT`; its report and `crew accept` read the branch there, not in `cwd`. */
   worktrees?: string[];
   /** The other contract worker of an author-reviewer pair (set on both records) and the messages the pair has sent, both ways. */

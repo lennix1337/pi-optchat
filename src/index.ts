@@ -56,6 +56,7 @@ import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
 import { registerReadChainHint } from './read-chain.ts';
 import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, registerDelegationNudge, routeFor } from './crew.ts';
 import { lastRunsOf } from './wake-signals.ts';
+import { createPatrol, escalationNote } from './patrol.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
 import { registerRecursiveGrepNarrowing } from './bash-recursive-grep.ts';
@@ -504,6 +505,13 @@ export default function optchat(pi: ExtensionAPI) {
         const lastRuns = Object.fromEntries(Object.entries(lastRunsOf(profile.children.runs(), Date.now())).map(([project, run]) => [project, run.at]));
         return { buildMinutes: triage.buildMinutes, ...triage.stallHours ? { stallHours: triage.stallHours } : {}, missions: profile.crew.missions(), lastRuns, lastStop: lastStopOf(ctx), commitments: readCommitments(profile.dir) };
       },
+      // Specialist patrol (config specialistPatrol): a specialist's deadline findings go to a read-only worker of that specialist, not to the manager.
+      patrol: () => {
+        const plan = own()?.config.specialistPatrol;
+        if (!plan) return undefined;
+        return createPatrol({ plan, dir: profile.dir, specialists: () => profile.crew.specialists(), runs: () => profile.children.runs(),
+          spawn: (task, cwd) => profile.children.spawn([task], cwd), escalate: (project, line) => heartbeat?.escalate(project, line) });
+      },
       wake: (beat, radar, choice) => {
         wakeRetried = false; clearWakeWorkers();
         const dream = briefDream(ctx);
@@ -644,6 +652,7 @@ export default function optchat(pi: ExtensionAPI) {
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports, profileInstructions: () => instructions(dir),
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
           route: kind => routeFor(kind, main, config.workerModels), crew, onRunEnd: run => commitments.runEnded(run),
+          escalated: (project, id) => { const item = readCommitments(dir).find(found => found.id === id); if (item) heartbeat?.escalate(project, escalationNote(item, project)); },
           quotaBlock: (provider, model) => routeBlock(readJsonOr<unknown>(QUOTA_FILE, {}), provider, model, Date.now()),
           onPark: ids => wakeWorkers.release(ids),
           // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.

@@ -8,6 +8,8 @@ const WEB = ['web_enable', 'web_search', 'source_check', 'fetch_content', 'get_s
 const HARD = [...CODE, 'lsp', 'codemode', ...WEB];
 
 /** Tool names a worker may use, by kind (Pi's `tools` allowlist: everything else stays unregistered). A plain subagent has no kind and no list. */
+/** A specialist patrol only reads: no edit or write, and bash is filtered to reads (patrol.ts). Its commitments tool is limited to its own project. */
+export const PATROL_TOOLS: readonly string[] = ['bash', 'read', 'output_read', 'project_evidence', 'specialist_memory', 'commitments'];
 export const WORKER_TOOLS: Record<WorkerKind, readonly string[]> = {
   code: CODE,
   mechanical: BASE.filter(name => name !== 'specialist_memory'),

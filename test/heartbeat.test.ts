@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
+import type { Patrol } from '../src/patrol-divert.ts';
 import type { Triage } from '../src/wake-signals.ts';
 import type { ModelChoice } from '../src/compactor.ts';
 
@@ -15,13 +16,14 @@ const MIN = 60_000;
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
   route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
-  triage = undefined as ((at: number) => Triage | undefined) | undefined } = {}) {
+  triage = undefined as ((at: number) => Triage | undefined) | undefined, patrol = undefined as ((at: number) => Patrol | undefined) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
   const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [], beats: Beat[] = [];
   const beat = new Heartbeat({
     dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy, radar, queued,
     ...route ? { route: (blocks: Record<string, number>) => route(now, blocks) } : {},
     ...triage ? { triage: () => triage(now) } : {},
+    ...patrol ? { patrol: () => patrol(now) } : {},
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
@@ -833,5 +835,95 @@ test('without commitments in the triage heartbeat.json gains no due fields', asy
   h.beat.arm(); await h.advance(15 * MIN);
   assert.equal(saved(h.dir).dueSeen, undefined);
   assert.equal(saved(h.dir).escalated, undefined);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+/** A patrol that records what it was asked to start, for the specialists in `handles`. */
+const patrolOf = (handles: string[], { minHours = 6, running = [] as string[], fails = false } = {}) => {
+  const started: { project: string; lines: string[] }[] = [];
+  const patrol: Patrol = { plan: { kind: 'mechanical', minHours }, handles: project => handles.includes(project), running: project => running.includes(project),
+    start: (project, findings) => { if (fails) return false; started.push({ project, lines: findings.map(finding => finding.line) }); return true; } };
+  return { patrol, started, running };
+};
+
+test('specialistPatrol: a due of a specialist starts one patrol and does not wake; a global or manager-owned one still wakes', async () => {
+  const { patrol, started } = patrolOf(['dentai']);
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol,
+    triage: () => triaged({ commitments: [due('c_one', 5 * MIN, { project: 'dentai' }), due('c_two', 5 * MIN)] }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.deepEqual(started, [{ project: 'dentai', lines: ['commitment due: c_one promise c_one'] }]);
+  assert.equal(h.woken.length, 1);
+  assert.deepEqual(h.beats[0].signals?.map(s => [s.project, s.lines]), [['global', ['commitment due: c_two promise c_two']]]);
+  assert.ok(saved(h.dir).dueSeen.some((key: string) => key.startsWith('c_one@')), 'the patrolled due is consumed');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('specialistPatrol: a patrol that takes everything leaves the manager asleep', async () => {
+  const { patrol, started } = patrolOf(['dentai']);
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol, triage: () => triaged({ commitments: [due('c_one', 5 * MIN, { project: 'dentai' })] }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(started.length, 1);
+  assert.equal(h.woken.length, 0, 'a quiet patrol is no manager turn');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('specialistPatrol: at most one patrol per specialist per minHours; a patrol that cannot start leaves the findings to the manager', async () => {
+  const { patrol, started } = patrolOf(['dentai'], { minHours: 2 });
+  const items = [due('c_one', 5 * MIN, { project: 'dentai' }), due('c_two', 40 * MIN, { project: 'dentai' }), due('c_three', 130 * MIN, { project: 'dentai' })];
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol, triage: () => triaged({ commitments: items }) });
+  for (let i = 0; i < 12; i++) { h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled(turn); }
+  assert.deepEqual(started.map(s => s.lines), [['commitment due: c_one promise c_one'], ['commitment due: c_three promise c_three']], 'c_two fell inside the two hours of the first patrol');
+  assert.deepEqual(h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines), ['commitment due: c_two promise c_two']);
+  rmSync(h.dir, { recursive: true, force: true });
+  const broken = patrolOf(['dentai'], { fails: true });
+  const g = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => broken.patrol, triage: () => triaged({ commitments: [due('c_one', 5 * MIN, { project: 'dentai' })] }) });
+  g.beat.arm(); await g.advance(15 * MIN);
+  assert.equal(g.woken.length, 1, 'no patrol started: the manager gets the due as before');
+  rmSync(g.dir, { recursive: true, force: true });
+});
+
+test('specialistPatrol: no patrol while a worker of the project runs; its findings come back when it ends', async () => {
+  const state = patrolOf(['dentai'], { running: ['dentai'] });
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => state.patrol, triage: () => triaged({ commitments: [due('c_one', 5 * MIN, { project: 'dentai' })] }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(state.started.length, 0);
+  assert.equal(h.woken.length, 0, 'held, not woken');
+  state.running.length = 0;
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(state.started.length, 1, 'the same due is patrolled once the worker is gone');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('specialistPatrol: an overdue 24 h+ item is patrolled once; if still unsettled the manager gets the rule signal next tick', async () => {
+  const { patrol, started } = patrolOf(['dentai'], { minHours: 1 });
+  const h = harness({ always: true, minutes: 60, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol, triage: () => triaged({ commitments: [due('c_old', 0, { project: 'dentai' })] }) });
+  const lines = () => h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines).filter(l => l.startsWith('overdue 24h+'));
+  for (let i = 0; i < 25; i++) { h.beat.arm(); await h.advance(60 * MIN); h.beat.turnSettled(turn); }
+  assert.equal(started.length, 2, 'the due at the start, then the overdue one');
+  assert.equal(lines().length, 1, 'the patrol did not settle it: the manager hears it, once');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('specialistPatrol: an escalation reaches the manager as exactly one signal line, then is cleared', async () => {
+  const { patrol } = patrolOf(['dentai']);
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol, triage: () => triaged({ commitments: [] }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 0);
+  h.beat.escalate('dentai', 'patrol of dentai escalated c_one to the operator (waiting_operator with choices): ship it?');
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.deepEqual(h.beats[0].signals?.map(s => [s.project, s.lines]), [['dentai', ['patrol of dentai escalated c_one to the operator (waiting_operator with choices): ship it?']]]);
+  h.beat.turnSettled(turn);
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1, 'signalled once');
+  assert.deepEqual(saved(h.dir).escalations, []);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('without a patrol the heartbeat behaves as before: a specialist due wakes the manager', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged({ commitments: [due('c_one', 5 * MIN, { project: 'dentai' })] }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.equal(saved(h.dir).patrolAt, undefined);
   rmSync(h.dir, { recursive: true, force: true });
 });

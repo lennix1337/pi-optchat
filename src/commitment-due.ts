@@ -28,7 +28,7 @@ export const escalationLine = (id: string) => `overdue 24h+: ${id} - ${ESCALATIO
 /** What the heartbeat remembers between ticks: the due times already signalled (`id@due`) and when each item was last escalated. */
 export interface DueState { dueSeen: string[]; escalated: Record<string, number> }
 /** One thing a tick found about an item; `kind` says which rule. */
-export interface DueFinding { id: string; project: string; kind: 'due' | 'overdue'; line: string }
+export interface DueFinding { id: string; project: string; kind: 'due' | 'overdue'; line: string; key?: string }
 
 /** The signals of this tick and the state to keep once the tick settles. A due time signals once (its key stays recorded while the item is open); an item overdue
  * for a day signals instead of its due line, at most once per day; closed items and items no longer there leave the state. */
@@ -40,7 +40,7 @@ export function dueFindings(items: readonly DueItem[], state: DueState, now: num
     if (Number.isFinite(at) && at <= now) {
       const key = `${item.id}@${item.due}`;
       dueSeen.push(key);
-      if (!state.dueSeen.includes(key) && !overdueDay(item, now)) findings.push({ id: item.id, project, kind: 'due', line: `commitment due: ${item.id} ${item.text}` });
+      if (!state.dueSeen.includes(key) && !overdueDay(item, now)) findings.push({ id: item.id, project, kind: 'due', line: `commitment due: ${item.id} ${item.text}`, key });
     }
     const last = state.escalated[item.id];
     if (last !== undefined) escalated[item.id] = last;
