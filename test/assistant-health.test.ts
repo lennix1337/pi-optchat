@@ -46,6 +46,22 @@ test('the probe reads the configured endpoint with its token and fails with the 
   });
 });
 
+test('a profile without assistant.json has no service to watch: the probe passes and never wakes the agent, while a present but invalid file still fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'assistant-health-'));
+  try {
+    const probe = assistantProbe();
+    assert.deepEqual(await probe.check({ dir }), { ok: true, ms: 0, detail: 'serviço não configurado neste perfil' });
+    const health = new ProdHealth({ probes: [probe], file: ASSISTANT_HEALTH_FILE, now: () => T0 });
+    const monitor = defaultMonitors().find(m => m.health.file === ASSISTANT_HEALTH_FILE) as Monitor;
+    const wakes: string[] = [];
+    for (let i = 0; i < FAILURES_BEFORE_ALERT + 1; i++) await tellTransitions(await health.round(dir), async () => undefined, text => { wakes.push(text); }, false, monitor);
+    assert.deepEqual(wakes, [], 'no assistant.json: no alert however many rounds');
+    assert.equal(readHealth(dir, ASSISTANT_HEALTH_FILE)[ASSISTANT_PROBE].down, false);
+    writeFileSync(join(dir, 'assistant.json'), '{not json');
+    assert.deepEqual(await probe.check({ dir }), { ok: false, ms: 0, problem: 'assistant.json ilegível ou inválido' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('an unreachable service is down only after two rounds, wakes the agent here and posts nothing to Slack', async () => {
   await withService(async (dir, port) => {
     const dead = await deadPort();

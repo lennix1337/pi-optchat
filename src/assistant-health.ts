@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
 import type { LocalProbe, ProbeResult } from './prod-health.ts';
 
@@ -25,6 +27,8 @@ export function assistantProbe(read: Read = readTasks, now: () => number = Date.
   return {
     name: ASSISTANT_PROBE,
     async check({ dir } = { dir: '' }): Promise<ProbeResult> {
+      // No assistant.json: this profile runs no service (or the file is not there yet). Only a file that is present and unusable is a failure.
+      if (!existsSync(join(dir, 'assistant.json'))) return { ok: true, ms: 0, detail: 'serviço não configurado neste perfil' };
       let endpoint: string;
       try { endpoint = assistantConfig({ dir }).endpoint; } catch { return { ok: false, ms: 0, problem: 'assistant.json ilegível ou inválido' }; }
       const started = now();

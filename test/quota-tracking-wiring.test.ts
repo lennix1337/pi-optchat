@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ProdHealth, registerProdHealth } from '../src/prod-health.ts';
 import { registerQuotaCommand } from '../src/quota-command.ts';
 import { QUOTA_HISTORY_FILE, sampleQuota } from '../src/quota-history.ts';
@@ -69,6 +70,8 @@ test('the health round samples the quota once per round, and a failing sampler d
 
 test('the terminal /cota prints the same table the Slack command does', async t => {
   const { dir, cacheFile } = profile(t);
+  // The fixture's windows end hours after NOW; the command reads the clock, so it is pinned there rather than to the day the suite runs.
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
   await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'no-prices.json') });
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   registerQuotaCommand({ registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, c) } as never, () => dir, cacheFile);
@@ -83,7 +86,7 @@ test('quota-report.mjs prints every cached account read-only and rejects bad arg
   const { dir, cacheFile } = profile(t);
   const before = readdirSync(dir).sort();
   const script = join(import.meta.dirname, '..', 'scripts', 'quota-report.mjs');
-  const { stdout } = await run(process.execPath, ['--experimental-transform-types', '--no-warnings', script, dir, '--weeks', '1', '--cache', cacheFile, '--rates', join(dir, 'none.json')]);
+  const { stdout } = await run(process.execPath, ['--experimental-transform-types', '--no-warnings', '--import', pathToFileURL(join(import.meta.dirname, 'fixed-clock.mjs')).href, script, dir, '--weeks', '1', '--cache', cacheFile, '--rates', join(dir, 'none.json')], { env: { ...process.env, FIXED_NOW: String(NOW) } });
   assert.match(stdout, /• anthropic: API key, sem limite de cota/);
   assert.match(stdout, /• anthropic-account-2: 5h 5% usado, renova \d\d:\d\d · 7d 19% usado/);
   assert.match(stdout, /Histórico de cota: desde /);
