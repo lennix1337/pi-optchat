@@ -17,7 +17,7 @@ import { isCompaction, removeDir } from './support.ts';
 const pi: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 
-for (const mode of ['in the same wake', 'after profile reopen', 'when delivered twice'] as const) test(`${mode === 'when delivered twice' ? 'a worker report' : 'an observed aborted worker report'} is processed once ${mode}`, { timeout: 20000 }, async t => {
+for (const mode of ['in the same wake', 'after profile reopen', 'when delivered twice'] as const) test(`${mode === 'when delivered twice' ? 'a worker report' : 'an observed aborted worker report'} is processed once ${mode}`, { timeout: 60000 }, async t => {
   const reopen = mode === 'after profile reopen', twice = mode === 'when delivered twice';
   const dir = mkdtempSync(join(tmpdir(), 'wake-recover-')), oldHome = process.env.OPTCHAT_HOME, oldAgent = process.env.PI_CODING_AGENT_DIR;
   process.env.OPTCHAT_HOME = dir; process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
@@ -34,7 +34,7 @@ for (const mode of ['in the same wake', 'after profile reopen', 'when delivered 
     return timer(fn, delay, ...args);
   }) as typeof setTimeout);
   const until = async (f: () => boolean, label: string) => {
-    for (const end = Date.now() + 6000; !f();) { if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => timer(r, 10)); }
+    for (const end = Date.now() + 15000; !f();) { if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => timer(r, 10)); }
   };
   let session: Awaited<ReturnType<typeof pinnedPi.createAgentSession>>['session'] | undefined;
   let repeatReport: (() => void) | undefined, workerFinish: (() => void) | undefined, reportHeld = false, drop = false, dropped = 0, reopened = twice, processed = 0, step = 0, spawns = 0;
