@@ -60,7 +60,7 @@ test('the crew keeps charters and memories under their caps, briefs workers from
     assert.throws(() => crew.write('dentai', 'memory', 'x'.repeat(MEMORY_BYTES + 1)), /over its 6144-byte cap.*Nothing was written/);
     assert.match(crew.read('dentai', 'memory'), /raw body/, 'a refused write leaves the old memory');
     const brief = crew.brief('code', 'dentai');
-    assert.match(brief, /\[Worker brief\] You are a code worker/);
+    assert.match(brief, /\[Worker brief\] You are a worker of the manager[\s\S]*\[This run\] You are a code worker/);
     assert.match(brief, /<project-charter project="dentai">\nDentAI: Next\.js/);
     assert.match(brief, /Stripe webhooks need the raw body/);
     assert.match(brief, /## Memory proposal/);

@@ -6,12 +6,13 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { leanProfile, leanSkill, WORKER, WORKER_TOOLS } from './lean-worker.ts';
+import { leanProfile, leanSkill, WORKER, WORKER_CWD, WORKER_TOOLS } from './lean-worker.ts';
 import { allowSearch, CONNECTED, cutOffChildren, delegation, NO_DELEGATION, NOT_CONNECTED, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, VIEW_DOC } from './prompts.ts';
 import { memoryTools, runPage, searchTool } from './tools.ts';
 import { DEFER, VIEW, type Memory } from './memory.ts';
 import { resolveModel, type ModelChoice } from './compactor.ts';
 import { cachePayload, prefixRetention } from './cache.ts';
+import { markBriefPrefix, relativeContext } from './worker-prefix.ts';
 import { CUT_OFF, RunHistory, isRunning, orderRuns, transition, sessionMessages, type RunInfo, type RunState, type FinishReason } from './runs.ts';
 import { ExternalRuns, SubagentRpc, type SubagentEvents } from './external-runs.ts';
 import { requestInterrupt, requestSteer, requestStop } from './external-control.ts';
@@ -34,7 +35,7 @@ import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { routerReport } from './router-mode.ts';
 import { PARK_MARGIN_MS, PARK_MAX, parkUntil, quotaError, untilText } from './quota-hold.ts';
-import { PEER_MESSAGES, WORKER_KINDS, WRITER_KINDS, checkContract, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
+import { PEER_MESSAGES, WORKER_KINDS, WRITER_KINDS, checkContract, goalOf, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
 export { PEER_MESSAGES } from './crew.ts';
 export const PEER_LIMIT = 'Peer limit reached: send the rest to the manager with tell_parent.';
@@ -162,6 +163,8 @@ const packageName = (path: string): string | undefined => {
 /** A task's cwd may start with `~` and may be relative to the spawning agent's directory. */
 export const taskDirectory = (cwd: string, path = '.', windows = process.platform === 'win32') =>
   resolve(cwd, path.replace(windows ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/, homedir()));
+/** How long after a worker finished a spawn in its project and directory is told it may be a follow-up. */
+const FOLLOW_UP_MS = 24 * 3_600_000;
 const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
 
 // Pi's CLI adds its built-in extensions (MCP, codemode, tool search) to its own session; SDK sessions such as
@@ -419,11 +422,28 @@ export class Children {
   }
   /** The spawn tools' answer, saying how this spawn's reports will come back. */
   async start(tasks: SpawnTask[], cwd: string, signal?: AbortSignal, parentId?: string, launched?: (ids: string[]) => void) {
+    const earlier = this.finishedAlready(tasks, cwd, parentId);
     const { ids, grouped, specialists, models, queued } = await this.launch(tasks, cwd, signal, parentId, false, launched);
     const created = specialists.map(slug => ` Note: new specialist ${slug} created; its charter is a template, so add what its workers need to know with the crew tool.`).join('');
     const waiting = queued.length ? `${ids.length ? ' ' : ''}${queuedText(queued, this.now())}` : '';
     if (!ids.length) return `${waiting}${created}`;
-    return `Started: ${ids.join(', ')}. Model${ids.length > 1 ? 's' : ''}: ${ids.map((id, i) => `${id} on ${models[i]}`).join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${waiting}${created}`;
+    return `Started: ${ids.join(', ')}. Model${ids.length > 1 ? 's' : ''}: ${ids.map((id, i) => `${id} on ${models[i]}`).join(', ')}. ${grouped && ids.length > 1 ? 'Their reports will arrive together, as one message, once all of them have finished.' : 'Reports will arrive automatically.'}${waiting}${created}${earlier}`;
+  }
+  /** A contract spawn where a worker of the same project and directory finished less than a day ago: the answer names it, since a follow-up
+   * (review findings, red CI, a new requirement) is `tell`, which keeps its conversation instead of building a new prompt cache. Information
+   * only; the spawn starts anyway. Plain subagents, peers and children of agents get none. */
+  private finishedAlready(tasks: SpawnTask[], cwd: string, parentId?: string) {
+    if (parentId !== undefined) return '';
+    const now = this.now();
+    const hints = tasks.flatMap(task => {
+      if (!task.kind || task.peer !== undefined) return [];
+      const directory = taskDirectory(cwd, task.cwd).toLowerCase(), project = task.project ?? specialistOf(taskDirectory(cwd, task.cwd));
+      const found = [...this.history.records.values()].filter(run => run.kind && run.project === project && run.cwd.toLowerCase() === directory && !run.connected
+        && run.ended !== undefined && now - run.ended < FOLLOW_UP_MS && ['completed', 'failed', 'stopped', 'interrupted'].includes(run.state) && run.sessionFile)
+        .sort((a, b) => (b.ended ?? 0) - (a.ended ?? 0))[0];
+      return found ? [`${found.id} finished ${((now - found.ended!) / 3_600_000).toFixed(1)} h ago in this project and directory ("${goalOf(found.task, 60)}"): when this task is a follow-up to it (review findings, red CI, an added requirement), tell ${found.id} resumes it with its whole conversation; a new spawn pays for a new prompt cache.`] : [];
+    });
+    return hints.length ? ` Note: ${[...new Set(hints)].join(' ')}` : '';
   }
   private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false, onLaunch?: (ids: string[]) => void, replay?: string) {
     // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
@@ -464,7 +484,7 @@ export class Children {
     onLaunch?.(launched.map(c => c.info.id));
     for (const [i, live] of launched.entries()) {
       live.batch = batch;
-      const work = this.execute(live, `${views[i]}\n\n${live.info.kind ? `Your model: ${live.info.model} (thinking ${live.info.thinking}).\n\n` : ''}Your task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
+      const work = this.execute(live, `${views[i]}\n\n${live.info.kind ? `Working directory: ${live.info.cwd.replace(/\\/g, '/')}\nYour model: ${live.info.model} (thinking ${live.info.thinking}).\n\n` : ''}Your task:\n${live.info.task}`).catch(error => this.warn(`Subagent completion failed: ${String(error)}`))
         .finally(() => { this.completions.delete(work); this.changed(); });
       this.completions.add(work);
       live.completion = work;
@@ -679,8 +699,9 @@ export class Children {
         pi.on('before_agent_start', event => {
           event.systemPromptOptions.customPrompt = kind ? WORKER : allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch);
           event.systemPromptOptions.sections.instructions = instructions;
+          if (kind) { event.systemPromptOptions.cwd = WORKER_CWD; event.systemPromptOptions.contextFiles = relativeContext(event.systemPromptOptions.contextFiles ?? [], directory); }
         });
-        pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload);
+        pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(kind ? markBriefPrefix(event.payload) : event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload);
       }],
     });
     await loader.reload();

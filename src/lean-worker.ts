@@ -43,3 +43,7 @@ OptChat may send you more messages, even while you work. zoom opens OptChat's me
 
 Be aware of time. When your task is long, tell OptChat how far you are with tell_parent. Before you wait on something slow, such as CI, say so the same
 way ("pushed, now watching CI until it passes"), so OptChat can go on without you, then watch it.`;
+
+/** The system prompt's working-directory section for a contract worker. The directory differs per worktree and sits before the profile's
+ *  instructions, so naming it there made every worker's prompt differ from there on; the first message carries it instead. */
+export const WORKER_CWD = 'Your working directory is the "Working directory" line of your first message.';
