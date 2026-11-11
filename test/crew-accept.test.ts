@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { acceptRun, parseShip, reportAppendix, runShip, type GitRunner, type ShipRunner } from '../src/crew-accept.ts';
+import { acceptRun, parseShip, reportAppendix, runShip, workCheckout, worktreeOf, type GitRunner, type ShipRunner } from '../src/crew-accept.ts';
 import { addCommitment, readCommitments, updateCommitment } from '../src/commitments.ts';
 import { Crew, crewTool } from '../src/crew.ts';
 import type { RunInfo } from '../src/runs.ts';
@@ -153,4 +153,85 @@ test('accept runs the real ship.mjs as a child process (no fakes) and reports wh
   const r = await runShip(fx.work, ['--help']);
   assert.equal(r.code, 0);
   assert.match(r.out, /--title/);
+});
+
+/** A main checkout on main, clean, and a worktree `.worktrees/job` of it on fix/job with `commits` commits ahead of origin/main. */
+function worktreeRepo(commits: number) {
+  const { dir, close } = tempDir('accept-wt-');
+  const seed = join(dir, 'seed'), origin = join(dir, 'origin.git'), main = join(dir, 'main');
+  git(dir, ['init', '-q', '-b', 'main', seed]);
+  writeFileSync(join(seed, 'README.md'), 'seed\n');
+  git(seed, ['add', '-A']); git(seed, ['commit', '-q', '-m', 'seed']);
+  git(dir, ['init', '-q', '--bare', '-b', 'main', origin]);
+  git(seed, ['push', '-q', origin, 'main']);
+  git(dir, ['clone', '-q', origin, main]);
+  appendFileSync(join(main, '.git', 'info', 'exclude'), '.worktrees/\n');
+  const work = join(main, '.worktrees', 'job');
+  git(main, ['worktree', 'add', '-q', '-b', 'fix/job', work, 'origin/main']);
+  for (let i = 1; i <= commits; i++) { writeFileSync(join(work, `f${i}.txt`), 'line\n'); git(work, ['add', '-A']); git(work, ['commit', '-q', '-m', `fix: change ${i}`]); }
+  return { dir, main, work, close };
+}
+function worktreeFixture(commits = 2, worktrees?: (fx: { main: string; work: string }) => string[]) {
+  const fx = worktreeRepo(commits);
+  const commitmentsDir = join(fx.dir, 'prof'); mkdirSync(commitmentsDir, { recursive: true });
+  const crew = new Crew(join(fx.dir, 'crew'));
+  const run: RunInfo = { id: 'run-1', task: 'x', cwd: fx.main, model: 'm', thinking: 'high', parentSession: 'p', started: 1, depth: 0, state: 'completed', kind: 'code', project: 'harness', guidance: [], worktrees: (worktrees ?? (f => [f.work]))(fx) };
+  crew.bindRuns(() => [run]);
+  const calls: { cwd: string; args: string[] }[] = [];
+  const ship: ShipRunner = async (cwd, args) => { calls.push({ cwd, args }); return { code: 0, out: 'status: queued\npr: 7\nurl: "https://github.com/acme/app/pull/7"\nauto_merge: queued\nrc: 0\n', err: '' }; };
+  return { ...fx, run, calls, deps: { crew, commitmentsDir, ship }, close: async () => { await crew.closeAll(); fx.close(); } };
+}
+
+test('accept ships the worktree the run worked in, not its project checkout on main', async t => {
+  const fx = worktreeFixture(); t.after(fx.close);
+  const text = await acceptRun(fx.deps, { runId: 'run-1', title: 't', body: 'b' });
+  assert.equal(fx.calls.length, 1);
+  assert.equal(fx.calls[0]!.cwd, fx.work, 'ship ran inside the run\'s worktree');
+  assert.match(text, /^Run run-1, fix\/job, 2 commits ahead of origin\/main: queued/);
+});
+
+test('untracked or dirty files in the project checkout do not block a run that worked in a worktree; a dirty worktree still does', async t => {
+  const fx = worktreeFixture(); t.after(fx.close);
+  mkdirSync(join(fx.main, '.scratch')); writeFileSync(join(fx.main, '.scratch', 'note.txt'), 'x\n');
+  writeFileSync(join(fx.main, 'README.md'), 'edited by someone else\n');
+  assert.match(await acceptRun(fx.deps, { runId: 'run-1', title: 't', body: 'b' }), /: queued/);
+  writeFileSync(join(fx.work, 'loose.txt'), 'x\n');
+  await assert.rejects(acceptRun(fx.deps, { runId: 'run-1', title: 't', body: 'b' }), /dirty tree in .*job.*loose\.txt.*Nothing was shipped/);
+  assert.equal(fx.calls.length, 1, 'the dirty worktree shipped nothing');
+});
+
+test('a run whose recorded worktree holds nothing falls back to its own directory, and a worktree of another repository is ignored', async t => {
+  const empty = worktreeFixture(0); t.after(empty.close);
+  await assert.rejects(acceptRun(empty.deps, { runId: 'run-1', title: 't', body: 'b' }), /main has no commits ahead of origin\/main/);
+  const other = repo(2); t.after(other.close);
+  const foreign = worktreeFixture(0, () => [other.work]); t.after(foreign.close);
+  await assert.rejects(acceptRun(foreign.deps, { runId: 'run-1', title: 't', body: 'b' }), /main has no commits ahead/, 'an unrelated repository is never shipped for this run');
+  assert.equal(foreign.calls.length, 0);
+});
+
+test('the report appendix of a run that worked in a worktree names that worktree\'s branch', async t => {
+  const fx = worktreeFixture(); t.after(fx.close);
+  const dir = await workCheckout(fx.run);
+  assert.equal(dir, fx.work);
+  assert.match(await reportAppendix(dir), /^\[git\] branch fix\/job: 2 commits ahead of origin\/main$/m);
+  assert.equal(await workCheckout({ cwd: fx.main }), fx.main, 'no recorded worktree: the run\'s own directory');
+});
+
+test('worktreeOf finds the checkout a tool call works in when it is not the run\'s own: edit and write paths, cd and git -C targets', async t => {
+  const fx = worktreeRepo(0); t.after(fx.close);
+  const rel = '.worktrees/job';
+  const found = (tool: string, args: unknown) => worktreeOf(tool, args, fx.main);
+  const want = fx.work.replaceAll('\\', '/');
+  assert.equal(found('edit', { path: join(fx.work, 'src', 'a.ts'), edits: [] }), want);
+  assert.equal(found('write', { path: `${rel}/new.txt`, content: 'x' }), want, 'a relative path resolves against the run\'s directory');
+  assert.equal(found('bash', { command: `cd ${rel} && npm test` }), want);
+  assert.equal(found('bash', { command: `git -C "${fx.work}" commit -m x` }), want);
+  assert.equal(found('powershell', { command: `Set-Location -LiteralPath '${fx.work}'; git status` }), want);
+  assert.equal(found('bash', { command: `cd ${rel} && git status && cd ..` }), want, 'a later cd back out does not matter: the worktree was worked in');
+  assert.equal(found('edit', { path: join(fx.main, 'src', 'a.ts') }), undefined, 'the run\'s own checkout is not a worktree');
+  assert.equal(found('read', { path: join(fx.work, 'a.ts') }), undefined, 'reading is not working there');
+  assert.equal(found('bash', { command: `cat ${rel}/README.md` }), undefined, 'neither is reading through the shell');
+  assert.equal(found('bash', { command: 'ls' }), undefined);
+  assert.equal(found('edit', { path: 5 }), undefined);
+  assert.equal(found('bash', undefined), undefined);
 });
