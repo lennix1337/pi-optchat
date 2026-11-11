@@ -1008,9 +1008,9 @@ export default function optchat(pi: ExtensionAPI) {
       const original = event.message;
       if (original.role === 'assistant') {
         // A tell that resumes a finished worker launches it again, as a spawn does: the wake waits for its report too.
-        for (const block of original.content) if (block.type === 'toolCall' && (block.name === 'spawn' || block.name === 'tell')) wakeWorkers.called(block.id);
+        for (const block of original.content) if (block.type === 'toolCall' && (block.name === 'spawn' || block.name === 'tell' || block.name === 'retarget')) wakeWorkers.called(block.id);
         if (original.stopReason === 'stop') wakeWorkers.replied();
-      } else if (original.role === 'toolResult' && (original.toolName === 'spawn' || original.toolName === 'tell')) {
+      } else if (original.role === 'toolResult' && (original.toolName === 'spawn' || original.toolName === 'tell' || original.toolName === 'retarget')) {
         wakeWorkers.result(original.toolCallId, (original.details as { runIds?: unknown } | undefined)?.runIds, original.isError);
         for (const report of reports) if (wakeWorkers.hasReport(report.text) && !report.awaitingProcessing) {
           report.awaitingProcessing = true; saveReports();
@@ -1350,6 +1350,16 @@ export default function optchat(pi: ExtensionAPI) {
       const resumed = before !== undefined && after !== undefined && (children.live(args.id) !== undefined || after.started !== before);
       if (resumed && heartbeat?.waking) wakeWorkers.launched(_id, [args.id]);
       return { ...result(text), details: resumed ? { runIds: [args.id] } : {} };
+    },
+  });
+
+  pi.registerTool({ name: 'retarget', label: 'Retarget worker', description: 'Resume a settled OptChat worker with its saved conversation on an explicitly chosen model or thinking level. Never switches automatically; active and unstarted workers are refused.',
+    parameters: childToolSchemas.retarget,
+    async execute(_id, args) {
+      if (args.model === undefined && args.thinking === undefined) throw new Error('Specify model or thinking; use tell without overrides.');
+      const text = await required().children.tell(args.id, args.message, 'manager', undefined, false, { model: args.model, thinking: args.thinking });
+      if (heartbeat?.waking) wakeWorkers.launched(_id, [args.id]);
+      return { ...result(text), details: { runIds: [args.id] } };
     },
   });
 

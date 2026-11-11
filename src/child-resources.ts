@@ -22,6 +22,7 @@ export const childToolSchemas = freezeTree({
     project: Type.Optional(Type.String({ description: 'Specialist slug (lowercase letters, digits, hyphens) whose charter and memory brief the worker; default from cwd. A new slug starts a new specialist.' })),
     peer: Type.Optional(Type.String({ minLength: 1, description: 'Pairs this contract worker with an existing one of the same project (the reviewer names its author\'s run id): both get tell_peer to message each other, at most 6 messages per pair, and you get a copy of each. Information only, never orders.' })) }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
   tell: Type.Object({ id: Type.String(), message: Type.String() }, { additionalProperties: false }),
+  retarget: Type.Object({ id: Type.String(), message: Type.String(), model: Type.Optional(Type.String({ description: 'Exact provider/model; omitted preserves the saved model.' })), thinking: Type.Optional(stringEnum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const, { description: 'Omitted preserves the saved thinking level.' })) }, { additionalProperties: false }),
   parent: Type.Object({ message: Type.String() }, { additionalProperties: false }),
   peer: Type.Object({ message: Type.String() }, { additionalProperties: false }),
   specialistMemory: Type.Object({ id: Type.Optional(Type.Integer({ minimum: 0 })), n: Type.Optional(Type.Integer({ minimum: 1 })),

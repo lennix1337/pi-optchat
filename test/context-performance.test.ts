@@ -20,9 +20,9 @@ test('agent labels use persisted identifiers and SDK thinking levels verbatim', 
     input: ['text'], contextWindow: 100000, maxTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   assert.ok(getSupportedThinkingLevels(model).length);
   for (const level of getSupportedThinkingLevels(model)) {
-    assert.equal(agentModel({ model: `${model.provider}/${model.id}`, thinking: level }), `${model.id}(${level})`);
+    assert.equal(agentModel({ model: `${model.provider}/${model.id}`, thinking: level }), `${model.provider}/${model.id}(${level})`);
   }
-  assert.equal(agentModel({ model: 'openai-codex/gpt-6-luna', thinking: 'xhigh' }), 'gpt-6-luna(xhigh)');
+  assert.equal(agentModel({ model: 'openai-codex/gpt-6-luna', thinking: 'xhigh' }), 'openai-codex/gpt-6-luna(xhigh)');
   assert.equal(agentModel({ model: 'unknown', thinking: 'unknown' }), 'unknown(unknown)');
   assert.ok(!agentModel({ model: 'evil\x1b\nmodel', thinking: 'hi\x1bgh' }).includes('\x1b'));
 });
