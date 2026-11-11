@@ -61,7 +61,7 @@ for (const recovery of ['its quota returns at the time it was told', 'the operat
         }
         if (!compression) {
           mainCalls++;
-          if (last.includes('Initialize.')) content = [{ type: 'toolCall', id: 'spawn-three', name: 'spawn', arguments: { tasks: ['ONE', 'TWO', 'THREE'].map(task => ({ task })) } }];
+          if (last.includes('Initialize.') && !last.includes('Finished')) content = [{ type: 'toolCall', id: 'spawn-three', name: 'spawn', arguments: { tasks: ['ONE', 'TWO', 'THREE'].map(task => ({ task })) } }];
           else if (last.includes('Finished')) { reportRequests.push(context.messages.map(m => textContent(m.role === 'toolResult' ? [] : m.content as never)).join('\n')); content = [{ type: 'text', text: 'Reports processed.' }]; }
         }
         const stopReason = content[0].type === 'toolCall' ? 'toolUse' : 'stop';

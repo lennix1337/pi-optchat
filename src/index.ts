@@ -25,7 +25,8 @@ import { Focus } from './focus.ts';
 import { atomicWrite, readJsonOr, storeFor } from './store.ts';
 import { QUOTA_FILE, quotaPlan, routeBlock } from './quota-health.ts';
 import { QuotaOutage } from './quota-hold.ts';
-import { ReportDispatcher } from './report-dispatch.ts';
+import { REPORT_GATHER_MS, ReportDispatcher } from './report-dispatch.ts';
+import { packReports } from './report-bundle.ts';
 import { knownProviders, pickWakeRoute } from './wake-route.ts';
 import { createCompressor, resolveModel } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
@@ -270,8 +271,9 @@ export default function optchat(pi: ExtensionAPI) {
   let runStarted = false;
   let fault: string | undefined;
   /** Reports not yet in memory. `count`: how many subagent reports the text joins. `batch`: held while the rest of that spawn runs, not sent yet.
-   * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. */
-  let reports: { text: string; count?: number; batch?: string; steered?: boolean; sentAt?: number; runIds?: string[]; workerRecovery?: boolean; awaitingProcessing?: boolean; observed?: boolean; responded?: boolean }[] = [];
+   * `steered`: last sent into a running turn, where Esc or a dequeue can clear it from Pi's queue unseen. `solo`: always sent as a message of
+   * its own. `members`: only on the transient bundle that carries several reports in one message; the reports stay here, each with its own receipt. */
+  let reports: { text: string; count?: number; batch?: string; steered?: boolean; sentAt?: number; runIds?: string[]; workerRecovery?: boolean; awaitingProcessing?: boolean; observed?: boolean; responded?: boolean; solo?: boolean; members?: Report[] }[] = [];
   type Report = (typeof reports)[number];
   /** While every model the main agent could run on is out of quota, reports wait here instead of starting turns that would fail (see quota-hold.ts). */
   let outage: QuotaOutage<Report> | undefined;
@@ -279,6 +281,10 @@ export default function optchat(pi: ExtensionAPI) {
   let reportDispatch: ReportDispatcher<Report> | undefined;
   let idle = () => true;
   const receipts = new Map<AgentMessage, string>();
+  /** The bundles sent (text -> the reports it carries) and, for a bundle's message in this run, those reports: logged one by one, each under its own receipt. */
+  const bundles = new Map<string, Report[]>();
+  const BUNDLES_KEPT = 50;
+  const bundled = new WeakMap<AgentMessage, Report[]>();
   /** Keep the original result for durable memory; `run` retains the bounded copy sent back to the model. */
   const fullToolResults = new WeakMap<AgentMessage, AgentMessage>();
   let checkpoints = Promise.resolve();
@@ -374,10 +380,22 @@ export default function optchat(pi: ExtensionAPI) {
   const isReplayedReport = (message: AgentMessage, receipt: string | undefined) => !!receipt?.startsWith(REPORT_RECEIPT) && message.role === 'user'
     && reports.some(r => r.awaitingProcessing && r.text === textContent(message.content))
     && !!active?.memory.root.some(e => e.receipt === receipt);
+  /** A bundled message is logged as the reports it carries, each with its own receipt, and each leaves the journal once logged. */
+  const logBundle = (a: Active, message: AgentMessage, carried: Report[]) => {
+    try {
+      for (const report of carried) {
+        if (!reports.includes(report)) continue;
+        logMessage(a.memory, { ...message, content: report.text } as AgentMessage, reportReceipt(report.text));
+        reports = reports.filter(r => r !== report);
+      }
+    } finally { saveReports(); }
+  };
   const flush = () => {
     if (!active) return;
     while (logged < run.length) {
       const message = run[logged];
+      const carried = bundled.get(message);
+      if (carried) { logBundle(active, message, carried); receipts.delete(message); logged++; continue; }
       const receipt = receipts.get(message);
       if (!isReplayedReport(message, receipt)) logMessage(active.memory, message, receipt, fullToolResults.get(message));
       logged++;
@@ -391,14 +409,24 @@ export default function optchat(pi: ExtensionAPI) {
   };
   // Shown as a dark background box, not as the user's own message. Before this profile has run once there is no
   // built system prompt to reuse, so that rare case still goes through Pi's normal prompt path as a user message.
-  const sendReport = (report: Report) => { if (!outage?.offer(report)) dispatchReport(report); };
-  const dispatchReport = (report: Report) => {
-    report.sentAt = Date.now();
-    if (reportDispatch) reportDispatch.push(report); else sendToPi(report, idle());
+  const sendReport = (report: Report) => sendReports([report]);
+  /** Reports that wait together go out together: what the quota hold keeps comes back as one delivery, so does a startup replay. */
+  const sendReports = (items: Report[]) => dispatchReports(items.filter(report => !outage?.offer(report)));
+  const dispatchReports = (items: Report[]) => {
+    for (const report of items) report.sentAt = Date.now();
+    if (reportDispatch) reportDispatch.pushAll(items); else for (const report of items) sendToPi(report, idle());
   };
+  /** A report that must not share its message: a wake waits on it by its text, or it is an instruction rather than news. */
+  const travelsAlone = (report: Report) => !!report.solo || !!report.awaitingProcessing || !!report.workerRecovery || report.batch !== undefined
+    || !!report.runIds && !!heartbeat?.waking || wakeWorkers.hasReport(report.text);
+  const packWaiting = (waiting: Report[]) => packReports(waiting, travelsAlone, (members, text, count): Report => ({ text, count, members }));
   const sendToPi = (report: Report, fromIdle: boolean) => {
     const { text, count } = report;
-    report.steered = !fromIdle; report.sentAt = Date.now();
+    for (const carried of report.members ?? [report]) { carried.steered = !fromIdle; carried.sentAt = Date.now(); }
+    if (report.members) {
+      bundles.set(text, report.members);
+      for (const key of [...bundles.keys()].slice(0, -BUNDLES_KEPT)) bundles.delete(key);
+    }
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
     else pi.sendUserMessage(text, { deliverAs: 'steer', expandPromptTemplates: false });
   };
@@ -626,8 +654,9 @@ export default function optchat(pi: ExtensionAPI) {
       reportDispatch?.close();
       reportDispatch = new ReportDispatcher<Report>({ idle: () => ctx.isIdle(), send: sendToPi,
         // Pi reports a refused send nowhere the extension can read; a send that started no turn is the sign.
+        pack: packWaiting, gatherMs: REPORT_GATHER_MS,
         failed: (report, attempt, giveUp) => {
-          report.sentAt = undefined;
+          for (const carried of report.members ?? [report]) carried.sentAt = undefined;
           ctx.ui.notify(giveUp ? `A report did not start a turn after ${attempt} tries; it stays journaled and is delivered at the next start.`
             : 'A report did not start a turn; sending it again.', 'warning');
         } });
@@ -643,7 +672,7 @@ export default function optchat(pi: ExtensionAPI) {
           return decision?.choice ? undefined : decision?.until;
         },
         notice: text => ctx.ui.notify(text, 'warning'),
-        send: items => { if (active?.memory === memory && !stopping) for (const item of items) if (reports.includes(item)) dispatchReport(item); },
+        send: items => { if (active?.memory === memory && !stopping) dispatchReports(items.filter(item => reports.includes(item))); },
         setTimer: (run, ms) => setTimeout(run, Math.min(ms, 2 ** 31 - 1)).unref(),
         clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
@@ -686,7 +715,7 @@ export default function optchat(pi: ExtensionAPI) {
         // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
         recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
       }
-      setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) for (const r of queuedReports) sendReport(r); });
+      setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) sendReports(queuedReports); });
       // A reload or crash in the middle of a wake left the wake model on: put the main one back.
       await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (ctx.mode === 'tui') startHeartbeat(ctx, active);
@@ -984,15 +1013,19 @@ export default function optchat(pi: ExtensionAPI) {
       try {
         const text = textContent(message.content);
         // A report is shown as our custom message, or sent as plain text before the first run has a prompt to reuse.
-        if (bounded.role === 'custom' && bounded.customType === REPORT_TYPE || reports.some(r => !r.batch && r.text === text)) {
+        if (bounded.role === 'custom' && bounded.customType === REPORT_TYPE || bundles.has(text) || reports.some(r => !r.batch && r.text === text)) {
           // A report sent again after a lost steer can still arrive twice (Pi kept the old steer after an abort): drop the extra copy.
           // Copies are counted, so a later report that happens to repeat an earlier text still arrives.
           const receipt = reportReceipt(text), copies = run.slice(logged).filter(m => receipts.get(m) === receipt).length;
-          const pending = reports.find(r => !r.batch && r.text === text);
-          if (pending?.awaitingProcessing && pending.observed ||
+          const carried = bundles.get(text), pending = reports.find(r => !r.batch && r.text === text);
+          // A bundle is a copy once every report it carries is logged, or when its message is already in this run.
+          if (carried && (copies > 0 || !carried.some(r => reports.includes(r))))
+            return { message: bounded.role === 'custom' ? { ...bounded, content: DUPLICATE_REPORT, display: false } : { ...message, content: DUPLICATE_REPORT } };
+          if (carried) bundled.set(message, carried);
+          else if (pending?.awaitingProcessing && pending.observed ||
             reports.filter(r => !r.batch && r.text === text).length <= copies && (copies > 0 || !pending?.awaitingProcessing && active.memory.root.some(e => e.receipt === receipt)))
             return { message: bounded.role === 'custom' ? { ...bounded, content: DUPLICATE_REPORT, display: false } : { ...message, content: DUPLICATE_REPORT } };
-          if (pending?.awaitingProcessing) pending.observed = true;
+          if (!carried && pending?.awaitingProcessing) pending.observed = true;
           receipts.set(message, receipt);
         } else {
           // The inbox journaled the typed input: match without image references or Pi's image notes.
@@ -1179,7 +1212,7 @@ export default function optchat(pi: ExtensionAPI) {
     wakeWorkers.settled(_event.aborted);
     if (_event.aborted) for (const r of reports) { r.observed = false; r.responded = false; }
     // A lost steer or an aborted processing turn may redeliver the report, never the worker's effects.
-    if (active && !fault && !stopping) for (const r of retryReports) if (reports.includes(r)) sendReport(r);
+    if (active && !fault && !stopping) sendReports(retryReports.filter(r => reports.includes(r)));
     if (wakeWorkers.notVerified && !wakeWorkers.holding) {
       reports = reports.filter(r => !r.workerRecovery); saveReports();
     }
