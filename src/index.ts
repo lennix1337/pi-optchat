@@ -52,6 +52,7 @@ import { Inbox } from './inbox.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
+import { registerReadChainHint } from './read-chain.ts';
 import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, registerDelegationNudge, routeFor } from './crew.ts';
 import { lastRunsOf } from './wake-signals.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
@@ -224,6 +225,7 @@ export default function optchat(pi: ExtensionAPI) {
   const deploy = new DeployWatch({ shells: () => runningShells(shells), extra: () => active?.config.deployCommands ?? [] }, workerHooks(() => active?.children));
   registerDeployGuard(pi, deploy, listener => shells.subscribe(listener));
   registerDelegationNudge(pi, () => active?.config.delegateAfter ?? 0, () => active?.config.managerMode === true, () => deploy.quiet());
+  registerReadChainHint(pi); // Lone read after lone read: batch the independent ones (src/read-chain.ts). Workers load no extension, so only this session gets it.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
