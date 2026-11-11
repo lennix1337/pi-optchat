@@ -86,6 +86,7 @@ export class QuotaOutage<T> {
     if (retryAt !== undefined) this.learned = Math.max(this.learned ?? 0, retryAt);
   }
   get holding() { return this.held.length; }
+  holds(item: T) { return this.held.includes(item); }
   private arm(until: number) {
     if (this.timer !== undefined) this.host.clearTimer(this.timer);
     this.timer = this.host.setTimer(() => this.release(), Math.max(0, until - this.host.now()) + OUTAGE_MARGIN_MS);
