@@ -26,7 +26,7 @@ test('bash is read-only only when every part of the command plainly reads', () =
     'git show HEAD:a.ts', 'git branch -a', 'git branch', 'git rev-parse --show-toplevel', 'git -C C:/x rev-parse HEAD', 'gh pr view 12', 'gh issue list', 'gh pr status', 'find . -name "*.ts"', 'date'];
   for (const command of reads) assert.equal(isReadOnlyCall(bash(command)), true, command);
   const writes = ['npm test', 'cat a > b', 'cat a >> b', 'ls > out.txt', 'sed -i s/a/b/ f', 'rm -rf x', 'git commit -m x', 'git push', 'git branch -D x', 'git branch new-feature', 'git checkout main', 'gh pr merge 3', 'gh pr create',
-    'find . -delete', 'find . -name a -exec rm {} ;', 'find . -type f -execdir rm {} +', 'ls && make clean', 'cat a; npm test', 'cat a | tee out', 'cat $(make)', 'echo `rm x`', 'node -e "1"', 'git diff --output=o.patch', 'xargs rm', ''];
+    'find . -delete', 'find . -name a -exec rm {} ;', 'find . -type f -execdir rm {} +', 'find . -fprint0 out', 'find . -fprintf out %p', 'ls && make clean', 'cat a; npm test', 'cat a | tee out', 'cat $(make)', 'echo `rm x`', 'node -e "1"', 'git diff --output=o.patch', 'xargs rm', ''];
   for (const command of writes) assert.equal(isReadOnlyCall(bash(command)), false, `write: ${command}`);
   assert.equal(isReadOnlyCall({ name: 'bash', input: {} }), false, 'no command');
   assert.equal(isReadOnlyCall({ name: 'bash', input: { command: 5 } }), false, 'a non-string command');
