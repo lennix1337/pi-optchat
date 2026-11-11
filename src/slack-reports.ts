@@ -13,6 +13,8 @@ import { QUOTA_FILE, QUOTA_HEALTH_FILE, quotaRisks } from './quota-health.ts';
 import { WeeklyScoreboard } from './scoreboard.ts';
 import { activityLines, githubActivity, harnessCost, type Activity } from './briefing-sources.ts';
 import { logBackgroundFailure } from './exec-log.ts';
+import { loadEconomy } from './quota-economy.ts';
+import { accountLines, weeklyLines } from './quota-format.ts';
 
 /**
  * What the operator hears on Slack without asking, each in its project's channel: his PRs changing (CI green or red,
@@ -142,13 +144,13 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string };
+export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[] };
 /**
  * The 07:00 briefing, most actionable first: what needs him today, a short plan, what closed in the last day, what
  * the harness did and noticed, then state (production, PC, quotas, PRs, agenda) and its cost. A source that failed
  * is named at the end.
  */
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, risks, fixes, github, cost }: SummaryInputs): string {
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const act = github ? activityLines(github) : { needs: [], closed: [] };
   const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
@@ -169,7 +171,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
   if (risks) lines.push('', '*Pode dar problema hoje*', ...(risks.length ? risks.slice(0, 10).map(r => `• ${one(r, 220)}`) : ['• Nada previsto.']));
   if (health?.length) lines.push('', '*Produção agora*', ...health.map(h => `\u2022 ${h}`));
   if (pc?.length) lines.push('', '*Este PC*', ...pc.map(h => `\u2022 ${h}`));
-  if (quota?.length) lines.push('', '*Cotas dos modelos*', ...quota.map(h => `\u2022 ${one(h, 450)}`));
+  if (quota?.length || accounts?.length) lines.push('', '*Cotas dos modelos*', ...quota?.map(h => `\u2022 ${one(h, 450)}`) ?? [], ...accounts?.map(h => one(h, 450)) ?? []);
   if (commitments?.attention.length) lines.push('', `*Compromissos meus atrasados ou parados (${commitments.attention.length})*`, ...commitments.attention.slice(0, 8).map(t => `• ${one(t, 160)}`));
   if (prs.length) {
     lines.push('', `*PRs abertos (${prs.length})*`);
@@ -184,14 +186,14 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
     const off = briefing.sources.filter(s => s.state !== 'ok').map(s => `${s.sourceId} ${s.state}`);
     if (off.length) lines.push(`_Fontes incompletas: ${off.join(', ')}_`);
   } else lines.push('', '_Briefing do Google indisponível agora._');
-  if (cost) lines.push('', '*Custo do harness*', `• ${cost}`);
+  if (cost || weekly?.length) lines.push('', '*Custo do harness*', ...cost ? [`• ${cost}`] : [], ...weekly?.map(h => `• ${one(h, 450)}`) ?? []);
   if (github?.failed.length) lines.push(`_Fontes incompletas: ${github.failed.join(', ')}_`);
   return lines.join('\n');
 }
 
 export class DailySummary {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly prs: PrWatch,
-    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh } = {}) {}
+    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; ratesFile?: string; gh?: Gh } = {}) {}
 
   /** Posts once a day, the first check after `at` (07:00) and before `until` (noon): a late start skips the day. */
   async maybePost(): Promise<boolean> {
@@ -207,7 +209,7 @@ export class DailySummary {
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
     const sent = await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
-      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now) }), null);
+      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE, this.options.ratesFile) }), null);
     // The date above says "tried"; `sentAt` and Slack's `ts` say "delivered": a date alone cannot tell a failed post from a sent one.
     const ts = (sent as { ts?: unknown } | undefined)?.ts;
     atomicWrite(file, JSON.stringify({ date: today, sentAt: (this.options.now ?? Date.now)(), ...(typeof ts === 'string' ? { ts } : {}) }));
@@ -247,6 +249,14 @@ export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<Summa
   const health = readHealth(dir), pc = readHealth(dir, PC_FILE);
   const risks = forecast({ commitments: items, prs: prs.map(outlook), health, pc, now });
   return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now) };
+}
+
+/** Each account's quota with its resets, and the weekly API-equivalent comparison; a failure drops the section, never the summary. */
+function quotaSection(dir: string, now: number, cacheFile: string, ratesFile?: string): Pick<SummaryInputs, 'accounts' | 'weekly'> {
+  try {
+    const state = readJsonOr<unknown>(cacheFile, {}), economy = loadEconomy({ dir, now, weeks: 2, cacheFile, ratesFile });
+    return { accounts: accountLines(state, now, economy), weekly: weeklyLines(economy) };
+  } catch (error) { logBackgroundFailure(dir, 'quota-economy', error); return {}; }
 }
 
 function withQuota<T extends { risks?: string[] }>(inputs: T, dir: string, now: number, file: string): T & { quota: string[]; risks: string[] } {

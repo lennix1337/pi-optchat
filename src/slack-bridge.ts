@@ -9,6 +9,7 @@ import { promptText, wakeTask } from './heartbeat.ts';
 import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, projectOfRepo, toolCalls } from './projects.ts';
 import { readDay, recordRun, renderDay } from './home-day.ts';
+import type { Economy } from './quota-economy.ts';
 import { failoverReader, homeStatus, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
 import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
@@ -182,6 +183,8 @@ export class SlackBridge {
     /** The selected model (`provider/id`) and pi-multi-account's state, for the commands answered without a turn and the App Home. */
     model: () => string | undefined; failover: () => unknown;
     models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean>;
+    /** The quota economy (US$ per 1%) the `cota` command adds to each account, when there is one. */
+    economy?: () => Economy | undefined;
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
     abort: () => boolean;
     /** When the heartbeat next checks for a wake, if armed. */
@@ -430,8 +433,8 @@ export class SlackBridge {
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
-    const { model, failover, now, models, select, abort } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select, abort };
+    const { model, failover, now, models, select, abort, economy } = this.options;
+    return { model, activity: () => this.activity, failover, now, models, select, abort, economy };
   }
 
   /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
@@ -692,7 +695,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;

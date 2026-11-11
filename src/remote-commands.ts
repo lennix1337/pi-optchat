@@ -1,5 +1,7 @@
 import { brasiliaDayTime } from './pc-health.ts';
 import { accounts } from './quota-health.ts';
+import { accountLines } from './quota-format.ts';
+import type { Economy } from './quota-economy.ts';
 import { readJsonOr } from './store.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
 
@@ -24,6 +26,8 @@ export interface CommandState {
   select(model: ModelRef): Promise<boolean>;
   /** Stops the run in progress, as Esc does in the terminal; false when nothing was running. */
   abort?(): boolean;
+  /** The quota economy (US$ per 1%), when the profile keeps a quota history; read-only and cached by the caller. */
+  economy?(): Economy | undefined;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
@@ -33,18 +37,7 @@ export interface RemoteCommand { name: string; aliases: readonly string[]; summa
 const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const refName = (m: ModelRef) => `${m.provider}/${m.id}`;
 
-function quotaLines(state: CommandState): string[] {
-  const now = state.now(), data = record(state.failover());
-  const measured = new Map(accounts(data, now).map(a => [a.id, a]));
-  const ids = [...new Set([...Object.keys(record(data.usageByProvider)), ...measured.keys()])].filter(id => safeIdentifier(id)).sort();
-  if (!ids.length) return ['sem leitura de cota (o pi-multi-account ainda não mediu nenhuma conta)'];
-  return ids.map(id => {
-    const a = measured.get(id);
-    if (!a) return `• ${id}: sem medição (conta sem janela de uso, ex. chave de API)`;
-    if (a.blockedUntil) return `• ${id}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}`;
-    return `• ${id}: ${a.used}% usado, renova ${brasiliaDayTime(a.resetAt!)}`;
-  });
-}
+const quotaLines = (state: CommandState): string[] => accountLines(record(state.failover()), state.now(), state.economy?.());
 
 function lastSwitch(state: CommandState): string | undefined {
   const list = record(state.failover()).lastSwitches;

@@ -9,6 +9,8 @@ import { registerToolInventory } from './tool-inventory.ts';
 import { readManyTool } from './read-many.ts';
 import { logSent, registerSlackReports } from './slack-reports.ts';
 import { registerProdHealth } from './prod-health.ts';
+import { cachedEconomy } from './quota-economy.ts';
+import { registerQuotaCommand } from './quota-command.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
@@ -799,7 +801,7 @@ export default function optchat(pi: ExtensionAPI) {
   // A paused import still takes the reports out, but a DM is delivered only to a profile that can run it: the input hook drops
   // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
-    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt, deferEnd: true,
+    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt, deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
       // The App Home's work items: read-only, from this profile's files and the shells running now (src/home-items.ts).
       items: () => {
         const a = active;
@@ -818,6 +820,7 @@ export default function optchat(pi: ExtensionAPI) {
   // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
   registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
   // Production health probes every 5 min, read-only: an outage posts to #dentai and wakes the agent once (src/prod-health.ts).
+  registerQuotaCommand(pi, () => slackOwner()?.dir);
   registerProdHealth(pi, slackOwner, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
   // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
   const work = registerWorkTracker(pi, () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);

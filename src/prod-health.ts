@@ -4,6 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { brasiliaTime } from './heartbeat.ts';
 import { pcProbes } from './pc-health.ts';
 import { quotaProbe, QUOTA_HEALTH_FILE } from './quota-health.ts';
+import { sampleQuotaFromCache } from './quota-history.ts';
 import { applyRemedies, type Remedy } from './self-fix.ts';
 import { appendSignals } from './journal-spool.ts';
 import { atomicWrite, readJsonOr } from './store.ts';
@@ -214,13 +215,16 @@ export type HealthOwner = { dir: string };
  * synthetic probe, marked as a test, to prove the wiring end to end.
  */
 export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | undefined, post: (text: string, channel: string | null) => Promise<unknown>,
-  wake: (text: string) => Promise<unknown> | void, monitors = defaultMonitors(), intervalMs = 5 * 60_000) {
+  wake: (text: string) => Promise<unknown> | void, monitors = defaultMonitors(), intervalMs = 5 * 60_000,
+  /** Runs once per round: the quota history rows (src/quota-history.ts) ride this timer instead of a second one. */
+  sample: (dir: string, now: number) => unknown = sampleQuotaFromCache) {
   let timer: ReturnType<typeof setInterval> | undefined, busy = false, lastError: string | undefined;
   const tell = (transitions: Transition[], test = false, route?: Route) => tellTransitions(transitions, post, wake, test, route);
   const round = async () => {
     const o = owner();
     if (busy || !o || !existsSync(join(o.dir, 'assistant.json'))) return;
     busy = true;
+    try { sample(o.dir, Date.now()); } catch { /* the history is a courtesy: the health round goes on */ }
     // A failed round is retried next interval; /optchat-health shows why it failed.
     lastError = await roundAll(monitors, o.dir, tell, (transitions, monitor) => {
       appendSignals(o.dir, healthSignals(monitor.health.file, transitions, monitor.health.now()));
