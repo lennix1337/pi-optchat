@@ -33,6 +33,7 @@ import { PerformanceMetrics, registerPerformance, performanceTool } from './perf
 import { focusedChildView } from './child-context.ts';
 import { childToolSchemas } from './child-resources.ts';
 import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
+import { reportAppendix } from './crew-accept.ts';
 import { routerReport } from './router-mode.ts';
 import { PARK_MARGIN_MS, PARK_MAX, parkUntil, quotaError, untilText } from './quota-hold.ts';
 import { PEER_MESSAGES, WORKER_KINDS, WRITER_KINDS, checkContract, goalOf, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
@@ -90,6 +91,8 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   profileInstructions?: () => string;
   /** A run ended on its own or by a stop (completed, failed, stopped), before its report is delivered. */
   onRunEnd?: (run: RunInfo) => void;
+  /** The git facts a code worker's report carries after its own text, computed from its cwd (default: `reportAppendix`); empty for none. */
+  appendix?: (cwd: string) => Promise<string>;
   /** The cached quota: when `provider/model` comes back (epoch ms); undefined when it is free or nothing is known. Never calls a model. */
   quotaBlock?: (provider: string, model: string) => number | undefined;
   /** Clock and timers of quota parking; tests replace them. */
@@ -927,8 +930,14 @@ export class Children {
     // Router mode: the main agent gets the report bounded, with pointers to the run and its transcript, not the whole chat.
     // A deleted run's transcript is gone.
     const text = this.settings.routerMode && !info.parentId ? routerReport(info)
-      : `[${info.id}] ${info.report}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`;
+      : `[${info.id}] ${info.report}${await this.appendixOf(info)}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`;
     await this.deliver(info, live.batch, text);
+  }
+  /** A code worker's branch state after its report (a blank line, then the lines); empty for any other run. A failure is one line: the report goes out either way. */
+  private async appendixOf(info: RunInfo) {
+    if (!info.kind || !WRITER_KINDS.includes(info.kind as WorkerKind) || this.deleting.has(info.id)) return '';
+    try { const text = await (this.options.appendix ?? reportAppendix)(info.cwd); return text ? `\n\n${text}` : ''; }
+    catch (error) { return `\n\n[git] appendix unavailable: ${oneLine(error instanceof Error ? error.message : String(error))}`; }
   }
   /** An end of a run that says its account is out of quota, when the run may wait for it: not a connected conversation, a child of an agent (its parent waits on it), a run being stopped or deleted, or one that parked too often in a row. */
   private quotaHit(info: RunInfo, message: string | undefined): QuotaHit | undefined {

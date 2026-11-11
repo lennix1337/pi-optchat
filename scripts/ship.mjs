@@ -18,8 +18,9 @@ const FORBIDDEN_HINT = {
   '--force': 'ship não força push', '-f': 'ship não força push', '--force-with-lease': 'ship não força push',
   '--no-verify': 'ship não pula hooks', '--admin': 'merge com --admin é decisão do operador',
 };
-const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--pr N] [--no-auto] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
+const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--title "título da PR"] [--pr N] [--no-auto] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
+  --title TEXTO        título da PR (padrão: o assunto do commit, ou o nome da branch com vários commits)
   -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
                        (obrigatória quando a branch ainda não tem PR aberta)
   --body-file ARQ      a mesma descrição, lida de um arquivo
@@ -106,9 +107,10 @@ function findGh() {
   }
   return (ghFound = { file: 'gh', shell: win });
 }
-function gh(args, kind = 'gh') {
-  if (!args.every(arg => SAFE_GH_ARG.test(arg))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
+// `free` is free text that may pass unchecked when gh runs without a shell (a .cmd shim would reinterpret it).
+function gh(args, kind = 'gh', free) {
   const found = findGh();
+  if (!args.every(arg => SAFE_GH_ARG.test(arg) || (arg === free && !found.shell))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
   return run(found.file, args, kind, found.shell);
 }
 
@@ -245,10 +247,10 @@ function reportAuto(ctx, result) {
 }
 
 // The description goes through a file under .git: gh arguments must stay in SAFE_GH_ARG, and free text cannot.
-async function openPr(branch, base, body) {
+async function openPr(branch, base, body, title) {
   const file = (await git(['rev-parse', '--git-path', 'SHIP_PR_BODY'])).out.trim();
   writeFileSync(file, `${body.trim()}\n`);
-  const c = await gh(['pr', 'create', '--fill', '--body-file', file, '--base', base, '--head', branch], 'create')
+  const c = await gh(['pr', 'create', ...(title ? ['--title', title] : ['--fill']), '--body-file', file, '--base', base, '--head', branch], 'create', title)
     .finally(() => rmSync(file, { force: true }));
   if (c.killed) {
     const found = await viewPr(branch);
@@ -436,7 +438,7 @@ async function shipBranch(opts, ctx) {
 
   if (opts.directMain) return emit('pushed', { ...ctx, branch: target });
 
-  const pr = existingOpen ?? await openPr(branch, base, opts.body);
+  const pr = existingOpen ?? await openPr(branch, base, opts.body, opts.title);
   ctx.pr = pr.number;
   ctx.url = pr.url;
   if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
@@ -445,7 +447,7 @@ async function shipBranch(opts, ctx) {
 
 // --- arguments and entry ---
 function parseArgs(argv) {
-  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, body: undefined, help: false };
+  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, title: undefined, body: undefined, help: false };
   const valueOf = (flag, i) => {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith('-')) throw refuse('missing_value', `${flag} precisa de um valor`);
@@ -468,6 +470,7 @@ function parseArgs(argv) {
       const path = valueOf(arg, i); i++;
       try { opts.body = readFileSync(path, 'utf8'); } catch { throw refuse('body_file_unreadable', `não consegui ler ${path}`); }
     }
+    else if (arg === '--title') { opts.title = valueOf(arg, i); i++; }
     else if (arg === '--all') opts.all = true;
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
@@ -494,6 +497,7 @@ function parseArgs(argv) {
   if (opts.all && opts.paths.length) throw refuse('conflicting_args', '--all e caminhos juntos: escolha um');
   if ((opts.all || opts.paths.length) && opts.message === undefined) throw refuse('message_required', 'com caminhos ou --all, passe -m "assunto"');
   if (opts.message !== undefined && !opts.message.trim()) throw refuse('message_required', '-m não pode ser vazio');
+  if (opts.title !== undefined && (!opts.title.trim() || /[\r\n]/.test(opts.title))) throw refuse('invalid_value', '--title é uma linha só, não vazia');
   if (opts.body !== undefined && !opts.body.trim()) throw refuse('body_required', 'a descrição (-b/--body-file) não pode ser vazia');
   if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined || opts.base !== undefined)) {
     throw refuse('conflicting_args', '--pr só enfileira o auto-merge de uma PR existente');
@@ -518,6 +522,7 @@ async function main(argv) {
   }
   const ctx = {};
   try {
+    if (opts.title !== undefined && (opts.sync || opts.pr !== undefined || opts.directMain)) throw refuse('conflicting_args', '--title só vale ao abrir uma PR nova');
     if (opts.sync) return await syncAfterMerge(opts, ctx);
     return opts.pr !== undefined
       ? await autoMergeOnly(opts, { pr: Number(opts.pr) })
