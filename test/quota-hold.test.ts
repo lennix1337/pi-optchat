@@ -116,6 +116,20 @@ test('four workers that hit 429 on their first request are parked, not reported 
   assert.ok(ids.every(id => h.children.history.records.get(id)?.parked === undefined));
 });
 
+test('a quota-parked writer can resume itself but excludes another writer', async t => {
+  let limited = true;
+  const h = await rig(t, {}, () => limited ? 'limit' : 'ok');
+  const repo = join(h.dir, 'repo');
+  mkdirSync(join(repo, '.git'), { recursive: true });
+  const task = 'Goal: test\nAcceptance: done\nEvidence: test\nAuthority: local only';
+  const [id] = await h.children.spawn([{ task, kind: 'code', model: 'quota-test/child', cwd: repo }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'writer parked');
+  await assert.rejects(() => h.children.spawn([{ task, kind: 'code', model: 'quota-test/child', cwd: repo }], h.dir), /One writer per repo/);
+  limited = false;
+  await h.children.tell(id, 'continue');
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'same writer completed');
+});
+
 test('a worker that already used a tool and then hits the limit resumes with its conversation', async t => {
   let limited = false;
   const h = await rig(t, {}, (task, call) => task === 'tooly' && call === 2 && !limited ? (limited = true, 'limit') : limited ? 'limit' : 'ok');

@@ -1222,7 +1222,7 @@ export class Children {
     if (this.closing) throw new Error('Profile is closing.');
     if (run.parked?.queued) throw new Error(`${id} is queued until ${untilText(run.parked.until, this.now())} (Brasília) because ${run.parked.provider} is out of quota; it has not started, so there is nothing to resume. It starts by itself.`);
     // One writer per repo holds for a resumed writer as for a new one.
-    if (run.kind && (WRITER_KINDS as readonly string[]).includes(run.kind)) this.checkWriters([{ task: run.task, kind: run.kind as WorkerKind, cwd: run.cwd }], run.cwd);
+    if (run.kind && (WRITER_KINDS as readonly string[]).includes(run.kind)) this.checkWriters([{ task: run.task, kind: run.kind as WorkerKind, cwd: run.cwd }], run.cwd, id);
     if (this.full(1)) throw new Error(`Profile limit: at most ${this.settings.maxAgents} active agents, including parents and descendants. ${id} can be resumed when one finishes.`);
     let manager: SessionManager | undefined;
     try { if (run.sessionFile && existsSync(run.sessionFile)) manager = SessionManager.open(run.sessionFile); } catch { manager = undefined; }
