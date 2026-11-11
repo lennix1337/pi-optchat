@@ -166,7 +166,7 @@ export const prefixRetention = (model?: CacheModel): 'short' | 'long' => {
 /** How long a merge of the chat view waits after the last request: the 1-hour entry lasts that long, the 5-minute one does not. */
 export const coldAfter = (model?: CacheModel) => prefixRetention(model) === 'long' ? COLD_LONG_MS : COLD_MS;
 
-/** OptChat's status line (agents and background shells at work), in Pi's context and in Anthropic's payload alike. */
+/** OptChat's status line (the waiting board: agents, shells, CI), in Pi's context and in Anthropic's payload alike. */
 export const isAtWork = (message: unknown) => record(message) && message.role === 'user' && Array.isArray(message.content) && message.content.length === 1
   && record(message.content[0]) && typeof message.content[0].text === 'string' && message.content[0].text.startsWith(STATUS_NOTE);
 function lastBlock(message: Record<string, unknown>) {

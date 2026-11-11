@@ -45,6 +45,8 @@ export interface LiveRun {
   session: AgentSession; info: RunInfo; updated: number; streaming?: AgentMessage;
   firstActivity?: boolean;
   tools: Map<string, { name: string; args: unknown; output?: unknown; started: number }>;
+  /** Tool calls the run has started and the latest one, for the waiting board. */
+  toolCalls?: number; lastTool?: { name: string; args: unknown };
   pendingReports: string[]; pendingGuidance: string[]; wake?: () => void; completion?: Promise<void>;
   /** Set by the user's interrupt: the queued guidance the run continues with once its current step is aborted; with none, it pauses. */
   interruption?: RunInfo['guidance'];
@@ -391,6 +393,7 @@ export class Children {
         if (guidance) { guidance.state = 'delivered'; this.save(live.info); }
       }
       if (event.type === 'tool_execution_start') live.tools.set(event.toolCallId, { name: event.toolName, args: event.args, started: performance.now() });
+      if (event.type === 'tool_execution_start') { live.toolCalls = (live.toolCalls ?? 0) + 1; live.lastTool = { name: event.toolName, args: event.args }; }
       if (event.type === 'tool_execution_update') {
         const tool = live.tools.get(event.toolCallId); if (tool) tool.output = event.partialResult;
       }

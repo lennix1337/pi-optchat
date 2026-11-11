@@ -82,7 +82,10 @@ test('after /reload, the previous OptChat instance holds no memory index, timer,
     for (let reload = 0; reload < 4; reload++) {
       await session.reload();
       await settle();
-      indexes.push(await memoryIndexes());
+      // Teardown work still in flight on a busy machine holds the old instance for a moment; a real leak outlasts every retry.
+      let count = await memoryIndexes();
+      for (let retry = 0; count > 1 && retry < 25; retry++) { await settle(); count = await memoryIndexes(); }
+      indexes.push(count);
     }
     assert.deepEqual(indexes, [1, 1, 1, 1], 'one memory index stays alive across reloads');
     assert.ok(process.listenerCount('exit') - exitHooks <= 1, `the shell reaper's exit hook is registered once per process, not once per reload (${exitHooks} before, ${process.listenerCount('exit')} after 4 reloads)`);

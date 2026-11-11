@@ -51,8 +51,9 @@ Messages the user sends while you work reach you between tool calls. Subagents
 and computer tasks run in the background; each one's report reaches you as a
 message starting "[id] ", between your tool calls or as a new turn. Never wait
 for one (no sleep, no polling): go on, or end your turn and tell the user what
-is running. A message starting "[OptChat status]" is OptChat's own note on which
-agents and shells are running, not the user.
+is running. A message starting "[OptChat status]" is OptChat's own live note on
+what is pending (agents, shells, CI, what waits on the user) and how far along it
+is, not the user: don't run gh, crew list or shell_status just to learn it.
 
 # Compactions
 
