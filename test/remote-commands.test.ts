@@ -33,10 +33,16 @@ test('only a whole-word message is a command; a question or a sentence stays wit
 
 test('cota lists each account from the cached pi-multi-account state, including exhausted and unmeasured ones', async () => {
   const { text } = await run('cota');
-  assert.match(text, /anthropic-account-2: 42% usado/);
-  assert.match(text, /openai-codex: \*esgotada\*/);
-  assert.match(text, /anthropic: sem medição/);
+  assert.match(text, /anthropic-account-2: 5h 42% usado, renova 16:00/);
+  assert.match(text, /openai-codex: 5h 100% usado, renova 17:00 · \*esgotada até 01\/11 17:00\*/);
+  assert.match(text, /anthropic: API key, sem limite de cota/);
   assert.match((await run('cota', state({ failover: () => ({}) }))).text, /sem leitura de cota/);
+});
+
+test('cota adds the API-equivalent US$ per 1% when the profile has the history to know it', async () => {
+  const economy = { now: NOW, accounts: [{ provider: 'anthropic-account-2', w7d: { intervals: 2, points: 4, tokens: 10, usd: 10, unpricedTokens: 0, usdPerPoint: 2.5, fullWindowUsd: 250 } }], weeks: [] };
+  assert.match((await run('cota', state({ economy: () => economy }))).text, /anthropic-account-2: 5h 42% usado, renova 16:00 · 1% = US\$2\.50 \(7d\)/);
+  assert.doesNotMatch((await run('cota', state({ economy: () => undefined }))).text, /1% = /);
 });
 
 test('status and modelo name the selected model, i.e. the account, and the last switch', async () => {
@@ -99,7 +105,7 @@ test('a command DM is answered by the bridge without reaching the agent; other D
     await f.bridge.poll();
     assert.deepEqual(f.agent.map(t => t.split('\n')[0]), ['[Slack] cota da openai acabou?', '[Slack #harness] status'], 'a channel message is never taken as a command');
     const reply = f.posts.find(p => p.path === '/v1/slack/send')!;
-    assert.match(reply.body.text, /anthropic-account-2: 42% usado/);
+    assert.match(reply.body.text, /anthropic-account-2: 5h 42% usado, renova 16:00/);
     assert.equal(reply.body.channel, undefined, 'the answer goes to the DM');
     assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'slack-cursor.json'), 'utf8')), { seq: 3 });
     f.bridge.sawUserMessage('[Slack] cota da openai acabou?');
