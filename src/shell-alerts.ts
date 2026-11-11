@@ -16,7 +16,9 @@ export interface OutputAlertsOptions {
 export const MAX_LINE_BYTES = 64 * 1024;
 /** Each piece also scans the last bytes of the piece before it, so a match shorter than this is found across a boundary. */
 export const OVERLAP_BYTES = 4 * 1024;
-const SHOWN = 5, CONTEXT = 2, CLIP_CHARS = 200, NEWLINE = 0x0a, CR = 0x0d;
+/** How many matches an alert shows (the latest ones); the rest are only counted. */
+export const SHOWN_MATCHES = 5;
+const SHOWN = SHOWN_MATCHES, CONTEXT = 2, CLIP_CHARS = 200, NEWLINE = 0x0a, CR = 0x0d;
 const FLAGS = 'imsu';
 /** `/pattern/flags`: the pattern runs to the last slash, so it may contain slashes. */
 const LITERAL = /^\/(.+)\/([^/]*)$/s;

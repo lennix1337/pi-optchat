@@ -5,7 +5,7 @@ import { LONG_COMMAND_GRACE_SECONDS, longCommandReason } from './long-commands.t
 import { foregroundWait } from './foreground-wait.ts';
 import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
-import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
+import { OutputAlerts, SHOWN_MATCHES, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
 import { stringEnum } from './string-enum.ts';
 import { textContent } from './transcript.ts';
 
@@ -32,6 +32,8 @@ export interface ShellJob {
 export interface ShellReporter {
   finished(job: ShellJob): void;
   alerted(job: ShellJob, text: string, alert: ShellAlert): void;
+  /** Sends what is still waiting to go out together; called when another reporter replaces this one. */
+  flush?(): void;
 }
 export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string }
 const outputLimit = 32_000;
@@ -64,7 +66,7 @@ export class ShellJobs {
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   /** The open profile's reporter for managed background shells: each one's end (when its notify mode wants it) and its alerts. Foreground bash
    * calls are not reported: Pi shows their results. It must not throw: it runs inside the job's own completion, as `subscribe` listeners do. */
-  setReporter(reporter: ShellReporter | undefined) { this.reporter = reporter; if (reporter) for (const job of this.unreported.splice(0)) reporter.finished(job); }
+  setReporter(reporter: ShellReporter | undefined) { this.reporter?.flush?.(); this.reporter = reporter; if (reporter) for (const job of this.unreported.splice(0)) reporter.finished(job); }
   /** Every ended background job reaches the observer, even when its notify mode hides the end from the model. */
   setEndObserver(observer: ((job: ShellJob) => void) | undefined) { this.endObserver = observer; }
   setLifecycleObserver(observer: { began(job: ShellJob): void; ended(job: ShellJob): void } | undefined) { this.lifecycle = observer; }
@@ -216,14 +218,52 @@ export interface ShellRoutes {
   agent(id: string, text: string): Promise<boolean>;
   failed(what: string, job: ShellJob, error: unknown): void;
 }
-/** The reporter of a profile's shells: a subagent's go into its own session, so it can run a long gate and be woken with the outcome. The main agent hears them only when the subagent could not take it. */
-export function shellReporter(routes: ShellRoutes): ShellReporter {
+/** How long a shell's alerts wait for another before they go out as one (a quiet window: each alert restarts it). A little over the 10 s between two alerts of a shell, so a steady stream folds. */
+export const ALERT_FOLD_MS = 12_000;
+/** The longest a folded alert waits, however steadily the shell keeps alerting. */
+export const ALERT_FOLD_MAX_MS = 60_000;
+export interface ShellReporterOptions {
+  foldMs?: number; maxHoldMs?: number;
+  now?: () => number;
+  /** Runs `run` after `ms`; returns a function that cancels it. */
+  setTimer?: (run: () => void, ms: number) => () => void;
+}
+/** Alerts of one shell, merged: the matches add up, the lines span all of them and the latest few stay shown. */
+export function foldAlerts(alerts: readonly ShellAlert[]): ShellAlert {
+  const matches = alerts.reduce((sum, a) => sum + a.matches, 0), shown = alerts.flatMap(a => a.shown).slice(-SHOWN_MATCHES);
+  return { matches, firstLine: Math.min(...alerts.map(a => a.firstLine)), lastLine: Math.max(...alerts.map(a => a.lastLine)),
+    total: alerts[alerts.length - 1].total, hidden: matches - shown.length, shown };
+}
+/**
+ * The reporter of a profile's shells: a subagent's go into its own session, so it can run a long gate and be woken with the outcome. The main agent hears them only when the subagent could not take it.
+ * A shell's alerts that come close together leave as one message (the count, the latest lines); its end, arriving before that message is sent, joins it.
+ */
+export function shellReporter(routes: ShellRoutes, options: ShellReporterOptions = {}): ShellReporter {
   const send = (job: ShellJob, text: string, once: boolean) => job.agent === undefined ? routes.main(text, once)
     : routes.agent(job.agent, text).then(taken => taken ? undefined : routes.main(`${text}
 Started by subagent ${job.agent}, which could not take it.`, once));
+  const now = options.now ?? Date.now, foldMs = options.foldMs ?? ALERT_FOLD_MS, maxHoldMs = options.maxHoldMs ?? ALERT_FOLD_MAX_MS;
+  const setTimer = options.setTimer ?? ((run, ms) => { const timer = setTimeout(run, ms); timer.unref?.(); return () => clearTimeout(timer); });
+  const folding = new Map<string, { job: ShellJob; alerts: ShellAlert[]; since: number; cancel: () => void }>();
+  const alertText = (fold: { job: ShellJob; alerts: ShellAlert[] }) => alertReport(fold.job.id, fold.job.alert ?? '', foldAlerts(fold.alerts));
+  /** The folded alerts of a shell, taken out of the wait. */
+  const take = (id: string) => { const fold = folding.get(id); fold?.cancel(); folding.delete(id); return fold; };
+  const report = (job: ShellJob, text: string, once: boolean, what: string) => send(job, text, once).catch(error => routes.failed(what, job, error));
+  const release = (id: string) => { const fold = take(id); if (fold && routes.live()) void report(fold.job, alertText(fold), false, 'report an alert from shell'); };
   return {
-    finished: job => { if (routes.live()) send(job, shellReport(job), true).catch(error => routes.failed('report shell', job, error)); },
-    alerted: (job, text) => { if (routes.live()) send(job, text, false).catch(error => routes.failed('report an alert from shell', job, error)); },
+    finished: job => {
+      if (!routes.live()) return;
+      const fold = take(job.id), text = shellReport(job);
+      void report(job, fold ? [alertText(fold), text].join('\n\n') : text, true, 'report shell');
+    },
+    alerted: (job, _text, alert) => {
+      if (!routes.live()) return;
+      const fold = folding.get(job.id) ?? { job, alerts: [], since: now(), cancel: () => {} };
+      fold.alerts.push(alert); fold.cancel();
+      fold.cancel = setTimer(() => release(job.id), Math.max(0, Math.min(foldMs, fold.since + maxHoldMs - now())));
+      folding.set(job.id, fold);
+    },
+    flush: () => { for (const id of [...folding.keys()]) release(id); },
   };
 }
 

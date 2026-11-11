@@ -1,15 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAssistantMessageEventStream, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { textContent } from '../src/transcript.ts';
+import { reportReceipt, textContent } from '../src/transcript.ts';
 import { isCompaction, removeDir } from './support.ts';
 import { emptyUsage } from '../src/usage.ts';
+import { memoryDirectory } from '../src/import/job.ts';
 
 const COUNT = 12;
 const texts = Array.from({ length: COUNT }, (_, i) => `[burst${String(i).padStart(2, '0')}] child ${i} done`);
@@ -81,5 +82,20 @@ test('a burst of reports journaled before a reload all reach the model once the 
     assert.deepEqual(missing(), [], `reports lost at startup (Pi errors: ${errors.join('; ') || 'none'})`);
     assert.deepEqual(errors, []);
     assert.deepEqual(JSON.parse(readFileSync(join(profile, 'pending-reports.json'), 'utf8')), [], 'every delivered report left the journal');
+  });
+});
+
+test('the burst reaches the model as one message, and every report in it is logged under its own receipt', async () => {
+  await withJournal(async ({ profile, seen, errors, session }) => {
+    const holders = () => [...seen].filter(s => texts.some(t => s.includes(t)));
+    for (const deadline = Date.now() + 15_000; !texts.every(t => holders().some(s => s.includes(t))) && Date.now() < deadline;) await new Promise(r => setTimeout(r, 25));
+    await session.agent.waitForIdle();
+    assert.equal(holders().length, 1, 'one message carries all the reports');
+    assert.deepEqual(texts.filter(t => !holders()[0].includes(t)), []);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(JSON.parse(readFileSync(join(profile, 'pending-reports.json'), 'utf8')), []);
+    const logged = (dir: string): string => readdirSync(dir, { withFileTypes: true }).map(e => e.isDirectory() ? logged(join(dir, e.name)) : e.name.endsWith('.json') || e.name.endsWith('.jsonl') ? readFileSync(join(dir, e.name), 'utf8') : '').join('\n');
+    const memory = logged(memoryDirectory(profile));
+    for (const text of texts) assert.ok(memory.includes(text) && memory.includes(reportReceipt(text)), `${text} is in memory under its own receipt`);
   });
 });
