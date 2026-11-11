@@ -5,6 +5,7 @@ import { constants as osConstants } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SettingsManager, createBashToolDefinition, createLocalBashOperations, getAgentDir, getShellConfig, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { LONG_COMMAND_NOTE } from './long-commands.ts';
+import { machineService } from './machine-service.ts';
 
 /**
  * Git Bash pipelines outlive Pi's bash timeout on Windows. Each stage is forked and then exec'd, so its
@@ -133,7 +134,7 @@ export function reapingBashOperations(shellPath?: string): BashOperations {
       });
       if (stdin) { child.stdin?.on('error', () => {}); child.stdin?.end(command); }
       const pid = child.pid;
-      if (pid) live.add(pid);
+      if (pid) { live.add(pid); machineService()?.sense.spawned(pid, command, Date.now()); }
       let reaping: Promise<void> | undefined, timedOut = false;
       const kill = () => { if (pid && !reaping) reaping = reapShellTree(pid, config.shell); };
       const timer = ms === undefined ? undefined : setTimeout(() => { timedOut = true; kill(); }, ms);
