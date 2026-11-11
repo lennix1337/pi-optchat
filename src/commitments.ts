@@ -7,6 +7,7 @@ import { ESCALATION_RULE, overdueDay } from './commitment-due.ts';
 import { brasiliaTime } from './heartbeat.ts';
 import { ghIssueState, IssueStateCache } from './commitment-issues.ts';
 import { logBackgroundFailure } from './exec-log.ts';
+import { SLUG } from './slug.ts';
 import { atomicWrite } from './store.ts';
 import { stringEnum } from './string-enum.ts';
 import { result } from './tools.ts';
@@ -37,6 +38,8 @@ export interface Commitment {
   next?: string;
   evidence?: string;
   supersedes?: string;
+  /** The crew project (a specialist slug) whose owner keeps this item: the heartbeat hands its signals to that specialist. Absent: the manager's. */
+  project?: string;
   /** While it waits on the operator: the answers he can tap on the App Home (each becomes his DM reply). */
   choices?: string[];
   /** Events the extension records on it by itself (see `LinkEvent`). */
@@ -77,7 +80,7 @@ function isCommitment(value: unknown): value is Commitment {
   const c = value as Record<string, unknown>;
   return isText(c.id) && isText(c.text) && isText(c.source) && (c.owner === 'optchat' || c.owner === 'operator')
     && STATUSES.some(status => status === c.status) && isTime(c.createdAt) && isTime(c.updatedAt) && isTime(c.progressAt)
-    && (c.due === undefined || isTime(c.due)) && (c.next === undefined || isText(c.next)) && (c.evidence === undefined || isText(c.evidence)) && (c.supersedes === undefined || isText(c.supersedes))
+    && (c.due === undefined || isTime(c.due)) && (c.next === undefined || isText(c.next)) && (c.evidence === undefined || isText(c.evidence)) && (c.supersedes === undefined || isText(c.supersedes)) && (c.project === undefined || isText(c.project) && SLUG.test(c.project))
     && (c.choices === undefined || (Array.isArray(c.choices) && c.choices.every(isText))) && (c.links === undefined || isLinks(c.links))
     && Array.isArray(c.notes) && c.notes.every(note => typeof note === 'object' && note !== null && isTime((note as { at?: unknown }).at) && isText((note as { text?: unknown }).text));
 }
@@ -108,6 +111,13 @@ function dueAt(input: { due?: string; dueInMinutes?: number }, now: number): str
   return iso(at);
 }
 
+/** A project is a crew slug (a known specialist or a new one); '' clears it on update. */
+function projectOf(project: string | undefined): string | undefined {
+  if (project === undefined || project === '') return undefined;
+  if (!SLUG.test(project)) throw new Error(`"${project}" is not a valid project: use a crew slug (lowercase letters, digits and hyphens, at most 41 characters), e.g. dentai.`);
+  return project;
+}
+
 /** Short distinct answers, at most MAX_CHOICES; an empty list clears them. */
 function choicesOf(choices: readonly string[] | undefined): string[] | undefined {
   if (choices === undefined) return undefined;
@@ -129,7 +139,7 @@ function linksOf(given: LinksInput | undefined, old?: Links): Links | undefined 
   return { ...prs.length ? { prs } : {}, ...runs.length ? { runs } : {}, ...reload ? { reload } : {}, ...next ? { next } : {}, ...merged.seen?.length ? { seen: merged.seen } : {} };
 }
 
-export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; links?: LinksInput };
+export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; project?: string; choices?: string[]; links?: LinksInput };
 export function addCommitment(dir: string, input: AddInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
   const at = iso(now);
@@ -144,6 +154,7 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
     ...(input.next ? { next: clip(input.next) } : {}),
     ...(dueAt(input, now) ? { due: dueAt(input, now) } : {}),
     ...(input.supersedes ? { supersedes: input.supersedes } : {}),
+    ...(projectOf(input.project) ? { project: projectOf(input.project) } : {}),
     ...(choicesOf(input.choices)?.length ? { choices: choicesOf(input.choices) } : {}),
     ...(linksOf(input.links) ? { links: linksOf(input.links) } : {}),
   };
@@ -163,16 +174,17 @@ export function overdueRefusal(old: Commitment, input: UpdateInput, now: number)
   return `${old.id} is overdue ${span(now - Date.parse(old.due!))}: a note or a next step is not enough; to update it, ${ESCALATION_RULE}.`;
 }
 
-export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; choices?: string[]; links?: LinksInput };
+export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; project?: string; choices?: string[]; links?: LinksInput };
 export function updateCommitment(dir: string, input: UpdateInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
   const old = items.find(c => c.id === input.id);
   if (!old) throw new Error(`No commitment ${input.id}`);
   if (input.status === 'done' && !input.evidence && !old.evidence) throw new Error('Closing as done needs evidence: what was observed that proves it.');
   const at = iso(now), due = dueAt(input, now), choices = choicesOf(input.choices), links = linksOf(input.links, old.links);
-  const { choices: oldChoices, links: _links, ...rest } = old;
+  const project = projectOf(input.project), { choices: oldChoices, links: _links, project: oldProject, ...rest } = old;
   const updated: Commitment = {
-    ...rest, ...(choices === undefined && oldChoices ? { choices: oldChoices } : {}), updatedAt: at,
+    ...rest, ...(input.project === undefined && oldProject ? { project: oldProject } : {}), ...(project ? { project } : {}),
+    ...(choices === undefined && oldChoices ? { choices: oldChoices } : {}), updatedAt: at,
     ...(choices?.length ? { choices } : {}),
     ...(links ? { links } : {}),
     ...(input.status ? { status: input.status } : {}),
@@ -252,7 +264,7 @@ export function attention(c: Commitment, now: number): string | undefined {
 export function describe(c: Commitment, now: number): string {
   const flag = attention(c, now);
   const due = c.due ? `, due ${brasiliaTime(Date.parse(c.due))}${Date.parse(c.due) > now ? ` (in ${span(Date.parse(c.due) - now)})` : ''}` : '';
-  return `${flag ? `⚠ ${flag} · ` : ''}${c.id} [${c.owner} · ${c.status} · ${span(now - Date.parse(c.createdAt))} old${due}] ${c.text}${c.next ? ` — next: ${c.next}` : ''}`;
+  return `${flag ? `⚠ ${flag} · ` : ''}${c.id} [${c.owner} · ${c.status}${c.project ? ` · project ${c.project}` : ''} · ${span(now - Date.parse(c.createdAt))} old${due}] ${c.text}${c.next ? ` — next: ${c.next}` : ''}`;
 }
 
 /** Open items, the ones needing attention first, then by deadline, then oldest. */
@@ -340,7 +352,7 @@ export class Presence {
 const params = Type.Object({
   action: stringEnum(['list', 'add', 'update']),
   id: Type.Optional(Type.String()),
-  text: Type.Optional(Type.String({ maxLength: 2000, description: 'the promise, one line' })),
+  text: Type.Optional(Type.String({ maxLength: 2000 })),
   source: Type.Optional(Type.String({ description: 'his message id, or "latest"' })),
   owner: Type.Optional(stringEnum(['optchat', 'operator'])),
   status: Type.Optional(stringEnum(STATUSES)),
@@ -350,6 +362,7 @@ const params = Type.Object({
   due: Type.Optional(Type.String()),
   dueInMinutes: Type.Optional(Type.Number()),
   supersedes: Type.Optional(Type.String({ description: 'id it replaces' })),
+  project: Type.Optional(Type.String({ description: 'slug; "" clears' })),
   choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'his Slack Home taps; [] clears' })),
   links: Type.Optional(Type.Object({
     prs: Type.Optional(Type.Array(Type.String())), runs: Type.Optional(Type.Array(Type.String())), reload: Type.Optional(Type.Boolean()), next: Type.Optional(Type.String()),
@@ -357,7 +370,7 @@ const params = Type.Object({
   all: Type.Optional(Type.Boolean({ description: 'include closed' })),
 }, { additionalProperties: false });
 type Params = { action: 'list' | 'add' | 'update'; id?: string; text?: string; source?: string; owner?: CommitmentOwner; status?: CommitmentStatus;
-  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; links?: LinksInput; all?: boolean };
+  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; project?: string; choices?: string[]; links?: LinksInput; all?: boolean };
 
 function listText(dir: string, all: boolean, now: number) {
   const items = readCommitments(dir), shown = all ? items : openCommitments(items, now);
@@ -374,7 +387,7 @@ type Owner = { dir: string; sourceExists(id: string): boolean; latestSource?(): 
 export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
   return {
     name: 'commitments', label: 'Commitments',
-    description: 'Promises to the operator and what waits on him. Open items show every turn; done needs evidence; a new decision supersedes.',
+    description: 'Promises to the operator and what waits on him. Open items show every turn; done needs evidence.',
     parameters: params,
     async execute(_id: string, args: Params) {
       const { dir, sourceExists, latestSource } = owner(), now = Date.now();
