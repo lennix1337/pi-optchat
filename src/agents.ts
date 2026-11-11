@@ -262,6 +262,15 @@ export class Children {
   get ids() { return [...this.running.keys()]; }
   get active() { return this.completions.size > 0 || this.launching > 0 || this.settling > 0; }
   live(id: string) { return this.running.get(id); }
+  /** How much each collection that lives as long as this object holds, for `heap_report`: a count that only grows names the leak. */
+  sizes() {
+    let messages = 0, tools = 0, queued = 0;
+    for (const live of this.running.values()) { messages += live.session.messages.length; tools += live.tools.size; queued += live.pendingReports.length + live.pendingGuidance.length; }
+    let reportChars = 0;
+    for (const run of this.history.records.values()) reportChars += run.report?.length ?? 0;
+    return { childrenRunning: this.running.size, childrenRunMessages: messages, childrenTools: tools, childrenQueued: queued, runHistory: this.history.records.size, runHistoryReportChars: reportChars,
+      childrenListeners: this.listeners.size, childrenCompletions: this.completions.size, childrenLaunches: this.launches.size, childrenPeerTools: this.peerTools.size, childrenParkTimers: this.parkTimers.size };
+  }
   /** Native and pi-subagents rows in one tree order, for the inspector and navigation. */
   runs() { this.external.refresh(); return orderRuns([...this.history.list(), ...this.external.snapshot()]); }
   /** Native first, so every control path that only knows native runs keeps working unchanged. */

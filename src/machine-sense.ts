@@ -180,6 +180,13 @@ export class MachineSense {
     try { this.ledger.append(this.rows(pending)); return undefined; } catch (error) { return error instanceof Error ? error : new Error(String(error)); }
   }
 
+  /** Collection sizes for `heap_report`. */
+  sizes() {
+    const a = this.attributor.sizes();
+    return { machineFrames: this.frames.length, machineProcs: this.procs.size, machineOwners: this.owners.size, machineClaims: a.claims, machineMemo: a.memo, machineBound: a.bound,
+      machineExternals: a.externals, machineUnattributed: a.unattributed, machineLowered: this.lowered.size, machinePendingOwners: this.pending?.acc.size ?? 0 };
+  }
+
   // Reading it back.
   now(): MachineNow | undefined { return this.last; }
   /** Ledger rows from `since` on, plus the minute not yet written. */

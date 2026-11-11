@@ -31,7 +31,9 @@ export const noteReload = () => { shared().reloads++; };
 export const reloadCount = () => shared().reloads;
 
 export type MemoryStats = ReturnType<Memory['stats']>;
-export interface OptChatSide { memory: MemoryStats; run: number; reloads: number }
+/** Sizes of the collections that live as long as the process (name -> count or characters), so one that only grows names itself. */
+export type Collections = Record<string, number>;
+export interface OptChatSide { memory: MemoryStats; run: number; reloads: number; collections: Collections }
 /** The parts of Pi's session manager the report reads, all optional so an older Pi still reports what it has. */
 export interface SessionLike {
   getEntryCount?(): number;

@@ -1286,7 +1286,11 @@ export default function optchat(pi: ExtensionAPI) {
   pi.registerTool(readManyTool(process.cwd()));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
   pi.registerTool({ ...machineTool(machineService, () => situation), defaultActive: false });
-  pi.registerTool({ ...heapReportTool(() => active && { memory: active.memory.stats(), run: run.length, reloads: reloadCount() }), defaultActive: false });
+  pi.registerTool({ ...heapReportTool(() => active && { memory: active.memory.stats(), run: run.length, reloads: reloadCount(), collections: {
+    ...active.children.sizes(), ...machineService()?.sense.sizes?.(),
+    shellJobs: shells.list().length, shellOutputChars: shells.list().reduce((sum, job) => sum + job.output.length, 0),
+    receipts: receipts.size, bundles: bundles.size, runMessages: run.length, previousMessages: previous.length, reports: reports.length,
+    heldWakeMessages: heldWakeMessages.length, peerCopies: peerCopies.length } }), defaultActive: false });
   registerToolInventory(pi, lazy);
   registerLiveResources(pi);
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
