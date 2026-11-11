@@ -25,7 +25,7 @@ test('nothing pending is an empty board, and no note for the model', () => {
 });
 
 test('a running worker shows its short id, task, elapsed time, tool calls, last tool and model', () => {
-  assert.deepEqual(texts({ runs: [run()] }), ['a1b2c3d4 "Fix the flaky wake test" 12m · 31 tools · npm test · claude-sonnet-5-5']);
+  assert.deepEqual(texts({ runs: [run()] }), ['a1b2c3d4 "Fix the flaky wake test" 12m · 31 tools · npm test · sonnet']);
 });
 
 test('a long task, command and output line are cut to their budgets', () => {
@@ -71,7 +71,7 @@ test('a foreground shell is not on the board (the caller filters it) and a stopp
 });
 
 test('a parked worker says when it tries again, a paused one says paused, a stopping one says so', () => {
-  assert.deepEqual(texts({ runs: [run({ id: 'p1', state: 'interrupted', until: NOW + 31 * MIN, updated: undefined })] }), ['p1 "Fix the flaky wake test" ⏸ cota esgotada, volta às 14:20 · 12m · claude-sonnet-5-5']);
+  assert.deepEqual(texts({ runs: [run({ id: 'p1', state: 'interrupted', until: NOW + 31 * MIN, updated: undefined })] }), ['p1 "Fix the flaky wake test" ⏸ cota esgotada, volta às 14:20 · 12m · sonnet']);
   assert.match(texts({ runs: [run({ id: 'p2', state: 'paused' })] })[0], /^p2 "Fix the flaky wake test" pausado, aguarda você · 12m/);
   assert.match(texts({ runs: [run({ id: 'p3', state: 'stopping' })] })[0], /· parando · 31 tools/);
   assert.deepEqual(texts({ runs: [run({ state: 'interrupted' })] }), [], 'interrupted without a retry time is history');
@@ -253,4 +253,14 @@ test('mounted, the widget keeps the compact look until the board is focused, the
   nav.handle('\x1b', true, false);
   assert.deepEqual(widget!.render(80), ['│ aguarda você (4): aprovar o deploy']);
   unmount(); board.close(); mock.timers.reset();
+});
+
+// A worker's task is the shared prefix, then the contract: Goal, Acceptance, Evidence, Authority.
+const BRIEF = ["You are a subagent. Don't write memory pages.", '', 'Context: the operator wants the board readable.', 'Goal: In pi-optchat, make the waiting board reachable from the keyboard. Then more.', 'Acceptance: tests in test/navigation.test.ts.', 'Evidence: red-before.', 'Authority: edit and commit locally.'].join('\n');
+
+test('a worker line names the Goal of the contract, not the shared prefix, and the model by its short name', () => {
+  const lines = texts({ runs: [run({ task: BRIEF, model: 'anthropic-account-2/claude-sonnet-5-5' }), run({ id: 'b2c3d4e5', task: "You are a subagent. Don't write memory pages.\n\nContext: Resolver o conflito de merge localmente", model: 'openai-codex/gpt-6.1-sol', updated: NOW - 9_000 })] });
+  assert.equal(lines[0], 'a1b2c3d4 "In pi-optchat, make the waiting board r…" 12m · 31 tools · npm test · sonnet');
+  assert.equal(lines[1], 'b2c3d4e5 "Resolver o conflito de merge localmente" 12m · 31 tools · npm test · gpt-6.1-sol', 'no Goal: the first line that is not the prefix');
+  assert.equal(lines.some(l => l.includes('You are a subagent')), false);
 });

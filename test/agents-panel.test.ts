@@ -99,6 +99,8 @@ test('taskLabel drops the shared brief prefix and keeps the first sentence of th
   assert.equal(taskLabel('[This run] You are a code worker.\n\nContext: Resolver o conflito de merge localmente\nmais linhas'), 'Resolver o conflito de merge localmente');
   assert.equal(taskLabel('Check e.g. the build output. Then stop.'), 'Check e.g. the build output.');
   assert.equal(taskLabel("You are a subagent. Don't write memory pages."), "You are a subagent. Don't write memory pages.");
+  assert.equal(taskLabel(["You are a subagent. Don't write memory pages.", '', 'Context: the operator wants the board readable.', 'Goal: In pi-optchat, make the waiting board reachable. Then more.', 'Acceptance: tests.'].join('\n')), 'In pi-optchat, make the waiting board reachable.', 'the Goal line wins over an earlier Context line');
+  assert.equal(taskLabel("You are a subagent. Don't write memory pages.\n\nGoal:\nfix the flaky wake test in the harness"), 'fix the flaky wake test in the harness');
 });
 
 test('shortModel, modelColumn, compact and toolBrief', () => {

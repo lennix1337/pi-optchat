@@ -16,7 +16,7 @@ const view = '<chat>\n' + '0+1|line\n'.repeat(400) + '</chat>';
 
 test('the status line is the waiting board: running agents by id, first task words, elapsed time and progress, under a label the main prompt explains', () => {
   assert.equal(atWork(board([{ id: 'a1', task: 'Review PR #123 "carefully"\nthen report back to me', tools: 4, last: 'npm test' }])),
-    `[OptChat status] 13:49 pendente:\n- a1 "Review PR #123 'carefully' then report…" 1m · 4 tools · npm test · m`);
+    `[OptChat status] 13:49 pendente:\n- a1 "Review PR #123 'carefully'" 1m · 4 tools · npm test · m`);
   assert.match(atWork(board([{ task: 'x'.repeat(5_000) }]))!, new RegExp(`a1 "${'x'.repeat(39)}…" 1m`), 'a long word is cut too');
   assert.match(PROMPT, /"\[OptChat status\]" is OptChat's own live note/);
   assert.match(PROMPT, /what is pending \(agents, shells, CI, what waits on the user\)/, 'the prompt says what the status note holds');

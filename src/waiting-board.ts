@@ -1,3 +1,4 @@
+import { shortModel, taskLine } from './agent-rows.ts';
 import type { RunInfo } from './runs.ts';
 import { isRunning } from './runs.ts';
 import { plainText, type ShellJob } from './shells.ts';
@@ -72,13 +73,13 @@ export function toolBrief(name: string, args: unknown) {
 }
 /** The last non-empty line of a shell's output. */
 export const lastLine = (output: string) => plainText(output).split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean).at(-1) ?? '';
-/** `anthropic-account-2/claude-sonnet-5-5` → `claude-sonnet-5-5`. */
-const modelName = (model: string) => model.split('/').pop() ?? model;
+/** `anthropic-account-2/claude-sonnet-5-5` → `sonnet`. */
+const modelName = shortModel;
 const repoName = (repo: string) => repo.split('/').pop() ?? repo;
 
 const ENDED = new Set<string>(['completed', 'failed', 'stopped']);
 function runLine(run: BoardRun, now: number): BoardLine | undefined {
-  const head = `${run.id} "${cut(run.task, 40).replaceAll('"', "'")}"`;
+  const head = `${run.id} "${cut(taskLine(run.task) || run.task, 40).replaceAll('"', "'")}"`;
   const at = run.ended ?? run.updated ?? run.started;
   if (ENDED.has(run.state)) {
     if (run.ended === undefined || now - run.ended > KEEP_MS) return undefined;
