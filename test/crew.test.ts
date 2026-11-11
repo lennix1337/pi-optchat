@@ -226,7 +226,7 @@ test('the delegation nudge does not count bash calls that only read', () => {
 });
 
 /** A Children over a synthetic provider: `control.reply` is what workers answer, `control.hold` keeps their turn from ending until it resolves. */
-async function crewHarness(options: { providers?: Record<string, string[]>; route?: (kind: WorkerKind) => ModelChoice; compress?: Compressor } = {}) {
+async function crewHarness(options: { providers?: Record<string, string[]>; route?: (kind: WorkerKind) => ModelChoice; compress?: Compressor; appendix?: (cwd: string) => Promise<string> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-agents-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   memory.append('user', 'CHAT_SENTINEL_42');
@@ -251,7 +251,7 @@ async function crewHarness(options: { providers?: Record<string, string[]>; rout
   const crew = new Crew(join(dir, 'crew'), { compress: options.compress ?? (async input => { compressions.count++; return input.source.slice(0, 100); }) });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async text => { reports.push(text); }, () => {}, dir,
-    { route: options.route ?? (() => ({ provider: 'optchat-test', model: 'worker', thinking: 'minimal' })), crew, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    { route: options.route ?? (() => ({ provider: 'optchat-test', model: 'worker', thinking: 'minimal' })), crew, appendix: options.appendix, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const done = async (...ids: string[]) => { for (const id of ids) await (children as any).running.get(id)?.completion; };
   return { dir, memory, prompts, tools, reports, control, crew, compressions, children, done, close: async () => { await children.close(); await crew.closeAll(); await memory.close(); removeDir(dir); } };
 }
@@ -283,6 +283,26 @@ test('contract workers start from their project brief on their kind\'s model; pl
     assert.deepEqual(await children.checkStalls(), ['silent1'], 'reported again after it showed activity');
     (children as any).running.delete('silent1');
   } finally { await children.close(); await crew.closeAll(); await memory.close(); removeDir(dir); }
+});
+
+test('a code worker report carries the git appendix after its text and before the chat pointer; other runs and a failing appendix never lose the report', async () => {
+  const asked: string[] = [];
+  let mode: 'text' | 'throws' = 'text';
+  const { dir, reports, children, done, close } = await crewHarness({ appendix: async cwd => { asked.push(cwd); if (mode === 'throws') throw new Error('git is gone'); return '[git] branch feat/x: 1 commit ahead of origin/main'; } });
+  try {
+    const [worker, plain] = await children.spawn([{ task: CONTRACT, kind: 'code', project: 'harness' }, { task: 'plain task' }], dir);
+    await done(worker!, plain!);
+    const mine = reports.find(text => text.startsWith(`[${worker}]`))!, other = reports.find(text => text.startsWith(`[${plain}]`));
+    assert.ok(mine?.startsWith(`[${worker}] done\n\n[git] branch feat/x: 1 commit ahead of origin/main\n\nFull chat: zoom`), `the appendix sits between the worker text and the chat pointer: ${mine}`);
+    assert.ok(other, 'the plain subagent reported too');
+    assert.doesNotMatch(other, /\[git\]/, 'a plain subagent gets no appendix');
+    assert.deepEqual(asked, [dir], 'asked once, for the worker cwd');
+    mode = 'throws';
+    const [again] = await children.spawn([{ task: `${CONTRACT} again`, kind: 'code', project: 'harness' }], dir);
+    await done(again!);
+    const failed = reports.find(text => text.startsWith(`[${again}]`))!;
+    assert.ok(failed.startsWith(`[${again}] done\n\n[git] appendix unavailable: git is gone\n\nFull chat`), `one line saying why: ${failed}`);
+  } finally { await close(); }
 });
 
 test('specialists are the known four plus every folder of the crew dir; a project must be a slug, and the error lists the specialists', async () => {

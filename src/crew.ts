@@ -4,6 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { accountGroup } from './account.ts';
 import type { ModelChoice } from './compactor.ts';
+import { acceptRun, type AcceptDeps } from './crew-accept.ts';
 import { Memory, type Compressor } from './memory.ts';
 import type { RunInfo } from './runs.ts';
 import { atomicWrite } from './store.ts';
@@ -426,7 +427,7 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 - Small work stays with you: reads, a short one-file fix, about 3-5 commands. Only multi-file edits, long suites and long investigations go to workers (a new worker builds a new prompt cache): call spawn with \`kind\` and a contract.
 - Kinds: "code" (Sonnet, code changes), "mechanical" (Haiku, rote edits, renames, data gathering), "hard" (Opus, the hardest design or SDK work), "plan" (Opus scout, read-only, returns contracts).
 - A contract has lines starting with Goal:, Acceptance:, Evidence: and Authority: (what the worker may and may not do; my authority map caps it). A worker gets the contract and its project's charter and memory, not this chat: put every fact it needs in the contract.
-- Review a report like a code review: check its evidence (diff, test output, CI) before you believe it; send it back with tell when it falls short. Push, PRs and merges stay with you.
+- Review a report like a code review: check its evidence (diff, test output, CI) before you believe it; send it back with tell when it falls short. A code worker's report ends with its branch state (commits ahead, diff stat, dirty tree). When it holds up, crew accept (run, title, text = the PR description) ships its committed branch in one call: push, PR, auto-merge, the linked commitments, and it returns the run's proposals. Push, PRs and merges stay with you.
 - Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "write"); reject the rest. Audit each project memory weekly: read the memory, its proposals and the recent runs, fill a thin memory from verified facts, drop stale lines, then write it, or call action "audit" when nothing changed.
 - A production deploy (deploy-web.ps1, deploy-prod.ps1...) is not delegated: run it yourself, in the foreground of this session, and keep the machine quiet (no workers, no suites) until the swap is verified.
 - Open missions that span wakes live in the crew's missions.md: keep each one with its goal, acceptance and next step until accepted.
@@ -435,13 +436,15 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 - Follow-ups of a worker's task (review findings, red CI on its PR, an added requirement) go to that worker with tell <id>, never a new spawn: it resumes with its whole conversation and its prompt cache. A spawn in a project and directory whose worker finished within 24 h names that run in its answer. "Ask a specialist" means spawn a "plan" worker for that project: it reads the project's tree and code and answers.`;
 
 const CREW_PARAMS = Type.Object({
-  action: stringEnum(['list', 'read', 'write', 'audit', 'view', 'zoom'] as const),
+  action: stringEnum(['list', 'read', 'write', 'audit', 'view', 'zoom', 'accept'] as const),
   project: Type.Optional(Type.String()),
   part: Type.Optional(stringEnum(['charter', 'memory', 'missions', 'proposals'] as const)),
   text: Type.Optional(Type.String()),
   id: Type.Optional(Type.Integer({ minimum: 0 })),
   n: Type.Optional(Type.Integer({ minimum: 1 })),
   findText: Type.Optional(Type.String({ minLength: 1 })),
+  run: Type.Optional(Type.String()),
+  title: Type.Optional(Type.String()),
 }, { additionalProperties: false });
 
 /** "dentai (2), harness (1)" */
@@ -478,14 +481,19 @@ function readCrewTree(c: Crew, args: { action: 'view' | 'zoom'; project?: Specia
   return readTree(tree, args.id, { n: args.n, findText: args.findText });
 }
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
-export const crewTool = (crew: () => Crew) => ({
+export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew'>) => ({
   name: 'crew', label: 'Crew memory',
-  description: `Specialist disk state, by project slug (a new slug starts one). list: sizes, memory age, pending proposals. read/write: part charter (${CHARTER_BYTES} B cap), memory (${MEMORY_BYTES} B cap), missions (across wakes, no project) or proposals (read-only). write: text replaces all, refused over the cap; a memory write clears the project's proposals. audit: marks the memory audited. view: memory tree; zoom: id, n, findText open its lines. Never paste a report whole; write only verified proposal lines.`,
+  description: `Crew state by project slug (a new slug starts one). list: sizes, ages, proposals pending. read/write: part charter (${CHARTER_BYTES} B), memory (${MEMORY_BYTES} B), missions (no project) or proposals (read-only); write text replaces all, refused over the cap; a memory write clears its proposals. audit: marks audited. view/zoom: memory tree (id, n). accept: run, title, text (PR body) ships a worker's committed branch (PR, auto-merge, commitments), returns its proposals.`,
   parameters: CREW_PARAMS,
-  async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'audit' | 'view' | 'zoom'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
-    id?: number; n?: number; findText?: string }) {
+  async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'audit' | 'view' | 'zoom' | 'accept'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
+    id?: number; n?: number; findText?: string; run?: string; title?: string }) {
     const c = crew();
     if (args.action === 'list') return result(listCrew(c));
+    if (args.action === 'accept') {
+      if (!args.run) throw new Error('accept needs run (the worker run id), title and text.');
+      if (!accept) throw new Error('accept is not available here.');
+      return result(await acceptRun({ ...accept(), crew: c }, { runId: args.run, title: args.title ?? '', body: args.text ?? '' }));
+    }
     const part = args.part ?? 'memory';
     if (args.project !== undefined) c.check(args.project);
     if (args.action === 'view' || args.action === 'zoom') return readCrewTree(c, { ...args, action: args.action });
