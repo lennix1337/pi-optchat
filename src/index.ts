@@ -25,6 +25,7 @@ import { Focus } from './focus.ts';
 import { atomicWrite, readJsonOr, storeFor } from './store.ts';
 import { QUOTA_FILE, quotaPlan, routeBlock } from './quota-health.ts';
 import { QuotaOutage } from './quota-hold.ts';
+import { ReportDispatcher } from './report-dispatch.ts';
 import { knownProviders, pickWakeRoute } from './wake-route.ts';
 import { createCompressor, resolveModel } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
@@ -272,6 +273,8 @@ export default function optchat(pi: ExtensionAPI) {
   type Report = (typeof reports)[number];
   /** While every model the main agent could run on is out of quota, reports wait here instead of starting turns that would fail (see quota-hold.ts). */
   let outage: QuotaOutage<Report> | undefined;
+  /** Sends reports to Pi one turn start at a time (src/report-dispatch.ts). */
+  let reportDispatch: ReportDispatcher<Report> | undefined;
   let idle = () => true;
   const receipts = new Map<AgentMessage, string>();
   /** Keep the original result for durable memory; `run` retains the bounded copy sent back to the model. */
@@ -388,8 +391,12 @@ export default function optchat(pi: ExtensionAPI) {
   // built system prompt to reuse, so that rare case still goes through Pi's normal prompt path as a user message.
   const sendReport = (report: Report) => { if (!outage?.offer(report)) dispatchReport(report); };
   const dispatchReport = (report: Report) => {
+    report.sentAt = Date.now();
+    if (reportDispatch) reportDispatch.push(report); else sendToPi(report, idle());
+  };
+  const sendToPi = (report: Report, fromIdle: boolean) => {
     const { text, count } = report;
-    report.steered = !idle(); report.sentAt = Date.now();
+    report.steered = !fromIdle; report.sentAt = Date.now();
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
     else pi.sendUserMessage(text, { deliverAs: 'steer', expandPromptTemplates: false });
   };
@@ -518,6 +525,7 @@ export default function optchat(pi: ExtensionAPI) {
     machineService()?.stop(); shells.setLifecycleObserver(undefined);
     heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();
     outage?.close(); outage = undefined;
+    reportDispatch?.close(); reportDispatch = undefined;
     if (wakeReloadTimer) clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
     if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
@@ -613,6 +621,14 @@ export default function optchat(pi: ExtensionAPI) {
             if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);
           } });
       outage?.close();
+      reportDispatch?.close();
+      reportDispatch = new ReportDispatcher<Report>({ idle: () => ctx.isIdle(), send: sendToPi,
+        // Pi reports a refused send nowhere the extension can read; a send that started no turn is the sign.
+        failed: (report, attempt, giveUp) => {
+          report.sentAt = undefined;
+          ctx.ui.notify(giveUp ? `A report did not start a turn after ${attempt} tries; it stays journaled and is delivered at the next start.`
+            : 'A report did not start a turn; sending it again.', 'warning');
+        } });
       outage = new QuotaOutage<Report>({ now: () => Date.now(),
         // Cached quota only, across the accounts of the main model's family: undefined when one of them is usable or nothing is known.
         // The hints learned from failed turns count per provider, like the failed-wake blocks of a wake.
@@ -894,6 +910,7 @@ export default function optchat(pi: ExtensionAPI) {
   };
   // A report sent while Pi is idle starts its run without before_agent_start; it reuses the last built prompt.
   pi.on('agent_start', (_event, ctx) => {
+    reportDispatch?.started();
     working = true; turn = []; showTitle(ctx); heartbeat?.disarm();
     if (active && !runStarted) startRun(ctx);
   });
