@@ -47,6 +47,7 @@ import { registerReportRenderer, type ReportDetails } from './report-message.ts'
 import { memoryTools, result, searchTool } from './tools.ts';
 import { Children, loadedBuiltins } from './agents.ts';
 import { childToolSchemas } from './child-resources.ts';
+import { retargetTool } from './retarget-tool.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { registerWhatsAppBridge } from './whatsapp-bridge.ts';
@@ -707,6 +708,7 @@ export default function optchat(pi: ExtensionAPI) {
       void sync.now();
       board?.close();
       board = new WaitingBoard({
+        requiresExplicitRecovery: id => children.requiresExplicitRecovery(id), parkOpening: id => children.parkOpening(id),
         runs: () => children.runs(), live: id => { const run = children.live(id); return run && { updated: run.updated, toolAt: run.toolAt, busy: run.tools.size > 0, lastTool: run.lastTool }; }, shells: () => shells.list(),
         waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map((p): WaitItem => ({ text: `aprovação: ${p.summary}`, id: p.token, choices: ['aprovar', 'negar'] })) ?? [], ...stillWaiting(boardWaiting(readCommitments(active.dir), Date.now()), readWatch(active.dir))] : [],
       }, pi.events);
@@ -741,7 +743,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
         // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
-        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
+        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), recover(children.reportExplicitRecovery(), 'Reporting workers requiring explicit recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
       }
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) sendReports(queuedReports); });
       // A reload or crash in the middle of a wake left the wake model on: put the main one back.
@@ -1008,9 +1010,9 @@ export default function optchat(pi: ExtensionAPI) {
       const original = event.message;
       if (original.role === 'assistant') {
         // A tell that resumes a finished worker launches it again, as a spawn does: the wake waits for its report too.
-        for (const block of original.content) if (block.type === 'toolCall' && (block.name === 'spawn' || block.name === 'tell')) wakeWorkers.called(block.id);
+        for (const block of original.content) if (block.type === 'toolCall' && (block.name === 'spawn' || block.name === 'tell' || block.name === 'retarget')) wakeWorkers.called(block.id);
         if (original.stopReason === 'stop') wakeWorkers.replied();
-      } else if (original.role === 'toolResult' && (original.toolName === 'spawn' || original.toolName === 'tell')) {
+      } else if (original.role === 'toolResult' && (original.toolName === 'spawn' || original.toolName === 'tell' || original.toolName === 'retarget')) {
         wakeWorkers.result(original.toolCallId, (original.details as { runIds?: unknown } | undefined)?.runIds, original.isError);
         for (const report of reports) if (wakeWorkers.hasReport(report.text) && !report.awaitingProcessing) {
           report.awaitingProcessing = true; saveReports();
@@ -1352,6 +1354,8 @@ export default function optchat(pi: ExtensionAPI) {
       return { ...result(text), details: resumed ? { runIds: [args.id] } : {} };
     },
   });
+
+  pi.registerTool(retargetTool(() => required().children, (id, worker) => { if (heartbeat?.waking) wakeWorkers.launched(id, [worker]); }));
 
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */
   const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config, main,
