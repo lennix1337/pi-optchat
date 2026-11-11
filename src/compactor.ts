@@ -89,9 +89,11 @@ function primeFirst() {
 }
 /** What a compaction shares with the turns: the same system prompt and tools (never called) once available. `model`: the turns'
  * model; a compactor on another one has no cached prefix to share with them, so it leaves their tools out. */
-export interface Shared { systemPrompt: string; tools?: Tool[]; model?: { provider: string; model: string } }
+export interface Shared { systemPrompt: string; tools?: Tool[]; model?: { provider: string; model: string };
+  /** What a compactor on another model gets instead of `systemPrompt`: no cache is shared with it, so the turns' whole prompt is only cost. */
+  lean?: string }
 const forModel = (shared: Shared, model: { provider: string; id: string }): Shared =>
-  shared.model && (shared.model.provider !== model.provider || shared.model.model !== model.id) ? { systemPrompt: shared.systemPrompt } : shared;
+  shared.model && (shared.model.provider !== model.provider || shared.model.model !== model.id) ? { systemPrompt: shared.lean ?? shared.systemPrompt } : shared;
 type IncidentContext = { sessionId?: string; recoveryIncidentId?: string };
 function compactorError(error: unknown, detail: string) {
   if (errorCategory(error) !== 'stream_interrupted') return error;

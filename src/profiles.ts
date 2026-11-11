@@ -29,6 +29,8 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   wakeTriage?: { buildMinutes: number; stallHours?: number };
   /** A specialist's deadline findings go to a read-only patrol worker of that specialist, at most once per `minHours`, instead of waking the manager (see patrol.ts). Absent: they wake the manager. */
   specialistPatrol?: PatrolPlan;
+  /** Tools whose declarations the main agent's requests leave out while they stay callable from codemode (see lazy-tools.ts). Absent: LAZY_TOOLS; `[]`: none. */
+  lazyTools?: string[];
   /** Extra deploy entry points beyond the built-in ones (script names with `*`, or a command prefix such as `fly deploy`): see src/deploy.ts. */
   deployCommands?: string[] }
 /** The main model the roles follow, as Pi's model_select reports it. */
@@ -132,13 +134,14 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'specialistPatrol'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'specialistPatrol', 'lazyTools'] as const;
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
     || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))
     || value.wakeRouteAcrossFamilies !== undefined && typeof value.wakeRouteAcrossFamilies !== 'boolean'
     || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)
+    || value.lazyTools !== undefined && !(Array.isArray(value.lazyTools) && value.lazyTools.every(entry => typeof entry === 'string' && entry.trim() !== ''))
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidPatrol(value.specialistPatrol);

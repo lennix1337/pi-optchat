@@ -6,6 +6,7 @@ import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts'
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
 import { registerToolInventory } from './tool-inventory.ts';
+import { lazyLoadout, lazySet } from './lazy-tools.ts';
 import { readManyTool } from './read-many.ts';
 import { logSent, registerSlackReports } from './slack-reports.ts';
 import { registerProdHealth } from './prod-health.ts';
@@ -268,7 +269,7 @@ export default function optchat(pi: ExtensionAPI) {
     const on = new Set(pi.getActiveTools());
     return { systemPrompt: stateless(promptFor(prompt, active.config)).prompt,
       tools: pi.getAllTools().filter(tool => on.has(tool.name)).map(({ name, description, parameters }) => ({ name, description, parameters })),
-      ...(main ? { model: main } : {}) };
+      ...(main ? { model: main } : {}), ...(active.config.compactorFullPrompt ? {} : { lean: PROMPT }) };
   };
   let runStarted = false;
   let fault: string | undefined;
@@ -1287,13 +1288,15 @@ export default function optchat(pi: ExtensionAPI) {
   registerConnectedRenderer(pi);
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id), ref => required().focus.observe(ref));
-  pi.registerTool(zoom); pi.registerTool(date);
+  // Always active, so its loadout hook runs on every tool change: it leaves the lazy tools' declarations out of requests.
+  const lazy = () => lazySet(active?.config.lazyTools);
+  pi.registerTool(zoom); pi.registerTool({ ...date, prepareLoadout: lazyLoadout(lazy) });
   pi.registerTool(outputReadTool(() => required().outputs));
   pi.registerTool(readManyTool(process.cwd()));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
   pi.registerTool({ ...machineTool(machineService, () => situation), defaultActive: false });
   pi.registerTool({ ...heapReportTool(() => active && { memory: active.memory.stats(), run: run.length, reloads: reloadCount() }), defaultActive: false });
-  registerToolInventory(pi);
+  registerToolInventory(pi, lazy);
   registerLiveResources(pi);
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
     handler: async (args, ctx) => {

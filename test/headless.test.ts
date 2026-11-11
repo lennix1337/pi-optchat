@@ -59,7 +59,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
   /** Makes the fixture call a tool instead of answering, from the context it is given; undefined answers with text. */
   script?: (messages: Context['messages']) => ScriptedCall | undefined } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
-  const sent: string[] = [], turns: string[] = [], errors: string[] = [];
+  const sent: string[] = [], turns: string[] = [], errors: string[] = [], declarations: string[][] = [];
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
   let probePending = options.writeProbe;
   runtime.registerProvider('fixture', {
@@ -68,6 +68,13 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
     streamSimple(model, context) {
       const request = JSON.stringify(context.messages);
       sent.push(request);
+      // Pi declares the tools in system messages (toolsAdded/toolsRemoved): replay them to get what this request declares.
+      const declared = new Set<string>();
+      for (const message of context.messages as Array<{ role: string; toolsAdded?: { name: string }[]; toolsRemoved?: string[] }>) {
+        for (const tool of message.toolsAdded ?? []) declared.add(tool.name);
+        for (const name of message.toolsRemoved ?? []) declared.delete(typeof name === 'string' ? name : (name as { name: string }).name);
+      }
+      declarations.push([...declared]);
       const last = context.messages.at(-1);
       const prompt = textContent(last && 'content' in last ? last.content : '');
       const compacting = prompt.includes('\n\nCompaction:');
@@ -103,7 +110,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
   };
   const bindings = () => manager.getEntries().flatMap(e => e.type === 'custom' && e.customType === 'optchat.profile' ? [e.data] : []);
   const close = async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); };
-  return { ask, bindings, close, errors, notes, sent, turns, dir, messages: () => session.state.messages, activeTools: () => session.getActiveToolNames(), compact: () => session.compact() };
+  return { ask, bindings, close, errors, notes, sent, turns, declarations, dir, messages: () => session.state.messages, activeTools: () => session.getActiveToolNames(), compact: () => session.compact() };
 }
 
 test('optchat-perf exposes actual SDK tool failures without another model request or error text', async () => {
@@ -138,6 +145,26 @@ test('optchat-perf exposes actual SDK tool failures without another model reques
     assert.equal(report.tools.diagnostic_probe.errors, 1);
     assert.doesNotMatch(note, /PRIVATE_TOOL_FAILURE|PRIVATE_TOOL_OUTPUT/);
     assert.deepEqual(pi.errors, []);
+  } finally { await pi.close(); rememberProfile(previousProfile); }
+});
+
+test('lazy tools stay active and callable but are left out of the request declarations', async () => {
+  const previousProfile = lastProfile()!;
+  const stub = (name: string, properties: Record<string, unknown>, required: string[]) => ({ name, label: name, description: `Stub ${name}.`,
+    parameters: Type.Unsafe({ type: 'object', properties, required, additionalProperties: false }),
+    async execute() { return { content: [{ type: 'text' as const, text: 'ok' }], details: {} }; } });
+  const later: ExtensionFactory = api => {
+    for (const tool of [stub('codemode', { code: { type: 'string' } }, ['code']), stub('web_search', { query: { type: 'string' }, limit: { type: 'number' } }, ['query']), stub('lsp', { action: { type: 'string' } }, ['action'])])
+      api.registerTool(tool);
+    api.on('session_start', () => api.setActiveTools([...api.getActiveTools(), 'codemode', 'web_search', 'lsp']));
+  };
+  const pi = await headless('print', { flag: 'work', connect: 'off', realTools: true, later });
+  try {
+    await pi.ask('first');
+    const last = pi.declarations.at(-1)!;
+    assert.ok(last.includes('codemode') && last.includes('zoom'), `declared: ${last}`);
+    assert.equal(last.includes('web_search') || last.includes('lsp'), false, 'the lazy declarations are left out of the request');
+    assert.ok(pi.activeTools().includes('web_search') && pi.activeTools().includes('lsp'), 'they stay active, so a codemode script can call them');
   } finally { await pi.close(); rememberProfile(previousProfile); }
 });
 
