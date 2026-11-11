@@ -143,6 +143,27 @@ test('--done deletes a branch git itself sees as merged without asking gh, and r
   assert.match(f.run(['--done', 'nope']).out, /error: not_found/);
 } finally { f.close(); } });
 
+test('--done and --update accept the branch name of a worktree and resolve it to its folder; an unknown branch still refuses bad_name', () => {
+  const f = fixture(); try {
+  const { path, tip } = f.task('bybranch', 'feat/by-branch');
+  git(path, ['push', '-q', 'origin', 'feat/by-branch']);
+  git(f.other, ['pull', '-q', '--ff-only', 'origin', 'main']);
+  git(f.other, ['fetch', '-q', 'origin']);
+  git(f.other, ['merge', '--ff-only', 'origin/feat/by-branch']);
+  git(f.other, ['push', '-q', 'origin', 'HEAD:main']);
+  const upd = f.run(['--update', 'feat/by-branch']);
+  assert.doesNotMatch(upd.out, /error: bad_name/, upd.out);
+  assert.equal(git(path, ['rev-parse', 'HEAD']), tip, 'the branch was resolved to its worktree, not refused');
+  const done = f.run(['--done', 'feat/by-branch']);
+  assert.equal(done.code, 0, done.out);
+  assert.match(done.out, /^status: done$/m, done.out);
+  assert.match(done.out, /^branch: deleted feat\/by-branch/m, done.out);
+  assert.ok(!existsSync(path), 'the worktree of the branch is removed');
+  const unknown = f.run(['--done', 'feat/nope']);
+  assert.equal(unknown.code, 2, unknown.out);
+  assert.match(unknown.out, /error: bad_name/);
+} finally { f.close(); } });
+
 test('--done leaves the main checkout alone when its fast-forward is impossible, and says so', () => {
   const f = fixture(); try {
   f.task('x', 'feat/x');
