@@ -12,6 +12,7 @@ import { askOneLine } from './one-line.ts';
 import { atomicWrite } from './store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { REPORT_TYPE, textContent } from './transcript.ts';
+import { dueFindings, DUE_SLACK_MS, nextDue, type DueFinding } from './commitment-due.ts';
 import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type Signal, type Triage } from './wake-signals.ts';
 
 /** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
@@ -280,6 +281,8 @@ interface Saved {
   wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string;
   /** wakeTriage only: project -> digest of its radar lines at the last tick that settled them, and the stalled missions then. */
   projectDigests?: Record<string, string>; stalled?: string[];
+  /** wakeTriage with commitments: the due times already signalled (`id@due`) and when each item was last escalated as overdue 24 h+. */
+  dueSeen?: string[]; escalated?: Record<string, number>;
   /** provider -> when a wake that died on its usage limit may be tried again; learned from failed wakes, cleared by a wake that ends well. */
   routeBlocks: Record<string, number>;
   /** provider -> consecutive failed wakes, for the backoff when the error names no time. */
@@ -305,7 +308,7 @@ function limitMinutes(reply: string): number | undefined {
 function readSaved(file: string): Saved {
   if (!existsSync(file)) return emptySaved();
   try {
-    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown; projectDigests?: unknown; stalled?: unknown; routeBlocks?: unknown; routeFailures?: unknown; daily?: unknown } | null;
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown; projectDigests?: unknown; stalled?: unknown; dueSeen?: unknown; escalated?: unknown; routeBlocks?: unknown; routeFailures?: unknown; daily?: unknown } | null;
     const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
     const timed = <T>(items: unknown) => Array.isArray(items) ? items.filter((c): c is T => !!c && typeof c === 'object' && typeof (c as { at?: unknown }).at === 'number') : [];
     return { wakes, checks: timed<Check>(saved?.checks), wakeLog: timed<WakeRecord>(saved?.wakeLog),
@@ -313,13 +316,22 @@ function readSaved(file: string): Saved {
       ...typeof saved?.radarDigest === 'string' ? { radarDigest: saved.radarDigest } : {},
       ...saved?.projectDigests !== null && typeof saved?.projectDigests === 'object' && !Array.isArray(saved.projectDigests)
         ? { projectDigests: Object.fromEntries(Object.entries(saved.projectDigests).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) } : {},
-      ...isStrings(saved?.stalled) ? { stalled: saved.stalled } : {} };
+      ...isStrings(saved?.stalled) ? { stalled: saved.stalled } : {},
+      ...isStrings(saved?.dueSeen) ? { dueSeen: saved.dueSeen } : {},
+      ...saved?.escalated !== null && typeof saved?.escalated === 'object' && !Array.isArray(saved.escalated) ? { escalated: numbers(saved.escalated) } : {} };
   } catch { return emptySaved(); }
 }
 /** The profile's saved wakes and checks, for the /heartbeat report. */
 export const readHeartbeat = (dir: string) => readSaved(join(dir, 'heartbeat.json'));
 /** The wake before the one starting now: the newest logged wake that is not running (the one just saved is). */
 export const previousWake = (dir: string) => readHeartbeat(dir).wakeLog.filter(wake => wake.outcome !== 'running').at(-1);
+
+/** The tick's project signals with the commitment findings added, each to the signal of its project. */
+function withCommitments(signals: Signal[], findings: readonly DueFinding[]): Signal[] {
+  const by = new Map(signals.map(signal => [signal.project, { ...signal, lines: [...signal.lines] }]));
+  for (const { project, line } of findings) { const found = by.get(project); if (found) found.lines.push(line); else by.set(project, { project, lines: [line] }); }
+  return [...by.values()];
+}
 
 /** Arms when the chat settles, disarms when a turn starts; checks every interval while the chat stays idle. */
 export class Heartbeat {
@@ -379,8 +391,11 @@ export class Heartbeat {
     this.disarm();
     const minutes = this.deps.minutes();
     if (minutes <= 0) return;
-    this.nextAt = this.deps.now() + minutes * 60_000;
-    this.timer = this.deps.setTimer(() => { this.timer = undefined; this.nextAt = undefined; this.running = this.fireOnce(); }, minutes * 60_000);
+    // A commitment's due time ends the wait early: the tick that reads it as passed is the one that signals it.
+    const at = this.deps.now(), due = nextDue(this.deps.triage?.()?.commitments ?? [], at);
+    const wait = due === undefined ? minutes * 60_000 : Math.min(minutes * 60_000, due - at + DUE_SLACK_MS);
+    this.nextAt = at + wait;
+    this.timer = this.deps.setTimer(() => { this.timer = undefined; this.nextAt = undefined; this.running = this.fireOnce(); }, wait);
   }
   disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; this.nextAt = undefined; }
   /** The operator is back: their turn decides what comes next. */
@@ -457,7 +472,7 @@ export class Heartbeat {
       this.quotaOut = true; this.save({ verdict: 'SLEEP', text }, undefined, undefined, 'skippedQuota'); this.arm(); return;
     }
     this.quotaOut = false;
-    let beat: Beat = { wake: true, text: '' }, seen: Pick<Saved, 'projectDigests' | 'stalled'> | undefined;
+    let beat: Beat = { wake: true, text: '' }, seen: Pick<Saved, 'projectDigests' | 'stalled' | 'dueSeen' | 'escalated'> | undefined;
     const triage = this.deps.triage?.();
     if (triage) {
       const verdict = this.triage(triage, radar);
@@ -493,7 +508,7 @@ export class Heartbeat {
   /** What a wakeTriage tick decides: the beat (a signal wake, or the build wake once its cadence has run), or none for a quiet tick; and what the tick saw,
    * which is recorded only once the tick is settled (a wake started, or nothing to wake for), so a signal a full day's cap held back is still one next tick.
    * The first tick has no radar to compare with: it records the radar as it is, and still signals a stalled mission or the last turn's error. */
-  private triage(triage: Triage, radar: string | undefined): { beat?: Beat; seen: Pick<Saved, 'projectDigests' | 'stalled'> } {
+  private triage(triage: Triage, radar: string | undefined): { beat?: Beat; seen: Pick<Saved, 'projectDigests' | 'stalled' | 'dueSeen' | 'escalated'> } {
     const saved = this.saved(), at = this.deps.now(), stallHours = triage.stallHours;
     const readable = radarDigest(radar) !== undefined, first = saved.projectDigests === undefined;
     const { missions, lastRuns, lastStop } = triage;
@@ -501,15 +516,16 @@ export class Heartbeat {
     const { 'global:stop': _old, ...kept } = saved.projectDigests ?? {};
     const digests = readable ? projectDigests(radar, lastStop) : { ...kept, ...stop };
     const { 'global:stop': _stop, ...radarOnly } = digests;
-    const seen = { projectDigests: digests, stalled: stalledMissions({ missions, lastRuns, now: at, stallHours }) };
-    const found = findSignals({ radar: readable ? radar : undefined, previous: first && readable ? radarOnly : saved.projectDigests ?? {}, missions, lastRuns, now: at, stallHours, stalled: saved.stalled ?? [], lastStop });
+    const due = triage.commitments ? dueFindings(triage.commitments, { dueSeen: saved.dueSeen ?? [], escalated: saved.escalated ?? {} }, at) : undefined;
+    const seen = { projectDigests: digests, stalled: stalledMissions({ missions, lastRuns, now: at, stallHours }), ...due ? due.state : {} };
+    const found = withCommitments(findSignals({ radar: readable ? radar : undefined, previous: first && readable ? radarOnly : saved.projectDigests ?? {}, missions, lastRuns, now: at, stallHours, stalled: saved.stalled ?? [], lastStop }), due?.findings ?? []);
     if (found.length) return { seen, beat: { wake: true, trigger: 'signal', signals: found, text: `signal: ${found.map(signal => signal.project).join(', ')}` } };
     const lastWake = saved.wakes.at(-1) ?? this.startedAt;
     if (at - lastWake >= triage.buildMinutes * 60_000) return { seen, beat: { wake: true, trigger: 'build', text: 'build cadence' } };
     return { seen };
   }
   /** Sets the radar digest; save() carries it over, and the next wake compares against it. */
-  private keep(fields: Partial<Pick<Saved, 'radarDigest' | 'projectDigests' | 'stalled'>>) { atomicWrite(this.file, JSON.stringify({ ...this.saved(), ...fields })); }
+  private keep(fields: Partial<Pick<Saved, 'radarDigest' | 'projectDigests' | 'stalled' | 'dueSeen' | 'escalated'>>) { atomicWrite(this.file, JSON.stringify({ ...this.saved(), ...fields })); }
   /** Keeps the newest verdicts with their reasons next to the wake count, so an idle stretch can be audited later. */
   private save(check: Omit<Check, 'at'>, wakes?: number[], wake?: WakeRecord, count?: Counter) {
     const saved = this.saved();

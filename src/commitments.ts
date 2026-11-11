@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import { ESCALATION_RULE, overdueDay } from './commitment-due.ts';
 import { brasiliaTime } from './heartbeat.ts';
 import { ghIssueState, IssueStateCache } from './commitment-issues.ts';
 import { logBackgroundFailure } from './exec-log.ts';
@@ -152,6 +153,16 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
   return item;
 }
 
+/** Why an update of an item overdue for a day is refused, or undefined when it is one of the three ways out: close it (done or dropped), change its status, set a future due, or set choices. */
+export function overdueRefusal(old: Commitment, input: UpdateInput, now: number): string | undefined {
+  if (!overdueDay(old, now)) return undefined;
+  if (input.status !== undefined && input.status !== old.status) return undefined;
+  if (choicesOf(input.choices)?.length) return undefined;
+  const due = dueAt(input, now);
+  if (due !== undefined && Date.parse(due) > now) return undefined;
+  return `${old.id} is overdue ${span(now - Date.parse(old.due!))}: a note or a next step is not enough; to update it, ${ESCALATION_RULE}.`;
+}
+
 export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; choices?: string[]; links?: LinksInput };
 export function updateCommitment(dir: string, input: UpdateInput, now = Date.now()): Commitment {
   const items = readCommitments(dir);
@@ -274,7 +285,7 @@ export function commitmentsContext(items: readonly Commitment[], now = Date.now(
   const lines = [`Open commitments (${open.length}; ages now, times UTC-3; keep them current with the commitments tool: progress, next step, close with evidence):`];
   for (const [index, c] of open.entries()) {
     const hint = issueHint(c);
-    const line = `- ${describe(c, now)}${hint ? ` · ${hint}` : ''}`;
+    const line = `- ${describe(c, now)}${hint ? ` · ${hint}` : ''}${overdueDay(c, now) ? ` · overdue 24h+: ${ESCALATION_RULE}` : ''}`;
     if ([...lines, line].join('\n').length > CONTEXT_MAX) { lines.push(`- … ${open.length - index} more: commitments {action:"list"}`); break; }
     lines.push(line);
   }
@@ -380,6 +391,9 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
         return result(`Added ${describe(item, now)}`);
       }
       if (!args.id) throw new Error('update needs id');
+      const old = readCommitments(dir).find(c => c.id === args.id);
+      const refusal = old && overdueRefusal(old, { ...args, id: args.id }, now);
+      if (refusal) throw new Error(refusal);
       const item = updateCommitment(dir, { ...args, id: args.id }, now);
       if (args.progress || args.evidence || args.status) onProgress();
       return result(`Updated ${describe(item, now)}`);

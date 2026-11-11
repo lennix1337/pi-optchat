@@ -764,3 +764,74 @@ test('with wakeTriage a stalled mission signals once; without it heartbeat.json 
   assert.deepEqual(Object.keys(saved(plain.dir)).sort(), ['checks', 'daily', 'radarDigest', 'routeBlocks', 'routeFailures', 'wakeLog', 'wakes']);
   rmSync(plain.dir, { recursive: true, force: true });
 });
+
+/** A commitment as the triage reads it. */
+const due = (id: string, at: number, extra: Record<string, unknown> = {}) => ({ id, text: `promise ${id}`, owner: 'optchat', status: 'open', due: new Date(at).toISOString(), ...extra });
+
+test('with wakeTriage a commitment whose due passed wakes with `commitment due: <id> <text>` once, under its project or global', async () => {
+  const items = [due('c_one', 5 * MIN, { project: 'dentai' }), due('c_two', 5 * MIN)];
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged({ commitments: items }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.equal(h.beats[0].trigger, 'signal');
+  assert.deepEqual(h.beats[0].signals?.map(s => [s.project, s.lines]), [['dentai', ['commitment due: c_one promise c_one']], ['global', ['commitment due: c_two promise c_two']]]);
+  h.beat.turnSettled(turn);
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 1, 'each due is consumed once');
+  assert.deepEqual(saved(h.dir).dueSeen.sort(), [`c_one@${items[0]!.due}`, `c_two@${items[1]!.due}`]);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a due that could not wake (24 h cap) is not consumed: it signals again next tick', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 0, radar: async () => triageRadar(1), triage: () => triaged({ commitments: [due('c_one', 5 * MIN)] }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(saved(h.dir).dueSeen, undefined);
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.notes.length, 2);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the timer is armed for the next open due plus 30 s when that comes before the interval; later dues leave the interval alone', () => {
+  const h = harness({ minutes: 60, triage: () => triaged({ commitments: [due('c_late', 3 * 60 * MIN), due('c_soon', 10 * MIN), due('c_done', 2 * MIN, { status: 'done' })] }) });
+  h.beat.arm();
+  assert.equal(h.pending(), 10 * MIN + 30_000);
+  const far = harness({ minutes: 60, triage: () => triaged({ commitments: [due('c_late', 3 * 60 * MIN)] }) });
+  far.beat.arm();
+  assert.equal(far.pending(), 60 * MIN);
+  const none = harness({ minutes: 60, triage: () => triaged() });
+  none.beat.arm();
+  assert.equal(none.pending(), 60 * MIN);
+  for (const x of [h, far, none]) rmSync(x.dir, { recursive: true, force: true });
+});
+
+test('the timer set for a due fires a tick that already sees the due as passed', async () => {
+  const h = harness({ always: true, minutes: 60, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged({ commitments: [due('c_one', 10 * MIN)] }) });
+  h.beat.arm(); await h.advance(11 * MIN);
+  assert.equal(h.woken.length, 1, 'woken at 10 min 30 s, not at the 60 min interval');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('overdue 24 h+ signals the rule once per 24 h, and the record is kept in heartbeat.json', async () => {
+  const overdue = [due('c_old', 0)];
+  const h = harness({ always: true, minutes: 60, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged({ commitments: overdue }) });
+  const escalations = () => h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines).filter(l => l.startsWith('overdue 24h+'));
+  const hours = async (n: number) => { for (let i = 0; i < n; i++) { h.beat.arm(); await h.advance(60 * MIN); h.beat.turnSettled(turn); } };
+  await hours(25);
+  assert.equal(escalations().length, 1);
+  assert.match(escalations()[0]!, /^overdue 24h\+: c_old - close it with evidence, narrow it \(new due \+ next\), or make it a direct question to the operator \(status waiting_operator with choices\)$/);
+  assert.equal(h.beats.filter(b => b.signals?.some(s => s.lines.some(l => l.startsWith('commitment due')))).length, 1, 'the due line came once, at the due');
+  await hours(10);
+  assert.equal(escalations().length, 1, 'not again within 24 h of the last one');
+  assert.ok(saved(h.dir).escalated.c_old > 0);
+  await hours(15);
+  assert.equal(escalations().length, 2, 'a day after the first, it is escalated again');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('without commitments in the triage heartbeat.json gains no due fields', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged() });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(saved(h.dir).dueSeen, undefined);
+  assert.equal(saved(h.dir).escalated, undefined);
+  rmSync(h.dir, { recursive: true, force: true });
+});

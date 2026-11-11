@@ -502,7 +502,7 @@ export default function optchat(pi: ExtensionAPI) {
         const triage = own()?.config.wakeTriage;
         if (!triage) return undefined;
         const lastRuns = Object.fromEntries(Object.entries(lastRunsOf(profile.children.runs(), Date.now())).map(([project, run]) => [project, run.at]));
-        return { buildMinutes: triage.buildMinutes, ...triage.stallHours ? { stallHours: triage.stallHours } : {}, missions: profile.crew.missions(), lastRuns, lastStop: lastStopOf(ctx) };
+        return { buildMinutes: triage.buildMinutes, ...triage.stallHours ? { stallHours: triage.stallHours } : {}, missions: profile.crew.missions(), lastRuns, lastStop: lastStopOf(ctx), commitments: readCommitments(profile.dir) };
       },
       wake: (beat, radar, choice) => {
         wakeRetried = false; clearWakeWorkers();
