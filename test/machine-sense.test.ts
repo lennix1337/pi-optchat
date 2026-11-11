@@ -509,3 +509,19 @@ test('the command of an orphan belongs to a call when two of its words, not all 
   assert.ok(!commandBelongsTo('"/c/Program Files/nodejs/npm" install', NPM_CALL));
   assert.ok(!commandBelongsTo('node C:/tools/unrelated-job.js --watch', NPM_CALL));
 });
+
+test('sizes() counts what the sampler keeps, and a churn of short-lived processes leaves it bounded by the live table', () => {
+  const { dir, close } = tempDir('machine-sizes-');
+  try {
+    const { sense } = newSense(dir), sim = new Sim();
+    for (let round = 0; round < 400; round++) {
+      sim.spawn(5000 + round, HOST, 'git.exe', 0, NORMAL, `git status ${round}`);
+      if (round >= 3) sim.exit(5000 + round - 3);
+      sense.ingest(sim.sample(5, 1));
+    }
+    const sizes = sense.sizes();
+    assert.ok(sizes.machineProcs <= 8, JSON.stringify(sizes));
+    assert.ok(sizes.machineOwners <= 8, JSON.stringify(sizes));
+    assert.ok(sizes.machineFrames <= 400 && sizes.machineExternals <= 4 && sizes.machineUnattributed <= 4, JSON.stringify(sizes));
+  } finally { close(); }
+});

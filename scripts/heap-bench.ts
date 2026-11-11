@@ -8,7 +8,7 @@
 // other live-service file stay behind, the sandbox guard refuses to start when one is present or the home is the real one,
 // and global fetch is blocked, so nothing can reach the assistant service, Slack, ai-memory or the network.
 // Every phase forces two collections, then prints heap, RSS and the longest event-loop gap since the previous phase.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
@@ -23,6 +23,8 @@ if (typeof globalThis.gc !== 'function') throw new Error('run with --expose-gc')
 const scratch = mkdtempSync(join(tmpdir(), 'heap-bench-'));
 const home = join(scratch, 'home');
 process.env.OPTCHAT_HOME = home;
+// The bench's own session runs a fixture model (no paid call), so the approval gate that would hold its spawn tool calls is off here, and only here.
+process.env.OPTCHAT_EFFECT_APPROVALS = '0';
 process.env.PI_CODING_AGENT_DIR = join(scratch, 'agent');
 process.env.AI_MEMORY_SERVER_URL = 'http://127.0.0.1:9'; process.env.AI_MEMORY_DATA_DIR = join(scratch, 'ai-memory');
 process.env.PI_GITWATCH_DIR = join(scratch, 'gitwatch'); process.env.MEMORY_DIR = join(scratch, 'optmem');
@@ -61,14 +63,14 @@ function sample(label: string) {
 let calls = 0;
 function stream(model: Model<Api>, context: Context) {
   const last = context.messages.at(-1), prompt = textContent(last && 'content' in last ? last.content : '');
-  const compacting = prompt.includes('\n\nCompaction:'), worker = context.messages.some(m => m.role === 'user' && textContent(m.content).includes('Your task:'));
+  const compacting = /Compaction: (?:compress message|merge lines)/.test(JSON.stringify(context.messages.map(m => m.content))), said = prompt.split('\n').at(-1) ?? '', worker = context.messages.some(m => m.role === 'user' && textContent(m.content).includes('Your task:'));
   const toolResults = context.messages.filter(m => m.role === 'toolResult').length;
-  const wantsRead = !compacting && (worker ? toolResults < 3 : /^read /.test(prompt) && last?.role === 'user');
-  const spawns = !compacting && /^spawn worker/.test(prompt) && last?.role === 'user';
-  const content: AssistantMessage['content'] = spawns ? [{ type: 'toolCall', id: `s-${++calls}`, name: 'spawn', arguments: { tasks: [{ task: `Read the file ${big} and report. ${prompt}` }] } }]
+  const wantsRead = !compacting && (worker ? toolResults < 3 : /^read /.test(said) && last?.role === 'user');
+  const spawns = !compacting && /^spawn worker/.test(said) && last?.role === 'user';
+  const content: AssistantMessage['content'] = spawns ? [{ type: 'toolCall', id: `s-${++calls}`, name: 'spawn', arguments: { tasks: [{ task: `Read the file ${big} and report. ${said}` }] } }]
     : compacting ? [{ type: 'text', text: `talk: summary ${++calls} ${'compacted '.repeat(30)}` }]
     : wantsRead ? [{ type: 'toolCall', id: `r-${++calls}`, name: 'read', arguments: { path: big } }]
-    : [{ type: 'text', text: worker ? `worker done ${'report '.repeat(40)}` : `OK ${prompt.slice(0, 80)}` }];
+    : [{ type: 'text', text: worker ? `worker done ${'report '.repeat(40)}` : `OK ${said.slice(0, 80)}` }];
   const message: AssistantMessage = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
     stopReason: wantsRead || spawns ? 'toolUse' : 'stop', usage: emptyUsage() };
   const out = createAssistantMessageEventStream();
@@ -98,18 +100,20 @@ await session.bindExtensions({ uiContext: ui, mode: 'rpc', onError: error => { e
 console.log(`open ms=${Math.round(performance.now() - opened)}`);
 sample('after open');
 
-const heap = async () => {
-  const tool = session.getAllTools().find(t => t.name === 'heap_report');
-  return tool;
-};
-void heap;
-
 const ask = (text: string) => session.prompt(text);
 const runsDir = join(profilePath(profile), 'runs');
-const finished = () => readdirSync(runsDir).filter(f => f.endsWith('.optchat.json')).flatMap(f => {
+const start = Date.now();
+/** Runs of this bench that ended: files touched since the start (stat only, so polling stays cheap next to 400 MB of old runs). */
+const finished = () => readdirSync(runsDir).filter(f => f.endsWith('.optchat.json') && statSync(join(runsDir, f)).mtimeMs >= start).flatMap(f => {
   try { const run = JSON.parse(readFileSync(join(runsDir, f), 'utf8')) as { state: string; started: number }; return run.started >= start ? [run] : []; } catch { return []; }
 });
-const start = Date.now();
+/** The collection counts OptChat's own heap_report tool gives (the same numbers the live process reports). */
+async function collections(input: { snapshot?: boolean } = {}) {
+  const tool = session.extensionRunner!.getToolDefinition('heap_report');
+  if (!tool) return undefined;
+  const result = await tool.execute('bench', input, undefined, undefined, { sessionManager: session.sessionManager } as never);
+  return (JSON.parse((result.content[0] as { text: string }).text) as { optchat?: { collections?: unknown } }).optchat?.collections;
+}
 
 // Phase A: chat turns that read a file and answer, so memory appends and compacts, as in a day of use.
 const per = Math.max(1, Math.floor(turns / 5));
@@ -128,12 +132,15 @@ for (let w = 1; w <= workers; w += 1) {
   const deadline = Date.now() + 60_000;
   while (done() <= before && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
   await session.agent.waitForIdle();
-  if (w % 5 === 0) sample(`after ${w} workers`);
+  sample(`after ${w} workers`); if (w % 5 === 0 || w === workers) console.log('collections', JSON.stringify(await collections()));
 }
-sample('final');
+sample('final'); console.log('collections final', JSON.stringify(await collections()));
+// Snapshots exist only in this disposable process: what holds the heap after the workload, by constructor.
+if (process.argv.includes('--snapshot')) { const tool = session.extensionRunner!.getToolDefinition('heap_report')!; const out = await tool.execute('bench', { gc: true, snapshot: true }, undefined, undefined, { sessionManager: session.sessionManager } as never); console.log('snapshot', (out.content[0] as { text: string }).text); }
 if (errors.length) console.log('errors', errors.slice(0, 5));
 const out = arg('json');
 if (out) writeFileSync(out, JSON.stringify(rows, null, 2));
 clearInterval(probe);
 await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
+if (!process.argv.includes('--keep')) rmSync(scratch, { recursive: true, force: true });
 process.exit(0);

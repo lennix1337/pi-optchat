@@ -65,6 +65,7 @@ export class Attributor {
   private unattributed = new Map<string, Owner>();
   private lastSample?: number;
   constructor(private options: AttributorOptions) {}
+  sizes() { return { claims: this.claims.length, memo: this.memo.size, bound: this.bound.size, externals: this.externals.size, unattributed: this.unattributed.size }; }
 
   /** OptChat is about to run a command (bash call, shell_start, a worker's call) for `owner`. Returns a handle for `release`. */
   claim(owner: Owner, command: string, at: number): number {

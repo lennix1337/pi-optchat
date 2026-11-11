@@ -48,7 +48,7 @@ test('a memory of N rows reports root=N and keeps at most the hot texts in RAM',
   const memory = new Memory(dir, async input => input.source.slice(0, 60), () => {}, 4000);
   try {
     const stats = memory.stats(), treeNodes = memory.tree.size; // summaries keep merging in the background
-    const report = await heapReport({}, { optchat: { memory: stats, run: 7, reloads: 3 } }, injected());
+    const report = await heapReport({}, { optchat: { memory: stats, run: 7, reloads: 3, collections: {} } }, injected());
     const side = report.optchat as { memory: Record<string, number>; run: number; reloads: number };
     assert.equal(side.memory.root, total);
     assert.ok(side.memory.liveTexts <= HOT_TEXTS && side.memory.liveTexts > 0, `live texts ${side.memory.liveTexts}`);
@@ -185,6 +185,11 @@ test('a real Pi turn records pi_pre_request and pi_boundary, and heap_report rea
     assert.ok(report.pi.sessionFileBytes > 0);
     assert.ok(report.optchat.memory.root >= 2); assert.ok(report.optchat.run >= 1);
     assert.equal(report.optchat.reloads, 0);
+    // Counts of the collections that live as long as the process, so a growing one can be named without a snapshot.
+    const sizes = report.optchat.collections;
+    for (const name of ['childrenRunning', 'childrenRunMessages', 'runHistory', 'shellJobs', 'shellOutputChars', 'receipts', 'bundles', 'runMessages', 'heldWakeMessages', 'peerCopies'])
+      assert.equal(typeof sizes[name], 'number', `${name} in ${JSON.stringify(sizes)}`);
+    assert.ok(sizes.runMessages >= 1);
     if (process.env.HEAP_REPORT_SAMPLE) writeFileSync(process.env.HEAP_REPORT_SAMPLE, heap);
   } finally {
     await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
