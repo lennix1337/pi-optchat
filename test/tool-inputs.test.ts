@@ -18,7 +18,7 @@ function registeredTools() {
 const validInputs: Record<string, Record<string, unknown>> = {
   zoom: { id: 0 }, date: { id: 0 }, search: { text: 'fixture' }, output_read: { ref: 'a'.repeat(64) }, read_many: { files: [{ path: 'a.ts', offset: 1, limit: 5 }] },
   shell_start: { command: 'not executed', timeout: 1, notify: 'none' }, shell_status: {}, shell_stop: { id: 'fixture' },
-  operation_state: {}, operational_state: {}, context_metrics: {}, heap_report: { gc: true, snapshot: false }, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
+  operation_state: {}, operational_state: {}, context_metrics: {}, machine: { view: 'top', window: 60 }, heap_report: { gc: true, snapshot: false }, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
   tell: { id: 'fixture', message: 'not sent' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
   slack_send: { text: 'not sent' }, tool_inventory: {}, skills_on_disk: { name: 'fixture' }, commitments: { action: 'list' },
   crew: { action: 'read', project: 'harness', part: 'memory' },

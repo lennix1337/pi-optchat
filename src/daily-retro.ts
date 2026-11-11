@@ -22,13 +22,14 @@ export function markRetro(dir: string, now: number) {
   atomicWrite(join(dir, RETRO_FILE), JSON.stringify({ date: localDate(now), startedAt: now }));
 }
 
-export function retroPrompt(date: string) {
+export function retroPrompt(date: string, machine: string[] = []) {
   return [
     `Daily retro (operator 03/11, standing order), ${date}. Run the \`retro\` skill (~/.agents/skills/retro/SKILL.md) over today's work in this chat:`,
     'what slowed delivery, what lowered quality, replies he had to correct, Slack/Home UX friction, and what wakes did or failed to do.',
     'Then apply every relevant fix now, without asking: harness code (PR + auto-merge), the swlucas05 profile AGENTS.md, skills, and autonomy.json',
     '(edit/write of the file; rules for deploy, production writes, paid runs, messages, consent, publish, force-push, installs, `*` and the default stay his and need his tap).',
     'Each fix gets a regression test or a measurement where one applies; mirror profile changes in dotfiles payload/pi.',
+    ...machine.length ? ['Measured cost centres of the last 24 h on this PC (machine ledger; the `machine` tool has the detail). Treat each as a candidate optimisation, and say which you changed:', ...machine.map(line => `- ${line}`)] : [],
     'Finish with one short Slack DM: what changed, what it should improve, and anything that needs his decision.',
   ].join('\n');
 }

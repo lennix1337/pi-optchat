@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { getCurrentSystemMessage, getSupportedThinkingLevels, type Api, type Model } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
@@ -97,6 +97,7 @@ import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { HOLD_MAX_MS, RELOAD_RESUME, registerSelfReload, reloadLease } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
+import { MachineService, machineService, machineTool } from './machine-service.ts';
 
 const binding = 'optchat.profile';
 /** The request head the prompt cache holds (StableHead) is kept in `HEAD_FILE` of the profile, keyed by session, so /reload sends it again.
@@ -480,11 +481,24 @@ export default function optchat(pi: ExtensionAPI) {
       const now = Date.now();
       if (!retroDue(profile.dir, now, at)) return;
       try { markRetro(profile.dir, now); } catch (error) { ctx.ui.notify(`Daily retro could not be recorded: ${errorText(error)}`, 'warning'); return; }
-      void deliverReport(retroPrompt(new Date(now).toLocaleDateString('sv-SE'))).catch(error => ctx.ui.notify(`Daily retro could not start: ${errorText(error)}`, 'error'));
+      void deliverReport(retroPrompt(new Date(now).toLocaleDateString('sv-SE'), machineService()?.insights(24 * 3_600_000, now))).catch(error => ctx.ui.notify(`Daily retro could not start: ${errorText(error)}`, 'error'));
     }, 60_000);
     retroTimer.unref?.();
   };
+  /** The machine sampler: one per main session, never in workers (they do not load this extension). Alerts reach the main agent like a shell's. */
+  const startMachineSense = (ctx: ExtensionContext, memory: unknown) => {
+    if (ctx.mode === 'print' || ctx.mode === 'json' || process.platform !== 'win32') return;
+    const service = MachineService.start({ agentDir: getAgentDir(), lowerOwn: () => active?.config.machineLower ?? true,
+      notify: text => { if (!stopping && active?.memory === memory) void deliverReport(text).catch(error => ctx.ui.notify(`Machine alert could not be delivered: ${errorText(error)}`, 'error')); },
+      runs: () => active?.children.runs().map(run => ({ id: run.id, started: run.started })) ?? [] });
+    const handles = new Map<string, number>();
+    shells.setLifecycleObserver({
+      began: job => { handles.set(job.id, service.sense.began({ id: job.id, command: job.command, mode: job.mode, agent: job.owner?.startsWith('agent ') ? job.owner : undefined }, job.started)); },
+      ended: job => { const handle = handles.get(job.id); if (handle !== undefined) service.sense.ended(handle); handles.delete(job.id); },
+    });
+  };
   const stop = async (reason?: string) => {
+    machineService()?.stop(); shells.setLifecycleObserver(undefined);
     heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();
     outage?.close(); outage = undefined;
     if (wakeReloadTimer) clearTimeout(wakeReloadTimer); wakeReloadTimer = undefined;
@@ -628,6 +642,7 @@ export default function optchat(pi: ExtensionAPI) {
         agent: (id, text) => children.shellNotice(id, text),
         failed: (what, job, error) => ctx.ui.notify(`Could not ${what} ${job.id}: ${errorText(error)}`, 'error'),
       }));
+      startMachineSense(ctx, memory);
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
@@ -1182,6 +1197,7 @@ export default function optchat(pi: ExtensionAPI) {
   pi.registerTool(outputReadTool(() => required().outputs));
   pi.registerTool(readManyTool(process.cwd()));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
+  pi.registerTool({ ...machineTool(machineService), defaultActive: false });
   pi.registerTool({ ...heapReportTool(() => active && { memory: active.memory.stats(), run: run.length, reloads: reloadCount() }), defaultActive: false });
   registerToolInventory(pi);
   registerLiveResources(pi);
