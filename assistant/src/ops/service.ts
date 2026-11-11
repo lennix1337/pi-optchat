@@ -31,7 +31,9 @@ const main = fileURLToPath(new URL('../main.ts', import.meta.url));
 
 export class OpsError extends Error {
   readonly detail: string;
-  constructor(code: string, detail = '') { super(code); this.name = 'OpsError'; this.detail = detail; }
+  /** The port a `port_*` failure is about, so the operator and the logon launcher see it without reading the log. */
+  readonly port?: number;
+  constructor(code: string, detail = '', port?: number) { super(code); this.name = 'OpsError'; this.detail = detail; if (port !== undefined) this.port = port; }
 }
 
 export function servicePaths(configPath: string): ServicePaths {
@@ -138,6 +140,16 @@ async function withLock<T>(paths: ServicePaths, fn: () => Promise<T>): Promise<T
   try { return await fn(); } finally { rmSync(paths.lock, { force: true }); }
 }
 
+/**
+ * The server's own verdict on a failed listen, read from what it appended to the log after `fromByte` (`Listen failed:
+ * <code>` in main.ts). The process outlives that failure, so waiting for it to exit reported a generic unhealthy start.
+ */
+export function listenFailure(log: string, fromByte: number): 'port_reserved' | 'port_in_use' | undefined {
+  if (!existsSync(log)) return undefined;
+  const code = /^Listen failed: (EACCES|EADDRINUSE)\b/m.exec(readFileSync(log).subarray(fromByte).toString('utf8'))?.[1];
+  return code === 'EACCES' ? 'port_reserved' : code === 'EADDRINUSE' ? 'port_in_use' : undefined;
+}
+
 function rotateLog(log: string): void {
   if (existsSync(log) && statSync(log).size > LOG_ROTATE_BYTES) renameSync(log, `${log}.1`);
 }
@@ -160,6 +172,7 @@ export async function startService(options: { configPath: string; web?: boolean;
     if (await portInUse(portOf(config.endpoint))) throw new OpsError('port_in_use', 'a process this tool did not start listens on the configured port; it was not touched');
     rotateLog(paths.log);
     rmSync(paths.stopFile, { force: true });
+    const logFrom = existsSync(paths.log) ? statSync(paths.log).size : 0;
     const log = openSync(paths.log, 'a', 0o600);
     let child;
     try {
@@ -177,15 +190,19 @@ export async function startService(options: { configPath: string; web?: boolean;
     writeFileSync(paths.record, JSON.stringify(owned), { mode: 0o600 });
     const deadline = Date.now() + (options.readyTimeoutMs ?? 15_000);
     let probe: ApiProbe = 'unreachable';
+    let listenFailed: ReturnType<typeof listenFailure>;
     while (!exited && Date.now() < deadline) {
       probe = await probeApi(config.endpoint, config.token);
       if (probe !== 'unreachable') break;
+      if ((listenFailed = listenFailure(paths.log, logFrom))) break;
       await sleep(150);
     }
     if (probe === 'ok') { child.unref(); return { result: 'started', pid, endpoint: config.endpoint, ...(staleRecordRemoved ? { staleRecordRemoved } : {}) }; }
     if (!exited && owns(owned)) { process.kill(pid); await waitForExit(pid, 5000); }
     rmSync(paths.record, { force: true });
     child.unref();
+    listenFailed ??= listenFailure(paths.log, logFrom);
+    if (listenFailed) throw new OpsError(listenFailed, logTail(paths.log, config.token), portOf(config.endpoint));
     throw new OpsError(exited ? 'start_failed' : 'start_unhealthy', logTail(paths.log, config.token));
   });
 }

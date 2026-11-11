@@ -20,7 +20,7 @@ export function cli(usage, options, run) {
     // Library failures are fixed codes; anything else is reported as unexpected with its message on stderr only.
     const message = error instanceof Error ? error.message : String(error);
     const code = /^[a-z][a-z_]*$/.test(message) ? message : 'unexpected';
-    console.log(JSON.stringify({ result: 'error', code }));
+    console.log(JSON.stringify({ result: 'error', code, ...(Number.isInteger(error?.port) ? { port: error.port } : {}) }));
     const detail = typeof error?.detail === 'string' ? error.detail : code === 'unexpected' ? message : '';
     if (detail) console.error(detail);
     process.exitCode = 1;

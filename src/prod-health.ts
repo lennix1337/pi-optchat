@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { brasiliaTime } from './heartbeat.ts';
+import { assistantProbe, ASSISTANT_HEALTH_FILE, ASSISTANT_WAKE_NOTE } from './assistant-health.ts';
 import { pcProbes } from './pc-health.ts';
 import { quotaProbe, QUOTA_HEALTH_FILE } from './quota-health.ts';
 import { sampleQuotaRound } from './quota-load.ts';
@@ -25,7 +26,8 @@ export interface ProbeResult { ok: boolean; problem?: string; ms: number; build?
 export interface Probe { name: string; url: string; slowMs: number; judge(status: number, body: string): { problem?: string; build?: string } }
 /** A probe of this machine rather than a URL. */
 /** `remedy` runs once when the probe goes down (see self-fix.ts). */
-export interface LocalProbe { name: string; check(): ProbeResult | Promise<ProbeResult>; remedy?: Remedy }
+/** `dir` is the profile directory the round runs for, for probes that read its files (assistant.json). */
+export interface LocalProbe { name: string; check(context?: { dir: string }): ProbeResult | Promise<ProbeResult>; remedy?: Remedy }
 export type Fetcher = (url: string, timeoutMs: number) => Promise<{ status: number; body: string; headersMs?: number; edge?: string }>;
 
 const api: Probe = {
@@ -69,12 +71,12 @@ const reason = (error: unknown) => {
   return `${error.message.slice(0, 120)}${typeof cause === 'string' ? ` (${cause})` : ''}`;
 };
 
-export function runProbe(probe: Probe | LocalProbe, fetcher: Fetcher, now: () => number = Date.now): Promise<ProbeResult> {
-  return 'check' in probe ? runLocal(probe) : runRemote(probe, fetcher, now);
+export function runProbe(probe: Probe | LocalProbe, fetcher: Fetcher, now: () => number = Date.now, dir = ''): Promise<ProbeResult> {
+  return 'check' in probe ? runLocal(probe, dir) : runRemote(probe, fetcher, now);
 }
 
-async function runLocal(probe: LocalProbe): Promise<ProbeResult> {
-  try { return await probe.check(); } catch (error) { return { ok: false, ms: 0, problem: `falha na checagem: ${reason(error)}` }; }
+async function runLocal(probe: LocalProbe, dir: string): Promise<ProbeResult> {
+  try { return await probe.check({ dir }); } catch (error) { return { ok: false, ms: 0, problem: `falha na checagem: ${reason(error)}` }; }
 }
 
 async function runRemote(probe: Probe, fetcher: Fetcher, now: () => number): Promise<ProbeResult> {
@@ -158,7 +160,7 @@ export class ProdHealth {
   async round(dir: string): Promise<Transition[]> {
     const now = this.options.now ?? Date.now, fetcher = this.options.fetcher ?? defaultFetch;
     const probes = this.options.probes ?? DEFAULT_PROBES;
-    const results = new Map(await Promise.all(probes.map(async p => [p.name, await runProbe(p, fetcher, now)] as const)));
+    const results = new Map(await Promise.all(probes.map(async p => [p.name, await runProbe(p, fetcher, now, dir)] as const)));
     const state = readHealth(dir, this.file), transitions = advance(state, results, now());
     atomicWrite(join(dir, this.file), JSON.stringify(state));
     appendHistory(join(dir, this.file.replace(/\.json$/, '.history.jsonl')), now(), results);
@@ -167,7 +169,13 @@ export class ProdHealth {
 }
 
 /** Where a monitor's transitions go, and whether its outage wakes the agent. */
-export interface Route { channel: string | null; wakes: boolean }
+export interface Route {
+  channel: string | null; wakes: boolean;
+  /** Replaces the production instructions in the wake text. */
+  wakeNote?: string;
+  /** False keeps the monitor off Slack: for a monitor whose outage takes Slack down with it. The wake and the journal carry it. */
+  slack?: false;
+}
 const PRODUCTION: Route = { channel: 'dentai', wakes: true };
 /** A set of probes with its own state file and route. */
 export interface Monitor extends Route { health: ProdHealth }
@@ -176,6 +184,8 @@ export const defaultMonitors = (): Monitor[] => [
   { health: new ProdHealth(), ...PRODUCTION },
   { health: new ProdHealth({ probes: pcProbes(), file: PC_FILE }), channel: null, wakes: false },
   { health: new ProdHealth({ probes: [quotaProbe()], file: QUOTA_HEALTH_FILE }), channel: null, wakes: false },
+  /** Slack runs through this service: its outage wakes the agent in the terminal and does not post to Slack. */
+  { health: new ProdHealth({ probes: [assistantProbe()], file: ASSISTANT_HEALTH_FILE }), channel: null, wakes: true, slack: false, wakeNote: ASSISTANT_WAKE_NOTE },
 ];
 
 /** Every transition is posted on the route's channel; only an outage on a waking route wakes the agent (a recovery needs no decision). */
@@ -183,9 +193,9 @@ export async function tellTransitions(transitions: Transition[], post: (text: st
   for (const t of transitions) {
     const text = `${test ? '[teste de injeção] ' : ''}${t.text}`;
     // A failed post is not lost: the wake below carries the same text, and a failed wake is posted instead.
-    const posted = await post(text, route.channel).then(() => true, () => false);
+    const posted = route.slack === false ? false : await post(text, route.channel).then(() => true, () => false);
     if (t.kind !== 'down' || !route.wakes) continue;
-    const woke = await Promise.resolve(wake(`[OptChat health] ${text}\nProduction is failing a read-only health probe. Investigate read-only (logs, recent deploys), report in #dentai, and do not write to production without the operator's OK.${test ? ' This is a controlled injection test: confirm you received it and stop.' : ''}`)).then(() => true, () => false);
+    const woke = await Promise.resolve(wake(`[OptChat health] ${text}\n${route.wakeNote ?? "Production is failing a read-only health probe. Investigate read-only (logs, recent deploys), report in #dentai, and do not write to production without the operator's OK."}${test ? ' This is a controlled injection test: confirm you received it and stop.' : ''}`)).then(() => true, () => false);
     if (!woke && posted) await post(`${text} (não consegui acordar o agente: veja no terminal)`, route.channel).catch(() => undefined);
   }
 }
