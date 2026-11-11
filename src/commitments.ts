@@ -308,9 +308,9 @@ export function commitmentsContext(items: readonly Commitment[], now = Date.now(
 export function summaryLines(items: readonly Commitment[], now: number) {
   const open = openCommitments(items, now);
   return {
-    waiting: open.filter(c => (c.owner === 'operator' || c.status === 'waiting_operator') && !overdueDay(c, now)).map(c => `${c.text}${c.next ? ` (próximo: ${c.next})` : ''}`),
+    waiting: open.filter(c => c.owner === 'operator' || c.status === 'waiting_operator').map(c => `${c.text}${c.next ? ` (próximo: ${c.next})` : ''}`),
     attention: open.filter(c => c.owner === 'optchat' && (c.status !== 'waiting_operator' || overdueDay(c, now)) && attention(c, now))
-      .map(c => `${c.text} — ${attention(c, now)!.replace(/^OVERDUE/, 'atrasado').replace('no next step for 24h+', 'sem próximo passo há 24h+').replace(/^no progress for/, 'sem progresso há')}${c.next ? ` (próximo: ${c.next})` : ''}`),
+      .map(c => `${c.text} — ${attention(c, now)!.replace(/^OVERDUE/, 'atrasado').replace('no next step for 24h+', 'sem próximo passo há 24h+').replace(/^no progress for/, 'sem progresso há')}${c.status === 'waiting_operator' ? ' · revisar espera' : ''}${c.next ? ` (próximo: ${c.next})` : ''}`),
   };
 }
 
@@ -323,12 +323,11 @@ export function waitingItems(items: readonly Commitment[], now: number): Waiting
 
 /**
  * What the waiting board puts under "Esperando você": the operator's items and the questions waiting on him, with their id and since when they wait
- * (the last update: no field records the moment it started waiting). An item OptChat owes that is a day overdue and has no question to tap is
- * OptChat's to close, narrow or turn into a question (`overdueDay`), not the operator's to answer, so it stays off the list.
+ * (the last update: no field records the moment it started waiting). Missing choices alone cannot tell whether a real question is waiting.
  */
 export type BoardWaitItem = WaitingItem & { id: string; since: number };
 export function boardWaiting(items: readonly Commitment[], now: number): BoardWaitItem[] {
-  return openCommitments(items, now).filter(c => (c.owner === 'operator' || c.status === 'waiting_operator') && !overdueDay(c, now))
+  return openCommitments(items, now).filter(c => c.owner === 'operator' || c.status === 'waiting_operator')
     .map(c => ({ id: c.id, text: c.text, since: Date.parse(c.updatedAt) || now, ...(c.next ? { ask: c.next } : {}), ...(c.choices?.length ? { choices: c.choices } : {}) }));
 }
 

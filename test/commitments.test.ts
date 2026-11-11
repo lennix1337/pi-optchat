@@ -68,7 +68,7 @@ test('the 07:00 summary lists what waits on the operator and my overdue or stuck
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('summary routes day-overdue assistant work without choices back to the assistant, not the operator', () => {
+test('summary keeps day-overdue operator requests without choices visible and flags them for triage', () => {
   const dir = temp();
   try {
     const mine = addCommitment(dir, { text: 'Resolve stale wait', source: '1', next: 'investigate', dueInMinutes: 1 }, T0);
@@ -76,9 +76,11 @@ test('summary routes day-overdue assistant work without choices back to the assi
     const question = addCommitment(dir, { text: 'Choose deployment', source: '2', next: 'Which day?', choices: ['Monday', 'Tuesday'], dueInMinutes: 1 }, T0);
     updateCommitment(dir, { id: question.id, status: 'waiting_operator' }, T0 + 1);
     addCommitment(dir, { text: 'Operator task', source: '3', owner: 'operator', dueInMinutes: 1 }, T0);
+    const approval = addCommitment(dir, { text: 'Autorizar deploy', source: '4', next: 'Aprova o deploy?', dueInMinutes: 1 }, T0);
+    updateCommitment(dir, { id: approval.id, status: 'waiting_operator' }, T0 + 1);
     const lines = summaryLines(readCommitments(dir), T0 + STALE_MS + 60_000);
-    assert.deepEqual(lines.waiting, ['Choose deployment (próximo: Which day?)', 'Operator task']);
-    assert.deepEqual(lines.attention, ['Resolve stale wait — atrasado 24h (próximo: investigate)']);
+    assert.deepEqual(lines.waiting, ['Resolve stale wait (próximo: investigate)', 'Choose deployment (próximo: Which day?)', 'Operator task', 'Autorizar deploy (próximo: Aprova o deploy?)']);
+    assert.deepEqual(lines.attention, ['Resolve stale wait — atrasado 24h · revisar espera (próximo: investigate)', 'Autorizar deploy — atrasado 24h · revisar espera (próximo: Aprova o deploy?)']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -183,7 +185,7 @@ test('source "latest" is the operator\'s latest message, and a missing source na
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('the board lists what waits on the operator with its id and since when; an overdue item OptChat owes, with no question, is not his to answer', () => {
+test('the board keeps overdue operator requests without choices visible with their id and age', () => {
   const dir = mkdtempSync(join(tmpdir(), 'commit-board-'));
   try {
     const now = Date.parse('2026-11-11T18:40:00Z'), day = 24 * 3_600_000, hour = 3_600_000;
@@ -192,10 +194,12 @@ test('the board lists what waits on the operator with its id and since when; an 
     updateCommitment(dir, { id: mine.id, status: 'waiting_operator' }, now - hour);
     const question = addCommitment(dir, { text: 'liberar a cota', source: '1', due: new Date(now - 2 * day).toISOString() }, now - 3 * day);
     updateCommitment(dir, { id: question.id, status: 'waiting_operator', choices: ['sim', 'não'] }, now - hour);
+    const approval = addCommitment(dir, { text: 'Autorizar deploy', source: '1', next: 'Aprova o deploy?', due: new Date(now - 2 * day).toISOString() }, now - 3 * day);
+    updateCommitment(dir, { id: approval.id, status: 'waiting_operator' }, now - hour);
     const board = boardWaiting(readCommitments(dir), now);
-    assert.deepEqual(board.map(item => item.id).sort(), [asked.id, question.id].sort());
-    assert.equal(board.some(item => item.id === mine.id), false, 'waiting with no question and a day overdue: for OptChat to narrow, not for him to answer');
+    assert.deepEqual(board.map(item => item.id).sort(), [asked.id, mine.id, question.id, approval.id].sort());
+    assert.equal(board.find(item => item.id === approval.id)?.ask, 'Aprova o deploy?');
     assert.deepEqual(board.find(item => item.id === asked.id), { id: asked.id, text: asked.text, since: Date.parse(asked.updatedAt), ask: 'sim ou não', choices: ['sim', 'não'] });
-    assert.equal(waitingItems(readCommitments(dir), now).length, 3, 'the Home still lists every item the operator owes, with the overdue one too');
+    assert.equal(waitingItems(readCommitments(dir), now).length, 4, 'the Home still lists every item the operator owes, with the overdue one too');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
