@@ -42,6 +42,9 @@ test('spawn accepts a worker kind and a project specialist', () => {
   assert.throws(() => validate(tools.get('commitments')!, { action: 'update', id: 'c_abcdef', links: { prs: ['o/r#1'], status: 'done' } }), /status/, 'a link cannot close an item');
   const acceptCall = { action: 'accept', run: 'abcd1234', title: 'feat: x', text: 'Problema, mudança, evidência.' };
   assert.deepEqual(validate(tools.get('crew')!, acceptCall), acceptCall, 'accept takes the run, the PR title and its description');
+  const editCall = { action: 'edit', project: 'harness', part: 'memory', edits: [{ oldText: 'old line', newText: '' }, { oldText: 'x', newText: 'y' }], append: '- new line' };
+  assert.deepEqual(validate(tools.get('crew')!, editCall), editCall, 'edit takes replacements and an optional appended line');
+  assert.throws(() => validate(tools.get('crew')!, { ...editCall, edits: [{ oldText: 'x' }] }), /newText/, 'a replacement names both texts');
   const auditCall = { action: 'audit', project: 'harness' };
   assert.deepEqual(validate(tools.get('crew')!, auditCall), auditCall);
   for (const call of [{ action: 'view', project: 'harness' }, { action: 'zoom', project: 'harness', id: 0, n: 2, findText: 'fixture' }]) {

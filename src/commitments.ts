@@ -328,22 +328,22 @@ export class Presence {
 // ---- The tool and the hooks. ----
 const params = Type.Object({
   action: stringEnum(['list', 'add', 'update']),
-  id: Type.Optional(Type.String({ description: 'update: c_xxxxxx' })),
-  text: Type.Optional(Type.String({ maxLength: 2000, description: 'add: the promise, one line' })),
-  source: Type.Optional(Type.String({ description: 'add: his message id, or "latest"' })),
+  id: Type.Optional(Type.String()),
+  text: Type.Optional(Type.String({ maxLength: 2000, description: 'the promise, one line' })),
+  source: Type.Optional(Type.String({ description: 'his message id, or "latest"' })),
   owner: Type.Optional(stringEnum(['optchat', 'operator'])),
   status: Type.Optional(stringEnum(STATUSES)),
-  next: Type.Optional(Type.String({ description: 'next step' })),
-  progress: Type.Optional(Type.String({ description: 'update: what moved; resets the stall clock' })),
+  next: Type.Optional(Type.String()),
+  progress: Type.Optional(Type.String({ description: 'what moved; resets stall clock' })),
   evidence: Type.Optional(Type.String()),
   due: Type.Optional(Type.String()),
   dueInMinutes: Type.Optional(Type.Number()),
-  supersedes: Type.Optional(Type.String({ description: 'add: id it replaces' })),
-  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'his answers, tapped on Slack Home; [] clears' })),
+  supersedes: Type.Optional(Type.String({ description: 'id it replaces' })),
+  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'his Slack Home taps; [] clears' })),
   links: Type.Optional(Type.Object({
     prs: Type.Optional(Type.Array(Type.String())), runs: Type.Optional(Type.Array(Type.String())), reload: Type.Optional(Type.Boolean()), next: Type.Optional(Type.String()),
-  }, { additionalProperties: false, description: 'notes progress by itself, never done: prs owner/repo#N, run ids, reload; next = the next step once it ends' })),
-  all: Type.Optional(Type.Boolean({ description: 'list: include closed' })),
+  }, { additionalProperties: false, description: 'auto progress, never done: prs owner/repo#N, run ids, reload; next: step once it ends' })),
+  all: Type.Optional(Type.Boolean({ description: 'include closed' })),
 }, { additionalProperties: false });
 type Params = { action: 'list' | 'add' | 'update'; id?: string; text?: string; source?: string; owner?: CommitmentOwner; status?: CommitmentStatus;
   next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; choices?: string[]; links?: LinksInput; all?: boolean };
@@ -363,7 +363,7 @@ type Owner = { dir: string; sourceExists(id: string): boolean; latestSource?(): 
 export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
   return {
     name: 'commitments', label: 'Commitments',
-    description: 'Promises to the operator and what waits on him: add, update, list. Open items show every turn; done needs evidence; a new decision supersedes the old.',
+    description: 'Promises to the operator and what waits on him. Open items show every turn; done needs evidence; a new decision supersedes.',
     parameters: params,
     async execute(_id: string, args: Params) {
       const { dir, sourceExists, latestSource } = owner(), now = Date.now();

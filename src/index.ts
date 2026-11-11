@@ -1305,7 +1305,7 @@ export default function optchat(pi: ExtensionAPI) {
       return { ...result(text), details: { runIds } };
     },
   });
-  pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Message a subagent: a running one gets it at its next tool boundary, a finished one resumes and reports.',
+  pi.registerTool({ name: 'tell', label: 'Tell background agent', description: 'Message a subagent: running gets it at its next tool boundary, finished resumes and reports.',
     parameters: childToolSchemas.tell,
     async execute(_id, args) {
       const children = required().children, before = children.live(args.id) ? undefined : children.info(args.id)?.started;
