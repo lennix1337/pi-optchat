@@ -116,8 +116,11 @@ export class RunHistory {
           else if ((run.state === 'running' || run.state === 'waiting') && !run.explicitRecovery) run.cutOff = true;
           if (run.explicitRecovery) delete run.cutOff;
           transition(run, 'interrupted'); run.ended = Date.now();
-          run.report = CUT_OFF;
+          run.report = run.explicitRecovery ? 'Retargeted worker interrupted at restart; inspect and continue explicitly.' : CUT_OFF;
           for (const g of run.guidance) if (g.state === 'queued') g.state = 'undelivered';
+          this.save(run);
+        } else if (run.explicitRecovery && run.parked && run.state === 'interrupted') {
+          run.report = 'Retargeted worker parked at restart; inspect and continue explicitly. No automatic quota retry is armed.';
           this.save(run);
         }
       } catch { this.warnings.push(`Could not read run metadata: ${file}`); }

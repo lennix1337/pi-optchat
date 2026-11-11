@@ -46,6 +46,7 @@ export interface BoardRun {
   phase?: string;
   /** When a worker parked for its account's quota tries again. */
   until?: number;
+  explicitRecovery?: boolean;
 }
 export interface BoardShell { id: string; command: string; state: ShellJob['state']; started: number; ended?: number; exitCode?: number; last?: string }
 /** What pi-gitwatch publishes on `gitwatch:state:v1`; every field is optional because its shape may still change. */
@@ -135,6 +136,7 @@ function runLine(run: BoardRun, now: number, pad: number): BoardLine | undefined
   }
   const age = span(now - run.started), model = modelName(run.model);
   if (run.state === 'interrupted') {
+    if (run.explicitRecovery) return working(`${head} · ⏸ aguarda retomada explícita · ${age} · ${model}`, 'wait', at, run.id);
     if (run.until === undefined) return undefined;
     return working(`${head} · ⏸ cota esgotada, volta às ${hhmm(run.until)} · ${age} · ${model}`, 'wait', at, run.id);
   }
@@ -265,6 +267,7 @@ interface Sources {
   live: (id: string) => { updated: number; toolAt?: number; busy?: boolean; lastTool?: { name: string; args: unknown } } | undefined;
   shells: () => readonly ShellJob[];
   waiting: () => readonly WaitItem[];
+  requiresExplicitRecovery?: (id: string) => boolean;
   now?: () => number;
 }
 interface Events { on(channel: string, handler: (data: unknown) => void): () => void; emit(channel: string, data: unknown): void }
@@ -296,7 +299,7 @@ export class WaitingBoard {
     const runs = this.sources.runs().filter(r => !r.source).map((r): BoardRun => {
       const live = isRunning(r) ? this.sources.live(r.id) : undefined;
       return { id: r.id, task: r.task, cwd: r.cwd, project: r.project, model: r.model, state: r.state, started: r.started, ended: r.ended, updated: live?.updated, toolAt: live?.toolAt, inTool: live?.busy,
-        phase: live?.lastTool ? phaseOf(live.lastTool.name, live.lastTool.args) : undefined, until: r.parked?.until };
+        phase: live?.lastTool ? phaseOf(live.lastTool.name, live.lastTool.args) : undefined, until: r.parked?.until, explicitRecovery: this.sources.requiresExplicitRecovery?.(r.id) };
     });
     const shells = this.sources.shells().filter(j => j.mode === 'background').map((j): BoardShell => ({ id: j.id, command: j.command, state: j.state, started: j.started, ended: j.ended, exitCode: j.exitCode,
       last: lastLine(j.output) || undefined }));

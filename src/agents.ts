@@ -1047,6 +1047,14 @@ export class Children {
   }
   /** Re-arms the parked runs a closed Pi left in the history; call once the profile is open. */
   resumeParked() { for (const run of this.history.records.values()) if (run.parked && !run.explicitRecovery && !this.uncertainRuns.has(run.id) && !this.parkTimers.has(run.id)) this.arm(run.id); }
+  requiresExplicitRecovery(id: string) {
+    const run = this.history.records.get(id);
+    return !!run?.explicitRecovery && run.state === 'interrupted' && !this.parkTimers.has(id) && !this.running.has(id);
+  }
+  async reportExplicitRecovery() {
+    const ids = [...this.history.records.values()].filter(run => this.requiresExplicitRecovery(run.id)).map(run => run.id);
+    if (ids.length) await this.report(`Retargeted workers require inspection and explicit continuation after restart; no automatic retry is armed: ${ids.join(', ')}.`);
+  }
   /** The time has come: still out of quota by the cache, wait on; else start a queued task, or resume a parked run with its conversation. */
   private async unpark(id: string, generation: number) {
     const run = this.history.records.get(id);
@@ -1255,27 +1263,28 @@ export class Children {
       throw error;
     }
   }
-  private async saveResume(info: RunInfo, run: RunInfo, session: AgentSession) {
+  private saveResume(info: RunInfo, run: RunInfo, session: AgentSession): void | Promise<never> {
+    try { this.save(info); } catch (error) { return this.recoverResumeSave(info, run, session, error); }
+  }
+  private async recoverResumeSave(info: RunInfo, run: RunInfo, session: AgentSession, error: unknown): Promise<never> {
     const id = run.id;
-    try { this.save(info); } catch (error) {
-      // Visibility after rename is not durability. Never dispatch on an uncertain save.
-      const stored = this.history.matchesStored(info);
-      if (stored !== false) {
-        this.cancelPark(id);
-        const { parked: _parked, cutOff: _cutOff, ...previous } = run;
-        const safe: RunInfo = { ...previous, state: 'stopped', ended: Date.now(), report: 'Retarget was not started: storage durability was not confirmed. Inspect and resume explicitly.' };
-        try { this.history.save(safe); } catch (recoveryError) {
-          this.uncertainRuns.add(id);
-          if (this.history.matchesStored(safe)) this.history.records.set(id, safe);
-          else this.history.records.set(id, info);
-          await this.shutdown(session); this.dispose(session);
-          throw new Error(`Retarget was not started; storage durability and recovery are uncertain. Inspect the saved worker before explicitly resuming it. ${String(recoveryError)}`);
-        }
+    // Visibility after rename is not durability. Never dispatch on an uncertain save.
+    const stored = this.history.matchesStored(info);
+    if (stored !== false) {
+      this.cancelPark(id);
+      const { parked: _parked, cutOff: _cutOff, ...previous } = run;
+      const safe: RunInfo = { ...previous, state: 'stopped', ended: Date.now(), report: 'Retarget was not started: storage durability was not confirmed. Inspect and resume explicitly.' };
+      try { this.history.save(safe); } catch (recoveryError) {
+        this.uncertainRuns.add(id);
+        if (this.history.matchesStored(safe)) this.history.records.set(id, safe);
+        else this.history.records.set(id, info);
         await this.shutdown(session); this.dispose(session);
-        throw new Error(`Retarget was not started: ${stored === undefined ? 'the saved state could not be read and' : ''} storage durability was not confirmed. Automatic wake was disabled; inspect and resume explicitly. ${String(error)}`);
+        throw new Error(`Retarget was not started; storage durability and recovery are uncertain. Inspect the saved worker before explicitly resuming it. ${String(recoveryError)}`);
       }
-      this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error;
+      await this.shutdown(session); this.dispose(session);
+      throw new Error(`Retarget was not started: ${stored === undefined ? 'the saved state could not be read and' : ''} storage durability was not confirmed. Automatic wake was disabled; inspect and resume explicitly. ${String(error)}`);
     }
+    this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error;
   }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
   private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number): Promise<string> {
@@ -1320,7 +1329,8 @@ export class Children {
       const prompt = cutOffChildren(text, cut);
       const info: RunInfo = { ...rest, ...(route ? { explicitRecovery: true } : {}), model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
         guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
-      await this.saveResume(info, run, session);
+      const saveFailure = this.saveResume(info, run, session);
+      if (saveFailure) await saveFailure;
       this.cancelPark(id);
       const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
       this.running.set(id, live);

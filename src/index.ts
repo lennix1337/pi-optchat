@@ -708,6 +708,7 @@ export default function optchat(pi: ExtensionAPI) {
       void sync.now();
       board?.close();
       board = new WaitingBoard({
+        requiresExplicitRecovery: id => children.requiresExplicitRecovery(id),
         runs: () => children.runs(), live: id => { const run = children.live(id); return run && { updated: run.updated, toolAt: run.toolAt, busy: run.tools.size > 0, lastTool: run.lastTool }; }, shells: () => shells.list(),
         waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map((p): WaitItem => ({ text: `aprovação: ${p.summary}`, id: p.token, choices: ['aprovar', 'negar'] })) ?? [], ...stillWaiting(boardWaiting(readCommitments(active.dir), Date.now()), readWatch(active.dir))] : [],
       }, pi.events);
@@ -742,7 +743,7 @@ export default function optchat(pi: ExtensionAPI) {
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
         // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
-        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
+        recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), recover(children.reportExplicitRecovery(), 'Reporting workers requiring explicit recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
       }
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) sendReports(queuedReports); });
       // A reload or crash in the middle of a wake left the wake model on: put the main one back.

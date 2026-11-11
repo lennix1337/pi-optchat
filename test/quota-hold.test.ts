@@ -14,6 +14,7 @@ import { parkUntil, quotaError, QuotaOutage, untilText } from '../src/quota-hold
 import { textContent } from '../src/transcript.ts';
 import { retargetTool } from '../src/retarget-tool.ts';
 import { emptyUsage } from '../src/usage.ts';
+import { WaitingBoard } from '../src/waiting-board.ts';
 import { removeDir } from './support.ts';
 
 // 19:00Z is 16:00 in Brasília.
@@ -55,7 +56,7 @@ function fakeClock() {
 }
 
 type Verdict = 'limit' | 'ok';
-type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[]; thinking?: string[] };
+type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[]; thinking?: string[]; events?: string[] };
 function syntheticStream(provider: string, control: TestControl, seen: string[][], routes: string[], calls: Map<string, number>, verdict: (task: string, call: number) => Verdict): NonNullable<Parameters<ModelRuntime['registerProvider']>[1]['streamSimple']> {
   return (model, context) => {
       routes.push(model.provider);
@@ -92,7 +93,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { 
   const build = (clock: ReturnType<typeof fakeClock>) => {
     const made = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'quota-test', model: 'child', thinking: 'off' }), () => '',
       async text => { reports.push(text); }, text => warnings.push(text), dir,
-      { settings: () => ({ subagentLevels: 1, maxAgents: 8 }), parentSession: 'parent', clock,
+      { settings: () => ({ subagentLevels: 2, maxAgents: 8 }), parentSession: 'parent', clock,
         quotaBlock: provider => provider === 'quota-test' && block.until !== undefined && block.until > clock.now() ? block.until : undefined,
         createSession: async options => {
           control.opens = (control.opens ?? 0) + 1;
@@ -100,6 +101,8 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { 
           if (control.wait) await control.wait;
           if (control.fail) throw new Error('synthetic session failure');
           const made = await createAgentSession({ ...options, modelRuntime: runtime });
+          const prompt = made.session.prompt.bind(made.session);
+          made.session.prompt = (...args) => { (control.events ??= []).push(`prompt:${options?.model?.provider}`); return prompt(...args); };
           const dispose = made.session.dispose.bind(made.session);
           made.session.dispose = () => { (control.disposed ??= []).push(options?.model?.provider ?? 'unknown'); dispose(); };
           return made;
@@ -240,8 +243,15 @@ test('a retargeted worker parked at restart waits for explicit continuation', as
   await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' });
   await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'new route parked');
   assert.equal(h.children.history.records.get(id)?.explicitRecovery, true);
+  const board = (children: Children) => new WaitingBoard({ runs: () => children.runs(), live: () => undefined, shells: () => [], waiting: () => [], requiresExplicitRecovery: id => children.requiresExplicitRecovery(id), now: () => h.clock.now() });
+  assert.match(board(h.children).view().lines.map(line => line.text).join('\n'), /volta às/);
+  assert.match(h.children.history.records.get(id)!.report!, /resumes by itself/);
   await h.children.close();
   const reloaded = h.build(h.clock), count = h.routes.length;
+  assert.match(reloaded.history.records.get(id)!.report!, /continue explicitly.*No automatic quota retry/);
+  assert.match(board(reloaded).view().lines.map(line => line.text).join('\n'), /aguarda retomada explícita/);
+  await reloaded.reportExplicitRecovery();
+  assert.ok(h.reports.some(report => report.includes(id) && report.includes('explicit continuation')));
   reloaded.resumeParked();
   await reloaded.resumeCutOff();
   await h.clock.advance(62 * MIN);
@@ -502,6 +512,71 @@ test('deleting a parked worker while retarget opens prevents its continuation', 
   await removal;
   assert.equal(h.children.history.records.has(id), false);
   assert.deepEqual(h.routes, ['quota-test']);
+});
+
+test('deletion queued by the save listener cannot dispatch an unregistered retarget', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'delete after save' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  let removal: Promise<void> | undefined, scheduled = false;
+  const unsubscribe = h.children.subscribe(() => {
+    const run = h.children.history.records.get(id);
+    if (!scheduled && run?.state === 'running' && run.model === 'quota-test-2/child') {
+      scheduled = true;
+      queueMicrotask(() => { (h.control.events ??= []).push('delete'); removal = h.children.remove(id); });
+    }
+  });
+  await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' }).catch(() => {});
+  await until(() => !!removal, 'deletion scheduled');
+  await removal;
+  unsubscribe();
+  assert.deepEqual(h.routes, ['quota-test'], 'delete prevents the replacement provider dispatch');
+  assert.ok(h.control.events!.indexOf('prompt:quota-test-2') < h.control.events!.indexOf('delete'), 'the prompt is registered before the queued deletion');
+  assert.equal(h.children.history.records.has(id), false);
+});
+
+test('provider revocation queued by the save listener happens after prompt registration', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'revoke after save' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  let scheduled = false;
+  const unsubscribe = h.children.subscribe(() => {
+    const run = h.children.history.records.get(id);
+    if (!scheduled && run?.state === 'running' && run.model === 'quota-test-2/child') {
+      scheduled = true;
+      queueMicrotask(() => { (h.control.events ??= []).push('revoke'); h.runtime.unregisterProvider('quota-test-2'); });
+    }
+  });
+  await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' });
+  await until(() => h.control.events?.includes('revoke') ?? false, 'revocation');
+  unsubscribe();
+  assert.ok(h.control.events!.indexOf('prompt:quota-test-2') < h.control.events!.indexOf('revoke'));
+});
+
+test('parent stop queued by the save listener happens after child prompt registration', async t => {
+  const h = await rig(t, {}, () => 'ok');
+  let release!: () => void;
+  h.control.hold = new Promise<void>(resolve => { release = resolve; });
+  const [parent] = await h.children.spawn([{ task: 'parent holds' }], h.dir);
+  await until(() => h.routes.length === 1, 'parent active');
+  h.control.hold = undefined;
+  let id: string;
+  try { [id] = await h.children.spawn([{ task: 'child completes' }], h.dir, undefined, parent); }
+  catch (error) { release(); throw error; }
+  await until(() => h.children.history.records.get(id)?.state === 'completed' && !h.children.live(id), 'child completed');
+  let stopped: Promise<void> | undefined, scheduled = false;
+  const unsubscribe = h.children.subscribe(() => {
+    const run = h.children.history.records.get(id);
+    if (!scheduled && run?.state === 'running' && run.model === 'quota-test-2/child') {
+      scheduled = true;
+      queueMicrotask(() => { (h.control.events ??= []).push('parent stop'); stopped = h.children.stop(parent); release(); });
+    }
+  });
+  await h.children.tell(id, 'continue', 'manager', parent, false, { model: 'quota-test-2/child' });
+  await until(() => !!stopped, 'parent stop');
+  await stopped;
+  unsubscribe();
+  assert.ok(h.control.events!.indexOf('prompt:quota-test-2') < h.control.events!.indexOf('parent stop'));
 });
 
 test('retarget revalidates a provider removed while its session is opening', async t => {
