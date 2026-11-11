@@ -14,6 +14,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { REPORT_TYPE, textContent } from './transcript.ts';
 import { dueFindings, DUE_SLACK_MS, nextDue, type DueFinding } from './commitment-due.ts';
 import { divert, type Patrol } from './patrol-divert.ts';
+import { heapGrowth, heapGrowthLine, recordHeapSample, type HeapSample } from './heap-trend.ts';
 import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type Signal, type Triage } from './wake-signals.ts';
 
 /** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
@@ -255,6 +256,8 @@ export interface HeartbeatDeps {
   triage?: () => Triage | undefined;
   /** A profile's `specialistPatrol` (see patrol-divert.ts): a specialist's deadline findings go to a patrol worker instead of the wake. Absent: they all go to the wake. */
   patrol?: () => Patrol | undefined;
+  /** The Pi heap in MB, sampled each wakeTriage tick for the growth watch. Default: this process's heapUsed. */
+  heapMb?: () => number;
   wake: (beat: Beat, radar?: string, choice?: ModelChoice) => void;
   note: (text: string) => void;
   setTimer: (run: () => void, ms: number) => unknown;
@@ -280,7 +283,7 @@ export interface WakeRecord {
 /** One Brasília day of what the heartbeat did: wakes started, wakes that ended in an error, ticks skipped for quota, ticks the cheap check put back to sleep. */
 export interface DailyCount { day: string; wakes: number; errors: number; skippedQuota: number; skippedIdle: number }
 type Counter = Exclude<keyof DailyCount, 'day'>;
-type Seen = Pick<Saved, 'projectDigests' | 'stalled' | 'dueSeen' | 'escalated' | 'patrolAt' | 'patrolled' | 'escalations'>;
+type Seen = Pick<Saved, 'projectDigests' | 'stalled' | 'dueSeen' | 'escalated' | 'patrolAt' | 'patrolled' | 'escalations' | 'heap' | 'heapAlarm'>;
 interface Saved {
   wakes: number[]; checks: Check[]; wakeLog: WakeRecord[]; radarDigest?: string;
   /** wakeTriage only: project -> digest of its radar lines at the last tick that settled them, and the stalled missions then. */
@@ -289,6 +292,8 @@ interface Saved {
   dueSeen?: string[]; escalated?: Record<string, number>;
   /** specialistPatrol: project -> when it was last patrolled, item -> when a patrol was given it, and the items a patrol asked the operator about, not yet signalled to the manager. */
   patrolAt?: Record<string, number>; patrolled?: Record<string, number>; escalations?: { project: string; line: string }[];
+  /** wakeTriage: the last 24 h of heap samples, and whether the current rising stretch was already signalled (re-armed when the slope falls under the threshold). */
+  heap?: HeapSample[]; heapAlarm?: boolean;
   /** provider -> when a wake that died on its usage limit may be tried again; learned from failed wakes, cleared by a wake that ends well. */
   routeBlocks: Record<string, number>;
   /** provider -> consecutive failed wakes, for the backoff when the error names no time. */
@@ -306,6 +311,7 @@ const dailyCounts = (value: unknown): DailyCount[] => !Array.isArray(value) ? []
   const count = (field: Counter) => typeof day[field] === 'number' && Number.isFinite(day[field]) ? day[field] as number : 0;
   return [{ day: day.day, wakes: count('wakes'), errors: count('errors'), skippedQuota: count('skippedQuota'), skippedIdle: count('skippedIdle') }];
 });
+const heapSamples = (items: unknown[]) => items.filter((s): s is HeapSample => !!s && typeof (s as HeapSample).at === 'number' && typeof (s as HeapSample).heapUsedMb === 'number' && typeof (s as HeapSample).afterGc === 'boolean');
 /** The minutes a usage-limit error says to wait ("Try again in ~2136 min."), capped; undefined when it names none. */
 function limitMinutes(reply: string): number | undefined {
   const minutes = Number(/try again in\s*~?\s*(\d+)\s*min/i.exec(reply)?.[1]);
@@ -314,7 +320,7 @@ function limitMinutes(reply: string): number | undefined {
 function readSaved(file: string): Saved {
   if (!existsSync(file)) return emptySaved();
   try {
-    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown; projectDigests?: unknown; stalled?: unknown; dueSeen?: unknown; escalated?: unknown; patrolAt?: unknown; patrolled?: unknown; escalations?: unknown; routeBlocks?: unknown; routeFailures?: unknown; daily?: unknown } | null;
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { wakes?: unknown; checks?: unknown; wakeLog?: unknown; radarDigest?: unknown; projectDigests?: unknown; stalled?: unknown; dueSeen?: unknown; escalated?: unknown; patrolAt?: unknown; patrolled?: unknown; escalations?: unknown; heap?: unknown; heapAlarm?: unknown; routeBlocks?: unknown; routeFailures?: unknown; daily?: unknown } | null;
     const wakes = Array.isArray(saved?.wakes) ? saved.wakes.filter((at): at is number => typeof at === 'number') : [];
     const timed = <T>(items: unknown) => Array.isArray(items) ? items.filter((c): c is T => !!c && typeof c === 'object' && typeof (c as { at?: unknown }).at === 'number') : [];
     return { wakes, checks: timed<Check>(saved?.checks), wakeLog: timed<WakeRecord>(saved?.wakeLog),
@@ -327,6 +333,8 @@ function readSaved(file: string): Saved {
       ...saved?.escalated !== null && typeof saved?.escalated === 'object' && !Array.isArray(saved.escalated) ? { escalated: numbers(saved.escalated) } : {},
       ...saved?.patrolAt !== null && typeof saved?.patrolAt === 'object' ? { patrolAt: numbers(saved.patrolAt) } : {},
       ...saved?.patrolled !== null && typeof saved?.patrolled === 'object' ? { patrolled: numbers(saved.patrolled) } : {},
+      ...Array.isArray(saved?.heap) ? { heap: heapSamples(saved.heap) } : {},
+      ...typeof saved?.heapAlarm === 'boolean' ? { heapAlarm: saved.heapAlarm } : {},
       ...Array.isArray(saved?.escalations) ? { escalations: saved.escalations.filter((e): e is { project: string; line: string } => !!e && typeof e.project === 'string' && typeof e.line === 'string') } : {} };
   } catch { return emptySaved(); }
 }
@@ -535,7 +543,10 @@ export class Heartbeat {
     const held = { patrolAt: saved.patrolAt ?? {}, patrolled: saved.patrolled ?? {}, escalations: saved.escalations ?? [] };
     const diverted = checked && patrol ? divert(checked, before, patrol, held, at) : undefined, due = diverted ?? checked;
     const asked = held.escalations.map(({ project, line }) => ({ id: '', project, kind: 'due' as const, line }));
-    const seen: Seen = { projectDigests: digests, stalled: stalledMissions({ missions, lastRuns, now: at, stallHours }), ...due ? { ...due.state, ...diverted ? { patrolAt: diverted.patrolAt, patrolled: diverted.patrolled } : {} } : {}, ...patrol ? { escalations: [] } : {} };
+    const heap = recordHeapSample(saved.heap ?? [], { at, heapUsedMb: (this.deps.heapMb?.() ?? process.memoryUsage().heapUsed / 1_048_576), afterGc: false });
+    const heapLine = heapGrowthLine(heapGrowth(heap, at));
+    if (heapLine && !saved.heapAlarm) asked.push({ id: '', project: 'global', kind: 'due', line: heapLine });
+    const seen: Seen = { projectDigests: digests, stalled: stalledMissions({ missions, lastRuns, now: at, stallHours }), ...due ? { ...due.state, ...diverted ? { patrolAt: diverted.patrolAt, patrolled: diverted.patrolled } : {} } : {}, ...patrol ? { escalations: [] } : {}, heap, heapAlarm: heapLine !== undefined };
     const found = withCommitments(findSignals({ radar: readable ? radar : undefined, previous: first && readable ? radarOnly : saved.projectDigests ?? {}, missions, lastRuns, now: at, stallHours, stalled: saved.stalled ?? [], lastStop }), [...due?.findings ?? [], ...asked]);
     if (found.length) return { seen, beat: { wake: true, trigger: 'signal', signals: found, text: `signal: ${found.map(signal => signal.project).join(', ')}` } };
     const lastWake = saved.wakes.at(-1) ?? this.startedAt;

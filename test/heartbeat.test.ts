@@ -16,7 +16,8 @@ const MIN = 60_000;
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
   route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
-  triage = undefined as ((at: number) => Triage | undefined) | undefined, patrol = undefined as ((at: number) => Patrol | undefined) | undefined } = {}) {
+  triage = undefined as ((at: number) => Triage | undefined) | undefined, patrol = undefined as ((at: number) => Patrol | undefined) | undefined,
+  heap = undefined as ((at: number) => number) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
   const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [], beats: Beat[] = [];
   const beat = new Heartbeat({
@@ -24,6 +25,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     ...route ? { route: (blocks: Record<string, number>) => route(now, blocks) } : {},
     ...triage ? { triage: () => triage(now) } : {},
     ...patrol ? { patrol: () => patrol(now) } : {},
+    ...heap ? { heapMb: () => heap(now) } : {},
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
@@ -813,11 +815,16 @@ test('the timer set for a due fires a tick that already sees the due as passed',
   rmSync(h.dir, { recursive: true, force: true });
 });
 
+/** The signal lines the woken beats carried that start with `prefix`. */
+const signalLines = (h: ReturnType<typeof harness>, prefix: string) => h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines).filter(l => l.startsWith(prefix));
+/** `count` ticks `step` apart, each woken turn settled so the next one arms. */
+const tickEvery = async (h: ReturnType<typeof harness>, step: number, count: number) => { for (let i = 0; i < count; i++) { h.beat.arm(); await h.advance(step); h.beat.turnSettled(turn); } };
+
 test('overdue 24 h+ signals the rule once per 24 h, and the record is kept in heartbeat.json', async () => {
   const overdue = [due('c_old', 0)];
   const h = harness({ always: true, minutes: 60, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged({ commitments: overdue }) });
-  const escalations = () => h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines).filter(l => l.startsWith('overdue 24h+'));
-  const hours = async (n: number) => { for (let i = 0; i < n; i++) { h.beat.arm(); await h.advance(60 * MIN); h.beat.turnSettled(turn); } };
+  const escalations = () => signalLines(h, 'overdue 24h+');
+  const hours = (n: number) => tickEvery(h, 60 * MIN, n);
   await hours(25);
   assert.equal(escalations().length, 1);
   assert.match(escalations()[0]!, /^overdue 24h\+: c_old - close it with evidence, narrow it \(new due \+ next\), or make it a direct question to the operator \(status waiting_operator with choices\)$/);
@@ -897,8 +904,8 @@ test('specialistPatrol: no patrol while a worker of the project runs; its findin
 test('specialistPatrol: an overdue 24 h+ item is patrolled once; if still unsettled the manager gets the rule signal next tick', async () => {
   const { patrol, started } = patrolOf(['dentai'], { minHours: 1 });
   const h = harness({ always: true, minutes: 60, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol, triage: () => triaged({ commitments: [due('c_old', 0, { project: 'dentai' })] }) });
-  const lines = () => h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines).filter(l => l.startsWith('overdue 24h+'));
-  for (let i = 0; i < 25; i++) { h.beat.arm(); await h.advance(60 * MIN); h.beat.turnSettled(turn); }
+  const lines = () => signalLines(h, 'overdue 24h+');
+  await tickEvery(h, 60 * MIN, 25);
   assert.equal(started.length, 2, 'the due at the start, then the overdue one');
   assert.equal(lines().length, 1, 'the patrol did not settle it: the manager hears it, once');
   rmSync(h.dir, { recursive: true, force: true });
@@ -925,5 +932,68 @@ test('without a patrol the heartbeat behaves as before: a specialist due wakes t
   h.beat.arm(); await h.advance(15 * MIN);
   assert.equal(h.woken.length, 1);
   assert.equal(saved(h.dir).patrolAt, undefined);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+const HOUR = 60 * MIN;
+/** Ticks every 15 minutes for `hours`. */
+const tickFor = (h: ReturnType<typeof harness>, hours: number) => tickEvery(h, 15 * MIN, hours * 4);
+const heapLines = (h: ReturnType<typeof harness>) => signalLines(h, 'Pi heap grows');
+
+test('wakeTriage: a heap that keeps rising signals once under global, then stays quiet', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 1000, radar: async () => triageRadar(1), triage: () => triaged(), heap: at => 1470 + 110 * at / HOUR });
+  await tickFor(h, 8);
+  assert.equal(heapLines(h).length, 1, 'one signal for the whole rising stretch');
+  assert.match(heapLines(h)[0]!, /^Pi heap grows ~110 MB\/h over \d+ h \(\d+ -> \d+ MB\)$/);
+  assert.equal(h.beats.filter(b => b.trigger === 'signal').length, 1);
+  assert.equal(saved(h.dir).heapAlarm, true);
+  assert.ok(saved(h.dir).heap.length > 4);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('wakeTriage: a flat heap never signals', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 1000, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 1500 });
+  await tickFor(h, 6);
+  assert.equal(heapLines(h).length, 0);
+  assert.equal(saved(h.dir).heapAlarm, false);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('wakeTriage: the heap signal re-arms once the slope falls under the threshold, and signals a new rise', async () => {
+  const rise = (from: number, at: number, start: number) => start + 110 * Math.max(0, at - from) / HOUR;
+  const h = harness({ always: true, minutes: 15, wakes: 1000, radar: async () => triageRadar(1), triage: () => triaged(),
+    heap: at => at < 6 * HOUR ? rise(0, at, 1470) : at < 40 * HOUR ? 2130 : rise(40 * HOUR, at, 2130) });
+  await tickFor(h, 6);
+  assert.equal(heapLines(h).length, 1);
+  await tickFor(h, 34);
+  assert.equal(heapLines(h).length, 1, 'a plateau signals nothing and clears the alarm');
+  assert.equal(saved(h.dir).heapAlarm, false);
+  await tickFor(h, 14);
+  assert.equal(heapLines(h).length, 2, 'the next rise is a new stretch');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('wakeTriage: a heap signal held back by the 24 h wake cap is signalled again next tick, not lost', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 0, radar: async () => triageRadar(1), triage: () => triaged({ buildMinutes: 100_000 }), heap: at => 1470 + 110 * at / HOUR });
+  await tickFor(h, 3);
+  assert.ok(h.notes.filter(note => note.includes('would wake the agent (signal: global)')).length >= 2, 'the held signal came again');
+  assert.notEqual(saved(h.dir).heapAlarm, true, 'a signal that did not wake is not marked as given');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a heartbeat.json from before the heap watch loads and gains the samples; a malformed heap field is ignored', async () => {
+  for (const heap of [undefined, 'oops', [{ at: 'x' }, null, { at: 1, heapUsedMb: 'big', afterGc: false }]]) {
+    const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 1500 });
+    writeFileSync(join(h.dir, 'heartbeat.json'), JSON.stringify({ wakes: [], checks: [], wakeLog: [], routeBlocks: {}, routeFailures: {}, daily: [], ...heap === undefined ? {} : { heap, heapAlarm: 'maybe' } }));
+    h.beat.arm(); await h.advance(15 * MIN);
+    assert.deepEqual(saved(h.dir).heap, [{ at: 15 * MIN, heapUsedMb: 1500, afterGc: false }]);
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test('without wakeTriage the heartbeat samples no heap', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), heap: () => 1500 });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(saved(h.dir).heap, undefined);
   rmSync(h.dir, { recursive: true, force: true });
 });
