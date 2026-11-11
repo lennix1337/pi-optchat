@@ -101,22 +101,57 @@ export function checkContract(task: string) {
 export const validRoutes = (value: unknown, choice: (item: unknown) => boolean) => typeof value === 'object' && value !== null && !Array.isArray(value)
   && Object.entries(value).every(([kind, list]) => (WORKER_KINDS as readonly string[]).includes(kind) && Array.isArray(list) && list.length > 0 && list.every(choice));
 
-const LONGEST_LINES = 5;
+const LONGEST_LINES = 3;
 const LINE_EXCERPT = 60;
-/** The longest lines of a text, one `line <index>: <bytes> B: <start>` each (0-based, as `split("\n")` numbers them): where a refused write is best cut. */
+/** The longest lines of a text, one `line <number>: <bytes> B: <start>` each (numbered from 1, longest first): where a refused write is best cut. */
 function longestLines(text: string) {
   return text.split('\n').map((line, index) => ({ index, line, bytes: Buffer.byteLength(line) }))
     .sort((a, b) => b.bytes - a.bytes || a.index - b.index).slice(0, LONGEST_LINES)
-    .map(({ index, line, bytes }) => `line ${index}: ${bytes} B: ${line.slice(0, LINE_EXCERPT)}`);
+    .map(({ index, line, bytes }) => `line ${index + 1}: ${bytes} B: ${line.slice(0, LINE_EXCERPT)}`);
 }
 
-/** Writes a capped file whole; refused over its cap, naming the excess and the longest lines so one more call fixes it, and whatever loads it never needs cutting. */
+/** The text of a capped file as `write` takes it back: without the newline the write adds. */
+const storedText = (path: string) => { try { return readFileSync(path, 'utf8').replace(/\n$/, ''); } catch { return ''; } };
+
+/** Writes a capped file whole; refused over its cap, naming the current and resulting bytes, the excess and the longest lines so one more call fixes it, and whatever loads it never needs cutting. */
 function writeCapped(path: string, label: string, cap: number, text: string, fix: string) {
   const size = Buffer.byteLength(text);
-  if (size > cap) throw new Error(`${label} is ${size} bytes, over its ${cap}-byte cap (cut at least ${size - cap} bytes): ${fix} and write it again. Nothing was written.\nLongest lines:\n${longestLines(text).join('\n')}`);
+  if (size > cap) throw new Error(`${label} would be ${size} B (now ${Buffer.byteLength(storedText(path))} B): ${size - cap} B over its ${cap} B cap. ${fix}, then retry. Nothing was written.\nLongest lines:\n${longestLines(text).join('\n')}`);
   mkdirSync(dirname(path), { recursive: true });
   atomicWrite(path, text.endsWith('\n') ? text : `${text}\n`);
   return size;
+}
+
+export type TextEdit = { oldText: string; newText: string };
+const excerpt = (text: string) => JSON.stringify(text.length > LINE_EXCERPT ? `${text.slice(0, LINE_EXCERPT)}…` : text);
+/**
+ * The text after replacing each `oldText` (matched once, against the text as it was, like the native edit tool) and appending a line.
+ * An empty `newText` that removes whole lines removes their newline too. Any failing edit refuses the whole call.
+ */
+export function editText(text: string, edits: readonly TextEdit[], append?: string) {
+  if (!edits.length && append === undefined) throw new Error('edit needs edits or append: [{oldText, newText}] and/or a line to append.');
+  const spans = edits.map(({ oldText, newText }, index) => {
+    const n = index + 1;
+    if (!oldText) throw new Error(`edit ${n}: oldText is empty. Nothing was written.`);
+    const at = text.indexOf(oldText);
+    if (at < 0) throw new Error(`edit ${n}: oldText not found: ${excerpt(oldText)}. Nothing was written.`);
+    if (text.indexOf(oldText, at + 1) >= 0) {
+      let found = 0;
+      for (let next = at; next >= 0; next = text.indexOf(oldText, next + 1)) found++;
+      throw new Error(`edit ${n}: oldText matches ${found} times: ${excerpt(oldText)}; add context to make it unique. Nothing was written.`);
+    }
+    const whole = newText === '' && (at === 0 || text[at - 1] === '\n') && text[at + oldText.length] === '\n';
+    return { n, start: at, end: at + oldText.length + (whole ? 1 : 0), newText };
+  });
+  const ordered = [...spans].sort((a, b) => a.start - b.start);
+  for (let i = 1; i < ordered.length; i++) {
+    const [first, second] = [ordered[i - 1]!, ordered[i]!];
+    if (second.start < first.end) throw new Error(`edit ${Math.max(first.n, second.n)}: overlaps edit ${Math.min(first.n, second.n)}. Nothing was written.`);
+  }
+  let out = '', from = 0;
+  for (const span of ordered) { out += text.slice(from, span.start) + span.newText; from = span.end; }
+  out += text.slice(from);
+  return append === undefined ? out : `${out}${out === '' || out.endsWith('\n') ? '' : '\n'}${append}`;
 }
 
 /** The root of the git checkout holding a directory (a worktree is its own root): the nearest ancestor with a `.git`; undefined outside any. */
@@ -257,11 +292,14 @@ export class Crew {
     }
     return [...counts].map(([specialist, { count, oldest }]) => ({ specialist, count, oldestDays: Math.round(Math.max(0, oldest) / DAY_MS * 10) / 10 }));
   }
+  storedMissions() { return storedText(join(this.dir, 'missions.md')); }
   /** Replaces missions.md whole; capped like a memory, since every wake reads it. */
   writeMissions(text: string) { return writeCapped(join(this.dir, 'missions.md'), 'missions.md', MEMORY_BYTES, text, 'close accepted missions'); }
   read(specialist: Specialist, part: 'charter' | 'memory') {
     try { return readFileSync(this.file(specialist, part), 'utf8'); } catch { return ''; }
   }
+  /** A charter or memory as `write` and `edit` see it (no trailing newline). */
+  stored(specialist: Specialist, part: 'charter' | 'memory') { return storedText(this.file(specialist, part)); }
   /** Replaces a charter or memory whole. */
   write(specialist: Specialist, part: 'charter' | 'memory', text: string) {
     const size = writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, text, 'trim stale or duplicated lines');
@@ -428,7 +466,7 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 - Kinds: "code" (Sonnet, code changes), "mechanical" (Haiku, rote edits, renames, data gathering), "hard" (Opus, the hardest design or SDK work), "plan" (Opus scout, read-only, returns contracts).
 - A contract has lines starting with Goal:, Acceptance:, Evidence: and Authority: (what the worker may and may not do; my authority map caps it). A worker gets the contract and its project's charter and memory, not this chat: put every fact it needs in the contract.
 - Review a report like a code review: check its evidence (diff, test output, CI) before you believe it; send it back with tell when it falls short. A code worker's report ends with its branch state (commits ahead, diff stat, dirty tree). When it holds up, crew accept (run, title, text = the PR description) ships its committed branch in one call: push, PR, auto-merge, the linked commitments, and it returns the run's proposals. Push, PRs and merges stay with you.
-- Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "write"); reject the rest. Audit each project memory weekly: read the memory, its proposals and the recent runs, fill a thin memory from verified facts, drop stale lines, then write it, or call action "audit" when nothing changed.
+- Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "edit" for a line or two, "write" to rewrite); reject the rest. Audit each project memory weekly: read the memory, its proposals and the recent runs, fill a thin memory from verified facts, drop stale lines, then write it, or call action "audit" when nothing changed.
 - A production deploy (deploy-web.ps1, deploy-prod.ps1...) is not delegated: run it yourself, in the foreground of this session, and keep the machine quiet (no workers, no suites) until the swap is verified.
 - Open missions that span wakes live in the crew's missions.md: keep each one with its goal, acceptance and next step until accepted.
 - Each specialist keeps a memory tree of its workers' finished runs, one leaf per report: crew view and zoom (with project) read it, crew list shows each project's last runs, and every worker brief carries its view.
@@ -436,10 +474,12 @@ You are the manager of a crew. You talk with the operator, decide, plan, write c
 - Follow-ups of a worker's task (review findings, red CI on its PR, an added requirement) go to that worker with tell <id>, never a new spawn: it resumes with its whole conversation and its prompt cache. A spawn in a project and directory whose worker finished within 24 h names that run in its answer. "Ask a specialist" means spawn a "plan" worker for that project: it reads the project's tree and code and answers.`;
 
 const CREW_PARAMS = Type.Object({
-  action: stringEnum(['list', 'read', 'write', 'audit', 'view', 'zoom', 'accept'] as const),
+  action: stringEnum(['list', 'read', 'write', 'edit', 'audit', 'view', 'zoom', 'accept'] as const),
   project: Type.Optional(Type.String()),
   part: Type.Optional(stringEnum(['charter', 'memory', 'missions', 'proposals'] as const)),
   text: Type.Optional(Type.String()),
+  edits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }))),
+  append: Type.Optional(Type.String()),
   id: Type.Optional(Type.Integer({ minimum: 0 })),
   n: Type.Optional(Type.Integer({ minimum: 1 })),
   findText: Type.Optional(Type.String({ minLength: 1 })),
@@ -483,10 +523,10 @@ function readCrewTree(c: Crew, args: { action: 'view' | 'zoom'; project?: Specia
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
 export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew'>) => ({
   name: 'crew', label: 'Crew memory',
-  description: `Crew state by project slug (a new slug starts one). list: sizes, ages, proposals pending. read/write: part charter (${CHARTER_BYTES} B), memory (${MEMORY_BYTES} B), missions (no project) or proposals (read-only); write text replaces all, refused over the cap; a memory write clears its proposals. audit: marks audited. view/zoom: memory tree (id, n). accept: run, title, text (PR body) ships a worker's committed branch (PR, auto-merge, commitments), returns its proposals.`,
+  description: `Crew by project slug (a new slug starts one). list: sizes, proposals. read/write/edit: part memory (${MEMORY_BYTES} B), charter (${CHARTER_BYTES} B), missions (no project), proposals (read-only). write: text replaces. edit: edits [{oldText,newText}] each matched once, '' deletes; append: a line; all or none. Over cap: refused, longest lines shown. audit: marks audited. view/zoom: tree (id, n). accept: run, title, text (PR body) ships a worker branch.`,
   parameters: CREW_PARAMS,
-  async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'audit' | 'view' | 'zoom' | 'accept'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
-    id?: number; n?: number; findText?: string; run?: string; title?: string }) {
+  async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'edit' | 'audit' | 'view' | 'zoom' | 'accept'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
+    edits?: TextEdit[]; append?: string; id?: number; n?: number; findText?: string; run?: string; title?: string }) {
     const c = crew();
     if (args.action === 'list') return result(listCrew(c));
     if (args.action === 'accept') {
@@ -504,14 +544,15 @@ export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew
       return result(`${args.project} audited: memory ${found.memoryBytes} B, reasons ${found.reasons.join(', ') || 'none'}, proposals pending ${waiting}`);
     }
     if (part === 'proposals') {
-      if (args.action === 'write') throw new Error('Proposals are read-only: apply the true lines with write of the project memory, which clears them.');
+      if (args.action === 'write' || args.action === 'edit') throw new Error('Proposals are read-only: apply the true lines with write or edit of the project memory, which clears them.');
       return result(proposalsText(c, args.project));
     }
     if (part !== 'missions' && !args.project) throw new Error(`${args.action} of a ${part} needs project (a slug; existing: ${c.specialists().join(', ')}).`);
     if (args.action === 'read') return result((part === 'missions' ? c.missions() : c.read(args.project!, part).trim()) || '(empty)');
-    if (args.text === undefined) throw new Error('write needs text: the whole new content.');
-    const size = part === 'missions' ? c.writeMissions(args.text) : c.write(args.project!, part, args.text);
-    return result(`Wrote ${part === 'missions' ? 'missions.md' : `${args.project} ${part}`}: ${size} B.`);
+    if (args.action === 'write' && args.text === undefined) throw new Error('write needs text: the whole new content.');
+    const text = args.action === 'edit' ? editText(part === 'missions' ? c.storedMissions() : c.stored(args.project!, part), args.edits ?? [], args.append) : args.text!;
+    const size = part === 'missions' ? c.writeMissions(text) : c.write(args.project!, part, text);
+    return result(`Wrote ${part === 'missions' ? 'missions.md' : `${args.project} ${part}`}: ${size}/${part === 'charter' ? CHARTER_BYTES : MEMORY_BYTES} B.`);
   },
 });
 

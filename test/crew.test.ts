@@ -45,7 +45,7 @@ test('specialistOf maps the operator\'s project folders to their specialist', ()
   assert.equal(specialistOf('C:/Users/swluc'), undefined);
 });
 
-test('a write over its cap says how many bytes to cut and which lines are longest, and still writes nothing', () => {
+test('a write over its cap says its current and resulting bytes, how many to cut and which lines are longest, and still writes nothing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-cap-'));
   try {
     const crew = new Crew(dir);
@@ -58,11 +58,11 @@ test('a write over its cap says how many bytes to cut and which lines are longes
     assert.ok(size > MEMORY_BYTES, `the fixture is over the cap: ${size} B`);
     let message = '';
     try { crew.write('dentai', 'memory', text); } catch (error) { message = (error as Error).message; }
-    assert.ok(message.startsWith(`dentai memory is ${size} bytes, over its ${MEMORY_BYTES}-byte cap (cut at least ${size - MEMORY_BYTES} bytes): trim stale or duplicated lines and write it again. Nothing was written.`), message);
+    assert.ok(message.startsWith(`dentai memory would be ${size} B (now 9 B): ${size - MEMORY_BYTES} B over its ${MEMORY_BYTES} B cap. trim stale or duplicated lines, then retry. Nothing was written.`), message);
     const listed = message.split('\n').filter(line => line.startsWith('line '));
-    assert.deepEqual(listed.map(line => line.slice(0, line.indexOf(':'))), ['line 11', 'line 3', 'line 10', 'line 9', 'line 8'], 'the five longest lines, longest first');
-    assert.equal(listed[0], `line 11: 2002 B: - ${'z'.repeat(58)}`);
-    assert.equal(listed[1], `line 3: ${Buffer.byteLength(lines[3])} B: - ação: ${'é'.repeat(52)}`, 'UTF-8 bytes counted, the excerpt cut at 60 characters');
+    assert.deepEqual(listed.map(line => line.slice(0, line.indexOf(':'))), ['line 12', 'line 4', 'line 11'], 'the three longest lines, numbered from 1, longest first');
+    assert.equal(listed[0], `line 12: 2002 B: - ${'z'.repeat(58)}`);
+    assert.equal(listed[1], `line 4: ${Buffer.byteLength(lines[3])} B: - ação: ${'é'.repeat(52)}`, 'UTF-8 bytes counted, the excerpt cut at 60 characters');
     assert.equal(crew.read('dentai', 'memory'), '- keep me\n', 'a refused write leaves the old memory');
   } finally { removeDir(dir); }
 });
@@ -80,7 +80,7 @@ test('the crew keeps charters and memories under their caps, briefs workers from
     const crew = new Crew(dir);
     crew.write('dentai', 'charter', 'DentAI: Next.js + Hono; deploy is the operator\'s.');
     crew.write('dentai', 'memory', '- build: pnpm turbo build\n- trap: Stripe webhooks need the raw body');
-    assert.throws(() => crew.write('dentai', 'memory', 'x'.repeat(MEMORY_BYTES + 1)), /over its 6144-byte cap.*Nothing was written/);
+    assert.throws(() => crew.write('dentai', 'memory', 'x'.repeat(MEMORY_BYTES + 1)), /over its 6144 B cap.*Nothing was written/);
     assert.match(crew.read('dentai', 'memory'), /raw body/, 'a refused write leaves the old memory');
     const brief = crew.brief('code', 'dentai');
     assert.match(brief, /\[Worker brief\] You are a worker of the manager[\s\S]*\[This run\] You are a code worker/);
@@ -108,7 +108,7 @@ test('the crew tool lists, reads and replaces parts, and refuses a write without
   try {
     const crew = new Crew(dir), tool = crewTool(() => crew);
     const text = async (args: Parameters<typeof tool.execute>[1]) => (await tool.execute('id', args)).content[0].text;
-    assert.equal(await text({ action: 'write', project: 'harness', part: 'memory', text: '- gates: npm run verify' }), 'Wrote harness memory: 23 B.');
+    assert.equal(await text({ action: 'write', project: 'harness', part: 'memory', text: '- gates: npm run verify' }), 'Wrote harness memory: 23/6144 B.');
     assert.equal(await text({ action: 'read', project: 'harness' }), '- gates: npm run verify');
     assert.equal(await text({ action: 'read', part: 'missions' }), '(empty)');
     assert.match(await text({ action: 'list' }), /harness: charter 0 B, memory 24 B, written 0\.0 d ago[\s\S]*No audit due\./);
@@ -337,7 +337,7 @@ test('specialists are the known four plus every folder of the crew dir; a projec
     const crew = new Crew(join(dir, 'crew')), tool = crewTool(() => crew);
     const text = async (args: Parameters<typeof tool.execute>[1]) => (await tool.execute('id', args)).content[0].text;
     assert.deepEqual(crew.specialists(), ['dentai', 'genexus18mcp', 'harness', 'dotfiles']);
-    assert.equal(await text({ action: 'write', project: 'lolidle', part: 'charter', text: '# lolidle' }), 'Wrote lolidle charter: 9 B.');
+    assert.equal(await text({ action: 'write', project: 'lolidle', part: 'charter', text: '# lolidle' }), 'Wrote lolidle charter: 9/4096 B.');
     assert.deepEqual(crew.specialists(), ['dentai', 'genexus18mcp', 'harness', 'dotfiles', 'lolidle']);
     assert.match(await text({ action: 'list' }), /^lolidle: charter 10 B, memory 0 B$/m);
     assert.deepEqual([...crew.auditDue()], ['lolidle'], 'a specialist with a charter and no memory is due, as missing');
