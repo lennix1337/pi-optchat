@@ -29,12 +29,21 @@ export function tokens(n: number) {
   if (n >= 1e6) return `${(Math.round(n / 1e5) / 10).toString().replace('.', ',')}M`;
   return n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
 }
-/** The goal extension's status as a short slot: `goal: unfocused [2 open] - /goal-focus` becomes `meta: 2 em aberto · /goal-focus`. Nothing when it has no status. */
+/**
+ * The goal extension's status as the footer's meta slot. The extension words it already (`meta: 1 aberta · /goal-focus`), so it is shown as it
+ * came; only the older English form (`goal: unfocused [2 open] - /goal-focus`) is translated. Nothing when it is empty.
+ */
 export function metaText(status: string | undefined) {
-  const text = status?.trim();
+  const text = status?.replace(/\s+/g, ' ').trim();
   if (!text) return undefined;
+  if (/^meta:/i.test(text)) return text;
   const open = /^goal:\s*unfocused\s*\[(\d+) open\]\s*-\s*(\S+)/i.exec(text);
-  return open ? `meta: ${open[1]} em aberto · ${open[2]}` : `meta: ${text.replace(/^goal:\s*/i, '')}`;
+  return open ? `meta: ${open[1]} ${open[1] === '1' ? 'aberta' : 'abertas'} · ${open[2]}` : `meta: ${text.replace(/^goal:\s*/i, '')}`;
+}
+/** The text of a goal status event; undefined when the payload is not one. An empty text is an answer: the goal has nothing to show. */
+export function goalEventText(data: unknown) {
+  const text = record(data).text;
+  return typeof text === 'string' ? text : undefined;
 }
 /** `Claude`, `GPT`, else the provider id: what the operator calls the account's family. */
 export function familyLabel(model: string | undefined, provider: string | undefined) {
@@ -88,7 +97,11 @@ export interface FooterSources {
   quotaState: () => unknown;
   hint?: string;
   now?: () => number;
+  /** Pi's event bus: the goal extension announces its status there (`GOAL_STATUS_EVENT`), already worded in Portuguese. */
+  events?: { on(channel: string, handler: (data: unknown) => void): () => void };
 }
+/** The goal extension's channel (pi-goal-x `GOAL_STATUS_EVENT`); its payload is `{ text, focused, open }`. */
+export const GOAL_STATUS_EVENT = 'goal-x:status:v1';
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const attempt = <T>(read: () => T): T | undefined => { try { return read(); } catch { return undefined; } };
 
@@ -113,14 +126,16 @@ export class FooterState {
 export function mountFooter(ctx: ExtensionContext, sources: FooterSources) {
   if (!ctx.hasUI) return () => {};
   const state = new FooterState(ctx, sources);
+  let announced: string | undefined;
+  const stopGoal = sources.events?.on(GOAL_STATUS_EVENT, data => { announced = goalEventText(data) ?? announced; });
   ctx.ui.setFooter((tui, theme, data) => {
     const timer = setInterval(() => tui.requestRender(), 5000); timer.unref();
     const stopBranch = data.onBranchChange(() => tui.requestRender());
     return {
       invalidate() {},
       dispose() { clearInterval(timer); stopBranch(); },
-      render: (width: number) => footerRows(state.input(data.getExtensionStatuses().get('goal')), width, (tone, text) => theme.fg(tone as 'dim', text), sources.hint),
+      render: (width: number) => footerRows(state.input(announced ?? data.getExtensionStatuses().get('goal')), width, (tone, text) => theme.fg(tone as 'dim', text), sources.hint),
     };
   });
-  return () => ctx.ui.setFooter(undefined);
+  return () => { stopGoal?.(); ctx.ui.setFooter(undefined); };
 }
