@@ -73,7 +73,7 @@ import { heartbeatCommand, summarizeTurn, wakeRetry } from './heartbeat-report.t
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
-import { openTaskOrders, readCommitments, registerCommitments, waitingItems } from './commitments.ts';
+import { openTaskOrders, boardWaiting, readCommitments, registerCommitments, waitingItems } from './commitments.ts';
 import { latestOperatorMessage } from './operator-words.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
@@ -90,7 +90,8 @@ import { ROUTER_DOC, syncRouterTools } from './router-mode.ts';
 import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
 import { BoardNavigation, inspectorShortcut, mountNavigation, mountWaitingBoard } from './navigation.ts';
-import { WaitingBoard } from './waiting-board.ts';
+import { mountFooter } from './footer.ts';
+import { WaitingBoard, type WaitItem } from './waiting-board.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
 import { createHandoffSummarizer } from './handoff.ts';
@@ -305,6 +306,7 @@ export default function optchat(pi: ExtensionAPI) {
   let unmountNavigation: (() => void) | undefined;
   let board: WaitingBoard | undefined;
   let unmountBoard: (() => void) | undefined;
+  let unmountFooter: (() => void) | undefined;
   let inspectorController: AbortController | undefined;
   const shortcut = inspectorShortcut();
   const title = new TabTitle();
@@ -573,7 +575,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
-    inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined; unmountBoard?.(); unmountBoard = undefined; board?.close(); board = undefined;
+    inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined; unmountBoard?.(); unmountBoard = undefined; unmountFooter?.(); unmountFooter = undefined; board?.close(); board = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
     const handOff = reason === 'reload' && active !== undefined;
     if (handOff) handOffShells(shells, active!.name);
@@ -705,14 +707,16 @@ export default function optchat(pi: ExtensionAPI) {
       void sync.now();
       board?.close();
       board = new WaitingBoard({
-        runs: () => children.runs(), live: id => children.live(id), shells: () => shells.list(),
-        waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map(p => `aprovação: ${p.summary}`) ?? [], ...stillWaiting(waitingItems(readCommitments(active.dir), Date.now()), readWatch(active.dir)).map(item => item.text)] : [],
+        runs: () => children.runs(), live: id => { const run = children.live(id); return run && { updated: run.updated, toolAt: run.toolAt, busy: run.tools.size > 0, lastTool: run.lastTool }; }, shells: () => shells.list(),
+        waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map((p): WaitItem => ({ text: `aprovação: ${p.summary}`, id: p.token, choices: ['aprovar', 'negar'] })) ?? [], ...stillWaiting(boardWaiting(readCommitments(active.dir), Date.now()), readWatch(active.dir))] : [],
       }, pi.events);
       board.requestState();
       if (ctx.mode === 'tui') {
-        const boardNav = new BoardNavigation(board);
-        unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav);
+        const boardNav = new BoardNavigation(board), customEditor = Boolean(ctx.ui.getEditorComponent());
+        // The footer is the status line; the bar below the editor then only shows while an inspector page is selected.
+        unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav, ctx.hasUI);
         unmountBoard = mountWaitingBoard(ctx, board, shortcut, boardNav);
+        unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readJsonOr<unknown>(QUOTA_FILE, {}), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}` });
       }
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => inPhase('open'), deliverReport);
@@ -1110,7 +1114,7 @@ export default function optchat(pi: ExtensionAPI) {
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
-      const statusLine = atWork(board?.view(12), deploy.active());
+      const statusLine = atWork(board?.view(12, true), deploy.active());
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);

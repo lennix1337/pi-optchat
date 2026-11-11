@@ -15,9 +15,9 @@ const board = (runs: Partial<BoardRun>[] = [], shells: Partial<BoardShell>[] = [
 const view = '<chat>\n' + '0+1|line\n'.repeat(400) + '</chat>';
 
 test('the status line is the waiting board: running agents by id, first task words, elapsed time and progress, under a label the main prompt explains', () => {
-  assert.equal(atWork(board([{ id: 'a1', task: 'Review PR #123 "carefully"\nthen report back to me', tools: 4, last: 'npm test' }])),
-    `[OptChat status] 13:49 pendente:\n- a1 "Review PR #123 'carefully'" 1m · 4 tools · npm test · m`);
-  assert.match(atWork(board([{ task: 'x'.repeat(5_000) }]))!, new RegExp(`a1 "${'x'.repeat(39)}…" 1m`), 'a long word is cut too');
+  assert.equal(atWork(board([{ id: 'a1', task: 'Goal: Review PR #123 "carefully"\nthen report back to me', cwd: 'C:/projetos/pi-optchat', phase: 'lendo código' }])),
+    '[OptChat status] 13:49 pendente:\n- pi-optchat · Review PR #123 "carefully" · lendo código · 1m · m [a1]');
+  assert.match(atWork(board([{ task: 'x'.repeat(5_000) }]))!, new RegExp(`${'x'.repeat(43)}… · 1m`), 'a long word is cut too');
   assert.match(PROMPT, /"\[OptChat status\]" is OptChat's own live note/);
   assert.match(PROMPT, /what is pending \(agents, shells, CI, what waits on the user\)/, 'the prompt says what the status note holds');
   assert.match(MASTER, /what is pending \(agents, shells, CI, what waits on the user\)/, 'the master prompt says it too');
@@ -58,8 +58,8 @@ test('the status line goes last, and the turn\'s cache mark sits on the block be
 });
 
 test('the status line also names running background shells, alone or with agents; a shell-only line is still recognised as the status line', () => {
-  assert.equal(atWork(board([], [{ id: 'sh1xxxxxxxx', command: 'npm run build -- --watch', last: 'built in 3s' }])), '[OptChat status] 13:49 pendente:\n- shell npm run build -- --watch · 1m · built in 3s · sh1xxxxx');
-  assert.equal(atWork(board([{}], [{}])), '[OptChat status] 13:49 pendente:\n- a1 "Fix it" 1m · 0 tools · m\n- shell node server.js · 1m · sh1');
+  assert.equal(atWork(board([], [{ id: 'sh1xxxxxxxx', command: 'npm run build -- --watch', last: 'built in 3s' }])), '[OptChat status] 13:49 pendente:\n- shell npm run build -- --watch · 1m · built in 3s [sh1xxxxx]');
+  assert.equal(atWork(board([{}], [{}])), '[OptChat status] 13:49 pendente:\n- Fix it · 1m · m [a1]\n- shell node server.js · 1m [sh1]');
   assert.equal(atWork(board([], [])), undefined, 'nothing running, no line');
   const line = atWork(board([], [{}]))!;
   assert.equal(isAtWork({ role: 'user', content: [{ type: 'text', text: line }] }), true, 'cache marks skip it like the agents line');

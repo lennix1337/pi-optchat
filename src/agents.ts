@@ -48,6 +48,8 @@ export interface LiveRun {
   tools: Map<string, { name: string; args: unknown; output?: unknown; started: number }>;
   /** Tool calls the run has started and the latest one, for the waiting board. */
   toolCalls?: number; lastTool?: { name: string; args: unknown };
+  /** When a tool last started or ended: the waiting board calls a worker silent for ten minutes with no tool running stalled. */
+  toolAt?: number;
   pendingReports: string[]; pendingGuidance: string[]; wake?: () => void; completion?: Promise<void>;
   /** Set by the user's interrupt: the queued guidance the run continues with once its current step is aborted; with none, it pauses. */
   interruption?: RunInfo['guidance'];
@@ -407,6 +409,7 @@ export class Children {
       }
       if (event.type === 'tool_execution_start') live.tools.set(event.toolCallId, { name: event.toolName, args: event.args, started: performance.now() });
       if (event.type === 'tool_execution_start') { live.toolCalls = (live.toolCalls ?? 0) + 1; live.lastTool = { name: event.toolName, args: event.args }; }
+      if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') live.toolAt = Date.now();
       if (event.type === 'tool_execution_update') {
         const tool = live.tools.get(event.toolCallId); if (tool) tool.output = event.partialResult;
       }

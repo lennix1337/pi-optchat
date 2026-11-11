@@ -21,7 +21,7 @@ test('agent-bar focus preserves typing, autocomplete, and ordinary history navig
 });
 
 const ITEMS = ['aprovar o deploy', 'decidir X', 'responder o PR #12', 'liberar a cota'];
-const fakeBoard = (items: string[]) => ({ expanded: () => ({ lines: items.map(text => ({ text, tone: 'wait' as const, at: 0, finished: false })), more: 0, pending: items.length, now: 0 }) });
+const fakeBoard = (items: string[]) => ({ expanded: () => ({ lines: items.map(text => ({ text, tone: 'wait' as const, at: 0, finished: false, section: 'waiting' as const })), more: 0, pending: items.length, waiting: items.length, now: 0 }) });
 const UP = '\x1b[A', DOWN = '\x1b[B';
 
 test('Up on an empty editor focuses the waiting board; the cursor moves, stays at the first item and leaves past the last', () => {

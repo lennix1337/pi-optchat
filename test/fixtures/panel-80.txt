@@ -1,0 +1,9 @@
+Esperando você (4)                                                        ↑ abre
+ ▸ DentAI cache HTML: libera o deploy web? [sim/não] · 44h
+Trabalhando (2)
+   gitwatch · aviso só aparece na próxima msg · lendo código · 5m · sonnet
+   optchat  · ↑ abre o quadro + rótulo do agente · testes · 1m · sonnet
+Acabou agora
+   ✓ shell pi-optchat: grep -n "Inspector" src/index.ts ok · 15:37
+────────────────────────────────────────────────────────────────────────────────
+$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71%                F6
