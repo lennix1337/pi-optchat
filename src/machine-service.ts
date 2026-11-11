@@ -7,6 +7,7 @@ import { costCentres, hours, machineInsights, type LedgerRow } from './machine-l
 import { HelperSampler, type SamplerStatus } from './machine-sample.ts';
 import { MachineSense, type MachineNow, type MachineSenseOptions } from './machine-sense.ts';
 import { dataHome } from './profiles.ts';
+import type { Situation } from './situation.ts';
 
 const SAMPLE_MS = 5_000;
 /** One sampler per Pi process, shared by the shell tools that tell it who started what. A /reload re-evaluates the extension, so the handle lives on a global symbol. */
@@ -108,16 +109,20 @@ export function renderHistory(rows: LedgerRow[], owner: string, windowMin: numbe
   return lines.join('\n');
 }
 
-export const machineTool = (service: () => MachineService | undefined) => ({
+export const machineTool = (service: () => MachineService | undefined, situation: () => Situation | undefined = () => undefined) => ({
   name: 'machine', label: 'Machine', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
-  description: 'What this PC is doing and who in OptChat\'s trees causes it (read-only). now: CPU, memory and owners at the last 5 s sample. top: owners by CPU over a window (minutes, default 60). history: one owner\'s minute rows over a window (owner = part of a name or command). Ledger is ~/.optchat/machine, 14 days.',
+  description: 'What this PC is doing and who in OptChat\'s trees causes it (read-only). now: CPU, memory and owners at the last 5 s sample. situation: all the facts behind the turn-start digest, normal or not (reboots, Docker, disk, quota with resets, GitHub, own work). top: owners by CPU over a window (minutes, default 60). history: one owner\'s minute rows over a window (owner = part of a name or command). Ledger is ~/.optchat/machine, 14 days.',
   parameters: Type.Object({
-    view: Type.Optional(Type.Union([Type.Literal('now'), Type.Literal('top'), Type.Literal('history')], { description: 'Default now.' })),
+    view: Type.Optional(Type.Union([Type.Literal('now'), Type.Literal('top'), Type.Literal('history'), Type.Literal('situation')], { description: 'Default now.' })),
     window: Type.Optional(Type.Number({ minimum: 1, maximum: 20160, description: 'Minutes back for top and history.' })),
     owner: Type.Optional(Type.String({ description: 'history: part of an owner name or command head, e.g. "sentry" or "stress.sh".' })),
     kind: Type.Optional(Type.String({ description: 'top: only this kind (worker, shell, bash, mcp, own, external).' })),
   }, { additionalProperties: false }),
-  async execute(_id: string, args: { view?: 'now' | 'top' | 'history'; window?: number; owner?: string; kind?: string }) {
+  async execute(_id: string, args: { view?: 'now' | 'top' | 'history' | 'situation'; window?: number; owner?: string; kind?: string }) {
+    if (args.view === 'situation') {
+      const digest = situation();
+      return { content: [{ type: 'text' as const, text: digest ? await digest.snapshotText() : 'The situation digest is not running in this session (it runs in the main Pi session, not in print mode).' }], details: {} };
+    }
     const svc = service();
     const text = (() => {
       if (!svc) return 'The machine sampler is not running in this session (it runs in the main Pi session on Windows).';

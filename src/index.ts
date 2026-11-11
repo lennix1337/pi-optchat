@@ -98,6 +98,8 @@ import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { HOLD_MAX_MS, RELOAD_RESUME, registerSelfReload, reloadLease } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
 import { MachineService, machineService, machineTool } from './machine-service.ts';
+import { Collector, Situation } from './situation.ts';
+import { realSources } from './situation-sources.ts';
 
 const binding = 'optchat.profile';
 /** The request head the prompt cache holds (StableHead) is kept in `HEAD_FILE` of the profile, keyed by session, so /reload sends it again.
@@ -247,6 +249,9 @@ export default function optchat(pi: ExtensionAPI) {
   /** The operational records as rendered at the view's capture. They sit in the message that holds the view, so re-rendering
    * them mid-turn rewrote the turn's whole run; a record made since then is in its operational_state result. */
   let records: { epoch: number; text: string } | undefined;
+  /** The situation digest (src/situation.ts) and the run it was last asked for: a run says it once, however often the view is rebuilt. */
+  let situation: Situation | undefined;
+  let runSeq = 0;
   let prompt = '';
   /** A compaction is a call like a turn (recipe §4): once a turn has built them, it gets the turns' system prompt and tools. */
   const shared = () => {
@@ -497,7 +502,16 @@ export default function optchat(pi: ExtensionAPI) {
       ended: job => { const handle = handles.get(job.id); if (handle !== undefined) service.sense.ended(handle); handles.delete(job.id); },
     });
   };
+  /** What changed on the PC and in the harness, said at the start of a turn (the `situationDigest` setting); one per main session. */
+  const startSituation = (ctx: ExtensionContext, dir: string) => {
+    if (ctx.mode === 'print' || ctx.mode === 'json') return;
+    situation = new Situation({ stateFile: join(dir, 'situation-state.json'), logFile: join(dir, 'situation-digest.jsonl'),
+      collector: new Collector(realSources({ agentDir: getAgentDir(), machine: () => machineService()?.sense.now(),
+        work: () => ({ agents: active?.children.working.length ?? 0, shells: runningShells(shells).length }) })) });
+    void situation.warm();
+  };
   const stop = async (reason?: string) => {
+    situation = undefined;
     machineService()?.stop(); shells.setLifecycleObserver(undefined);
     heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();
     outage?.close(); outage = undefined;
@@ -643,6 +657,7 @@ export default function optchat(pi: ExtensionAPI) {
         failed: (what, job, error) => ctx.ui.notify(`Could not ${what} ${job.id}: ${errorText(error)}`, 'error'),
       }));
       startMachineSense(ctx, memory);
+      startSituation(ctx, dir);
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
@@ -867,7 +882,7 @@ export default function optchat(pi: ExtensionAPI) {
     return { action: 'continue' };
   });
   const startRun = (ctx: ExtensionContext) => {
-    flush(); run = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = true; viewEpoch++;
+    flush(); run = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = true; viewEpoch++; runSeq++;
     const config = active?.config;
     previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
@@ -1007,7 +1022,8 @@ export default function optchat(pi: ExtensionAPI) {
       if (records?.epoch !== viewEpoch) {
         const operationalStarted = performance.now();
         const operational = readOperationalState(join(a.dir, 'operational-state.json'));
-        records = { epoch: viewEpoch, text: [operational.entries.length ? renderOperationalContext(operational) : '', commitments.context(a.dir), catchup.context()].filter(Boolean).join('\n\n') };
+        const digest = a.config.situationDigest ? situation?.forRun(runSeq) : undefined;
+        records = { epoch: viewEpoch, text: [digest ?? '', operational.entries.length ? renderOperationalContext(operational) : '', commitments.context(a.dir), catchup.context()].filter(Boolean).join('\n\n') };
         a.metrics.record('operational', performance.now() - operationalStarted);
       }
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
@@ -1197,7 +1213,7 @@ export default function optchat(pi: ExtensionAPI) {
   pi.registerTool(outputReadTool(() => required().outputs));
   pi.registerTool(readManyTool(process.cwd()));
   pi.registerTool({ ...performanceTool(() => required().metrics, () => required().outputs.stats()), defaultActive: false });
-  pi.registerTool({ ...machineTool(machineService), defaultActive: false });
+  pi.registerTool({ ...machineTool(machineService, () => situation), defaultActive: false });
   pi.registerTool({ ...heapReportTool(() => active && { memory: active.memory.stats(), run: run.length, reloads: reloadCount() }), defaultActive: false });
   registerToolInventory(pi);
   registerLiveResources(pi);
