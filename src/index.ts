@@ -87,7 +87,8 @@ import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells
 import { ROUTER_DOC, syncRouterTools } from './router-mode.ts';
 import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
-import { inspectorShortcut, mountNavigation } from './navigation.ts';
+import { inspectorShortcut, mountNavigation, mountWaitingBoard } from './navigation.ts';
+import { WaitingBoard } from './waiting-board.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
 import { createHandoffSummarizer } from './handoff.ts';
@@ -299,6 +300,8 @@ export default function optchat(pi: ExtensionAPI) {
   let importController: AbortController | undefined;
   let importTask: Promise<void> | undefined;
   let unmountNavigation: (() => void) | undefined;
+  let board: WaitingBoard | undefined;
+  let unmountBoard: (() => void) | undefined;
   let inspectorController: AbortController | undefined;
   const shortcut = inspectorShortcut();
   const title = new TabTitle();
@@ -560,7 +563,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (retroTimer) clearInterval(retroTimer); retroTimer = undefined;
     for (const unwatch of unwatchWork.splice(0)) unwatch();
     remote?.close(); remote = undefined; joined?.close(); joined = undefined;
-    inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined;
+    inspectorController?.abort(); unmountNavigation?.(); unmountNavigation = undefined; unmountBoard?.(); unmountBoard = undefined; board?.close(); board = undefined;
     stopping = true; importController?.abort(); await importTask?.catch(() => {});
     const handOff = reason === 'reload' && active !== undefined;
     if (handOff) handOffShells(shells, active!.name);
@@ -689,7 +692,16 @@ export default function optchat(pi: ExtensionAPI) {
       const agentSource = { subscribe: (l: () => void) => children.subscribe(l), snapshot: () => children.working };
       unwatchWork.push(work.watchShells(shellSource), work.watchAgents(agentSource));
       void sync.now();
-      if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
+      board?.close();
+      board = new WaitingBoard({
+        runs: () => children.runs(), live: id => children.live(id), shells: () => shells.list(),
+        waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map(p => `aprovação: ${p.summary}`) ?? [], ...stillWaiting(waitingItems(readCommitments(active.dir), Date.now()), readWatch(active.dir)).map(item => item.text)] : [],
+      }, pi.events);
+      board.requestState();
+      if (ctx.mode === 'tui') {
+        unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells);
+        unmountBoard = mountWaitingBoard(ctx, board, shortcut);
+      }
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => inPhase('open'), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
@@ -1086,7 +1098,7 @@ export default function optchat(pi: ExtensionAPI) {
       system.state = [system.state, a.operations.context(), records.text].filter(Boolean).join('\n\n');
       const window = ctx.model?.contextWindow;
       const inputBudget = window ? inputTokenBudget(window, ctx.model?.maxTokens) : undefined;
-      const statusLine = atWork(a.children.working, runningShells(shells), deploy.active());
+      const statusLine = atWork(board?.view(12), deploy.active());
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);

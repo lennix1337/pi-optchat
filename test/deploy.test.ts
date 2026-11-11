@@ -8,6 +8,7 @@ import { DEPLOY_COMMANDS, DeployWatch, HOLD, RELEASE, clock, isDeployCommand, re
 import { loadConfig } from '../src/profiles.ts';
 import { ShellJobs, runningShells } from '../src/shells.ts';
 import { atWork } from '../src/transcript.ts';
+import { boardView } from '../src/waiting-board.ts';
 
 type Handler = (event: any) => any;
 /** A Pi whose events run every handler registered for them, in registration order, like Pi does. */
@@ -199,11 +200,12 @@ test('running workers hear one hold message when a deploy starts and one release
 test('the status note shows the deploy, with or without agents and shells', () => {
   const since = Date.UTC(2026, 10, 9, 21, 15);
   assert.equal(clock(since), '18:15', 'Brasília time');
-  const note = atWork([], [], { since, command: 'pwsh -File scripts/release/deploy-web.ps1 -Commit abc' })!;
+  const note = atWork(undefined, { since, command: 'pwsh -File scripts/release/deploy-web.ps1 -Commit abc' })!;
   assert.match(note, /^\[OptChat status\] Production deploy in flight since 18:15: "pwsh -File scripts\/release\/deploy-web\.ps1 -Commit abc"\./);
   assert.match(note, /never through a worker/);
-  assert.equal(atWork([], []), undefined);
-  assert.match(atWork([{ id: 'a1', task: 'Fix it' }], [], { since, command: 'x' })!, /Agents at work now: a1 "Fix it"\. Production deploy in flight since 18:15/);
+  assert.equal(atWork(undefined), undefined);
+  const board = boardView({ now: since, runs: [{ id: 'a1', task: 'Fix it', model: 'p/m', state: 'running', started: since - 60_000 }], shells: [] });
+  assert.match(atWork(board, { since, command: 'x' })!, /- a1 "Fix it" 1m · 0 tools · m\nProduction deploy in flight since 18:15/);
   assert.match(refusal({ since, command: 'x' }), /^Deploy em andamento desde 18:15: segure novos agentes até a troca ser verificada/);
 });
 

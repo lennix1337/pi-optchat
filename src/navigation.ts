@@ -5,6 +5,7 @@ import type { Memory } from './memory.ts';
 import { inspectorShowing, nextPage, type InspectorPage } from './inspector.ts';
 import { isRunning } from './runs.ts';
 import type { ShellJobs } from './shells.ts';
+import { overflowText, type BoardView, type WaitingBoard } from './waiting-board.ts';
 
 /** Configured before extension registration; this also works in legacy terminals with F6. */
 export function inspectorShortcut(value = process.env.OPTCHAT_INSPECT_KEY ?? 'f6'): KeyId {
@@ -77,4 +78,29 @@ export function mountNavigation(ctx: ExtensionContext, children: Children, memor
     unsubscribe.forEach(stop => stop()); ctx.ui.setWidget('optchat-agents', undefined);
     if (!previous && ctx.ui.getEditorComponent() === factory) ctx.ui.setEditorComponent(undefined);
   };
+}
+
+const TONES = { active: 'accent', wait: 'warning', ok: 'success', bad: 'error', info: 'muted' } as const;
+/** The waiting board's lines for a terminal of `width`: a title, one line per item and the overflow with the way to inspect it. Empty when nothing is pending or recent. */
+export function renderWaitingBoard(view: BoardView, width: number, color: (tone: string, text: string) => string, shortcut: string) {
+  if (!view.lines.length) return [];
+  const lines = view.lines.map(line => truncateToWidth(`${color('dim', '\u2502 ')}${color(TONES[line.tone], line.text)}`, width));
+  if (view.more) lines.push(truncateToWidth(`${color('dim', '\u2502 ')}${color('dim', overflowText(view.more, `${shortcut} inspect`))}`, width));
+  return lines;
+}
+
+/** The board above the editor: it redraws on every gitwatch event and on a tick that keeps the elapsed times moving. */
+export function mountWaitingBoard(ctx: ExtensionContext, board: WaitingBoard, shortcut: string) {
+  let redraw = () => {}, shown = false;
+  ctx.ui.setWidget('optchat-waiting', (tui, theme) => {
+    redraw = () => tui.requestRender();
+    return { invalidate() {}, render: (width: number) => {
+      const lines = inspectorShowing() ? [] : renderWaitingBoard(board.view(), width, (tone, text) => theme.fg(tone as 'accent', text), shortcut);
+      shown = lines.length > 0; return lines;
+    } };
+  });
+  const unsubscribe = board.subscribe(() => redraw());
+  // Idle sessions repaint nothing: the tick only runs the screen while the board has something to say.
+  const timer = setInterval(() => { if (shown || board.view().lines.length) redraw(); }, 1000); timer.unref();
+  return () => { clearInterval(timer); unsubscribe(); ctx.ui.setWidget('optchat-waiting', undefined); };
 }

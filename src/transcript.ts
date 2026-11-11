@@ -5,6 +5,7 @@ import { getCurrentSystemMessage, type SystemMessage, type UserMessage } from '@
 import { CAP, PAGE, cap, end, flat, isView, mostDue, start, type Memory, type Part } from './memory.ts';
 import { estimatedContextTokens } from './run-context.ts';
 import { STATUS_NOTE } from './prompts.ts';
+import { boardNote, type BoardView } from './waiting-board.ts';
 import { clock } from './deploy.ts';
 import { record } from './cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
@@ -169,21 +170,20 @@ export function runTranscript(messages: readonly AgentMessage[]) {
   }).join('\n');
 }
 
-/** The status line naming running agents by id and the first words of their task, and running background shells by id and command; none while nothing runs. */
-export function atWork(runs: readonly { id: string; task: string }[], shells: readonly { id: string; command: string }[] = [], deploy?: { since: number; command: string }) {
-  if (!runs.length && !shells.length && !deploy) return undefined;
+/** The status line: the waiting board (src/waiting-board.ts) as the model reads it, and a production deploy in flight; none while nothing is pending. */
+export function atWork(board: BoardView | undefined, deploy?: { since: number; command: string }) {
+  const note = board && boardNote(board);
+  if (!note && !deploy) return undefined;
   const brief = (text: string) => {
     const words = flat(text).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
     // Six words, but never more than 60 characters: a task can be one long word.
     const preview = [...start].slice(0, 60).join('');
     return `"${preview}${words.length > 6 || preview.length < start.length ? '…' : ''}"`;
   };
-  const parts = [
-    ...runs.length ? [`Agents at work now: ${runs.map(({ id, task }) => `${id} ${brief(task)}`).join(', ')}.`] : [],
-    ...shells.length ? [`Shells running now: ${shells.map(({ id, command }) => `${id} ${brief(command)}`).join(', ')}.`] : [],
+  return STATUS_NOTE + [
+    ...note ? [note] : [],
     ...deploy ? [`Production deploy in flight since ${clock(deploy.since)}: ${brief(deploy.command)}. It runs in this session, never through a worker: start no agents and no heavy local work until the swap is verified.`] : [],
-  ];
-  return STATUS_NOTE + parts.join(' ');
+  ].join('\n');
 }
 
 /** Label wake-only inputs independently of the message that carries the historical view. */

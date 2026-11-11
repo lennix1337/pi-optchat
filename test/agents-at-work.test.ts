@@ -2,29 +2,36 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { atWork, buildContext } from '../src/transcript.ts';
+import { boardView, type BoardRun, type BoardShell } from '../src/waiting-board.ts';
 import { cachePayload, isAtWork } from '../src/cache.ts';
 import { PROMPT } from '../src/recipe-prompt.ts';
 import { MASTER } from '../src/prompts.ts';
 
 const user: AgentMessage = { role: 'user', content: 'question', timestamp: 0 };
+const NOW = Date.parse('2026-11-11T16:49:00Z');
+const board = (runs: Partial<BoardRun>[] = [], shells: Partial<BoardShell>[] = []) => boardView({ now: NOW,
+  runs: runs.map(r => ({ id: 'a1', task: 'Fix it', model: 'p/m', state: 'running' as const, started: NOW - 60_000, ...r })),
+  shells: shells.map(j => ({ id: 'sh1', command: 'node server.js', state: 'running' as const, started: NOW - 60_000, ...j })) });
 const view = '<chat>\n' + '0+1|line\n'.repeat(400) + '</chat>';
 
-test('the status line names running agents by id and first task words, under a label the main prompt explains', () => {
-  assert.equal(atWork([{ id: 'a1', task: 'Review PR #123 "carefully"\nthen report back to me' }, { id: 'b2', task: 'Fix it' }]),
-    '[OptChat status] Agents at work now: a1 "Review PR #123 \'carefully\' then report…", b2 "Fix it".');
-  assert.equal(atWork([{ id: 'c3', task: 'x'.repeat(5_000) }]), `[OptChat status] Agents at work now: c3 "${'x'.repeat(60)}…".`, 'a long word is cut too');
-  assert.match(PROMPT, /"\[OptChat status\]" is OptChat's own note/);
-  assert.match(PROMPT, /agents and shells are running, not the user/, 'the prompt names shells in the status note');
-  assert.match(MASTER, /agents and shells are running, not the user/, 'the master prompt names shells too');
+test('the status line is the waiting board: running agents by id, first task words, elapsed time and progress, under a label the main prompt explains', () => {
+  assert.equal(atWork(board([{ id: 'a1', task: 'Review PR #123 "carefully"\nthen report back to me', tools: 4, last: 'npm test' }])),
+    `[OptChat status] 13:49 pendente:\n- a1 "Review PR #123 'carefully' then report…" 1m · 4 tools · npm test · m`);
+  assert.match(atWork(board([{ task: 'x'.repeat(5_000) }]))!, new RegExp(`a1 "${'x'.repeat(39)}…" 1m`), 'a long word is cut too');
+  assert.match(PROMPT, /"\[OptChat status\]" is OptChat's own live note/);
+  assert.match(PROMPT, /what is pending \(agents, shells, CI, what waits on the user\)/, 'the prompt says what the status note holds');
+  assert.match(MASTER, /what is pending \(agents, shells, CI, what waits on the user\)/, 'the master prompt says it too');
+  assert.match(MASTER, /don't run gh, crew list or shell_status just to learn it/);
 });
 
 test('with no agents running there is no status line at all', () => {
-  assert.equal(atWork([]), undefined);
-  assert.deepEqual(buildContext([user], [user], view, 'prompt', [], atWork([])).map(m => m.role), ['system', 'user']);
+  assert.equal(atWork(board()), undefined);
+  assert.equal(atWork(undefined), undefined);
+  assert.deepEqual(buildContext([user], [user], view, 'prompt', [], atWork(board())).map(m => m.role), ['system', 'user']);
 });
 
 test('a call that follows a tool result carries no status line: the turn already has it', () => {
-  const line = atWork([{ id: 'a1', task: 'Fix it' }])!;
+  const line = atWork(board([{}]))!;
   const call: AgentMessage = { role: 'assistant', content: [{ type: 'toolCall', id: 't', name: 'date', arguments: { id: 0 } }], api: 'anthropic-messages', provider: 'p', model: 'm',
     stopReason: 'toolUse', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: 0 };
   const result: AgentMessage = { role: 'toolResult', toolCallId: 't', toolName: 'date', content: [{ type: 'text', text: 'Fri' }], isError: false, timestamp: 0 };
@@ -32,7 +39,7 @@ test('a call that follows a tool result carries no status line: the turn already
 });
 
 test('the status line goes last, and the turn\'s cache mark sits on the block before it', () => {
-  const line = atWork([{ id: 'a1', task: 'Fix it' }])!;
+  const line = atWork(board([{}]))!;
   assert.deepEqual(buildContext([user], [user], view, 'prompt', [], undefined, line).at(-1), { role: 'user', content: [{ type: 'text', text: line }], timestamp: 0 });
   // As Anthropic receives it, right after a tool result: the line changes between calls, so a mark on it would be written and never read.
   const payload = { messages: [
@@ -51,10 +58,9 @@ test('the status line goes last, and the turn\'s cache mark sits on the block be
 });
 
 test('the status line also names running background shells, alone or with agents; a shell-only line is still recognised as the status line', () => {
-  assert.equal(atWork([], [{ id: 'sh1', command: 'npm run build -- --watch' }]), '[OptChat status] Shells running now: sh1 "npm run build -- --watch".');
-  assert.equal(atWork([{ id: 'a1', task: 'Fix it' }], [{ id: 'sh1', command: 'node server.js' }]),
-    '[OptChat status] Agents at work now: a1 "Fix it". Shells running now: sh1 "node server.js".');
-  assert.equal(atWork([], []), undefined, 'nothing running, no line');
-  const line = atWork([], [{ id: 'sh1', command: 'node server.js' }])!;
+  assert.equal(atWork(board([], [{ id: 'sh1xxxxxxxx', command: 'npm run build -- --watch', last: 'built in 3s' }])), '[OptChat status] 13:49 pendente:\n- sh1xxxxx npm run build -- --watch · 1m · built in 3s');
+  assert.equal(atWork(board([{}], [{}])), '[OptChat status] 13:49 pendente:\n- a1 "Fix it" 1m · 0 tools · m\n- sh1 node server.js · 1m');
+  assert.equal(atWork(board([], [])), undefined, 'nothing running, no line');
+  const line = atWork(board([], [{}]))!;
   assert.equal(isAtWork({ role: 'user', content: [{ type: 'text', text: line }] }), true, 'cache marks skip it like the agents line');
 });
