@@ -165,7 +165,7 @@ export class MachineSense {
     const host = this.options.hostPid, rows: LedgerRow[] = [{ t: pending.minute, owner: 'machine', kind: 'machine', cpuS: round1(pending.cpuS), rssMb: Math.round(pending.memMb), procs: pending.procs, wallS: Math.round(pending.wallS), host }];
     for (const acc of pending.acc.values()) {
       // Idle externals would only be noise: our own owners always get a row, other programs only when they cost something.
-      if (acc.kind === 'external' && acc.cpuS < 0.5 && acc.rssMb < 150) continue;
+      if ((acc.kind === 'external' || acc.kind === 'unattributed') && acc.cpuS < 0.5 && acc.rssMb < 150) continue;
       if (acc.cpuS < 0.05 && acc.rssMb < 50 && acc.kind !== 'mcp') continue;
       rows.push({ t: pending.minute, owner: acc.owner, kind: acc.kind, ...acc.detail ? { detail: acc.detail } : {}, cpuS: round1(acc.cpuS), rssMb: Math.round(acc.rssMb), procs: acc.procs, wallS: Math.round(acc.wallS), host });
     }

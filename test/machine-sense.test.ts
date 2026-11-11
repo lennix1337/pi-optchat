@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { commandHead } from '../src/machine-attribution.ts';
+import { commandBelongsTo, commandHead } from '../src/machine-attribution.ts';
 import { MachineSense } from '../src/machine-sense.ts';
 import { MachineLedger, costCentres, machineInsights, type LedgerRow } from '../src/machine-ledger.ts';
 import type { ProcRow, Sample } from '../src/machine-sample.ts';
@@ -84,6 +84,7 @@ test('a reused pid is never taken for the process that had it before', () => {
     sim.exit(300);
     sense.attributor.attribute(sim.sample(5));
     // Windows hands pid 300 to an unrelated program, whose parent is not ours.
+    sim.spawn(4242, 1, 'explorer.exe', -3_600_000);
     sim.spawn(300, 4242, 'chrome.exe', 0);
     const got = sense.attributor.attribute(sim.sample(5));
     assert.deepEqual([got.get(300)?.kind, got.get(300)?.group], ['external', 'external chrome.exe']);
@@ -203,7 +204,8 @@ test('the same culprit after a recovery waits out its 15 minutes; a different on
     assert.equal(notes.filter(n => n.includes('for 60 s on')).length, 1, 'deduped');
     // an outside program becomes the culprit
     for (const pid of pids) sim.exit(pid);
-    sim.spawn(900, 1, 'ffmpeg.exe', 0);
+    sim.spawn(4242, 1, 'explorer.exe', -3_600_000);
+    sim.spawn(900, 4242, 'ffmpeg.exe', 0);
     saturate(sense, sim, [], 7, 1, 10);
     saturate(sense, sim, [900], 14, 1, 95);
     const last = notes.at(-1)!;
@@ -271,7 +273,7 @@ test('lowerToIdle refuses a foreign pid, the host, the sampler and pids it has n
     const { sense, priorities } = newSense(dir), sim = new Sim();
     sense.began({ id: 'tc-3', command: 'npm test', mode: 'foreground' }, sim.t);
     sim.spawn(200, HOST, 'bash.exe', 100); sim.spawn(300, 200, 'node.exe', 200); sim.spawn(301, 200, 'node.exe', 200, 0x4000); sim.spawn(302, 200, 'node.exe', 200, IDLE);
-    sim.spawn(700, 1, 'chrome.exe'); sim.spawn(701, 4242, 'node.exe');
+    sim.spawn(4242, 1, 'explorer.exe', -3_600_000); sim.spawn(700, 4242, 'chrome.exe'); sim.spawn(701, 4242, 'node.exe');
     sense.ingest(sim.sample(5));
     assert.equal(sense.lowerToIdle(700), 'refused');
     assert.equal(sense.lowerToIdle(701), 'refused');
@@ -397,4 +399,113 @@ test('history reads the minute still in progress as well as the written ones', (
     assert.deepEqual([row.cpuS, row.detail], [4, 'make']);
     assert.equal(sense.now()?.owners.find(o => o.group === 'bash')?.procs, 1);
   } finally { close(); }
+});
+
+// ---- orphans: a parent that died before the sampler saw it ----
+
+const NPM_CALL = 'cd C:/projetos/pi-optchat/.worktrees/waiting-board && npm test > /tmp/waiting-board-test.log 2>&1';
+/** The 11/11 incident: the worker's bash (33380) is a child of the host; Git Bash's intermediate (17308) exited within ms, so `npm test` (6300) has a parent that never appears in any sample. */
+function incident(sense: MachineSense, sim: Sim) {
+  sense.began({ id: 'tc-68131e9d', command: NPM_CALL, mode: 'foreground', agent: 'agent 68131e9d-aaaa' }, sim.t);
+  sim.spawn(33380, HOST, 'bash.exe', 400, NORMAL, `C:\Program Files\Git\bin\bash.exe -c "${NPM_CALL}"`);
+  sense.ingest(sim.sample(5));
+  sim.spawn(6300, 17308, 'bash.exe', 100, NORMAL, '"/c/Program Files/nodejs/npm" test');
+  sim.spawn(36664, 6300, 'bash.exe', 300);
+  sim.spawn(27780, 36664, 'node.exe', 500, NORMAL, 'node C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js test');
+  sim.spawn(8760, 27780, 'cmd.exe', 700);
+  sim.spawn(35068, 8760, 'node.exe', 900, NORMAL, 'node --test test/*.test.ts');
+  const children = Array.from({ length: 30 }, (_, i) => 40000 + i);
+  for (const pid of children) sim.spawn(pid, 35068, 'node.exe', 1500);
+  return { tree: [6300, 36664, 27780, 8760, 35068, ...children], children };
+}
+
+test('an orphan of the worker\'s npm test, whose parent exited before any sample, belongs to the worker that ran it', () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  try {
+    const { sense } = newSense(dir), sim = new Sim();
+    const { tree } = incident(sense, sim);
+    const got = sense.attributor.attribute(sim.sample(5));
+    assert.equal(got.get(33380)?.group, 'worker 68131e9d');
+    for (const pid of tree) assert.deepEqual([pid, got.get(pid)?.kind, got.get(pid)?.group], [pid, 'worker', 'worker 68131e9d']);
+  } finally { close(); }
+});
+
+test('the alert for the incident tree names the worker and its call, never "not ours"', () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  try {
+    const { sense, notes } = newSense(dir), sim = new Sim();
+    sim.idleS = 600;
+    const { tree } = incident(sense, sim);
+    sense.ingest(sim.sample(5));
+    saturate(sense, sim, tree, 13, 0.8, 97);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /Top: worker 68131e9d npm test > \/tmp\/waiting-board-test\.log 2>&1: 36 procs, \d+% CPU/);
+    assert.doesNotMatch(notes[0], /not ours|external/);
+  } finally { close(); }
+});
+
+test('an orphan no open call explains is unattributed, in the alert and the ledger, and never "not ours"', () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  try {
+    const { sense, notes } = newSense(dir), sim = new Sim();
+    sim.idleS = 600;
+    sense.began({ id: 'tc-1', command: 'npm test', mode: 'foreground', agent: 'agent 68131e9d-aaaa' }, sim.t);
+    sim.spawn(200, HOST, 'bash.exe', 100);
+    sense.ingest(sim.sample(5));
+    sim.spawn(7000, 17308, 'node.exe', 100, NORMAL, 'node C:/tools/unrelated-job.js --watch');
+    sim.spawn(7001, 7000, 'node.exe', 300);
+    sim.spawn(7002, 17309, 'node.exe', 300); // no command line known at all
+    const got = sense.attributor.attribute(sim.sample(5));
+    for (const pid of [7000, 7001, 7002]) assert.deepEqual([pid, got.get(pid)?.kind, got.get(pid)?.group], [pid, 'unattributed', 'unattributed (parent gone) node.exe']);
+    saturate(sense, sim, [7000, 7001, 7002], 13, 1, 97);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /Top: unattributed \(parent gone\) node\.exe: 3 procs, \d+% CPU/);
+    assert.doesNotMatch(notes[0], /not ours|external/);
+    assert.ok(sense.history(0).some(r => r.owner === 'unattributed (parent gone) node.exe' && r.kind === 'unattributed'));
+    assert.equal(sense.lowerToIdle(7000), 'refused', 'what OptChat cannot show it started is never lowered');
+  } finally { close(); }
+});
+
+test('a long-running process whose parent is long gone, and a fresh one with a live parent, stay external', () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  try {
+    const { sense } = newSense(dir), sim = new Sim();
+    sense.began({ id: 'tc-1', command: 'npm test', mode: 'foreground' }, sim.t);
+    sim.spawn(500, 1, 'explorer.exe', -3_600_000); // parent long gone, started before the sampler looked
+    sim.spawn(4242, 1, 'explorer.exe', -3_600_000);
+    sense.ingest(sim.sample(5));
+    sim.spawn(501, 4242, 'node.exe', 100, NORMAL, '"/c/Program Files/nodejs/npm" test'); // fresh, same command as the open call, but its parent chain is alive outside the host tree
+    sim.spawn(502, 17308, 'node.exe', -3_600_000, NORMAL, 'npm test'); // old orphan
+    const got = sense.attributor.attribute(sim.sample(5));
+    assert.deepEqual([500, 501, 502].map(pid => got.get(pid)?.kind), ['external', 'external', 'external']);
+  } finally { close(); }
+});
+
+test('a released call no longer claims new orphans', () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  try {
+    const { sense } = newSense(dir), sim = new Sim();
+    const handle = sense.began({ id: 'tc-1', command: 'npm test', mode: 'foreground' }, sim.t);
+    sense.ingest(sim.sample(5));
+    sense.ended(handle);
+    sim.spawn(7000, 17308, 'node.exe', 100, NORMAL, '"/c/Program Files/nodejs/npm" test');
+    assert.equal(sense.attributor.attribute(sim.sample(5)).get(7000)?.kind, 'unattributed');
+  } finally { close(); }
+});
+
+test('the ledger insights mark an unattributed centre as unknown, not as someone else\'s', () => {
+  const rows: LedgerRow[] = [];
+  for (let i = 0; i < 5; i++) rows.push({ t: T0 - 3_600_000 + i * 60_000, owner: 'unattributed (parent gone) node.exe', kind: 'unattributed', cpuS: 40, rssMb: 100, procs: 5, wallS: 60, host: HOST });
+  const lines = machineInsights(rows, T0, 24 * 3_600_000);
+  assert.equal(lines[0], 'cpu: unattributed (parent gone) node.exe: 3 cpu-min over 5 min alive, up to 5 procs [owner unknown]');
+});
+
+test('the command of an orphan belongs to a call when two of its words, not all generic, run in a row in the call', () => {
+  assert.ok(commandBelongsTo('"/c/Program Files/nodejs/npm" test', NPM_CALL));
+  assert.ok(commandBelongsTo('cat /dev/zero', 'cat /dev/zero | head -c 1 > /dev/null'));
+  assert.ok(commandBelongsTo('grep -c reaperprobe123 file', 'sleep 1 & grep -c reaperprobe123 file; wait'));
+  assert.ok(!commandBelongsTo('node.exe', NPM_CALL), 'one word is not enough');
+  assert.ok(!commandBelongsTo('bash.exe -c', NPM_CALL), 'generic words say nothing');
+  assert.ok(!commandBelongsTo('"/c/Program Files/nodejs/npm" install', NPM_CALL));
+  assert.ok(!commandBelongsTo('node C:/tools/unrelated-job.js --watch', NPM_CALL));
 });

@@ -74,3 +74,21 @@ test('the real helper compiles, samples this process and sees a child of the roo
     assert.equal(last.procs.find(p => p.pid === last.helperPid)?.prio, 0x40, 'the helper itself runs at idle priority');
   } finally { sampler.stop(); child.kill(); close(); }
 });
+
+test('the real helper gives the command line of a fresh process whose parent is already gone', { skip: process.platform !== 'win32', timeout: 60_000 }, async () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  const samples: Sample[] = [];
+  // A root nothing descends from: only the orphan rule can attach a command line.
+  const sampler = new HelperSampler({ dir, rootPid: 99_999_999, intervalMs: 500, onSample: s => samples.push(s) });
+  let orphan: number | undefined;
+  try {
+    await sampler.start();
+    const launcher = spawn(process.execPath, ['-e', `const { spawn } = require('node:child_process'); const c = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000) /* orphan-probe */'], { detached: true, stdio: 'ignore', windowsHide: true }); console.log(c.pid); c.unref();`], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    orphan = await new Promise<number>(resolve => launcher.stdout!.once('data', d => resolve(Number(String(d).trim()))));
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && !samples.flatMap(s => s.procs).some(p => p.pid === orphan && p.cmd)) await new Promise(r => setTimeout(r, 250));
+    const mine = samples.flatMap(s => s.procs).find(p => p.pid === orphan && p.cmd);
+    assert.ok(mine?.cmd?.includes('orphan-probe'), 'an orphan carries its command line on its first sample');
+    assert.ok(!samples.at(-1)!.procs.some(p => p.pid === launcher.pid), 'the launcher is gone, as in the incident');
+  } finally { sampler.stop(); if (orphan) try { process.kill(orphan); } catch { /* already gone */ } close(); }
+});
