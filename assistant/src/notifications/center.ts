@@ -7,7 +7,9 @@ import { immediate } from '../store/transaction.ts';
  * transport (lock screen, toast, browser) receives fixed text per category, never task titles, content or secrets.
  * Pushing needs operator consent per channel and waits out quiet hours. Transport acceptance (`accepted`) is not
  * human reading (`read`); only `markRead` from a human surface records that. Dispatch is claimed durably before
- * transport; an uncertain outcome is never automatically replayed.
+ * transport; an uncertain outcome is never automatically replayed. A flood is capped per channel: past `burstLimit`
+ * pushes inside `burstWindowMs` the rest are recorded `suppressed` with reason `burst`, and one `tasks_burst` summary
+ * is pushed instead (once per window). The window is durable, so a restart does not hand the flood a fresh budget.
  */
 export type NotificationChannel = 'local' | 'web';
 export type NotificationCategory = keyof typeof lockScreenText;
@@ -20,10 +22,13 @@ export type DeliveredNotification = { id: string; text: string; ref: string };
 export type QuietHours = { start: string; end: string; timeZone: string };
 export type NotificationCenterOptions = {
   databasePath: string; operatorAuthority: object; now?: () => number;
+  /** Most pushes per channel per window (default 3) and the window length in ms (default 60 000). */
+  burstLimit?: number; burstWindowMs?: number;
   /** Test seam: called after each durable boundary so a test can fail exactly there. */
   boundary?: (name: string, id: string) => void;
 };
-type Row = { id: string; channel: NotificationChannel; category: NotificationCategory; ref: string; state: NotificationState; reason: string | null;
+type BurstWindow = { start: number; count: number; summarized: boolean };
+type Row = { seq: number; id: string; channel: NotificationChannel; category: NotificationCategory; ref: string; state: NotificationState; reason: string | null;
   attempts: number; created: number; accepted: number | null; read: number | null };
 
 const lockScreenText = {
@@ -35,6 +40,7 @@ const lockScreenText = {
   briefing_ready: 'Your daily briefing is ready.',
   approval_pending: 'An assistant action is waiting for your review.',
   effect_uncertain: 'An assistant action needs reconciliation.',
+  tasks_burst: 'Several assistant tasks changed; open the panel.',
   routine_paused: 'An assistant routine was paused.',
   signal_attention: 'A monitored signal needs your attention.',
   signal_cleared: 'A monitored signal recovered.',
@@ -71,10 +77,14 @@ export class NotificationCenter {
   private readonly db: DatabaseSync;
   private readonly options: NotificationCenterOptions;
   private readonly now: () => number;
+  private readonly burstLimit: number;
+  private readonly burstWindowMs: number;
   constructor(options: NotificationCenterOptions) {
     if (!options?.operatorAuthority || typeof options.operatorAuthority !== 'object') throw new Error('invalid_options');
     this.options = { ...options };
     this.now = options.now ?? Date.now;
+    this.burstLimit = boundedInteger(options.burstLimit, 3, 1, 500);
+    this.burstWindowMs = boundedInteger(options.burstWindowMs, 60_000, 1, 86_400_000);
     this.db = new DatabaseSync(options.databasePath);
     this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS notification_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL, changed INTEGER NOT NULL);
@@ -124,45 +134,83 @@ export class NotificationCenter {
     });
   }
 
-  private claim(row: Row): 'skipped' | 'suppressed' | 'deferred' | 'claimed' {
+  /** The channel's current push budget window: a new one when none is open, it has expired or the clock went back. */
+  private burstWindow(channel: NotificationChannel): BurstWindow {
+    const at = this.now(), open = this.read<BurstWindow>(`burst:${channel}`);
+    return open && at >= open.start && at - open.start < this.burstWindowMs ? open : { start: at, count: 0, summarized: false };
+  }
+  private consented(channel: NotificationChannel): boolean { return this.read<boolean>(`consent:${channel}`) === true; }
+  private quiet(): boolean { const quiet = this.read<QuietHours>('quiet_hours'); return !!quiet && inQuietHours(quiet, this.now()); }
+
+  private claim(row: Row): 'skipped' | 'suppressed' | 'deferred' | 'burst' | 'claimed' {
     const channel = row.channel;
     return immediate(this.db, () => {
       const current = this.db.prepare('SELECT state FROM notifications WHERE id = ? AND channel = ?').get(row.id, channel) as { state: NotificationState } | undefined;
       if (current?.state !== 'pending') return 'skipped';
-      if (this.read<boolean>(`consent:${channel}`) !== true) {
+      if (!this.consented(channel)) {
         this.db.prepare("UPDATE notifications SET state = 'suppressed', reason = 'no_consent' WHERE id = ? AND channel = ? AND state = 'pending'").run(row.id, channel);
         return 'suppressed';
       }
-      const quiet = this.read<QuietHours>('quiet_hours');
-      if (quiet && inQuietHours(quiet, this.now())) return 'deferred';
+      if (this.quiet()) return 'deferred';
+      const window = this.burstWindow(channel);
+      if (window.count >= this.burstLimit) {
+        this.db.prepare("UPDATE notifications SET state = 'suppressed', reason = 'burst' WHERE id = ? AND channel = ? AND state = 'pending'").run(row.id, channel);
+        return 'burst';
+      }
+      this.setting(`burst:${channel}`, { ...window, count: window.count + 1 });
       this.db.prepare("UPDATE notifications SET state = 'uncertain', reason = 'dispatch_in_flight', attempts = attempts + 1 WHERE id = ? AND channel = ? AND state = 'pending'").run(row.id, channel);
       return 'claimed';
     });
   }
 
+  /** Claims the window's one summary notice, recorded durably as already dispatched; null when it was sent, or consent or quiet hours say no. */
+  private claimSummary(channel: NotificationChannel, firstSeq: number): DeliveredNotification | null {
+    return immediate(this.db, () => {
+      const window = this.burstWindow(channel);
+      if (window.summarized || !this.consented(channel) || this.quiet()) return null;
+      const id = `burst:${firstSeq}`;
+      const made = this.db.prepare("INSERT OR IGNORE INTO notifications (id, channel, category, ref, state, reason, attempts, created) VALUES (?, ?, 'tasks_burst', ?, 'uncertain', 'dispatch_in_flight', 1, ?)")
+        .run(id, channel, `burst-${firstSeq}`, this.now());
+      if (!made.changes) return null;
+      this.setting(`burst:${channel}`, { ...window, summarized: true });
+      return { id, text: lockScreenText.tasks_burst, ref: `burst-${firstSeq}` };
+    });
+  }
+
+  /** Transport boundary shared by notices and the summary: a failure stays `uncertain` and is never replayed. */
+  private async push(channel: NotificationChannel, note: DeliveredNotification, transport: (note: DeliveredNotification) => void | Promise<void>): Promise<boolean> {
+    this.options.boundary?.('dispatch_claimed', note.id);
+    try { await transport(note); }
+    catch {
+      this.db.prepare("UPDATE notifications SET reason = 'transport_uncertain' WHERE id = ? AND channel = ? AND state = 'uncertain'").run(note.id, channel);
+      return false;
+    }
+    this.options.boundary?.('transport_accepted', note.id);
+    this.db.prepare("UPDATE notifications SET state = 'accepted', reason = NULL, accepted = ? WHERE id = ? AND channel = ? AND state = 'uncertain'").run(this.now(), note.id, channel);
+    return true;
+  }
+
   /**
    * Pushes pending notifications of one channel. Without consent they become `suppressed` (still listed, never pushed);
    * during quiet hours they stay pending. A claimed dispatch or transport failure remains uncertain and is not retried.
+   * Past the channel's burst budget notices become `suppressed` (reason `burst`, counted in `suppressed`) and one summary push
+   * (counted in `accepted` or `failed`) stands in for them.
    */
   async deliver(channel: NotificationChannel, transport: (note: DeliveredNotification) => void | Promise<void>, limit = 50): Promise<{ accepted: number; deferred: number; suppressed: number; failed: number }> {
     if (!channels.includes(channel)) throw new Error('invalid_channel');
     const rows = this.db.prepare("SELECT * FROM notifications WHERE channel = ? AND state = 'pending' ORDER BY seq LIMIT ?").all(channel, boundedInteger(limit, 50, 1, 500)) as Row[];
     const result = { accepted: 0, deferred: 0, suppressed: 0, failed: 0 };
+    let firstBurst: number | null = null;
     for (const row of rows) {
       const decision = this.claim(row);
       if (decision === 'suppressed') { result.suppressed++; continue; }
+      if (decision === 'burst') { result.suppressed++; firstBurst ??= row.seq; continue; }
       if (decision === 'deferred') { result.deferred++; continue; }
       if (decision !== 'claimed') continue;
-      this.options.boundary?.('dispatch_claimed', row.id);
-      try { await transport({ id: row.id, text: lockScreenText[row.category], ref: row.ref }); }
-      catch {
-        this.db.prepare("UPDATE notifications SET reason = 'transport_uncertain' WHERE id = ? AND channel = ? AND state = 'uncertain'").run(row.id, channel);
-        result.failed++; continue;
-      }
-      this.options.boundary?.('transport_accepted', row.id);
-      this.db.prepare("UPDATE notifications SET state = 'accepted', reason = NULL, accepted = ? WHERE id = ? AND channel = ? AND state = 'uncertain'").run(this.now(), row.id, channel);
-      result.accepted++;
+      if (await this.push(channel, { id: row.id, text: lockScreenText[row.category], ref: row.ref }, transport)) result.accepted++; else result.failed++;
     }
+    const summary = firstBurst === null ? null : this.claimSummary(channel, firstBurst);
+    if (summary) { if (await this.push(channel, summary, transport)) result.accepted++; else result.failed++; }
     return result;
   }
 
