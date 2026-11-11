@@ -388,7 +388,12 @@ export class Children {
   /** Runs at work now: running, waiting for children, or stopping; not paused. */
   get working() { return [...this.running.values()].filter(live => isRunning(live.info)).map(live => live.info); }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
-  private changed() { for (const listener of this.listeners) { try { listener(); } catch (error) { try { this.warn(`Subagent listener failed: ${String(error)}`); } catch { /* A notification must not undo a saved run. */ } } } }
+  private changed() {
+    for (const listener of this.listeners) try { listener(); } catch (error) {
+      try { this.warn(`Subagent listener failed: ${String(error)}`); }
+      catch (warningError) { console.error(`Subagent listener and warning failed: ${String(error)}; ${String(warningError)}`); }
+    }
+  }
   private save(info: RunInfo) { this.history.save(info); this.changed(); }
   private timed(phase: AgentTiming['phase'], runId?: string, started?: number, promptChars?: number) {
     if (!this.options.onTiming) return;
@@ -1041,7 +1046,7 @@ export class Children {
     this.parkTimers.delete(id);
   }
   /** Re-arms the parked runs a closed Pi left in the history; call once the profile is open. */
-  resumeParked() { for (const run of this.history.records.values()) if (run.parked && !this.uncertainRuns.has(run.id) && !this.parkTimers.has(run.id)) this.arm(run.id); }
+  resumeParked() { for (const run of this.history.records.values()) if (run.parked && !run.explicitRecovery && !this.uncertainRuns.has(run.id) && !this.parkTimers.has(run.id)) this.arm(run.id); }
   /** The time has come: still out of quota by the cache, wait on; else start a queued task, or resume a parked run with its conversation. */
   private async unpark(id: string, generation: number) {
     const run = this.history.records.get(id);
@@ -1235,6 +1240,43 @@ export class Children {
     return !this.deleting.has(id) && this.history.records.get(id) === run && run.state === snapshot.state && run.parked === snapshot.parked && this.parkGeneration.get(id) === snapshot.generation
       && !!model && model.provider === snapshot.provider && model.id === snapshot.model && this.registry.hasConfiguredAuth(model) && (getSupportedThinkingLevels(model) as readonly string[]).includes(snapshot.thinking);
   }
+  private async preemptParkResume(id: string, run: RunInfo, automatic: Promise<string>, message: string, caller: string | undefined, route: RouteOverride) {
+    this.retargeting.add(id); this.launching++; this.cancelPark(id);
+    try {
+      // The stale opening is expected to reject once its generation is cancelled.
+      try { await automatic; } catch (error) {
+        if (!(error instanceof Error && error.message.includes('worker or route changed while opening'))) this.warn(`Superseded quota resume failed: ${String(error)}`);
+      }
+      this.launching--; this.retargeting.delete(id);
+      return await this.resume(id, message, caller, route);
+    } catch (error) {
+      if (this.retargeting.delete(id)) this.launching--;
+      if (this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id) && !this.running.has(id) && !this.deleting.has(id) && !this.closing && !this.uncertainRuns.has(id)) this.arm(id);
+      throw error;
+    }
+  }
+  private async saveResume(info: RunInfo, run: RunInfo, session: AgentSession) {
+    const id = run.id;
+    try { this.save(info); } catch (error) {
+      // Visibility after rename is not durability. Never dispatch on an uncertain save.
+      const stored = this.history.matchesStored(info);
+      if (stored !== false) {
+        this.cancelPark(id);
+        const { parked: _parked, cutOff: _cutOff, ...previous } = run;
+        const safe: RunInfo = { ...previous, state: 'stopped', ended: Date.now(), report: 'Retarget was not started: storage durability was not confirmed. Inspect and resume explicitly.' };
+        try { this.history.save(safe); } catch (recoveryError) {
+          this.uncertainRuns.add(id);
+          if (this.history.matchesStored(safe)) this.history.records.set(id, safe);
+          else this.history.records.set(id, info);
+          await this.shutdown(session); this.dispose(session);
+          throw new Error(`Retarget was not started; storage durability and recovery are uncertain. Inspect the saved worker before explicitly resuming it. ${String(recoveryError)}`);
+        }
+        await this.shutdown(session); this.dispose(session);
+        throw new Error(`Retarget was not started: ${stored === undefined ? 'the saved state could not be read and' : ''} storage durability was not confirmed. Automatic wake was disabled; inspect and resume explicitly. ${String(error)}`);
+      }
+      this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error;
+    }
+  }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
   private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number): Promise<string> {
     if (this.uncertainRuns.has(id)) throw new Error(`${id} is blocked because storage recovery is uncertain; inspect the saved worker before resuming.`);
@@ -1261,18 +1303,7 @@ export class Children {
     if (!manager?.getEntries().some(e => e.type === 'message')) throw new Error(`The saved transcript of ${id} is missing or unreadable, so it cannot be resumed. Spawn a fresh subagent and give it the context it needs.`);
     if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
     const { provider, model, thinking } = this.resumeModel(id, run, route);
-    if (automatic) {
-      this.retargeting.add(id); this.launching++; this.cancelPark(id);
-      try {
-        await automatic.catch(() => {});
-        this.launching--; this.retargeting.delete(id);
-        return await this.resume(id, message, caller, route);
-      } catch (error) {
-        if (this.retargeting.delete(id)) this.launching--;
-        if (this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id) && !this.running.has(id) && !this.deleting.has(id) && !this.closing && !this.uncertainRuns.has(id)) this.arm(id);
-        throw error;
-      }
-    }
+    if (automatic) return this.preemptParkResume(id, run, automatic, message, caller, route!);
     const snapshot = { generation: this.parkGeneration.get(id), state: run.state, parked: run.parked, provider, model: model.id, thinking };
     this.launching++; this.resuming.add(id);
     let reserved = true;
@@ -1287,27 +1318,9 @@ export class Children {
       const { ended: _ended, cutOff: _cutOff, parked: _parked, ...rest } = run;
       const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
       const prompt = cutOffChildren(text, cut);
-      const info: RunInfo = { ...rest, model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
+      const info: RunInfo = { ...rest, ...(route ? { explicitRecovery: true } : {}), model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
         guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
-      try { this.save(info); } catch (error) {
-        // Visibility after rename is not durability. Never dispatch on an uncertain save.
-        const stored = this.history.matchesStored(info);
-        if (stored !== false) {
-          this.cancelPark(id);
-          const { parked: _parked, cutOff: _cutOff, ...previous } = run;
-          const safe: RunInfo = { ...previous, state: 'stopped', ended: Date.now(), report: 'Retarget was not started: storage durability was not confirmed. Inspect and resume explicitly.' };
-          try { this.history.save(safe); } catch (recoveryError) {
-            this.uncertainRuns.add(id);
-            if (this.history.matchesStored(safe)) this.history.records.set(id, safe);
-            else this.history.records.set(id, info);
-            await this.shutdown(session); this.dispose(session);
-            throw new Error(`Retarget was not started; storage durability and recovery are uncertain. Inspect the saved worker before explicitly resuming it. ${String(recoveryError)}`);
-          }
-          await this.shutdown(session); this.dispose(session);
-          throw new Error(`Retarget was not started: ${stored === undefined ? 'the saved state could not be read and' : ''} storage durability was not confirmed. Automatic wake was disabled; inspect and resume explicitly. ${String(error)}`);
-        }
-        this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error;
-      }
+      await this.saveResume(info, run, session);
       this.cancelPark(id);
       const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
       this.running.set(id, live);
@@ -1332,10 +1345,10 @@ export class Children {
    * Cut-off children of a cut-off parent wait for it: resuming it names them, and its `tell` resumes them.
    */
   async resumeCutOff() {
-    const cut = [...this.history.records.values()].filter(run => run.cutOff).sort((a, b) => a.depth - b.depth || a.started - b.started).map(run => run.id);
+    const cut = [...this.history.records.values()].filter(run => run.cutOff && !run.explicitRecovery).sort((a, b) => a.depth - b.depth || a.started - b.started).map(run => run.id);
     const resumed: string[] = [], lines: string[] = [], orphans: string[] = [];
     // Always the current record: a `tell` during startup may have resumed the run and replaced it meanwhile.
-    const current = (id: string) => { const run = this.history.records.get(id); return run?.cutOff ? run : undefined; };
+    const current = (id: string) => { const run = this.history.records.get(id); return run?.cutOff && !run.explicitRecovery ? run : undefined; };
     const drop = (run: RunInfo) => { delete run.cutOff; this.save(run); };
     for (const id of cut) {
       const run = current(id);

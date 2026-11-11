@@ -55,7 +55,7 @@ function fakeClock() {
 }
 
 type Verdict = 'limit' | 'ok';
-type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[] };
+type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[]; thinking?: string[] };
 function syntheticStream(provider: string, control: TestControl, seen: string[][], routes: string[], calls: Map<string, number>, verdict: (task: string, call: number) => Verdict): NonNullable<Parameters<ModelRuntime['registerProvider']>[1]['streamSimple']> {
   return (model, context) => {
       routes.push(model.provider);
@@ -64,7 +64,7 @@ function syntheticStream(provider: string, control: TestControl, seen: string[][
       seen.push(context.messages.map(m => `${m.role}:${textContent(m.role === 'toolResult' ? [] : m.content as never).slice(0, 60)}`));
       const stream = createAssistantMessageEventStream();
       const base = { api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: emptyUsage() };
-      const limited = provider === 'quota-test-2' ? control.secondLimit : verdict(task, call) === 'limit';
+      const limited = provider !== 'quota-test' ? control.secondLimit : verdict(task, call) === 'limit';
       const message: AssistantMessage = limited ? { ...base, role: 'assistant', content: [], stopReason: 'error', errorMessage: HINT }
         : provider === 'quota-test' && task === 'tooly' && call === 1 ? { ...base, role: 'assistant', content: [{ type: 'toolCall', id: 'call-1', name: 'date', arguments: {} }], stopReason: 'toolUse' }
         : { ...base, role: 'assistant', content: [{ type: 'text', text: `Finished ${task}` }], stopReason: 'stop' };
@@ -77,8 +77,8 @@ function syntheticStream(provider: string, control: TestControl, seen: string[][
   };
 }
 function installProviders(runtime: ModelRuntime, control: TestControl, seen: string[][], routes: string[], calls: Map<string, number>, verdict: (task: string, call: number) => Verdict) {
-  for (const provider of ['quota-test', 'quota-test-2']) runtime.registerProvider(provider, { baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
-    models: [{ id: 'child', name: 'Synthetic child', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+  for (const provider of ['quota-test', 'quota-test-2', 'quota-reasoning']) runtime.registerProvider(provider, { baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+    models: [{ id: 'child', name: 'Synthetic child', reasoning: provider === 'quota-reasoning', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
     streamSimple: syntheticStream(provider, control, seen, routes, calls, verdict) });
 }
 /** Workers on a synthetic provider whose answer the test chooses per task: out of quota, or a short answer (`tooly` first calls a tool). */
@@ -96,6 +96,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { 
         quotaBlock: provider => provider === 'quota-test' && block.until !== undefined && block.until > clock.now() ? block.until : undefined,
         createSession: async options => {
           control.opens = (control.opens ?? 0) + 1;
+          (control.thinking ??= []).push(options?.thinkingLevel ?? 'off');
           if (control.wait) await control.wait;
           if (control.fail) throw new Error('synthetic session failure');
           const made = await createAgentSession({ ...options, modelRuntime: runtime });
@@ -112,10 +113,10 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { 
 }
 
 const failures = (reports: string[]) => reports.filter(text => /Task error|failed|Task aborted/i.test(text));
-async function dispatchRetarget(children: Children, id: string) {
-  const tool = retargetTool(() => children, () => { throw new Error('must not report launch'); }) as unknown as AgentTool;
+async function dispatchRetarget(children: Children, id: string, route: { model: string; thinking?: string } = { model: 'quota-test-2/child' }, launched: () => void = () => { throw new Error('must not report launch'); }) {
+  const tool = retargetTool(() => children, launched) as unknown as AgentTool;
   const assistantMessage = { role: 'assistant' as const, content: [], api: 'openai-completions', provider: 'fixture', model: 'fixture', usage: emptyUsage(), stopReason: 'stop' as const, timestamp: 1 };
-  return runToolCall({ type: 'toolCall', id: 'retarget-call', name: 'retarget', arguments: { id, message: 'continue', model: 'quota-test-2/child' } },
+  return runToolCall({ type: 'toolCall', id: 'retarget-call', name: 'retarget', arguments: { id, message: 'continue', ...route } },
     { tools: [tool], assistantMessage, context: { messages: [], tools: [tool] } });
 }
 
@@ -200,6 +201,57 @@ test('retarget keeps the transcript, fences old quota callbacks and persists the
   assert.equal(h.routes.at(-1), 'quota-test-2');
 });
 
+test('retarget changes thinking off to high and preserves it on explicit continuation after reload', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'reasoning' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  assert.equal(h.children.history.records.get(id)?.thinking, 'off');
+  const result = await dispatchRetarget(h.children, id, { model: 'quota-reasoning/child', thinking: 'high' }, () => {});
+  assert.equal(result.isError, false, JSON.stringify(result.result.content));
+  assert.match(JSON.stringify(result.result.content), /quota-reasoning\/child \(high\)/);
+  assert.equal(h.control.thinking?.at(-1), 'high');
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'reasoning completed');
+  const file = join(h.dir, 'runs', `${id}.optchat.json`);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).thinking, 'high');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).explicitRecovery, true);
+  // Model a crash during a legitimate retargeted execution using its persisted metadata.
+  h.children.history.save({ ...h.children.history.records.get(id)!, state: 'running' });
+  await h.children.close();
+  const reloaded = h.build(h.clock);
+  assert.equal(reloaded.history.records.get(id)?.thinking, 'high');
+  assert.equal(reloaded.history.records.get(id)?.state, 'interrupted');
+  const count = h.routes.length;
+  reloaded.resumeParked();
+  await reloaded.resumeCutOff();
+  await h.clock.advance(62 * MIN);
+  assert.equal(h.routes.length, count, 'legitimate retargeted cut requires explicit continuation');
+  await reloaded.tell(id, 'continue explicitly');
+  await until(() => reloaded.history.records.get(id)?.state === 'completed', 'continued');
+  assert.equal(h.control.thinking?.at(-1), 'high');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).thinking, 'high');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).explicitRecovery, true, 'explicit continuation retains the recovery policy');
+});
+
+test('a retargeted worker parked at restart waits for explicit continuation', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'retarget parked' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'old route parked');
+  h.control.secondLimit = true;
+  await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' });
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'new route parked');
+  assert.equal(h.children.history.records.get(id)?.explicitRecovery, true);
+  await h.children.close();
+  const reloaded = h.build(h.clock), count = h.routes.length;
+  reloaded.resumeParked();
+  await reloaded.resumeCutOff();
+  await h.clock.advance(62 * MIN);
+  assert.equal(h.routes.length, count);
+  h.control.secondLimit = false;
+  await reloaded.tell(id, 'continue explicitly');
+  await until(() => reloaded.history.records.get(id)?.state === 'completed', 'explicit continuation');
+  assert.equal(h.routes.at(-1), 'quota-test-2');
+});
+
 test('an explicit no-op route continues once with the same identity and conversation', async t => {
   const h = await rig(t, {}, () => 'ok');
   const [id] = await h.children.spawn([{ task: 'no-op' }], h.dir);
@@ -255,6 +307,19 @@ test('a throwing listener does not undo a persisted and dispatched retarget', as
   assert.ok(h.warnings.some(w => w.includes('listener failure')));
   await h.children.close();
   assert.equal(h.build(h.clock).history.records.get(id)?.model, 'quota-test-2/child');
+});
+
+test('listener and warning failures use a visible fallback without escaping', async t => {
+  const h = await rig(t);
+  const internals = h.children as unknown as { warn(message: string): void; changed(): void };
+  internals.warn = () => { throw new Error('warning failure'); };
+  const unsubscribe = h.children.subscribe(() => { throw new Error('listener failure'); });
+  const original = console.error, messages: string[] = [];
+  try {
+    console.error = message => { messages.push(String(message)); };
+    assert.doesNotThrow(() => internals.changed());
+  } finally { console.error = original; unsubscribe(); }
+  assert.match(messages.join('\n'), /listener failure.*warning failure/);
 });
 
 test('a pre-write failure leaves the old parked route on disk and recoverable', async t => {
@@ -321,12 +386,22 @@ for (const failRecovery of ['none', 'post-rename', 'pre-write'] as const) test(`
   assert.deepEqual(h.routes, ['quota-test'], 'no automatic wake in this process');
   h.children.history.save = save;
   await h.children.close();
-  if (failRecovery === 'pre-write') return; // The visible running record needs inspection, not automatic recovery.
   const reloaded = h.build(h.clock);
-  assert.equal(reloaded.history.records.get(id)?.model, 'quota-test/child');
+  assert.equal(reloaded.history.records.get(id)?.model, failRecovery === 'pre-write' ? 'quota-test-2/child' : 'quota-test/child');
+  if (failRecovery === 'pre-write') {
+    assert.equal(reloaded.history.records.get(id)?.state, 'interrupted');
+    assert.equal(reloaded.history.records.get(id)?.explicitRecovery, true);
+    assert.equal(reloaded.history.records.get(id)?.cutOff, undefined);
+  }
   reloaded.resumeParked();
+  await reloaded.resumeCutOff();
   await h.clock.advance(62 * MIN);
-  assert.deepEqual(h.routes, ['quota-test'], 'no automatic wake after ordinary reload');
+  assert.deepEqual(h.routes, ['quota-test'], 'neither startup recovery path dispatched');
+  if (failRecovery === 'pre-write') {
+    await reloaded.tell(id, 'explicit continuation');
+    await until(() => h.routes.length === 2, 'explicit continuation after uncertain transition');
+    assert.equal(h.routes.at(-1), 'quota-test-2');
+  }
   if (failRecovery === 'none') {
     await reloaded.tell(id, 'explicitly continue');
     await until(() => h.routes.length === 2, 'explicit continuation');

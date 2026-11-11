@@ -28,6 +28,8 @@ export interface RunInfo {
   handoff?: { reason: FinishReason; text?: string; delivered?: boolean };
   /** Working when Pi closed or crashed: the next start resumes it (see `Children.resumeCutOff`). */
   cutOff?: boolean;
+  /** Retargeted execution requires explicit continuation after a restart. */
+  explicitRecovery?: boolean;
   /** Waiting for its model account's quota (state `interrupted`): resumed by itself at `until`. `queued`: it never started, so it starts fresh instead of resuming a conversation. */
   parked?: { until: number; reason: string; provider: string; attempts: number; queued?: boolean };
   /** Quota parks in a row since it last made progress; the run is reported as failed past `PARK_MAX`. */
@@ -74,6 +76,7 @@ function isRun(value: unknown): value is RunInfo {
     && (value.report === undefined || typeof value.report === 'string')
     && (value.connected === undefined || typeof value.connected === 'boolean')
     && (value.cutOff === undefined || typeof value.cutOff === 'boolean')
+    && (value.explicitRecovery === undefined || typeof value.explicitRecovery === 'boolean')
     && (value.worktrees === undefined || Array.isArray(value.worktrees) && value.worktrees.every(dir => typeof dir === 'string'))
     && (value.parks === undefined || typeof value.parks === 'number' && Number.isInteger(value.parks) && value.parks >= 0)
     && (value.parked === undefined || record(value.parked) && typeof value.parked.until === 'number' && Number.isFinite(value.parked.until) && typeof value.parked.reason === 'string'
@@ -110,7 +113,8 @@ export class RunHistory {
         if (isActiveRun(run)) {
           if (run.connected) run.handoff ??= { reason: 'owner-stopped' };
           // Paused runs wait for the user and stopping ones were stopped on purpose: neither is picked up again by itself.
-          else if (run.state === 'running' || run.state === 'waiting') run.cutOff = true;
+          else if ((run.state === 'running' || run.state === 'waiting') && !run.explicitRecovery) run.cutOff = true;
+          if (run.explicitRecovery) delete run.cutOff;
           transition(run, 'interrupted'); run.ended = Date.now();
           run.report = CUT_OFF;
           for (const g of run.guidance) if (g.state === 'queued') g.state = 'undelivered';
