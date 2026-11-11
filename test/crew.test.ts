@@ -44,6 +44,28 @@ test('specialistOf maps the operator\'s project folders to their specialist', ()
   assert.equal(specialistOf('C:/Users/swluc'), undefined);
 });
 
+test('a write over its cap says how many bytes to cut and which lines are longest, and still writes nothing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-cap-'));
+  try {
+    const crew = new Crew(dir);
+    crew.write('dentai', 'memory', '- keep me');
+    const lines = Array.from({ length: 12 }, (_, index) => `- line ${index}: ${'a'.repeat(400 + index * 10)}`);
+    lines[3] = `- ação: ${'é'.repeat(300)}`;
+    lines[11] = `- ${'z'.repeat(2000)}`;
+    const text = lines.join('\n');
+    const size = Buffer.byteLength(text);
+    assert.ok(size > MEMORY_BYTES, `the fixture is over the cap: ${size} B`);
+    let message = '';
+    try { crew.write('dentai', 'memory', text); } catch (error) { message = (error as Error).message; }
+    assert.ok(message.startsWith(`dentai memory is ${size} bytes, over its ${MEMORY_BYTES}-byte cap (cut at least ${size - MEMORY_BYTES} bytes): trim stale or duplicated lines and write it again. Nothing was written.`), message);
+    const listed = message.split('\n').filter(line => line.startsWith('line '));
+    assert.deepEqual(listed.map(line => line.slice(0, line.indexOf(':'))), ['line 11', 'line 3', 'line 10', 'line 9', 'line 8'], 'the five longest lines, longest first');
+    assert.equal(listed[0], `line 11: 2002 B: - ${'z'.repeat(58)}`);
+    assert.equal(listed[1], `line 3: ${Buffer.byteLength(lines[3])} B: - ação: ${'é'.repeat(52)}`, 'UTF-8 bytes counted, the excerpt cut at 60 characters');
+    assert.equal(crew.read('dentai', 'memory'), '- keep me\n', 'a refused write leaves the old memory');
+  } finally { removeDir(dir); }
+});
+
 test('a worker task must be a contract: the four parts, as headings or labels, in English or Portuguese', () => {
   assert.deepEqual(missingParts(CONTRACT), []);
   assert.deepEqual(missingParts('## Objetivo\nx\n## Critério de aceite\ny\n- **Prova:** z\nAutoridade: nenhuma'), []);

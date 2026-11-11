@@ -100,10 +100,19 @@ export function checkContract(task: string) {
 export const validRoutes = (value: unknown, choice: (item: unknown) => boolean) => typeof value === 'object' && value !== null && !Array.isArray(value)
   && Object.entries(value).every(([kind, list]) => (WORKER_KINDS as readonly string[]).includes(kind) && Array.isArray(list) && list.length > 0 && list.every(choice));
 
-/** Writes a capped file whole; refused over its cap, so whatever loads it never needs cutting. */
+const LONGEST_LINES = 5;
+const LINE_EXCERPT = 60;
+/** The longest lines of a text, one `line <index>: <bytes> B: <start>` each (0-based, as `split("\n")` numbers them): where a refused write is best cut. */
+function longestLines(text: string) {
+  return text.split('\n').map((line, index) => ({ index, line, bytes: Buffer.byteLength(line) }))
+    .sort((a, b) => b.bytes - a.bytes || a.index - b.index).slice(0, LONGEST_LINES)
+    .map(({ index, line, bytes }) => `line ${index}: ${bytes} B: ${line.slice(0, LINE_EXCERPT)}`);
+}
+
+/** Writes a capped file whole; refused over its cap, naming the excess and the longest lines so one more call fixes it, and whatever loads it never needs cutting. */
 function writeCapped(path: string, label: string, cap: number, text: string, fix: string) {
   const size = Buffer.byteLength(text);
-  if (size > cap) throw new Error(`${label} is ${size} bytes, over its ${cap}-byte cap: ${fix} and write it again. Nothing was written.`);
+  if (size > cap) throw new Error(`${label} is ${size} bytes, over its ${cap}-byte cap (cut at least ${size - cap} bytes): ${fix} and write it again. Nothing was written.\nLongest lines:\n${longestLines(text).join('\n')}`);
   mkdirSync(dirname(path), { recursive: true });
   atomicWrite(path, text.endsWith('\n') ? text : `${text}\n`);
   return size;
