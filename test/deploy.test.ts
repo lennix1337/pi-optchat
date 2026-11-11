@@ -205,7 +205,7 @@ test('the status note shows the deploy, with or without agents and shells', () =
   assert.match(note, /never through a worker/);
   assert.equal(atWork(undefined), undefined);
   const board = boardView({ now: since, runs: [{ id: 'a1', task: 'Fix it', model: 'p/m', state: 'running', started: since - 60_000 }], shells: [] });
-  assert.match(atWork(board, { since, command: 'x' })!, /- a1 "Fix it" 1m · 0 tools · m\nProduction deploy in flight since 18:15/);
+  assert.match(atWork(board, { since, command: 'x' })!, /- Fix it · 1m · m \[a1\]\nProduction deploy in flight since 18:15/);
   assert.match(refusal({ since, command: 'x' }), /^Deploy em andamento desde 18:15: segure novos agentes até a troca ser verificada/);
 });
 

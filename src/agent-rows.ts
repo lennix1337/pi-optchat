@@ -10,20 +10,28 @@ const BOILERPLATE = [
 ];
 const MIN_SENTENCE = 12;
 
-/** The run's own description: the first sentence of its goal, without the shared brief prefix. */
-export function taskLabel(task: string) {
+/** The run's own description: the contract's "Goal:" line without its tag, else the first line that is not the shared brief prefix; empty when the task is only prefix. */
+export function taskLine(task: string) {
+  const all = task.split('\n').map(l => l.trim());
+  const goal = all.findIndex(l => /^Goal\s*:/i.test(l));
+  const goalText = goal < 0 ? '' : all[goal].replace(/^Goal\s*:\s*/i, '') || all.slice(goal + 1).find(Boolean) || '';
   let text = task;
-  for (let pass = 0; pass < 8; pass++) {
+  for (let pass = 0; pass < 8 && !goalText; pass++) {
     const stripped = BOILERPLATE.reduce((t, pattern) => t.replace(pattern, ''), text);
     if (stripped === text) break;
     text = stripped;
   }
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  let line = lines[0] ?? '';
-  let end = 0;
+  return goalText || lines[0] || '';
+}
+
+/** `taskLine`, cut to its first sentence. */
+export function taskLabel(task: string) {
+  let line = taskLine(task), end = 0;
+  if (!line) return task.trim();
   for (const match of line.matchAll(/[.!?](?=\s|$)/g)) { end = match.index + 1; if (end >= MIN_SENTENCE) break; }
   if (end >= MIN_SENTENCE) line = line.slice(0, end);
-  return line || task.trim();
+  return line;
 }
 
 /** `pi-optchat` for `C:/projetos/pi-optchat/.worktrees/x` or `.../pi-optchat`: the project a worktree belongs to, not its branch name. */

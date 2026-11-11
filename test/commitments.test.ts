@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addCommitment, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment, waitingItems } from '../src/commitments.ts';
+import { addCommitment, boardWaiting, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment, waitingItems } from '../src/commitments.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 import { plainToolResult } from './support.ts';
 
@@ -166,5 +166,22 @@ test('source "latest" is the operator\'s latest message, and a missing source na
     assert.equal(readCommitments(dir)[0]!.source, '5');
     latest = undefined;
     await assert.rejects(tool.execute('c', { action: 'add', text: 'y', source: 'latest' }), /no operator message yet/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the board lists what waits on the operator with its id and since when; an overdue item OptChat owes, with no question, is not his to answer', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'commit-board-'));
+  try {
+    const now = Date.parse('2026-11-11T18:40:00Z'), day = 24 * 3_600_000, hour = 3_600_000;
+    const asked = addCommitment(dir, { text: 'DentAI cache HTML: libera o deploy web?', source: '1', owner: 'operator', next: 'sim ou não', choices: ['sim', 'não'] }, now - 44 * hour);
+    const mine = addCommitment(dir, { text: 'fechar o PR', source: '1', due: new Date(now - 2 * day).toISOString() }, now - 3 * day);
+    updateCommitment(dir, { id: mine.id, status: 'waiting_operator' }, now - hour);
+    const question = addCommitment(dir, { text: 'liberar a cota', source: '1', due: new Date(now - 2 * day).toISOString() }, now - 3 * day);
+    updateCommitment(dir, { id: question.id, status: 'waiting_operator', choices: ['sim', 'não'] }, now - hour);
+    const board = boardWaiting(readCommitments(dir), now);
+    assert.deepEqual(board.map(item => item.id).sort(), [asked.id, question.id].sort());
+    assert.equal(board.some(item => item.id === mine.id), false, 'waiting with no question and a day overdue: for OptChat to narrow, not for him to answer');
+    assert.deepEqual(board.find(item => item.id === asked.id), { id: asked.id, text: asked.text, since: Date.parse(asked.updatedAt), ask: 'sim ou não', choices: ['sim', 'não'] });
+    assert.equal(waitingItems(readCommitments(dir), now).length, 3, 'the Home still lists every item the operator owes, with the overdue one too');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
