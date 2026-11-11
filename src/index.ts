@@ -9,7 +9,7 @@ import { registerToolInventory } from './tool-inventory.ts';
 import { readManyTool } from './read-many.ts';
 import { logSent, registerSlackReports } from './slack-reports.ts';
 import { registerProdHealth } from './prod-health.ts';
-import { cachedEconomy } from './quota-economy.ts';
+import { cachedEconomy } from './quota-load.ts';
 import { registerQuotaCommand } from './quota-command.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { ProdHealth, registerProdHealth } from '../src/prod-health.ts';
 import { registerQuotaCommand } from '../src/quota-command.ts';
 import { QUOTA_HISTORY_FILE, sampleQuota } from '../src/quota-history.ts';
+import { updateUsageAggregate } from '../src/usage-aggregate.ts';
 import { DailySummary, localDate } from '../src/slack-reports.ts';
 
 const run = promisify(execFile);
@@ -32,9 +33,10 @@ const profile = (t: { after(fn: () => void): void }) => {
 
 test('the 07:00 summary lists every account with both resets and the weekly API-equivalent block next to the harness cost', async t => {
   const { dir, cacheFile } = profile(t);
+  await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'no-prices.json') });
   const posts: string[] = [];
   const daily = new DailySummary(() => ({ dir, name: 'fixture' }), async text => { posts.push(text); }, { open: () => [] } as never, () => 0, {
-    at: '00:00', until: 24, now: () => NOW, quotaFile: cacheFile, ratesFile: join(dir, 'no-prices.json'), gh: async () => { throw new Error('offline'); },
+    at: '00:00', until: 24, now: () => NOW, quotaFile: cacheFile, gh: async () => { throw new Error('offline'); },
     request: async (_owner, path) => path.startsWith('/v1/briefing') ? { localDate: localDate(NOW), items: [], sources: [] } : { tasks: [] },
   });
   assert.equal(await daily.maybePost(), true);
@@ -67,6 +69,7 @@ test('the health round samples the quota once per round, and a failing sampler d
 
 test('the terminal /cota prints the same table the Slack command does', async t => {
   const { dir, cacheFile } = profile(t);
+  await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'no-prices.json') });
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   registerQuotaCommand({ registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, c) } as never, () => dir, cacheFile);
   assert.deepEqual([...commands.keys()], ['cota']);

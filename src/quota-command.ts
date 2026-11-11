@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { loadEconomy } from './quota-economy.ts';
+import { loadEconomy } from './quota-load.ts';
 import { reportText } from './quota-format.ts';
 import { QUOTA_FILE } from './quota-health.ts';
 import { readJsonOr } from './store.ts';

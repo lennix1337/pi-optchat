@@ -1,8 +1,6 @@
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { QUOTA_FILE } from './quota-health.ts';
-import { QUOTA_HISTORY_FILE, readQuotaHistory, type QuotaRow } from './quota-history.ts';
+import type { QuotaRow } from './quota-history.ts';
 import { nonnegative } from './diagnostic-metadata.ts';
 import { readJsonOr } from './store.ts';
 
@@ -19,7 +17,12 @@ export const SAME_PERIOD_MS = 5 * 60_000;
 
 export type RoleKey = 'main' | 'subagent' | 'compactor' | 'other';
 export const ROLE_KEYS: readonly RoleKey[] = ['main', 'subagent', 'compactor', 'other'];
-export interface Call { at: number; provider: string; /** The record's role, folded to main/subagent/compactor/other. */ role: RoleKey; tokens: number; /** API-equivalent US$; undefined when no price is known. */ usd?: number }
+export interface Call {
+  at: number; provider: string; /** The record's role, folded to main/subagent/compactor/other. */ role: RoleKey; tokens: number;
+  /** API-equivalent US$; undefined when no price is known. */ usd?: number;
+  /** A bucket of the usage aggregate stands for several calls, some of them maybe unpriced. */ calls?: number; unpricedTokens?: number;
+}
+const unpricedOf = (call: Call) => call.unpricedTokens ?? (call.usd === undefined ? call.tokens : 0);
 export interface Spend { calls: number; tokens: number; usd: number; unpricedTokens: number }
 export interface Rates { input: number; output: number; cacheRead: number; cacheWrite: number; tiers?: { inputTokensAbove: number; input: number; output: number; cacheRead: number; cacheWrite: number }[] }
 /** `provider/model` (the base provider: `openai-codex-account-2` is `openai-codex`) to US$ per million tokens. */
@@ -30,8 +33,7 @@ export const baseProvider = (provider: string) => provider.replace(/-account-\d+
 export const roleKey = (role: unknown): RoleKey => role === 'main' || role === 'subagent' || role === 'compactor' ? role : 'other';
 const emptySpend = (): Spend => ({ calls: 0, tokens: 0, usd: 0, unpricedTokens: 0 });
 const addSpend = (to: Spend, call: Call) => {
-  to.calls++; to.tokens += call.tokens;
-  if (call.usd === undefined) to.unpricedTokens += call.tokens; else to.usd += call.usd;
+  to.calls += call.calls ?? 1; to.tokens += call.tokens; to.unpricedTokens += unpricedOf(call); to.usd += call.usd ?? 0;
 };
 
 const rate = (value: unknown) => nonnegative(value) ? value : 0;
@@ -82,42 +84,6 @@ export function toCall(entry: unknown, rates: RateTable): Call | undefined {
   return { at, provider, role: roleKey(e.role), tokens, usd };
 }
 
-const CHUNK = 4 << 20;
-const DATE = '"date":"', ISO_DATE = /^\d{4}-\d\d-\d\dT/;
-/**
- * The calls dated after `sinceMs`, read from the end of usage.jsonl in chunks: the file is large (hundreds of MB over time) and
- * the newest records are the only ones a weekly view needs. A chunk is the last one needed once all its records are older than
- * `since` by an hour (records are appended in time order, give or take the seconds a call takes).
- */
-export function readCalls(file: string, sinceMs: number, rates: RateTable): Call[] {
-  let fd: number;
-  try { fd = openSync(file, 'r'); } catch { return []; }
-  const calls: Call[] = [];
-  const sinceIso = new Date(sinceMs - 3_600_000).toISOString();
-  try {
-    let pos = fstatSync(fd).size, carry = Buffer.alloc(0);
-    while (pos > 0) {
-      const start = Math.max(0, pos - CHUNK), buf = Buffer.alloc(pos - start);
-      readSync(fd, buf, 0, buf.length, start);
-      let data = Buffer.concat([buf, carry]);
-      if (start > 0) { const nl = data.indexOf(10); if (nl < 0) { carry = data; pos = start; continue; } carry = data.subarray(0, nl); data = data.subarray(nl + 1); } else carry = Buffer.alloc(0);
-      let newest = '';
-      for (const line of data.toString('utf8').split('\n')) {
-        const at = line.indexOf(DATE);
-        if (at < 0) continue;
-        const date = line.slice(at + DATE.length, at + DATE.length + 24);
-        if (!ISO_DATE.test(date)) continue;
-        if (date > newest) newest = date;
-        if (date < sinceIso) continue;
-        try { const call = toCall(JSON.parse(line), rates); if (call && call.at >= sinceMs) calls.push(call); } catch { /* a torn line */ }
-      }
-      pos = start;
-      if (newest && newest < sinceIso) break;
-    }
-  } finally { closeSync(fd); }
-  return calls.sort((a, b) => a.at - b.at);
-}
-
 export interface WindowEconomy {
   /** Pairs of consecutive readings inside one quota period. */
   intervals: number;
@@ -142,7 +108,7 @@ export interface Week {
   /** Calls the usage log records without a provider (session overhead). */
   unattributed: Spend;
 }
-export interface Economy { now: number; since?: number; accounts: AccountEconomy[]; weeks: Week[] }
+export interface Economy { now: number; since?: number; /** Set by the loader when the profile has no usage aggregate yet: the US$ and tokens below are then unknown, not zero. */ usageMissing?: true; accounts: AccountEconomy[]; weeks: Week[] }
 
 interface Interval { from: number; to: number; points: number }
 /** Points consumed between consecutive readings of one window; a reset (new reset time) or a drop starts a new period and counts nothing, never a negative amount. */
@@ -168,7 +134,7 @@ class Ledger {
       this.at.push(c.at);
       this.tokens.push(this.tokens.at(-1)! + c.tokens);
       this.usd.push(this.usd.at(-1)! + (c.usd ?? 0));
-      this.unpriced.push(this.unpriced.at(-1)! + (c.usd === undefined ? c.tokens : 0));
+      this.unpriced.push(this.unpriced.at(-1)! + unpricedOf(c));
     }
   }
   /** Number of calls at or before `t`. */
@@ -197,10 +163,10 @@ function windowEconomy(intervals: readonly Interval[], ledger: Ledger | undefine
  */
 export function analyzeQuota(history: readonly QuotaRow[], calls: readonly Call[], now: number, weeks = 2, providers: readonly string[] = []): Economy {
   const rows = new Map<string, QuotaRow[]>();
-  for (const row of history) rows.set(row.provider, [...rows.get(row.provider) ?? [], row]);
+  for (const row of history) (rows.get(row.provider) ?? rows.set(row.provider, []).get(row.provider)!).push(row);
   for (const list of rows.values()) list.sort((a, b) => a.fetchedAt - b.fetchedAt);
   const byProvider = new Map<string, Call[]>();
-  for (const call of calls) byProvider.set(call.provider, [...byProvider.get(call.provider) ?? [], call]);
+  for (const call of calls) (byProvider.get(call.provider) ?? byProvider.set(call.provider, []).get(call.provider)!).push(call);
   const ledgers = new Map([...byProvider].map(([p, list]) => [p, new Ledger(list.sort((a, b) => a.at - b.at))] as const));
   const ids = [...new Set([...rows.keys(), ...providers])].sort();
   const intervals = new Map(ids.map(id => [id, { w5h: intervalsOf(rows.get(id) ?? [], 'w5h'), w7d: intervalsOf(rows.get(id) ?? [], 'w7d') }] as const));
@@ -231,30 +197,4 @@ export function analyzeQuota(history: readonly QuotaRow[], calls: readonly Call[
     slices.push(week);
   }
   return { now, since: history[0]?.fetchedAt, accounts, weeks: slices };
-}
-
-export interface EconomyFiles { dir: string; now?: number; weeks?: number; cacheFile?: string; ratesFile?: string; usageFile?: string }
-/** Reads the profile's history and usage log and the registry's prices, and analyzes them. Read-only. */
-export function loadEconomy({ dir, now = Date.now(), weeks = 2, cacheFile = QUOTA_FILE, ratesFile, usageFile = join(dir, 'usage.jsonl') }: EconomyFiles): Economy {
-  const history = readQuotaHistory(dir, QUOTA_HISTORY_FILE);
-  const cached = Object.keys(record(record(readJsonOr<unknown>(cacheFile, {})).usageByProvider));
-  const since = Math.min(now - weeks * WEEK_MS, history[0]?.fetchedAt ?? Infinity);
-  return analyzeQuota(history, readCalls(usageFile, since, readRates(ratesFile)), now, weeks, cached);
-}
-
-/**
- * `loadEconomy` once per `ttlMs`: it reads a week of usage.jsonl, too much for every `cota` message. A failed read gives
- * `undefined` (the quota lines then simply carry no US$ per 1%), never an error in the command.
- */
-export function cachedEconomy(dir: () => string | undefined, ttlMs = 15 * 60_000, weeks = 1, now: () => number = Date.now, files: Partial<EconomyFiles> = {}): () => Economy | undefined {
-  let kept: { dir: string; at: number; value: Economy | undefined } | undefined;
-  return () => {
-    const d = dir(), at = now();
-    if (!d) return undefined;
-    if (kept?.dir === d && at - kept.at < ttlMs) return kept.value;
-    let value: Economy | undefined;
-    try { value = loadEconomy({ ...files, dir: d, now: at, weeks }); } catch { value = undefined; }
-    kept = { dir: d, at, value };
-    return value;
-  };
 }

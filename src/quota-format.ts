@@ -68,7 +68,7 @@ const signed = (n: number) => `${n >= 0 ? '+' : ''}${Math.round(n * 10) / 10}`;
  */
 export function weeklyLines(economy: Economy, label: (id: string) => string = id => id): string[] {
   const [now, before] = economy.weeks;
-  if (!now) return [];
+  if (!now || economy.usageMissing) return [];
   const out: string[] = [];
   for (const id of Object.keys(now.byAccount).sort()) {
     const a = now.byAccount[id]!, b = before?.byAccount[id];
@@ -95,7 +95,8 @@ export function reportText(state: unknown, economy: Economy, label: (id: string)
     if (a.plan === 'api-key' || (!a.w5h && !a.w7d)) continue;
     lines.push(`• ${label(a.provider)}`, `   ${windowRow('7d', a.w7d)}`, `   ${windowRow('5h', a.w5h)}`);
   }
-  for (const week of economy.weeks) {
+  if (economy.usageMissing) lines.push('', 'Gasto em US$ e tokens: o agregado de uso do perfil ainda não existe (o amostrador o cria no próximo ciclo de 5 minutos).');
+  else for (const week of economy.weeks) {
     const covered = economy.since !== undefined && economy.since < week.to;
     lines.push('', `Semana ${week.index === 0 ? 'mais recente' : `-${week.index}`} (${brasiliaDayTime(week.from)} → ${brasiliaDayTime(week.to)}):`);
     for (const id of Object.keys(week.byAccount).sort()) {

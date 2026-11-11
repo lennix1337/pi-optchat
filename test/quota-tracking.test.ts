@@ -4,7 +4,9 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QUOTA_HISTORY_FILE, quotaWindows, readQuotaHistory, sampleQuota, type QuotaRow } from '../src/quota-history.ts';
-import { analyzeQuota, baseProvider, intervalsOf, loadEconomy, readCalls, readRates, roleKey, toCall, WEEK_MS, type Call, type RateTable } from '../src/quota-economy.ts';
+import { analyzeQuota, baseProvider, intervalsOf, readRates, roleKey, toCall, WEEK_MS, type Call, type RateTable } from '../src/quota-economy.ts';
+import { cachedEconomy, loadEconomy, sampleQuotaRound } from '../src/quota-load.ts';
+import { aggregateCalls, readUsageAggregate, scanTail, updateUsageAggregate, USAGE_AGGREGATE_FILE } from '../src/usage-aggregate.ts';
 import { accountLines, accountText, reportText, resetText, weeklyLines, windowText } from '../src/quota-format.ts';
 import { quotaCommandText } from '../src/quota-command.ts';
 
@@ -173,19 +175,20 @@ test('the weekly comparison splits the last 7 days and the 7 before by account a
   assert.match(text, /Por papel: main US\$10\.00 \(antes US\$120\.00\) · subagent US\$5\.00 \(antes US\$30\.00\)/);
 });
 
-test('usage.jsonl is read from its tail: only calls after `since`, across chunk boundaries, ignoring torn lines', t => {
+test('usage.jsonl is read from its tail: only calls after `since`, across chunk boundaries, ignoring torn lines', async t => {
   const dir = tmp(t), file = join(dir, 'usage.jsonl'), pad = 'x'.repeat(250);
   const total = 30_000;
   const out: string[] = [];
   for (let i = 0; i < total; i++) out.push(JSON.stringify({ id: i, date: new Date(NOW - (total - i) * 1000).toISOString(), role: 'main', provider: 'p', model: 'm', pad, usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { total: 0.5 } } }));
   out.splice(total - 5, 0, '{"date":"torn');
   writeFileSync(file, out.join('\n') + '\n');
-  assert.ok(statSync(file).size > 8 << 20, 'bigger than two chunks');
-  const some = readCalls(file, NOW - 100 * 1000 - 1, new Map());
-  assert.equal(some.length, 100 + 0, 'the last 100 calls (one second apart)');
-  assert.equal(readCalls(file, 0, new Map()).length, total, 'the whole file, torn line skipped');
-  assert.deepEqual(readCalls(join(dir, 'missing.jsonl'), 0, new Map()), []);
-  assert.deepEqual(readCalls(file, NOW + 1000, new Map()), []);
+  assert.ok(statSync(file).size > 8 << 20, 'bigger than several chunks');
+  const some = await scanTail(file, NOW - 100 * 1000 - 1, new Map());
+  assert.equal(some?.calls.length, 100, 'the last 100 calls (one second apart)');
+  assert.ok(some!.bytesRead < 4 << 20, `a recent window reads a few chunks, not the file (${some!.bytesRead} bytes)`);
+  assert.equal((await scanTail(file, 0, new Map()))?.calls.length, total, 'the whole file, torn line skipped');
+  assert.equal(await scanTail(join(dir, 'missing.jsonl'), 0, new Map()), undefined);
+  assert.deepEqual((await scanTail(file, NOW + 1000, new Map()))?.calls, []);
 });
 
 test('reset times are Brasília time (UTC-3): the clock for today, the date for another day, even when UTC is already tomorrow', () => {
@@ -220,12 +223,13 @@ test('each account line shows both windows with resets, API key and no-data acco
   assert.match(accountLines(state, NOW, eco).find(l => l.includes('anthropic-account-2'))!, /19% usado, renova 17\/11 09:00 · 1% = US\$2\.50 \(7d\)$/);
 });
 
-test('the report and the terminal /cota print every cached account with the same lines, plus history, window economy and weeks', t => {
+test('the report and the terminal /cota print every cached account with the same lines, plus history, window economy and weeks', async t => {
   const dir = tmp(t), cacheFile = join(dir, 'cache.json');
   writeFileSync(cacheFile, JSON.stringify(cache(NOW)));
   sampleQuota(dir, cache(NOW - 2 * HOUR, 5, 10), NOW - 2 * HOUR);
   sampleQuota(dir, cache(NOW - HOUR, 5, 14), NOW - HOUR);
   writeFileSync(join(dir, 'usage.jsonl'), `${JSON.stringify({ ...record('anthropic-account-2', 'claude-opus-5-5', { input: 10, totalTokens: 10 }, 8), date: new Date(NOW - 90 * 60_000).toISOString() })}\n`);
+  await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'none.json') });
   const text = quotaCommandText(dir, NOW, cacheFile);
   assert.match(text, /• anthropic: API key, sem limite de cota/);
   assert.match(text, /• anthropic-account-2: 5h 5% usado, renova 12:00 · 7d 19% usado, renova 17\/11 09:00 · 1% = US\$2\.00 \(7d\)/);
@@ -246,15 +250,18 @@ test('a week that predates the history says so instead of printing 0 points', ()
   assert.match(reportText({}, eco), /Histórico de cota: ainda sem leituras/);
 });
 
-test('reading usage.jsonl stops at the first chunk that is entirely older than the window, even when a line has a garbled date', t => {
+test('reading usage.jsonl stops at the first chunk that is entirely older than the window, even when a line has a garbled date', async t => {
   const dir = tmp(t), file = join(dir, 'usage.jsonl'), pad = 'x'.repeat(250);
   const make = (at: number) => JSON.stringify({ date: new Date(at).toISOString(), role: 'main', provider: 'p', model: 'm', pad, usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { total: 1 } } });
   const out = [make(NOW - 10 * HOUR)]; // an in-range record far back, out of order: only reachable if the reader did not stop
-  for (let i = 0; i < 22_000; i++) out.push(i === 12_000 ? '{"date":"zzz-not-a-date","pad":"' + pad + '"}' : make(NOW - 30 * DAY));
+  for (let i = 0; i < 22_000; i++) out.push(i === 20_000 ? '{"date":"zzz-not-a-date","pad":"' + pad + '"}' : make(NOW - 30 * DAY));
   out.push(make(NOW - 1000));
   writeFileSync(file, out.join('\n') + '\n');
-  assert.ok(statSync(file).size > 2 * (4 << 20) && statSync(file).size < 3 * (4 << 20), 'three chunks: the newest, the garbled one, the one holding the early record');
-  assert.deepEqual(readCalls(file, NOW - DAY, new Map()).map(c => c.at), [NOW - 1000], 'stopped at the old chunk');
+  const size = statSync(file).size, chunk = 1 << 20;
+  assert.ok(size > 6 * chunk, 'many chunks');
+  const scan = await scanTail(file, NOW - DAY, new Map());
+  assert.deepEqual(scan?.calls.map(c => c.at), [NOW - 1000], 'the old record behind the stop is not reached');
+  assert.ok(scan!.bytesRead < 4 * chunk, `stopped at the first old chunk (${scan!.bytesRead} of ${size} bytes)`);
 });
 
 test('a reading with no fetchedAt is never written, even after the account has history', t => {

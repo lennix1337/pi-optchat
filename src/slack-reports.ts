@@ -13,7 +13,7 @@ import { QUOTA_FILE, QUOTA_HEALTH_FILE, quotaRisks } from './quota-health.ts';
 import { WeeklyScoreboard } from './scoreboard.ts';
 import { activityLines, githubActivity, harnessCost, type Activity } from './briefing-sources.ts';
 import { logBackgroundFailure } from './exec-log.ts';
-import { loadEconomy } from './quota-economy.ts';
+import { loadEconomy } from './quota-load.ts';
 import { accountLines, weeklyLines } from './quota-format.ts';
 
 /**
@@ -193,7 +193,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
 
 export class DailySummary {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly prs: PrWatch,
-    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; ratesFile?: string; gh?: Gh } = {}) {}
+    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh } = {}) {}
 
   /** Posts once a day, the first check after `at` (07:00) and before `until` (noon): a late start skips the day. */
   async maybePost(): Promise<boolean> {
@@ -209,7 +209,7 @@ export class DailySummary {
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
     const sent = await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
-      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE, this.options.ratesFile) }), null);
+      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE) }), null);
     // The date above says "tried"; `sentAt` and Slack's `ts` say "delivered": a date alone cannot tell a failed post from a sent one.
     const ts = (sent as { ts?: unknown } | undefined)?.ts;
     atomicWrite(file, JSON.stringify({ date: today, sentAt: (this.options.now ?? Date.now)(), ...(typeof ts === 'string' ? { ts } : {}) }));
@@ -252,9 +252,9 @@ export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<Summa
 }
 
 /** Each account's quota with its resets, and the weekly API-equivalent comparison; a failure drops the section, never the summary. */
-function quotaSection(dir: string, now: number, cacheFile: string, ratesFile?: string): Pick<SummaryInputs, 'accounts' | 'weekly'> {
+function quotaSection(dir: string, now: number, cacheFile: string): Pick<SummaryInputs, 'accounts' | 'weekly'> {
   try {
-    const state = readJsonOr<unknown>(cacheFile, {}), economy = loadEconomy({ dir, now, weeks: 2, cacheFile, ratesFile });
+    const state = readJsonOr<unknown>(cacheFile, {}), economy = loadEconomy({ dir, now, weeks: 2, cacheFile });
     return { accounts: accountLines(state, now, economy), weekly: weeklyLines(economy) };
   } catch (error) { logBackgroundFailure(dir, 'quota-economy', error); return {}; }
 }
