@@ -228,6 +228,9 @@ export class Children {
   private closing = false;
   private launching = 0;
   private readonly resuming = new Set<string>();
+  private readonly parkResumes = new Map<string, Promise<string>>();
+  private readonly retargeting = new Set<string>();
+  private readonly uncertainRuns = new Set<string>();
   private readonly deleting = new Set<string>();
   private settling = 0;
   private readonly launches = new Set<Promise<unknown>>();
@@ -385,7 +388,7 @@ export class Children {
   /** Runs at work now: running, waiting for children, or stopping; not paused. */
   get working() { return [...this.running.values()].filter(live => isRunning(live.info)).map(live => live.info); }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
-  private changed() { for (const listener of this.listeners) listener(); }
+  private changed() { for (const listener of this.listeners) { try { listener(); } catch (error) { try { this.warn(`Subagent listener failed: ${String(error)}`); } catch { /* A notification must not undo a saved run. */ } } } }
   private save(info: RunInfo) { this.history.save(info); this.changed(); }
   private timed(phase: AgentTiming['phase'], runId?: string, started?: number, promptChars?: number) {
     if (!this.options.onTiming) return;
@@ -557,7 +560,7 @@ export class Children {
     const holders = new Map<string, string>();
     // A run being resumed holds its repo already, before it is registered as running; so does one parked for quota, which comes back to it.
     const parked = [...this.history.records.values()].filter(info => info.parked && info.id !== except);
-    for (const info of [...[...this.running.values()].map(live => live.info), ...[...this.resuming].flatMap(id => this.history.records.get(id) ?? []), ...parked]) {
+    for (const info of [...[...this.running.values()].map(live => live.info), ...[...this.resuming].filter(id => id !== except).flatMap(id => this.history.records.get(id) ?? []), ...parked]) {
       const top = info.kind && !info.patrol && (WRITER_KINDS as readonly string[]).includes(info.kind) ? repoRoot(info.cwd) : undefined;
       if (top) holders.set(top.toLowerCase(), `worker ${info.id}`);
     }
@@ -1038,11 +1041,11 @@ export class Children {
     this.parkTimers.delete(id);
   }
   /** Re-arms the parked runs a closed Pi left in the history; call once the profile is open. */
-  resumeParked() { for (const run of this.history.records.values()) if (run.parked && !this.parkTimers.has(run.id)) this.arm(run.id); }
+  resumeParked() { for (const run of this.history.records.values()) if (run.parked && !this.uncertainRuns.has(run.id) && !this.parkTimers.has(run.id)) this.arm(run.id); }
   /** The time has come: still out of quota by the cache, wait on; else start a queued task, or resume a parked run with its conversation. */
   private async unpark(id: string, generation: number) {
     const run = this.history.records.get(id);
-    if (this.parkGeneration.get(id) !== generation || !run?.parked || this.closing || this.running.has(id) || this.resuming.has(id)) return;
+    if (this.parkGeneration.get(id) !== generation || !run?.parked || this.closing || this.uncertainRuns.has(id) || this.running.has(id) || this.resuming.has(id)) return;
     const block = this.resetOf(run);
     if (block !== undefined && block > this.now()) { run.parked.until = block + PARK_MARGIN_MS; this.save(run); this.arm(id); return; }
     try {
@@ -1050,7 +1053,11 @@ export class Children {
       if (run.parked.queued || !this.transcribed(run)) {
         const task: SpawnTask = { task: run.task, model: run.model, ...run.kind && (WORKER_KINDS as readonly string[]).includes(run.kind) ? { kind: run.kind as WorkerKind, project: run.project } : {} };
         await this.track(this.launch([task], run.cwd, undefined, undefined, false, undefined, id));
-      } else await this.track(this.resume(id, QUOTA_BACK, undefined));
+      } else {
+        const work = this.resume(id, QUOTA_BACK, undefined, undefined, generation);
+        this.parkResumes.set(id, work);
+        try { await this.track(work); } finally { if (this.parkResumes.get(id) === work) this.parkResumes.delete(id); }
+      }
     } catch (error) { await this.retryPark(id, error, generation); }
   }
   private transcribed(run: RunInfo) {
@@ -1123,6 +1130,7 @@ export class Children {
   /** `caller` is the agent sending a manager message: undefined for the main agent, else the parent subagent's ID. */
   async tell(id: string, message: string, source: 'manager' | 'user' = 'manager', caller?: string, notice = false, route?: RouteOverride) {
     if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
+    if (this.uncertainRuns.has(id)) throw new Error(`${id} is blocked because storage recovery is uncertain; inspect the saved worker before resuming.`);
     if (this.settings.routerMode && source === 'manager' && !notice) checkHandoffSummary(message, HANDOFF_MAX_BYTES, 'Guidance');
     if (this.externalRun(id)) {
       if (source !== 'user') throw new Error(`${id} belongs to pi-subagents; only the user can steer it from this panel.`);
@@ -1228,13 +1236,15 @@ export class Children {
       && !!model && model.provider === snapshot.provider && model.id === snapshot.model && this.registry.hasConfiguredAuth(model) && (getSupportedThinkingLevels(model) as readonly string[]).includes(snapshot.thinking);
   }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
-  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride) {
+  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number): Promise<string> {
+    if (this.uncertainRuns.has(id)) throw new Error(`${id} is blocked because storage recovery is uncertain; inspect the saved worker before resuming.`);
     const run = this.history.records.get(id);
     if (!run) throw new Error(`${id} belongs to pi-subagents and cannot be resumed by OptChat's runtime. Resume it with the subagent tool.`);
     const text = message.trim();
     if (!text) throw new Error('Message is empty.');
     if (run.connected) throw new Error(`${id} was a connected conversation with the user. It has ended and its handoff was delivered, so it cannot be resumed. Spawn a new subagent instead.`);
-    if (!['completed', 'failed', 'stopped', 'interrupted'].includes(run.state) || this.resuming.has(id)) throw new Error(`${id} is still finishing. Its report will arrive on its own.`);
+    const automatic = route && !this.retargeting.has(id) ? this.parkResumes.get(id) : undefined;
+    if (!['completed', 'failed', 'stopped', 'interrupted'].includes(run.state) || this.retargeting.has(id) || this.resuming.has(id) && !automatic) throw new Error(`${id} is still finishing. Its report will arrive on its own.`);
     if (run.parentId !== caller) {
       if (!run.parentId) throw new Error(`Only the main agent can resume ${id}.`);
       const parent = this.running.get(run.parentId);
@@ -1245,12 +1255,24 @@ export class Children {
     if (run.parked?.queued) throw new Error(`${id} is queued until ${untilText(run.parked.until, this.now())} (Brasília) because ${run.parked.provider} is out of quota; it has not started, so there is nothing to resume. It starts by itself.`);
     // One writer per repo holds for a resumed writer as for a new one.
     if (run.kind && (WRITER_KINDS as readonly string[]).includes(run.kind)) this.checkWriters([{ task: run.task, kind: run.kind as WorkerKind, cwd: run.cwd }], run.cwd, id);
-    if (this.full(1)) throw new Error(`Profile limit: at most ${this.settings.maxAgents} active agents, including parents and descendants. ${id} can be resumed when one finishes.`);
+    if (this.full(automatic ? 0 : 1)) throw new Error(`Profile limit: at most ${this.settings.maxAgents} active agents, including parents and descendants. ${id} can be resumed when one finishes.`);
     let manager: SessionManager | undefined;
     try { if (run.sessionFile && existsSync(run.sessionFile)) manager = SessionManager.open(run.sessionFile); } catch { manager = undefined; }
     if (!manager?.getEntries().some(e => e.type === 'message')) throw new Error(`The saved transcript of ${id} is missing or unreadable, so it cannot be resumed. Spawn a fresh subagent and give it the context it needs.`);
     if (!existsSync(run.cwd) || !statSync(run.cwd).isDirectory()) throw new Error(`${id}'s directory ${run.cwd} no longer exists, so it cannot be resumed. Spawn a fresh subagent instead.`);
     const { provider, model, thinking } = this.resumeModel(id, run, route);
+    if (automatic) {
+      this.retargeting.add(id); this.launching++; this.cancelPark(id);
+      try {
+        await automatic.catch(() => {});
+        this.launching--; this.retargeting.delete(id);
+        return await this.resume(id, message, caller, route);
+      } catch (error) {
+        if (this.retargeting.delete(id)) this.launching--;
+        if (this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id) && !this.running.has(id) && !this.deleting.has(id) && !this.closing && !this.uncertainRuns.has(id)) this.arm(id);
+        throw error;
+      }
+    }
     const snapshot = { generation: this.parkGeneration.get(id), state: run.state, parked: run.parked, provider, model: model.id, thinking };
     this.launching++; this.resuming.add(id);
     let reserved = true;
@@ -1258,7 +1280,7 @@ export class Children {
       const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
       const parent = run.parentId ? this.running.get(run.parentId) : undefined;
-      if (this.closing || route && (!this.retargetUnchanged(id, run, snapshot) || session.model?.provider !== provider || session.model?.id !== model.id || session.thinkingLevel !== thinking) || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {
+      if (this.closing || automaticGeneration !== undefined && this.parkGeneration.get(id) !== automaticGeneration || route && (!this.retargetUnchanged(id, run, snapshot) || session.model?.provider !== provider || session.model?.id !== model.id || session.thinkingLevel !== thinking) || run.parentId && (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state))) {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping, or the worker or route changed while opening; nothing was started.');
       }
       // The finished record stays untouched (and resumable) unless the new one is saved.
@@ -1267,7 +1289,25 @@ export class Children {
       const prompt = cutOffChildren(text, cut);
       const info: RunInfo = { ...rest, model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
         guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
-      try { this.save(info); } catch (error) { this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error; }
+      try { this.save(info); } catch (error) {
+        // Visibility after rename is not durability. Never dispatch on an uncertain save.
+        const stored = this.history.matchesStored(info);
+        if (stored !== false) {
+          this.cancelPark(id);
+          const { parked: _parked, cutOff: _cutOff, ...previous } = run;
+          const safe: RunInfo = { ...previous, state: 'stopped', ended: Date.now(), report: 'Retarget was not started: storage durability was not confirmed. Inspect and resume explicitly.' };
+          try { this.history.save(safe); } catch (recoveryError) {
+            this.uncertainRuns.add(id);
+            if (this.history.matchesStored(safe)) this.history.records.set(id, safe);
+            else this.history.records.set(id, info);
+            await this.shutdown(session); this.dispose(session);
+            throw new Error(`Retarget was not started; storage durability and recovery are uncertain. Inspect the saved worker before explicitly resuming it. ${String(recoveryError)}`);
+          }
+          await this.shutdown(session); this.dispose(session);
+          throw new Error(`Retarget was not started: ${stored === undefined ? 'the saved state could not be read and' : ''} storage durability was not confirmed. Automatic wake was disabled; inspect and resume explicitly. ${String(error)}`);
+        }
+        this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error;
+      }
       this.cancelPark(id);
       const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
       this.running.set(id, live);
@@ -1280,7 +1320,7 @@ export class Children {
     } finally {
       if (reserved) this.launching--;
       this.resuming.delete(id);
-      if (route && reserved && this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id) && !this.closing) this.arm(id);
+      if (route && reserved && this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id) && !this.closing && !this.uncertainRuns.has(id)) this.arm(id);
     }
     this.changed();
     const effective = this.history.records.get(id)!;

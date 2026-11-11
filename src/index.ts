@@ -47,6 +47,7 @@ import { registerReportRenderer, type ReportDetails } from './report-message.ts'
 import { memoryTools, result, searchTool } from './tools.ts';
 import { Children, loadedBuiltins } from './agents.ts';
 import { childToolSchemas } from './child-resources.ts';
+import { retargetTool } from './retarget-tool.ts';
 import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { registerWhatsAppBridge } from './whatsapp-bridge.ts';
@@ -1353,15 +1354,7 @@ export default function optchat(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({ name: 'retarget', label: 'Retarget worker', description: 'Resume a settled OptChat worker with its saved conversation on an explicitly chosen model or thinking level. Never switches automatically; active and unstarted workers are refused.',
-    parameters: childToolSchemas.retarget,
-    async execute(_id, args) {
-      if (args.model === undefined && args.thinking === undefined) throw new Error('Specify model or thinking; use tell without overrides.');
-      const text = await required().children.tell(args.id, args.message, 'manager', undefined, false, { model: args.model, thinking: args.thinking });
-      if (heartbeat?.waking) wakeWorkers.launched(_id, [args.id]);
-      return { ...result(text), details: { runIds: [args.id] } };
-    },
-  });
+  pi.registerTool(retargetTool(() => required().children, (id, worker) => { if (heartbeat?.waking) wakeWorkers.launched(id, [worker]); }));
 
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */
   const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config, main,

@@ -1,15 +1,18 @@
 import './support.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
+import { runToolCall, type AgentTool } from '@earendil-works/pi-agent-core';
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Children, PARK_NOTE_MS } from '../src/agents.ts';
 import { Memory } from '../src/memory.ts';
 import { parkUntil, quotaError, QuotaOutage, untilText } from '../src/quota-hold.ts';
 import { textContent } from '../src/transcript.ts';
+import { retargetTool } from '../src/retarget-tool.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
@@ -52,7 +55,7 @@ function fakeClock() {
 }
 
 type Verdict = 'limit' | 'ok';
-type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean };
+type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[] };
 function syntheticStream(provider: string, control: TestControl, seen: string[][], routes: string[], calls: Map<string, number>, verdict: (task: string, call: number) => Verdict): NonNullable<Parameters<ModelRuntime['registerProvider']>[1]['streamSimple']> {
   return (model, context) => {
       routes.push(model.provider);
@@ -91,7 +94,15 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { 
       async text => { reports.push(text); }, text => warnings.push(text), dir,
       { settings: () => ({ subagentLevels: 1, maxAgents: 8 }), parentSession: 'parent', clock,
         quotaBlock: provider => provider === 'quota-test' && block.until !== undefined && block.until > clock.now() ? block.until : undefined,
-        createSession: async options => { if (control.wait) await control.wait; if (control.fail) throw new Error('synthetic session failure'); return createAgentSession({ ...options, modelRuntime: runtime }); } });
+        createSession: async options => {
+          control.opens = (control.opens ?? 0) + 1;
+          if (control.wait) await control.wait;
+          if (control.fail) throw new Error('synthetic session failure');
+          const made = await createAgentSession({ ...options, modelRuntime: runtime });
+          const dispose = made.session.dispose.bind(made.session);
+          made.session.dispose = () => { (control.disposed ??= []).push(options?.model?.provider ?? 'unknown'); dispose(); };
+          return made;
+        } });
     opened.push(made);
     return made;
   };
@@ -101,6 +112,12 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { 
 }
 
 const failures = (reports: string[]) => reports.filter(text => /Task error|failed|Task aborted/i.test(text));
+async function dispatchRetarget(children: Children, id: string) {
+  const tool = retargetTool(() => children, () => { throw new Error('must not report launch'); }) as unknown as AgentTool;
+  const assistantMessage = { role: 'assistant' as const, content: [], api: 'openai-completions', provider: 'fixture', model: 'fixture', usage: emptyUsage(), stopReason: 'stop' as const, timestamp: 1 };
+  return runToolCall({ type: 'toolCall', id: 'retarget-call', name: 'retarget', arguments: { id, message: 'continue', model: 'quota-test-2/child' } },
+    { tools: [tool], assistantMessage, context: { messages: [], tools: [tool] } });
+}
 
 test('four workers that hit 429 on their first request are parked, not reported as failed, and run again after the reset', async t => {
   let limited = true;
@@ -223,6 +240,177 @@ test('retarget rejects an active worker without changing its route', async t => 
     release();
     await until(() => h.children.history.records.get(id)?.state === 'completed', 'completed');
   } finally { release(); }
+});
+
+test('a throwing listener does not undo a persisted and dispatched retarget', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'listener' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  const unsubscribe = h.children.subscribe(() => { throw new Error('listener failure'); });
+  await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' });
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'completed');
+  unsubscribe();
+  const file = join(h.dir, 'runs', `${id}.optchat.json`);
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify(h.children.history.records.get(id)));
+  assert.ok(h.warnings.some(w => w.includes('listener failure')));
+  await h.children.close();
+  assert.equal(h.build(h.clock).history.records.get(id)?.model, 'quota-test-2/child');
+});
+
+test('a pre-write failure leaves the old parked route on disk and recoverable', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'pre-write' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  const file = join(h.dir, 'runs', `${id}.optchat.json`), before = readFileSync(file, 'utf8');
+  const save = h.children.history.save.bind(h.children.history);
+  h.children.history.save = info => {
+    if (info.model !== 'quota-test-2/child') return save(info);
+    const write = fs.writeFileSync;
+    try {
+      fs.writeFileSync = (() => { throw new Error('before write'); }) as typeof fs.writeFileSync;
+      syncBuiltinESMExports();
+      save(info);
+    } finally { fs.writeFileSync = write; syncBuiltinESMExports(); }
+  };
+  await assert.rejects(h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' }), /before write/);
+  h.children.history.save = save;
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.equal(JSON.stringify(h.children.history.records.get(id)), before);
+  await h.children.close();
+  const reloaded = h.build(h.clock);
+  assert.deepEqual(reloaded.history.records.get(id), JSON.parse(before));
+  reloaded.resumeParked();
+  await h.clock.advance(62 * MIN);
+  await until(() => h.routes.length === 2, 'old route resumed after reload');
+  assert.deepEqual(h.routes, ['quota-test', 'quota-test']);
+});
+
+for (const failRecovery of ['none', 'post-rename', 'pre-write'] as const) test(`directory fsync failure after rename fails closed (recovery failure: ${failRecovery})`, async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'post-rename' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  const file = join(h.dir, 'runs', `${id}.optchat.json`);
+  const save = h.children.history.save.bind(h.children.history);
+  let injected = 0;
+  h.children.history.save = info => {
+    if (injected === 0 && info.model !== 'quota-test-2/child' || injected >= (failRecovery === 'none' ? 1 : 2)) return save(info);
+    injected++;
+    if (injected === 2 && failRecovery === 'pre-write') throw new Error('compensation before write');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!, open = fs.openSync, fsync = fs.fsyncSync;
+    let flushes = 0;
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      fs.openSync = ((path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => String(path) === join(h.dir, 'runs') && flags === 'r' ? open(file, 'r+') : open(path, flags, mode)) as typeof fs.openSync;
+      fs.fsyncSync = fd => { if (++flushes === 2) throw new Error('directory fsync failed'); fsync(fd); };
+      syncBuiltinESMExports();
+      save(info);
+    } finally {
+      fs.openSync = open; fs.fsyncSync = fsync; Object.defineProperty(process, 'platform', platform); syncBuiltinESMExports();
+    }
+  };
+  const dispatched = await dispatchRetarget(h.children, id);
+  assert.equal(dispatched.isError, true);
+  assert.match(JSON.stringify(dispatched.result.content), /not started.*(?:durability was not confirmed|durability and recovery are uncertain)/);
+  assert.equal(injected, failRecovery === 'none' ? 1 : 2);
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify(h.children.history.records.get(id)));
+  assert.equal(h.children.history.records.get(id)?.state, failRecovery === 'pre-write' ? 'running' : 'stopped');
+  assert.deepEqual(h.routes, ['quota-test'], 'new route never dispatched');
+  if (failRecovery !== 'none') await assert.rejects(h.children.tell(id, 'again'), /blocked.*uncertain/);
+  h.children.resumeParked();
+  await h.clock.advance(62 * MIN);
+  assert.deepEqual(h.routes, ['quota-test'], 'no automatic wake in this process');
+  h.children.history.save = save;
+  await h.children.close();
+  if (failRecovery === 'pre-write') return; // The visible running record needs inspection, not automatic recovery.
+  const reloaded = h.build(h.clock);
+  assert.equal(reloaded.history.records.get(id)?.model, 'quota-test/child');
+  reloaded.resumeParked();
+  await h.clock.advance(62 * MIN);
+  assert.deepEqual(h.routes, ['quota-test'], 'no automatic wake after ordinary reload');
+  if (failRecovery === 'none') {
+    await reloaded.tell(id, 'explicitly continue');
+    await until(() => h.routes.length === 2, 'explicit continuation');
+    assert.equal(h.routes.at(-1), 'quota-test');
+  }
+});
+
+test('unreadable state after rename fails closed and compensates before ordinary reload', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const [id] = await h.children.spawn([{ task: 'unreadable' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  const file = join(h.dir, 'runs', `${id}.optchat.json`), save = h.children.history.save.bind(h.children.history);
+  const matches = h.children.history.matchesStored.bind(h.children.history);
+  let injected = false, readFailed = false;
+  h.children.history.save = info => {
+    save(info);
+    if (!injected && info.model === 'quota-test-2/child') { injected = true; throw new Error('post-rename fsync'); }
+  };
+  h.children.history.matchesStored = info => {
+    const read = fs.readFileSync;
+    try {
+      fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+        if (String(args[0]) === file) { readFailed = true; throw new Error('transient read failure'); }
+        return read(...args);
+      }) as typeof fs.readFileSync;
+      syncBuiltinESMExports();
+      return matches(info);
+    } finally { fs.readFileSync = read; syncBuiltinESMExports(); }
+  };
+  const dispatched = await dispatchRetarget(h.children, id);
+  assert.equal(dispatched.isError, true);
+  assert.match(JSON.stringify(dispatched.result.content), /not started.*could not be read.*durability/);
+  assert.ok(injected && readFailed);
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify(h.children.history.records.get(id)));
+  assert.equal(h.children.history.records.get(id)?.state, 'stopped');
+  assert.deepEqual(h.routes, ['quota-test']);
+  h.children.history.save = save; h.children.history.matchesStored = matches;
+  await h.children.close();
+  const reloaded = h.build(h.clock);
+  reloaded.resumeParked(); await h.clock.advance(62 * MIN);
+  assert.deepEqual(h.routes, ['quota-test']);
+  assert.equal(reloaded.history.records.get(id)?.state, 'stopped');
+});
+
+test('retarget supersedes an automatic quota resume already opening', async t => {
+  const h = await rig(t, {}, () => 'limit');
+  const repo = join(h.dir, 'race-repo');
+  mkdirSync(join(repo, '.git'), { recursive: true });
+  const task = 'Goal: test\nAcceptance: done\nEvidence: test\nAuthority: local only';
+  const [id] = await h.children.spawn([{ task, kind: 'code', model: 'quota-test/child', cwd: repo }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  let release!: () => void;
+  h.control.wait = new Promise<void>(resolve => { release = resolve; });
+  const opens = h.control.opens!, disposals = h.control.disposed?.length ?? 0;
+  h.clock.callbacks[0]();
+  await until(() => h.control.opens! > opens, 'old route opening');
+  await assert.rejects(h.children.spawn([{ task, kind: 'code', model: 'quota-test/child', cwd: repo }], h.dir), /One writer per repo/);
+  const attempt = h.children.tell(id, 'new route', 'manager', undefined, false, { model: 'quota-test-2/child' });
+  const outcome = attempt.then(value => ({ value }), error => ({ error }));
+  release();
+  const result = await outcome;
+  assert.ok('value' in result, `retarget failed: ${'error' in result && String(result.error)}`);
+  assert.ok(h.control.disposed?.slice(disposals).includes('quota-test'), 'the old opening session was disposed');
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'new route completed');
+  assert.deepEqual(h.routes, ['quota-test', 'quota-test-2']);
+  assert.equal(h.children.history.records.get(id)?.model, 'quota-test-2/child');
+});
+
+test('invalid retarget does not cancel an automatic resume already opening', async t => {
+  const h = await rig(t, {}, (_task, call) => call === 1 ? 'limit' : 'ok');
+  const [id] = await h.children.spawn([{ task: 'invalid race' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked && !h.children.live(id), 'parked');
+  const before = structuredClone(h.children.history.records.get(id));
+  let release!: () => void;
+  h.control.wait = new Promise<void>(resolve => { release = resolve; });
+  const opens = h.control.opens!;
+  h.clock.callbacks[0]();
+  await until(() => h.control.opens! > opens, 'old route opening');
+  try {
+    await assert.rejects(h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child', thinking: 'high' }), /Thinking level/);
+    assert.deepEqual(h.children.history.records.get(id), before);
+  } finally { release(); }
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'old route completed');
+  assert.deepEqual(h.routes, ['quota-test', 'quota-test']);
 });
 
 test('deleting a parked worker while retarget opens prevents its continuation', async t => {

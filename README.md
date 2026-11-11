@@ -190,7 +190,7 @@ A fallback may also be written by hand. One entry per provider family, so re-add
 
 Compression and subagents make extra model requests with your provider credentials.
 
-Use `retarget` with a worker id, a continuation message, and an explicit `model` (`provider/model`) and/or `thinking` to resume a finished or quota-paused OptChat worker on that route. Omitted fields keep the worker's saved values; unsupported or unconfigured routes are refused without changing its quota wake. Its conversation and worktree stay with the same worker. Active workers, queued workers that have not started, missing transcripts and native pi-subagents cannot be retargeted. This does not guarantee that an interrupted external effect was completed or undone: check uncertain effects before guiding the continuation.
+Use `retarget` with a worker id, a continuation message, and an explicit `model` (`provider/model`) and/or `thinking` to resume a finished or quota-paused OptChat worker on that route. Omitted fields keep the worker's saved values; unsupported or unconfigured routes are refused without changing its quota wake. Its conversation and worktree stay with the same worker. Active workers, queued workers that have not started, missing transcripts and native pi-subagents cannot be retargeted. This does not guarantee that an interrupted external effect was completed or undone: check uncertain effects before guiding the continuation. If storage reports an uncertain write, retarget fails without starting the new route and asks for explicit recovery; even a visible file cannot prove it will survive power loss after a failed fsync.
 
 ## Long runs and compactor diagnostics
 

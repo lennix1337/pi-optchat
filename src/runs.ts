@@ -134,6 +134,9 @@ export class RunHistory {
       } catch { this.warnings.push(`Could not read historical child: ${file}`); }
     }
   }
+  matchesStored(run: RunInfo) {
+    try { return readFileSync(join(this.directory, `${run.id}.optchat.json`), 'utf8') === JSON.stringify(run); } catch { return undefined; }
+  }
   save(run: RunInfo) {
     if (run.source) throw new Error(`${run.id} belongs to ${run.source}, not this profile; OptChat never writes its metadata.`);
     atomicWrite(join(this.directory, `${run.id}.optchat.json`), JSON.stringify(run));
