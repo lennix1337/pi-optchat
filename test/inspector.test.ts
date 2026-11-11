@@ -41,7 +41,7 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     inspector.handleInput('\x1b[F');
     assert.match(inspector.render(100).find(l => l.startsWith(' →')) ?? '', /Task 99/);
     assert.match(inspector.render(100).join('\n'), /Enter open/);
-    assert.match(inspector.render(100).join('\n'), /gpt-6-luna\(xhigh\)/);
+    assert.doesNotMatch(inspector.render(100).join('\n'), /gpt-6-luna/, 'the model every run shares is not repeated on each row');
     for (const width of [18, 40, 64, 100, 160]) assert.ok(inspector.render(width).every(line => visibleWidth(line) <= width));
     inspector.handleInput('\r');
     assert.deepEqual(actions, [{ open: 'run-99' }]);
@@ -189,8 +189,8 @@ test('agent rows distinguish queued and undelivered guidance from current activi
     const rows = page.render(140);
     const queued = rows.find(line => line.includes('queued task')) ?? '';
     const offline = rows.find(line => line.includes('offline task')) ?? '';
-    assert.match(queued, /1 message queued · run_command · updated \d+s ago/);
-    assert.match(offline, /interrupted · 1 message not delivered/);
+    assert.match(queued, /run_command · 1 message queued · 30s ago/);
+    assert.match(offline, /1 message not delivered.*interrupted/);
   } finally { page.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 });
 

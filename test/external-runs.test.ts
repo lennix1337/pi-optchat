@@ -326,17 +326,22 @@ test('the agents panel lists pi-subagents runs with their own model, and d hides
     const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
     const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
     const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
+    // Two native runs on another model: the π run's own model is the unusual one, so the panel names it.
+    for (const id of ['native-1', 'native-2']) children.history.records.set(id, { id, task: `Native ${id}`, cwd: dir, model: 'anthropic/claude-sonnet-5-5', thinking: 'high', parentSession: 'parent', depth: 1, started: 1e12, ended: 1e12 + 1, state: 'completed', guidance: [] });
     const inspector = new Inspector({ profile: 'personal', session: 'parent', children, usage: new UsageLedger(dir), memory, page: 'agents', rows: () => 24, redraw: () => {}, done: () => {}, color: (_tone, text) => text, context: () => undefined });
     try {
       const screen = inspector.render(100).join('\n');
-      assert.match(screen, /π worker: reply with exactly ok/);
-      assert.match(screen, /claude-haiku-5-5\(low\)/);
-      assert.match(screen, /1 π/);
+      assert.match(screen, /π worker worker: reply with exactly ok/);
+      assert.match(screen, /haiku\(low\)/);
+      assert.doesNotMatch(screen, /sonnet/);
+      assert.match(screen, /3 done/);
+      inspector.handleInput('\x1b[F');
+      assert.match(inspector.render(100).find(l => l.startsWith(' →')) ?? '', /π worker/);
       inspector.handleInput('d');
       assert.match(inspector.render(100).at(-2) ?? '', /Press d again to hide this π run from the panel/);
       inspector.handleInput('d');
       assert.match(inspector.render(100).at(-2) ?? '', /Hidden from this panel; pi-subagents keeps the run/);
-      assert.doesNotMatch(inspector.render(100).join('\n'), /claude-haiku-5-5/);
+      assert.doesNotMatch(inspector.render(100).join('\n'), /haiku/);
       assert.equal(children.external.isHidden('pi-run-a'), true);
     } finally { inspector.dispose(); await children.close(); await memory.close(); removeDir(dir); }
   } finally { if (previous === undefined) delete process.env.PI_SUBAGENTS_TEMP_ROOT; else process.env.PI_SUBAGENTS_TEMP_ROOT = previous; removeDir(root); }
