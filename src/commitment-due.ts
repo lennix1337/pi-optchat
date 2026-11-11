@@ -14,6 +14,18 @@ export interface DueItem {
   id: string; text: string; owner: string; status: string; due?: string; project?: string; choices?: readonly string[];
 }
 const isClosed = (status: string) => status === 'done' || status === 'dropped';
+/** The specialists a text can name, by the words that name them (the same split as `specialistOf`). */
+const NAMES: [string, RegExp][] = [
+  ['dotfiles', /\bdotfiles\b/i],
+  ['dentai', /\b(?:dentai|usdentai|odontoclinic|denta-\d+)/i],
+  ['genexus18mcp', /\b(?:genexus|gx18|evo3)/i],
+  ['harness', /\b(?:pi-[a-z]+|optchat|harness|ripwire|gitwatch|compactor|goal-x|crew)\b/i],
+];
+/** The one specialist a commitment's text names, for an item with no `project` field. None or two stay with the manager, so a patrol never takes what is not clearly its own. */
+export function inferProject(text: string): string | undefined {
+  const hit = NAMES.filter(([, words]) => words.test(text)).map(([project]) => project);
+  return hit.length === 1 ? hit[0] : undefined;
+}
 const dueMs = (item: DueItem) => item.due === undefined ? NaN : Date.parse(item.due);
 /** The items the operator owes are his to settle: the deadline rules concern what OptChat promised. */
 const ours = (item: DueItem) => item.owner === 'optchat' && !isClosed(item.status);
@@ -36,7 +48,7 @@ export function dueFindings(items: readonly DueItem[], state: DueState, now: num
   const findings: DueFinding[] = [], dueSeen: string[] = [], escalated: Record<string, number> = {};
   for (const item of items) {
     if (!ours(item)) continue;
-    const project = item.project ?? GLOBAL_PROJECT, at = dueMs(item);
+    const project = item.project ?? inferProject(item.text) ?? GLOBAL_PROJECT, at = dueMs(item);
     if (Number.isFinite(at) && at <= now) {
       const key = `${item.id}@${item.due}`;
       dueSeen.push(key);
