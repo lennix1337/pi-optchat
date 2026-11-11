@@ -83,6 +83,9 @@ export const SETTINGS = {
   routerMode: { kind: 'toggle', label: 'Router mode', default: false,
     description: 'The main agent routes and reports and does not execute: its tools leave out the execution tools (bash, powershell, edit, write, shell_start, codemode, browser_harness, desktop, project_checks), and long work goes to workers started with spawn. A worker\'s report reaches the main agent bounded, with pointers to its run and transcript, not the whole chat. Tasks and guidance are capped at 8 KB. Off: the main agent executes, as before.',
     applies: 'Applies from the next turn; subagents started after this apply the caps and the bounded reports.' },
+  transcriptKeep: { kind: 'number', label: 'Chat kept in Pi', default: 400, min: 0, unit: 'messages',
+    description: 'Once Pi holds more than twice this many messages, everything before the last ones leaves Pi\'s memory and the chat on screen, so a long session stays fast: heap, each request\'s copy of the list and a reload all grow with it. Nothing is lost: the session file and OptChat memory keep every message, and the model reads OptChat\'s own view, which this does not change. No model call. 0: off, Pi keeps everything.',
+    applies: 'Applies when the chat next settles.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

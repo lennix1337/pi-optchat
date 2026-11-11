@@ -101,6 +101,7 @@ import { PerformanceMetrics, registerPerformance, performanceTool } from './perf
 import { heapReportTool, noteReload, reloadCount } from './heap-report.ts';
 import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
+import { housekeepingBoundary } from './housekeeping.ts';
 import { HOLD_MAX_MS, RELOAD_RESUME, registerSelfReload, reloadLease } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
 import { MachineService, machineService, machineTool } from './machine-service.ts';
@@ -1166,6 +1167,8 @@ export default function optchat(pi: ExtensionAPI) {
     finally { active?.metrics.record('usage', performance.now() - started); }
   };
   pi.on('turn_end', (_event, ctx) => collectUsage(ctx));
+  // Bounds Pi's own list and chat (transcriptKeep); the file and OptChat memory keep everything and the model's request is unchanged.
+  pi.on('agent_before_settle', (event, ctx) => active && !stopping ? housekeepingBoundary(event, ctx.sessionManager.buildContextEntries(), active.config.transcriptKeep) : undefined);
   const watchWakeWorkers = (ctx: ExtensionContext) => {
     wakeWorkerContext = ctx;
     if (wakeWorkerTimer) clearTimeout(wakeWorkerTimer);
