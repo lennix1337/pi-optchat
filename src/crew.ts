@@ -6,6 +6,7 @@ import { accountGroup } from './account.ts';
 import type { ModelChoice } from './compactor.ts';
 import { acceptRun, type AcceptDeps } from './crew-accept.ts';
 import { Memory, type Compressor } from './memory.ts';
+import { SLUG } from './slug.ts';
 import type { RunInfo } from './runs.ts';
 import { atomicWrite } from './store.ts';
 import { stringEnum } from './string-enum.ts';
@@ -24,7 +25,7 @@ export const WRITER_KINDS: readonly WorkerKind[] = ['code', 'mechanical', 'hard'
 export const KNOWN_SPECIALISTS = ['dentai', 'genexus18mcp', 'harness', 'dotfiles'] as const;
 /** A specialist is a slug: the name of its folder in the crew dir. */
 export type Specialist = string;
-export const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
+export { SLUG };
 export type WorkerRoutes = Partial<Record<WorkerKind, ModelChoice[]>>;
 
 /** One entry per provider family; the one for the family the main model is on wins (see `routeFor`). */

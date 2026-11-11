@@ -8,6 +8,7 @@ import { record } from './cache.ts';
 import { atomicWrite, type Store } from './store.ts';
 import { DEFAULT_SETTINGS, readSettings, type Settings } from './settings.ts';
 import { invalidPlan, invalidRadar, type HeartbeatPlan } from './heartbeat.ts';
+import { invalidPatrol, type PatrolPlan } from './patrol-divert.ts';
 import { invalidTriage } from './wake-signals.ts';
 import { validRoutes, type WorkerRoutes } from './crew.ts';
 import { accountGroup } from './account.ts';
@@ -26,6 +27,8 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   wakeRouteAcrossFamilies?: boolean;
   /** Event-driven wakes (see wake-signals.ts): a heartbeat tick wakes the agent only for a project with news, or once every `buildMinutes` to build something new. Absent: every tick wakes as before. */
   wakeTriage?: { buildMinutes: number; stallHours?: number };
+  /** A specialist's deadline findings go to a read-only patrol worker of that specialist, at most once per `minHours`, instead of waking the manager (see patrol.ts). Absent: they wake the manager. */
+  specialistPatrol?: PatrolPlan;
   /** Tools whose declarations the main agent's requests leave out while they stay callable from codemode (see lazy-tools.ts). Absent: LAZY_TOOLS; `[]`: none. */
   lazyTools?: string[];
   /** Extra deploy entry points beyond the built-in ones (script names with `*`, or a command prefix such as `fly deploy`): see src/deploy.ts. */
@@ -131,7 +134,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'lazyTools'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'specialistPatrol', 'lazyTools'] as const;
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
@@ -141,7 +144,7 @@ export function loadConfig(dir: string): ProfileConfig {
     || value.lazyTools !== undefined && !(Array.isArray(value.lazyTools) && value.lazyTools.every(entry => typeof entry === 'string' && entry.trim() !== ''))
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
-    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage);
+    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidPatrol(value.specialistPatrol);
     if (problem) throw new Error(problem);
     // The optional fields were validated above; an absent or empty one stays out of the config.
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;

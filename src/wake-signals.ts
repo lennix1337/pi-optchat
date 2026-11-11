@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { errorCategory } from './compactor-diagnostics.ts';
+import type { DueItem } from './commitment-due.ts';
 import { missionProjects, specialistOf } from './crew.ts';
 import type { RunInfo } from './runs.ts';
 
@@ -15,6 +16,8 @@ export interface Triage {
   lastRuns: Record<string, number>;
   /** How the last turn ended, when it was not a normal stop. */
   lastStop?: string;
+  /** The profile's commitments: a due time that passes, and an item overdue for a day, are signals (see commitment-due.ts). Absent: none. */
+  commitments?: readonly DueItem[];
 }
 /** One project with something new, and the lines that say what. `lastRun` is the id of its newest worker run, set by whoever knows the runs. */
 export interface Signal { project: string; lines: string[]; lastRun?: string }
@@ -118,10 +121,10 @@ export function signals({ radar, previous, missions, lastRuns, now, stallHours =
 }
 
 /** Per project, the newest contract worker run (kind and project set): its id and when it was last active; a run still going counts as now. */
-export function lastRunsOf(runs: readonly Pick<RunInfo, 'id' | 'kind' | 'project' | 'started' | 'ended' | 'state'>[], now: number): Record<string, { id: string; at: number }> {
+export function lastRunsOf(runs: readonly Pick<RunInfo, 'id' | 'kind' | 'project' | 'started' | 'ended' | 'state' | 'patrol'>[], now: number): Record<string, { id: string; at: number }> {
   const last: Record<string, { id: string; at: number }> = {};
   for (const run of runs) {
-    if (!run.kind || !run.project) continue;
+    if (!run.kind || !run.project || run.patrol) continue;
     const finished = run.state === 'completed' || run.state === 'failed' || run.state === 'stopped' || run.state === 'interrupted';
     const at = finished ? run.ended ?? run.started : now;
     if (!last[run.project] || at >= last[run.project].at) last[run.project] = { id: run.id, at };
