@@ -154,6 +154,8 @@ function decide(pr) {
   const checks = summarizeChecks(pr.statusCheckRollup);
   if (checks.failed.length) return { action: 'stop', reason: 'checks_failed', detail: checks.failed.slice(0, 5).join(', ') };
   if (pr.mergeStateStatus === 'BLOCKED') return { action: 'enqueue' };
+  // CLEAN with every check finished and green: nothing is left to wait for, and GitHub refuses to queue auto-merge here.
+  if (pr.mergeStateStatus === 'CLEAN' && checks.total > 0 && checks.pending === 0) return { action: 'merge_now' };
   const reason = {
     CLEAN: checks.total ? 'merge_would_be_immediate' : 'checks_not_reported',
     UNSTABLE: 'merge_state_unstable', DIRTY: 'merge_conflict', BEHIND: 'branch_behind_base', DRAFT: 'draft', UNKNOWN: 'merge_state_unknown',
@@ -191,6 +193,14 @@ async function enqueue(number) {
   return { reason: 'auto_merge_unverified', detail: after.error ? firstLine(after.error.err) : 'gh aceitou, mas a PR não mostra auto-merge', pr: after.pr };
 }
 
+async function mergeNow(number) {
+  const m = await gh(['pr', 'merge', String(number), '--squash', '--delete-branch']);
+  const after = await viewPr(number);
+  if (after.pr?.state === 'MERGED') return { auto: 'merged', pr: after.pr };
+  if (m.killed) return { auto: 'uncertain' };
+  return { auto: 'not_queued', reason: 'merge_refused', detail: firstLine(m.err), pr: after.pr };
+}
+
 async function autoMerge(number, waitSeconds) {
   const settled = await settle(number, waitSeconds);
   if (settled.error) return { auto: 'not_queued', reason: 'pr_unreadable', detail: tail(settled.error.err) };
@@ -199,6 +209,7 @@ async function autoMerge(number, waitSeconds) {
   if (decision.action === 'merged') return { auto: 'merged', pr: settled.pr };
   if (decision.action === 'queued') return { auto: 'queued', pr: settled.pr };
   if (decision.action === 'stop') return { auto: 'not_queued', reason: decision.reason, detail: decision.detail, pr: settled.pr };
+  if (decision.action === 'merge_now') return mergeNow(number);
   const queued = await enqueue(number);
   if (queued.uncertain) return { auto: 'uncertain' };
   if (queued.reason) return { auto: 'not_queued', reason: queued.reason, detail: queued.detail, pr: queued.pr };
