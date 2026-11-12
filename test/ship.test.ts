@@ -313,6 +313,17 @@ test('CLEAN with checks still running would merge at once, so it is not queued',
   assert.match(r.out.next, /gh pr merge 1 --squash/);
 });
 
+test('CLEAN with every check already green merges now: auto-merge cannot queue and nothing is left to validate', t => {
+  const fx = fixture(); t.after(fx.close);
+  const green = [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+  fx.setGh({ defaults: { mergeStateStatus: 'CLEAN', checks: green } });
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out.status, 'merged');
+  assert.ok(fx.ghCalls().some(args => args[1] === 'merge' && args.includes('--squash') && !args.includes('--auto')), 'a direct squash merge ran');
+});
+
 test('a failing check is reported and blocks the queue', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ defaults: { mergeStateStatus: 'BLOCKED', checks: [{ __typename: 'CheckRun', name: 'billing', status: 'COMPLETED', conclusion: 'FAILURE' }, { __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }] } });

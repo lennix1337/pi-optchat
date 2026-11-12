@@ -35,6 +35,14 @@ if (verb === 'view') {
 } else if (verb === 'merge') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for ${rest[0]}`);
+  if (!rest.includes('--auto')) {
+    if (pr.mergeStateStatus !== 'CLEAN') fail(`Pull request is not mergeable: ${pr.mergeStateStatus}`);
+    pr.state = 'MERGED';
+    save();
+    process.stdout.write(`✓ Squashed and merged pull request #${pr.number}
+`);
+    process.exit(0);
+  }
   if (state.autoMerge === 'disabled') fail('Auto merge is not allowed for this repository');
   if (state.autoMerge === 'clean') fail('Pull request is in clean status');
   if (state.autoMerge === 'merge_now') pr.state = 'MERGED';
