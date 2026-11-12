@@ -190,9 +190,9 @@ export default function optchat(pi: ExtensionAPI) {
   registerRecursiveGrepNarrowing(pi);
   // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
   registerCommitHookGuard(pi);
-  // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts); the profile's local-gate
-  // verdicts cover checks GitHub never started.
-  registerMergeCiGuard(pi, { dir: () => active && join(active.dir, 'local-gate') });
+  // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts); checks GitHub never
+  // started do not count.
+  registerMergeCiGuard(pi);
   // Each owned browser tab's last page, so input on a consent, account or billing page waits for the operator.
   registerBrowserPages(pi);
   // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
