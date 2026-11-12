@@ -29,7 +29,7 @@ const board: BoardInput = {
     { id: 'a1b2c3d4', task: 'Goal: aviso só aparece na próxima msg', project: 'gitwatch', model: 'anthropic-account-2/claude-sonnet-5-5', state: 'running', started: NOW - 5 * MIN, updated: NOW - 4_000, toolAt: NOW - 4_000, phase: 'lendo código' },
     { id: 'b2c3d4e5', task: "You are a subagent. Don't write memory pages.\n\nGoal: ↑ abre o quadro + rótulo do agente", project: 'optchat', model: 'anthropic-account-2/claude-sonnet-5-5', state: 'running', started: NOW - MIN, updated: NOW - 9_000, toolAt: NOW - 9_000, phase: 'testes' },
   ],
-  shells: [{ id: 'cd8f3ec5-0000', command: 'cd C:/projetos/pi-optchat && grep -n "Inspector" src/index.ts', state: 'completed', started: NOW - 4 * MIN, ended: NOW - 3 * MIN, exitCode: 0 }],
+  shells: [{ id: 'cd8f3ec5-0000', command: 'cd C:/projetos/pi-optchat && grep -n "Inspector" src/index.ts', state: 'completed', started: NOW - 2 * MIN, ended: NOW - MIN, exitCode: 0 }],
 };
 const footer: FooterInput = {
   now: NOW, spend: 44.93, context: { tokens: 197_000, window: 1_000_000 },
