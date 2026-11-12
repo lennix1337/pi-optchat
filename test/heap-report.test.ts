@@ -107,6 +107,8 @@ test('a snapshot is refused when the heap is over a quarter of its limit or memo
   assert.equal(fine.written.length, 1);
   assert.match(fine.written[0], /\.heapsnapshot$/);
   assert.equal((taken.snapshot as { refused?: boolean }).refused, undefined);
+  const keys = Object.keys(taken);
+  assert.equal(keys.indexOf('snapshot'), keys.indexOf('summary') + 1, 'the snapshot file sits right after the summary, so a short read of the report finds it');
 });
 
 test('gc:true forces a collection and reports the heap before and after with the pause', async () => {
