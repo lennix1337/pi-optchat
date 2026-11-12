@@ -67,7 +67,7 @@ test('the boundary writes one flagged compaction with the cut, and nothing while
   assert.equal(draft.type, 'compaction');
   assert.deepEqual(draft.type === 'compaction' && draft.details, { optchat: true, housekeeping: true });
   assert.equal(draft.type === 'compaction' && draft.firstKeptEntryId, housekeepingCut(entries, 10)!.firstKeptEntryId);
-  assert.match(draft.type === 'compaction' ? draft.summary : '', /^\d+ earlier messages/);
+  assert.match(draft.type === 'compaction' ? draft.summary : '', /^Limpeza de RAM do Pi, sem modelo e sem resumo: \d+ mensagens antigas/);
   const refused: [string, Parameters<typeof event>[0], number][] = [
     ['a run that failed (a retry may follow)', { outcome: 'error' }, 10],
     ['a continuation asked for', { continue: true }, 10],

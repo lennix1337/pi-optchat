@@ -106,7 +106,8 @@ function dueAt(input: { due?: string; dueInMinutes?: number }, now: number): str
     return iso(now + input.dueInMinutes * 60_000);
   }
   if (input.due === undefined) return undefined;
-  const at = Date.parse(input.due);
+  // Date.parse reads loose text such as "12/11 08:00" as 11 Dec 2001: only a full ISO date is a due date.
+  const at = /^\d{4}-\d{2}-\d{2}T/.test(input.due) ? Date.parse(input.due) : NaN;
   if (!Number.isFinite(at)) throw new Error('due must be an ISO timestamp (e.g. 2026-10-30T22:00:00-03:00)');
   return iso(at);
 }

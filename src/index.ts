@@ -1190,7 +1190,12 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.on('turn_end', (_event, ctx) => collectUsage(ctx));
   // Bounds Pi's own list and chat (transcriptKeep); the file and OptChat memory keep everything and the model's request is unchanged.
-  pi.on('agent_before_settle', (event, ctx) => active && !stopping ? housekeepingBoundary(event, ctx.sessionManager.buildContextEntries(), active.config.transcriptKeep) : undefined);
+  pi.on('agent_before_settle', (event, ctx) => {
+    if (!active || stopping) return;
+    const boundary = housekeepingBoundary(event, ctx.sessionManager.buildContextEntries(), active.config.transcriptKeep);
+    if (boundary) ctx.ui.notify('Limpeza de RAM do Pi (sem modelo): mensagens antigas saíram só da tela; a memória do OptChat não mudou.', 'info');
+    return boundary;
+  });
   const watchWakeWorkers = (ctx: ExtensionContext) => {
     wakeWorkerContext = ctx;
     if (wakeWorkerTimer) clearTimeout(wakeWorkerTimer);
