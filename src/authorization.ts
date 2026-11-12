@@ -86,8 +86,8 @@ function liveTarget(dir: string | undefined): Target {
   return path => {
     if (!namesContract(path)) return false;
     const word = typeof path === 'string' ? path.replace(/^['"]|['"]$/g, '').replace(/^~(?=[\\/]|$)/, homedir()) : undefined;
-    const candidate = word?.replace(/^\/([a-z])\//i, '$1:/');
-    // A drive path (`C:/...`) is absolute wherever the gate runs, Linux CI included.
+    const candidate = word?.replaceAll('\\', '/').replace(/^\/([a-z])\//i, '$1:/');
+    // A drive path (`C:/...`) or a `\` separator means the same file wherever the gate runs, Linux CI included.
     if (!candidate || /[$%`]/.test(candidate) || !(isAbsolute(candidate) || /^[a-z]:[\\/]/i.test(candidate))) return true;
     return comparable(resolve(dirname(candidate))) === folder;
   };
