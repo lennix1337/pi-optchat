@@ -60,20 +60,15 @@ function session(directory: string, quotes: Record<string, string>, { checkoutSl
   writeFileSync(join(directory, 'autonomy.json'), JSON.stringify(LIVE_CONTRACT));
   const file = join(directory, 'operational-state.json');
   const hooks = new Map<string, (...args: any[]) => any>();
-  const advised: string[] = [];
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
   registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo: REPO, contractDir: () => directory,
     orderGrant: effect => {
       try { return orderGrantFor(readOperationalState(file), effect, id => quotes[id], now(), slugOf); }
       catch { return undefined; }
-    },
-    advisor: async request => {
-      advised.push(String((request.input as { command?: string }).command ?? request.tool));
-      return { approve: false, reason: 'the advisor refuses', model: 'test' };
     } });
   const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] }, ui: { notify: () => {}, setWidget: () => {} } };
   return {
-    file, advised,
+    file,
     order: (update: OperationalUpdate) => updateOperationalState(file, update),
     run: (tool: string, command: string, cwd = 'C:/projetos/pi-optchat') => hooks.get('tool_call')!({ toolName: tool, toolCallId: `${tool}:${command}`, input: { command } }, { ...ctx, cwd }),
   };
@@ -84,7 +79,6 @@ test('the 2026-10-30 order "pode fazer o merge e deploy", recorded as one merge 
   s.order(ORDER);
   assert.equal(await s.run('bash', MERGE), undefined, 'the merge runs');
   assert.equal(await s.run('shell_start', DEPLOY), undefined, 'the deploy runs');
-  assert.deepEqual(s.advised, [], 'the advisor is never asked about what the order covers');
 }));
 
 test('"faz o merge mas não o deploy" lifts the merge and nothing else', () => withTempDir('optchat-order-lift-', async directory => {
@@ -92,7 +86,6 @@ test('"faz o merge mas não o deploy" lifts the merge and nothing else', () => w
   s.order({ ...ORDER, text: 'faz o merge mas não o deploy', sourceMessageId: '2' });
   assert.equal(await s.run('bash', MERGE), undefined, 'the merge runs');
   waitsForOperator(await s.run('shell_start', DEPLOY));
-  assert.deepEqual(s.advised, []);
 }));
 
 test('an order lifts nothing past its 12-hour TTL', () => withTempDir('optchat-order-lift-', async directory => {

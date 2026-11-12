@@ -17,16 +17,17 @@ export { ACTIONS, IRREVERSIBLE, productionWriteHost, segments, normalPath, type 
 export const LEVELS = ['free', 'report', 'ask'] as const;
 export type Level = typeof LEVELS[number];
 export interface Rule { action: Action | '*'; scope: string[]; level: Level; until?: string; note?: string }
-export interface Contract { version: 1; default: Level | 'advisor'; rules: Rule[] }
-export interface Decision { level: Level | 'advisor'; effect?: Effect; rule?: Rule }
+export interface Contract { version: 1; default: Level; rules: Rule[] }
+export interface Decision { level: Level; effect?: Effect; rule?: Rule }
 
 const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => list.some(item => item === value);
 
 /** A validated contract, or an error naming the first problem. */
 export function parseContract(value: unknown): Contract {
   if (!record(value) || value.version !== 1) throw new Error('autonomy.json must be { "version": 1, "default": ..., "rules": [...] }');
-  const fallback = value.default ?? 'advisor';
-  if (fallback !== 'advisor' && !oneOf(LEVELS, fallback)) throw new Error(`autonomy.json default must be advisor, ${LEVELS.join(', ')}`);
+  // `advisor` (the retired approval advisor) reads as `report`: what has no rule runs and is logged.
+  const fallback = value.default === undefined || value.default === 'advisor' ? 'report' : value.default;
+  if (!oneOf(LEVELS, fallback)) throw new Error(`autonomy.json default must be ${LEVELS.join(', ')}`);
   if (!Array.isArray(value.rules)) throw new Error('autonomy.json rules must be a list');
   const rules = value.rules.map((rule: unknown, index): Rule => {
     const where = `autonomy.json rule ${index + 1}`;
@@ -50,29 +51,28 @@ export function loadContract(dir: string): Contract | undefined {
 const glob = (pattern: string) => new RegExp(`^${pattern.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*')}$`);
 const strictness: Record<Level, number> = { free: 0, report: 1, ask: 2 };
 
-/** First live rule matching the effect wins; a `*` scope matches any target; without one, an irreversible effect asks. */
-export function decideEffect(contract: Contract, effect: Effect, now = Date.now()): Decision {
+/**
+ * First live rule matching the effect wins; a `*` scope matches any target; without one, an irreversible effect asks and
+ * the rest takes the contract's default. `askUnruled` (one folder of a multi-folder delete) asks too.
+ */
+export function decideEffect(contract: Contract, effect: Effect, now = Date.now(), askUnruled = false): Decision {
   const rule = contract.rules.find(r => (r.action === '*' || r.action === effect.action) && (!r.until || Date.parse(r.until) > now)
     && r.scope.some(pattern => pattern === '*' || effect.targets.some(target => glob(pattern).test(target))));
   if (rule) return { level: rule.level, effect, rule };
   // An irreversible effect the operator wrote no rule for waits for him, whatever the default says.
-  return { level: IRREVERSIBLE.includes(effect.action) ? 'ask' : contract.default, effect };
+  return { level: askUnruled || IRREVERSIBLE.includes(effect.action) ? 'ask' : contract.default, effect };
 }
 
-/** A recursive delete removes each of its folders; other effects name one repository several ways (checkout, slug). */
+/** A recursive delete removes each of its folders (more than one waits unless a rule frees each); other effects name one repository several ways (checkout, slug). */
 const separately = (effect: Effect): Effect[] => effect.action === 'recursive-delete' && effect.targets.length > 1
   ? effect.targets.map(target => ({ ...effect, targets: [target] })) : [effect];
 
-/** The strictest decision over every effect of a call; `advisor` when nothing asks and an effect has no rule, or the call has no recognised effect. */
+/** The strictest decision over every effect of a call; a call with no recognised effect is `report`. */
 export function decide(contract: Contract, effects: Effect[], now = Date.now()): Decision {
-  // The gate stopped the call for a reason the classifier cannot name: the contract has nothing to say about it.
-  if (!effects.length) return { level: 'advisor' };
-  const decisions = effects.flatMap(separately).map(effect => decideEffect(contract, effect, now));
-  const asked = decisions.find(d => d.level === 'ask');
-  if (asked) return asked;
-  const open = decisions.find(d => d.level === 'advisor');
-  if (open) return open;
-  return decisions.reduce((worst, d) => strictness[d.level as Level] > strictness[worst.level as Level] ? d : worst);
+  // The gate stopped the call for a reason the classifier cannot name: the contract has nothing to say, so it runs and is logged.
+  if (!effects.length) return { level: 'report' };
+  const decisions = effects.flatMap(effect => { const parts = separately(effect); return parts.map(part => decideEffect(contract, part, now, parts.length > 1)); });
+  return decisions.reduce((worst, d) => strictness[d.level] > strictness[worst.level] ? d : worst);
 }
 
 /** A removed worktree or a file path still belongs to the checkout around it: use the nearest existing folder. */
@@ -100,7 +100,7 @@ export const gitRepo: Repo = {
 export const classifyEffects = (call: { tool: string; input: unknown; cwd: string }, repo: Repo = gitRepo) => classify(call, repo);
 
 /** One line per effect the agent ran under a `report` rule, for the operator's briefing. */
-export function logReported(dir: string, entry: { at: number; action: Action; targets: string[]; summary: string; rule?: string }) {
+export function logReported(dir: string, entry: { at: number; action: Action | 'unclassified'; targets: string[]; summary: string; rule?: string }) {
   appendFileSync(join(dir, 'autonomy-log.jsonl'), `${JSON.stringify(entry)}\n`);
 }
 

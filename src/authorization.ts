@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
-import { externalEffectsOf, productionWriteHost, scriptCommands, runsDeploy, segments } from './effect-classifier.ts';
+import { databaseDestructive, externalEffectsOf, productionWriteHost, scriptCommands, runsDeploy, segments } from './effect-classifier.ts';
 import { browserConsentEffect } from './external-effects.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
@@ -12,7 +14,7 @@ export interface PendingApproval { token: string; tool: string; kind?: string; s
 export type ApprovalMode = 'all' | 'risk';
 /** How a call that waited for the operator stopped waiting. */
 export type Settled = 'approved' | 'denied' | 'superseded' | 'expired';
-interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode; onSettled?: (token: string, outcome: Settled) => void }
+interface Options { now?: () => number; ttlMs?: number; maxPending?: number; mode?: ApprovalMode; onSettled?: (token: string, outcome: Settled) => void; contractDir?: () => string | undefined }
 
 const reads = new Set(['read', 'read_many', 'output_read', 'get_search_content', 'zoom', 'date', 'grep', 'find', 'ls', 'search', 'project_evidence', 'get_goal', 'shell_status', 'catchup_report']);
 const navigation = new Set(['map', 'task', 'search', 'symbol', 'callers', 'callees', 'impact', 'exemplar', 'edit_check', 'quality', 'test_gate']);
@@ -71,6 +73,23 @@ const paidTools = new Set(['subagent', 'spawn', 'tell']);
 export const CONTRACT_CHANGE = 'autonomy contract change';
 /** Whether a call's arguments name autonomy.json, the operator's contract file. */
 const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
+/** Whether a write target is the live contract: names the file and, when the profile folder is known, sits in it. */
+type Target = (path: unknown) => boolean;
+const comparable = (path: string) => (process.platform === 'win32' ? path.replace(/^\/([a-z])\//i, '$1:/').toLowerCase() : path).replaceAll('\\', '/');
+/**
+ * A path that is clearly absolute and clearly elsewhere (a dotfiles mirror, a backup) is a copy of the contract, not the
+ * contract. Anything relative or built from a variable could be the live file, so it stays one.
+ */
+function liveTarget(dir: string | undefined): Target {
+  if (!dir) return namesContract;
+  const folder = comparable(resolve(dir));
+  return path => {
+    if (!namesContract(path)) return false;
+    const word = typeof path === 'string' ? path.replace(/^['"]|['"]$/g, '').replace(/^~(?=[\\/]|$)/, homedir()) : undefined;
+    if (!word || /[$%`]/.test(word) || !isAbsolute(word.replace(/^\/([a-z])\//i, '$1:/'))) return true;
+    return comparable(resolve(dirname(word.replace(/^\/([a-z])\//i, '$1:/')))) === folder;
+  };
+}
 /**
  * Tools whose arguments are prose: naming a file there cannot change it. A delegated agent's task text is prose too:
  * the child runs this same gate and can never approve its own contract change.
@@ -95,13 +114,13 @@ const fsWrite = /\b(?:writeFile|appendFile|rename|copyFile|cp|rm|unlink|truncate
  * Shell commands are judged like bash (a `cat` of the file only reads, 03/11 false positive); a script whose shell calls
  * cannot all be read as literal commands still counts as a writer.
  */
-function codemodeWritesContract(code: string) {
+function codemodeWritesContract(code: string, target: Target) {
   if (!namesContract(code)) return false;
   if (/\btools\.(?:edit|write)\s*\(/.test(code)) return true;
   const shells = code.match(/\btools\.(?:bash|shell_start)\s*\(/g)?.length ?? 0;
   if (!shells) return false;
   const commands = scriptCommands(code);
-  return commands.length < shells || commands.some(shellWritesContract);
+  return commands.length < shells || commands.some(command => shellWritesContract(command, target));
 }
 
 /** Shell text without here-document bodies: a body is content for the file its command line names, like a write's content. */
@@ -122,9 +141,9 @@ const substitution = /\$\(([^()`]*)\)|`([^`$()]*)`/g;
  * assigned from one that names the contract carries the file name into later segments; the substitution itself becomes
  * an empty word. Returns undefined when an inner command can write the file.
  */
-function substitutionsResolved(text: string) {
+function substitutionsResolved(text: string, target: Target) {
   const inner = [...text.matchAll(substitution)].map(match => match[1] ?? match[2]);
-  if (inner.some(shellWritesContract)) return undefined;
+  if (inner.some(command => shellWritesContract(command, target))) return undefined;
   for (const [, name, value] of text.matchAll(/\b(\w+)="?(\$\([^()`]*\)|`[^`$()]*`)/g)) {
     if (namesContract(value)) text = text.replace(new RegExp(`\\$\\{?${name}\\b\\}?`, 'g'), 'autonomy.json');
   }
@@ -137,15 +156,15 @@ const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
  * Whether shell text can write the contract file: a redirect into it, a copy onto it, or any other segment that names it
  * and is not a read-only command. Command substitution naming it counts, since its segments cannot be told apart.
  */
-function shellWritesContract(command: string) {
+function shellWritesContract(command: string, target: Target) {
   const raw = loopVariablesResolved(withoutHeredocBodies(command).replace(/\d*>&\d/g, ''));
   if (!namesContract(raw)) return false;
-  const text = substitutionsResolved(raw);
+  const text = substitutionsResolved(raw, target);
   if (text === undefined || /`|\$\(/.test(text)) return true;
   return segments(text, '.').some(({ command: segment }) => {
-    if ([...segment.matchAll(redirect)].some(match => namesContract(match[1]))) return true;
+    if ([...segment.matchAll(redirect)].some(match => target(match[1]))) return true;
     const rest = segment.replace(redirect, '').replace(/^(?:\w+=\S*\s+)*/, '').trim().replace(controlPrefix, '');
-    if (copyCommand.test(rest)) return namesContract(rest.split(/\s+/).filter(arg => !arg.startsWith('-')).at(-1));
+    if (copyCommand.test(rest)) return target(rest.split(/\s+/).filter(arg => !arg.startsWith('-')).at(-1));
     if (loopHeader.test(rest) || (nodeInline.test(rest) && !fsWrite.test(rest))) return false;
     return namesContract(rest) && !readOnlyCommand.test(rest);
   });
@@ -155,11 +174,12 @@ function shellWritesContract(command: string) {
  * A call that can change the contract: an edit or write of the file, a shell command naming it that is not read-only,
  * or any other tool (codemode, subagents) naming it. Searches, reads and prose such as a reload checkpoint never are.
  */
-export function touchesContract({ tool, input }: { tool: string; input: unknown }) {
+export function touchesContract({ tool, input }: { tool: string; input: unknown }, contractDir?: string) {
+  const target = liveTarget(contractDir);
   if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
-  if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && namesContract(input.path);
-  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command);
-  if (tool === 'codemode' && record(input) && typeof input.code === 'string') return codemodeWritesContract(input.code);
+  if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && target(input.path);
+  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command, target);
+  if (tool === 'codemode' && record(input) && typeof input.code === 'string') return codemodeWritesContract(input.code, target);
   return namesContract(input);
 }
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
@@ -181,9 +201,9 @@ function recursiveDelete(command: string) {
 }
 
 /** The high-impact class a call belongs to in risk mode, or undefined for ordinary work. */
-function riskClass({ tool, input }: Invocation) {
+function riskClass({ tool, input }: Invocation, contractDir?: string) {
   // The agent never widens its own contract: any call that can write autonomy.json waits for the operator.
-  if (touchesContract({ tool, input })) return CONTRACT_CHANGE;
+  if (touchesContract({ tool, input }, contractDir)) return CONTRACT_CHANGE;
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
   if (tool === 'browser_harness') return browserConsentEffect(input) ? 'consent click' : undefined;
   const text = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? input.command
@@ -195,6 +215,7 @@ function riskClass({ tool, input }: Invocation) {
 function shellRisk(text: string, script: boolean) {
   if (recursiveDelete(text)) return 'recursive delete';
   if (productionWriteHost(text)) return 'production write';
+  if ((script ? scriptCommands(text) : [text]).some(databaseDestructive)) return 'database destructive';
   const external = (script ? scriptCommands(text) : [text]).flatMap(externalEffectsOf);
   if (external.some(e => e.action === 'message')) return 'third-party message';
   if (external.length) return 'production write';
@@ -253,10 +274,11 @@ export class EffectApprovals {
   private readonly maxPending: number;
   private readonly mode: ApprovalMode;
   private readonly onSettled: (token: string, outcome: Settled) => void;
+  private readonly contractDir: () => string | undefined;
   // Long enough for an operator who stepped away; the call stays visible on screen meanwhile.
-  constructor({ now = Date.now, ttlMs = 30 * 60_000, maxPending = 32, mode = 'all', onSettled = () => {} }: Options = {}) {
+  constructor({ now = Date.now, ttlMs = 30 * 60_000, maxPending = 32, mode = 'all', onSettled = () => {}, contractDir = () => undefined }: Options = {}) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 256) throw new Error('Invalid approval bounds');
-    this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode; this.onSettled = onSettled;
+    this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode; this.onSettled = onSettled; this.contractDir = contractDir;
   }
   /** Drops a call; one still waiting for the operator reports how it stopped waiting. */
   private drop(token: string, outcome: Exclude<Settled, 'approved'>) {
@@ -279,7 +301,7 @@ export class EffectApprovals {
       return { block: true, reason: 'Not executed: effect approval requires bounded, finite plain JSON arguments.' };
     }
     if (diagnostic(call)) return;
-    const kind = this.mode === 'risk' ? riskClass(call) : undefined;
+    const kind = this.mode === 'risk' ? riskClass(call, this.contractDir()) : undefined;
     if (this.mode === 'risk' && !kind) return;
     const key = standingKey(call);
     if (key && this.standing.get(call.session)?.has(key)) return;
@@ -312,8 +334,8 @@ export class EffectApprovals {
     this.onSettled(token, 'approved');
     [...this.pending].forEach(([key, other]) => { if (other.session === entry.session && !other.approved && other.created <= entry.created && key !== token) this.drop(key, 'superseded'); });
   }
-  /** The advisor's approval of one pending call; unlike the operator's, it leaves the other pending calls waiting. */
-  approveByAdvisor(session: string, token: string) {
+  /** The contract's approval of one pending call; unlike the operator's, it leaves the other pending calls waiting. */
+  approveByContract(session: string, token: string) {
     const entry = this.pending.get(token);
     if (!entry || entry.session !== session || entry.approved) return false;
     entry.approved = true;

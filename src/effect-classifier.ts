@@ -3,12 +3,12 @@ import { browserConsentEffect, browserScriptEffects, commandExternalEffects, pag
 
 /** High-impact effects the autonomy contract decides on. */
 export const ACTIONS = ['push', 'push-main', 'force-push', 'merge', 'publish', 'deploy', 'production-write', 'paid',
-  'discard', 'recursive-delete', 'global-install', 'message', 'consent', 'merge-bypass', 'process-kill'] as const;
+  'discard', 'recursive-delete', 'global-install', 'message', 'consent', 'merge-bypass', 'process-kill', 'database-destructive'] as const;
 /**
  * Effects that cannot be taken back once they reach the world: without a rule of the operator's own in autonomy.json
- * they always wait for him; the advisor never decides them.
+ * they always wait for him.
  */
-export const IRREVERSIBLE: readonly Action[] = ['force-push', 'publish', 'deploy', 'production-write', 'message', 'consent', 'merge-bypass'];
+export const IRREVERSIBLE: readonly Action[] = ['force-push', 'publish', 'deploy', 'production-write', 'message', 'consent', 'merge-bypass', 'database-destructive'];
 export type Action = typeof ACTIONS[number];
 /** One effect a call would have, with what it touches: lowercase paths, `owner/repo` slugs, `ssh:<host>` or a kind. */
 export interface Effect { action: Action; targets: string[] }
@@ -128,6 +128,26 @@ export function productionWriteHost(text: string) {
   const ssh = /(?:^|[\s;&|(])ssh(?:\s+(?:-[ipoFJLRDElbcmSWweOQ]\s*\S+|-[A-Za-z0-9]+))*\s+(?:[\w.-]+@)?(\w[\w.-]*)/.exec(text)?.[1];
   const unprovenClient = databaseClient.test(text) && !(readOnlyForced.test(text) && !readWriteAsked.test(text));
   return ssh && (sqlWrite.test(text) || remoteMutation.test(text) || unprovenClient) ? ssh.toLowerCase() : undefined;
+}
+
+/** Commands that only print or record text: a destructive statement they quote is not run. */
+const textCommand = /^(?:echo|printf|grep|rg|cat|head|tail|less|ls|find|diff|git|gh)$/;
+const destructiveCommand = /(?:^|\s)dropdb\b|\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b[^\n]*--force-reset|\bdocker\s+volume\s+(?:rm|prune)\b|\bdocker(?:\s+|-)compose\b[^\n]*\sdown\b[^\n]*\s(?:-v|--volumes)\b/i;
+const destructiveSql = /\bdrop\s+(?:table|database|schema)\b|\btruncate\s+(?:table\s+)?[\w."]/i;
+/** `DELETE FROM t` up to the end of its statement (`;` or a closing quote) with no WHERE. */
+const deleteWithoutWhere = (text: string) => [...text.matchAll(/\bdelete\s+from\s+[^;"'`]*/gi)].some(([statement]) => !/\bwhere\b/i.test(statement));
+const commandName = (command: string) => unquote(commandWords(command)[0] ?? '').toLowerCase().split(/[/\\]/).at(-1)!;
+
+/**
+ * Whether shell text runs a destructive database command: DROP TABLE/DATABASE/SCHEMA, TRUNCATE, DELETE FROM without a
+ * WHERE, `prisma migrate reset`, `prisma db push --force-reset`, `dropdb`, `docker volume rm|prune`, `docker compose down -v`.
+ * Commands that only print text (echo, grep, cat, git commit messages...) do not count; a here-document body is the SQL
+ * of the command that reads it. Not a sandbox: obfuscated commands pass.
+ */
+export function databaseDestructive(text: string) {
+  const bodies = [...text.matchAll(/^([^\n]*)<<-?\s*(['"]?)(\w+)\2[^\n]*\n([\s\S]*?)\n\s*\3\s*$/gm)].filter(([, head]) => !textCommand.test(commandName(head))).map(match => match[4]);
+  const code = segments(text, '.').map(({ command }) => command).filter(command => !textCommand.test(commandName(command)));
+  return [...code, ...bodies].some(part => destructiveCommand.test(part) || destructiveSql.test(part) || deleteWithoutWhere(part));
 }
 
 /** A recursive delete (rm -r, Remove-Item -Recurse, rd /s) whose targets are not all inside a temp folder. */
@@ -351,6 +371,7 @@ export function classifyEffects({ tool, input, cwd }: { tool: string; input: unk
     const host = productionWriteHost(text);
     if (host) effects.push({ action: 'production-write', targets: [`ssh:${host}`] });
     for (const { command, dir } of segments(text, cwd)) effects.push(...segmentEffects(command, dir, repo, 0));
+    if (databaseDestructive(text)) effects.push({ action: 'database-destructive', targets: ['database'] });
   }
   return effects;
 }

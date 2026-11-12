@@ -7,7 +7,6 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { classifyEffects, decide, parseContract, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { touchesContract } from '../src/authorization.ts';
-import { ADVISOR_PROMPT } from '../src/effect-advisor.ts';
 
 /** Checkouts by path, without git: slug and current branch. */
 const repos: Record<string, [string, string]> = {
@@ -135,7 +134,7 @@ test('a codemode script is judged by the shell commands it hands to tools and th
 });
 
 const contract = parseContract({
-  version: 1, default: 'advisor',
+  version: 1, default: 'report',
   rules: [
     { action: 'push', scope: ['lennix1337/*'], level: 'free', note: 'own branches' },
     { action: 'push-main', scope: ['lennix1337/pi-*', 'lennix1337/dotfiles'], level: 'report', note: 'Pi forks and dotfiles after gates' },
@@ -152,16 +151,16 @@ const verdict = (command: string, cwd = 'C:/Users/swluc') => decide(contract, cl
 test('the first live rule that matches the action and a target decides; otherwise the default', () => {
   assert.equal(verdict('git push -u origin feat/x', 'C:/projetos/pi-optchat'), 'free');
   assert.equal(verdict('git -C C:/projetos/dotfiles push origin main'), 'report');
-  assert.equal(verdict('git push origin main', 'C:/projetos/dentai-mono'), 'advisor', 'no rule names push-main on DentAI');
+  assert.equal(verdict('git push origin main', 'C:/projetos/dentai-mono'), 'report', 'no rule names push-main on DentAI');
   assert.equal(verdict('gh pr merge 86 --repo tecnologia-ai/dentai'), 'ask', 'rule order, not specificity, decides');
-  assert.equal(verdict('node bench.mjs run --label x'), 'advisor', 'an expired rule no longer applies');
-  assert.equal(verdict('git status'), 'advisor', 'no effect: nothing to decide here; the gate already let it through');
+  assert.equal(verdict('node bench.mjs run --label x'), 'report', 'an expired rule no longer applies');
+  assert.equal(verdict('git status'), 'report', 'no effect: nothing to decide here; the gate already let it through');
 });
 
 // Retro 03/11: widening the free build-folder rule to `*/.next/*` would have freed `rm -rf web/.next/types web/src`,
 // because a rule matched when any one of the deleted folders did.
 test('a delete of several folders is as strict as its strictest folder', () => {
-  const deletes = parseContract({ version: 1, default: 'advisor', rules: [
+  const deletes = parseContract({ version: 1, default: 'report', rules: [
     { action: 'recursive-delete', scope: ['*/.next', '*/.next/*'], level: 'free' },
     { action: 'recursive-delete', scope: ['*/worktrees/*'], level: 'report' },
     { action: 'recursive-delete', scope: ['*'], level: 'ask' },
@@ -176,11 +175,11 @@ test('a delete of several folders is as strict as its strictest folder', () => {
   assert.equal(verdict('git -C C:/projetos/dotfiles push origin main'), 'report');
 });
 
-test('a call with no recognised effect goes to the advisor even when the default asks', () => {
-  // The live contract defaults to ask; the fixture above defaults to advisor and would hide this.
+test('a call with no recognised effect runs and is logged even when the default asks', () => {
+  // A strict default must not turn ordinary work into a question: the contract has nothing to say about it.
   const strict = parseContract({ version: 1, default: 'ask', rules: [{ action: 'push', scope: ['lennix1337/*'], level: 'free' }] });
   const level = (command: string, cwd = 'C:/Users/swluc') => decide(strict, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo)).level;
-  assert.equal(level('git status'), 'advisor', 'nothing for the contract to decide');
+  assert.equal(level('git status'), 'report', 'nothing for the contract to decide');
   assert.equal(level('git push origin main', 'C:/projetos/dentai-mono'), 'ask', 'an effect no rule names still gets the default');
   assert.equal(level('git push -u origin feat/x', 'C:/projetos/pi-optchat'), 'free');
 });
@@ -199,40 +198,37 @@ test('an invalid contract names its problem', () => {
   assert.throws(() => parseContract({ version: 1, default: 'yes', rules: [] }), /default/);
 });
 
-/** The registered gate in risk mode with a profile folder holding `contract`, and an advisor that approves everything. */
+/** The registered gate in risk mode with a profile folder holding `contract`. */
 function gate(contractText: string | undefined) {
   const dir = mkdtempSync(join(tmpdir(), 'autonomy-'));
   if (contractText !== undefined) writeFileSync(join(dir, 'autonomy.json'), contractText);
   const hooks = new Map<string, (...args: any[]) => any>();
-  const asked: string[] = [], notices: string[] = [];
+  const notices: string[] = [];
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
-  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir,
-    advisor: async request => { asked.push((request.input as { command: string }).command); return { approve: true, reason: 'looks fine', model: 'm' }; } });
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir });
   const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] },
     ui: { notify: (message: string) => notices.push(message), setWidget: () => {} } };
   const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', toolCallId: command, input: { command } }, ctx);
-  return { dir, asked, notices, call, done: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, notices, call, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test('the gate follows autonomy.json before any advisor: ask waits for the operator even when the advisor would approve', async () => {
+test('the gate follows autonomy.json: ask waits for the operator', async () => {
   const g = gate(JSON.stringify({ version: 1, rules: [{ action: 'merge', scope: ['tecnologia-ai/*'], level: 'ask', note: 'per-PR OK' }] }));
   const refused = await g.call('gh pr merge 86 --repo tecnologia-ai/dentai --squash');
   assert.equal(refused.block, true);
   assert.match(refused.reason, /autonomy\.json says this waits for the operator: merge on .*tecnologia-ai\/dentai: ask \(rule merge tecnologia-ai\/\* : per-PR OK\)|autonomy\.json says this waits for the operator: merge on .*tecnologia-ai\/dentai: ask/);
   assert.match(refused.reason, /\/approve/);
-  assert.deepEqual(g.asked, [], 'the advisor never sees a call the contract reserves for the operator');
   assert.equal((await g.call('gh pr merge 86 --repo tecnologia-ai/dentai --squash')).block, true, 'retrying does not change it');
   g.done();
 });
 
-test('free runs without the advisor; report runs and leaves a line for the briefing', async () => {
+test('free runs; report runs and leaves a line for the briefing', async () => {
   const g = gate(JSON.stringify({ version: 1, rules: [
     { action: 'push', scope: ['lennix1337/*'], level: 'free' },
     { action: 'push-main', scope: ['lennix1337/pi-*'], level: 'report', note: 'after gates' },
   ] }));
   assert.equal(await g.call('git push -u origin feat/x'), undefined);
   assert.equal(await g.call('git push origin HEAD:main'), undefined);
-  assert.deepEqual(g.asked, []);
   const log = readFileSync(join(g.dir, 'autonomy-log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(log.map(entry => [entry.action, entry.targets, entry.summary, entry.rule]),
     [['push-main', ['c:/projetos/pi-optchat', 'lennix1337/pi-optchat'], 'git push origin HEAD:main (in pi-optchat)', 'after gates']]);
@@ -240,15 +236,53 @@ test('free runs without the advisor; report runs and leaves a line for the brief
   g.done();
 });
 
-test('an effect without a rule still goes to the advisor; without a contract nothing changes', async () => {
+const lines = (dir: string) => readFileSync(join(dir, 'autonomy-log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+
+test('an effect without a rule runs and is logged as report, with or without a contract; a legacy advisor default reads as report', async () => {
   const g = gate(JSON.stringify({ version: 1, rules: [{ action: 'push', scope: ['someone-else/*'], level: 'ask' }] }));
   assert.equal(await g.call('git push -u origin feat/x'), undefined);
-  assert.deepEqual(g.asked, ['git push -u origin feat/x']);
+  assert.deepEqual(lines(g.dir).map(entry => entry.action), ['push']);
   g.done();
   const none = gate(undefined);
   assert.equal(await none.call('git push -u origin feat/x'), undefined);
-  assert.deepEqual(none.asked, ['git push -u origin feat/x']);
   none.done();
+  const legacy = gate(JSON.stringify({ version: 1, default: 'advisor', rules: [] }));
+  assert.equal(await legacy.call('git push -u origin feat/x'), undefined);
+  assert.equal(parseContract({ version: 1, default: 'advisor', rules: [] }).default, 'report');
+  legacy.done();
+});
+
+test('git reset --hard and a gated call with no recognised effect run and are logged; an irreversible effect with no rule still asks', async () => {
+  const g = gate(JSON.stringify({ version: 1, default: 'report', rules: [] }));
+  assert.equal(await g.call('git reset --hard origin/main'), undefined);
+  assert.equal(await g.call('npm install -g typescript'), undefined);
+  assert.deepEqual(lines(g.dir).map(entry => entry.action), ['discard', 'global-install']);
+  assert.equal((await g.call('git push --force origin feat/x')).block, true);
+  assert.equal((await g.call('pwsh -File scripts/release/deploy-changed.ps1')).block, true);
+  g.done();
+});
+
+test('the gate asks for destructive database commands and lets reads and bounded SQL through', async () => {
+  const g = gate(JSON.stringify({ version: 1, default: 'report', rules: [] }));
+  const dropdb = ['drop', 'db'].join('');
+  for (const command of ['DROP TABLE x', 'TRUNCATE x', 'DELETE FROM x;', 'psql -c "DROP SCHEMA public CASCADE"', 'mysql -e "delete from users"',
+    'npx prisma migrate reset', 'npx prisma db push --force-reset', `${dropdb} app`, 'docker volume rm pgdata', 'docker volume prune -f', 'docker compose down -v',
+    'docker-compose down --volumes', 'psql <<EOF\nDELETE FROM x;\nEOF'])
+    assert.equal((await g.call(command)).block, true, command);
+  for (const command of ['DELETE FROM x WHERE id=1', 'psql -c "DELETE FROM x WHERE id = 1;"', 'psql -c "SELECT count(*) FROM x"', 'psql -c "UPDATE x SET a = 1 WHERE id = 2"',
+    'docker compose down', 'docker volume ls', 'npx prisma migrate dev', 'npx prisma db push', 'git commit -m "never DROP TABLE x"', 'echo "TRUNCATE x"', 'grep -rn "DELETE FROM" src'])
+    assert.equal(await g.call(command), undefined, command);
+  g.done();
+});
+
+test('a recursive delete of several folders asks unless each folder has a free rule; one folder is reported', async () => {
+  const g = gate(JSON.stringify({ version: 1, default: 'report', rules: [{ action: 'recursive-delete', scope: ['*/node_modules'], level: 'free' }] }));
+  assert.equal((await g.call('rm -rf a b')).block, true);
+  assert.equal((await g.call('rm -rf a/node_modules b')).block, true);
+  assert.equal(await g.call('rm -rf a/node_modules b/node_modules'), undefined);
+  assert.equal(await g.call('rm -rf a'), undefined);
+  assert.deepEqual(lines(g.dir).map(entry => [entry.action, entry.targets.length]), [['recursive-delete', 1]]);
+  g.done();
 });
 
 test('an unreadable contract fails closed: every high-impact call waits for the operator', async () => {
@@ -256,7 +290,6 @@ test('an unreadable contract fails closed: every high-impact call waits for the 
   const refused = await g.call('git push -u origin feat/x');
   assert.equal(refused.block, true);
   assert.match(refused.reason, /autonomy\.json is unreadable/);
-  assert.deepEqual(g.asked, []);
   assert.equal(await g.call('git status'), undefined, 'ordinary work is untouched');
   g.done();
 });
@@ -270,7 +303,6 @@ test('unreadable policy diagnostics do not expose configuration contents', async
     assert.match(refused.reason, /autonomy\.json is unreadable/);
     assert.equal(refused.reason.includes(canary), false);
     assert.equal(g.notices.some(text => text.includes(canary)), false);
-    assert.deepEqual(g.asked, []);
   } finally { g.done(); }
 });
 
@@ -279,12 +311,19 @@ test('the agent cannot widen its own contract: touching autonomy.json waits for 
   const refused = await g.call(`echo '{"version":1,"default":"free","rules":[]}' > ${g.dir}/autonomy.json`);
   assert.equal(refused.block, true);
   assert.match(refused.reason, /Only the operator changes autonomy\.json/);
-  assert.deepEqual(g.asked, [], 'the advisor is not asked either');
   g.done();
 });
 
 // Built, not written out: a literal file name in this edit would trip the very gate this test pins down.
 const contractFile = ['autonomy', 'json'].join('.');
+
+test('the gate lets the live contract be copied into a mirror and still stops a write onto it', async () => {
+  const g = gate(JSON.stringify({ version: 1, default: 'report', rules: [] }));
+  const live = join(g.dir, contractFile), mirror = 'C:/projetos/dotfiles/payload/pi/optchat/p/' + contractFile;
+  assert.equal(await g.call(`cp ${live} ${mirror}`), undefined);
+  assert.equal((await g.call(`cp ${mirror} ${live}`)).block, true);
+  g.done();
+});
 
 test('only a call that can change the contract file is a contract change; searching or mentioning it is not', async () => {
   const f = contractFile;
@@ -345,18 +384,16 @@ test('reads and prose that name the contract file never wait for the operator', 
 test('a search through the gate still runs without asking anyone', async () => {
   const g = gate(undefined);
   assert.equal(await g.call(`grep -rn "${contractFile}" src/*.ts | head`), undefined);
-  assert.deepEqual(g.asked, []);
   g.done();
 });
 
-test('risk mode stops deploys and production writes, and without a rule of the operator the advisor never decides them', async () => {
+test('risk mode stops deploys and production writes unless the operator wrote a rule for them', async () => {
   const g = gate(undefined);
   const write = await g.call('ssh hetzner-dentai "psql -c \\"delete from leads where id=1\\""');
   const deploy = await g.call('pwsh -File scripts/release/deploy-changed.ps1');
   assert.equal(write?.block, true);
   assert.equal(deploy?.block, true);
   assert.match(write.reason, /production-write on ssh:hetzner-dentai: ask \(no matching rule\)/);
-  assert.deepEqual(g.asked, [], 'an approving advisor cannot let an irreversible effect through');
   g.done();
 });
 
@@ -375,8 +412,7 @@ test("an ask rule runs when the operator's typed order covers it, and says so; w
   const notices: string[] = [];
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
   registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir,
-    orderGrant: effect => effect.action === 'merge' || effect.action === 'deploy' ? 'operator order 86455' : undefined,
-    advisor: async () => ({ approve: false, reason: 'never asked', model: 'm' }) });
+    orderGrant: effect => effect.action === 'merge' || effect.action === 'deploy' ? 'operator order 86455' : undefined });
   const ctx = { cwd: 'C:/projetos/dentai-mono', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] },
     ui: { notify: (message: string) => notices.push(message), setWidget: () => {} } };
   const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', toolCallId: command, input: { command } }, ctx);
@@ -392,7 +428,7 @@ test("an ask rule runs when the operator's typed order covers it, and says so; w
 });
 
 // 03/11: asked only "what are these python processes, why so much CPU" and "can Beatriz's dev server be optimized",
-// the agent killed both with taskkill. No gate saw it: a kill was not an effect, so the advisor never weighed it.
+// the agent killed both with taskkill. No gate saw it: a kill was not an effect, so nothing weighed it.
 test('the 03/11 kills are process-kill effects with the processes they stop', () => {
   assert.deepEqual(effects('for p in 6584 33888; do taskkill //PID $p //F >/dev/null 2>&1; echo "$p rc=$?"; done'), ['process-kill pid:$p']);
   assert.deepEqual(effects('taskkill //PID 33856 //T //F 2>&1 | tail -5; echo rc=$?'), ['process-kill pid:33856']);
@@ -409,11 +445,6 @@ test('looking at processes is not a kill', () => {
   for (const command of ['kill -0 4242', 'kill -l', 'kill -s 0 4242', 'tasklist /FI "PID eq 5"', 'powershell -c "Get-Process node"',
     'netstat -ano | grep 3100', 'wmic process get ProcessId,CommandLine', 'echo taskkill', 'grep -n taskkill src/x.ts'])
     assert.deepEqual(effects(command), [], command);
-});
-
-test('the advisor weighs a kill against what the operator asked', () => {
-  assert.match(ADVISOR_PROMPT, /stops a process the agent did not start/);
-  assert.match(ADVISOR_PROMPT, /only asked what it is or why it uses CPU or memory/);
 });
 
 test('a dry run writes nothing, so it needs no approval, as the release scripts already do', () => {

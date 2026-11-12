@@ -268,22 +268,6 @@ export function describe(c: Commitment, now: number): string {
 }
 
 /** Open items, the ones needing attention first, then by deadline, then oldest. */
-/** A memory message, as far as `openTaskOrders` reads it. */
-type Said = { kind?: string; text?: string; origin?: unknown } | undefined;
-/**
- * For each open task OptChat owes: the operator's own message that opened it when its source id is one of his typed
- * messages, else the commitment text. The approval advisor reads these so an order older than the last few
- * messages still covers the steps it needs.
- */
-export function openTaskOrders(items: readonly Commitment[], message: (id: string) => Said, chars = 600): string[] {
-  return items.filter(c => c.owner === 'optchat' && !closed(c.status)).map(c => {
-    const source = /^(0|[1-9]\d*)$/.test(c.source) ? message(c.source) : undefined;
-    const words = source?.kind === 'user' && !source.origin && source.text ? source.text.replace(/\s+/g, ' ').trim() : '';
-    const text = words ? `${words} (task: ${c.text})` : c.text;
-    return text.length > chars ? `${text.slice(0, chars - 1)}\u2026` : text;
-  });
-}
-
 export function openCommitments(items: readonly Commitment[], now: number) {
   const rank = (c: Commitment) => { const flag = attention(c, now); return flag?.startsWith('OVERDUE') ? 0 : flag ? 1 : c.due ? 2 : 3; };
   return items.filter(c => !closed(c.status))

@@ -20,16 +20,14 @@ function fixture() {
   return { root, repo, tree, git, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test('advisor cannot override an unmerged worktree refusal', async () => {
+test('the gate refuses an unmerged worktree removal whatever the contract says', async () => {
   const f = fixture();
   try {
     const hooks = new Map<string, (...args: any[]) => any>();
-    let advised = false;
     registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI,
-      { enabled: true, advisor: async () => { advised = true; return { approve: true, model: 'test', reason: 'yes' }; } });
+      { enabled: true });
     const result = await hooks.get('tool_call')!({ toolName: 'bash', input: { command: `git -C "${f.repo}" worktree remove -f "${f.tree}"` } }, { cwd: f.repo });
     assert.match(result.reason, /feature.*explicit order/i);
-    assert.equal(advised, false);
   } finally { f.cleanup(); }
 });
 

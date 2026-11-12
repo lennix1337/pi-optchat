@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describeGrant, grantTargets, latestGrant, operationalValidations, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, scopePatternCompiles, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
+import { latestGrant, operationalValidations, orderGrantFor, readOperationalState, renderOperationalContext, scopeCovers, scopePatternCompiles, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
 const withDirectory = (run: (directory: string) => void) => withTempDir('optchat-operational-state-', run);
@@ -125,8 +125,6 @@ test('a newer grant with overlapping scope supersedes the older one in queries a
   const context = renderOperationalContext(state);
   assert.match(context, /pode pushar tudo/);
   assert.doesNotMatch(context, /no Git\/push/);
-  assert.match(describeGrant(state, 'push', { command: 'git push' }, 'C:/projetos/x')!, /^ALLOWED push/);
-  assert.equal(describeGrant(state, 'discard', {}, 'C:/projetos/x'), undefined);
 }));
 
 test('a grant keeps the spelling of its scope, so a Linux checkout can still be read, and still matches in any case', () => withDirectory(directory => {
@@ -136,14 +134,9 @@ test('a grant keeps the spelling of its scope, so a Linux checkout can still be 
   assert.equal(latestGrant(state, 'push', '/tmp/repo-abc/src')?.grant.allow, true);
 }));
 
-test('a grant covers the folder a command acts in, not only the session folder', () => withDirectory(directory => {
+test('a grant scope must be a path, never prose', () => withDirectory(directory => {
   const file = join(directory, 'operational-state.json');
-  const state = updateOperationalState(file, scopedGrant('sim pode remover sempre se ja foi mergeada', '1', { action: 'delete', scope: 'C:/projetos', allow: true, until: 'done' }));
-  const grantFor = (command: string) => describeGrant(state, 'discard', { command }, grantTargets({ command }, 'C:/Users/swluc'));
-  assert.match(grantFor('cd C:/projetos/Genexus18MCP && git worktree remove worktrees/pr708 && git branch -D pr708-sync')!, /^ALLOWED delete in C:\/projetos /);
-  assert.match(grantFor('git -C C:/projetos/pi-optchat branch -D feat/x')!, /^ALLOWED delete/);
-  assert.equal(grantFor('git branch -D feat/x'), undefined, 'the home folder is outside the scope');
-  // A prose scope never covers a path, so the advisor would never see the grant it describes.
+  // A prose scope never covers a path, so it would never match anything.
   assert.throws(() => updateOperationalState(file, scopedGrant('sim', '2', { action: 'delete', scope: 'git worktrees whose branch is merged, any project in c:/projetos', allow: true, until: 'done' })), /grant\.scope/);
   assert.throws(() => updateOperationalState(file, scopedGrant('sim', '3', { action: 'push', scope: 'c:/a; c:/b', allow: true, until: 'done' })), /grant\.scope/);
 }));

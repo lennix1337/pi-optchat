@@ -66,15 +66,14 @@ import { registerCommitHookGuard } from './commit-hook-guard.ts';
 import { registerMergeCiGuard } from './merge-ci-guard.ts';
 import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
-import { adviseEffect } from './effect-advisor.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, summarizeTurn, wakeRetry } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
-import { describeGrant, grantTargets, orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
+import { orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
-import { openTaskOrders, boardWaiting, readCommitments, registerCommitments, waitingItems } from './commitments.ts';
+import { boardWaiting, readCommitments, registerCommitments, waitingItems } from './commitments.ts';
 import { latestOperatorMessage } from './operator-words.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
@@ -195,21 +194,8 @@ export default function optchat(pi: ExtensionAPI) {
   registerMergeCiGuard(pi);
   // Each owned browser tab's last page, so input on a consent, account or billing page waits for the operator.
   registerBrowserPages(pi);
-  // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
-  const approvals = registerEffectApprovals(pi, { advisor: (request, ctx) => {
-    const profile = active;
-    if (!profile) return Promise.reject(new Error('no OptChat profile is open'));
-    let grants: string[] = [];
-    try {
-      const line = describeGrant(readOperationalState(join(profile.dir, 'operational-state.json')), request.kind, request.input, grantTargets(request.input, request.cwd));
-      if (line) grants = [line];
-    } catch { /* an unreadable state file must not block the advisor; the operator still decides */ }
-    let tasks: string[] = [];
-    try { tasks = openTaskOrders(readCommitments(profile.dir), id => profile.memory.root[Number(id)]); }
-    catch { /* no commitments file: the recent messages alone decide */ }
-    return adviseEffect(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), { ...request, grants, tasks },
-      message => profile.usage.compression(message, 'advisor', profile.sessionId));
-  }, contractDir: () => active?.dir,
+  // The profile's autonomy.json decides a gated call; what it has no rule for runs and is logged.
+  const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir,
   // "pode fazer o merge e o deploy", recorded as grants quoting it, covers the calls it names instead of one prompt each.
   orderGrant: effect => {
     const profile = active;

@@ -2,38 +2,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { EffectApprovals, touchesContract } from '../src/authorization.ts';
-import { operatorWords, recentRequests, registerEffectApprovals } from '../src/authorization-hooks.ts';
+import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { fromRecords } from '../src/closed-conflicts.ts';
-import { openTaskOrders, type Commitment } from '../src/commitments.ts';
 
 const user = (text: string) => ({ type: 'message', message: { role: 'user', content: text } });
-
-test('machine notices are not operator requests, so an order survives a run of gitwatch notices', () => {
-  const branch = [
-    user('[Slack] pode fazer uma release minor do gx18mcp'),
-    ...Array.from({ length: 5 }, (_, i) => user(`[gitwatch] lennix1337/Genexus18MCP 11:3${i}: PR #84${i} merged`)),
-    user('[shell 628285a3-aaaa] exited 1'),
-    user('[optchat-reload-resume] Native Pi reload completed'),
-    user('[Slack] (aprovação) O operador aprovou no celular: git push'),
-    user('approve-effect 0123456789abcdef01234567'),
-  ];
-  const ctx = { sessionManager: { getBranch: () => branch }, ui: {} } as never;
-  assert.deepEqual(recentRequests(ctx), ['pode fazer uma release minor do gx18mcp']);
-  assert.equal(operatorWords('[Slack #harness] faz o 3'), 'faz o 3');
-  assert.equal(operatorWords('termina a release'), 'termina a release');
-});
-
-test('an open task carries the operator\'s own words that opened it to the advisor', () => {
-  const base = { owner: 'optchat' as const, createdAt: '', updatedAt: '', progressAt: '', notes: [] };
-  const items: Commitment[] = [
-    { ...base, id: 'c_1', text: 'Release minor do GX18MCP', source: '7', status: 'open' },
-    { ...base, id: 'c_2', text: 'Antigo', source: '8', status: 'done' },
-    { ...base, id: 'c_3', text: 'Sem fonte', source: 'slack', status: 'waiting_operator' },
-  ];
-  const memory: Record<string, { kind: string; text: string }> = { 7: { kind: 'user', text: '[Slack] pode fazer' } };
-  assert.deepEqual(openTaskOrders(items, id => memory[id]), ['[Slack] pode fazer (task: Release minor do GX18MCP)', 'Sem fonte']);
-});
 
 test('reading the contract is not changing it', () => {
   const file = 'C:/Users/x/.optchat/profiles/p/autonomy.json';
@@ -71,6 +46,22 @@ test('a read-only command substitution naming the contract only reads it (04/11:
   assert.equal(writes(`f=$(ls ${file}); sed -i s/a/b/ \${f}`), true);
   assert.equal(writes(`x=$(cp y ${file})`), true);
   assert.equal(writes(`x=$(cat $(ls ${file}))`), true);
+});
+
+// 11/11: `cp <live profile>/autonomy.json <dotfiles mirror>/autonomy.json` was refused: both paths name the file, but it
+// only reads the live one. Only a write whose target is the live contract changes it.
+test('copying or printing the live contract into another path is not changing it; a write onto the live file is', () => {
+  const live = join(tmpdir(), 'optchat-profile-p'), liveFile = `${live}/autonomy.json`.replaceAll('\\', '/');
+  const mirror = 'C:/projetos/dotfiles/payload/pi/optchat/p/autonomy.json';
+  const writes = (command: string) => touchesContract({ tool: 'bash', input: { command } }, live);
+  for (const command of [`cp ${liveFile} ${mirror}`, `cp -f "${liveFile}" "${mirror}"`, `cat ${liveFile} > ${mirror}`, `Copy-Item ${liveFile} ${mirror}`, `cp ~/.optchat/profiles/p/autonomy.json ${mirror}`])
+    assert.equal(writes(command), false, command);
+  for (const command of [`cp ${mirror} ${liveFile}`, `cat ${mirror} > ${liveFile}`, `echo '{}' >> "${live}\\autonomy.json"`, `sed -i s/a/b/ ${liveFile}`])
+    assert.equal(writes(command), true, command);
+  assert.equal(touchesContract({ tool: 'write', input: { path: mirror, content: '{}' } }, live), false);
+  assert.equal(touchesContract({ tool: 'write', input: { path: liveFile, content: '{}' } }, live), true);
+  assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cp ${liveFile} ${mirror}' })` } }, live), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `cp ${liveFile} ${mirror}` } }), true, 'without a profile folder to compare, a copy naming the file stays gated');
 });
 
 test('gh pr close --delete-branch is judged as the remote push it is', () => {

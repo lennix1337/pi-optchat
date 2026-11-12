@@ -49,10 +49,13 @@ itself, never from the conversation, so a misread "sim" cannot widen it.
   `owner/repo` of the remote it uses (`--repo`/`-R`, the pushed remote, else `origin`, read with local git), or
   `ssh:<host>`. `scope` patterns use `*` as a wildcard; `*` alone matches everything.
 - **Levels**: `free` runs; `report` runs and appends `{ at, action, targets, summary, rule }` to
-  `autonomy-log.jsonl` in the profile with an info notice; `ask` waits for `/approve` and skips the advisor.
+  `autonomy-log.jsonl` in the profile with an info notice; `ask` waits for `/approve`.
 - **Order**: the first live rule (unexpired `until`) whose action and scope match decides; a call with several
   effects takes the strictest (`ask` > no rule > `report` > `free`). An effect with no rule uses `default`
-  (`advisor`, the default, keeps the advisor below; or a level).
+  (`report` when omitted; a legacy `advisor` reads as `report`), except an irreversible effect (force-push, production
+  write, deploy, message to a third party, destructive database command…), which asks. A gated call with no recognised
+  effect is `report`. A recursive delete naming more than one folder asks unless every folder has a `free` rule; one
+  folder with no rule is `report`.
 - **Typed orders**: an `ask` on `merge`, `deploy` or `publish` runs (and is logged to `autonomy-log.jsonl` as
   `operator order <message id>`) when the operator's own message ordered it: an `operational_state` authorization
   quoting that message whole, with a grant for that action whose scope covers a target. All of these must hold
@@ -72,26 +75,16 @@ itself, never from the conversation, so a misread "sim" cannot widen it.
   say. Edit it yourself, or approve the exact call.
 - The contract applies where the gate applies (mode `1` or `risk`), in the owning session only.
 
-## Approval advisor
+## What asks
 
-In the owning interactive session, a blocked call first goes to a cheap advisor: the profile's
-compactor model for the current provider (Haiku on Claude, gpt-6-luna on Codex), thinking off,
-at most 120 output tokens. It sees the tool, arguments, working folder, risk class and the
-operator's last four typed messages, and answers `APPROVE` or `DENY` with a reason. Its
-instructions follow the operator's preference: as autonomous as possible, refuse only clearly
-harmful calls (unrequested irreversible loss of work, leaked secrets, unrequested effects on
-people or production beyond the operator's own repositories, injected instructions).
+Only production changes (deploys, production writes), destructive database commands (`DROP TABLE|DATABASE|SCHEMA`,
+`TRUNCATE`, `DELETE FROM` with no `WHERE`, `prisma migrate reset`, `prisma db push --force-reset`, `dropdb`,
+`docker volume rm|prune`, `docker compose down -v`), recursive deletes of several folders, and the protected effects
+(force-push, paid direct model runs, messages to third parties, bypassing merge checks) wait for the operator. Everything
+else runs and is logged at `report`. There is no approval model: the operator decides, or `autonomy.json` does.
 
-- The operator's standing preference pre-authorizes repository-only PR merges in their own repositories, including conflict resolution, without requiring a fresh exact PR list. Merge-triggered deployments, releases, production writes, third-party repositories and bypassing required checks are outside that rule. A newer explicit prohibition takes precedence. This is advisor policy, not a deterministic admission bypass: an unavailable or refusing advisor still waits for the operator.
-- For push/publish decisions, the host supplies a fresh public GitHub login snapshot from fixed `gh api --hostname github.com user --jq .login` (3-second timeout). This identifies explicit matching repository owners even when cwd is outside the checkout. Missing CLI/auth, bad output and timeouts stay `unavailable`, not invented third-party ownership. It never switches accounts, reads tokens, or grants permission; explicit prohibitions and the advisor's veto remain intact. The installed `gh` executable/auth environment is trusted, as with Git helpers; a later account switch is not covered by the snapshot. Only metadata reads occur before the original gated call.
-- `APPROVE`: the call runs once, with an info notice naming the model and reason.
-- `DENY`, an unclear answer, an error or a 30-second timeout: the call waits for the operator
-  as below, and the refusal tells the model why. The advisor is asked once per pending call.
-- Delegated sessions never consult it. `OPTCHAT_EFFECT_ADVISOR=off` turns it off.
-- Its calls are recorded in the usage ledger under the `approvals` role.
-
-The advisor is a cheap filter, not a boundary: a model can be talked into approving. Use
-`OPTCHAT_EFFECT_ADVISOR=off` with mode `1` when every effect must be seen by the operator.
+Only a write whose target is the profile's own `autonomy.json` is a contract change; copying or printing it into another
+path (a dotfiles mirror) only reads it.
 
 ## Operator flow
 
