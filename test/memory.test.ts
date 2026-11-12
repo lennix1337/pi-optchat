@@ -1217,6 +1217,8 @@ test('old summarized messages keep their text on disk, not in RAM, and still zoo
     assert.equal(held(total - HOT_TEXTS - 1), false);
     assert.equal(held(total - HOT_TEXTS), true);
     assert.equal(memory.root[5].text, text(5));
+    // One shared getter, not an accessor and a closure per entry: those made every old entry a ~450-byte dictionary-mode object.
+    assert.equal(Object.getOwnPropertyDescriptor(memory.root[5], 'text'), undefined);
     assert.equal(memory.zoom(5, 1), `5+1|user: ${text(5)}`);
     assert.deepEqual(memory.search('Original 17:').map(e => e.i), [17]);
     assert.equal(JSON.parse(JSON.stringify(memory.root[9])).text, text(9));
