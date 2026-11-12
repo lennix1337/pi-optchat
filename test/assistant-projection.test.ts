@@ -5,7 +5,7 @@ import type { RunInfo } from '../src/runs.ts';
 
 const run = (id: string, parentSession: string, state: RunInfo['state'] = 'completed', source?: 'pi-subagents'): RunInfo => ({ id, parentSession, state, source, task: 'secret-task', report: 'secret-report', cwd: '', model: '', thinking: '', started: 0, depth: 1, guidance: [] });
 const sources = () => ({ profileId: 'profile-a', sessionId: 'session-a',
-  approvals: [{ token: 'secret-token', tool: 'bash', summary: 'secret-credential\n\x1b[31m', expires: 1 }],
+  approvals: [{ token: 'secret-token', tool: 'bash', summary: 'secret-credential\n\x1b[31m', detail: 'secret-credential', expires: 1 }],
   operations: [{ id: 'session-a:call', status: 'started' as const, error: true, evidence: 'secret-evidence', tool: 'secret-args' }, { id: 'other:call', status: 'started' as const }],
   runs: [run('run-a', 'session-a', 'failed'), run('other', 'session-b'), run('external', '', 'completed', 'pi-subagents')],
 });
@@ -53,7 +53,7 @@ test('empty scope and operation evidence status are explicit', () => {
   assert.equal(page.rows[0].status, 'reconciled');
   assert.equal(page.rows[0].verification, 'not_verified');
   assert.ok(!renderLocalInbox(page).includes('untrusted report'));
-  const unknownTool = projectLocalInbox({ profileId: 'p', sessionId: 's', approvals: [{ token: 'token', tool: 'secret-credential', summary: '', expires: 1 }], operations: [], runs: [] });
+  const unknownTool = projectLocalInbox({ profileId: 'p', sessionId: 's', approvals: [{ token: 'token', tool: 'secret-credential', summary: '', detail: '', expires: 1 }], operations: [], runs: [] });
   assert.ok(!renderLocalInbox(unknownTool).includes('secret-credential'));
   const hostile = projectLocalInbox({ profileId: 'p', sessionId: 's', approvals: [], runs: [run('id\n\x1b[31msecret', 's')], operations: [] });
   assert.equal(hostile.rows[0].reference.type === 'agent' && hostile.rows[0].reference.id, 'id\n\x1b[31msecret');

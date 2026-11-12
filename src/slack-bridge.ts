@@ -64,7 +64,9 @@ const defaultRequest: Request = async (owner, path, body, cancel) => assistantRe
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
-export type ApprovalRequest = { token: string; summary: string; label: string; expires: number; decide: (approve: boolean) => boolean;
+export type ApprovalRequest = { token: string; summary: string; label: string; expires: number;
+  /** The whole invocation, shown verbatim in the post so the operator sees exactly what he approves. */
+  detail?: string; decide: (approve: boolean) => boolean;
   /** An effect the bridge itself runs on the phone's decision (a remote command); its answer replaces the note to the agent. */
   onPhone?: (approve: boolean) => Promise<string> };
 /** What an approval post says once the call stopped waiting, so it never stays "pendente" with live buttons. */
@@ -552,7 +554,8 @@ export class SlackBridge {
     const now = this.options.now();
     for (const [ts, post] of this.approvals) if (post.request.expires <= now) this.approvals.delete(ts);
     const minutes = Math.max(1, Math.round((request.expires - now) / 60_000));
-    const head = `⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\n`, tail = `(vale ${minutes} min). Aprova só esta chamada, uma vez.`;
+    const full = request.detail ? `\`\`\`${request.detail.replaceAll('```', '`\u200b``')}\`\`\`\n` : '';
+    const head = `⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\n${full}`, tail = `(vale ${minutes} min). Aprova só esta chamada, uma vez.`;
     try {
       let ts: string, channel: string | undefined;
       try { ({ ts, channel } = await this.send(`${head}Toque em *Aprovar* ou *Negar*, ou responda *aprovar*/*negar* nesta thread ${tail}`, null, null, { approval: true })); }

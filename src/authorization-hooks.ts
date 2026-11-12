@@ -221,7 +221,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     const pending = gate.pendingFor(session).find(p => p.token === refusal.token);
     if (pending && !alerted.has(pending.token)) {
       alerted.add(pending.token);
-      ctx.ui.notify(`Approval needed \u2014 ${label(pending)}: ${pending.summary}. Type /approve to run it once, /deny to drop it.`, 'warning');
+      ctx.ui.notify(`Approval needed \u2014 ${label(pending)}. Type /approve to run it once, /deny to drop it.\n${pending.detail}`, 'warning');
       bell();
       if (onPending) phone.hold(pending, session);
     }
