@@ -154,8 +154,8 @@ class ColdEntry implements Entry {
 }
 /** A summary whose text lives in the tree files; plain fields and one shared getter, like ColdEntry. */
 class ColdSummary implements Summary {
-  constructor(readonly l: number, readonly i: number, readonly size: number, private readonly read: () => string) {}
-  get text() { return this.read(); }
+  constructor(readonly l: number, readonly i: number, readonly size: number, private readonly store: Store) {}
+  get text() { return this.store.nodeText!(this.l, this.i); }
 }
 function isSummary(value: unknown): value is Summary {
   return object(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
@@ -252,11 +252,10 @@ export class Memory {
   }
   /** Summaries outside the shown views are read back from disk when needed instead of held as text. */
   private chillTree() {
-    if (!this.store.nodeReader) return;
+    if (!this.store.hasNode) return;
     const shown = new Set([...this.chat.parts, ...this.compaction.parts].map(key));
     for (const [id, node] of this.tree) {
-      const read = !shown.has(id) && Object.getOwnPropertyDescriptor(node, 'text')?.writable ? this.store.nodeReader(node.l, node.i) : undefined;
-      if (read) this.tree.set(id, new ColdSummary(node.l, node.i, node.size, read));
+      if (!shown.has(id) && Object.getOwnPropertyDescriptor(node, 'text')?.writable && this.store.hasNode(node.l, node.i)) this.tree.set(id, new ColdSummary(node.l, node.i, node.size, this.store));
     }
   }
   private loadTree(records: unknown[]) {
