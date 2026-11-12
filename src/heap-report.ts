@@ -118,6 +118,7 @@ export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, so
   const heap = deps.heapStats(), usage = process.memoryUsage();
   result.summary = { rssMb: mb(usage.rss), heapUsedMb: mb(heap.used_heap_size), heapLimitMb: mb(heap.heap_size_limit),
     heapUsedPercentOfLimit: round(heap.used_heap_size / heap.heap_size_limit * 100), afterGc: Boolean(gc) };
+  if (input.snapshot) result.snapshot = await snapshot(heap, deps);
   result.memoryUsage = usage;
   result.v8 = { heap, spaces: spaces() };
   result.eventLoop = eventLoop();
@@ -125,7 +126,6 @@ export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, so
   result.pi = sources.session ? piSide(sources.session) : null;
   result.optchat = sources.optchat ?? null;
   if (gc) result.gc = gc;
-  if (input.snapshot) result.snapshot = await snapshot(heap, deps);
   return result;
 }
 async function snapshot(heap: v8.HeapInfo, deps: HeapDeps) {
