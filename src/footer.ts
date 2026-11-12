@@ -78,11 +78,16 @@ const quotaTone = (used: number): Tone | undefined => used >= 95 ? 'error' : use
 const windowPart = (name: string, w: QuotaWindowRow, now: number, reset: boolean): Pick<Segment, 'text' | 'tone'> =>
   w.resetAt <= now ? { text: `${name} ?` } : { text: `${name} ${Math.round(w.used)}%${reset ? ` (${resetText(w.resetAt, now)})` : ''}`, tone: quotaTone(w.used) };
 
+/** Cache hit with two decimals, cut down rather than rounded, so only a fully cached prompt reads 100,00%. */
+export function cacheText(hit: number): string {
+  return `cache ${(Math.floor(hit * 10_000 + 1e-9) / 100).toFixed(2).replace('.', ',')}%`;
+}
+
 /** The footer's parts, the least important first to go when the terminal is narrow (`drop` high goes first). */
 export function footerSegments(input: FooterInput): Segment[] {
   const { now, quota, context } = input, out: Segment[] = [];
   if (input.model) out.push({ text: modelText(input.model.id, input.model.thinking), drop: 0 });
-  if (input.cacheHit !== undefined) out.push({ text: `cache ${Math.round(input.cacheHit * 100)}%`, tone: input.cacheHit < 0.5 ? 'warning' : undefined, drop: 2.5 });
+  if (input.cacheHit !== undefined) out.push({ text: cacheText(input.cacheHit), tone: input.cacheHit < 0.5 ? 'warning' : undefined, drop: 2.5 });
   if (input.spend !== undefined) out.push({ text: `${dollars(input.spend)} hoje`, drop: 1 });
   if (context?.window) {
     const used = context.tokens === null ? undefined : context.tokens / context.window * 100;
