@@ -94,7 +94,10 @@ test('without a UI the footer is left to Pi; with one it replaces it and unmount
 });
 
 test('the footer leads with the model and its thinking level, then the cache hit of the last reply', async () => {
-  const { lastCacheHit, modelText, FooterState, footerLine } = await import('../src/footer.ts');
+  const { lastCacheHit, modelText, cacheText, FooterState, footerLine } = await import('../src/footer.ts');
+  assert.equal(cacheText(0.99996), 'cache 99,99%', 'a nearly full cache never shows as 100%');
+  assert.equal(cacheText(1), 'cache 100,00%');
+  assert.equal(cacheText(0.5729), 'cache 57,29%');
   assert.equal(modelText('claude-opus-5-5', 'high'), 'opus-5-5 high');
   assert.equal(modelText('openai-codex/gpt-6.1-sol', 'xhigh'), 'gpt-6.1-sol xhigh');
   assert.equal(modelText('gpt-6.1-terra'), 'gpt-6.1-terra');
@@ -110,7 +113,7 @@ test('the footer leads with the model and its thinking level, then the cache hit
   assert.equal(lastCacheHit(sm(undefined)), undefined, 'an empty session has no hit to show');
   const ctx = { getContextUsage: () => ({ tokens: 50_000, contextWindow: 500_000 }), model: { id: 'claude-opus-5-5', provider: 'anthropic', contextWindow: 500_000 }, sessionManager: sm('d') } as never;
   const input = new FooterState(ctx, { spend: () => 3, quotaState: () => ({}), thinking: () => 'high', now: () => 0 }).input(undefined);
-  assert.equal(footerLine(input, 200, (_t, s) => s), 'opus-5-5 high · cache 60% · $3,00 hoje · contexto 50k/500k');
+  assert.equal(footerLine(input, 200, (_t, s) => s), 'opus-5-5 high · cache 60,00% · $3,00 hoje · contexto 50k/500k');
   assert.equal(footerLine(input, 14, (_t, s) => s), 'opus-5-5 high', 'the model is the last part to go on a narrow terminal');
   const broken = new FooterState({ ...ctx as object, sessionManager: { getLeafEntry: () => { throw new Error('x'); } } } as never, { spend: () => 3, quotaState: () => ({}), thinking: () => { throw new Error('y'); }, now: () => 0 }).input(undefined);
   assert.equal(footerLine(broken, 200, (_t, s) => s), 'opus-5-5 · $3,00 hoje · contexto 50k/500k', 'a failing source only hides its part');
