@@ -47,8 +47,10 @@ export interface Store {
   image(name: string): Maybe<{ mimeType: Mime; data: Uint8Array } | undefined>;
   /** Reads message `i`'s text back from the log, so Memory can drop old texts from RAM. Undefined when the store cannot. */
   reader?(i: number): (() => string) | undefined;
-  /** Reads summary node (`l`, `i`) back from the tree files, so Memory can drop old summaries from RAM. Undefined when the store cannot. */
-  nodeReader?(l: number, i: number): (() => string) | undefined;
+  /** Whether summary node (`l`, `i`) can be read back from the tree files, so Memory can drop old summaries from RAM. */
+  hasNode?(l: number, i: number): boolean;
+  /** Reads summary node (`l`, `i`) back from the tree files. */
+  nodeText?(l: number, i: number): string;
   /** How many messages' log positions the store keeps in RAM, for diagnostics. */
   lineIndexSize?(): number;
   lock?: Lease;
@@ -186,13 +188,14 @@ export class FileStore implements Store {
   private readonly lastSeenBytes = new Map<string, number>();
   /** Where each message's line is, by message index, so its text can be read back. */
   private readonly lines = new Map<number, { file: string; offset: number; length: number }>();
-  /** Where each summary node's latest line is, by level and index. */
-  private readonly nodes = new Map<number, { file: string; offset: number; length: number }>();
+  /** Where each summary node's latest line starts, by level and index, as one number (file slot * 2^40 + offset): ~300k of them. */
+  private readonly nodes = new Map<number, number>();
+  private readonly nodeFiles: string[] = [];
   private cached?: { file: string; data: Buffer; timer: ReturnType<typeof setTimeout> };
   constructor(readonly directory: string, private readonly warn: (s: string) => void = console.error) {}
   load(): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
-    this.lines.clear(); this.nodes.clear();
+    this.lines.clear(); this.nodes.clear(); this.nodeFiles.length = 0;
     const main = join(this.directory, 'main'), entries = records(main, this.warn, (value, file, offset, length) => {
       const i = (value as { i?: unknown } | null)?.i;
       if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
@@ -204,7 +207,7 @@ export class FileStore implements Store {
     if (existsSync(view)) try { saved = readFileSync(view, 'utf8'); } catch { saved = ''; }
     const tree = records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
-      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), { file, offset, length });
+      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
     });
     return { entries, tree, view: saved };
   }
@@ -221,14 +224,20 @@ export class FileStore implements Store {
     const line = this.lines.get(i);
     return line && (() => lineText(this.read(line.file), line.offset, line.length, i, line.file));
   }
-  nodeReader(l: number, i: number) {
-    const line = this.nodes.get(l * 2 ** 40 + i);
-    return line && (() => {
-      let record: { l?: unknown; i?: unknown; text?: unknown } | null;
-      try { record = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length)); } catch { record = null; }
-      if (record?.l !== l || record.i !== i || typeof record.text !== 'string') throw new Error(`Summary ${l}:${i} is no longer where it was in ${line.file}; restart Pi to reload the memory.`);
-      return record.text;
-    });
+  private nodeSlot(file: string) {
+    const slot = this.nodeFiles.lastIndexOf(file);
+    return slot >= 0 ? slot : this.nodeFiles.push(file) - 1;
+  }
+  hasNode(l: number, i: number) { return this.nodes.has(l * 2 ** 40 + i); }
+  nodeText(l: number, i: number) {
+    const at = this.nodes.get(l * 2 ** 40 + i), file = this.nodeFiles[Math.floor((at ?? 0) / 2 ** 40)];
+    let record: { l?: unknown; i?: unknown; text?: unknown } | null = null;
+    if (at !== undefined) try {
+      const data = this.read(file), offset = at % 2 ** 40, end = data.indexOf(0x0a, offset);
+      record = JSON.parse(data.toString('utf8', offset, end < 0 ? data.length : end));
+    } catch { record = null; }
+    if (record?.l !== l || record.i !== i || typeof record.text !== 'string') throw new Error(`Summary ${l}:${i} is no longer where it was${file ? ` in ${file}` : ''}; restart Pi to reload the memory.`);
+    return record.text;
   }
   private read(file: string) {
     if (this.cached?.file === file) { this.cached.timer.refresh(); return this.cached.data; }
