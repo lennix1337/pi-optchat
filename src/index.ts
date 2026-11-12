@@ -439,8 +439,16 @@ export default function optchat(pi: ExtensionAPI) {
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
     else pi.sendUserMessage(text, { deliverAs: 'steer', expandPromptTemplates: false });
   };
-  const deliverReport = async (text: string, { once = false, count, runIds, workerRecovery }: { once?: boolean; count?: number; runIds?: string[]; workerRecovery?: boolean } = {}) => {
+  const deliverReport = async (text: string, { once = false, count, runIds, workerRecovery, quiet = false }: { once?: boolean; count?: number; runIds?: string[]; workerRecovery?: boolean; quiet?: boolean } = {}) => {
     if (once && (active?.memory.root.some(e => e.receipt === reportReceipt(text)) || reports.some(r => r.text === text))) return;
+    // Progress from a worker never wakes an idle main agent: it joins the session now, and memory, which builds the next turn's
+    // view, keeps it as work: no run is open to log it.
+    // A running agent still gets it steered in, through the normal path below.
+    if (quiet && !stopping && active && idle()) {
+      logMessage(active.memory, { role: 'user', content: text, timestamp: Date.now() }, reportReceipt(text));
+      pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true }, { triggerTurn: false });
+      return;
+    }
     if (runIds && heartbeat?.waking) {
       wakeWorkers.queued(text, runIds);
       if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);

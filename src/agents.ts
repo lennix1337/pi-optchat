@@ -247,7 +247,7 @@ export class Children {
   private parkNoteTimer: unknown;
   constructor(private readonly memory: Memory, private readonly registry: ModelRegistry,
     private readonly choice: () => ModelChoice, private readonly instructions: () => string,
-    private readonly report: (text: string, options?: { once?: boolean; count?: number; runIds?: string[] }) => Promise<void>, private readonly warn: (text: string) => void,
+    private readonly report: (text: string, options?: { once?: boolean; count?: number; runIds?: string[]; quiet?: boolean }) => Promise<void>, private readonly warn: (text: string) => void,
     private readonly profileDirectory = memory.directory, private readonly options: Options = {}) {
     this.history = new RunHistory(profileDirectory);
     this.external = new ExternalRuns(profileDirectory);
@@ -777,12 +777,13 @@ export class Children {
   /** Lets a child message its parent mid-run, the way tell lets the parent guide it. */
   private parentTool(id: string, parentId: string | undefined, connected: boolean) {
     return { name: 'tell_parent', label: parentId ? 'Message parent agent' : 'Message main agent',
-      description: `Send ${parentId ? 'your parent agent' : 'the main agent'} a question or important finding while you keep working. Its reply can arrive as guidance; continue useful work instead of polling. Your final answer is delivered automatically.`,
+      description: parentId ? 'Send your parent agent a question or important finding while you keep working. Its reply can arrive as guidance; continue useful work instead of polling. Your final answer is delivered automatically.'
+        : 'Send the main agent progress or a finding while you keep working. It arrives without interrupting the main agent. A question that blocks you goes in your final answer: end the run with it. Your final answer is delivered automatically.',
       parameters: childToolSchemas.parent, execute: async (_id: string, args: { message: string }) => {
         const message = args.message.trim();
         if (!message) throw new Error('Message is empty.');
         const text = `[${id}] ${connected ? 'Connected agent message' : 'Message from subagent (still running)'}: ${message}`;
-        if (!await this.toParent(parentId, text)) throw new Error('Your parent is no longer running.');
+        if (!await this.toParent(parentId, text, !connected)) throw new Error('Your parent is no longer running.');
         return result(parentId ? `Message sent to parent ${parentId}.` : 'Message sent to the main agent.');
       },
     };
@@ -839,9 +840,9 @@ export class Children {
     catch (error) { this.warn(`Could not copy a peer message to the manager: ${String(error)}`); }
     return `${answer} ${PEER_MESSAGES - self.peer.sent} of ${PEER_MESSAGES} peer messages left for this pair.`;
   }
-  /** A mid-run message to a child's parent: false if that parent is no longer running. */
-  private async toParent(parentId: string | undefined, text: string) {
-    if (!parentId) { await this.report(text); return true; }
+  /** A mid-run message to a child's parent: false if that parent is no longer running. `quiet`: progress for the main agent, which reads it with its next turn instead of starting one. */
+  private async toParent(parentId: string | undefined, text: string, quiet = false) {
+    if (!parentId) { await this.report(text, quiet ? { quiet } : undefined); return true; }
     const parent = this.running.get(parentId);
     if (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state)) return false;
     if (parent.info.state === 'running') await parent.session.steer(text);
