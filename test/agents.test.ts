@@ -368,7 +368,7 @@ test('children get the main agent\'s extensions, AGENTS.md files and skills, but
 test('children can message their parent mid-run: the main agent, an idle parent, or a busy one', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-tell-parent-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
-  const reports: string[] = [], warnings: string[] = [], releases = new Map<string, () => void>();
+  const reports: string[] = [], quiet: string[] = [], warnings: string[] = [], releases = new Map<string, () => void>();
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
@@ -400,7 +400,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     },
   });
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
-    async text => { reports.push(withoutFullChat(text)); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+    async (text, options) => { reports.push(withoutFullChat(text)); if (options?.quiet) quiet.push(withoutFullChat(text)); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const heard = (id: string, from: string) => children.messages(id).some(m => m.role === 'assistant' && textContent(m.content).includes(`heard: [${from}] Message from subagent (still running): question from`));
   try {
     // Top-level child: the message reaches the main agent before the final report.
@@ -410,6 +410,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     releases.get('asker-top')!();
     await until(() => !children.active);
     assert.deepEqual(reports, [`[${top}] Message from subagent (still running): question from asker-top`, `[${top}] asked`]);
+    assert.deepEqual(quiet, [`[${top}] Message from subagent (still running): question from asker-top`], 'the root worker progress is quiet; its final report still wakes the main agent');
 
     // Idle parent (waiting on its child) is woken by the message.
     const [idle] = await children.spawn([{ task: 'boss-idle' }], dir);
@@ -424,6 +425,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     releases.get('asker-idle-after-ask')!();
     await until(() => !children.active);
     assert.equal(reports.length, 3, 'nested messages stay with the parent, not the main agent');
+    assert.equal(quiet.length, 1, 'a message to a parent worker is never quiet: it still wakes or steers that parent');
 
     // Busy parent gets the message as steering at its next tool boundary.
     const [busy] = await children.spawn([{ task: 'boss-busy' }], dir);

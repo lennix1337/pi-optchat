@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerDelegationNudge } from '../src/crew.ts';
 import { DEPLOY_COMMANDS, DeployWatch, HOLD, RELEASE, clock, isDeployCommand, refusal, registerDeployGuard, workerHooks } from '../src/deploy.ts';
 import { loadConfig } from '../src/profiles.ts';
 import { ShellJobs, runningShells } from '../src/shells.ts';
@@ -19,15 +18,14 @@ function fakePi() {
   return { pi, emit };
 }
 
-/** The extension's wiring: the guard, the nudge and the watch over one ShellJobs. */
-function harness(options: { extra?: string[]; working?: { id: string }[]; delegateAfter?: number } = {}) {
+/** The extension's wiring: the guard and the watch over one ShellJobs. */
+function harness(options: { extra?: string[]; working?: { id: string }[]} = {}) {
   const { pi, emit } = fakePi();
   const shells = new ShellJobs();
   const told: string[] = [];
   const workers = { working: options.working ?? [], tell: async (id: string, message: string) => { told.push(`${id}: ${message}`); } };
   const watch = new DeployWatch({ shells: () => runningShells(shells), extra: () => options.extra ?? [] }, workerHooks(() => workers));
   registerDeployGuard(pi as never, watch, listener => shells.subscribe(listener));
-  registerDelegationNudge(pi as never, () => options.delegateAfter ?? 2, () => true, () => watch.quiet());
   emit('session_start');
   let id = 0;
   const call = (toolName: string, input: Record<string, unknown> = {}) => {
@@ -35,14 +33,7 @@ function harness(options: { extra?: string[]; working?: { id: string }[]; delega
     const blocked = emit('tool_call', { toolName, toolCallId, input });
     return { toolCallId, blocked, finish: (text = 'ok') => emit('tool_result', { toolName, toolCallId, input, content: [{ type: 'text', text }] }) };
   };
-  /** A tool result as the nudge hook sees it: whether the delegation reminder joined it. */
-  const nudged = (toolName: string, command: string) => {
-    const { toolCallId, blocked } = call(toolName, { command });
-    assert.equal(blocked, undefined);
-    const patched = emit('tool_result', { toolName, toolCallId, input: { command }, content: [{ type: 'text', text: 'ok' }] });
-    return Boolean(patched?.content?.some((block: { text: string }) => block.text.includes('[crew]')));
-  };
-  return { emit, shells, watch, told, call, nudged };
+  return { emit, shells, watch, told, call };
 }
 
 /** A shell body that ends when the test says so, successfully or not. */
@@ -104,32 +95,6 @@ test('a profile config keeps deployCommands and refuses anything that is not a l
     assert.throws(() => load({ deployCommands: [1] }), /Invalid profile config/);
     assert.throws(() => load({ deployCommands: [' '] }), /Invalid profile config/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('the delegation reminder is silent in a turn that ran a deploy and while one runs, and comes back after', () => {
-  const h = harness();
-  h.emit('agent_start');
-  assert.equal(h.nudged('bash', 'git status --short && npm test'), false, 'first execution call');
-  assert.equal(h.nudged('bash', 'npm run build'), true, 'the reminder fires as before in an ordinary turn');
-  // A turn that ran a deploy command: the reminder stays quiet for the rest of that turn, even after the deploy returned.
-  h.emit('agent_start');
-  assert.equal(h.nudged('bash', 'pwsh -File scripts/release/deploy-web.ps1 -Commit abc'), false);
-  for (let i = 0; i < 6; i++) assert.equal(h.nudged('bash', `npm run step-${i}`), false, `quiet after the deploy command, call ${i}`);
-  h.emit('agent_start');
-  assert.equal(h.nudged('bash', 'npm run a'), false);
-  assert.equal(h.nudged('bash', 'npm run b'), true, 'the next turn is an ordinary one');
-
-  // A deploy shell started in an earlier turn keeps every later turn quiet until it ends.
-  const running = gate();
-  const shell = h.shells.start('pwsh -File scripts/release/deploy-web.ps1 -Commit abc', '/project', running.run);
-  h.emit('agent_start');
-  for (let i = 0; i < 6; i++) assert.equal(h.nudged('edit', `x${i}`), false, `quiet while the deploy shell runs, call ${i}`);
-  running.end();
-  return h.shells.settle(shell, 5_000).then(() => {
-    h.emit('agent_start');
-    assert.equal(h.nudged('bash', 'npm run a'), false);
-    assert.equal(h.nudged('bash', 'npm run b'), true, 'the reminder is back once the shell has ended');
-  });
 });
 
 test('spawn and subagent launches are refused while a deploy shell runs, and allowed again when it ends well or badly', async () => {

@@ -44,7 +44,13 @@ function mergedPr(branch: string, repo: string) {
 const key = (path: string) => { try { return realpathSync.native(path).toLowerCase(); } catch { return resolve(path).toLowerCase(); } };
 const within = (path: string, dir: string) => key(path) === key(dir) || key(path).startsWith(key(dir).replace(/[\\/]$/, '') + sep);
 
-/** Refuse a registered worktree unless its tip is proven merged into origin's default or a merged PR. */
+/** Nothing to lose: no uncommitted or untracked change, and its HEAD is already on some remote-tracking ref. */
+function cleanAndPushed(path: string, head: string | undefined) {
+  if (!head || run('git', ['status', '--porcelain'], path) !== '') return false;
+  return Boolean(run('git', ['for-each-ref', '--count=1', '--contains', head, '--format=%(refname)', 'refs/remotes'], path));
+}
+
+/** Refuse a registered worktree unless its tip is proven merged into origin's default or a merged PR, or it is clean and already pushed. */
 export function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr = mergedPr): string | undefined {
   for (const target of worktreeRemovalTargets(text, cwd)) {
     const list = run('git', ['worktree', 'list', '--porcelain'], target.repo);
@@ -61,7 +67,7 @@ export function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr = 
       const head = /^HEAD ([a-f0-9]+)$/m.exec(entry)?.[1];
       const base = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], target.repo);
       const ancestor = head && base && run('git', ['merge-base', '--is-ancestor', head, base], target.repo) !== undefined;
-      if (!ancestor && !(branch && hasMergedPr(branch, target.repo))) return `Blocked removal of worktree ${path} (branch ${branch ?? 'detached HEAD'}): removal of unmerged worktrees needs the operator's explicit order.`;
+      if (!ancestor && !(branch && hasMergedPr(branch, target.repo)) && !cleanAndPushed(path, head)) return `Blocked removal of worktree ${path} (branch ${branch ?? 'detached HEAD'}): removal of unmerged worktrees needs the operator's explicit order.`;
     }
   }
   return undefined;

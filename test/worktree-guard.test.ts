@@ -47,6 +47,29 @@ test('unmerged forced worktree removal is blocked, ancestor and squash merge are
   } finally { f.cleanup(); }
 });
 
+test('a clean worktree whose HEAD is on a remote-tracking ref may go; a dirty one or one with commits on no remote may not', () => {
+  const f = fixture();
+  try {
+    const remove = (path: string) => `git -C "${f.repo}" worktree remove -f "${path}"`;
+    assert.match(worktreeRemovalRefusal(remove(f.tree), f.repo, () => false)!, /feature/, 'commit on no remote');
+    f.git('update-ref', 'refs/remotes/origin/feature', 'feature');
+    writeFileSync(join(f.tree, 'scratch.txt'), 'untracked');
+    assert.match(worktreeRemovalRefusal(remove(f.tree), f.repo, () => false)!, /feature/, 'pushed but dirty (untracked)');
+    rmSync(join(f.tree, 'scratch.txt'));
+    writeFileSync(join(f.tree, 'file'), 'edited');
+    assert.match(worktreeRemovalRefusal(remove(f.tree), f.repo, () => false)!, /feature/, 'pushed but dirty (tracked)');
+    writeFileSync(join(f.tree, 'file'), 'feature');
+    assert.equal(worktreeRemovalRefusal(remove(f.tree), f.repo, () => false), undefined, 'clean and pushed');
+    assert.equal(worktreeRemovalRefusal(`rm -rf "${f.tree}"`, f.repo, () => false), undefined, 'rm -rf of the same clean pushed worktree');
+    // A detached gate worktree at a pushed PR head.
+    const gate = join(f.root, 'gate');
+    f.git('worktree', 'add', '--detach', gate, 'feature');
+    assert.equal(worktreeRemovalRefusal(remove(gate), f.repo, () => false), undefined, 'detached at a pushed head');
+    execFileSync('git', ['-C', gate, 'commit', '--allow-empty', '-m', 'local only'], { stdio: 'pipe' });
+    assert.match(worktreeRemovalRefusal(remove(gate), f.repo, () => false)!, /detached HEAD/, 'detached with a commit on no remote');
+  } finally { f.cleanup(); }
+});
+
 test('removing a folder that holds unmerged worktrees is blocked', () => {
   const f = fixture();
   try {

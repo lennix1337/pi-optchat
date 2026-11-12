@@ -56,7 +56,7 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
 import { registerReadChainHint } from './read-chain.ts';
-import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, registerDelegationNudge, routeFor } from './crew.ts';
+import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, routeFor } from './crew.ts';
 import { lastRunsOf } from './wake-signals.ts';
 import { createPatrol, escalationNote } from './patrol.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
@@ -190,9 +190,9 @@ export default function optchat(pi: ExtensionAPI) {
   registerRecursiveGrepNarrowing(pi);
   // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
   registerCommitHookGuard(pi);
-  // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts); the profile's local-gate
-  // verdicts cover checks GitHub never started.
-  registerMergeCiGuard(pi, { dir: () => active && join(active.dir, 'local-gate') });
+  // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts); checks GitHub never
+  // started do not count.
+  registerMergeCiGuard(pi);
   // Each owned browser tab's last page, so input on a consent, account or billing page waits for the operator.
   registerBrowserPages(pi);
   // Risky calls go first to the profile's cheap compactor model (Haiku on Claude, gpt-6-luna on Codex), thinking off.
@@ -228,10 +228,9 @@ export default function optchat(pi: ExtensionAPI) {
   onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
-  // A production deploy in flight (src/deploy.ts): the delegation reminder is quiet, launches are refused, running workers hold heavy work.
+  // A production deploy in flight (src/deploy.ts): launches are refused, running workers hold heavy work.
   const deploy = new DeployWatch({ shells: () => runningShells(shells), extra: () => active?.config.deployCommands ?? [] }, workerHooks(() => active?.children));
   registerDeployGuard(pi, deploy, listener => shells.subscribe(listener));
-  registerDelegationNudge(pi, () => active?.config.delegateAfter ?? 0, () => active?.config.managerMode === true, () => deploy.quiet());
   registerReadChainHint(pi); // Lone read after lone read: batch the independent ones (src/read-chain.ts). Workers load no extension, so only this session gets it.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
@@ -439,8 +438,16 @@ export default function optchat(pi: ExtensionAPI) {
     if (prompt) pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true, details: { count } }, { triggerTurn: true, deliverAs: 'steer' });
     else pi.sendUserMessage(text, { deliverAs: 'steer', expandPromptTemplates: false });
   };
-  const deliverReport = async (text: string, { once = false, count, runIds, workerRecovery }: { once?: boolean; count?: number; runIds?: string[]; workerRecovery?: boolean } = {}) => {
+  const deliverReport = async (text: string, { once = false, count, runIds, workerRecovery, quiet = false }: { once?: boolean; count?: number; runIds?: string[]; workerRecovery?: boolean; quiet?: boolean } = {}) => {
     if (once && (active?.memory.root.some(e => e.receipt === reportReceipt(text)) || reports.some(r => r.text === text))) return;
+    // Progress from a worker never wakes an idle main agent: it joins the session now, and memory, which builds the next turn's
+    // view, keeps it as work: no run is open to log it.
+    // A running agent still gets it steered in, through the normal path below.
+    if (quiet && !stopping && active && idle()) {
+      logMessage(active.memory, { role: 'user', content: text, timestamp: Date.now() }, reportReceipt(text));
+      pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true }, { triggerTurn: false });
+      return;
+    }
     if (runIds && heartbeat?.waking) {
       wakeWorkers.queued(text, runIds);
       if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);

@@ -8,7 +8,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from '@earen
 import { createAgentSession, ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Children, specialistMemoryTool } from '../src/agents.ts';
 import type { ModelChoice } from '../src/compactor.ts';
-import { AUDIT_DAYS, Crew, DIGEST_BYTES, type WorkerKind, MEMORY_BYTES, NUDGE, SPECIALIST_VIEW_BYTES, checkContract, crewTool, crewWakeNote, missingParts, pauseOnApiKey, registerDelegationNudge, routeFor, specialistOf } from '../src/crew.ts';
+import { AUDIT_DAYS, Crew, DIGEST_BYTES, type WorkerKind, MEMORY_BYTES, SPECIALIST_VIEW_BYTES, checkContract, crewTool, crewWakeNote, missingParts, pauseOnApiKey, routeFor, specialistOf } from '../src/crew.ts';
 import { Memory, type Compressor } from '../src/memory.ts';
 import { quotaPlan } from '../src/quota-health.ts';
 import type { RunInfo } from '../src/runs.ts';
@@ -189,41 +189,11 @@ test('a memory file stamped slightly ahead of the clock reads as 0.0 days old, n
   } finally { removeDir(dir); }
 });
 
-test('the delegation nudge appears on every Nth execution call of a turn, only in manager mode', async () => {
-  const handlers = new Map<string, (event: any) => any>();
-  const pi = { on: (name: string, handler: (event: any) => any) => { handlers.set(name, handler); } };
-  let on = true;
-  registerDelegationNudge(pi as never, () => 3, () => on);
-  const call = (toolName: string) => handlers.get('tool_result')!({ toolName, content: [{ type: 'text', text: 'ok' }] });
-  assert.equal(call('bash'), undefined);
-  assert.equal(call('read'), undefined, 'reads do not count');
-  assert.equal(call('edit'), undefined);
-  assert.equal(call('bash').content.at(-1).text, `\n${NUDGE(3)}`);
-  handlers.get('agent_start')!({});
-  assert.equal(call('bash'), undefined, 'a new turn starts the count again');
-  on = false;
-  for (let i = 0; i < 5; i++) assert.equal(call('bash'), undefined);
-});
-
-test('the delegation nudge does not count bash calls that only read', () => {
-  const handlers = new Map<string, (event: any) => any>();
-  registerDelegationNudge({ on: (name: string, handler: (event: any) => any) => { handlers.set(name, handler); } } as never, () => 2, () => true);
-  const call = (command: string, toolName = 'bash') => handlers.get('tool_result')!({ toolName, input: { command }, content: [{ type: 'text', text: 'ok' }] });
-  const reads = ['cat package.json', 'head -n 5 a.ts | wc -l', 'tail -f log', "sed -n '1,20p' src/a.ts", 'grep -rn "foo" src && rg bar', 'ls -la; git status --short', 'git log --oneline -5',
-    'git -C C:/projetos/x diff --stat', 'git show HEAD:a.ts', 'gh pr view 12', 'gh issue list --state open', 'git diff 2>&1 | head -20', 'grep -i x f'];
-  for (const command of reads) for (let i = 0; i < 3; i++) assert.equal(call(command), undefined, `read: ${command}`);
-  const executes = ['npm test', 'cat a > b', 'sed -i s/a/b/ f', "sed -n -i 'p' f", 'ls && make clean', 'git commit -m x', 'git push', 'gh pr merge 3', 'gh api -X POST /x', 'cat $(make)', 'echo hi', 'git diff --output=out.patch', 'grep foo f | tee out', 'cat a; npm test'];
-  for (const command of executes) {
-    handlers.get('agent_start')!({});
-    assert.equal(call(command), undefined, `first: ${command}`);
-    assert.ok(call(command)?.content.at(-1).text.includes(NUDGE(2)), `counts: ${command}`);
-  }
-  handlers.get('agent_start')!({});
-  assert.equal(call('x', 'edit'), undefined);
-  assert.ok(call('x', 'write'), 'edit and write still count');
-  handlers.get('agent_start')!({});
-  assert.equal(call('x', 'shell_start'), undefined);
-  assert.ok(call('cat a', 'shell_start'), 'shell_start counts whatever it runs');
+test('manager mode adds no delegation reminder to tool results and has no setting for one', async () => {
+  const crewModule = await import('../src/crew.ts');
+  assert.equal('registerDelegationNudge' in crewModule, false);
+  assert.equal('NUDGE' in crewModule, false);
+  assert.equal('delegateAfter' in (await import('../src/settings.ts')).SETTINGS, false);
 });
 
 /** A Children over a synthetic provider: `control.reply` is what workers answer, `control.hold` keeps their turn from ending until it resolves. */

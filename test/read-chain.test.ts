@@ -32,7 +32,7 @@ test('bash is read-only only when every part of the command plainly reads', () =
   assert.equal(isReadOnlyCall({ name: 'bash', input: { command: 5 } }), false, 'a non-string command');
 });
 
-test('the classifier the delegation nudge uses is the one the hint uses', () => {
+test('the hint classifies shell commands with onlyReads', () => {
   for (const command of ['find . -name x', 'git rev-parse HEAD', 'git branch -a', 'date', 'gh pr status', 'find . -delete', 'git branch -D x']) assert.equal(isReadOnlyCall(bash(command)), onlyReads(command), command);
 });
 

@@ -434,8 +434,6 @@ export class Crew {
 /** Messages an author-reviewer pair may send each other, both directions together (tell_peer). */
 export const PEER_MESSAGES = 6;
 
-/** Tool calls that execute or edit; a manager that makes many of them in one turn is doing a worker's job. */
-const EXECUTION = new Set(['bash', 'powershell', 'edit', 'write', 'shell_start']);
 /** One simple command that only reads: cat/head/tail/sed -n/grep/rg/ls/wc, git status|log|diff|show, gh <noun> view|list|status, date, git rev-parse, git branch listing, find without -delete/-exec. */
 const READ_ONLY = [/^(?:cat|head|tail|grep|rg|ls|wc)(?:\s|$)/, /^sed\s+-n\s(?!(?:.*\s)?-[a-z]*i\b)/, /^git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show)(?:\s|$)/, /^gh\s+\S+\s+(?:view|list|status)(?:\s|$)/, /^date(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+rev-parse(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+branch(?:\s+(?:-a|-r|-v|-vv|--list|--all|--remotes))*$/, /^find\s(?!.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)/];
 /** Whether a shell command is made only of reading commands. Doubtful commands (redirections, substitutions, in-place or output flags,
@@ -446,30 +444,14 @@ export function onlyReads(command: string) {
   const segments = text.split(/&&|\|\||[;|\n]/).map(part => part.trim()).filter(Boolean);
   return segments.length > 0 && segments.every(part => READ_ONLY.some(pattern => pattern.test(part)));
 }
-export const NUDGE = (count: number) => `[crew] ${count} execution calls in this turn. You are the manager: hand edits, builds and tests to a worker (spawn with kind "code", or "mechanical" for rote work) with a contract, and review its report.`;
-/** Appends one reminder to the result of the Nth execution call of a turn, then every N calls after it. `quiet` silences it (a production
- * deploy runs in this session, never through a worker: src/deploy.ts). */
-export function registerDelegationNudge(pi: ExtensionAPI, after: () => number, enabled: () => boolean, quiet: () => boolean = () => false) {
-  let count = 0;
-  pi.on('agent_start', () => { count = 0; });
-  pi.on('tool_result', event => {
-    if (!enabled() || !EXECUTION.has(event.toolName) || quiet()) return;
-    if (event.toolName === 'bash' && typeof event.input?.command === 'string' && onlyReads(event.input.command)) return;
-    const limit = after();
-    if (limit <= 0 || ++count % limit !== 0) return;
-    return { content: [...event.content, { type: 'text' as const, text: `\n${NUDGE(count)}` }] };
-  });
-}
-
 export const MANAGER_DOC = `# Manager mode
 You are the manager of a crew. You talk with the operator, decide, plan, write contracts, review workers' results and report. Workers execute. The operator turned this mode on: it is his standing request to delegate to workers, so spawning one needs no further ask (plain subagents without a kind still do).
-- Small work stays with you: reads, a short one-file fix, about 3-5 commands. Only multi-file edits, long suites and long investigations go to workers (a new worker builds a new prompt cache): call spawn with \`kind\` and a contract.
+- Work up to one PR in one repo stays with you. Workers only for batches of independent fixes in parallel (own worktrees) or long suites/investigations (a new worker builds a new prompt cache): call spawn with \`kind\` and a contract.
 - Kinds: "code" (Sonnet, code changes), "mechanical" (Haiku, rote edits, renames, data gathering), "hard" (Opus, the hardest design or SDK work), "plan" (Opus scout, read-only, returns contracts).
 - A contract has lines starting with Goal:, Acceptance:, Evidence: and Authority: (what the worker may and may not do; my authority map caps it). A worker gets the contract and its project's charter and memory, not this chat: put every fact it needs in the contract.
 - Review a report like a code review: check its evidence (diff, test output, CI) before you believe it; send it back with tell when it falls short. A code worker's report ends with its branch state (commits ahead, diff stat, dirty tree). When it holds up, crew accept (run, title, text = the PR description) ships its committed branch in one call: push, PR, auto-merge, the linked commitments, and it returns the run's proposals. Push, PRs and merges stay with you.
-- Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "edit" for a line or two, "write" to rewrite); reject the rest. Audit each project memory weekly: read the memory, its proposals and the recent runs, fill a thin memory from verified facts, drop stale lines, then write it, or call action "audit" when nothing changed.
+- Each report ends with a memory proposal: apply the lines that are true and lasting with the crew tool (action "edit" for a line or two, "write" to rewrite); reject the rest.
 - A production deploy (deploy-web.ps1, deploy-prod.ps1...) is not delegated: run it yourself, in the foreground of this session, and keep the machine quiet (no workers, no suites) until the swap is verified.
-- Open missions that span wakes live in the crew's missions.md: keep each one with its goal, acceptance and next step until accepted.
 - Each specialist keeps a memory tree of its workers' finished runs, one leaf per report: crew view and zoom (with project) read it, crew list shows each project's last runs, and every worker brief carries its view.
 - Author and reviewer: spawn the reviewer with \`peer: <authorRunId>\` (same project); the two message each other with tell_peer (${PEER_MESSAGES} per pair, information, never orders), a message to a finished author resumes it, and you get a copy of each in memory without a turn. Push, PRs and merges stay with you.
 - Follow-ups of a worker's task (review findings, red CI on its PR, an added requirement) go to that worker with tell <id>, never a new spawn: it resumes with its whole conversation and its prompt cache. A spawn in a project and directory whose worker finished within 24 h names that run in its answer. "Ask a specialist" means spawn a "plan" worker for that project: it reads the project's tree and code and answers.`;

@@ -4,8 +4,8 @@ import { commandWords, segments } from './effect-classifier.ts';
 /**
  * A production deploy runs in the foreground of the main session, never through a worker, and the machine stays quiet while it
  * runs. This file knows when one is in flight: the run of a deploy entry point (a bash/powershell call, or a background shell,
- * including a bash call that the long-command mover turned into a shell) marks it until that call or shell ends. While it is, the
- * delegation reminder stays quiet, spawn/subagent launches are refused, running workers are told to hold heavy local work, and the
+ * including a bash call that the long-command mover turned into a shell) marks it until that call or shell ends. While it is,
+ * spawn/subagent launches are refused, running workers are told to hold heavy local work, and the
  * status note shows the deploy.
  */
 
@@ -63,20 +63,17 @@ export const clock = (at: number) => new Intl.DateTimeFormat('pt-BR', { hour: '2
 export class DeployWatch {
   private readonly calls = new Map<string, DeployInfo>();
   private readonly shellMatches = new Map<string, boolean>();
-  private ranThisTurn = false;
   private current: DeployInfo | undefined;
   constructor(private readonly source: DeploySource, private readonly hooks: DeployHooks, private readonly now: () => number = Date.now) {}
 
   /** A call that starts a command: a foreground one is in flight until `end`; a background shell is read from the shells themselves. */
   begin(callId: string, tool: string, command: string) {
     if (!isDeployCommand(command, this.source.extra())) return;
-    this.ranThisTurn = true;
     if (tool !== 'shell_start') this.calls.set(callId, { since: this.now(), command });
     this.refresh();
   }
   /** The foreground call finished (success, failure, abort or refusal). */
   end(callId: string) { if (this.calls.delete(callId)) this.refresh(); }
-  newTurn() { this.ranThisTurn = false; }
   /** The earliest deploy in flight, if any. */
   active(): DeployInfo | undefined {
     const live = new Set<string>();
@@ -90,8 +87,6 @@ export class DeployWatch {
     for (const id of [...this.shellMatches.keys()]) if (!live.has(id)) this.shellMatches.delete(id);
     return found.sort((a, b) => a.since - b.since)[0];
   }
-  /** The delegation reminder is quiet in a turn that ran a deploy command and while one is in flight. */
-  quiet() { return this.ranThisTurn || this.active() !== undefined; }
   /** Compares with the last state and fires `started`/`ended` once per deploy; call after anything that may have changed it. */
   refresh() {
     const now = this.active(), before = this.current;
@@ -101,7 +96,7 @@ export class DeployWatch {
       else if (!now && before) this.hooks.ended(before);
     } catch { /* telling workers is a courtesy: it never fails the call or the shell that triggered it */ }
   }
-  reset() { this.calls.clear(); this.shellMatches.clear(); this.ranThisTurn = false; this.current = undefined; }
+  reset() { this.calls.clear(); this.shellMatches.clear(); this.current = undefined; }
 }
 
 export const refusal = (info: DeployInfo) => `Deploy em andamento desde ${clock(info.since)}: segure novos agentes até a troca ser verificada. Um deploy roda em primeiro plano nesta sessão, sem trabalhadores, e a máquina fica quieta até lá.${info.shell ? ` Se travou: shell_stop ${info.shell.slice(0, 8)}.` : ''}`;
@@ -125,7 +120,6 @@ export function registerDeployGuard(pi: ExtensionAPI, watch: DeployWatch, subscr
   pi.on('session_start', () => { unsubscribe?.(); unsubscribe = subscribe(() => watch.refresh()); watch.refresh(); });
   // A /reload leaves shells running for the new instance, which reads them itself; this one lets go of the shells and its state.
   pi.on('session_shutdown', () => { unsubscribe?.(); unsubscribe = undefined; watch.reset(); });
-  pi.on('agent_start', () => watch.newTurn());
   pi.on('tool_call', event => {
     const input = event.input as { command?: unknown; action?: unknown } | undefined;
     if (['bash', 'powershell', 'shell_start'].includes(event.toolName) && typeof input?.command === 'string') watch.begin(event.toolCallId, event.toolName, input.command);

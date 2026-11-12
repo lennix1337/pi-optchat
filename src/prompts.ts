@@ -166,7 +166,7 @@ export const NO_DELEGATION = 'You are at the maximum delegation depth. Complete 
 /** Pi hands steering to a run only between tool calls, so one long command keeps the parent and the user from reaching it. */
 export const STEERABLE = 'Never block in a single command for more than about 60 seconds. To wait for something, poll in short separate tool calls (for example one `sleep 30` per call), so messages from your parent or the user can reach you between calls.';
 export const CONNECTED = 'You are speaking directly with the user in a connected window. Continue this conversation across requests. Use tell_parent for questions or findings the main agent needs now. A handoff will be generated when the user completes or disconnects the window.';
-export const NOT_CONNECTED = 'Use tell_parent only when your parent needs something now (a blocking question, an important early finding, or when asked to). Your final answer is delivered automatically; do not repeat it with tell_parent.';
+export const NOT_CONNECTED = 'Use tell_parent for progress or an important early finding; a message to the main agent does not interrupt it. A question that blocks you goes in your final answer: end the run with it. Your final answer is delivered automatically; do not repeat it with tell_parent.';
 
 // The message a subagent is resumed with after a Pi restart cut it off.
 export const RESTARTED = 'Pi restarted while you were working. Your last tool call may have been cut off; check its effect before redoing it. Continue your task.';
