@@ -304,6 +304,16 @@ test('an approval post is decided only by aprovar/negar in its own DM thread, on
   } finally { f.close(); }
 });
 
+test('an approval post shows the whole command in a code block', async () => {
+  const f = fixture();
+  try {
+    const detail = `bash (em /repo):\nssh prod "psql -c 'SELECT ${'x, '.repeat(80)}y'"`;
+    await f.bridge.askApproval({ token: '5'.repeat(24), summary: 'ssh prod "psql…', detail, label: 'production-write', expires: 1_000_000 + 600_000, decide: () => true });
+    const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string };
+    assert.ok(post.text.includes(`\`\`\`${detail}\`\`\``), 'the full invocation, untruncated');
+  } finally { f.close(); }
+});
+
 test('an approval still reaches Slack, without buttons, when the service predates them', async () => {
   const f = fixture();
   try {

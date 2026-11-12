@@ -209,7 +209,7 @@ export default function optchat(pi: ExtensionAPI) {
   },
   // A call that waits for the operator is also posted to their Slack DM, where its buttons or `aprovar`/`negar` in its
   // thread decide it; decided anywhere else, the post is rewritten to say so.
-  onPending: (pending, session, gate) => void slack.askApproval({ token: pending.token, summary: pending.summary, label: pending.kind ?? pending.tool, expires: pending.expires,
+  onPending: (pending, session, gate) => void slack.askApproval({ token: pending.token, summary: pending.summary, detail: pending.detail, label: pending.kind ?? pending.tool, expires: pending.expires,
     decide: approve => gate.decideFromPhone(session, pending.token, approve) }),
   onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));

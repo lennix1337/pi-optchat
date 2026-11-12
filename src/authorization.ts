@@ -7,9 +7,10 @@ import { browserConsentEffect } from './external-effects.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
-interface Pending { session: string; fingerprint: string; expires: number; approved: boolean; tool: string; kind?: string; summary: string; created: number }
+interface Pending { session: string; fingerprint: string; expires: number; approved: boolean; tool: string; kind?: string; summary: string; detail: string; created: number }
 /** What the operator sees for a call waiting on approval. */
-export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; expires: number }
+/** `summary` is one line for lists; `detail` is the whole invocation, which the operator reads before approving. */
+export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; detail: string; expires: number }
 /** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
 export type ApprovalMode = 'all' | 'risk';
 /** How a call that waited for the operator stopped waiting. */
@@ -236,6 +237,14 @@ function summarize({ tool, input, cwd }: Invocation) {
   return (line.length > 120 ? `${line.slice(0, 119)}…` : line) + where;
 }
 
+/** The exact invocation, untruncated: a command or script verbatim, other arguments as JSON, plus its directory. */
+export function describeInvocation({ tool, input, cwd }: Invocation) {
+  const body = record(input) && typeof input.command === 'string' ? input.command
+    : record(input) && typeof input.code === 'string' ? input.code
+      : JSON.stringify(input, null, 2) ?? String(input);
+  return `${tool}${cwd ? ` (em ${cwd.replaceAll('\\', '/')})` : ''}:\n${body}`;
+}
+
 const pushMain = /^git -C (\S+) push origin main$/;
 
 /** Lowercase forward-slash absolute path without dot segments, or undefined. */
@@ -316,7 +325,7 @@ export class EffectApprovals {
     if (this.pending.size >= this.maxPending) return { block: true, reason: 'Not executed: effect approval capacity reached. Wait for expiry or session reset; do not dispatch a substitute action.' };
     const token = randomBytes(12).toString('hex');
     const now = this.now();
-    this.pending.set(token, { session: call.session, fingerprint, expires: now + this.ttlMs, approved: false, tool: call.tool, kind, summary: summarize(call), created: now });
+    this.pending.set(token, { session: call.session, fingerprint, expires: now + this.ttlMs, approved: false, tool: call.tool, kind, summary: summarize(call), detail: describeInvocation(call), created: now });
     return this.refusal(call.tool, token, kind);
   }
   private refusal(tool: string, token: string, kind?: string): Refusal {
@@ -327,7 +336,7 @@ export class EffectApprovals {
     this.expire();
     return [...this.pending].filter(([, entry]) => entry.session === session && !entry.approved)
       .sort(([, a], [, b]) => b.created - a.created)
-      .map(([token, { tool, kind, summary, expires }]) => ({ token, tool, kind, summary, expires }));
+      .map(([token, { tool, kind, summary, detail, expires }]) => ({ token, tool, kind, summary, detail, expires }));
   }
   /** Approves one call and drops the older calls it superseded: the model was told to wait, so they were abandoned. */
   private grant(token: string) {

@@ -216,6 +216,17 @@ test('approving one call clears the calls it superseded from the screen', async 
   assert.equal((await hooks.get('tool_call')!(first, ctx)).block, true, 'a superseded call is not approved by the newer approval');
 });
 
+test('a pending approval carries the whole invocation, however long, beside its one-line summary', () => {
+  const gate = new EffectApprovals();
+  const sql = `ssh prod "psql -c \\"SELECT ${'col, '.repeat(60)}id FROM t;\\""`;
+  token(gate, invocation('bash', { command: sql }));
+  const [pending] = gate.pendingFor('owner');
+  assert.ok(pending.summary.length < 160, 'the summary stays one short line');
+  assert.equal(pending.detail, `bash (em /repo):\n${sql}`);
+  token(gate, invocation('codemode', { code: 'await tools.x({a: 1});\nreturn 2;' }));
+  assert.equal(gate.pendingFor('owner').find(p => p.tool === 'codemode')!.detail, 'codemode (em /repo):\nawait tools.x({a: 1});\nreturn 2;', 'a script is shown verbatim, not as "codemode script"');
+});
+
 test('pending approvals expire from the screen', async () => {
   let now = 0;
   const gate = new EffectApprovals({ now: () => now, ttlMs: 100 });
