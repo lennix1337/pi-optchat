@@ -95,6 +95,12 @@ function liftOrdered(dir: string, effects: Effect[], orderGrant: OrderGrant, pen
   return remaining ?? 'run';
 }
 
+/** For an action a typed order can lift: how to record the order he already gave, so the gate runs it without a per-call approval. */
+export function orderHint(action: string | undefined) {
+  if (action !== 'merge' && action !== 'deploy' && action !== 'publish') return '';
+  return `If his message already orders this ${action}, do not ask him to approve the call: record it with operational_state {kind:"authorization", sourceMessageId:"<his message id or latest>", text:"<his exact words>", grant:{action:"${action}", scope:"<repo root, e.g. C:/projetos/dentai-mono>", allow:true, until:"done"}} and rerun the call; the order then covers its retries for 12 h. `;
+}
+
 /** The contract's word on a refused call: `run`, a refusal note, or undefined when no profile is open (the operator decides). */
 function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
   if (touchesContract(call, contractDir())) {
@@ -117,7 +123,7 @@ function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource,
   }
   if (!decision) return undefined;
   if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
-    : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ` };
+    : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ${orderHint(decision.effect?.action)}` };
   // A call with no recognised effect is logged only when the gate named a risk class for it: in `all` mode that is every tool call.
   if (decision.level === 'report' && dir && (decision.effect || pending.kind)) reportEffect(dir, decision, pending, ctx);
   return 'run';

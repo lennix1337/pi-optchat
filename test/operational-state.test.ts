@@ -272,3 +272,22 @@ test('a document already validated at the read boundary is rendered without vali
   renderOperationalContext({ version: 1, entries: [...state.entries] });
   assert.equal(operationalValidations() - beforeRender, 1, 'a document that did not come through the read boundary is still validated');
 }));
+
+test('a full log makes room by dropping its oldest check, so the operator\'s next order is still recorded', () => withTempDir('optchat-opstate-full-', directory => {
+  const file = join(directory, 'operational-state.json');
+  updateOperationalState(file, { kind: 'decision', text: 'keep me', sourceMessageId: '1' });
+  updateOperationalState(file, { kind: 'check', text: 'oldest check', sourceMessageId: '2', status: 'verified', evidence: [{ kind: 'test', ref: 'x' }] } as OperationalUpdate);
+  for (let i = 0; i < 254; i++) updateOperationalState(file, { kind: 'decision', text: `decision ${i}`, sourceMessageId: String(10 + i) });
+  assert.equal(readOperationalState(file).entries.length, 256);
+  const next = updateOperationalState(file, { kind: 'authorization', text: 'ok pode fazer deploy', sourceMessageId: '153389', grant: { action: 'deploy', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
+  assert.equal(next.entries.length, 256);
+  assert.equal(next.entries.at(-1)!.text, 'ok pode fazer deploy');
+  assert.ok(next.entries.some(entry => entry.text === 'keep me'), 'decisions stay');
+  assert.ok(!next.entries.some(entry => entry.text === 'oldest check'), 'the check made room');
+}));
+
+test('a full log with nothing stale still refuses', () => withTempDir('optchat-opstate-full-', directory => {
+  const file = join(directory, 'operational-state.json');
+  for (let i = 0; i < 256; i++) updateOperationalState(file, { kind: 'decision', text: `decision ${i}`, sourceMessageId: String(i) });
+  assert.throws(() => updateOperationalState(file, { kind: 'decision', text: 'one more', sourceMessageId: '999' }), /entry limit 256 reached/);
+}));
