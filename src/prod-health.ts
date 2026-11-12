@@ -123,6 +123,16 @@ export function advance(state: HealthState, results: Map<string, ProbeResult>, n
   return out;
 }
 
+/** Every remote probe failing to resolve its host at once says this machine's DNS is down, not production: such a round counts for nothing (the history still records it). One probe failing alone stays a real failure. */
+const DNS_FAULT = /\((ENOTFOUND|EAI_AGAIN)\)$/;
+function withoutLocalNetworkFaults(probes: readonly (Probe | LocalProbe)[], results: Map<string, ProbeResult>): Map<string, ProbeResult> {
+  const remote = probes.filter(p => !('check' in p)).map(p => results.get(p.name)!);
+  if (remote.length < 2 || !remote.every(r => !r.ok && DNS_FAULT.test(r.problem ?? ''))) return results;
+  const kept = new Map(results);
+  for (const p of probes) if (!('check' in p)) kept.delete(p.name);
+  return kept;
+}
+
 /** One line per probe for the morning summary and the status command. */
 export function healthLines(state: HealthState): string[] {
   const measure = (s: ProbeState) => s.detail ? ` · ${s.detail}` : s.ms !== undefined ? ` (${s.ms} ms)` : '';
@@ -161,7 +171,7 @@ export class ProdHealth {
     const now = this.options.now ?? Date.now, fetcher = this.options.fetcher ?? defaultFetch;
     const probes = this.options.probes ?? DEFAULT_PROBES;
     const results = new Map(await Promise.all(probes.map(async p => [p.name, await runProbe(p, fetcher, now, dir)] as const)));
-    const state = readHealth(dir, this.file), transitions = advance(state, results, now());
+    const state = readHealth(dir, this.file), transitions = advance(state, withoutLocalNetworkFaults(probes, results), now());
     atomicWrite(join(dir, this.file), JSON.stringify(state));
     appendHistory(join(dir, this.file.replace(/\.json$/, '.history.jsonl')), now(), results);
     return transitions;

@@ -163,3 +163,18 @@ test('a probe keeps the CDN edge (colo and cache status) so a slow stretch can b
     assert.equal(row.edge, 'GRU DYNAMIC');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('every remote probe failing on DNS is this machine\'s network, not production: no failure is counted, so it never alerts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'health-'));
+  try {
+    const dns: Fetcher = async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }); };
+    const health = new ProdHealth({ fetcher: dns, now: () => T0 });
+    for (let i = 0; i < FAILURES_BEFORE_ALERT + 1; i++) assert.deepEqual(await health.round(dir), []);
+    assert.ok(Object.values(readHealth(dir)).every(s => s.failures === 0 && !s.down), 'rounds from a broken local network count nothing');
+    const oneDns: Fetcher = async url => { if (url === api.url) return dns(url, 1); return { status: 200, body: url === web.url ? WEB_OK : US_OK }; };
+    const single = new ProdHealth({ fetcher: oneDns, now: () => T0 });
+    let told: unknown[] = [];
+    for (let i = 0; i < FAILURES_BEFORE_ALERT; i++) told = await single.round(dir);
+    assert.equal(told.length, 1, 'one probe failing on DNS while the others answer is a real outage');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
