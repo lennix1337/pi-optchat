@@ -140,6 +140,18 @@ export function isEntry(value: unknown): value is Entry {
     && KINDS.some(kind => kind === value.kind)
     && typeof value.text === 'string' && typeof value.date === 'string';
 }
+/** A summarized message whose text lives on disk. Its fields are plain and its one getter is shared, so it stays a small fast-mode
+ * object; an accessor and a closure per entry made each one a ~450-byte dictionary-mode object, ~150k of them. */
+class ColdEntry implements Entry {
+  readonly i: number; readonly kind: Kind; readonly size: number; readonly date: string; readonly receipt?: string; readonly origin?: Origin;
+  constructor(entry: Entry, private readonly store: Store) {
+    this.i = entry.i; this.kind = entry.kind; this.size = entry.size; this.date = entry.date;
+    if (entry.receipt) this.receipt = entry.receipt;
+    if (entry.origin) this.origin = entry.origin;
+  }
+  get text() { return this.store.reader?.(this.i)?.() ?? ''; }
+  toJSON() { return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(this.receipt ? { receipt: this.receipt } : {}), ...(this.origin ? { origin: this.origin } : {}) }; }
+}
 function isSummary(value: unknown): value is Summary {
   return object(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
     && typeof value.text === 'string';
@@ -284,8 +296,7 @@ export class Memory {
   private chill(i: number) {
     const entry = this.root[i];
     if (!entry || !this.node({ l: 0, i }) || !Object.getOwnPropertyDescriptor(entry, 'text')?.writable) return;
-    const read = this.store.reader?.(i);
-    if (read) Object.defineProperty(entry, 'text', { get: read, enumerable: true, configurable: true });
+    if (this.store.reader?.(i)) this.root[i] = new ColdEntry(entry, this.store);
   }
   node(part: Part) { return this.tree.get(key(part)); }
   /** Explicitly reset a policy-refused node; normal appends never clear this terminal block. */
