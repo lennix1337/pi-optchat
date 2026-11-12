@@ -152,9 +152,9 @@ test('a contract spawn in a project and directory whose worker finished within 2
   } finally { await close(); }
 });
 
-test('the manager doc keeps small work with the manager and sends follow-ups back to the worker with tell', () => {
-  assert.match(MANAGER_DOC, /Small work stays with you: reads, a short one-file fix, about 3-5 commands/);
-  assert.match(MANAGER_DOC, /multi-file edits, long suites and long investigations/);
+test('the manager doc keeps up to one PR in one repo with the manager and sends follow-ups back to the worker with tell', () => {
+  assert.match(MANAGER_DOC, /Work up to one PR in one repo stays with you\. Workers only for batches of independent fixes in parallel \(own worktrees\) or long suites\/investigations/);
+  assert.doesNotMatch(MANAGER_DOC, /Small work stays|short one-file fix|missions\.md|Audit each project memory weekly/);
   assert.doesNotMatch(MANAGER_DOC, /Quick reads \(about 5 read-only commands\)/);
   assert.match(MANAGER_DOC, /Follow-ups[^\n]*review findings[^\n]*red CI[^\n]*added requirement[^\n]*tell <id>[^\n]*never a new spawn/);
   assert.match(MANAGER_DOC, /new prompt cache/);
