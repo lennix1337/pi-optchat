@@ -40,9 +40,9 @@ const outputLimit = 32_000;
 /** CSI, OSC (hyperlinks, titles), charset designations (`tput sgr0` prints ESC ( B) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
 const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()*+][ -~]|\u001b[@-_]/g;
 export const plainText = (text: string) => text.replace(TERMINAL_ESCAPES, '');
-/** `build_exit=1`, `rc=2`: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
+/** `build_exit=1`, `rc=2`, or `rc: 3` as ship.mjs prints it: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
 export function innerExitFailures(output: string): string[] {
-  return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))=([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
+  return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))(?:=|:[ \t]*)([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
 }
 const field = (value: unknown, key: string): unknown => typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 /** Session-local execution inventory. Only explicitly managed jobs can be stopped individually. */

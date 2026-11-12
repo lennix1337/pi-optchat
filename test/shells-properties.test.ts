@@ -73,7 +73,7 @@ test('plainText is idempotent and leaves text without escape sequences unchanged
 });
 
 test('innerExitFailures reports exactly the nonzero echoed exit codes, each on its own line', () => {
-  const lines = [['rc=0', null], ['rc=1', 'rc=1'], ['build_exit=2', 'build_exit=2'], ['  tsc.exit=7  ', 'tsc.exit=7'], ['rc=01', null], ['rc=1 more', null], ['echo rc=$?', null], ['done', null], ['RC=3', 'RC=3']] as const;
+  const lines = [['rc=0', null], ['rc=1', 'rc=1'], ['build_exit=2', 'build_exit=2'], ['  tsc.exit=7  ', 'tsc.exit=7'], ['rc=01', null], ['rc=1 more', null], ['echo rc=$?', null], ['done', null], ['RC=3', 'RC=3'], ['rc: 3', 'rc=3'], ['rc: 0', null], ['next: 3 more', null]] as const;
   for (let seed = 1; seed <= CASES; seed++) {
     const next = rng(seed), chosen = Array.from({ length: Math.floor(next() * 8) }, () => pick(next, lines));
     const output = chosen.map(([line]) => line).join(pick(next, ['\n', '\r\n']));
