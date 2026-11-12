@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Memory } from '../src/memory.ts';
 import { operationalStateTool } from '../src/operational-tool.ts';
-import { readOperationalState, renderOperationalContext } from '../src/operational-state.ts';
+import { MAX_OPERATIONAL_ENTRIES, readOperationalState, renderOperationalContext, updateOperationalState } from '../src/operational-state.ts';
 
 test('operational tool validates original provenance and never treats assistant/imported sources as authorization', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'operational-tool-'));
@@ -37,6 +37,21 @@ test('operational tool validates original provenance and never treats assistant/
     assert.equal(state.entries.length, 1);
     assert.match(renderOperationalContext(state), /no authority/);
     assert.equal(flushed, 7);
+  } finally { await memory.close(); }
+});
+
+test('a full log that makes room answers with the new record, not "already recorded"', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operational-tool-full-'));
+  const memory = new Memory(dir, async () => 'short');
+  memory.append('user', 'ok pode fazer deploy');
+  const file = join(dir, 'operational-state.json');
+  for (let i = 0; i < MAX_OPERATIONAL_ENTRIES; i++)
+    updateOperationalState(file, { kind: 'check', status: 'verified', text: `old check ${i}`, sourceMessageId: '0', evidence: [{ kind: 'log', ref: 'x' }] });
+  const tool = operationalStateTool(() => ({ dir, memory }), () => {});
+  try {
+    const reply = JSON.parse((await tool.execute('f', { update: { kind: 'decision', text: 'new decision', sourceMessageId: '0' } })).content[0]!.text);
+    assert.equal(reply.recorded.text, 'new decision');
+    assert.equal(reply.entries, MAX_OPERATIONAL_ENTRIES);
   } finally { await memory.close(); }
 });
 

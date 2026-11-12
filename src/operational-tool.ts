@@ -36,8 +36,9 @@ function quoteHint(text: string, source: string): string {
 
 /** The new record and the count, not the whole document: echoing every record on each update cost tens of KB per call. */
 function recordReply(file: string, update: OperationalUpdate) {
-  const before = readOperationalState(file).entries.length, next = updateOperationalState(file, update);
-  const recorded = next.entries.length > before ? next.entries.at(-1) : undefined;
+  // A full log drops its oldest stale entry to make room, so the count alone cannot tell a new record from a duplicate.
+  const before = readOperationalState(file).entries.at(-1)?.id, next = updateOperationalState(file, update);
+  const recorded = next.entries.at(-1)?.id !== before ? next.entries.at(-1) : undefined;
   return JSON.stringify({ recorded: recorded ?? 'already recorded (identical entry exists)', entries: next.entries.length });
 }
 
