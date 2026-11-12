@@ -138,11 +138,28 @@ test('what waits on the operator is a question with its answers and its age, fir
   assert.equal(boardView(input({ waiting: [ask({ text: 'x'.repeat(90) })] })).lines[0].text.split(' [')[0].length, 60, 'compact question: 60 characters');
 });
 
+test('a success fades in four minutes, a fine shell in ninety seconds, a failure stays ten; the compact board shows three, the focused one all', () => {
+  const shells = [shell({ id: 's-ok', command: 'sleep 25', state: 'completed', started: NOW - 3 * MIN, ended: NOW - 2 * MIN, exitCode: 0, last: undefined }),
+    shell({ id: 's-new', command: 'ls', state: 'completed', started: NOW - MIN, ended: NOW - MIN, exitCode: 0, last: undefined }),
+    shell({ id: 's-bad', command: 'npm test', state: 'completed', started: NOW - 9 * MIN, ended: NOW - 8 * MIN, exitCode: 1, last: undefined })];
+  const runs = [run({ id: 'w-old', state: 'completed', ended: NOW - 5 * MIN }), run({ id: 'w-new', task: 'Second', state: 'completed', ended: NOW - 3 * MIN }),
+    run({ id: 'w-bad', task: 'Third', state: 'failed', ended: NOW - 7 * MIN })];
+  const compact = boardView(input({ runs, shells }));
+  assert.deepEqual(compact.lines.map(l => l.text), [
+    '✓ shell ls ok · 13:48',
+    '✓ pi-optchat · Second concluído · 13:46',
+    '✗ pi-optchat · Third falhou · 13:42',
+  ], 'a shell done two minutes ago and a worker done five are gone; three finished lines at most');
+  assert.equal(compact.more, 1, 'the failed shell past the cap is counted, not dropped');
+  assert.match(renderWaitingBoard(compact, 80, plain, 'f6').at(-1)!, /\+1 mais · f6 inspecionar/);
+  assert.equal(expandedView(input({ runs, shells })).lines.length, 6, 'the focused board keeps all ten minutes');
+});
+
 test('finished work stays ten minutes, newest first after the pending lines: workers, shells and gitwatch notices', () => {
   const notices = [{ repo: 'swlucas05/pi-optchat', wake: true, text: 'PR #279 merged', at: NOW - 2 * MIN, events: [{ pr: 279, kind: 'merged', text: 'merged abc1234' }] },
     { repo: 'o/r', at: NOW - 11 * MIN, events: [{ pr: 1, kind: 'merged', text: 'merged' }] },
     { repo: 'o/r', at: new Date(NOW - 3 * MIN).toISOString(), events: [{ pr: 5, kind: 'checks', text: 'checks failed: lint' }, { pr: 5, kind: 'push', text: 'new head f00' }] }];
-  const view = boardView(input({
+  const view = expandedView(input({
     runs: [run({ id: 'w1', state: 'completed', ended: NOW - 4 * MIN }), run({ id: 'w2', state: 'failed', ended: NOW - 6 * MIN }), run({ id: 'w3', state: 'running' })],
     shells: [shell({ state: 'completed', ended: NOW - 5 * MIN, exitCode: 0, last: undefined })], notices }));
   const lines = view.lines.map(l => l.text);

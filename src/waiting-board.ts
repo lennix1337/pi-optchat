@@ -10,8 +10,14 @@ import { plainText, type ShellJob } from './shells.ts';
  * line plus the ids it can act on. Times are Brasília's, the zone the operator reads.
  */
 
-/** How long a finished item stays on the board. */
+/** How long a failure stays on the board; the focused board keeps every finished item this long. */
 export const KEEP_MS = 10 * 60_000;
+/** How long a success stays on the compact board: it is news for a moment, then clutter. */
+export const OK_KEEP_MS = 4 * 60_000;
+/** A shell that went fine leaves sooner: its output already reached the model, and the report says what it meant. */
+export const SHELL_OK_KEEP_MS = 90_000;
+/** Finished lines the compact board shows at most, newest first; the rest join the overflow count. */
+export const DONE_LINES = 3;
 /** A running worker that has done nothing for this long is shown as stalled. */
 export const STALL_MS = 10 * 60_000;
 /** Lines the compact widget shows at most, the overflow line included; the waiting section adds its one question to them. */
@@ -27,6 +33,8 @@ export type Tone = 'active' | 'wait' | 'ok' | 'bad' | 'info';
 export type Section = 'waiting' | 'working' | 'done';
 /** `note` is what the model reads when it differs from the line: the same words plus the ids. */
 export interface BoardLine { text: string; tone: Tone; at: number; finished: boolean; section: Section; note?: string;
+  /** A finished line's time on the compact board. */
+  keep?: number;
   /** A worker's line as its goal and what surrounds it (`head + goal + tail` is `text`): a narrow terminal shortens the goal and keeps the phase, time and model. */
   parts?: { head: string; goal: string; tail: string } }
 /** `more` counts the lines left out, `pending` all the lines still waiting or running, `waiting` every question for the operator, shown or not. */
@@ -110,8 +118,8 @@ const modelName = shortModel;
 const repoName = (repo: string) => repo.split('/').pop() ?? repo;
 
 /** A finished item: its mark, what it was, how it ended and when. */
-const finished = (ok: boolean, what: string, result: string, at: number, tone: Tone = ok ? 'ok' : 'bad'): BoardLine =>
-  ({ text: `${ok ? '✓' : '✗'} ${what} ${result} · ${hhmm(at)}`, tone, at, finished: true, section: 'done' });
+const finished = (ok: boolean, what: string, result: string, at: number, tone: Tone = ok ? 'ok' : 'bad', keep = ok ? OK_KEEP_MS : KEEP_MS): BoardLine =>
+  ({ text: `${ok ? '✓' : '✗'} ${what} ${result} · ${hhmm(at)}`, tone, at, finished: true, section: 'done', keep });
 /** An item in progress; `ids` are what the model's note adds to the line. */
 const working = (text: string, tone: Tone, at: number, ids?: string, parts?: BoardLine['parts']): BoardLine => ({ text, tone, at, finished: false, section: 'working', ...ids ? { note: `${text} [${ids}]` } : {}, ...parts ? { parts } : {} });
 
@@ -165,7 +173,7 @@ function shellLine(shell: BoardShell, now: number, expand = false): BoardLine | 
   if (shell.ended !== undefined) {
     if (now - shell.ended > KEEP_MS || shell.state === 'stopped') return undefined;
     const ok = shell.state === 'completed' && (shell.exitCode ?? 0) === 0;
-    const line = finished(ok, what, ok ? 'ok' : `falhou${shell.exitCode !== undefined ? ` rc ${shell.exitCode}` : ''}`, shell.ended);
+    const line = finished(ok, what, ok ? 'ok' : `falhou${shell.exitCode !== undefined ? ` rc ${shell.exitCode}` : ''}`, shell.ended, ok ? 'ok' : 'bad', ok ? SHELL_OK_KEEP_MS : KEEP_MS);
     return expand ? { ...line, text: `${line.text}${out}` } : line;
   }
   return working(expand ? `${what} · ${span(now - shell.started)}${out}` : `${what} · ${span(now - shell.started)}${shell.last ? ` · ${cut(shell.last, 50)}` : ''}`, 'active', shell.started, shell.id.slice(0, 8));
@@ -215,7 +223,7 @@ function noticeLine(notice: GitwatchNotice, now: number): BoardLine | undefined 
   const text = /^merged/.test(what) ? 'mergeado' : /^closed/.test(what) ? 'fechado sem merge' : /^checks failed/.test(what) ? what.replace(/^checks failed/, 'CI falhou')
     : kind === 'checks' && /pass|green|ok/i.test(what) ? 'CI ok' : what;
   const bad = /falhou|fechado|stall|auto-merge has not merged/.test(text), good = text === 'mergeado' || text === 'CI ok';
-  const line = finished(!bad, [repo ? repoName(repo) : '', ref].filter(Boolean).join(' '), cut(text, 50), at, bad ? 'bad' : good ? 'ok' : 'info');
+  const line = finished(!bad, [repo ? repoName(repo) : '', ref].filter(Boolean).join(' '), cut(text, 50), at, bad ? 'bad' : good ? 'ok' : 'info', bad ? KEEP_MS : OK_KEEP_MS);
   return { ...line, text: line.text.replace(/^[✓✗]/, bad ? '✗' : good ? '✓' : '•').replace(/ {2,}/g, ' ') };
 }
 
@@ -236,9 +244,11 @@ function build(input: BoardInput, max: number, expand: boolean, everyQuestion = 
     ...input.runs.flatMap(r => runLine(r, now, pad) ?? []), ...input.shells.flatMap(s => shellLine(s, now, expand) ?? []),
     ...input.gitwatch ? gitwatchLines(input.gitwatch, now) : [], ...(input.notices ?? []).flatMap(n => noticeLine(n, now) ?? []),
   ].sort((a, b) => Number(a.finished) - Number(b.finished) || b.at - a.at);
-  const all = [...everyQuestion ? waiting : waiting.slice(0, 1), ...rest], pending = waiting.length + rest.filter(l => !l.finished).length;
-  if (all.length <= max) return { lines: all, more: 0, pending, waiting: waiting.length, now };
-  return { lines: all.slice(0, max - 1), more: all.length - (max - 1), pending, waiting: waiting.length, now };
+  const open = rest.filter(l => !l.finished), done = rest.filter(l => l.finished && (expand || now - l.at <= (l.keep ?? KEEP_MS)));
+  const hidden = expand ? 0 : Math.max(0, done.length - DONE_LINES);
+  const all = [...everyQuestion ? waiting : waiting.slice(0, 1), ...open, ...done.slice(0, done.length - hidden)], pending = waiting.length + open.length;
+  if (all.length <= max) return { lines: all, more: hidden, pending, waiting: waiting.length, now };
+  return { lines: all.slice(0, max - 1), more: all.length - (max - 1) + hidden, pending, waiting: waiting.length, now };
 }
 
 export const overflowText = (more: number, hint = '') => `+${more} mais${hint ? ` · ${hint}` : ''}`;
