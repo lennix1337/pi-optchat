@@ -152,6 +152,11 @@ class ColdEntry implements Entry {
   get text() { return this.store.reader?.(this.i)?.() ?? ''; }
   toJSON() { return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(this.receipt ? { receipt: this.receipt } : {}), ...(this.origin ? { origin: this.origin } : {}) }; }
 }
+/** A summary whose text lives in the tree files; plain fields and one shared getter, like ColdEntry. */
+class ColdSummary implements Summary {
+  constructor(readonly l: number, readonly i: number, readonly size: number, private readonly read: () => string) {}
+  get text() { return this.read(); }
+}
 function isSummary(value: unknown): value is Summary {
   return object(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
     && typeof value.text === 'string';
@@ -243,6 +248,16 @@ export class Memory {
     this.compaction.fit(loaded, true);
     for (let i = loaded; i < this.root.length; i++) { this.push(i); this.fit(i + 1); }
     this.fit(); this.save(); this.schedule();
+    this.chillTree();
+  }
+  /** Summaries outside the shown views are read back from disk when needed instead of held as text. */
+  private chillTree() {
+    if (!this.store.nodeReader) return;
+    const shown = new Set([...this.chat.parts, ...this.compaction.parts].map(key));
+    for (const [id, node] of this.tree) {
+      const read = !shown.has(id) && Object.getOwnPropertyDescriptor(node, 'text')?.writable ? this.store.nodeReader(node.l, node.i) : undefined;
+      if (read) this.tree.set(id, new ColdSummary(node.l, node.i, node.size, read));
+    }
   }
   private loadTree(records: unknown[]) {
     for (const value of records) if (!isSummary(value) && !isTerminalRecord(value)) this.warn('Skipped an invalid OptChat summary record.');
