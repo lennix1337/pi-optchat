@@ -94,7 +94,7 @@ test('a Git Bash /tmp script is read from the temp folder it names', () => {
   finally { rmSync(join(tmpdir(), name), { force: true }); }
 });
 
-test('without a rule of the operator, an irreversible effect asks; the default and the advisor no longer decide it', () => {
+test('without a rule of the operator, an irreversible effect asks; the default does not decide it', () => {
   const contract = parseContract({ version: 1, default: 'free', rules: [{ action: 'push', scope: ['*'], level: 'free' }] });
   for (const action of ['message', 'production-write', 'deploy', 'publish', 'force-push', 'consent', 'merge-bypass'] as const)
     assert.equal(decide(contract, [{ action, targets: ['x'] }]).level, 'ask', action);
@@ -233,23 +233,19 @@ test('exec and state results move a tab to the page their header reports; goto f
   forgetBrowserPages();
 });
 
-test('the registered gate sends an irreversible effect to the operator even when the advisor would approve it', async () => {
+test('the registered gate sends an irreversible effect with no rule to the operator and lets a branch push run', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'trust-'));
-  writeFileSync(join(dir, 'autonomy.json'), JSON.stringify({ version: 1, default: 'advisor', rules: [] }));
+  writeFileSync(join(dir, 'autonomy.json'), JSON.stringify({ version: 1, default: 'report', rules: [] }));
   const hooks = new Map<string, (...args: any[]) => any>();
-  const asked: string[] = [];
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
-  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir,
-    advisor: async request => { asked.push(JSON.stringify(request.input)); return { approve: true, reason: 'fine', model: 'm' }; } });
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir });
   const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] }, ui: { notify: () => {}, setWidget: () => {} } };
   try {
     const sent = await hooks.get('tool_call')!({ toolName: 'bash', toolCallId: '1', input: { command: 'curl -X POST https://graph.facebook.com/v19.0/1/messages -d x' } }, ctx);
     assert.equal(sent?.block, true);
     assert.match(sent.reason, /message on graph\.facebook\.com: ask \(no matching rule\)/);
-    assert.deepEqual(asked, []);
     const pushed = await hooks.get('tool_call')!({ toolName: 'bash', toolCallId: '2', input: { command: 'git push origin feat/x' } }, ctx);
-    assert.equal(pushed, undefined, 'a branch push goes to the advisor, which approves');
-    assert.equal(asked.length, 1);
+    assert.equal(pushed, undefined, 'a branch push has no rule: it runs and is logged');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

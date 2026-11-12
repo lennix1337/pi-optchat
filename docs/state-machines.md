@@ -296,9 +296,6 @@ A pending call is `{approved: boolean, expires}` in a map keyed by token; `drop(
 `approved` / `denied` / `superseded` / `expired` once, only for calls that were still waiting. `admit` consumes an approved
 entry on the next identical call. `expire()` runs on every entry point, approved entries included.
 Findings:
-- P3 (catalogued). In `advisedAdmission`, two concurrent identical calls both see the pending token without a note
-  (`notes` is filled after the advisor answers), so the advisor is asked twice and the second answer is refused because the
-  first already consumed the approval. It needs two identical gated calls in one parallel batch.
 
 ## 20. Subagent run — `src/runs.ts:36` (`moves`, `transition`), `src/agents.ts:124` (`Children`)
 

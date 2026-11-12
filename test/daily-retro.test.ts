@@ -20,7 +20,7 @@ test('the daily retro is due once a day, after its time', () => {
 });
 
 const contract = {
-  version: 1, default: 'advisor', rules: [
+  version: 1, default: 'report', rules: [
     { action: 'deploy', scope: ['*'], level: 'ask' },
     { action: 'recursive-delete', scope: ['*/dist'], level: 'free' },
     { action: 'recursive-delete', scope: ['*'], level: 'ask' },

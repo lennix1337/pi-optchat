@@ -11,9 +11,9 @@ import { branchMerged, type Runner } from '../src/merged-branch.ts';
 const COMMAND = 'cd C:/projetos/pi-gitwatch && git worktree remove worktrees/prunable-cleanup; git worktree prune; git branch -D fix/prunable-worktree-cleanup';
 const MERGED_BRANCH = 'fix/prunable-worktree-cleanup';
 
-/** The discard rules of the operator's autonomy.json (profile swlucas05, default advisor) with a strict fallback behind them. */
+/** The discard rules of the operator's autonomy.json (profile swlucas05) with a strict fallback behind them. */
 const CONTRACT = parseContract({
-  version: 1, default: 'advisor', rules: [
+  version: 1, default: 'report', rules: [
     { action: 'discard', scope: ['worktree-cleanup'], level: 'free', note: 'merged worktrees may always go' },
     { action: 'discard', scope: ['candidate/*', 'merged-branch'], level: 'free', note: 'merged branches are recreatable' },
     { action: 'discard', scope: ['*'], level: 'ask', note: 'discarding work needs an OK' },
