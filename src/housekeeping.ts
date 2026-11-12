@@ -45,5 +45,11 @@ export function housekeepingBoundary(event: Pick<AgentBeforeSettleEvent, 'outcom
   const cut = housekeepingCut(context, keep);
   if (!cut) return;
   return { entries: [{ type: 'compaction', firstKeptEntryId: cut.firstKeptEntryId, details: HOUSEKEEPING_DETAILS,
-    summary: `${cut.dropped} earlier messages left Pi's in-memory context to keep it small. They stay in the session file and in OptChat memory (zoom, date); the model reads OptChat's own view, which this does not change.` }] };
+    summary: housekeepingNotice(cut.dropped) }] };
 }
+
+/** What the operator reads under Pi's "Compacted from N tokens" label: a RAM cleanup, not a model summary, and nothing forgotten. */
+export const housekeepingNotice = (dropped: number) =>
+  `Limpeza de RAM do Pi, sem modelo e sem resumo: ${dropped} mensagens antigas saíram da tela e da memória do processo. ` +
+  `Nada se perde: continuam no arquivo da sessão e na memória do OptChat (zoom, date), que é o que o modelo lê. ` +
+  `O número de tokens acima é o tamanho da lista do Pi antes da limpeza, não um corte no contexto do modelo.`;

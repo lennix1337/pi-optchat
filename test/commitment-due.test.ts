@@ -151,3 +151,11 @@ test('an item with no project field belongs to the one specialist its text names
     ['c_000001', 'dentai'], ['c_000002', 'harness'], ['c_000003', 'genexus18mcp'], ['c_000004', 'global'], ['c_000005', 'global'], ['c_000006', 'dentai'], ['c_000007', 'dotfiles'],
   ]);
 });
+
+test('a due without a full ISO date is refused, not read as 2001', () => {
+  const dir = temp();
+  try {
+    assert.throws(() => addCommitment(dir, { text: 'x', source: '1', due: '12/11 08:00' }, T0), /due must be an ISO timestamp/);
+    assert.equal(addCommitment(dir, { text: 'y', source: '1', due: '2026-11-12T08:00:00-03:00' }, T0).due, '2026-11-12T11:00:00.000Z');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
