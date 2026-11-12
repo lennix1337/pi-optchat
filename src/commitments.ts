@@ -424,7 +424,15 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
   const linked = (event: LinkEvent) => {
     const dir = owner()?.dir;
     if (!dir) return;
-    try { if (recordLinkEvent(dir, event, now()).length) presence.progressed(now()); }
+    try {
+      const changed = recordLinkEvent(dir, event, now());
+      if (!changed.length) return;
+      presence.progressed(now());
+      // A planned next step must start a turn: a quiet notice (an auto-merge gitwatch settled) starts none by itself.
+      const note = linkNote(event);
+      for (const c of note?.ends ? changed.filter(c => c.links?.next) : [])
+        pi.sendMessage({ customType: 'commitment-next', display: true, content: `[commitment ${c.id}] ${note!.text}. Planned next step: ${c.links!.next}\nMachine notice, not the operator's words: take the step already authorized for this commitment.` }, { triggerTurn: true, deliverAs: 'followUp' });
+    }
     catch (error) { logBackgroundFailure(dir, `commitment link ${event.type}`, error); }
   };
   pi.on('message_end', ({ message }) => {

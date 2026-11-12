@@ -20,9 +20,11 @@ const mergedNotice = (repo: string, pr: number, text = 'merged abc1234') => ({ r
 /** The extension's hooks on a fake Pi, with the clock under the test's control. */
 function hooks(dir: string, clock: { now: number }) {
   const handlers = new Map<string, (event: Record<string, unknown>) => unknown>();
-  const pi = { registerTool: () => {}, on: (name: string, handler: (event: Record<string, unknown>) => unknown) => { handlers.set(name, handler); } };
+  const sent: { message: { customType: string; content: string }; options: { triggerTurn?: boolean } }[] = [];
+  const pi = { registerTool: () => {}, on: (name: string, handler: (event: Record<string, unknown>) => unknown) => { handlers.set(name, handler); },
+    sendMessage: (message: { customType: string; content: string }, options: { triggerTurn?: boolean }) => { sent.push({ message, options }); } };
   const registered = registerCommitments(pi as never, () => ({ dir, sourceExists: () => true }), () => clock.now);
-  return { registered, fire: (name: string, event: Record<string, unknown>) => handlers.get(name)?.(event) };
+  return { registered, sent, fire: (name: string, event: Record<string, unknown>) => handlers.get(name)?.(event) };
 }
 const only = (dir: string, id: string) => readCommitments(dir).find(c => c.id === id)!;
 
@@ -104,6 +106,25 @@ test('the link sets next only when it says what comes next, and only when the PR
     assert.equal(only(dir, withNext.id).next, 'verify the deploy');
     assert.equal(only(dir, without.id).next, 'wait for CI', 'no next in the link: next stays');
     assert.equal(only(dir, without.id).status, 'open');
+  } finally { removeDir(dir); }
+});
+
+test('a merge of a PR whose commitment plans a next step starts a turn, even when gitwatch sent the merge quietly', () => {
+  const dir = temp(), clock = { now: T0 };
+  try {
+    const planned = addCommitment(dir, { text: 'Release 4.5.0', source: '1', links: { prs: ['lennix1337/Genexus18MCP#981'], next: 'rerun release.ps1 -Minor' } }, T0 - 60_000);
+    addCommitment(dir, { text: 'Land #982', source: '1', links: { prs: ['lennix1337/Genexus18MCP#982'] } }, T0 - 60_000);
+    const { fire, sent } = hooks(dir, clock);
+    const quiet = (pr: number, kind: string, text: string) => ({ message: { role: 'custom', customType: 'gitwatch', content: 'x', display: true, details: { repo: 'lennix1337/Genexus18MCP', events: [{ pr, kind, text, wake: false }] } } });
+    fire('message_end', quiet(981, 'checks', 'checks failed: lint'));
+    assert.equal(sent.length, 0, 'a PR that has not ended starts no turn');
+    fire('message_end', quiet(982, 'merged', 'merged def'));
+    assert.equal(sent.length, 0, 'a commitment without a planned step starts no turn');
+    fire('message_end', quiet(981, 'merged', 'merged 93a1074d'));
+    fire('message_end', quiet(981, 'merged', 'merged 93a1074d'));
+    assert.equal(sent.length, 1, 'one turn, a repeat starts none');
+    assert.equal(sent[0]!.options.triggerTurn, true);
+    assert.match(sent[0]!.message.content, new RegExp(`${planned.id}.*merged 93a1074d.*rerun release\\.ps1 -Minor`, 's'));
   } finally { removeDir(dir); }
 });
 
