@@ -48,13 +48,17 @@ test('a memory of N rows reports root=N and keeps at most the hot texts in RAM',
   const memory = new Memory(dir, async input => input.source.slice(0, 60), () => {}, 4000);
   try {
     const stats = memory.stats(), treeNodes = memory.tree.size; // summaries keep merging in the background
+    let held = 0, cold = 0;
+    for (const node of memory.tree.values()) { if (Object.getOwnPropertyDescriptor(node, 'text')) held += Buffer.byteLength(node.text); else cold++; }
     const report = await heapReport({}, { optchat: { memory: stats, run: 7, reloads: 3, collections: {} } }, injected());
     const side = report.optchat as { memory: Record<string, number>; run: number; reloads: number };
     assert.equal(side.memory.root, total);
     assert.ok(side.memory.liveTexts <= HOT_TEXTS && side.memory.liveTexts > 0, `live texts ${side.memory.liveTexts}`);
     assert.ok(side.memory.liveTextBytes > 0);
     assert.equal(side.memory.treeNodes, treeNodes);
-    assert.ok(side.memory.treeTextBytes > 0);
+    assert.equal(side.memory.treeTextBytes, held, 'treeTextBytes counts only the text a summary holds in RAM');
+    assert.equal(side.memory.treeColdNodes, cold);
+    assert.ok(held > 0 || cold > 0);
     assert.equal(side.memory.storeLines, total);
     assert.equal(side.memory.searchCacheQueries, 0);
     memory.search('Original 17');
