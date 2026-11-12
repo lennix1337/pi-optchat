@@ -201,11 +201,14 @@ export class Memory {
   stats() {
     let liveTexts = 0, liveTextBytes = 0;
     for (const entry of this.root) if (Object.getOwnPropertyDescriptor(entry, 'text')?.writable) { liveTexts++; liveTextBytes += Buffer.byteLength(entry.text); }
-    let treeTextBytes = 0;
-    for (const node of this.tree.values()) treeTextBytes += node.size;
+    // Only summaries that still hold their text count: a ColdSummary reads it from disk, so its bytes are not heap.
+    let treeTextBytes = 0, treeColdNodes = 0;
+    for (const node of this.tree.values()) {
+      if (Object.getOwnPropertyDescriptor(node, 'text')) treeTextBytes += Buffer.byteLength(node.text); else treeColdNodes++;
+    }
     let searchCacheHits = 0;
     for (const held of this.searchCache.values()) searchCacheHits += held.hits.length;
-    return { root: this.root.length, liveTexts, liveTextBytes, treeNodes: this.tree.size, treeTextBytes, storeLines: this.store.lineIndexSize?.() ?? 0,
+    return { root: this.root.length, liveTexts, liveTextBytes, treeNodes: this.tree.size, treeColdNodes, treeTextBytes, storeLines: this.store.lineIndexSize?.() ?? 0,
       searchCacheQueries: this.searchCache.size, searchCacheHits, unbuilt: this.unbuilt.size };
   }
   /** Messages examined by search so far; tests read it to prove a repeated query does not rescan history. */
