@@ -1228,6 +1228,26 @@ test('old summarized messages keep their text on disk, not in RAM, and still zoo
   } finally { await memory.close(); removeDir(dir); }
 });
 
+test('old summaries stay on disk, not in RAM, and still read whole, revised ones as revised', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-cold-tree-'));
+  const total = HOT_TEXTS + 40, text = (i: number) => `Resumo ${i}: memória ção`;
+  const line = (value: object) => `${JSON.stringify(value)}
+`, date = '2026-10-09T12:00:00.000Z';
+  mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
+  writeFileSync(join(dir, 'main', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ i, kind: 'user', text: `user: ${text(i)}`, size: 0, date })).join(''));
+  writeFileSync(join(dir, 'tree', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ l: 0, i, text: `user: ${text(i)}`, size: 0 })).join('')
+    + Array.from({ length: 20 }, (_, i) => line({ l: 1, i, text: `pares ${i}`, size: 0 })).join('')
+    + line({ l: 0, i: 5, text: 'user: revisado', size: 0, revised: true }));
+  const memory = new Memory(dir, async input => input.source.slice(0, 60), () => {}, 4000);
+  try {
+    const held = (i: number) => Object.getOwnPropertyDescriptor(memory.node({ l: 0, i }), 'text')?.writable === true;
+    assert.equal(held(7), false, 'an old summary outside the view holds no text');
+    assert.equal(memory.node({ l: 0, i: 7 })?.text, `user: ${text(7)}`);
+    assert.equal(memory.node({ l: 0, i: 5 })?.text, 'user: revisado', 'the latest revision is the one read back');
+    assert.equal(memory.node({ l: 0, i: 7 })?.size, Buffer.byteLength(`user: ${text(7)}`));
+  } finally { await memory.close(); removeDir(dir); }
+});
+
 test('a zoom range that is not aligned names the aligned lines that read the same messages', () => {
   // Real misses: id not a multiple of n (122912+64), n not a power of two (125177+6), a block past the end.
   assert.match(noLine(122912, 64, 123461).message, /To read messages 122912-122975 zoom: 122912\+32, 122944\+32\./);

@@ -47,6 +47,8 @@ export interface Store {
   image(name: string): Maybe<{ mimeType: Mime; data: Uint8Array } | undefined>;
   /** Reads message `i`'s text back from the log, so Memory can drop old texts from RAM. Undefined when the store cannot. */
   reader?(i: number): (() => string) | undefined;
+  /** Reads summary node (`l`, `i`) back from the tree files, so Memory can drop old summaries from RAM. Undefined when the store cannot. */
+  nodeReader?(l: number, i: number): (() => string) | undefined;
   /** How many messages' log positions the store keeps in RAM, for diagnostics. */
   lineIndexSize?(): number;
   lock?: Lease;
@@ -184,11 +186,13 @@ export class FileStore implements Store {
   private readonly lastSeenBytes = new Map<string, number>();
   /** Where each message's line is, by message index, so its text can be read back. */
   private readonly lines = new Map<number, { file: string; offset: number; length: number }>();
+  /** Where each summary node's latest line is, by level and index. */
+  private readonly nodes = new Map<number, { file: string; offset: number; length: number }>();
   private cached?: { file: string; data: Buffer; timer: ReturnType<typeof setTimeout> };
   constructor(readonly directory: string, private readonly warn: (s: string) => void = console.error) {}
   load(): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
-    this.lines.clear();
+    this.lines.clear(); this.nodes.clear();
     const main = join(this.directory, 'main'), entries = records(main, this.warn, (value, file, offset, length) => {
       const i = (value as { i?: unknown } | null)?.i;
       if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
@@ -198,7 +202,11 @@ export class FileStore implements Store {
     // An unreadable view is rebuilt, as a damaged one is.
     let saved: string | undefined;
     if (existsSync(view)) try { saved = readFileSync(view, 'utf8'); } catch { saved = ''; }
-    return { entries, tree: records(join(this.directory, 'tree'), this.warn), view: saved };
+    const tree = records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
+      const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
+      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), { file, offset, length });
+    });
+    return { entries, tree, view: saved };
   }
   append(entry: Entry): undefined {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
@@ -212,6 +220,15 @@ export class FileStore implements Store {
   reader(i: number) {
     const line = this.lines.get(i);
     return line && (() => lineText(this.read(line.file), line.offset, line.length, i, line.file));
+  }
+  nodeReader(l: number, i: number) {
+    const line = this.nodes.get(l * 2 ** 40 + i);
+    return line && (() => {
+      let record: { l?: unknown; i?: unknown; text?: unknown } | null;
+      try { record = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length)); } catch { record = null; }
+      if (record?.l !== l || record.i !== i || typeof record.text !== 'string') throw new Error(`Summary ${l}:${i} is no longer where it was in ${line.file}; restart Pi to reload the memory.`);
+      return record.text;
+    });
   }
   private read(file: string) {
     if (this.cached?.file === file) { this.cached.timer.refresh(); return this.cached.data; }
