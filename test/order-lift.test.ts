@@ -71,6 +71,7 @@ function session(directory: string, quotes: Record<string, string>, { checkoutSl
     file,
     order: (update: OperationalUpdate) => updateOperationalState(file, update),
     run: (tool: string, command: string, cwd = 'C:/projetos/pi-optchat') => hooks.get('tool_call')!({ toolName: tool, toolCallId: `${tool}:${command}`, input: { command } }, { ...ctx, cwd }),
+    runCode: (code: string) => hooks.get('tool_call')!({ toolName: 'codemode', toolCallId: `codemode:${Math.random()}`, input: { code } }, ctx),
   };
 }
 
@@ -79,6 +80,20 @@ test('the 2026-10-30 order "pode fazer o merge e deploy", recorded as one merge 
   s.order(ORDER);
   assert.equal(await s.run('bash', MERGE), undefined, 'the merge runs');
   assert.equal(await s.run('shell_start', DEPLOY), undefined, 'the deploy runs');
+}));
+
+test('the 2026-11-12 order "ok pode fazer deploy" runs the vault_run deploy from the _deploy-main worktree and its rerun after a preflight stop', () => withTempDir('optchat-order-lift-', async directory => {
+  const s = session(directory, { '153389': 'ok pode fazer deploy' });
+  s.order({ kind: 'authorization', text: 'ok pode fazer deploy', sourceMessageId: '153389', grant: { action: 'deploy', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
+  const code = 'return await tools.vault_run({secrets:["CLOUDFLARE_DENTAI_TOKEN"], timeoutMs:60000, command:`cd /c/projetos/dentai-mono/worktrees/_deploy-main && export CLOUDFLARE_CACHE_PURGE_TOKEN="$CLOUDFLARE_DENTAI_TOKEN" && export GITHUB_PAT_TOKEN="$(gh auth token --user tecnologia-ai)" && L=/c/Users/swluc/AppData/Local/Temp/rel-d70becad/deploy.log && nohup pwsh -NoProfile -File scripts/release/deploy-changed.ps1 -Commit d70becad8386deb08f94dab6699ac10b0bf67be6 -PolicyFile C:/Users/swluc/AppData/Local/Temp/rel-d70becad/policy.json > $L 2>&1 & echo pid=$!`});';
+  assert.equal(await s.runCode(code), undefined, 'the first run goes');
+  assert.equal(await s.runCode(code), undefined, 'the rerun after the preflight stop goes too');
+}));
+
+test('a deploy with no recorded order is refused with the way to record the order he already gave', () => withTempDir('optchat-order-lift-', async directory => {
+  const refusal = await session(directory, {}).run('shell_start', DEPLOY);
+  waitsForOperator(refusal);
+  assert.match(refusal.reason, /record it with operational_state .*grant:\{action:"deploy"/);
 }));
 
 test('"faz o merge mas não o deploy" lifts the merge and nothing else', () => withTempDir('optchat-order-lift-', async directory => {

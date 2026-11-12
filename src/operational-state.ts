@@ -284,6 +284,18 @@ export function readOperationalState(file: string): OperationalState {
   return state;
 }
 
+/**
+ * The entries minus the oldest one that no longer steers anything: a check or change record, or an authorization whose
+ * grant expired, and that no kept record supersedes. A full log must not refuse the operator's next order.
+ */
+function withRoom(entries: readonly OperationalEntry[], now = Date.now()) {
+  const referenced = new Set(entries.flatMap(entry => entry.supersedes ? [entry.supersedes] : []));
+  const stale = (entry: OperationalEntry) => !referenced.has(entry.id)
+    && (entry.kind === 'check' || entry.kind === 'change' || (entry.kind === 'authorization' && !!entry.grant && expired(entry.grant, now)));
+  const index = entries.findIndex(stale);
+  return index < 0 ? entries : entries.filter((_, i) => i !== index);
+}
+
 /** Appends one explicit fact, preserving prior records and their supersession lineage. */
 export function updateOperationalState(file: string, update: OperationalUpdate): OperationalState {
   const input = validateUpdate(update);
@@ -293,7 +305,8 @@ export function updateOperationalState(file: string, update: OperationalUpdate):
   const id = stableId(input);
   const duplicate = current.entries.find(entry => entry.id === id);
   if (duplicate) return current;
-  if (current.entries.length >= MAX_OPERATIONAL_ENTRIES) fail(`entry limit ${MAX_OPERATIONAL_ENTRIES} reached`);
+  const kept = current.entries.length >= MAX_OPERATIONAL_ENTRIES ? withRoom(current.entries) : current.entries;
+  if (kept.length >= MAX_OPERATIONAL_ENTRIES) fail(`entry limit ${MAX_OPERATIONAL_ENTRIES} reached`);
 
   if (input.supersedes) {
     const prior = current.entries.find(entry => entry.id === input.supersedes);
@@ -301,7 +314,7 @@ export function updateOperationalState(file: string, update: OperationalUpdate):
     if (current.entries.some(entry => entry.supersedes === prior.id)) fail('superseded record already has a successor');
   }
   const entry = { id, ...input, createdAt: new Date().toISOString() } as OperationalEntry;
-  const next = sealed(validateState({ version: OPERATIONAL_STATE_VERSION, entries: [...current.entries, entry] }));
+  const next = sealed(validateState({ version: OPERATIONAL_STATE_VERSION, entries: [...kept, entry] }));
   const serialized = `${JSON.stringify(next, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > MAX_OPERATIONAL_STATE_BYTES) fail(`document exceeds ${MAX_OPERATIONAL_STATE_BYTES} bytes`);
   atomicWrite(file, serialized);
