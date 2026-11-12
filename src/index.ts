@@ -56,7 +56,7 @@ import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
 import { registerReadChainHint } from './read-chain.ts';
-import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, registerDelegationNudge, routeFor } from './crew.ts';
+import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, routeFor } from './crew.ts';
 import { lastRunsOf } from './wake-signals.ts';
 import { createPatrol, escalationNote } from './patrol.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
@@ -228,10 +228,9 @@ export default function optchat(pi: ExtensionAPI) {
   onSettled: (token, outcome) => void slack.settled(token, outcome) });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
-  // A production deploy in flight (src/deploy.ts): the delegation reminder is quiet, launches are refused, running workers hold heavy work.
+  // A production deploy in flight (src/deploy.ts): launches are refused, running workers hold heavy work.
   const deploy = new DeployWatch({ shells: () => runningShells(shells), extra: () => active?.config.deployCommands ?? [] }, workerHooks(() => active?.children));
   registerDeployGuard(pi, deploy, listener => shells.subscribe(listener));
-  registerDelegationNudge(pi, () => active?.config.delegateAfter ?? 0, () => active?.config.managerMode === true, () => deploy.quiet());
   registerReadChainHint(pi); // Lone read after lone read: batch the independent ones (src/read-chain.ts). Workers load no extension, so only this session gets it.
   let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;

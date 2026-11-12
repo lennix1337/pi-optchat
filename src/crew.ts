@@ -434,8 +434,6 @@ export class Crew {
 /** Messages an author-reviewer pair may send each other, both directions together (tell_peer). */
 export const PEER_MESSAGES = 6;
 
-/** Tool calls that execute or edit; a manager that makes many of them in one turn is doing a worker's job. */
-const EXECUTION = new Set(['bash', 'powershell', 'edit', 'write', 'shell_start']);
 /** One simple command that only reads: cat/head/tail/sed -n/grep/rg/ls/wc, git status|log|diff|show, gh <noun> view|list|status, date, git rev-parse, git branch listing, find without -delete/-exec. */
 const READ_ONLY = [/^(?:cat|head|tail|grep|rg|ls|wc)(?:\s|$)/, /^sed\s+-n\s(?!(?:.*\s)?-[a-z]*i\b)/, /^git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show)(?:\s|$)/, /^gh\s+\S+\s+(?:view|list|status)(?:\s|$)/, /^date(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+rev-parse(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+branch(?:\s+(?:-a|-r|-v|-vv|--list|--all|--remotes))*$/, /^find\s(?!.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)/];
 /** Whether a shell command is made only of reading commands. Doubtful commands (redirections, substitutions, in-place or output flags,
@@ -446,21 +444,6 @@ export function onlyReads(command: string) {
   const segments = text.split(/&&|\|\||[;|\n]/).map(part => part.trim()).filter(Boolean);
   return segments.length > 0 && segments.every(part => READ_ONLY.some(pattern => pattern.test(part)));
 }
-export const NUDGE = (count: number) => `[crew] ${count} execution calls in this turn. You are the manager: hand edits, builds and tests to a worker (spawn with kind "code", or "mechanical" for rote work) with a contract, and review its report.`;
-/** Appends one reminder to the result of the Nth execution call of a turn, then every N calls after it. `quiet` silences it (a production
- * deploy runs in this session, never through a worker: src/deploy.ts). */
-export function registerDelegationNudge(pi: ExtensionAPI, after: () => number, enabled: () => boolean, quiet: () => boolean = () => false) {
-  let count = 0;
-  pi.on('agent_start', () => { count = 0; });
-  pi.on('tool_result', event => {
-    if (!enabled() || !EXECUTION.has(event.toolName) || quiet()) return;
-    if (event.toolName === 'bash' && typeof event.input?.command === 'string' && onlyReads(event.input.command)) return;
-    const limit = after();
-    if (limit <= 0 || ++count % limit !== 0) return;
-    return { content: [...event.content, { type: 'text' as const, text: `\n${NUDGE(count)}` }] };
-  });
-}
-
 export const MANAGER_DOC = `# Manager mode
 You are the manager of a crew. You talk with the operator, decide, plan, write contracts, review workers' results and report. Workers execute. The operator turned this mode on: it is his standing request to delegate to workers, so spawning one needs no further ask (plain subagents without a kind still do).
 - Small work stays with you: reads, a short one-file fix, about 3-5 commands. Only multi-file edits, long suites and long investigations go to workers (a new worker builds a new prompt cache): call spawn with \`kind\` and a contract.
