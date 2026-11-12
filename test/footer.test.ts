@@ -92,3 +92,26 @@ test('without a UI the footer is left to Pi; with one it replaces it and unmount
   assert.equal(calls[1], undefined);
   assert.equal(calls.length, 2);
 });
+
+test('the footer leads with the model and its thinking level, then the cache hit of the last reply', async () => {
+  const { lastCacheHit, modelText, FooterState, footerLine } = await import('../src/footer.ts');
+  assert.equal(modelText('claude-opus-5-5', 'high'), 'opus-5-5 high');
+  assert.equal(modelText('openai-codex/gpt-6.1-sol', 'xhigh'), 'gpt-6.1-sol xhigh');
+  assert.equal(modelText('gpt-6.1-terra'), 'gpt-6.1-terra');
+  const entries: Record<string, { id: string; type: string; parentId: string | null; message?: unknown }> = {
+    a: { id: 'a', type: 'message', parentId: null, message: { role: 'assistant', usage: { input: 100, cacheRead: 900, cacheWrite: 0, output: 5 } } },
+    b: { id: 'b', type: 'message', parentId: 'a', message: { role: 'assistant', usage: { input: 2_000, cacheRead: 6_000, cacheWrite: 2_000, output: 5 } } },
+    c: { id: 'c', type: 'message', parentId: 'b', message: { role: 'user', content: 'oi' } },
+    d: { id: 'd', type: 'thinking_level_change', parentId: 'c' },
+  };
+  const sm = (leaf: string | undefined) => ({ getLeafEntry: () => leaf ? entries[leaf] : undefined, getEntry: (id: string) => entries[id] }) as never;
+  assert.equal(lastCacheHit(sm('d')), 0.6, 'the newest assistant reply counts, past user and settings entries');
+  assert.equal(lastCacheHit(sm('a')), 0.9);
+  assert.equal(lastCacheHit(sm(undefined)), undefined, 'an empty session has no hit to show');
+  const ctx = { getContextUsage: () => ({ tokens: 50_000, contextWindow: 500_000 }), model: { id: 'claude-opus-5-5', provider: 'anthropic', contextWindow: 500_000 }, sessionManager: sm('d') } as never;
+  const input = new FooterState(ctx, { spend: () => 3, quotaState: () => ({}), thinking: () => 'high', now: () => 0 }).input(undefined);
+  assert.equal(footerLine(input, 200, (_t, s) => s), 'opus-5-5 high · cache 60% · $3,00 hoje · contexto 50k/500k');
+  assert.equal(footerLine(input, 14, (_t, s) => s), 'opus-5-5 high', 'the model is the last part to go on a narrow terminal');
+  const broken = new FooterState({ ...ctx as object, sessionManager: { getLeafEntry: () => { throw new Error('x'); } } } as never, { spend: () => 3, quotaState: () => ({}), thinking: () => { throw new Error('y'); }, now: () => 0 }).input(undefined);
+  assert.equal(footerLine(broken, 200, (_t, s) => s), 'opus-5-5 · $3,00 hoje · contexto 50k/500k', 'a failing source only hides its part');
+});

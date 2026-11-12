@@ -718,7 +718,7 @@ export default function optchat(pi: ExtensionAPI) {
         // The footer is the status line; the bar below the editor then only shows while an inspector page is selected.
         unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav, ctx.hasUI);
         unmountBoard = mountWaitingBoard(ctx, board, shortcut, boardNav);
-        unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readJsonOr<unknown>(QUOTA_FILE, {}), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}`, events: pi.events });
+        unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readJsonOr<unknown>(QUOTA_FILE, {}), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}`, events: pi.events, thinking: () => pi.getThinkingLevel() });
       }
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => inPhase('open'), deliverReport);

@@ -5,12 +5,17 @@ import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import { resetText } from './quota-format.ts';
 
 /**
- * The one-line footer under the editor, in Portuguese: today's spend, the context used of its limit, the account's quota windows with
- * their reset time (Brasília) and the goal extension's state. It replaces Pi's built-in footer (git branch, token totals, model name).
+ * The one-line footer under the editor, in Portuguese: the model and its thinking level, the cache hit of the last call, today's spend,
+ * the context used of its limit, the account's quota windows with their reset time (Brasília) and the goal extension's state. It replaces
+ * Pi's built-in footer (git branch, token totals, model name).
  */
 export interface FooterQuota { label: string; w5h?: QuotaWindowRow; w7d?: QuotaWindowRow }
 export interface FooterInput {
   now: number;
+  /** The session's model id and thinking level. */
+  model?: { id: string; thinking?: string };
+  /** Share of the last call's prompt read from the provider cache, 0..1. */
+  cacheHit?: number;
   /** Dollars spent today, from the usage ledger. */
   spend?: number;
   /** Context tokens in use (unknown right after a compaction) and the model's window. */
@@ -50,6 +55,24 @@ export function familyLabel(model: string | undefined, provider: string | undefi
   const name = shortModel(model ?? '');
   return /claude|opus|sonnet|haiku/i.test(model ?? '') ? 'Claude' : /gpt|codex|^o\d/i.test(name) ? 'GPT' : provider ?? name;
 }
+/** `opus-5-5 high`, `gpt-6.1-sol xhigh`: the model id without its provider or `claude-` prefix, then the thinking level. */
+export function modelText(id: string, thinking?: string) {
+  const name = id.slice(id.indexOf('/') + 1).replace(/^claude-/, '').replace(/[\x00-\x20\x7f-\x9f]/g, '') || 'modelo?';
+  return thinking ? `${name} ${thinking}` : name;
+}
+/** Cache hit of the last assistant reply on the branch: tokens read from cache over the whole prompt; undefined when none is found. */
+export function lastCacheHit(sessionManager: Pick<ExtensionContext['sessionManager'], 'getLeafEntry' | 'getEntry'>, maxSteps = 400): number | undefined {
+  let entry = sessionManager.getLeafEntry() as { type?: string; parentId?: string | null; message?: { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } } } | undefined;
+  for (let step = 0; entry && step < maxSteps; step++) {
+    const usage = entry.type === 'message' && entry.message?.role === 'assistant' ? entry.message.usage : undefined;
+    if (usage) {
+      const read = usage.cacheRead ?? 0, prompt = (usage.input ?? 0) + read + (usage.cacheWrite ?? 0);
+      if (prompt > 0) return read / prompt;
+    }
+    entry = entry.parentId ? sessionManager.getEntry(entry.parentId) as typeof entry : undefined;
+  }
+  return undefined;
+}
 const quotaTone = (used: number): Tone | undefined => used >= 95 ? 'error' : used >= 80 ? 'warning' : undefined;
 /** A window that already renewed is an old reading: it shows `?` rather than a use that no longer holds. */
 const windowPart = (name: string, w: QuotaWindowRow, now: number, reset: boolean): Pick<Segment, 'text' | 'tone'> =>
@@ -58,6 +81,8 @@ const windowPart = (name: string, w: QuotaWindowRow, now: number, reset: boolean
 /** The footer's parts, the least important first to go when the terminal is narrow (`drop` high goes first). */
 export function footerSegments(input: FooterInput): Segment[] {
   const { now, quota, context } = input, out: Segment[] = [];
+  if (input.model) out.push({ text: modelText(input.model.id, input.model.thinking), drop: 0 });
+  if (input.cacheHit !== undefined) out.push({ text: `cache ${Math.round(input.cacheHit * 100)}%`, tone: input.cacheHit < 0.5 ? 'warning' : undefined, drop: 2.5 });
   if (input.spend !== undefined) out.push({ text: `${dollars(input.spend)} hoje`, drop: 1 });
   if (context?.window) {
     const used = context.tokens === null ? undefined : context.tokens / context.window * 100;
@@ -97,6 +122,8 @@ export interface FooterSources {
   quotaState: () => unknown;
   hint?: string;
   now?: () => number;
+  /** The session's thinking level (`pi.getThinkingLevel`). */
+  thinking?: () => string | undefined;
   /** Pi's event bus: the goal extension announces its status there (`GOAL_STATUS_EVENT`), already worded in Portuguese. */
   events?: { on(channel: string, handler: (data: unknown) => void): () => void };
 }
@@ -110,14 +137,15 @@ export class FooterState {
   private at = -Infinity;
   private spend: number | undefined;
   private state: unknown;
-  constructor(private readonly ctx: Pick<ExtensionContext, 'getContextUsage' | 'model'>, private readonly sources: FooterSources) {}
+  constructor(private readonly ctx: Pick<ExtensionContext, 'getContextUsage' | 'model'> & Partial<Pick<ExtensionContext, 'sessionManager'>>, private readonly sources: FooterSources) {}
   input(goalStatus: string | undefined): FooterInput {
     const now = this.sources.now?.() ?? Date.now();
     if (now - this.at > TTL_MS || now < this.at) { this.at = now; this.spend = attempt(this.sources.spend); this.state = attempt(this.sources.quotaState); }
     const usage = attempt(() => this.ctx.getContextUsage()), model = attempt(() => this.ctx.model);
     const window = usage?.contextWindow ?? model?.contextWindow;
     const windows = model ? quotaWindows(record(record(this.state).usageByProvider)[model.provider]) : {};
-    return { now, spend: this.spend, ...window ? { context: { tokens: usage?.tokens ?? null, window } } : {},
+    const thinking = attempt(() => this.sources.thinking?.()), cacheHit = this.ctx.sessionManager ? attempt(() => lastCacheHit(this.ctx.sessionManager!)) : undefined;
+    return { now, spend: this.spend, ...model ? { model: { id: model.id, thinking } } : {}, ...cacheHit !== undefined ? { cacheHit } : {}, ...window ? { context: { tokens: usage?.tokens ?? null, window } } : {},
       ...model && (windows.w5h || windows.w7d) ? { quota: { label: familyLabel(model.id, model.provider), ...windows } } : {}, goalStatus };
   }
 }
