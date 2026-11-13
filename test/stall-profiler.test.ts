@@ -127,3 +127,20 @@ test('startStallProfiler stays off unless PI_STALL_PROFILER=1 (its rolls stall t
     else process.env.PI_STALL_PROFILER = prev;
   }
 });
+
+test('startStallProfiler stops a profiler an earlier module copy left running (survives Pi reload)', () => {
+  const prev = process.env.PI_STALL_PROFILER;
+  const slot = globalThis as Record<symbol, unknown>, key = Symbol.for('pi-optchat.stall-profiler');
+  let stopped = 0;
+  slot[key] = { start: async () => {}, roll: async () => {}, stop: () => { stopped++; } };
+  delete process.env.PI_STALL_PROFILER;
+  try {
+    assert.equal(startStallProfiler(), undefined);
+    assert.equal(stopped, 1);
+    assert.equal(slot[key], undefined);
+  } finally {
+    delete slot[key];
+    if (prev === undefined) delete process.env.PI_STALL_PROFILER;
+    else process.env.PI_STALL_PROFILER = prev;
+  }
+});
