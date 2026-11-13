@@ -69,7 +69,7 @@ import { registerEffectApprovals } from './authorization-hooks.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
-import { heartbeatCommand, summarizeTurn, wakeRetry } from './heartbeat-report.ts';
+import { heartbeatCommand, MEMORY_REPLY_RETRY, summarizeTurn, wakeRetry, type WakeRetried } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
@@ -307,7 +307,7 @@ export default function optchat(pi: ExtensionAPI) {
   const dreamLessons = new DayFrozenLessons();
   let settledAt = Date.now();
   /** The open wake was already sent back once for a memory-line reply; a second one settles as it is. */
-  let wakeRetried = false;
+  let wakeRetried: WakeRetried = {};
   const wakeWorkers = new WakeWorkers();
   /** Peer-message copies that arrived while a manager run was in progress (see `peerCopy`). */
   let peerCopies: string[] = [];
@@ -513,7 +513,7 @@ export default function optchat(pi: ExtensionAPI) {
           spawn: (task, cwd) => profile.children.spawn([task], cwd), escalate: (project, line) => heartbeat?.escalate(project, line) });
       },
       wake: (beat, radar, choice) => {
-        wakeRetried = false; clearWakeWorkers();
+        wakeRetried = {}; clearWakeWorkers();
         const dream = briefDream(ctx);
         const runs = lastRunsOf(profile.children.runs(), Date.now());
         const note = beat.signals?.length ? crewWakeNote(profile.crew.missions(), [], [], beat.signals.map(signal => ({ ...signal, lastRun: runs[signal.project]?.id })))
@@ -1209,7 +1209,7 @@ export default function optchat(pi: ExtensionAPI) {
       const expired = wakeWorkers.expire();
       if (!expired) { watchWakeWorkers(ctx); return; }
       ctx.ui.notify(WORKER_UNVERIFIED, 'warning');
-      wakeRetried = true;
+      wakeRetried = { memory: true, empty: true };
       // The worker transcript retains the original. Unknown transport is not permission to replay it.
       if (expired === 'recover') {
         void deliverReport(WORKER_RECOVERY, { workerRecovery: true }).catch(error => ctx.ui.notify(`Worker recovery dispatch failed: ${errorText(error)}`, 'error'));
@@ -1260,10 +1260,10 @@ export default function optchat(pi: ExtensionAPI) {
     const reload = wake && active && !fault && !stopping ? selfReload.ready(ctx, _event.aborted) : undefined;
     if (reload && active) { heartbeat?.holdReload(reload, Date.now() + HOLD_MAX_MS, wake); watchWakeReload(reload, ctx, active); }
     const waitingReload = wake && !fault && !stopping && !_event.aborted && wake.stopReason !== 'error' && heartbeat?.awaitingReload;
-    const retry = wake && !waitingReload && !waitingWorkers && !wakeRetried && !fault && !stopping ? wakeRetry(wake) : undefined;
+    const retry = wake && !waitingReload && !waitingWorkers && !fault && !stopping ? wakeRetry(wake, wakeRetried) : undefined;
     if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
     else if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
-    else if (retry) { wakeRetried = true; void deliverReport(retry); }
+    else if (retry) { wakeRetried = { ...wakeRetried, [retry === MEMORY_REPLY_RETRY ? 'memory' : 'empty']: true }; void deliverReport(retry); }
     else {
       heartbeat?.turnSettled({ ...wake ?? summarizeTurn(turn), ...ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}` } });
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));

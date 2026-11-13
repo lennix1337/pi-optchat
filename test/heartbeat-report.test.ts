@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beatSnapshot, type WakeRecord } from '../src/heartbeat.ts';
-import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedIdle, renderReport, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
+import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedReply, renderReport, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
 import { queueFile } from '../src/heartbeat-queue.ts';
 
 const call = (id: string, name: string, args: unknown) => ({ type: 'toolCall', id, name, arguments: args });
@@ -115,14 +115,21 @@ test('a ship.mjs run counts as a delivery: the PR it opened is logged, so the ne
   assert.deepEqual(summary.commits, ['pr https://github.com/lennix1337/pi-optchat/pull/97']);
 });
 
-test('a wake that only wrote a memory line is caught (03/11 16:35); a real report or any tool run is not', () => {
+test('a wake reply shaped like a memory line is caught (03/11 16:35, 13/11 19:34); a real report is not', () => {
   const memoryLine = '104704-112 OptChat 03/11 15:57-16:20 BRT, read-only monitoring, no operator order beyond user 104994';
-  assert.equal(memoryShapedIdle({ reply: memoryLine, tools: 0, commits: [] }), true);
-  assert.equal(memoryShapedIdle({ reply: '105113+1|work: heartbeat', tools: 0, commits: [] }), true);
-  assert.equal(memoryShapedIdle({ reply: 'tool: bash ran tests; echo: 80 pass', tools: 0, commits: [] }), true);
-  assert.equal(memoryShapedIdle({ reply: memoryLine, tools: 3, commits: [] }), false, 'it worked, only the report is odd');
-  assert.equal(memoryShapedIdle({ reply: 'Abri a PR #97 e o merge automático está programado.', tools: 0, commits: [] }), false);
-  assert.equal(memoryShapedIdle({ reply: '2 PRs mergeadas às 15:30.', tools: 0, commits: [] }), false);
+  assert.equal(memoryShapedReply(memoryLine), true);
+  assert.equal(memoryShapedReply('105113+1|work: heartbeat'), true);
+  assert.equal(memoryShapedReply('tool: bash ran tests; echo: 80 pass'), true);
+  assert.equal(memoryShapedReply('Abri a PR #97 e o merge automático está programado.'), false);
+  assert.equal(memoryShapedReply('2 PRs mergeadas às 15:30.'), false);
+});
+
+test('a memory-line reply is sent back even after tools ran and after the empty-wake nudge (13/11 19:34: "158821+1|work: ..." reached the operator)', () => {
+  const leaked = { reply: '158821+1|work: heartbeat notice repeats that the wake is about to end', tools: 12, commits: [] };
+  assert.equal(wakeRetry(leaked, { empty: true }), MEMORY_REPLY_RETRY);
+  assert.equal(wakeRetry(leaked, { empty: true, memory: true }), undefined, 'each nudge goes once per wake');
+  assert.equal(wakeRetry({ reply: 'Nada novo.', tools: 2, commits: [] }, { empty: true }), undefined);
+  assert.doesNotMatch(MEMORY_REPLY_RETRY, /ran no tool/);
 });
 
 test('a wake that settles with no commit, push, PR or merge is sent back once to build something new (operator 08/11: "não quero que um wake não faça nada")', () => {

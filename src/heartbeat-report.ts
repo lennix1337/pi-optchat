@@ -46,26 +46,28 @@ export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
 }
 
 /**
- * A wake reply shaped like a memory line (`104704-112 OptChat ...`, `id+n|`, `user: ...; echo: ...`) with no tool call: the
- * model summarized the view instead of working (03/11 16:35: the operator saw a memory line and "vc n fez nada").
+ * A wake reply shaped like a memory line (`104704-112 OptChat ...`, `id+n|`, `user: ...; echo: ...`): the model summarized the
+ * view instead of answering, and the operator reads that text (03/11 16:35 "vc n fez nada"; 13/11 19:34 "bugou isso ai?").
  */
-export function memoryShapedIdle(summary: WakeSummary): boolean {
-  if (summary.tools > 0) return false;
-  const reply = summary.reply.trim();
-  return /^\d{3,}(?:[-+]\d+)?[|\s]/.test(reply) || /^(?:user|talk|tool|echo|work|note):\s/.test(reply);
+export function memoryShapedReply(reply: string): boolean {
+  const text = reply.trim();
+  return /^\d{3,}(?:[-+]\d+)?[|\s]/.test(text) || /^(?:user|talk|tool|echo|work|note):\s/.test(text);
 }
 
-/** Sent once into the same wake when its reply was a memory line and nothing ran. */
-export const MEMORY_REPLY_RETRY = '[OptChat heartbeat] Your wake reply was a memory summary line and you ran no tool: that is not a wake, and the operator reads it as "did nothing". Do the wake now: close what the previous wake left open, then deliver a change with your tools, and end with a short report in Portuguese (pt-BR) in plain sentences, never in memory-line format.';
+/** Sent once into the same wake when its reply was a memory line, whatever ran before it. */
+export const MEMORY_REPLY_RETRY = '[OptChat heartbeat] Your wake reply was a memory summary line, and the operator reads that text as a broken answer. Reply again: if the wake still has work, do it with your tools; then end with a short report in Portuguese (pt-BR) in plain sentences, never in memory-line format (no `id+n|`, no `user:`/`talk:`/`echo:` tags).';
 
 /** Sent once into the same wake when it settled having committed, pushed, opened or merged nothing (operator 08/11: "não quero que um wake não faça nada"). */
 export const EMPTY_WAKE_RETRY = '[OptChat heartbeat] This wake is about to end without delivering a change: no commit, push, PR or merge. Measuring, re-reading state and reporting "nothing new" is not a wake (operator, 08/11: "não quero que um wake não faça nada"; explore new horizons). Keep going in this same wake: pick a new capability toward the end goal, a living assistant that helps the operator through his day on its own (notices what he needs, decides and acts without being asked), in the harness or a new package. Name its user-visible result and evidence, write the red test, build it, ship it as a PR with auto-merge, then report in Portuguese (pt-BR) what it does and how it was validated.';
 
-/** The nudge a settled wake gets once, if it did not work: a memory-line reply, or no delivered change. Aborts and errors are not idleness. */
-export function wakeRetry(summary: WakeSummary): string | undefined {
-  if (memoryShapedIdle(summary)) return MEMORY_REPLY_RETRY;
+/** Which nudges this wake already got; each goes at most once. */
+export interface WakeRetried { memory?: boolean; empty?: boolean }
+
+/** The nudge a settled wake gets: a memory-line reply, or no delivered change. Aborts and errors are not idleness. */
+export function wakeRetry(summary: WakeSummary, retried: WakeRetried = {}): string | undefined {
   if (summary.stopReason === 'aborted' || summary.stopReason === 'error') return undefined;
-  return summary.commits.length ? undefined : EMPTY_WAKE_RETRY;
+  if (memoryShapedReply(summary.reply)) return retried.memory ? undefined : MEMORY_REPLY_RETRY;
+  return summary.commits.length || retried.empty ? undefined : EMPTY_WAKE_RETRY;
 }
 
 export interface ReportContext { now: number; cap: number; minutes: number; /** Every wake of the daily cap's count; without it the report counts the logged wakes. */ wakes?: number[] }
