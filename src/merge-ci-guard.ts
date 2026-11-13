@@ -61,10 +61,13 @@ async function neverStarted(view: Rollup, exec: Exec, cwd: string): Promise<bool
 
 export async function mergeRefusal(command: string, cwd: string, exec: Exec): Promise<string | undefined> {
   for (const merge of directMerges(command, cwd)) {
+    const variable = [merge.pr, merge.repo].find(value => value?.includes('$'));
+    if (variable) return `Not run: the PR of \`gh pr merge\` comes from a shell variable (${variable}), so its checks cannot be read before the command runs. Write it out: one \`gh pr merge <N>\` per PR, several may share one command.`;
     const args = ['pr', 'view', ...(merge.pr ? [merge.pr] : []), ...(merge.repo ? ['--repo', merge.repo] : []), '--json', 'statusCheckRollup,mergeStateStatus,headRefOid,headRepository'];
     let problem: string | undefined;
     try {
       const out = await exec('gh', args, { cwd: merge.dir, timeout: 20_000 });
+      if (out.code !== 0 && /no pull requests found/i.test(out.stderr)) return `Not run: PR ${merge.pr ?? '(current branch)'} does not exist yet, so its checks cannot be read. When this command creates it, merge in a separate call afterwards, or let ship.mjs commit, push, open it and queue the merge in one step.`;
       if (out.code !== 0 || out.killed) problem = `could not read its checks (${(out.stderr || 'gh failed').trim().slice(0, 160)})`;
       else {
         const view = JSON.parse(out.stdout) as Rollup;
