@@ -143,8 +143,9 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
   let stopped = false;
   let rolling = false;
   let startPromise: Promise<void> | null = null;
-  // Keep only the single most recent stopped profile in memory.
+  // The previous window is kept too: a stall the watch records only after this roll fired is attributed on the next one.
   let lastProfile: { profile: CpuProfileLike; windowEndMs: number } | null = null;
+  let previousProfile: { profile: CpuProfileLike; windowEndMs: number } | null = null;
 
   const start = async () => {
     if (stopped || started) return startPromise ?? undefined;
@@ -177,11 +178,14 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
       const windowEndMs = performance.now();
       if (!stopped && session) await session.post('Profiler.start');
       const typed = profile as unknown as CpuProfileLike;
+      previousProfile = lastProfile;
       lastProfile = { profile: typed, windowEndMs };
       for (const stall of watch.stalls()) {
         if (stall.cpu) continue;
-        const cpu = attributeStallCpu(lastProfile.profile, lastProfile.windowEndMs, stall.startMs, stall.endMs);
-        if (cpu) stall.cpu = cpu;
+        for (const p of [lastProfile, previousProfile]) {
+          const cpu = p && attributeStallCpu(p.profile, p.windowEndMs, stall.startMs, stall.endMs);
+          if (cpu) { stall.cpu = cpu; break; }
+        }
       }
     } catch {
       // Ignore transient stop/start errors when shutting down.
@@ -192,7 +196,7 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
 
   const stop = () => {
     stopped = true;
-    lastProfile = null;
+    lastProfile = previousProfile = null;
     if (timer) { clearInterval(timer); timer = null; }
     if (session) {
       try { session.disconnect(); } catch { /* already disconnected */ }
