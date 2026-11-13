@@ -258,6 +258,22 @@ function readOnlyPowerShell(words: Word[]): boolean {
   return (flag === '-command' || flag === '-c') && !!script?.quoted && words.length === at + 2 && readOnlyPowerShellScript(script.value);
 }
 
+// Docker inspections only. `logs -f` never ends, and every other subcommand can run, stop or remove something.
+const DOCKER_READS = new Set(['ps', 'stats', 'logs', 'inspect', 'images', 'top', 'version', 'info', 'port', 'diff']);
+const readOnlyDocker = (words: Word[]) => DOCKER_READS.has(words[1]?.value ?? '') && !hasGlob(words)
+  && !words.some(word => word.value === '--follow' || shortCluster(word, 'f') && words[1].value === 'logs');
+
+// `ssh [-o BatchMode=yes|ConnectTimeout=N] host '<command>'` where the remote command is itself a read-only diagnostic.
+// Any other option can run a local program (`ProxyCommand`) or open a tunnel, and no command would start a shell.
+function readOnlySsh(words: Word[]): boolean {
+  let at = 1;
+  while (words[at]?.value === '-o' && /^(?:BatchMode=yes|ConnectTimeout=\d+)$/.test(words[at + 1]?.value ?? '')) at += 2;
+  const host = words[at]?.value, remote = words[at + 1];
+  if (!host || !/^[\w][\w.@-]*$/.test(host) || !remote?.quoted || words.length !== at + 2) return false;
+  const inner = diagnosticCommands(remote.value);
+  return !!inner && inner.every(readOnlyWords);
+}
+
 function readOnlyWords({ words, piped }: Command): boolean {
   const name = words[0].value;
   // Beyond the long-standing set below, an unquoted glob could expand to an option.
@@ -276,6 +292,8 @@ function readOnlyWords({ words, piped }: Command): boolean {
     case 'date': return words.slice(1).every(word => word.value.startsWith('+') || ['-u', '--utc', '--universal'].includes(word.value));
     case 'find': return readOnlyFind(words);
     case 'gh': return readOnlyGh(words);
+    case 'docker': return readOnlyDocker(words);
+    case 'ssh': return readOnlySsh(words);
     case 'powershell': case 'powershell.exe': case 'pwsh': case 'pwsh.exe': return readOnlyPowerShell(words);
     // `tr` only reads stdin; as the first command there is nothing it could usefully inspect.
     case 'tr': return piped;
