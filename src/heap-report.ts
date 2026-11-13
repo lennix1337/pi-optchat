@@ -8,6 +8,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import { Type } from 'typebox';
 import { stallWatch } from './loop-stalls.ts';
+import { startStallProfiler } from './stall-profiler.ts';
 import type { Memory } from './memory.ts';
 
 /** A heap over this share of V8's limit is too big to snapshot in place: the snapshot needs about as much memory again. */
@@ -27,6 +28,7 @@ function loop() {
   return state.loop;
 }
 stallWatch(); // the stall list starts with the process too
+startStallProfiler(); // lazily captures CPU samples for any stall, unless PI_STALL_PROFILER=0
 loop(); // measuring starts when the extension loads, so the first report already covers the session so far
 /** Called when a reload tears a profile down. */
 export const noteReload = () => { shared().reloads++; };
