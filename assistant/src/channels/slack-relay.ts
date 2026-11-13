@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { basename, extname, isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
 import { immediate } from '../store/transaction.ts';
@@ -152,6 +152,9 @@ const POST_URL = 'https://slack.com/api/chat.postMessage';
 const UPDATE_URL = 'https://slack.com/api/chat.update';
 const API = 'https://slack.com/api/';
 const MAX_DOWNLOAD = 50 * 1024 * 1024;
+/** What the assistant may attach to a post: pictures and PDFs, at most 10 MB, so a path can never leak a secret file. */
+export const UPLOAD_TYPES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf']);
+const MAX_UPLOAD = 10 * 1024 * 1024;
 const PART = 3900;
 /** Slack's limit for a section block's text; a longer approval post goes out without buttons (a thread reply still decides). */
 const SECTION_MAX = 3000;
@@ -263,6 +266,25 @@ export class SlackPoster {
       posted = typeof body.channel === 'string' ? body.channel : posted;
     }
     return { parts: chunks.length, ts, ...(posted ? { channel: posted } : {}) };
+  }
+
+  /** Attaches a local picture or PDF to the operator's DM or a configured channel (Slack's external upload flow; needs `files:write`). */
+  async upload(path: string, options: { channel?: string; threadTs?: string } = {}): Promise<{ file: string }> {
+    const destination = options.channel === undefined ? undefined : Object.hasOwn(this.options.channels, options.channel) ? this.options.channels[options.channel] : null;
+    if (destination === null) throw new OutboxRefused('unknown_channel');
+    if (!isAbsolute(path) || !UPLOAD_TYPES.has(extname(path).toLowerCase())) throw new OutboxRefused('file_type_not_allowed');
+    let size: number;
+    try { size = statSync(path).size; } catch { throw new OutboxRefused('file_not_found'); }
+    if (size === 0 || size > MAX_UPLOAD) throw new OutboxRefused('file_size_not_allowed');
+    const name = basename(path);
+    const target = destination ?? String((await this.call(`${API}conversations.open`, { users: this.options.operator }, true) as { channel?: { id?: unknown } }).channel?.id ?? '');
+    if (!/^[CDG][A-Z0-9]{2,20}$/.test(target)) throw new OutboxRefused('unknown_channel');
+    const slot = await this.call(`${API}files.getUploadURLExternal`, { filename: name, length: size }, true) as { upload_url?: unknown; file_id?: unknown };
+    if (typeof slot.upload_url !== 'string' || typeof slot.file_id !== 'string' || !FILE_HOST.test(slot.upload_url)) throw new OutboxRefused('slack_upload_slot');
+    const put = await this.options.fetch(slot.upload_url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60_000), body: readFileSync(path) });
+    if (!put.ok) throw new Error('slack_upload_failed');
+    await this.call(`${API}files.completeUploadExternal`, { files: [{ id: slot.file_id, title: name }], channel_id: target, ...(options.threadTs ? { thread_ts: options.threadTs } : {}) });
+    return { file: slot.file_id };
   }
 
   /** Rewrites one of the bot's own DM posts as plain text, dropping its buttons. */
