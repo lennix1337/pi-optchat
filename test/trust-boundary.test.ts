@@ -274,6 +274,20 @@ test('a merge runs only over green CI; --auto may wait only where GitHub itself 
   assert.equal(await mergeRefusal('gh pr merge 31 --auto --squash', 'C:/', exec({ ...running, mergeStateStatus: 'BLOCKED' })), undefined);
 });
 
+test('a merge the guard cannot check before it runs is refused with the way through: a PR in a shell variable, a PR the same command creates', async () => {
+  const calls: string[][] = [];
+  const noPr: Exec = async (_c, args) => { calls.push(args); return { code: 1, stdout: '', stderr: 'no pull requests found for branch "docs/ci-runners"' }; };
+  // 2026-11-12: these were refused as "no pull requests found for branch "$n"" and retried in another turn.
+  const loop = await mergeRefusal('for n in 976 977; do gh pr merge $n -R lennix1337/Genexus18MCP --squash --auto; done', 'C:/', noPr);
+  assert.match(loop!, /^Not run: .*shell variable \(\$n\).*one `gh pr merge <N>` per PR/);
+  const repo = await mergeRefusal('for r in pi-lsp:3; do gh pr merge 3 -R lennix1337/$p --squash; done', 'C:/', noPr);
+  assert.match(repo!, /shell variable \(lennix1337\/\$p\)/);
+  assert.equal(calls.length, 0, 'nothing to look up');
+  const created = await mergeRefusal('git push -u origin docs/ci-runners && gh pr create --fill && gh pr merge --auto --squash', 'C:/', noPr);
+  assert.match(created!, /^Not run: .*does not exist yet.*separate call.*ship\.mjs/);
+  assert.doesNotMatch(created!, /Wait for the checks/);
+});
+
 test('a red check whose Actions job never ran a step (GitHub refused to start it: billing) does not block a merge; a job that ran steps does', async () => {
   const sha = '6b02a198341438d5e800cbfdcce9de7874e47d0d';
   const neverRan = { statusCheckRollup: [
