@@ -38,6 +38,11 @@ export function launchDurable(root: string, job: Omit<DurableRecord, 'pid'>): Du
   return record;
 }
 
+/** A detached shell leads its own process group outside Windows, so one signal reaches the whole tree. */
+const killTree = async (pid: number) => {
+  if (process.platform === 'win32') return reapShellTree(pid, getShellConfig().shell).catch(() => {});
+  try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
+};
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; } };
 const readExit = (file: string) => { try { const text = readFileSync(file, 'utf8').trim(); return text === '' ? undefined : Number(text); } catch { return undefined; } };
 
@@ -59,7 +64,7 @@ export interface FollowOptions { feed?: (chunk: Buffer) => void; pollMs?: number
 export async function followDurable(root: string, record: DurableRecord, signal: AbortSignal, update: (output: string, log?: string) => void, options: FollowOptions = {}) {
   const paths = durablePaths(root, record.id);
   let offset = 0, stopping = false;
-  const kill = () => { stopping = true; void reapShellTree(record.pid, getShellConfig().shell).catch(() => {}); };
+  const kill = () => { stopping = true; void killTree(record.pid); };
   if (signal.aborted) kill(); else signal.addEventListener('abort', kill, { once: true });
   const timer = record.deadline === undefined ? undefined : setTimeout(kill, Math.max(0, record.deadline - Date.now()));
   try {
