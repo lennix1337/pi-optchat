@@ -49,8 +49,17 @@ test('a failing remedy is reported as needing the operator; a probe without reme
 test('the PC disk and maintenance probes carry the maintenance remedy; memory has none; null turns it off', () => {
   const remedy = counting();
   const probes = pcProbes({ drive: 'C:\\', reportDir: 'X', maintenance: remedy, reports: () => [] });
-  assert.deepEqual(probes.map(p => [p.name, p.remedy === remedy]), [['PC: disco C:', true], ['PC: memória', false], ['PC: manutenção diária', true]]);
-  assert.ok(pcProbes({ maintenance: null }).every(p => !p.remedy));
+  assert.deepEqual(probes.slice(0, 3).map(p => [p.name, p.remedy === remedy]), [['PC: disco C:', true], ['PC: memória', false], ['PC: manutenção diária', true]]);
+  assert.ok(pcProbes({ maintenance: null, backup: null }).every(p => !p.remedy));
+});
+
+test('a stopped offsite backup is a PC probe whose remedy runs the backup task again', async () => {
+  const remedy = counting(), backup = counting();
+  const probes = pcProbes({ drive: 'C:\\', reportDir: undefined, backupDir: 'B', maintenance: remedy, backup, reports: () => [] });
+  const probe = probes.find(p => p.name === 'PC: backup na VM');
+  assert.ok(probe, 'probe present when the backup writes its reports here');
+  assert.equal(probe!.remedy, backup);
+  assert.match((await probe!.check()).problem!, /nenhum relatório em B/);
 });
 
 test('registered: a low disk runs the maintenance alone, tells the DM so, and the 07:00 summary leads with it', async t => { const dir = scratch(t);
