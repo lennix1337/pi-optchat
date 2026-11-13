@@ -73,6 +73,30 @@ test('a descendant whose parent already exited keeps the owner it was seen with'
   } finally { close(); }
 });
 
+test('a restart or /reload keeps the owners of the processes it left running; a reused pid is still not taken for them', () => {
+  const { dir, close } = tempDir('optchat-machine-');
+  try {
+    const sim = new Sim(), first = newSense(dir).sense;
+    first.began({ id: 'bench1', command: 'node bench.mjs --browser', mode: 'background' }, sim.t);
+    sim.spawn(200, HOST, 'bash.exe', 100);
+    sim.spawn(300, 200, 'msedge.exe', 500);
+    sim.spawn(400, 200, 'msedge.exe', 600);
+    first.ingest(sim.sample(5));
+    first.ingest(sim.sample(5));
+    first.flush();
+    // The old Pi exits with its shell; the headless browsers it launched live on under a new Pi.
+    sim.exit(HOST); sim.exit(200); sim.exit(400);
+    sim.spawn(150, 1, 'node.exe', 0);
+    sim.spawn(400, 1, 'msedge.exe', 0); // Windows handed pid 400 to an unrelated browser
+    sim.t += 30_000;
+    const second = newSense(dir, { hostPid: 150 }).sense;
+    const got = second.attributor.attribute(sim.sample(5));
+    assert.deepEqual([got.get(300)?.kind, got.get(300)?.group], ['shell', 'shell bench1']);
+    assert.equal(got.get(400)?.kind, 'external');
+    assert.equal(got.get(150)?.kind, 'host');
+  } finally { close(); }
+});
+
 test('a reused pid is never taken for the process that had it before', () => {
   const { dir, close } = tempDir('optchat-machine-');
   try {

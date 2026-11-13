@@ -41,6 +41,8 @@ const CLAIM_BEFORE_MS = 2_000, CLAIM_AFTER_MS = 30_000, BOUND_BEFORE_MS = 60_000
 
 interface Claim { id: number; owner: Owner; command: string; at: number; bound?: boolean }
 interface Memo { start: number; owner: Owner; seen: number }
+export interface RememberedOwner extends Memo { pid: number }
+const KINDS: ReadonlySet<string> = new Set<OwnerKind>(['bash', 'shell', 'worker', 'mcp', 'own', 'unattributed']);
 export interface AttributorOptions {
   /** The pid of the Pi process whose trees are ours. */
   hostPid: number;
@@ -48,6 +50,8 @@ export interface AttributorOptions {
   mcp?: () => McpSignature[];
   /** The worker runs that started lately, to say which one a freshly launched MCP server serves. */
   runs?: () => { id: string; started: number }[];
+  /** What the previous Attributor's `remembered` returned; taken over at the first sample, by its clock. */
+  inherited?: unknown;
 }
 
 /**
@@ -64,8 +68,24 @@ export class Attributor {
   private externals = new Map<string, Owner>();
   private unattributed = new Map<string, Owner>();
   private lastSample?: number;
-  constructor(private options: AttributorOptions) {}
+  private inherited?: unknown;
+  constructor(private options: AttributorOptions) { this.inherited = options.inherited; }
   sizes() { return { claims: this.claims.length, memo: this.memo.size, bound: this.bound.size, externals: this.externals.size, unattributed: this.unattributed.size }; }
+
+  /** The owners worth handing to the next Attributor: a restart or /reload starts empty, and the processes the old one left running would read as other programs'. The old host and its sampler stay behind. */
+  remembered(): RememberedOwner[] {
+    return [...this.memo].filter(([, m]) => KINDS.has(m.owner.kind)).map(([pid, m]) => ({ pid, ...m }));
+  }
+  /** Takes over what `remembered` handed down, unless it is older than the memo keeps. A pid is matched with its start time as always, so one Windows reused meanwhile is not taken for it. */
+  private remember(rows: unknown, now: number) {
+    if (!Array.isArray(rows)) return;
+    for (const r of rows as Partial<RememberedOwner>[]) {
+      const o = r?.owner;
+      if (typeof r?.pid !== 'number' || typeof r.start !== 'number' || typeof r.seen !== 'number' || now - r.seen > REMEMBER_MS || r.pid === this.options.hostPid) continue;
+      if (!o || typeof o.id !== 'string' || typeof o.group !== 'string' || !KINDS.has(o.kind as string) || this.memo.has(r.pid)) continue;
+      this.memo.set(r.pid, { start: r.start, owner: { id: o.id, group: o.group, kind: o.kind as OwnerKind, ...typeof o.detail === 'string' ? { detail: o.detail } : {} }, seen: r.seen });
+    }
+  }
 
   /** OptChat is about to run a command (bash call, shell_start, a worker's call) for `owner`. Returns a handle for `release`. */
   claim(owner: Owner, command: string, at: number): number {
@@ -87,6 +107,7 @@ export class Attributor {
   /** Every process of the sample with its owner. The Pi host and the helper have their own owners; a process outside the host's tree is external, grouped by program name. */
   attribute(sample: Sample): Map<number, Owner> {
     const now = sample.t, result = new Map<number, Owner>();
+    if (this.inherited !== undefined) { this.remember(this.inherited, now); this.inherited = undefined; }
     this.claims = this.claims.filter(c => c.at > now - 6 * 3_600_000 || !c.bound);
     const live = new Map(sample.procs.map(p => [p.pid, p]));
     // Parents start before their children, so one pass in start order sees each parent's owner first.

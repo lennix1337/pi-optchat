@@ -1,3 +1,5 @@
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Attributor, LOWERABLE, commandHead, type McpSignature, type Owner } from './machine-attribution.ts';
 import { MachineAlerts, type Frame, type GroupFrame, type Limits } from './machine-alerts.ts';
 import { MachineLedger, type LedgerRow } from './machine-ledger.ts';
@@ -8,6 +10,8 @@ const RANK = new Map<number, number>([[0x40, 0], [0x4000, 1], [0x20, 2], [0x8000
 const KEEP_FRAMES_MS = 30 * 60_000;
 const OPERATOR_ACTIVE_S = 60;
 const FRAME_GROUPS = 25;
+/** The owners the next Pi process inherits (see `Attributor.remembered`). */
+const OWNERS_FILE = 'owners.json';
 
 export interface MachineSenseOptions {
   hostPid: number;
@@ -55,7 +59,9 @@ export class MachineSense {
 
   constructor(private options: MachineSenseOptions) {
     this.alerts = new MachineAlerts(options.limits);
-    this.attributor = new Attributor({ hostPid: options.hostPid, mcp: options.mcp, runs: options.runs });
+    let inherited: unknown;
+    try { inherited = JSON.parse(readFileSync(join(options.dir, OWNERS_FILE), 'utf8')); } catch { /* none yet, or torn: start empty */ }
+    this.attributor = new Attributor({ hostPid: options.hostPid, mcp: options.mcp, runs: options.runs, inherited });
     this.ledger = new MachineLedger(options.dir);
     this.alerts.actionNote = () => { const note = this.lowerNote; this.lowerNote = ''; return note || undefined; };
   }
@@ -173,11 +179,17 @@ export class MachineSense {
   }
   /** Writes the finished minute (or, at shutdown, the one in progress). A disk failure is returned, not thrown: the sampler must outlive it. */
   flush(): Error | undefined {
+    this.saveOwners();
     const pending = this.pending; this.pending = undefined;
     if (!pending || pending.wallS <= 0) return undefined;
     const day = new Date(pending.minute).toLocaleDateString('sv-SE');
     if (day !== this.prunedDay) { this.prunedDay = day; this.ledger.prune(pending.minute); }
     try { this.ledger.append(this.rows(pending)); return undefined; } catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+  }
+
+  private saveOwners() {
+    const file = join(this.options.dir, OWNERS_FILE);
+    try { writeFileSync(`${file}.tmp`, JSON.stringify(this.attributor.remembered())); renameSync(`${file}.tmp`, file); } catch { /* the next minute retries; at worst a restart reads its leftovers as external */ }
   }
 
   /** Collection sizes for `heap_report`. */
