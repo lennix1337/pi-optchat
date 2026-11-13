@@ -73,6 +73,7 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
         const view = JSON.parse(out.stdout) as Rollup;
         problem = ciProblem(view, merge.auto);
         if (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir)) problem = undefined;
+        else if (problem?.startsWith('failing checks') && (view.statusCheckRollup ?? []).some(c => c.status && c.status !== 'COMPLETED')) problem += ' (another check is still running: a billing-refused job is only waved through once every check has finished, so retry the same merge in a few seconds; never `--admin`)';
       }
     } catch (error) { problem = `could not read its checks (${error instanceof Error ? error.message.slice(0, 160) : 'gh failed'})`; }
     if (problem) return `Not run: PR ${merge.pr ?? '(current branch)'} is not mergeable over green CI: ${problem}. Wait for the checks (gitwatch wakes you) or fix the CI; \`--auto\` only waits where the repository requires checks.`;
