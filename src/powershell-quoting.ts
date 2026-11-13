@@ -11,12 +11,17 @@ const INVOCATION = /(?:^|[\s;&|(])(?:powershell|pwsh)(?:\.exe)?(?=\s)/gi;
 /** PowerShell-only forms: `$_`, `$env:X`, `$PSItem`, `$true/$false/$null`, `$(...)`, `$x.Prop`, `$x[0]`, `$script:x`. */
 const POWERSHELL_DOLLAR = /(?<!\\)\$(?:_(?!\w)|env:|PSItem\b|true\b|false\b|null\b|\(|[A-Za-z_]\w*[.[:])/i;
 
+/** `-File <path> [args]`: the script comes from the file; `$(...)` in the quoted path or arguments is bash's, as intended. */
+const FILE_FLAG = /^-f(?:ile)?(?=\s|$)/i;
+
 /** Double-quoted strings bash sees in one PowerShell invocation, up to the first unquoted separator. */
 function doubleQuoted(command: string, from: number): string[] {
   const strings: string[] = [];
   for (let at = from; at < command.length; at++) {
     const char = command[at];
     if (char === '\n' || char === ';' || char === '|' || char === '&') break;
+    // 12/11: `-File "$(cygpath -w probe.ps1)"` was refused three times, so the .ps1 the guard asks for never ran.
+    if (char === '-' && /\s/.test(command[at - 1]) && FILE_FLAG.test(command.slice(at))) return [];
     if (char === "'") { const end = command.indexOf("'", at + 1); if (end < 0) break; at = end; continue; }
     if (char !== '"') continue;
     let end = at + 1;
