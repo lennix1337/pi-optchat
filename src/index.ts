@@ -91,6 +91,7 @@ import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
 import { BoardNavigation, inspectorShortcut, mountNavigation, mountWaitingBoard } from './navigation.ts';
 import { mountFooter } from './footer.ts';
+import { mountToolGroups } from './tool-groups.ts';
 import { WaitingBoard, type WaitItem } from './waiting-board.ts';
 import { joinHeadless, listAttachableAgents, serveWindows } from './window-bridge.ts';
 import { openConnectedWindow, registerConnectedRenderer } from './connected-window.ts';
@@ -169,6 +170,7 @@ export default function optchat(pi: ExtensionAPI) {
   // zero model calls, never the command's text in a notification. Foreground bash is Pi's own result, not a managed job.
   shells.setEndObserver(job => { const current = active; if (!current || stopping) return; recordShellOutcome(current.dir, current.sessionId, job); });
   registerExecLog(pi, () => active?.dir);
+  mountToolGroups(pi);
   registerPerformance(pi, () => active?.metrics, (timestamp, latency) => active?.usage.timing(timestamp, latency));
   const recoveryIncidents = new Map<string, string>();
   const recoveryEvent = (event: unknown) => {
