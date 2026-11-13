@@ -284,8 +284,12 @@ function ghEffects(w: string[], dir: string, repo: Repo): Effect[] {
   if (group === 'pr' && verb === 'merge') return [{ action: w.includes('--admin') ? 'merge-bypass' : 'merge', targets: targets() }];
   if ((group === 'release' && /^(?:create|upload|edit)$/.test(verb ?? '')) || (group === 'repo' && /^(?:create|delete)$/.test(verb ?? '')))
     return [{ action: 'publish', targets: targets() }];
-  if (group === 'workflow' && verb === 'run' && w.slice(3).some(arg => /deploy|release|publish|prod/i.test(arg) && !arg.startsWith('-')))
-    return [{ action: 'deploy', targets: targets() }];
+  if (group === 'workflow' && verb === 'run') {
+    const names = w.slice(3).filter(arg => !arg.startsWith('-'));
+    // A deploy or prod workflow reaches live services; a release/publish one ships a package or tag.
+    if (names.some(arg => /deploy|prod/i.test(arg))) return [{ action: 'deploy', targets: targets() }];
+    if (names.some(arg => /release|publish/i.test(arg))) return [{ action: 'publish', targets: targets() }];
+  }
   return [];
 }
 
