@@ -107,6 +107,20 @@ test('terminal native check receipts distinguish test output from an interrupted
   assert.equal(outcomeUnknown(receipt({ schema: 'untrusted/v1' })), true);
 });
 
+test('a tool that reports its input was not delivered settled the call, even when its hint names a timeout option', async () => {
+  const { outcomeUnknown } = await import('../src/operations.ts');
+  const text = (value: object) => [{ type: 'text', text: JSON.stringify(value) }];
+  const rejected = {
+    version: '2.5', ok: false, command: 'mouse-wheel',
+    error: { code: 'INVALID_ARGS', message: "error: unexpected argument '--xy' found", disposition: { delivery: 'not_delivered', retry: 'safe' } },
+    hint: 'Valid options: --x, --y, --dy, --wait-for, --wait-timeout. Did you mean --x?',
+  };
+  assert.equal(outcomeUnknown(text(rejected)), false);
+  // Anything short of a declared non-delivery keeps the conservative reading.
+  assert.equal(outcomeUnknown(text({ ...rejected, error: { ...rejected.error, disposition: { delivery: 'delivered_unverified', retry: 'unsafe' } } })), true);
+  assert.equal(outcomeUnknown(text({ ok: false, error: { code: 'TIMEOUT', message: 'timed out' } })), true);
+});
+
 test('a refusal returned before anything ran is an observed outcome even when it mentions timeout or uncertainty', async () => {
   const { outcomeUnknown } = await import('../src/operations.ts');
   const text = (value: string) => [{ type: 'text', text: value }];

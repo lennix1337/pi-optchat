@@ -133,6 +133,14 @@ function completedCheckOutcome(text: string): boolean | undefined {
   return undefined;
 }
 
+/** A tool that states its input never reached the target (agent-desktop's `disposition.delivery`) settled the call. */
+function declaredNotDelivered(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { error?: { disposition?: { delivery?: unknown } } } | null;
+    return parsed?.error?.disposition?.delivery === 'not_delivered';
+  } catch { return false; }
+}
+
 function refusedBeforeRunning(text: string): boolean {
   let message = text;
   try {
@@ -157,7 +165,7 @@ export function outcomeUnknown(content: readonly unknown[] | undefined): boolean
   // The runner's terminal receipt is execution evidence; words in failed assertions are not.
   const completed = completedCheckOutcome(text);
   if (completed !== undefined) return completed;
-  if (refusedBeforeRunning(text)) return false;
+  if (refusedBeforeRunning(text) || declaredNotDelivered(text)) return false;
   return INTERRUPTED.test(text.slice(-400));
 }
 const failedUnobserved = (event: { isError: boolean; content?: readonly unknown[] }) => event.isError && outcomeUnknown(event.content);
