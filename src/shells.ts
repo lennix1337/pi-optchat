@@ -8,6 +8,7 @@ import type { ShellNotify } from './settings.ts';
 import { OutputAlerts, SHOWN_MATCHES, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
 import { stringEnum } from './string-enum.ts';
 import { textContent } from './transcript.ts';
+import { followDurable, launchDurable, pendingDurable, type DurableRecord } from './durable-shells.ts';
 
 export interface ShellJob {
   id: string; command: string; cwd: string; mode: 'foreground' | 'background';
@@ -35,7 +36,7 @@ export interface ShellReporter {
   /** Sends what is still waiting to go out together; called when another reporter replaces this one. */
   flush?(): void;
 }
-export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string }
+export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string; /** A durable shell's own id and start, when OptChat follows it again. */ id?: string; started?: number }
 const outputLimit = 32_000;
 /** CSI, OSC (hyperlinks, titles), charset designations (`tput sgr0` prints ESC ( B) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
 const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()*+][ -~]|\u001b[@-_]/g;
@@ -72,7 +73,7 @@ export class ShellJobs {
   setLifecycleObserver(observer: { began(job: ShellJob): void; ended(job: ShellJob): void } | undefined) { this.lifecycle = observer; }
   private changed() { for (const listener of this.listeners) listener(); }
   begin(id: string, command: string, cwd: string, mode: ShellJob['mode'], owner = 'main', options: ShellOptions = {}) {
-    this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert, ...options.agent === undefined ? {} : { agent: options.agent } });
+    this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: options.started ?? Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert, ...options.agent === undefined ? {} : { agent: options.agent } });
     this.changed();
     try { this.lifecycle?.began(this.jobs.get(id)!); } catch { /* an observer never owns the job */ }
   }
@@ -121,7 +122,7 @@ export class ShellJobs {
     job.state = 'stopping'; controller.abort(); this.changed(); return true;
   }
   start(command: string, cwd: string, execute: (signal: AbortSignal, update: (output: string, log?: string) => void) => Promise<{ output: string; failed: boolean; exitCode?: number; log?: string }>, options: ShellOptions = {}) {
-    const id = randomUUID(), controller = new AbortController();
+    const id = options.id ?? randomUUID(), controller = new AbortController();
     this.controllers.set(id, controller); this.begin(id, command, cwd, 'background', options.agent === undefined ? 'main' : `agent ${options.agent.slice(0, 8)}`, options);
     const task = Promise.resolve().then(() => {
       controller.signal.throwIfAborted();
@@ -272,10 +273,12 @@ export interface ShellSettings {
   notifyDefault?: () => ShellNotify;
   /** The least time between two alerts of one shell. Defaults to 10 seconds. */
   alertIntervalMs?: number;
+  /** Where the open profile keeps durable shells; undefined while no profile is open (and for subagents). */
+  durableDir?: () => string | undefined;
 }
 
 /** The shell_start arguments that a run needs. */
-interface ShellArgs { command: string; timeout?: number; notify?: ShellNotify; alert?: string }
+interface ShellArgs { command: string; timeout?: number; notify?: ShellNotify; alert?: string; durable?: boolean }
 /** The bash tool, run for one shell. Its raw output feeds the alerts, when there are any, and the last matches go out when the run ends. */
 async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSignal, update: (output: string, log?: string) => void, watch: OutputAlerts | undefined) {
   try {
@@ -290,11 +293,34 @@ async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSi
 function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, cwd: string, agent?: string): string {
   const pattern = args.alert === undefined ? undefined : alertPattern(args.alert);
   const notify = args.notify ?? settings.notifyDefault?.() ?? 'end';
+  const root = args.durable && agent === undefined ? settings.durableDir?.() : undefined;
+  if (args.durable && !root) throw new Error('durable needs the main agent with an open profile');
+  if (root) {
+    const started = Date.now();
+    const record = launchDurable(root, { id: randomUUID(), command: args.command, cwd, started, notify, alert: args.alert,
+      ...args.timeout === undefined ? {} : { deadline: started + args.timeout * 1000 } });
+    return followShell(jobs, settings, root, record);
+  }
   const id: string = jobs.start(args.command, cwd, (abort, update) => {
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(id, alert) });
     return runShell(id, cwd, args, abort, update, watch);
   }, { notify, alert: args.alert, agent });
   return id;
+}
+
+/** Follows a durable shell as a managed background job under its own id: its end and alerts reach the agent as any shell's. */
+function followShell(jobs: ShellJobs, settings: ShellSettings, root: string, record: DurableRecord): string {
+  const pattern = record.alert === undefined ? undefined : alertPattern(record.alert);
+  return jobs.start(record.command, record.cwd, (abort, update) => {
+    const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(record.id, alert) });
+    return followDurable(root, record, abort, update, { feed: watch ? chunk => watch.feed(chunk) : undefined }).finally(() => watch?.end());
+  }, { notify: record.notify, alert: record.alert, id: record.id, started: record.started });
+}
+/** On profile open: follows again the durable shells a crash, restart or quit left without a reported end. A /reload's are already followed. */
+export function resumeDurableShells(jobs: ShellJobs, settings: ShellSettings): string[] {
+  const root = settings.durableDir?.();
+  if (!root) return [];
+  return pendingDurable(root).filter(record => !jobs.find(record.id)).map(record => followShell(jobs, settings, root, record));
 }
 
 /**
@@ -366,9 +392,9 @@ export function registerShellTools(pi: ExtensionAPI, jobs: ShellJobs, canStart: 
   const findMine = (id: string) => { const job = jobs.find(id); return job && mine(job) ? job : undefined; };
   const listMine = () => jobs.list().filter(mine);
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
-    description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs keep running across /reload and are stopped when the profile closes or Pi quits; detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
+    description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs keep running across /reload and are stopped when the profile closes or Pi quits; durable: true runs one detached that also survives a Pi crash, restart or quit (its end is reported when OptChat reopens; for long workers such as agy, not servers); detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
-      notify: Type.Optional(stringEnum(['end', 'failure', 'none'])), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) }, { additionalProperties: false }),
+      notify: Type.Optional(stringEnum(['end', 'failure', 'none'])), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), durable: Type.Optional(Type.Boolean()) }, { additionalProperties: false }),
     async execute(_id, args, signal, _update, ctx) {
       canStart();
       if (signal?.aborted) throw new Error('Shell start cancelled');
