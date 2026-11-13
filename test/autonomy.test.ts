@@ -54,6 +54,15 @@ test('the production SQL reset that sent a real WhatsApp message is a production
   assert.deepEqual(effects('ssh hetzner-dentai "docker ps --format {{.Names}}"'), []);
 });
 
+test('ssh named only inside quoted text or a heredoc body is not an ssh call', () => {
+  // A commit message and a test file that mention ssh and docker rm run neither.
+  assert.deepEqual(effects(`node scripts/ship.mjs -m "Diagnóstico: docker de inspeção e ssh com comando de leitura; docker exec/run/rm seguem bloqueados" src/a.ts`), []);
+  const testFile = `cat >> test/x.test.ts <<'EOF'\nassert.ok(readOnly('x ssh hetzner-dentai docker ps'));\nassert.ok(!readOnly('a ssh to a host: docker rm api'));\nEOF\nnode --test test/x.test.ts`;
+  assert.deepEqual(effects(testFile), []);
+  // A real ssh call still counts, also inside a command substitution.
+  assert.deepEqual(effects('out=$(ssh hetzner-dentai "docker restart api")'), ['production-write ssh:hetzner-dentai']);
+});
+
 test('a database client over ssh is a production write unless the command visibly forces read-only', () => {
   // 2026-10-30: the UPDATE was written to /tmp/fix.sql by an earlier call, so this call showed no SQL at all.
   const fromFile = String.raw`ssh -o BatchMode=yes hetzner-dentai 'docker exec -i dentai-postgresdb sh -c "psql -v ON_ERROR_STOP=1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -At -F \"|\""' < /tmp/fix.sql 2>&1`;
