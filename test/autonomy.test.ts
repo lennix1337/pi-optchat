@@ -40,6 +40,9 @@ test('merges, publishing and deploys name the repository they touch', () => {
   assert.deepEqual(effects('gh release create v4.0.4 -R lennix1337/Genexus18MCP'), ['publish c:/users/swluc,lennix1337/genexus18mcp']);
   assert.deepEqual(effects('cd C:/projetos/dentai-mono && pwsh -File scripts/release/deploy-changed.ps1 -Sha 6f7d5915'), ['deploy c:/projetos/dentai-mono,tecnologia-ai/dentai']);
   assert.deepEqual(effects('gh workflow run deploy-prod.yml -R tecnologia-ai/dentai'), ['deploy c:/users/swluc,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('gh workflow run publish.yml --ref main -R lennix1337/pi-ripwire-but-better'), ['publish c:/users/swluc,lennix1337/pi-ripwire-but-better'], 'a package publish workflow is a publish, not a deploy');
+  assert.deepEqual(effects('gh workflow run release.yml -R lennix1337/pi-vault'), ['publish c:/users/swluc,lennix1337/pi-vault']);
+  assert.deepEqual(effects('gh workflow run release-prod.yml -R tecnologia-ai/dentai'), ['deploy c:/users/swluc,tecnologia-ai/dentai'], 'a prod workflow stays a deploy');
   assert.deepEqual(effects('cd C:/projetos/pi-optchat && pwsh -NoProfile -File ./release.ps1 -Version 4.0.4'), ['publish c:/projetos/pi-optchat,lennix1337/pi-optchat']);
   assert.deepEqual(effects('cd C:/projetos/pi-optchat && pwsh -NoProfile -File ./release.ps1 -WhatIf'), []);
   assert.deepEqual(effects('git push origin --delete fix/old', 'C:/projetos/dentai-mono'), ['discard c:/projetos/dentai-mono,tecnologia-ai/dentai'], 'deleting a remote branch is a discard');
