@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SlackChannel } from '../src/channels/slack.ts';
 import { SlackPoster, SlackRelay, slackText } from '../src/channels/slack-relay.ts';
@@ -88,6 +90,34 @@ test('the offline receipt answers a channel message in that channel, not in the 
     assert.equal(slack.calls[0].body.channel, 'C0HARNESS');
     assert.equal(slack.calls[0].body.thread_ts, '1793000000.000100');
   } finally { r.close(); }
+});
+
+test('the poster uploads a picture through the external flow into a channel thread or the DM, and refuses other files', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-upload-'));
+  const png = join(dir, 'prévia.png'); writeFileSync(png, Buffer.from('png-bytes'));
+  const secret = join(dir, '.env'); writeFileSync(secret, 'TOKEN=x');
+  const calls: { url: string; body: string }[] = [];
+  const fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: typeof init.body === 'string' ? init.body : `bytes:${(init.body as Buffer).length}` });
+    if (url.endsWith('files.getUploadURLExternal')) return new Response(JSON.stringify({ ok: true, upload_url: 'https://files.slack.com/upload/v1/abc', file_id: 'F0ONE' }));
+    if (url.endsWith('conversations.open')) return new Response(JSON.stringify({ ok: true, channel: { id: 'D0OWNER' } }));
+    return new Response(JSON.stringify({ ok: true }));
+  }) as typeof globalThis.fetch;
+  const poster = new SlackPoster({ botToken: 'xoxb-test-upload', operator: 'U0OWNER', channels: CHANNELS, fetch });
+  assert.deepEqual(await poster.upload(png, { channel: 'dentai', threadTs: '1793000000.000100' }), { file: 'F0ONE' });
+  assert.deepEqual(calls.map(c => c.url.split('/').pop()), ['files.getUploadURLExternal', 'abc', 'files.completeUploadExternal']);
+  assert.match(calls[0]!.body, /length=9/);
+  assert.equal(calls[1]!.body, 'bytes:9');
+  assert.deepEqual(JSON.parse(calls[2]!.body), { files: [{ id: 'F0ONE', title: 'prévia.png' }], channel_id: 'C0DENTAI', thread_ts: '1793000000.000100' });
+  calls.length = 0;
+  await poster.upload(png);
+  assert.equal(JSON.parse(calls.at(-1)!.body).channel_id, 'D0OWNER', 'without a channel the DM is opened by the operator id');
+  const before = calls.length;
+  await assert.rejects(poster.upload(secret), /file_type_not_allowed/);
+  await assert.rejects(poster.upload('relativo.png'), /file_type_not_allowed/);
+  await assert.rejects(poster.upload(join(dir, 'nada.png')), /file_not_found/);
+  await assert.rejects(poster.upload(png, { channel: 'C0DENTAI' }), /unknown_channel/);
+  assert.equal(calls.length, before, 'a refused file never reaches Slack');
 });
 
 test('the poster sends to the operator DM with the bot token and splits long text', async () => {

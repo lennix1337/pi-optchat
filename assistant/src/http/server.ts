@@ -118,6 +118,7 @@ const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolea
   '/v1/slack/fetch': { shape: { channel: channelId, ts: messageTs, thread: messageTs }, run: (p, b) => p.fetchMessage(b.channel, b.ts, b.thread) },
   '/v1/slack/home': { shape: body => ({ text: boundedText(HOME_MAX), ...optionalFields(body, { working: (v: unknown) => typeof v === 'boolean', approval: messageTs, choices: homeChoices, fold: (v: unknown) => v === 'more' || v === 'less' }) }), write: 'home',
     run: (p, b) => p.publishHome(b.text, { working: b.working === true, ...(messageTs(b.approval) ? { approval: b.approval } : {}), ...(b.choices ? { choices: b.choices } : {}), ...(b.fold ? { fold: b.fold } : {}) }) },
+  '/v1/slack/upload': { shape: body => ({ path: boundedText(500), ...optionalFields(body, { channel: (v: unknown) => typeof v === 'string' && /^[a-z0-9][a-z0-9_-]{0,79}$/.test(v), threadTs: messageTs }) }), write: 'upload', run: (p, b) => p.upload(b.path, { ...(b.channel ? { channel: b.channel } : {}), ...(b.threadTs ? { threadTs: b.threadTs } : {}) }) },
   '/v1/slack/download': {
     shape: { url: (v: unknown) => typeof v === 'string' && v.length < 2000, name: boundedText(200) },
     run: (p, b, slack) => { if (!slack.filesDir) throw new Error('no_files_dir'); return p.download(b.url, b.name, slack.filesDir); },

@@ -453,6 +453,27 @@ test('slack_send replies in a topic thread also show in the conversation; automa
   } finally { f.close(); }
 });
 
+test('slack_send files go under the post, in its thread and channel', async () => {
+  const f = fixture();
+  try {
+    await f.bridge.report('Prévias prontas', 'dentai', 'vitrine', ['C:/x/a.png', 'C:/x/b.png']);
+    await f.bridge.report('Segunda', 'dentai', 'vitrine', ['C:/x/c.png']);
+    const uploads = bodiesFor<{ path: string; threadTs: string; channel?: string }>('/v1/slack/upload')(f);
+    assert.deepEqual(uploads, [
+      { path: 'C:/x/a.png', threadTs: '1.1', channel: 'dentai' },
+      { path: 'C:/x/b.png', threadTs: '1.1', channel: 'dentai' },
+      { path: 'C:/x/c.png', threadTs: '1.1', channel: 'dentai' },
+    ]);
+  } finally { f.close(); }
+});
+
+test('a refused file reports that the message itself was sent', async () => {
+  const f = fixture([], { request: async (_o: unknown, path: string) => { if (path === '/v1/slack/upload') throw new HttpError(502); return { parts: 1, ts: '1.1' }; } });
+  try {
+    await assert.rejects(f.bridge.report('Prévia', 'dentai', undefined, ['C:/x/.env']), /The message was sent, but the file C:\/x\/\.env was not.*files:write/);
+  } finally { f.close(); }
+});
+
 test('slack_send without a channel goes to the channel of the work: its topic, else the repos the run touched; dm keeps the DM', async () => {
   const f = fixture();
   try {

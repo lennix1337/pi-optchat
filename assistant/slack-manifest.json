@@ -6,7 +6,7 @@
         "shortcuts": [ { "name": "Mandar pro Jarvis", "type": "message", "callback_id": "optchat_forward", "description": "Envia esta mensagem para o Jarvis na DM" } ]
     },
     "oauth_config": {
-        "scopes": { "bot": ["im:history", "im:read", "im:write", "chat:write", "channels:read", "channels:history", "channels:manage", "channels:join", "groups:read", "groups:history", "groups:write", "users:read", "reactions:write", "files:read", "commands"] },
+        "scopes": { "bot": ["im:history", "im:read", "im:write", "chat:write", "channels:read", "channels:history", "channels:manage", "channels:join", "groups:read", "groups:history", "groups:write", "users:read", "reactions:write", "files:read", "files:write", "commands"] },
         "pkce_enabled": false
     },
     "settings": {

@@ -622,9 +622,13 @@ export class SlackBridge {
    * Posts under a topic: the first post of a `topic` opens a message in the channel, later ones reply in its thread,
    * so one subject (a PR, a long task) keeps its history together. Topics last two weeks.
    */
-  async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string }> {
+  async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; thread: string }> {
     const owner = this.owner();
-    if (!topic || !owner) return this.publish(text, this.progressThread(channel), channel, this.answering?.channel === channel ? options : {});
+    if (!topic || !owner) {
+      const thread = this.progressThread(channel);
+      const sent = await this.publish(text, thread, channel, this.answering?.channel === channel ? options : {});
+      return { ...sent, thread: thread ?? sent.ts };
+    }
     const file = join(owner.dir, TOPICS), now = this.options.now();
     let topics: Record<string, { channel: string | null; ts: string; at: number }> = {};
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none yet */ }
@@ -636,7 +640,7 @@ export class SlackBridge {
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
       atomicWrite(file, JSON.stringify(Object.fromEntries(fresh)));
     }
-    return result;
+    return { ...result, thread: open?.ts ?? result.ts };
   }
 
   /**
@@ -644,10 +648,23 @@ export class SlackBridge {
    * touched), unless the run answers his DM; `dm` forces the DM. A reply in a thread also shows in the conversation,
    * so he sees every report without opening threads.
    */
-  async report(text: string, channel?: string, topic?: string): Promise<{ channel: string | null }> {
+  async report(text: string, channel?: string, topic?: string, files: readonly string[] = []): Promise<{ channel: string | null }> {
     const to = channel === 'dm' ? null : channel ?? this.workChannel(topic);
-    await this.post(text, to, topic, { broadcast: true });
+    const { thread } = await this.post(text, to, topic, { broadcast: true });
+    for (const path of files) await this.attach(path, thread, to);
     return { channel: to };
+  }
+
+  /** A picture or PDF under the post that explains it, in the same thread. */
+  private async attach(path: string, threadTs: string, channel: string | null): Promise<void> {
+    const owner = this.owner();
+    if (!owner) throw new Error('No active profile.');
+    try { await this.options.request(owner, '/v1/slack/upload', { path, threadTs, ...(channel ? { channel } : {}) }); }
+    catch (error) {
+      // The message is already out: say so, and name the likeliest cause (the service answers 502 for a type, size, path or scope refusal).
+      const why = error instanceof HttpError && error.status === 502 ? 'Slack or the service refused it (only png, jpg, gif, webp or pdf up to 10 MB at an absolute path; the Slack app needs the files:write scope)' : error instanceof Error ? error.message : String(error);
+      throw new Error(`The message was sent, but the file ${path} was not: ${why}`);
+    }
   }
 
   private workChannel(topic?: string): string | null {
@@ -725,10 +742,11 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #, or dm; omit to follow the work.' })),
+      files: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 4, description: 'Absolute paths of pictures or PDFs (png, jpg, gif, webp, pdf; 10 MB each) to attach under the message, e.g. a screenshot of finished work.' })),
       topic: Type.Optional(Type.String({ pattern: '^[\\w.#:/-]{1,80}$', description: 'Short key of the task this post belongs to (e.g. denta-106, gx-issue-701). The first post with a topic opens it; later posts with the same topic reply in its thread.' })),
     }, { additionalProperties: false }),
     async execute(_id, params) {
-      const { channel } = await bridge.report(params.text, params.channel, params.topic);
+      const { channel } = await bridge.report(params.text, params.channel, params.topic, params.files);
       bridge.answered(channel);
       return { content: [{ type: 'text', text: `Sent to ${channel ? `Slack #${channel}` : "the operator's Slack DM"}.` }], details: undefined };
     },
