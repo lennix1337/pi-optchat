@@ -7,6 +7,10 @@ import { queryOutput, type OutputQuery } from './output-query.ts';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const MiB = 1024 * 1024;
+// Validated record metadata, shared by every store of the process: each agent and session opens its own store, and a
+// per-store map made each one's first put reread and rehash every output of the profile (~90 ms per new store, 845 outputs).
+// Entries stay keyed by path and checked against the file's stat, so a changed file is validated again.
+const retention = new Map<string, { stat: BigIntStats; created: number }>();
 export interface OutputLimits { maxBytes?: number; maxResultBytes?: number; ttlMs?: number; now?: () => number }
 /** Local, untrusted tool data. Namespace is hashed, never interpreted as a path. No raw content in metadata/telemetry. */
 export class OutputStore {
@@ -16,7 +20,6 @@ export class OutputStore {
   readonly now: () => number;
   private readonly maxBytes: number;
   private readonly maxResultBytes: number;
-  private readonly retention = new Map<string, { stat: BigIntStats; created: number }>();
   constructor(profile: string, session: string, limits: OutputLimits = {}) {
     this.root = join(profile, 'outputs');
     this.directory = join(this.root, hash(session));
@@ -31,15 +34,15 @@ export class OutputStore {
   }
   /** Only quota scans reuse metadata. Retrieval always validates the full record, and deletion always revalidates expiry. */
   private expired(file: string, ref: string, stat: BigIntStats) {
-    const known = this.retention.get(file), now = this.now();
+    const known = retention.get(file), now = this.now();
     if (known && now - known.created <= this.ttlMs
       && (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'] as const).every(key => known.stat[key] === stat[key])) return false;
-    this.retention.delete(file);
+    retention.delete(file);
     const { created } = this.record(file, ref);
     if (now - created > this.ttlMs) return true;
     // Bound metadata for profiles with many tiny outputs; evicted entries are simply validated again.
-    if (this.retention.size >= 1024) this.retention.delete(this.retention.keys().next().value!);
-    this.retention.set(file, { stat, created });
+    if (retention.size >= 8192) retention.delete(retention.keys().next().value!);
+    retention.set(file, { stat, created });
     return false;
   }
   /** Never evict unexpired references just to admit a new output. */

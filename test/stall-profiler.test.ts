@@ -115,8 +115,10 @@ test('integration: real profiler captures deliberateBusyWait on the CPU during a
   }
 });
 
-test('startStallProfiler returns undefined when PI_STALL_PROFILER=0', () => {
+test('startStallProfiler stays off unless PI_STALL_PROFILER=1 (its rolls stall the loop)', () => {
   const prev = process.env.PI_STALL_PROFILER;
+  delete process.env.PI_STALL_PROFILER;
+  assert.equal(startStallProfiler(), undefined);
   process.env.PI_STALL_PROFILER = '0';
   try {
     assert.equal(startStallProfiler(), undefined);

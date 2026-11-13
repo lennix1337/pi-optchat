@@ -28,7 +28,7 @@ function loop() {
   return state.loop;
 }
 stallWatch(); // the stall list starts with the process too
-startStallProfiler(); // lazily captures CPU samples for any stall, unless PI_STALL_PROFILER=0
+startStallProfiler(); // CPU samples for stalls only with PI_STALL_PROFILER=1 (its rolls stall the loop)
 loop(); // measuring starts when the extension loads, so the first report already covers the session so far
 /** Called when a reload tears a profile down. */
 export const noteReload = () => { shared().reloads++; };

@@ -209,9 +209,10 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
 
 const SHARED = Symbol.for('pi-optchat.stall-profiler');
 
-/** Lazily starts the process-wide rolling CPU stall profiler unless PI_STALL_PROFILER=0. */
+/** Starts the process-wide rolling CPU stall profiler only with PI_STALL_PROFILER=1: each 10 s roll serializes the profile on the
+ * main thread, and live it caused the ~200-300 ms stalls it recorded, one per window. */
 export function startStallProfiler(opts?: { windowMs?: number; intervalUs?: number }): StallProfilerHandle | undefined {
-  if (process.env.PI_STALL_PROFILER === '0') return undefined;
+  if (process.env.PI_STALL_PROFILER !== '1') return undefined;
   const slot = globalThis as Record<symbol, StallProfilerHandle | undefined>;
   if (slot[SHARED]) return slot[SHARED];
   const handle = slot[SHARED] = createStallProfiler(opts);
