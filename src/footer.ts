@@ -75,8 +75,9 @@ export function lastCacheHit(sessionManager: Pick<ExtensionContext['sessionManag
 }
 const quotaTone = (used: number): Tone | undefined => used >= 95 ? 'error' : used >= 80 ? 'warning' : undefined;
 /** A window that already renewed is an old reading: it shows `?` rather than a use that no longer holds. */
-const windowPart = (name: string, w: QuotaWindowRow, now: number, reset: boolean): Pick<Segment, 'text' | 'tone'> =>
-  w.resetAt <= now ? { text: `${name} ?` } : { text: `${name} ${Math.round(w.used)}%${reset ? ` (${resetText(w.resetAt, now)})` : ''}`, tone: quotaTone(w.used) };
+/** A window with its reset time; the weekly one always names the day, since its reset is days away. */
+const windowPart = (name: string, w: QuotaWindowRow, now: number, withDay = false): Pick<Segment, 'text' | 'tone'> =>
+  w.resetAt <= now ? { text: `${name} ?` } : { text: `${name} ${Math.round(w.used)}% (${resetText(w.resetAt, now, withDay)})`, tone: quotaTone(w.used) };
 
 /** Cache hit with two decimals, cut down rather than rounded, so only a fully cached prompt reads 100,00%. */
 export function cacheText(hit: number): string {
@@ -93,8 +94,8 @@ export function footerSegments(input: FooterInput): Segment[] {
     const used = context.tokens === null ? undefined : context.tokens / context.window * 100;
     out.push({ text: `contexto ${context.tokens === null ? '?' : tokens(context.tokens)}/${tokens(context.window)}`, tone: used !== undefined && used >= 80 ? used >= 95 ? 'error' : 'warning' : undefined, drop: 3 });
   }
-  if (quota?.w5h) out.push({ ...windowPart(`${quota.label} 5h`, quota.w5h, now, true), drop: 2 });
-  if (quota?.w7d) out.push({ ...windowPart(quota.w5h ? '7d' : `${quota.label} 7d`, quota.w7d, now, !quota.w5h), drop: 4 });
+  if (quota?.w5h) out.push({ ...windowPart(`${quota.label} 5h`, quota.w5h, now), drop: 2 });
+  if (quota?.w7d) out.push({ ...windowPart(quota.w5h ? '7d' : `${quota.label} 7d`, quota.w7d, now, true), drop: 4 });
   const meta = metaText(input.goalStatus);
   if (meta) out.push({ text: meta, tone: 'dim', drop: 5 });
   return out;

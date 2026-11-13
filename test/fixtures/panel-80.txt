@@ -6,4 +6,4 @@ Trabalhando (2)
 Acabou agora
    ✓ shell pi-optchat: grep -n "Inspector" src/index.ts ok · 15:39
 ────────────────────────────────────────────────────────────────────────────────
-$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71%                F6
+$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71% (14/11 18:39)
