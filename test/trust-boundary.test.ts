@@ -302,4 +302,6 @@ test('a red check whose Actions job never ran a step (GitHub refused to start it
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, {})))!, /failing checks/, 'steps that cannot be read are not proof');
   const legacy = { ...neverRan, statusCheckRollup: [{ context: 'ci/legacy', state: 'FAILURE' }] };
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(legacy, zero)))!, /failing checks: ci\/legacy/, 'a status without an Actions job is not covered');
+  const inFlight = { ...neverRan, statusCheckRollup: [...neverRan.statusCheckRollup, { name: 'windows', status: 'IN_PROGRESS', conclusion: '' }] };
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(inFlight, zero)))!, /retry the same merge in a few seconds; never `--admin`/, 'a red job beside a running one says to wait, not to bypass');
 });
