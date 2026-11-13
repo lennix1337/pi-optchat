@@ -1,7 +1,7 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { BOARD_LINES, NOTE_CHARS, STALL_MS, WaitingBoard, boardNote, boardView, expandedView, hhmm, lastLine, overflowText, phaseOf, span, waitAge, type BoardInput, type BoardRun, type BoardShell, type WaitItem } from '../src/waiting-board.ts';
+import { BOARD_LINES, NOTE_CHARS, cut, STALL_MS, WaitingBoard, boardNote, boardView, expandedView, hhmm, lastLine, overflowText, phaseOf, span, waitAge, type BoardInput, type BoardRun, type BoardShell, type WaitItem } from '../src/waiting-board.ts';
 import type { RunInfo } from '../src/runs.ts';
 import type { ShellJob } from '../src/shells.ts';
 import { atWork } from '../src/transcript.ts';
@@ -335,4 +335,14 @@ test('on a narrow terminal the goal gives way and the phase, time and model stay
   assert.equal(at(80), '   optchat · make the waiting board reachable from the… · testes · 12m · sonnet');
   assert.equal(at(64), '   optchat · make the waiting board rea… · testes · 12m · sonnet');
   assert.equal(visibleWidth(at(30)) <= 30, true);
+});
+
+test('cut cleans only the head of a long text, and still marks the rest as cut', () => {
+  const brief = `${' '.repeat(2000)}Goal: build it\n${'detalhe '.repeat(200_000)}`;
+  const started = performance.now();
+  for (let i = 0; i < 50; i++) cut(brief, 60);
+  assert.ok(performance.now() - started < 50, 'a 1.6 MB brief must not be cleaned whole on every render');
+  assert.equal(cut('curto', 60), 'curto');
+  assert.equal(cut(`${' '.repeat(1000)}fim`, 60), '…');
+  assert.match(cut(`Goal: x ${'a '.repeat(100)}`, 20), /^Goal: x a a a a a a…$/);
 });

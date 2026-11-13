@@ -77,8 +77,9 @@ const num = (value: unknown) => typeof value === 'number' && Number.isFinite(val
 const time = (value: unknown) => num(value) ?? (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined);
 /** One line of at most `n` characters, cut with an ellipsis. */
 export function cut(text: string, n: number) {
-  const flat = plainText(text).replace(/\s+/g, ' ').trim(), chars = [...flat];
-  return chars.length <= n ? flat : `${chars.slice(0, n - 1).join('').trimEnd()}…`;
+  // Only the head can show: a whole worker brief or shell output was cleaned on every board render (~300 ms per 10 s live).
+  const limit = n * 8 + 256, flat = plainText(text.slice(0, limit)).replace(/\s+/g, ' ').trim(), chars = [...flat];
+  return chars.length <= n && text.length <= limit ? flat : `${chars.slice(0, n - 1).join('').trimEnd()}…`;
 }
 /** `45s`, `4m`, `1h05`. */
 export function span(ms: number) {
