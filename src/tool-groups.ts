@@ -158,7 +158,8 @@ export function groupedRenderers(name: string, base: Renderers | undefined, grou
 
 /** Folds back-to-back tool rows in the TUI; PI_TOOL_GROUPS=0 keeps every row as Pi draws it. */
 export function mountToolGroups(pi: ExtensionAPI) {
-  if (process.env.PI_TOOL_GROUPS === '0') return;
+  // Hosts without tool renderers (older Pi, test doubles) keep the plain per-call rows.
+  if (process.env.PI_TOOL_GROUPS === '0' || typeof pi.registerToolRenderer !== 'function') return;
   const groups = new ToolGroups();
   pi.registerToolRenderer((name, next) => groupedRenderers(name, next(), groups));
   const load = (_event: unknown, ctx: ExtensionContext) => { groups.load(ctx.sessionManager.getBranch()); };
