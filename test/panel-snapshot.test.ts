@@ -51,13 +51,13 @@ for (const width of [80, 120]) {
 test('the footer holds today\'s spend, the context, the quota windows with their reset time and the goal state, in Portuguese, nothing else', () => {
   const [rule, line] = footerRows(footer, 200, plain);
   assert.equal(rule, '─'.repeat(200));
-  assert.equal(line, '$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71% · meta: 2 abertas · /goal-focus');
+  assert.equal(line, '$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71% (14/11 18:39) · meta: 2 abertas · /goal-focus');
   assert.doesNotMatch(line, /saved|\bR\d|\bW\d|\bCH\d|agent/i);
 });
 
 test('a narrow terminal drops the least important parts first, and a quota near its limit changes tone', () => {
   const widths = [90, 60, 40, 30].map(width => footerRows(footer, width, plain)[1]);
-  assert.deepEqual(widths, ['$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71%', '$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39)', '$44,9 hoje · Claude 5h 21% (18:39)', '$44,9 hoje']);
+  assert.deepEqual(widths, ['$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39) · 7d 71% (14/11 18:39)', '$44,9 hoje · contexto 197k/1M · Claude 5h 21% (18:39)', '$44,9 hoje · Claude 5h 21% (18:39)', '$44,9 hoje']);
   const tone = (used: number, context?: FooterInput['context']) => footerRows({ ...footer, context, quota: { label: 'Claude', w5h: { used, resetAt: NOW + HOUR } } }, 200, (t, x) => `<${t}>${x}</>`)[1];
   assert.match(tone(85), /<warning>Claude 5h 85% \(\d\d:\d\d\)<\/>/);
   assert.match(tone(97), /<error>Claude 5h 97%/);

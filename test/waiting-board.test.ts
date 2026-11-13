@@ -138,7 +138,7 @@ test('what waits on the operator is a question with its answers and its age, fir
   assert.equal(boardView(input({ waiting: [ask({ text: 'x'.repeat(90) })] })).lines[0].text.split(' [')[0].length, 60, 'compact question: 60 characters');
 });
 
-test('a success fades in four minutes, a fine shell in ninety seconds, a failure stays ten; the compact board shows three, the focused one all', () => {
+test('a success fades in four minutes, any shell in ninety seconds (failed too: the model already has its result), a failure stays ten; the compact board shows three, the focused one all', () => {
   const shells = [shell({ id: 's-ok', command: 'sleep 25', state: 'completed', started: NOW - 3 * MIN, ended: NOW - 2 * MIN, exitCode: 0, last: undefined }),
     shell({ id: 's-new', command: 'ls', state: 'completed', started: NOW - MIN, ended: NOW - MIN, exitCode: 0, last: undefined }),
     shell({ id: 's-bad', command: 'npm test', state: 'completed', started: NOW - 9 * MIN, ended: NOW - 8 * MIN, exitCode: 1, last: undefined })];
@@ -150,8 +150,10 @@ test('a success fades in four minutes, a fine shell in ninety seconds, a failure
     '✓ pi-optchat · Second concluído · 13:46',
     '✗ pi-optchat · Third falhou · 13:42',
   ], 'a shell done two minutes ago and a worker done five are gone; three finished lines at most');
-  assert.equal(compact.more, 1, 'the failed shell past the cap is counted, not dropped');
-  assert.match(renderWaitingBoard(compact, 80, plain, 'f6').at(-1)!, /\+1 mais · f6 inspecionar/);
+  assert.equal(compact.more, 0, 'a shell that failed eight minutes ago has left the compact board');
+  const fourth = boardView(input({ runs, shells: [...shells, shell({ id: 's-bad2', command: 'npm run lint', state: 'completed', started: NOW - MIN, ended: NOW - MIN, exitCode: 1, last: undefined })] }));
+  assert.equal(fourth.more, 1, 'a finished line past the cap is counted, not dropped');
+  assert.match(renderWaitingBoard(fourth, 80, plain, 'f6').at(-1)!, /\+1 mais · f6 inspecionar/);
   assert.equal(expandedView(input({ runs, shells })).lines.length, 6, 'the focused board keeps all ten minutes');
 });
 

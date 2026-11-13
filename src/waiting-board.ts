@@ -14,8 +14,8 @@ import { plainText, type ShellJob } from './shells.ts';
 export const KEEP_MS = 10 * 60_000;
 /** How long a success stays on the compact board: it is news for a moment, then clutter. */
 export const OK_KEEP_MS = 4 * 60_000;
-/** A shell that went fine leaves sooner: its output already reached the model, and the report says what it meant. */
-export const SHELL_OK_KEEP_MS = 90_000;
+/** A shell leaves sooner, failed or not: its output already reached the model, and the report says what it meant. */
+export const SHELL_KEEP_MS = 90_000;
 /** Finished lines the compact board shows at most, newest first; the rest join the overflow count. */
 export const DONE_LINES = 3;
 /** A running worker that has done nothing for this long is shown as stalled. */
@@ -173,7 +173,7 @@ function shellLine(shell: BoardShell, now: number, expand = false): BoardLine | 
   if (shell.ended !== undefined) {
     if (now - shell.ended > KEEP_MS || shell.state === 'stopped') return undefined;
     const ok = shell.state === 'completed' && (shell.exitCode ?? 0) === 0;
-    const line = finished(ok, what, ok ? 'ok' : `falhou${shell.exitCode !== undefined ? ` rc ${shell.exitCode}` : ''}`, shell.ended, ok ? 'ok' : 'bad', ok ? SHELL_OK_KEEP_MS : KEEP_MS);
+    const line = finished(ok, what, ok ? 'ok' : `falhou${shell.exitCode !== undefined ? ` rc ${shell.exitCode}` : ''}`, shell.ended, ok ? 'ok' : 'bad', SHELL_KEEP_MS);
     return expand ? { ...line, text: `${line.text}${out}` } : line;
   }
   return working(expand ? `${what} · ${span(now - shell.started)}${out}` : `${what} · ${span(now - shell.started)}${shell.last ? ` · ${cut(shell.last, 50)}` : ''}`, 'active', shell.started, shell.id.slice(0, 8));
