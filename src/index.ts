@@ -85,7 +85,7 @@ import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
 import { oneLine, showInspector, type InspectorPage } from './inspector.ts';
 import { showAgentView } from './agent-view.ts';
-import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells, runningShells, shellReporter } from './shells.ts';
+import { ShellJobs, adoptShells, handOffShells, longCommandMover, registerShells, resumeDurableShells, runningShells, shellReporter } from './shells.ts';
 import { ROUTER_DOC, syncRouterTools } from './router-mode.ts';
 import { recordShellOutcome } from './journal-spool.ts';
 import { registerReapingBash } from './shell-reaper.ts';
@@ -162,7 +162,7 @@ export default function optchat(pi: ExtensionAPI) {
   let adoptedProfile = adopted?.profile;
   // A bash call expected to run long starts as a background shell instead of holding the turn (long-commands.ts).
   const canStartShell = () => { required(); if (stopping) throw new Error('Profile is closing'); };
-  const shellSettings = { notifyDefault: () => active?.config.shellNotify ?? 'end' };
+  const shellSettings = { notifyDefault: () => active?.config.shellNotify ?? 'end', durableDir: () => active && join(active.dir, 'shells') };
   registerReapingBash(pi, longCommandMover(shells, shellSettings, () => active !== undefined && !stopping));
   registerShells(pi, shells, canStartShell, shellSettings);
   let active: Active | undefined;
@@ -732,6 +732,7 @@ export default function optchat(pi: ExtensionAPI) {
         agent: (id, text) => children.shellNotice(id, text),
         failed: (what, job, error) => ctx.ui.notify(`Could not ${what} ${job.id}: ${errorText(error)}`, 'error'),
       }));
+      try { resumeDurableShells(shells, shellSettings); } catch (error) { ctx.ui.notify(`Could not follow durable shells again: ${errorText(error)}`, 'error'); }
       startMachineSense(ctx, memory);
       startSituation(ctx, dir);
       const queuedReports = [...reports];
