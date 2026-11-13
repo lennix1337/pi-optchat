@@ -106,6 +106,10 @@ test('paid model calls, discards, deletes and global installs are recognised; in
   assert.deepEqual(effects('pwsh -Command "& ./Invoke-PcMaintenance.ps1 -Steps Worktrees -Apply"'), ['discard pc-maintenance']);
   assert.deepEqual(effects('rm -rf C:/projetos/old-thing'), ['recursive-delete c:/projetos/old-thing']);
   assert.deepEqual(effects('rm -rf /tmp/radmut'), []);
+  // 13/11: a PowerShell cleanup of two temp scratch folders waited for the operator.
+  assert.deepEqual(effects(String.raw`powershell -NoProfile -Command "Remove-Item -Recurse -Force \$env:TEMP\rt,\$env:TEMP\rt2 -ErrorAction SilentlyContinue"`), []);
+  assert.deepEqual(effects(String.raw`pwsh -c "Remove-Item -Recurse -Force $env:TEMP\rt -ErrorAction Stop"`), []);
+  assert.deepEqual(effects(String.raw`pwsh -c "Remove-Item -Recurse -Force $env:TEMP\rt,C:\projetos\x"`), ['recursive-delete $env:temp/rt,c:/projetos/x']);
   assert.deepEqual(effects('npm i -g agent-browser'), ['global-install machine']);
   assert.deepEqual(effects('git status && npm test'), []);
   assert.deepEqual(classifyEffects({ tool: 'read', input: { path: 'x' }, cwd: '' }, repo), []);

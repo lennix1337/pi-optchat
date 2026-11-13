@@ -43,7 +43,7 @@ export function normalPath(path: string, base?: string, keepCase = false) {
   const joined = parts.join('/');
   return (keepCase ? joined : joined.toLowerCase()).replace(/\/+$/, '');
 }
-const tempDir = /^(?:[a-z]:\/(?:tmp|temp)(?:\/|$)|\/tmp(?:\/|$)|[a-z]:\/users\/[^/]+\/appdata\/local\/temp(?:\/|$)|\$\{?(?:tmp|temp|tmpdir)\b|%temp%)/;
+const tempDir = /^(?:[a-z]:\/(?:tmp|temp)(?:\/|$)|\/tmp(?:\/|$)|[a-z]:\/users\/[^/]+\/appdata\/local\/temp(?:\/|$)|\$\{?(?:tmp|temp|tmpdir)\b|\$env:(?:tmp|temp)\b|%temp%)/;
 
 /** Shell text as words; quotes group words and are kept, so `unquote` can tell data from code. */
 function words(text: string) {
@@ -158,7 +158,10 @@ export function databaseDestructive(text: string) {
 function recursiveDelete(args: string[], dir: string): string[] | undefined {
   const flags = args.filter(arg => /^-/.test(arg) || /^\/s$/i.test(arg));
   if (!flags.some(flag => /^-[a-zA-Z]*[rR]|^--recursive$|^-Recurse$|^\/s$/i.test(flag))) return;
-  const targets = args.filter(arg => !flags.includes(arg)).map(arg => normalPath(arg, dir));
+  // PowerShell: `-ErrorAction Stop` and friends take a value, and `a,b` lists several paths; `\$env` is bash's escape.
+  const valued = /^-(?:ErrorAction|EA|WarningAction|Filter|Include|Exclude)$/i;
+  const targets = args.filter((arg, i) => !flags.includes(arg) && !valued.test(args[i - 1] ?? ''))
+    .flatMap(arg => arg.split(',')).filter(Boolean).map(arg => normalPath(arg.replace(/^\\(?=\$)/, ''), dir));
   return !targets.length || !targets.every(target => tempDir.test(target)) ? targets : undefined;
 }
 
