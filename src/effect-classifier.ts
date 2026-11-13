@@ -124,8 +124,11 @@ const readWriteAsked = /\bdefault_transaction_read_only\s*(?:=|to\b)\s*'?off'?\b
  * the command does not force read-only (its SQL may sit in a file this text does not show). Else undefined.
  */
 export function productionWriteHost(text: string) {
-  // Flags that take a value (-i key, -p 22, -o Opt=x ...) consume it; the first other word is the host.
-  const ssh = /(?:^|[\s;&|(])ssh(?:\s+(?:-[ipoFJLRDElbcmSWweOQ]\s*\S+|-[A-Za-z0-9]+))*\s+(?:[\w.-]+@)?(\w[\w.-]*)/.exec(text)?.[1];
+  // Flags that take a value (-i key, -p 22, -o Opt=x ...) consume it; the first other word is the host. Only an ssh
+  // the shell runs counts: one named inside quoted text (a commit message) or a heredoc body (a test file) does not.
+  const sshCall = /(?:^|[\s;&|(])ssh(?:\s+(?:-[ipoFJLRDElbcmSWweOQ]\s*\S+|-[A-Za-z0-9]+))*\s+(?:[\w.-]+@)?(\w[\w.-]*)/;
+  const unquoted = (command: string) => command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, '""');
+  const ssh = segments(text, '').map(({ command }) => sshCall.exec(unquoted(command))?.[1]).find(Boolean);
   const unprovenClient = databaseClient.test(text) && !(readOnlyForced.test(text) && !readWriteAsked.test(text));
   return ssh && (sqlWrite.test(text) || remoteMutation.test(text) || unprovenClient) ? ssh.toLowerCase() : undefined;
 }
