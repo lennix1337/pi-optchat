@@ -1,7 +1,10 @@
 import { PerformanceObserver, performance } from 'node:perf_hooks';
 
+export interface CpuFrame { frame: string; ms: number }
+export interface CpuStack { stack: string[]; ms: number }
+export interface StallCpu { topSelf: CpuFrame[]; topStacks: CpuStack[]; samples: number }
 /** One event-loop stall: when it ended, how long the loop was blocked past its tick, and how much of that a garbage collection explains. */
-export interface Stall { at: string; blockedMs: number; gcMs: number; gcKind: string | null }
+export interface Stall { at: string; blockedMs: number; gcMs: number; gcKind: string | null; startMs: number; endMs: number; cpu?: StallCpu }
 interface Gc { start: number; end: number; kind: number }
 
 const TICK_MS = 100, STALL_MS = 200, KEEP = 20;
@@ -20,8 +23,11 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
     if (blocked >= STALL_MS) {
       const overlapping = gcs.filter(gc => gc.end > last && gc.start < t);
       const worst = overlapping.reduce<Gc | undefined>((a, b) => !a || b.end - b.start > a.end - a.start ? b : a, undefined);
-      stalls.push({ at: new Date(wall()).toISOString(), blockedMs: Math.round(blocked),
-        gcMs: Math.round(overlapping.reduce((sum, gc) => sum + gc.end - gc.start, 0)), gcKind: worst ? KINDS[worst.kind] ?? String(worst.kind) : null });
+      const stall = { at: new Date(wall()).toISOString(), blockedMs: Math.round(blocked),
+        gcMs: Math.round(overlapping.reduce((sum, gc) => sum + gc.end - gc.start, 0)), gcKind: worst ? KINDS[worst.kind] ?? String(worst.kind) : null } as Stall;
+      // Monotonic bounds stay non-enumerable so existing deepEqual assertions and heap_report JSON keep their exact shape.
+      Object.defineProperties(stall, { startMs: { value: last }, endMs: { value: t } });
+      stalls.push(stall);
       if (stalls.length > KEEP) stalls.shift();
     }
     last = t;
