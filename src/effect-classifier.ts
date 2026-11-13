@@ -75,7 +75,8 @@ export function segments(text: string, cwd: string, keepCase = false) {
       current += c;
     }
     if (quote) { current += '\n'; continue; }
-    heredoc = /<<-?\s*['"]?(\w+)['"]?/.exec(current)?.[1] ?? heredoc;
+    // The marker may sit before a pipe or `;` that already flushed its segment (`cat <<'EOF' | wc -l`), so read the line, not `current`.
+    heredoc = /<<-?\s*['"]?(\w+)['"]?/.exec(line)?.[1] ?? heredoc;
     flush();
   }
   flush();

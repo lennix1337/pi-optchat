@@ -59,6 +59,10 @@ test('ssh named only inside quoted text or a heredoc body is not an ssh call', (
   assert.deepEqual(effects(`node scripts/ship.mjs -m "Diagnóstico: docker de inspeção e ssh com comando de leitura; docker exec/run/rm seguem bloqueados" src/a.ts`), []);
   const testFile = `cat >> test/x.test.ts <<'EOF'\nassert.ok(readOnly('x ssh hetzner-dentai docker ps'));\nassert.ok(!readOnly('a ssh to a host: docker rm api'));\nEOF\nnode --test test/x.test.ts`;
   assert.deepEqual(effects(testFile), []);
+  // The heredoc opener may be followed by a pipe on the same line.
+  assert.deepEqual(effects(`cat <<'EOF' | wc -l
+ssh hetzner-dentai docker restart api
+EOF`), []);
   // A real ssh call still counts, also inside a command substitution.
   assert.deepEqual(effects('out=$(ssh hetzner-dentai "docker restart api")'), ['production-write ssh:hetzner-dentai']);
 });
