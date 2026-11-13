@@ -479,3 +479,48 @@ test('a dry run writes nothing, so it needs no approval, as the release scripts 
   assert.deepEqual(effects('npm publish --access public', 'C:/projetos/pi-optchat'), ['publish c:/projetos/pi-optchat,lennix1337/pi-optchat']);
   assert.deepEqual(effects('git push --force origin feat/x -- --dry-run', 'C:/projetos/pi-optchat').length, 1, 'a flag after -- is a ref, not a dry run');
 });
+
+test('gh pr/issue prose mentioning autonomy.json is not a contract change', () => {
+  const f = contractFile;
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `gh pr create --title "Fix ${f}" --body "Mentions \\\`${f}\\\` and \\\`slack_send\\\`"` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `gh pr edit 12 --body "Still mentions ${f}"` } }), false);
+  assert.equal(touchesContract({ tool: 'bash', input: { command: `gh pr comment 12 --body "${f}"` } }), false);
+});
+
+test('copying autonomy.json to a relative mirror path outside the profile folder is not a contract change', () => {
+  const f = contractFile;
+  const profileDir = 'C:/Users/example/.optchat/profiles/dev';
+  assert.equal(touchesContract({
+    tool: 'bash',
+    cwd: 'C:/projetos/dotfiles',
+    input: { command: `[ -f payload/${f} ] && cp ~/.optchat/profiles/dev/${f} payload/${f}` },
+  }, profileDir), false);
+  assert.equal(touchesContract({
+    tool: 'bash',
+    cwd: 'C:/projetos/dotfiles',
+    input: { command: `cd C:/projetos/dotfiles && test -f payload/${f} && cp ~/.optchat/profiles/dev/${f} payload/${f}` },
+  }, profileDir), false);
+  // Copying INTO the live profile folder (relative from profileDir or absolute) still counts.
+  assert.equal(touchesContract({
+    tool: 'bash',
+    cwd: profileDir,
+    input: { command: `cp /tmp/new.json ${f}` },
+  }, profileDir), true);
+});
+
+test('codemode editing another file whose text mentions autonomy.json is not a contract change', () => {
+  const f = contractFile;
+  assert.equal(touchesContract({
+    tool: 'codemode',
+    input: { code: `await tools.edit({ path: 'C:/projetos/pi-optchat/skills/assistant/SKILL.md', edits: [{ oldText: 'a', newText: 'See ${f}' }] })` },
+  }), false);
+  // Dynamic or contract-targeting edit/write still counts.
+  assert.equal(touchesContract({
+    tool: 'codemode',
+    input: { code: `await tools.edit({ path: '~/.optchat/${f}', edits: [] })` },
+  }), true);
+  assert.equal(touchesContract({
+    tool: 'codemode',
+    input: { code: `const p = '~/.optchat/${f}'; await tools.write({ path: p, content: '{}' })` },
+  }), true);
+});

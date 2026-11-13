@@ -75,21 +75,25 @@ export const CONTRACT_CHANGE = 'autonomy contract change';
 /** Whether a call's arguments name autonomy.json, the operator's contract file. */
 const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
 /** Whether a write target is the live contract: names the file and, when the profile folder is known, sits in it. */
-type Target = (path: unknown) => boolean;
+type Target = (path: unknown, baseDir?: string) => boolean;
 const comparable = (path: string) => (process.platform === 'win32' ? path.replace(/^\/([a-z])\//i, '$1:/').toLowerCase() : path).replaceAll('\\', '/');
 /**
  * A path that is clearly absolute and clearly elsewhere (a dotfiles mirror, a backup) is a copy of the contract, not the
- * contract. Anything relative or built from a variable could be the live file, so it stays one.
+ * contract. Anything relative (unless `baseDir` resolves it) or built from a variable could be the live file, so it stays one.
  */
 function liveTarget(dir: string | undefined): Target {
   if (!dir) return namesContract;
   const folder = comparable(resolve(dir));
-  return path => {
+  return (path, baseDir) => {
     if (!namesContract(path)) return false;
     const word = typeof path === 'string' ? path.replace(/^['"]|['"]$/g, '').replace(/^~(?=[\\/]|$)/, homedir()) : undefined;
     const candidate = word?.replaceAll('\\', '/').replace(/^\/([a-z])\//i, '$1:/');
-    // A drive path (`C:/...`) or a `\` separator means the same file wherever the gate runs, Linux CI included.
-    if (!candidate || /[$%`]/.test(candidate) || !(isAbsolute(candidate) || /^[a-z]:[\\/]/i.test(candidate))) return true;
+    if (!candidate || /[$%`]/.test(candidate)) return true;
+    const isAbs = isAbsolute(candidate) || /^[a-z]:[\\/]/i.test(candidate);
+    if (!isAbs) {
+      if (!baseDir) return true;
+      return comparable(resolve(dirname(resolve(baseDir, candidate)))) === folder;
+    }
     return comparable(resolve(dirname(candidate))) === folder;
   };
 }
@@ -104,7 +108,7 @@ const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'conta
 // `find` reads unless it deletes, runs or writes (`-delete`, `-exec`, `-fprint`); `sed -n` without `-i` prints.
 // `git add/commit/push` record the working-tree file without writing it (03/11: the dotfiles mirror commit waited);
 // `ship.mjs` is that same commit/push/PR flow, and its `-m`/`--body` text only tells about the file (04/11: 3 refusals).
-const readOnlyCommand = /^(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|realpath|readlink|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|Resolve-Path|find(?![^;&|\n]*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)|sed\s+-n(?![^;&|\n]*\s-i)|git\s+(?:-C\s+\S+\s+)?(?:grep|log|diff|show|status|blame|ls-files|add|commit|push)|node\s+\S*scripts[\\/]ship\.mjs)\b/i;
+const readOnlyCommand = /^(?:\[(?=\s)|(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|realpath|readlink|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|Resolve-Path|find(?![^;&|\n]*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)|sed\s+-n(?![^;&|\n]*\s-i)|git\s+(?:-C\s+\S+\s+)?(?:grep|log|diff|show|status|blame|ls-files|add|commit|push)|gh\s+(?:pr|issue)\s+(?:create|edit|comment|view|list|checks|status)|node\s+\S*scripts[\\/]ship\.mjs)\b)/i;
 /** Shell control words in front of a segment's command: `for f in a b` only lists words, `do`/`then` precede the real command. */
 const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
 const loopHeader = /^for\s+\w+\s+in\b/;
@@ -119,7 +123,11 @@ const fsWrite = /\b(?:writeFile|appendFile|rename|copyFile|cp|rm|unlink|truncate
  */
 function codemodeWritesContract(code: string, target: Target) {
   if (!namesContract(code)) return false;
-  if (/\btools\.(?:edit|write)\s*\(/.test(code)) return true;
+  const editChunks = code.split(/\btools\.(?:edit|write)\s*\(/).slice(1);
+  for (const chunk of editChunks) {
+    const p = /^\s*\{[\s\S]*?\bpath\s*:\s*(['"])((?:\\.|(?!\1)[^\\])*)\1/.exec(chunk);
+    if (!p || target(p[2])) return true;
+  }
   const shells = code.match(/\btools\.(?:bash|shell_start)\s*\(/g)?.length ?? 0;
   if (!shells) return false;
   const commands = scriptCommands(code);
@@ -138,7 +146,7 @@ function loopVariablesResolved(text: string) {
   return text;
 }
 /** A flat `$(...)` or backtick substitution; a nested one is left in place and judged as a writer. */
-const substitution = /\$\(([^()`]*)\)|`([^`$()]*)`/g;
+const substitution = /\$\(([^()`]*)\)|(?<!\\)`((?:\\.|[^`$()\\])*)`/g;
 /**
  * Substitutions judged as the commands they are (04/11: `f=$(ls .../autonomy.json | head -1)` refused a grep). A variable
  * assigned from one that names the contract carries the file name into later segments; the substitution itself becomes
@@ -147,7 +155,7 @@ const substitution = /\$\(([^()`]*)\)|`([^`$()]*)`/g;
 function substitutionsResolved(text: string, target: Target) {
   const inner = [...text.matchAll(substitution)].map(match => match[1] ?? match[2]);
   if (inner.some(command => shellWritesContract(command, target))) return undefined;
-  for (const [, name, value] of text.matchAll(/\b(\w+)="?(\$\([^()`]*\)|`[^`$()]*`)/g)) {
+  for (const [, name, value] of text.matchAll(/\b(\w+)="?(\$\([^()`]*\)|(?<!\\)`(?:\\.|[^`$()\\])*`)/g)) {
     if (namesContract(value)) text = text.replace(new RegExp(`\\$\\{?${name}\\b\\}?`, 'g'), 'autonomy.json');
   }
   return text.replace(substitution, '""');
@@ -159,15 +167,16 @@ const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
  * Whether shell text can write the contract file: a redirect into it, a copy onto it, or any other segment that names it
  * and is not a read-only command. Command substitution naming it counts, since its segments cannot be told apart.
  */
-function shellWritesContract(command: string, target: Target) {
+function shellWritesContract(command: string, target: Target, cwd?: string) {
   const raw = loopVariablesResolved(withoutHeredocBodies(command).replace(/\d*>&\d/g, ''));
   if (!namesContract(raw)) return false;
   const text = substitutionsResolved(raw, target);
-  if (text === undefined || /`|\$\(/.test(text)) return true;
-  return segments(text, '.').some(({ command: segment }) => {
-    if ([...segment.matchAll(redirect)].some(match => target(match[1]))) return true;
+  if (text === undefined || /(?<!\\)`|\$\(/.test(text)) return true;
+  return segments(text, cwd || '.', true).some(({ command: segment, dir }) => {
+    const baseDir = cwd ? dir : undefined;
+    if ([...segment.matchAll(redirect)].some(match => target(match[1], baseDir))) return true;
     const rest = segment.replace(redirect, '').replace(/^(?:\w+=\S*\s+)*/, '').trim().replace(controlPrefix, '');
-    if (copyCommand.test(rest)) return target(rest.split(/\s+/).filter(arg => !arg.startsWith('-')).at(-1));
+    if (copyCommand.test(rest)) return target(rest.split(/\s+/).filter(arg => !arg.startsWith('-')).at(-1), baseDir);
     if (loopHeader.test(rest) || (nodeInline.test(rest) && !fsWrite.test(rest))) return false;
     return namesContract(rest) && !readOnlyCommand.test(rest);
   });
@@ -177,11 +186,11 @@ function shellWritesContract(command: string, target: Target) {
  * A call that can change the contract: an edit or write of the file, a shell command naming it that is not read-only,
  * or any other tool (codemode, subagents) naming it. Searches, reads and prose such as a reload checkpoint never are.
  */
-export function touchesContract({ tool, input }: { tool: string; input: unknown }, contractDir?: string) {
+export function touchesContract({ tool, input, cwd }: { tool: string; input: unknown; cwd?: string }, contractDir?: string) {
   const target = liveTarget(contractDir);
   if (reads.has(tool) || prose.has(tool) || diagnostic({ session: '', cwd: '', tool, input })) return false;
-  if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && target(input.path);
-  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command, target);
+  if (tool === 'edit' || tool === 'write') return record(input) && typeof input.path === 'string' && target(input.path, cwd);
+  if ((tool === 'bash' || tool === 'shell_start') && record(input) && typeof input.command === 'string') return shellWritesContract(input.command, target, cwd);
   if (tool === 'codemode' && record(input) && typeof input.code === 'string') return codemodeWritesContract(input.code, target);
   return namesContract(input);
 }
