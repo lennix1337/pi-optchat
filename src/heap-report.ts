@@ -7,6 +7,7 @@ import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import { Type } from 'typebox';
+import { stallWatch } from './loop-stalls.ts';
 import type { Memory } from './memory.ts';
 
 /** A heap over this share of V8's limit is too big to snapshot in place: the snapshot needs about as much memory again. */
@@ -25,6 +26,7 @@ function loop() {
   if (!state.loop) { state.loop = monitorEventLoopDelay({ resolution: 10 }); state.loop.enable(); }
   return state.loop;
 }
+stallWatch(); // the stall list starts with the process too
 loop(); // measuring starts when the extension loads, so the first report already covers the session so far
 /** Called when a reload tears a profile down. */
 export const noteReload = () => { shared().reloads++; };
@@ -121,7 +123,7 @@ export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, so
   if (input.snapshot) result.snapshot = await snapshot(heap, deps);
   result.memoryUsage = usage;
   result.v8 = { heap, spaces: spaces() };
-  result.eventLoop = eventLoop();
+  result.eventLoop = { ...eventLoop(), stalls: stallWatch().stalls() };
   result.process = { exitListeners: process.listenerCount('exit'), activeResources: activeResources() };
   result.pi = sources.session ? piSide(sources.session) : null;
   result.optchat = sources.optchat ?? null;
@@ -143,7 +145,7 @@ async function snapshot(heap: v8.HeapInfo, deps: HeapDeps) {
 
 export const heapReportTool = (optchat: () => OptChatSide | undefined) => ({
   name: 'heap_report', label: 'Heap report', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
-  description: 'Memory and event-loop numbers of this Pi process, its session and OptChat memory: process.memoryUsage, V8 heap and space statistics, event-loop delay p50/p99/max since the last report, exit listeners and active resources, session entry counts and file size, OptChat memory rows, live texts and caches. Counts and sizes only, no text. '
+  description: 'Memory and event-loop numbers of this Pi process, its session and OptChat memory: process.memoryUsage, V8 heap and space statistics, event-loop delay p50/p99/max since the last report plus the last stalls over 200 ms (time, blocked ms, and the garbage collection that overlapped it), exit listeners and active resources, session entry counts and file size, OptChat memory rows, live texts and caches. Counts and sizes only, no text. '
     + 'gc:true forces a collection first (reports the pause and heap after it). snapshot:true writes a .heapsnapshot to the temp folder and summarizes its top constructors in a child process; it is refused when the heap is over 25% of V8\'s limit or free memory is under twice the heap. Never attach the V8 inspector to a live Pi: use this.',
   parameters: Type.Object({
     gc: Type.Optional(Type.Boolean({ description: 'Force a garbage collection first and report the heap after it, with the pause.' })),
