@@ -263,20 +263,38 @@ function withQuota<T extends { risks?: string[] }>(inputs: T, dir: string, now: 
   return { ...inputs, quota: healthLines(readHealth(dir, QUOTA_HEALTH_FILE)), risks: [...inputs.risks ?? [], ...quotaRisks(readJsonOr<unknown>(file, {}), now)] };
 }
 
+export const BACKGROUND_FAILURE_TYPE = 'optchat-background-failure';
+
+/** Failures of the timed reports. Every one goes to the exec log; the agent hears of each job once per session, in a hidden
+ * message at its next turn. Nothing is printed: console output lands over the terminal UI the operator is reading. */
+export class BackgroundFailures {
+  private readonly warned = new Set<string>();
+  private pending: string[] = [];
+  constructor(private readonly dir: () => string | undefined) {}
+  pass(label: string, run: () => Promise<unknown>) {
+    return () => void run().catch(error => {
+      logBackgroundFailure(this.dir(), label, error);
+      if (this.warned.has(label)) return;
+      this.warned.add(label);
+      this.pending.push(`OptChat ${label} failed (later failures of this job go only to exec-log.jsonl): ${one(error instanceof Error ? error.message : String(error), 600)}`);
+    });
+  }
+  take() {
+    if (!this.pending.length) return undefined;
+    const content = `${this.pending.splice(0).join('\n')}\nMachine notice, not the operator's words.`;
+    return { message: { customType: BACKGROUND_FAILURE_TYPE, content, display: false } };
+  }
+}
+
 /** Timers for the PR watch (every 3 min) and the morning summary (checked every minute), per session. */
 export function registerSlackReports(pi: ExtensionAPI, owner: () => ReportOwner | undefined, post: Post, approvals: () => number) {
   const prs = new PrWatch(owner, post);
   const daily = new DailySummary(owner, post, prs, approvals);
   const weekly = new WeeklyScoreboard(owner, post);
   let timers: ReturnType<typeof setInterval>[] = [];
-  const warned = new Set<string>();
-  /** A report that keeps failing says so once per session, not every pass. */
-  const pass = (label: string, run: () => Promise<unknown>) => () => void run().catch(error => {
-    logBackgroundFailure(owner()?.dir, label, error);
-    if (warned.has(label)) return;
-    warned.add(label);
-    console.error(`OptChat ${label}: ${error instanceof Error ? error.message : String(error)}`);
-  });
+  const failures = new BackgroundFailures(() => owner()?.dir);
+  const pass = failures.pass.bind(failures);
+  pi.on('before_agent_start', () => failures.take());
   const prPass = pass('PR watch', () => prs.poll());
   pi.on('session_start', () => {
     for (const t of timers) clearInterval(t);
