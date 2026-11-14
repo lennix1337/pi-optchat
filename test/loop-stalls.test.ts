@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStallWatch, stallWatch } from '../src/loop-stalls.ts';
+import { createStallWatch, spanHooks, stallWatch } from '../src/loop-stalls.ts';
 import { heapReport } from '../src/heap-report.ts';
 
 const clock = () => { let t = 1000; return { now: () => t, advance: (ms: number) => { t += ms; } }; };
@@ -59,4 +59,18 @@ test('a watchdog left in the process by an older build (before an extension relo
     assert.deepEqual(watch.stalls(), [old]);
     assert.equal(stallWatch(), watch);
   } finally { (slot[key] as { stop?: () => void } | undefined)?.stop?.(); slot[key] = saved; }
+});
+
+test('spanHooks names a stall inside a hook handler, sync or async, and keeps the handler result', async () => {
+  const c = clock(), watch = createStallWatch(c.now);
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const pi = { on: (event: string, handler: (...args: unknown[]) => unknown) => { handlers.set(event, handler); } };
+  spanHooks(pi, watch);
+  pi.on('context_with_system', () => { c.advance(1100); watch.tick(); return 'kept'; });
+  pi.on('message_end', async () => { c.advance(1100); watch.tick(); await null; return 7; });
+  assert.equal(handlers.get('context_with_system')!(), 'kept');
+  assert.equal(await handlers.get('message_end')!(), 7);
+  assert.deepEqual(watch.stalls().map(s => s.during), [['hook:context_with_system'], ['hook:message_end']]);
+  c.advance(1100); watch.tick();
+  assert.equal(watch.stalls()[2].during, undefined, 'a hook that returned is no longer in flight');
 });
