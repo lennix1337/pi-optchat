@@ -156,7 +156,9 @@ test('lazy tools stay active and callable but are left out of the request declar
   const later: ExtensionFactory = api => {
     for (const tool of [stub('codemode', { code: { type: 'string' } }, ['code']), stub('web_search', { query: { type: 'string' }, limit: { type: 'number' } }, ['query']), stub('lsp', { action: { type: 'string' } }, ['action'])])
       api.registerTool(tool);
-    api.on('session_start', () => api.setActiveTools([...api.getActiveTools(), 'codemode', 'web_search', 'lsp']));
+    // On the default lazy list like the two above, but model-only: Pi lets no script call it.
+    api.registerTool({ ...stub('source_check', { path: { type: 'string' } }, ['path']), exposure: 'model-only' });
+    api.on('session_start', () => api.setActiveTools([...api.getActiveTools(), 'codemode', 'web_search', 'lsp', 'source_check']));
   };
   const pi = await headless('print', { flag: 'work', connect: 'off', realTools: true, later });
   try {
@@ -165,6 +167,7 @@ test('lazy tools stay active and callable but are left out of the request declar
     assert.ok(last.includes('codemode') && last.includes('zoom'), `declared: ${last}`);
     assert.equal(last.includes('web_search') || last.includes('lsp'), false, 'the lazy declarations are left out of the request');
     assert.ok(pi.activeTools().includes('web_search') && pi.activeTools().includes('lsp'), 'they stay active, so a codemode script can call them');
+    assert.ok(last.includes('source_check'), `a listed tool that scripts cannot call keeps its declaration; declared: ${last}`);
   } finally { await pi.close(); rememberProfile(previousProfile); }
 });
 
