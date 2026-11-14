@@ -423,8 +423,12 @@ test('--direct-main pushes the default branch with no PR', t => {
 test('a PR create that times out is reconciled and not replayed', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ createHangs: true });
+  const hook = join(fx.work, '.git', 'hooks', 'pre-push');
+  writeFileSync(hook, '#!/bin/sh\nsleep 2\n');
+  chmodSync(hook, 0o755);
   commitFile(fx, 'a.txt');
-  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_TIMEOUT_MS: '1500' });
+  // Only the create call gets the short bound: a push slower than it (a loaded Windows runner) must not be taken for the hung create.
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_CREATE_TIMEOUT_MS: '1500' });
   assert.equal(r.code, 4);
   assert.equal(r.out.status, 'uncertain');
   assert.equal(r.out.stage, 'pr_create');

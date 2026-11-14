@@ -49,7 +49,8 @@ const uncertain = (stage, next) => new Stop('uncertain', { stage, next });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const firstLine = text => (text.trim().split(/\r?\n/)[0] ?? '').slice(0, 200);
 const tail = text => text.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 300);
-const timeoutFor = kind => Number(process.env[kind === 'commit' ? 'SHIP_COMMIT_TIMEOUT_MS' : 'SHIP_TIMEOUT_MS']) || TIMEOUT_MS[kind];
+// SHIP_<KIND>_TIMEOUT_MS bounds one stage kind; SHIP_TIMEOUT_MS is the shared bound of every kind but commit.
+const timeoutFor = kind => Number(process.env[`SHIP_${kind.toUpperCase()}_TIMEOUT_MS`] || (kind === 'commit' ? undefined : process.env.SHIP_TIMEOUT_MS)) || TIMEOUT_MS[kind];
 
 // --- output: a flat key: value object; values that could be misread (colons, quotes, numeric text) are quoted ---
 const TOON_ESCAPE = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
