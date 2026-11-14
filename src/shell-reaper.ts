@@ -3,6 +3,8 @@ import { constants, existsSync } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Type } from 'typebox';
+import { FULL_OUTPUT_NOTE, FULL_OUTPUT_PARAM, NO_MATCH_TEXT, compactCommand, isEmptyGrepMiss, prepareRtkEnvironment } from './rtk.ts';
 import { SettingsManager, createBashToolDefinition, createLocalBashOperations, getAgentDir, getShellConfig, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { LONG_COMMAND_NOTE } from './long-commands.ts';
 import { machineService } from './machine-service.ts';
@@ -179,10 +181,20 @@ export type LongBashMover = (args: { command: string; timeout?: number }, cwd: s
 export function registerReapingBash(pi: ExtensionAPI, moveLong?: LongBashMover) {
   if (process.platform !== 'win32' && !moveLong) return;
   const definition = reapingBash(process.cwd());
-  pi.registerTool({ ...definition, description: moveLong ? `${definition.description} ${LONG_COMMAND_NOTE}` : definition.description,
-    execute: async (id, params, signal, onUpdate, ctx) => {
+  prepareRtkEnvironment();
+  const parameters = Type.Object({ ...definition.parameters.properties,
+    [FULL_OUTPUT_PARAM]: Type.Optional(Type.Boolean({ description: 'Run the command exactly as written, without the automatic compact output. Only when the compact output hid what you need.' })) });
+  const description = [definition.description, moveLong ? LONG_COMMAND_NOTE : '', FULL_OUTPUT_NOTE].filter(Boolean).join(' ');
+  pi.registerTool({ ...definition, parameters, description,
+    execute: async (id, input, signal, onUpdate, ctx) => {
+      const { [FULL_OUTPUT_PARAM]: full, ...rest } = input as typeof input & { [FULL_OUTPUT_PARAM]?: boolean };
+      const params = { ...rest, command: await compactCommand(rest.command, full === true) };
       const moved = moveLong?.(params, ctx.cwd, signal);
-      return moved ? { ...await moved, details: undefined } : reapingBash(ctx.cwd).execute(id, params, signal, onUpdate, ctx);
+      if (moved) return { ...await moved, details: undefined };
+      const result = await reapingBash(ctx.cwd).execute(id, params, signal, onUpdate, ctx);
+      const structured = result.structuredContent as { exit_code?: unknown; output?: unknown } | undefined;
+      return result.isError && isEmptyGrepMiss(params.command, structured?.exit_code, structured?.output)
+        ? { ...result, isError: false, content: [{ type: 'text' as const, text: NO_MATCH_TEXT }] } : result;
     } });
   if (process.platform === 'win32') pi.on('user_bash', (_event, ctx) => ({ operations: reapingBashOperations(shellSettings(ctx.cwd).shellPath) }));
 }

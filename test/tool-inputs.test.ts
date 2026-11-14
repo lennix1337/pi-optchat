@@ -53,14 +53,24 @@ test('spawn accepts a worker kind and a project specialist', () => {
   }
   assert.throws(() => validate(tools.get('crew')!, { action: 'zoom', project: 'harness', id: -1 }), /id/);
 });
-// Pi's own tools that OptChat re-registers only to change how they run; their inputs stay exactly Pi's.
+// Pi's own tools that OptChat re-registers to change how they run; Pi's inputs stay exactly as they are,
+// plus only the optional extras listed here.
 const nativeOverrides = ['bash'];
+const nativeExtras: Record<string, string[]> = { bash: ['full_output'] };
 const tools = registeredTools();
 test('the registered tool set is completely covered by strict input cases', () => {
   assert.deepEqual([...tools.keys()].sort(), [...Object.keys(validInputs), ...nativeOverrides].sort());
 });
 test('a re-registered native tool keeps Pi\'s own input schema', () => {
-  for (const name of nativeOverrides) assert.deepEqual(tools.get(name)!.parameters, createBashToolDefinition(process.cwd()).parameters);
+  const pi = createBashToolDefinition(process.cwd()).parameters as { properties: Record<string, unknown>; required?: string[] };
+  for (const name of nativeOverrides) {
+    const ours = tools.get(name)!.parameters as typeof pi;
+    const extras = nativeExtras[name] ?? [];
+    assert.deepEqual(Object.keys(ours.properties).filter(key => !(key in pi.properties)), extras);
+    for (const key of Object.keys(pi.properties)) assert.deepEqual(ours.properties[key], pi.properties[key]);
+    assert.deepEqual(ours.required ?? [], pi.required ?? []);
+    assert.deepEqual({ ...ours, properties: undefined }, { ...pi, properties: undefined });
+  }
 });
 const validate = (tool: Pick<ToolDefinition, 'name' | 'parameters'>, args: Record<string, unknown>) => validateToolArguments(tool as never,
   { type: 'toolCall', id: 'fixture', name: tool.name, arguments: args as never });

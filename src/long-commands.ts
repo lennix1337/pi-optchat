@@ -19,7 +19,7 @@ export const LONG_COMMAND_NOTE = `Commands expected to run long (test suites, bu
 
 const MAX_SHELL_DEPTH = 3;
 /** Commands that run another command: their argument is classified in its turn. */
-const PREFIX_WRAPPERS = new Set(['time', 'nohup', 'exec', 'command', 'env', 'caffeinate']);
+const PREFIX_WRAPPERS = new Set(['time', 'nohup', 'exec', 'command', 'env', 'caffeinate', 'rtk']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'wsl', 'pwsh', 'powershell', 'cmd']);
 /** The flags that give a shell its command text. */
 const SHELL_COMMAND_FLAGS = new Set(['-c', '-lc', '-ic', '-e', '-command', '/c']);
