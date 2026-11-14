@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, getAgentDir, type AgentSession, type AgentSessionEvent, type ExtensionAPI, type InlineExtension, type ModelRegistry } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, getAgentDir, type AgentSession, type SessionEntry, type AgentSessionEvent, type ExtensionAPI, type InlineExtension, type ModelRegistry } from '@earendil-works/pi-coding-agent';
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { getSupportedThinkingLevels, type Api, type Model } from '@earendil-works/pi-ai';
@@ -22,6 +22,7 @@ import { fullChat, refreshFraction, runTranscript, textContent } from './transcr
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
 import { recordSubagentSignal } from './journal-spool.ts';
+import { atomicWrite } from './store.ts';
 import { DEFAULT_SETTINGS, type Settings } from './settings.ts';
 import { inputTokenBudget, priceTierBudget } from './run-context.ts';
 import { registerShellTools, type ShellJobs } from './shells.ts';
@@ -218,6 +219,29 @@ export function childCompaction(model: Parameters<typeof bindingTierBudget>[0], 
   const tier = bindingTierBudget(model, fraction);
   return subagentCompaction(model.contextWindow, fraction, model.maxTokens, workerAt > 0 ? Math.min(tier ?? Infinity, workerAt) : tier);
 }
+/** Counts the usage of child sessions written while no process was recording them. Each session's counted size is kept on disk,
+ * so a profile open reparses only the sessions that grew instead of every child session ever run (hundreds of MB). */
+export function backfillChildUsage(directory: string, runs: Iterable<{ id: string; sessionFile?: string; parentSession?: string }>,
+  usage: { backfill: (entries: SessionEntry[], session: string, role: 'main' | 'subagent', runId?: string) => void }, warn: (text: string) => void,
+  open: (file: string) => { getEntries(): SessionEntry[] } = file => SessionManager.open(file)) {
+  const file = join(directory, 'child-usage-counted.json');
+  let counted: Record<string, number> = {};
+  try { counted = JSON.parse(readFileSync(file, 'utf8')) as Record<string, number>; } catch { /* first open or unreadable: count everything */ }
+  const next: Record<string, number> = {};
+  let changed = false;
+  for (const run of runs) {
+    if (!run.sessionFile) continue;
+    let size: number;
+    try { size = statSync(run.sessionFile).size; } catch { continue; }
+    if (counted[run.id] === size) { next[run.id] = size; continue; }
+    try {
+      usage.backfill(open(run.sessionFile).getEntries(), run.parentSession ?? '', 'subagent', run.id);
+      next[run.id] = size; changed = true;
+    } catch (error) { warn(`Could not backfill child usage for ${run.id}: ${String(error)}`); }
+  }
+  if (changed || Object.keys(counted).length !== Object.keys(next).length) atomicWrite(file, JSON.stringify(next));
+}
+
 export class Children {
   private readonly running = new Map<string, LiveRun>();
   readonly history: RunHistory;
@@ -254,13 +278,7 @@ export class Children {
     this.rpc = new SubagentRpc(options.events);
     options.crew?.bindRuns(() => this.history.records.values());
     for (const warning of this.history.warnings) warn(warning);
-    for (const run of this.history.records.values()) {
-      if (!run.sessionFile || !options.usage) continue;
-      try {
-        const manager = SessionManager.open(run.sessionFile);
-        options.usage.backfill(manager.getEntries(), run.parentSession, 'subagent', run.id);
-      } catch (error) { warn(`Could not backfill child usage for ${run.id}: ${String(error)}`); }
-    }
+    if (options.usage) backfillChildUsage(profileDirectory, this.history.records.values(), options.usage, warn);
   }
   private get settings(): Settings { return { ...DEFAULT_SETTINGS, ...this.options.settings?.() }; }
   private now() { return this.options.clock?.now() ?? Date.now(); }
