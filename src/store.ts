@@ -1,6 +1,6 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Entry, Summary } from './memory.ts';
 
 /** The image types memory keeps, and the file extension each is saved under. */
@@ -151,10 +151,22 @@ export function appendJson(file: string, value: unknown, size?: number) {
 }
 /** Where a record's line lies in its file: bytes `offset` to `offset + length`, newline excluded. */
 type Located = (value: unknown, file: string, offset: number, length: number) => void;
+/** A past day's line: where it lies, and its record; with 1 last, the record without its text, `size` in its place. */
+type DayRow = [offset: number, length: number, value: unknown, textless: 0 | 1];
+/** A message record without its text and with the `size` Memory gives it (the bytes of `kind: text`), or undefined if not one. */
+function textless(value: unknown) {
+  const record = value as { i?: unknown; kind?: unknown; text?: unknown } | null;
+  if (!record || typeof record.kind !== 'string' || typeof record.text !== 'string' || !Number.isSafeInteger(record.i)) return undefined;
+  const { text, ...rest } = record;
+  return { ...rest, size: Buffer.byteLength(`${record.kind}: ${text}`) };
+}
+const logNames = (dir: string) => existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort() : [];
 function records(dir: string, warn: (s: string) => void, located: Located) {
-  if (!existsSync(dir)) return;
-  for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort()) {
-    const file = join(dir, name), data = readFileSync(file);
+  for (const name of logNames(dir)) fileRecords(join(dir, name), warn, located);
+}
+function fileRecords(file: string, warn: (s: string) => void, located: Located) {
+  {
+    const data = readFileSync(file);
     let from = 0, index = 0;
     // Newline is the append commit marker. Even a parseable unterminated tail may be a write interrupted before commit.
     for (let newline = data.indexOf(0x0a); newline >= 0; from = newline + 1, newline = data.indexOf(0x0a, from)) {
@@ -205,13 +217,27 @@ export class FileStore implements Store {
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
       if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
     });
-    const main = join(this.directory, 'main'), entries: unknown[] = [];
-    records(main, this.warn, (value, file, offset, length) => {
+    const main = join(this.directory, 'main'), entries: unknown[] = [], names = logNames(main);
+    // Past days are no longer written to: each is parsed once into an index of its records without their texts, and later opens
+    // read that (~5% of the bytes) instead. Texts a summary does not cover yet, and the newest `hot`, come from the log.
+    const slim = new Set<number>();
+    for (const file of names.slice(0, -1).map(name => join(main, name))) for (const [offset, length, value, textlessRow] of this.dayIndex(file)) {
+      const i = (value as { i?: unknown } | null)?.i;
+      if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+      if (textlessRow) slim.add(entries.length);
+      entries.push(value);
+    }
+    if (names.length) fileRecords(join(main, names[names.length - 1]), this.warn, (value, file, offset, length) => {
       const i = (value as { i?: unknown } | null)?.i;
       if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
       const old = entries.push(value) - 1 - hot;
-      if (old >= 0) entries[old] = this.cold(entries[old]);
+      if (old >= 0 && !slim.has(old)) entries[old] = this.cold(entries[old]);
     });
+    for (const k of slim) {
+      const value = entries[k] as { i: number }, line = this.lines.get(value.i);
+      if (line && (k >= entries.length - hot || !this.hasNode(0, value.i))) entries[k] = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length));
+    }
+    this.drop();
     for (const name of readdirSync(main).filter(n => n.endsWith('.jsonl'))) this.lastSeenBytes.set(join(main, name), statSync(join(main, name)).size);
     const view = join(this.directory, 'view.json');
     // An unreadable view is rebuilt, as a damaged one is.
@@ -221,10 +247,24 @@ export class FileStore implements Store {
   }
   /** A summarized message without its text, with the `size` Memory gives it (the bytes of `kind: text`); anything else as is. */
   private cold(value: unknown) {
-    const record = value as { i?: unknown; kind?: unknown; text?: unknown } | null;
-    if (!record || typeof record.kind !== 'string' || typeof record.text !== 'string' || !Number.isSafeInteger(record.i) || !this.hasNode(0, record.i as number)) return value;
-    const { text, ...rest } = record;
-    return { ...rest, size: Buffer.byteLength(`${record.kind}: ${text}`) };
+    const record = value as { i?: unknown } | null;
+    return Number.isSafeInteger(record?.i) && this.hasNode(0, record!.i as number) ? textless(value) ?? value : value;
+  }
+  /** A past day's records, text dropped, with where each line lies: from its index when the day is unchanged since it was built. */
+  private dayIndex(file: string): DayRow[] {
+    const stat = statSync(file), index = join(this.directory, 'load-index', `${basename(file)}.json`);
+    try {
+      const saved = JSON.parse(readFileSync(index, 'utf8')) as { version?: unknown; size?: unknown; mtimeMs?: unknown; rows?: unknown };
+      if (saved.version === 1 && saved.size === stat.size && saved.mtimeMs === stat.mtimeMs && Array.isArray(saved.rows)) return saved.rows as DayRow[];
+    } catch {}
+    const rows: DayRow[] = [];
+    fileRecords(file, this.warn, (value, _file, offset, length) => {
+      const slim = textless(value);
+      rows.push(slim ? [offset, length, slim, 1] : [offset, length, value, 0]);
+    });
+    try { mkdirSync(dirname(index), { recursive: true }); atomicWrite(index, JSON.stringify({ version: 1, size: stat.size, mtimeMs: stat.mtimeMs, rows })); }
+    catch (error) { this.warn(`OptChat could not save the load index ${index}: ${(error as Error).message}`); }
+    return rows;
   }
   append(entry: Entry): undefined {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
