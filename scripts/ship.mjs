@@ -27,6 +27,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --all                git add -A antes do commit
   --pr N               só enfileira o auto-merge da PR N (sem commit, push ou PR)
   --no-auto            abre a PR sem enfileirar o auto-merge
+  --closes-verified    permite fixes/closes #N na descrição: a falha foi reproduzida e a reprodução passa
   --direct-main        envia a branch padrão direto, sem PR
   --branch NOME        estando na branch padrão, cria a branch NOME com as mudanças atuais e envia por ela
   --base BRANCH        base da PR (padrão: branch padrão do origin)
@@ -39,6 +40,8 @@ saída: "status" final. exit 0 feito · 1 falhou · 2 recusado antes de qualquer
 class Stop extends Error {
   constructor(status, fields) { super(status); this.status = status; this.fields = fields; }
 }
+// GitHub closes the issue when a PR with one of these words merges; the profile reserves that for a reproduced fix.
+const CLOSING_KEYWORD = /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s*:?\s+(?:[\w.-]+\/[\w.-]+)?#\d+/i;
 const refuse = (error, hint) => new Stop('refused', { error, hint });
 const failed = (stage, result, next) => new Stop('failed', { stage, detail: tail(result.err || result.out), next });
 const uncertain = (stage, next) => new Stop('uncertain', { stage, next });
@@ -458,7 +461,7 @@ async function shipBranch(opts, ctx) {
 
 // --- arguments and entry ---
 function parseArgs(argv) {
-  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, title: undefined, body: undefined, help: false };
+  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, title: undefined, body: undefined, closesVerified: false, help: false };
   const valueOf = (flag, i) => {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith('-')) throw refuse('missing_value', `${flag} precisa de um valor`);
@@ -485,6 +488,7 @@ function parseArgs(argv) {
     else if (arg === '--all') opts.all = true;
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
+    else if (arg === '--closes-verified') opts.closesVerified = true;
     else if (arg === '--sync') opts.sync = true;
     else if (arg === '--direct-main') opts.directMain = true;
     else if (arg === '--branch') {
@@ -510,6 +514,9 @@ function parseArgs(argv) {
   if (opts.message !== undefined && !opts.message.trim()) throw refuse('message_required', '-m não pode ser vazio');
   if (opts.title !== undefined && (!opts.title.trim() || /[\r\n]/.test(opts.title))) throw refuse('invalid_value', '--title é uma linha só, não vazia');
   if (opts.body !== undefined && !opts.body.trim()) throw refuse('body_required', 'a descrição (-b/--body-file) não pode ser vazia');
+  if (opts.body !== undefined && !opts.closesVerified && CLOSING_KEYWORD.test(opts.body)) {
+    throw refuse('closing_keyword', 'a descrição fecha uma issue sozinha (fixes/closes/resolves #N): uma correção ainda não reproduzida usa "refs #N"; com a reprodução vista passar, acrescente --closes-verified');
+  }
   if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined || opts.base !== undefined)) {
     throw refuse('conflicting_args', '--pr só enfileira o auto-merge de uma PR existente');
   }
