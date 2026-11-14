@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStallWatch, spanHooks, stallWatch } from '../src/loop-stalls.ts';
+import { createStallWatch, spanHooks, spanned, stallWatch } from '../src/loop-stalls.ts';
 import { heapReport } from '../src/heap-report.ts';
 
 const clock = () => { let t = 1000; return { now: () => t, advance: (ms: number) => { t += ms; } }; };
@@ -75,4 +75,13 @@ test('spanHooks names a stall inside a hook handler, sync or async, and keeps th
   c.advance(1100); watch.tick();
   assert.equal(watch.stalls()[2].during, undefined, 'a hook that returned is no longer in flight');
   assert.equal(pi.on, original, 'the host object is not mutated (a host Proxy keeps its own on)');
+});
+
+test('spanned names a stall inside one step, sync or async, and ends the span when the step does', async () => {
+  const c = clock(), watch = createStallWatch(c.now);
+  assert.equal(spanned('open:usage', () => { c.advance(1100); watch.tick(); return 'kept'; }, watch), 'kept');
+  assert.equal(await spanned('open:memory', async () => { await null; c.advance(1100); watch.tick(); return 7; }, watch), 7);
+  assert.throws(() => spanned('open:crew', () => { throw new Error('boom'); }, watch), /boom/);
+  c.advance(1100); watch.tick();
+  assert.deepEqual(watch.stalls().map(s => s.during), [['open:usage'], ['open:memory'], undefined]);
 });

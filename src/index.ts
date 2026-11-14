@@ -80,7 +80,7 @@ import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.t
 import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
-import { spanHooks } from './loop-stalls.ts';
+import { spanHooks, spanned } from './loop-stalls.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
 import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
@@ -614,11 +614,12 @@ export default function optchat(host: ExtensionAPI) {
       const config = loadConfig(dir);
       main = ctx.model && { provider: ctx.model.provider, model: ctx.model.id };
       const sessionId = ctx.sessionManager.getSessionId();
-      const usage = new UsageLedger(dir);
+      // Each opening step is a named stall span (open:<step>), so a stall at startup or reload says which step held the loop.
+      const usage = spanned('open:usage', () => new UsageLedger(dir));
       const operations = new OperationJournal(dir);
       const metrics = new PerformanceMetrics();
       const outputs = new OutputContext(new OutputStore(dir, sessionId));
-      usage.backfill(ctx.sessionManager.getEntries(), sessionId);
+      spanned('open:backfill', () => usage.backfill(ctx.sessionManager.getEntries(), sessionId));
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
@@ -631,25 +632,25 @@ export default function optchat(host: ExtensionAPI) {
         try { writeCompactorDiagnostic(dir, diagnostic); }
         catch (error) { if (!diagnosticsFailed) { diagnosticsFailed = true; ctx.ui.notify(`Could not save compactor diagnostics: ${errorText(error)}`, 'warning'); } }
       }, undefined, () => ({ sessionId, recoveryIncidentId: recoveryIncidents.get(sessionId) }), closed);
-      const memory = await Memory.open(memoryDirectory(dir), async (input, signal) => {
+      const memory = await spanned('open:memory', () => Memory.open(memoryDirectory(dir), async (input, signal) => {
         const started = performance.now();
         try { return await compress(input, signal); }
         finally { metrics.record('compaction', performance.now() - started); }
-      }, warning => ctx.ui.notify(warning, 'error'), undefined, undefined, undefined, DEFER);
+      }, warning => ctx.ui.notify(warning, 'error'), undefined, undefined, undefined, DEFER));
       openingMemory = memory;
       void cleanClosedOnce(dir, memory, closed()).then(changed => { if (changed) ctx.ui.notify(`OptChat rewrote ${changed} memory lines that cited closed conflicts.`, 'info'); },
         error => ctx.ui.notify(`Could not clean closed conflicts from memory: ${errorText(error)}`, 'warning'));
       const inbox = new Inbox(dir);
-      const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
+      const recovered = pendingImport(dir) ? 0 : spanned('open:inbox', () => inbox.recover(memory));
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
       // The specialists' trees get their own compressor, on the compactor's model, billed as "crew"; it pauses on a per-token provider.
       const crewCompress = createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
         usage.compression(message, 'crew', sessionId, attribution);
       }, () => config.summaryAcceptBytes, () => undefined);
-      const crew = new Crew(join(dir, 'crew'), {
+      const crew = spanned('open:crew', () => new Crew(join(dir, 'crew'), {
         compress: pauseOnApiKey(crewCompress, () => resolveModel(ctx.modelRegistry, modelFor(config, 'compactor', main))?.provider, provider => quotaPlan(provider)),
-        warn: text => ctx.ui.notify(text, 'warning'), note: text => ctx.ui.notify(text, 'info') });
-      const children = new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
+        warn: text => ctx.ui.notify(text, 'warning'), note: text => ctx.ui.notify(text, 'info') }));
+      const children = spanned('open:children', () => new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports, profileInstructions: () => instructions(dir),
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
@@ -663,7 +664,7 @@ export default function optchat(host: ExtensionAPI) {
             if (!heartbeat?.waking) return;
             wakeWorkers.adopt(resumed, partner);
             if (wakeWorkerContext) watchWakeWorkers(wakeWorkerContext);
-          } });
+          } }));
       outage?.close();
       reportDispatch?.close();
       reportDispatch = new ReportDispatcher<Report>({ idle: () => ctx.isIdle(), send: sendToPi,
@@ -718,7 +719,7 @@ export default function optchat(host: ExtensionAPI) {
         unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readJsonOr<unknown>(QUOTA_FILE, {}), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}`, events: pi.events, thinking: () => pi.getThinkingLevel() });
       }
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
-      if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => inPhase('open'), deliverReport);
+      if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await spanned('open:windows', () => serveWindows(dir, children, () => inPhase('open'), deliverReport));
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
@@ -734,7 +735,7 @@ export default function optchat(host: ExtensionAPI) {
         agent: (id, text) => children.shellNotice(id, text),
         failed: (what, job, error) => ctx.ui.notify(`Could not ${what} ${job.id}: ${errorText(error)}`, 'error'),
       }));
-      try { resumeDurableShells(shells, shellSettings); } catch (error) { ctx.ui.notify(`Could not follow durable shells again: ${errorText(error)}`, 'error'); }
+      try { spanned('open:shells', () => resumeDurableShells(shells, shellSettings)); } catch (error) { ctx.ui.notify(`Could not follow durable shells again: ${errorText(error)}`, 'error'); }
       startMachineSense(ctx, memory);
       startSituation(ctx, dir);
       const queuedReports = [...reports];
