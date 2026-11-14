@@ -65,12 +65,14 @@ test('spanHooks names a stall inside a hook handler, sync or async, and keeps th
   const c = clock(), watch = createStallWatch(c.now);
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const pi = { on: (event: string, handler: (...args: unknown[]) => unknown) => { handlers.set(event, handler); } };
-  spanHooks(pi, watch);
-  pi.on('context_with_system', () => { c.advance(1100); watch.tick(); return 'kept'; });
-  pi.on('message_end', async () => { c.advance(1100); watch.tick(); await null; return 7; });
+  const hooked = spanHooks(pi, watch);
+  const original = pi.on;
+  hooked.on('context_with_system', () => { c.advance(1100); watch.tick(); return 'kept'; });
+  hooked.on('message_end', async () => { c.advance(1100); watch.tick(); await null; return 7; });
   assert.equal(handlers.get('context_with_system')!(), 'kept');
   assert.equal(await handlers.get('message_end')!(), 7);
   assert.deepEqual(watch.stalls().map(s => s.during), [['hook:context_with_system'], ['hook:message_end']]);
   c.advance(1100); watch.tick();
   assert.equal(watch.stalls()[2].during, undefined, 'a hook that returned is no longer in flight');
+  assert.equal(pi.on, original, 'the host object is not mutated (a host Proxy keeps its own on)');
 });

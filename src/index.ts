@@ -154,8 +154,8 @@ export const version = ((): string | undefined => {
 })();
 const brand = version ? `OptChat v${version}` : 'OptChat';
 
-export default function optchat(pi: ExtensionAPI) {
-  spanHooks(pi);
+export default function optchat(host: ExtensionAPI) {
+  const pi = spanHooks(host);
   quietGhTelemetry();
   basicPythonRepl();
   // Shells a /reload handed over keep running under the same IDs; another profile opening first stops them.
