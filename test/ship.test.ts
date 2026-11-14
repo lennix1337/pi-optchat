@@ -222,6 +222,22 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   for (const forbidden of ['--no-verify', '--force', '--admin']) assert.equal(traced.includes(forbidden) || calls.join(' ').includes(forbidden), false, forbidden);
 });
 
+test('a description that closes an issue by keyword is refused: a fix not yet reproduced says refs #N', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  for (const body of ['Corrige o bug. Fixes #12', 'closes #3', 'Resolved #7', 'fixes lennix1337/Genexus18MCP#994']) {
+    const r = ship(fx, ['-m', 'feat: a', '-b', body, 'a.txt']);
+    assert.equal(r.code, 2, body);
+    assert.equal(r.out.error, 'closing_keyword', body);
+  }
+  assert.equal(git(fx.work, ['ls-remote', 'origin', 'refs/heads/feat/x']), '');
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'create'));
+  const ok = ship(fx, ['-m', 'feat: a', '-b', 'Problema: x. refs #12. Prefixes #4 não fecha.', 'a.txt']);
+  assert.notEqual(ok.out.error, 'closing_keyword', 'refs #N is the sanctioned form');
+  const proven = ship(fx, ['-m', 'feat: b', '--closes-verified', '-b', 'Fixes #12; reproduzido e passando em KBTeste.', '--no-auto', 'a.txt']);
+  assert.notEqual(proven.out.error, 'closing_keyword', '--closes-verified acknowledges the reproduction');
+});
+
 test('a new PR without a description is refused before staging, committing or pushing', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');
