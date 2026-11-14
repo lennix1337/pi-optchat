@@ -39,9 +39,15 @@ async function run(command: string, args: string[], cwd: string, timeout = 2000)
   catch { return undefined; }
 }
 
-async function mergedPr(branch: string, repo: string) {
-  const output = await run('gh', ['pr', 'list', '--state', 'merged', '--head', branch, '--json', 'number'], repo, 3000);
-  try { const prs: unknown = JSON.parse(output ?? ''); return Array.isArray(prs) && prs.length > 0; } catch { return false; }
+type MergedPr = (branch: string | undefined, repo: string, head: string | undefined) => boolean | Promise<boolean>;
+
+/** A merged PR whose head branch has this name, or whose head commit is this tip (a PR fetched as `pull/N/head:pr-N` keeps only the commit). */
+async function mergedPr(branch: string | undefined, repo: string, head: string | undefined) {
+  const found = async (args: string[], match: (pr: { headRefOid?: string }) => boolean) => {
+    const output = await run('gh', ['pr', 'list', '--state', 'merged', ...args, '--json', 'number,headRefOid'], repo, 3000);
+    try { const prs: unknown = JSON.parse(output ?? ''); return Array.isArray(prs) && prs.some(match); } catch { return false; }
+  };
+  return Boolean(branch && await found(['--head', branch], () => true)) || Boolean(head && await found(['--search', head], pr => pr.headRefOid === head));
 }
 
 // realpath expands Windows 8.3 short names (RUNNER~1) that Git lists in long form.
@@ -55,7 +61,7 @@ async function cleanAndPushed(path: string, head: string | undefined) {
 }
 
 /** Refuse a registered worktree unless its tip is proven merged into origin's default or a merged PR, or it is clean and already pushed. */
-export async function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr: (branch: string, repo: string) => boolean | Promise<boolean> = mergedPr): Promise<string | undefined> {
+export async function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr: MergedPr = mergedPr): Promise<string | undefined> {
   for (const target of worktreeRemovalTargets(text, cwd)) {
     const list = await run('git', ['worktree', 'list', '--porcelain'], target.repo);
     if (!list) {
@@ -71,7 +77,7 @@ export async function worktreeRemovalRefusal(text: string, cwd: string, hasMerge
       const head = /^HEAD ([a-f0-9]+)$/m.exec(entry)?.[1];
       const base = await run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], target.repo);
       const ancestor = head && base && await run('git', ['merge-base', '--is-ancestor', head, base], target.repo) !== undefined;
-      if (!ancestor && !(branch && await hasMergedPr(branch, target.repo)) && !await cleanAndPushed(path, head)) return `Blocked removal of worktree ${path} (branch ${branch ?? 'detached HEAD'}): removal of unmerged worktrees needs the operator's explicit order.`;
+      if (!ancestor && !((branch || head) && await hasMergedPr(branch, target.repo, head)) && !await cleanAndPushed(path, head)) return `Blocked removal of worktree ${path} (branch ${branch ?? 'detached HEAD'}): removal of unmerged worktrees needs the operator's explicit order.`;
     }
   }
   return undefined;

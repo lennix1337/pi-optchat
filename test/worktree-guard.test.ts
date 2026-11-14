@@ -38,6 +38,9 @@ test('unmerged forced worktree removal is blocked, ancestor and squash merge are
     assert.match((await worktreeRemovalRefusal(cmd, f.repo, () => false))!, /feature.*explicit order/i);
     assert.match((await worktreeRemovalRefusal(`rm -rf "${f.tree}"`, f.repo, () => false))!, /feature/);
     assert.equal(await worktreeRemovalRefusal(cmd, f.repo, () => true), undefined);
+    // A PR fetched as `git fetch origin pull/N/head:pr-N` has a local branch name GitHub does not know: its merged PR is found by head commit.
+    const head = f.git('rev-parse', 'feature');
+    assert.equal(await worktreeRemovalRefusal(cmd, f.repo, (_branch, _repo, sha) => sha === head), undefined, 'merged PR found by head commit');
     f.git('update-ref', 'refs/remotes/origin/main', 'feature');
     assert.equal(await worktreeRemovalRefusal(cmd, f.repo, () => false), undefined);
     assert.equal(await worktreeRemovalRefusal('rm -rf unrelated', f.repo, () => false), undefined);
