@@ -78,7 +78,7 @@ export class OutputContext {
   constructor(readonly store: OutputStore) {}
   stats() { return { ...this.totals }; }
   project(messages: readonly AgentMessage[]): AgentMessage[] {
-    return messages.map(message => {
+    return this.store.inBurst(() => messages.map(message => {
       if (this.unchanged.has(message)) return message;
       const cached = this.cached.get(message);
       if (cached && cached.expires > this.store.now()) return cached.message;
@@ -98,7 +98,7 @@ export class OutputContext {
         this.totals.stored++; this.totals.originalBytes += size; this.totals.previewBytes += Buffer.byteLength(content);
         return projected;
       } catch { this.totals.fallbacks++; return message; }
-    });
+    }));
   }
   read(ref: string, options: { offset?: number; limit?: number; findText?: string; query?: OutputQuery }) {
     const { query, ...paging } = options;

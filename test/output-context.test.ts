@@ -285,3 +285,25 @@ test('a referenced original is renewed at half its lifetime, not on every provid
     assert.equal(store.read(ref), log, 'the renewed original stays readable for its full lifetime');
   } finally { f.close(); }
 });
+test('a burst of puts scans the shared quota once and still counts its own writes', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'burst', { maxBytes: 4000 });
+    store.inBurst(() => { for (let i = 0; i < 5; i++) store.put(`output ${i} ${'a'.repeat(200)}`); });
+    assert.equal(store.scans, 1);
+    assert.throws(() => store.inBurst(() => { for (let i = 5; i < 40; i++) store.put(`output ${i} ${'a'.repeat(200)}`); }), /full/);
+    assert.equal(store.scans, 2);
+    store.put('outside a burst'); store.put('scans every time');
+    assert.equal(store.scans, 4);
+  } finally { f.close(); }
+});
+test('projecting many outputs scans the quota once', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'many'), context = new OutputContext(store);
+    const many = Array.from({ length: 6 }, (_, i) => toolResultMessage(`c${i}`, 'bash', log.replace('CS0246', `CS${i}`), { isError: true, timestamp: i }));
+    context.project(many);
+    assert.equal(context.stats().stored, 6);
+    assert.equal(store.scans, 1);
+  } finally { f.close(); }
+});
