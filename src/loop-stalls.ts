@@ -49,19 +49,21 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
 
 type Watch = ReturnType<typeof createStallWatch>;
 
+/** Runs `step` as a named stall span that ends when it returns, throws or (for a promise) settles; returns its result unchanged. */
+export function spanned<T>(name: string, step: () => T, watch: Pick<Watch, 'begin'> = stallWatch()): T {
+  const end = watch.begin(name);
+  let result: T;
+  try { result = step(); } catch (error) { end(); throw error; }
+  if (result instanceof Promise) return result.finally(end) as T;
+  end();
+  return result;
+}
+
 /** Names every extension hook handler as a stall span (`hook:<event>`), so a stall outside a tool says which hook held the loop;
- * one with no name at all ran in Pi itself. Registers through `pi.on` as before and returns each handler's result unchanged. */
-/** A view of `pi` whose `on` times each handler; `pi` itself is left untouched, since the host may hand
- * extensions a wrapper (a Proxy) whose own `on` must keep seeing the original handlers' registration. */
+ * one with no name at all ran in Pi itself. Returns a view of `pi` whose `on` times each handler; `pi` itself is left untouched,
+ * since the host may hand extensions a wrapper (a Proxy) whose own `on` must keep seeing the original handlers' registration. */
 export function spanHooks<T extends { on: (event: any, handler: (...args: any[]) => any) => unknown }>(pi: T, watch: Pick<Watch, 'begin'> = stallWatch()): T {
-  const on: T['on'] = (event, handler) => pi.on(event, (...args: unknown[]) => {
-    const end = watch.begin(`hook:${event}`);
-    let result: unknown;
-    try { result = handler(...args); } catch (error) { end(); throw error; }
-    if (result instanceof Promise) return result.finally(end);
-    end();
-    return result;
-  });
+  const on: T['on'] = (event, handler) => pi.on(event, (...args: unknown[]) => spanned(`hook:${event}`, () => handler(...args), watch));
   return new Proxy(pi, { get: (target, property, receiver) => property === 'on' ? on : Reflect.get(target, property, receiver) });
 }
 interface Held { watch: Watch; build: typeof createStallWatch; stop: () => void }
