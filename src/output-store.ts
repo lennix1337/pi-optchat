@@ -20,6 +20,9 @@ export class OutputStore {
   readonly now: () => number;
   private readonly maxBytes: number;
   private readonly maxResultBytes: number;
+  /** Full quota scans so far. */
+  scans = 0;
+  private burst: { used: number } | undefined;
   constructor(profile: string, session: string, limits: OutputLimits = {}) {
     this.root = join(profile, 'outputs');
     this.directory = join(this.root, hash(session));
@@ -45,10 +48,14 @@ export class OutputStore {
     retention.set(file, { stat, created });
     return false;
   }
-  /** Never evict unexpired references just to admit a new output. */
-  put(text: string) {
-    if (Buffer.byteLength(text) > this.maxResultBytes) throw new Error('Output exceeds storage limit');
-    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+  /** Puts made inside `fn` share one quota scan (the first); their own writes are added to it. Other writers are seen at the next scan. */
+  inBurst<T>(fn: () => T): T {
+    if (this.burst) return fn();
+    this.burst = { used: -1 };
+    try { return fn(); } finally { this.burst = undefined; }
+  }
+  private scan() {
+    this.scans++;
     let used = 0;
     // The quota is shared across sessions in this profile, not multiplied by agent count.
     for (const scope of readdirSync(this.root).filter(name => /^[a-f0-9]{64}$/.test(name))) {
@@ -65,6 +72,15 @@ export class OutputStore {
         else used += Number(stat.size);
       }
     }
+    return used;
+  }
+  /** Never evict unexpired references just to admit a new output. */
+  put(text: string) {
+    if (Buffer.byteLength(text) > this.maxResultBytes) throw new Error('Output exceeds storage limit');
+    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    const burst = this.burst;
+    if (burst && burst.used < 0) burst.used = this.scan();
+    let used = burst ? burst.used : this.scan();
     const ref = hash(text), file = this.file(ref);
     if (existsSync(file)) {
       try { this.read(ref); }
@@ -77,6 +93,7 @@ export class OutputStore {
     const data = JSON.stringify({ version: 1, created: this.now(), text });
     if (used + Buffer.byteLength(data) > this.maxBytes) throw new Error('Output storage is full');
     atomicWrite(file, data);
+    if (burst) burst.used = used + Buffer.byteLength(data);
     // Do not replace the provider result unless the durable original is readable and intact.
     if (this.read(ref) !== text) throw new Error('Output integrity check failed');
     return ref;
