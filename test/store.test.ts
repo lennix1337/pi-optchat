@@ -1,6 +1,6 @@
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -185,5 +185,32 @@ test('FileStore: a message text is read back from its line, loaded or appended, 
     const file = join(dir, 'main', `${localDay()}.jsonl`);
     writeFileSync(file, readFileSync(file, 'utf8').replace('"i":1', '"i":7'));
     assert.throws(() => swapped.reader(1)!(), /no longer where it was/);
+  } finally { removeDir(dir); }
+});
+
+test('a past day of the log is parsed once: later opens take its records from a small index, and a changed day is parsed again', () => {
+  const dir = temp();
+  try {
+    const main = join(dir, 'main'), tree = join(dir, 'tree');
+    mkdirSync(main, { recursive: true }); mkdirSync(tree, { recursive: true });
+    const past = join(main, '2020-01-01.jsonl');
+    writeFileSync(past, [entry(0, 'old one'), entry(1, 'old two')].map(e => JSON.stringify(e) + '\n').join(''));
+    writeFileSync(join(main, '2020-01-02.jsonl'), JSON.stringify(entry(2, 'today')) + '\n');
+    writeFileSync(join(tree, '2020-01-01.jsonl'), [node(0, 's0'), node(1, 's1'), node(2, 's2')].map(n => JSON.stringify(n) + '\n').join(''));
+    const first = new FileStore(dir, () => {}).load(1);
+    const cold = { i: 0, kind: 'user', date: entry(0, '').date, size: Buffer.byteLength('user: old one') };
+    assert.deepEqual(first.entries[0], cold);
+    const index = join(dir, 'load-index', '2020-01-01.jsonl.json');
+    assert.ok(existsSync(index), 'the past day gets an index');
+    assert.ok(!existsSync(join(dir, 'load-index', '2020-01-02.jsonl.json')), 'the newest day, still written to, gets none');
+    // The index is what a second open reads: a size changed only there shows up.
+    const saved = JSON.parse(readFileSync(index, 'utf8'));
+    saved.rows[0][2].size = 999; writeFileSync(index, JSON.stringify(saved));
+    const second = new FileStore(dir, () => {});
+    assert.equal((second.load(1).entries[0] as { size: number }).size, 999);
+    assert.equal(second.reader(1)?.(), 'old two', 'texts still read back from the log');
+    // An appended past day no longer matches its index and is parsed again.
+    appendFileSync(past, JSON.stringify(entry(3, 'late')) + '\n');
+    assert.deepEqual(new FileStore(dir, () => {}).load(1).entries[0], cold);
   } finally { removeDir(dir); }
 });

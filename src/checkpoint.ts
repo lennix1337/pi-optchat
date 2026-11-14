@@ -10,13 +10,15 @@ const LOOSE_LIMIT_KIB = 16_384;
 export async function checkpoint(directory: string) {
   const git = (args: string[]) => exec('git', ['-C', directory, ...args], { maxBuffer: 1_000_000 });
   if (!existsSync(join(directory, '.git'))) await git(['init', '-q', '-b', 'main']);
-  if (!existsSync(join(directory, '.gitignore'))) atomicWrite(join(directory, '.gitignore'), '/runs/\n/memory.html\n/usage.jsonl\n/usage.db*\n*.tmp\n');
-  // usage.db is a disposable index of usage.jsonl; profiles whose .gitignore predates it must not commit it either. An exclude
-  // pathspec would fail on profiles whose .gitignore already lists it, so the repository's own exclude file carries it.
+  if (!existsSync(join(directory, '.gitignore'))) atomicWrite(join(directory, '.gitignore'), '/runs/\n/memory.html\n/usage.jsonl\n/usage.db*\nload-index/\n*.tmp\n');
+  // usage.db and load-index/ are disposable indexes of their logs; profiles whose .gitignore predates them must not commit them
+  // either. An exclude pathspec would fail on profiles whose .gitignore already lists one, so the repository's own exclude file
+  // carries them.
   const exclude = join(directory, '.git', 'info', 'exclude'), excluded = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
-  if (!excluded.split('\n').includes('/usage.db*')) {
+  const missing = ['/usage.db*', 'load-index/'].filter(pattern => !excluded.split('\n').includes(pattern));
+  if (missing.length) {
     mkdirSync(join(directory, '.git', 'info'), { recursive: true });
-    appendFileSync(exclude, `${excluded && !excluded.endsWith('\n') ? '\n' : ''}/usage.db*\n`);
+    appendFileSync(exclude, `${excluded && !excluded.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`);
   }
   await git(['add', '-A', '--', '.', ':!compactor-diagnostics.jsonl', ':!compactor-diagnostics.jsonl.1', ':!recovery-diagnostics.jsonl', ':!recovery-diagnostics.jsonl.1',
     ':!cache-diagnostics.jsonl', ':!cache-diagnostics.jsonl.1', ':!cache-entries.json']);

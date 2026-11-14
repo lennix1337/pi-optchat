@@ -28,8 +28,10 @@ test('a checkpoint writes the ignore file whenever it is missing, and never repl
     writeFileSync(join(dir, 'cache-diagnostics.jsonl.1'), '{}\n');
     writeFileSync(join(dir, 'cache-entries.json'), '{}');
     for (const suffix of ['', '-wal', '-shm', '-journal']) writeFileSync(join(dir, `usage.db${suffix}`), 'index');
+    mkdirSync(join(dir, 'load-index')); writeFileSync(join(dir, 'load-index', '2020-01-01.jsonl.json'), '{}');
     await checkpoint(dir);
     assert.equal(readFileSync(join(dir, '.gitignore'), 'utf8'), '/mine/\n');
+    assert.ok(!tracked(dir).some(file => file.startsWith('load-index/')), 'the disposable log load index stays untracked');
     assert.ok(!tracked(dir).some(file => /^(compactor|recovery|cache)-diagnostics/.test(file)), 'diagnostics stay untracked even with an older/custom ignore file');
     assert.ok(!tracked(dir).includes('cache-entries.json'), 'the prompt-cache entries, rewritten every request, stay untracked');
     assert.ok(!tracked(dir).some(file => file.startsWith('usage.db')), 'the disposable usage index stays untracked even with an older/custom ignore file');
