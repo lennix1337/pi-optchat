@@ -51,12 +51,14 @@ const signatureOf = (tool: ToolInfo) => {
 
 export function inventory(tools: readonly ToolInfo[], active: readonly string[], systemPrompt: string, lazy: ReadonlySet<string> = new Set()): ToolRow[] {
   const text = instructionText(systemPrompt), activeNames = new Set(active);
+  // The same rule as lazyLoadout: no script can call a model-only tool, so listing it hides nothing.
+  const hides = (tool: ToolInfo) => lazy.has(tool.name) && tool.exposure !== 'model-only';
   return tools.filter(tool => tool.exposure !== 'hidden').map(tool => ({
     name: tool.name,
     source: sourceOf(tool.sourceInfo),
     exposure: tool.exposure,
-    declared: activeNames.has(tool.name) && !lazy.has(tool.name),
-    lazy: activeNames.has(tool.name) && lazy.has(tool.name),
+    declared: activeNames.has(tool.name) && !hides(tool),
+    lazy: activeNames.has(tool.name) && hides(tool),
     signature: signatureOf(tool),
     named: names(text, tool.name),
     bytes: bytes(tool.description) + bytes(tool.parameters) + bytes(tool.promptGuidelines ?? []),
