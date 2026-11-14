@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { commandWords, segments } from './effect-classifier.ts';
@@ -30,13 +31,16 @@ export function worktreeRemovalTargets(text: string, cwd: string): Target[] {
   return targets;
 }
 
-function run(command: string, args: string[], cwd: string, timeout = 2000): string | undefined {
-  try { return execFileSync(command, args, { cwd, timeout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); }
+const exec = promisify(execFile);
+
+/** Asynchronous: these calls (git, and gh over the network) run inside a tool_call hook, which must not freeze Pi while they wait. */
+async function run(command: string, args: string[], cwd: string, timeout = 2000): Promise<string | undefined> {
+  try { return (await exec(command, args, { cwd, timeout, encoding: 'utf8', windowsHide: true })).stdout.trim(); }
   catch { return undefined; }
 }
 
-function mergedPr(branch: string, repo: string) {
-  const output = run('gh', ['pr', 'list', '--state', 'merged', '--head', branch, '--json', 'number'], repo, 3000);
+async function mergedPr(branch: string, repo: string) {
+  const output = await run('gh', ['pr', 'list', '--state', 'merged', '--head', branch, '--json', 'number'], repo, 3000);
   try { const prs: unknown = JSON.parse(output ?? ''); return Array.isArray(prs) && prs.length > 0; } catch { return false; }
 }
 
@@ -45,15 +49,15 @@ const key = (path: string) => { try { return realpathSync.native(path).toLowerCa
 const within = (path: string, dir: string) => key(path) === key(dir) || key(path).startsWith(key(dir).replace(/[\\/]$/, '') + sep);
 
 /** Nothing to lose: no uncommitted or untracked change, and its HEAD is already on some remote-tracking ref. */
-function cleanAndPushed(path: string, head: string | undefined) {
-  if (!head || run('git', ['status', '--porcelain'], path) !== '') return false;
-  return Boolean(run('git', ['for-each-ref', '--count=1', '--contains', head, '--format=%(refname)', 'refs/remotes'], path));
+async function cleanAndPushed(path: string, head: string | undefined) {
+  if (!head || await run('git', ['status', '--porcelain'], path) !== '') return false;
+  return Boolean(await run('git', ['for-each-ref', '--count=1', '--contains', head, '--format=%(refname)', 'refs/remotes'], path));
 }
 
 /** Refuse a registered worktree unless its tip is proven merged into origin's default or a merged PR, or it is clean and already pushed. */
-export function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr = mergedPr): string | undefined {
+export async function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr: (branch: string, repo: string) => boolean | Promise<boolean> = mergedPr): Promise<string | undefined> {
   for (const target of worktreeRemovalTargets(text, cwd)) {
-    const list = run('git', ['worktree', 'list', '--porcelain'], target.repo);
+    const list = await run('git', ['worktree', 'list', '--porcelain'], target.repo);
     if (!list) {
       // A linked worktree keeps a `.git` file; when Git cannot list it, its merge state is unknown, so refuse.
       if (existsSync(join(target.path, '.git'))) return `Blocked removal of ${target.path}: Git could not list its worktrees, so its merge state is unknown.`;
@@ -65,9 +69,9 @@ export function worktreeRemovalRefusal(text: string, cwd: string, hasMergedPr = 
       if (!path || !within(path, target.path)) continue;
       const branch = /^branch refs\/heads\/(.+)$/m.exec(entry)?.[1]?.trim();
       const head = /^HEAD ([a-f0-9]+)$/m.exec(entry)?.[1];
-      const base = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], target.repo);
-      const ancestor = head && base && run('git', ['merge-base', '--is-ancestor', head, base], target.repo) !== undefined;
-      if (!ancestor && !(branch && hasMergedPr(branch, target.repo)) && !cleanAndPushed(path, head)) return `Blocked removal of worktree ${path} (branch ${branch ?? 'detached HEAD'}): removal of unmerged worktrees needs the operator's explicit order.`;
+      const base = await run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], target.repo);
+      const ancestor = head && base && await run('git', ['merge-base', '--is-ancestor', head, base], target.repo) !== undefined;
+      if (!ancestor && !(branch && await hasMergedPr(branch, target.repo)) && !await cleanAndPushed(path, head)) return `Blocked removal of worktree ${path} (branch ${branch ?? 'detached HEAD'}): removal of unmerged worktrees needs the operator's explicit order.`;
     }
   }
   return undefined;
