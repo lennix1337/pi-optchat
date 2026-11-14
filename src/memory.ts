@@ -152,6 +152,11 @@ class ColdEntry implements Entry {
   get text() { return this.store.reader?.(this.i)?.() ?? ''; }
   toJSON() { return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(this.receipt ? { receipt: this.receipt } : {}), ...(this.origin ? { origin: this.origin } : {}) }; }
 }
+/** A message the store loaded without its text (`FileStore.load(hot)`): its size travels instead, and `reader` gives the text. */
+function isColdRecord(value: unknown): boolean {
+  return object(value) && !('text' in value) && Number.isSafeInteger(value.i) && KINDS.some(kind => kind === value.kind)
+    && typeof value.size === 'number' && typeof value.date === 'string';
+}
 /** A summary whose text lives in the tree files; plain fields and one shared getter, like ColdEntry. */
 class ColdSummary implements Summary {
   constructor(readonly l: number, readonly i: number, readonly size: number, private readonly store: Store) {}
@@ -225,7 +230,7 @@ export class Memory {
   /** Opens the memory in `directory` through the store `storeFor` picks, after its load. */
   static async open(directory: string, compress: Compressor, warn: (s: string) => void = console.error, budget = VIEW, jobs = 8, retryMs?: number, defer = 1) {
     const store = storeFor(directory, warn);
-    return new Memory({ directory, store, saved: await store.load() }, compress, warn, budget, jobs, retryMs, defer);
+    return new Memory({ directory, store, saved: await store.load(HOT_TEXTS) }, compress, warn, budget, jobs, retryMs, defer);
   }
   /** A directory alone opens a FileStore there. `jobs`: summaries built at once, and how many unbuilt lines a new message's node
    * waits behind. Chat keeps 8; imports pass the "Import: summaries at once" setting. */
@@ -235,12 +240,12 @@ export class Memory {
     this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), budget * Math.max(1, defer));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
     let saved: Saved;
-    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; saved = store.load(); }
+    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; saved = store.load(HOT_TEXTS); }
     else ({ directory: this.directory, store: this.store, saved } = source);
     const log = saved.entries;
-    const entries = log.every(isEntry) ? log.sort((a, b) => a.i - b.i) : undefined;
+    const entries = log.every(value => isEntry(value) || isColdRecord(value)) ? (log as Entry[]).sort((a, b) => a.i - b.i) : undefined;
     if (!entries || entries.some((entry, i) => entry.i !== i)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.');
-    for (const value of entries) this.root.push({ ...value, size: bytes(`${value.kind}: ${value.text}`) });
+    for (const value of entries) this.root.push(isColdRecord(value) ? new ColdEntry(value, this.store) : { ...value, size: bytes(`${value.kind}: ${value.text}`) });
     this.loadTree(saved.tree);
     for (const node of this.tree.values()) this.queueParent(node);
     for (let i = 0; i < this.root.length; i++) if (!this.node({ l: 0, i })) this.unbuilt.add(i);

@@ -1228,6 +1228,32 @@ test('old summarized messages keep their text on disk, not in RAM, and still zoo
   } finally { await memory.close(); removeDir(dir); }
 });
 
+test('opening a memory never holds every old text at once: summarized old messages come back from the store without text', async () => {
+  // A reload parsed the whole log (~280 MB) into strings before chilling it: RSS jumped to ~1.5 GB and the loop froze for seconds.
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-cold-load-'));
+  const total = HOT_TEXTS + 40, text = (i: number) => `Original ${i}: memória ${'x'.repeat(i % 7)}`;
+  const line = (value: object) => `${JSON.stringify(value)}\n`, date = '2026-10-09T12:00:00.000Z';
+  mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
+  writeFileSync(join(dir, 'main', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ i, kind: 'user', text: text(i), size: 0, date })).join(''));
+  // Message 3 has no summary yet: it must keep its text, since its summary still has to be built from it.
+  writeFileSync(join(dir, 'tree', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => i === 3 ? '' : line({ l: 0, i, text: `user: ${text(i)}`, size: 0 })).join(''));
+  try {
+    const saved = new FileStore(dir).load(HOT_TEXTS);
+    const entry = (i: number) => saved.entries[i] as { text?: string; size?: number };
+    assert.equal('text' in entry(0), false, 'an old summarized message is not parsed into RAM text');
+    assert.equal(entry(0).size, bytes(`user: ${text(0)}`));
+    assert.equal(entry(3).text, text(3));
+    assert.equal(entry(total - HOT_TEXTS).text, text(total - HOT_TEXTS));
+    assert.equal((new FileStore(dir).load().entries[0] as { text?: string }).text, text(0), 'a plain load still returns every text');
+    const memory = new Memory(dir, async input => input.source.slice(0, 60), () => {}, 4000);
+    try {
+      assert.equal(memory.root[0].text, text(0));
+      assert.equal(memory.root[0].size, bytes(`user: ${text(0)}`));
+      assert.equal(memory.zoom(0, 1), `0+1|user: ${text(0)}`);
+    } finally { await memory.close(); }
+  } finally { removeDir(dir); }
+});
+
 test('old summaries stay on disk, not in RAM, and still read whole, revised ones as revised', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-cold-tree-'));
   const total = HOT_TEXTS + 40, text = (i: number) => `Resumo ${i}: memória ção`;
