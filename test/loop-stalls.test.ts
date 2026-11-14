@@ -85,3 +85,15 @@ test('spanned names a stall inside one step, sync or async, and ends the span wh
   c.advance(1100); watch.tick();
   assert.deepEqual(watch.stalls().map(s => s.during), [['open:usage'], ['open:memory'], undefined]);
 });
+
+test('a stall that ran several steps back to back says how long each one held the loop, so the heaviest step is named', () => {
+  const c = clock(), watch = createStallWatch(c.now);
+  watch.tick();
+  const usage = watch.begin('open:usage'); c.advance(300); usage();
+  const memory = watch.begin('open:memory'); c.advance(2500); memory();
+  const tiny = watch.begin('open:inbox'); tiny();
+  c.advance(100); watch.tick();
+  const stall = watch.stalls()[0];
+  assert.deepEqual(stall.during, ['open:usage', 'open:memory', 'open:inbox']);
+  assert.deepEqual(stall.spanMs, { 'open:usage': 300, 'open:memory': 2500 }, 'steps under 10 ms are left out');
+});

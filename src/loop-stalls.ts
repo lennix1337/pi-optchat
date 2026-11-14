@@ -6,7 +6,9 @@ export interface StallCpu { topSelf: CpuFrame[]; topStacks: CpuStack[]; samples:
 /** One event-loop stall: when it ended, how long the loop was blocked past its tick, and how much of that a garbage collection explains. */
 export interface Stall { at: string; blockedMs: number; gcMs: number; gcKind: string | null; startMs: number; endMs: number; cpu?: StallCpu;
   /** Names (tool:<name>) of the spans in flight or finished inside the stall window; absent when none, i.e. the block ran outside any tool. */
-  during?: string[] }
+  during?: string[];
+  /** Milliseconds each span spent inside the stall window (spans under 10 ms left out), so a stall over several steps names the heaviest. */
+  spanMs?: Record<string, number> }
 interface Gc { start: number; end: number; kind: number }
 interface Span { name: string; start: number; end?: number }
 
@@ -36,8 +38,15 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
         gcMs: Math.round(overlapping.reduce((sum, gc) => sum + gc.end - gc.start, 0)), gcKind: worst ? KINDS[worst.kind] ?? String(worst.kind) : null } as Stall;
       // Monotonic bounds stay non-enumerable so existing deepEqual assertions and heap_report JSON keep their exact shape.
       Object.defineProperties(stall, { startMs: { value: last }, endMs: { value: t } });
-      const during = [...new Set(spans.filter(sp => sp.start < t && (sp.end === undefined || sp.end > last)).map(sp => sp.name))];
+      const inside = spans.filter(sp => sp.start < t && (sp.end === undefined || sp.end > last));
+      const during = [...new Set(inside.map(sp => sp.name))];
       if (during.length) stall.during = during;
+      const spanMs: Record<string, number> = {};
+      for (const sp of inside) {
+        const ms = Math.round(Math.min(sp.end ?? t, t) - Math.max(sp.start, last));
+        if (ms >= 10) spanMs[sp.name] = (spanMs[sp.name] ?? 0) + ms;
+      }
+      if (Object.keys(spanMs).length) stall.spanMs = spanMs;
       stalls.push(stall);
       if (stalls.length > KEEP) stalls.shift();
     }
