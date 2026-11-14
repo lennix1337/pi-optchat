@@ -3,6 +3,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { estimatedContextTokens } from './run-context.ts';
+import { stallWatch } from './loop-stalls.ts';
 
 export type Stage = 'context' | 'projection' | 'tool' | 'provider_headers' | 'first_content' | 'response' | 'persistence' | 'settle' | 'child_open' | 'compaction'
   // Pi's own time around a request, outside OptChat's hooks: from turn start (or the last tool's end) to the context hook, and from the last message to turn end.
@@ -99,7 +100,7 @@ export class PerformanceMetrics {
 /** Real hook boundaries, not provider inference time or end-to-end speed claims. */
 export function registerPerformance(pi: ExtensionAPI, metrics: () => PerformanceMetrics | undefined,
   onLatency?: (messageTimestamp: number, latency: { firstMs?: number; responseMs: number }) => void) {
-  const tools = new Map<string, { name: string; start: number }>();
+  const tools = new Map<string, { name: string; start: number; end: () => void }>();
   let request: number | undefined, first = false, firstMs: number | undefined;
   // Pi builds the request's messages (projection, structuredClone) between these two marks, and persists and previews the turn between the other two.
   let beforeRequest: number | undefined, lastMessage: number | undefined;
@@ -112,9 +113,10 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
     if (lastMessage !== undefined) metrics()?.record('pi_boundary', performance.now() - lastMessage);
     lastMessage = undefined;
   });
-  pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now() }); });
+  pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now(), end: stallWatch().begin(`tool:${event.toolName ?? 'unknown'}`) }); });
   pi.on('tool_execution_end', event => {
     const started = tools.get(event.toolCallId); tools.delete(event.toolCallId);
+    started?.end();
     if (started) metrics()?.recordTool(started.name, performance.now() - started.start, event.isError === true);
     beforeRequest = performance.now();
   });
