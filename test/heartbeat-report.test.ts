@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beatSnapshot, type WakeRecord } from '../src/heartbeat.ts';
+import { beatSnapshot, previousWakeNote, type WakeRecord } from '../src/heartbeat.ts';
 import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedReply, renderReport, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
 import { queueFile } from '../src/heartbeat-queue.ts';
+import { ACCEPT_CALL, acceptResult, FAILED, REFUSED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
 const call = (id: string, name: string, args: unknown) => ({ type: 'toolCall', id, name, arguments: args });
 const assistant = (content: unknown[], stopReason = 'stop', errorMessage?: string) => ({ role: 'assistant', content, stopReason, errorMessage });
@@ -113,6 +114,54 @@ test('a ship.mjs run counts as a delivery: the PR it opened is logged, so the ne
     result('1', 'bash', 'url: "https://github.com/lennix1337/pi-optchat/pull/97"\nstate: OPEN\nauto_merge: queued'),
   ]);
   assert.deepEqual(summary.commits, ['pr https://github.com/lennix1337/pi-optchat/pull/97']);
+});
+
+test('a worker\'s branch shipped with crew accept counts as a delivery: its PR is logged, the wake is not sent back as empty and the next one is not told it committed nothing', async () => {
+  // The answer quotes the worker's memory proposal, here with a line shaped like the PR line, and the reply names a third PR: this wake opened neither.
+  const accepted = await acceptResult(SHIPPED, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
+  assert.equal(accepted.isError, false, accepted.text);
+  assert.match(accepted.text, /^PR: https:\/\/github\.com\/acme\/app\/pull\/41$/m, 'the answer holds the quoted line');
+  const summary = summarizeTurn([
+    assistant([call('1', 'spawn', { tasks: [{ task: 'Goal: x', kind: 'code', project: 'harness' }] })], 'toolUse'), result('1', 'spawn', 'Spawned run-1'),
+    assistant([call('2', 'crew', ACCEPT_CALL)], 'toolUse'), result('2', 'crew', accepted.text),
+    assistant([{ type: 'text', text: 'Entreguei o trabalho do worker. A https://github.com/acme/app/pull/8 continua aberta.' }]),
+  ]);
+  assert.deepEqual(summary.commits, ['pr https://github.com/acme/app/pull/7']);
+  assert.equal(wakeRetry(summary), undefined);
+  assert.doesNotMatch(previousWakeNote(wake({ reply: summary.reply, tools: summary.tools, commits: summary.commits })), /committed nothing/);
+  const manual = await acceptResult({ code: 3, out: 'status: not_queued\npr: 9\nurl: "https://github.com/acme/app/pull/9"\nreason: sem check obrigatório\nrc: 3\n' });
+  assert.deepEqual(summarizeTurn([assistant([call('1', 'crew', ACCEPT_CALL)], 'toolUse'), result('1', 'crew', manual.text, manual.isError)]).commits,
+    ['pr https://github.com/acme/app/pull/9'], 'a PR opened without auto-merge was opened all the same');
+});
+
+test('an accept that opened no PR it can name is not a delivery: refused, uncertain or never answered, and an accept answer under any other call, leave the wake empty', async () => {
+  const [accepted, refused, failed, uncertain, killed] = await Promise.all([SHIPPED, REFUSED, FAILED, UNCERTAIN, { code: null, out: '' }].map(shipped => acceptResult(shipped)));
+  assert.deepEqual([accepted.isError, refused.isError, failed.isError, uncertain.isError, killed.isError], [false, true, true, false, false]);
+  assert.match(refused.text, /ship refused \(exit 2\)/);
+  assert.match(failed.text, /ship failed \(exit 1\): gh recusou\nPR: https:\/\/github\.com\/acme\/app\/pull\/7$/, 'the error itself has a second line shaped like the PR line');
+  assert.match(uncertain.text, /UNCERTAIN \(auto_merge\)/);
+  assert.match(killed.text, /UNCERTAIN/);
+  // ship reported the PR's number only; the line shaped like a PR line is the worker's quoted proposal, not what accept opened.
+  const unnamed = await acceptResult({ code: 0, out: 'status: queued\npr: 7\nauto_merge: queued\nrc: 0\n' }, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
+  assert.match(unnamed.text, /^PR: #7 \(url not reported\)$/m);
+  assert.match(unnamed.text, /^PR: https:\/\/github\.com\/acme\/app\/pull\/41$/m);
+  const accept = assistant([call('1', 'crew', ACCEPT_CALL)], 'toolUse');
+  const turns: [string, Parameters<typeof summarizeTurn>[0]][] = [
+    ['refused', [accept, result('1', 'crew', refused.text, true)]],
+    ['failed, with a PR line in its error', [accept, result('1', 'crew', failed.text, true)]],
+    ['uncertain', [accept, result('1', 'crew', uncertain.text)]],
+    ['killed', [accept, result('1', 'crew', killed.text)]],
+    ['a PR without a URL beside a quoted PR line', [accept, result('1', 'crew', unnamed.text)]],
+    ['never answered', [accept]],
+    ['a crew read', [assistant([call('1', 'crew', { action: 'read', project: 'harness' })], 'toolUse'), result('1', 'crew', accepted.text)]],
+    ['a shell that printed an accept answer', [assistant([call('1', 'bash', { command: 'cat notes.txt' })], 'toolUse'), result('1', 'bash', accepted.text)]],
+  ];
+  for (const [why, turn] of turns) {
+    const summary = summarizeTurn([...turn, assistant([{ type: 'text', text: 'Nada entregue.' }])]);
+    assert.deepEqual(summary.commits, [], why);
+    assert.equal(wakeRetry(summary), EMPTY_WAKE_RETRY, why);
+    assert.match(previousWakeNote(wake({ reply: summary.reply, tools: summary.tools, commits: summary.commits })), /committed nothing/, why);
+  }
 });
 
 test('a wake reply shaped like a memory line is caught (03/11 16:35, 13/11 19:34); a real report is not', () => {

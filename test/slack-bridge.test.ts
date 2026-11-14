@@ -12,6 +12,7 @@ import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 import { wakeEffects } from '../src/wake-log.ts';
+import { ACCEPT_CALL, acceptResult, FAILED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
 /** `channels`: the service's configured Slack channels besides the projects; without `wakes` a wake falls back to its repo channel. */
 /** Lets the Home publication chain (one request at a time, the newest view last) run to its end. */
@@ -227,6 +228,36 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
     'Genexus18MCP: apagou a branch remota fix/888 (falhou)',
     'compromisso c_a0ae29 fechado',
   ]);
+});
+
+test('a worker\'s branch shipped with crew accept is an effect of the wake: #wakes names its PR instead of "sem entrega"; a failed or uncertain accept is none', async () => {
+  const accept = (id: string) => ({ role: 'assistant', content: [{ type: 'toolCall', id, name: 'crew', arguments: ACCEPT_CALL }] });
+  const logged = (toolCallId: string, answer: { text: string; isError: boolean }) => ({ role: 'toolResult', toolCallId, isError: answer.isError, content: [{ type: 'text', text: answer.text }] });
+  // The answer quotes the worker's memory proposal, here with a line shaped like the PR line: accept did not open that one.
+  const accepted = await acceptResult(SHIPPED, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
+  const failed = await acceptResult(FAILED), uncertain = await acceptResult(UNCERTAIN);
+  assert.deepEqual([accepted.isError, failed.isError, uncertain.isError], [false, true, false]);
+  assert.match(failed.text, /ship failed \(exit 1\): gh recusou\nPR: https:\/\/github\.com\/acme\/app\/pull\/7$/, 'the error itself has a second line shaped like the PR line');
+  assert.match(uncertain.text, /UNCERTAIN/);
+  const effect = 'app: abriu <https://github.com/acme/app/pull/7|PR #7> (crew accept)';
+  assert.deepEqual(wakeEffects([accept('a'), logged('a', accepted)]), [effect]);
+  assert.deepEqual(wakeEffects([accept('f'), logged('f', failed), accept('u'), logged('u', uncertain), accept('n')]), []);
+  assert.deepEqual(wakeEffects([{ role: 'assistant', content: [{ type: 'toolCall', id: 'v', name: 'crew', arguments: { action: 'read', project: 'harness' } }] }, logged('v', accepted)]), [], 'an accept answer under another crew action');
+
+  const f = fixture([], {}, ['wakes']);
+  const posts = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string; channel?: string });
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded([accept('a'), logged('a', accepted), ...replies('Entreguei o trabalho do worker.')] as unknown as AgentMessage[]);
+    assert.equal(posts().at(-1)!.channel, 'wakes');
+    assert.doesNotMatch(posts().at(-1)!.text, /sem entrega/);
+    assert.ok(posts().at(-1)!.text.endsWith(`\n*Efeitos:*\n• ${effect}\n*Relato:* Entreguei o trabalho do worker.`), posts().at(-1)!.text);
+
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded([accept('f'), logged('f', failed), ...replies('O aceite falhou.')] as unknown as AgentMessage[]);
+    assert.equal(posts().length, 2);
+    assert.match(posts().at(-1)!.text, / · sem entrega\n\*Relato:\* O aceite falhou\.$/);
+  } finally { f.close(); }
 });
 
 test('wakeEffects ignores commands quoted in scripts, searches, heredocs and message bodies', () => {

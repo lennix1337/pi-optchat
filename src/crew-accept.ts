@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prLine } from './accepted-pr.ts';
 import { closed, readCommitments, updateCommitment } from './commitments.ts';
 import { repoRoot, type Proposal } from './crew.ts';
 import type { RunInfo } from './runs.ts';
@@ -194,7 +195,7 @@ export async function acceptRun(deps: AcceptDeps, input: { runId: string; title:
   const proposals = deps.crew.pending().filter(p => p.runId === runId);
   return [
     `${head}: ${status}`,
-    `PR: ${url ?? `#${number ?? '?'} (url not reported)`}`,
+    prLine(url ?? `#${number ?? '?'} (url not reported)`),
     `auto-merge: ${fields.auto_merge ?? status}${fields.reason ? ` (${fields.reason})` : ''}${fields.checks ? `; checks ${fields.checks}` : ''}`,
     ...status === 'not_queued' && fields.next ? [`next: ${fields.next}`] : [],
     `commitments: ${linked}`,

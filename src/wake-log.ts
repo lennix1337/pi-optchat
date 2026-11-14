@@ -1,3 +1,4 @@
+import { acceptedPr } from './accepted-pr.ts';
 import { commandWords, segments } from './effect-classifier.ts';
 
 /**
@@ -76,6 +77,11 @@ export function wakeEffects(messages: readonly Message[]): string[] {
       else if (call.name === 'commitments' && args.action === 'add') lines.push(`compromisso aberto: ${clip(String(args.text ?? ''), 80)}${failed}`);
       else if (call.name === 'commitments' && args.action === 'update' && args.status === 'done') lines.push(`compromisso ${String(args.id ?? '')} fechado${failed}`);
       else if (call.name === 'self_reload') lines.push(`pediu reload do Pi${failed}`);
+      else if (call.name === 'crew' && args.action === 'accept') {
+        // An accept ships a worker's branch itself, with no shell call: the PR it opened is the effect. A refused or uncertain one opened none it can name.
+        const pr = result && !result.error ? acceptedPr(result.text) : undefined;
+        if (pr) lines.push(`${pr.repo}: abriu <${pr.url}|PR #${pr.number}> (crew accept)`);
+      }
     }
   }
   const files = [...edited].map(([repo, names]) => `${repo}: editou ${[...names].join(', ')}`);

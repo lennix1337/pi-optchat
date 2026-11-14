@@ -1,9 +1,10 @@
+import { acceptedPr } from './accepted-pr.ts';
 import { readHeartbeat, type WakeRecord, type WakeSummary } from './heartbeat.ts';
 import { addQueueItem, renderQueue } from './heartbeat-queue.ts';
 
 /** The parts of Pi's messages a woken turn is read from. */
 interface TurnMessage { role: string; content?: unknown; toolCallId?: string; isError?: boolean; stopReason?: string; errorMessage?: string }
-interface Block { type?: string; text?: string; id?: string; name?: string; arguments?: { command?: unknown } }
+interface Block { type?: string; text?: string; id?: string; name?: string; arguments?: { command?: unknown; action?: unknown } }
 
 const blocks = (content: unknown): Block[] => Array.isArray(content) ? content.filter((b): b is Block => !!b && typeof b === 'object') : [];
 const textOf = (content: unknown) => typeof content === 'string' ? content : blocks(content).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n');
@@ -25,20 +26,27 @@ function gitLines(output: string): string[] {
   return found;
 }
 
-/** The last reply, the number of tool calls and the commits and pushes (from successful bash/powershell git commands) of one turn. */
+/** The last reply, the number of tool calls and what one turn delivered: the commits and pushes of its successful bash/powershell git commands, and the PR each `crew` accept opened. */
 export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
   let tools = 0;
-  const gitCalls = new Map<string, string>(), commits: string[] = [];
+  const gitCalls = new Map<string, string>(), accepts = new Set<string>(), commits: string[] = [];
+  const log = (line: string) => { if (!commits.includes(line) && commits.length < MAX_COMMITS) commits.push(line); };
   for (const message of messages) {
     if (message.role === 'assistant') for (const block of blocks(message.content)) {
       if (block.type !== 'toolCall') continue;
       tools++;
       const command = block.arguments?.command;
       if (block.id && ['bash', 'powershell'].includes(block.name ?? '') && typeof command === 'string' && gitEffect.test(command)) gitCalls.set(block.id, command.slice(command.search(gitEffect)));
+      // `crew` accept ships a worker's branch itself, with no shell call: in manager mode it is how a wake delivers, and such wakes were logged as "committed nothing".
+      if (block.id && block.name === 'crew' && block.arguments?.action === 'accept') accepts.add(block.id);
     } else if (message.role === 'toolResult' && message.toolCallId && gitCalls.has(message.toolCallId) && !message.isError) {
       // `git commit -q`, `git push -q` and `gh pr merge` print no ref line: the successful command itself is the record.
       const lines = gitLines(textOf(message.content)), command = gitCalls.get(message.toolCallId) ?? '';
-      for (const line of lines.length ? lines : [`ran ${oneLine(command).slice(0, 80)}`]) if (!commits.includes(line) && commits.length < MAX_COMMITS) commits.push(line);
+      for (const line of lines.length ? lines : [`ran ${oneLine(command).slice(0, 80)}`]) log(line);
+    } else if (message.role === 'toolResult' && message.toolCallId && accepts.has(message.toolCallId) && !message.isError) {
+      // Unlike a git command, an accept that answered is no record by itself: an uncertain ship answers too, and names no PR.
+      const pr = acceptedPr(textOf(message.content));
+      if (pr) log(`pr ${pr.url}`);
     }
   }
   const last = messages.findLast(m => m.role === 'assistant');
