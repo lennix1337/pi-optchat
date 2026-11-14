@@ -190,9 +190,9 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   /** Longest a pending call is held back from `onPending` while the run goes on. */
   holdMs = 3 * 60_000 } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
-  const guard = (event: { toolName: string; input: unknown }, cwd: string) => {
+  const guard = async (event: { toolName: string; input: unknown }, cwd: string) => {
     if (event.toolName !== 'bash' || !event.input || typeof event.input !== 'object' || !('command' in event.input) || typeof event.input.command !== 'string') return;
-    const reason = worktreeRemovalRefusal(event.input.command, cwd);
+    const reason = await worktreeRemovalRefusal(event.input.command, cwd);
     if (reason) return { block: true as const, reason };
   };
   if (!(enabled ?? (env === '1' || env === 'risk'))) {
@@ -215,8 +215,8 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     display.show(ctx);
     return RESULTS[result];
   });
-  pi.on('tool_call', (event, ctx) => {
-    const blocked = guard(event, ctx.cwd);
+  pi.on('tool_call', async (event, ctx) => {
+    const blocked = await guard(event, ctx.cwd);
     if (blocked) return blocked;
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };
