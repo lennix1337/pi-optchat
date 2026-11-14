@@ -34,7 +34,8 @@ export interface Lease {
  * in a profile (runs, recovery journals, the active-memory pointer and imports, usage, settings, AGENTS.md) stays on the machine.
  * Memory loads once when it opens, then works in RAM and issues every write in order. */
 export interface Store {
-  load(): Maybe<Saved>;
+  /** With `hot`, a store that can read texts back (`reader`) may return older summarized messages without text, with their `size`. */
+  load(hot?: number): Maybe<Saved>;
   /** Appends a message. Throws, writing nothing, if someone else appended since this store loaded. */
   append(entry: Entry): Write;
   /** Appends a summary node. */
@@ -150,9 +151,8 @@ export function appendJson(file: string, value: unknown, size?: number) {
 }
 /** Where a record's line lies in its file: bytes `offset` to `offset + length`, newline excluded. */
 type Located = (value: unknown, file: string, offset: number, length: number) => void;
-function records(dir: string, warn: (s: string) => void, located?: Located): unknown[] {
-  if (!existsSync(dir)) return [];
-  const result: unknown[] = [];
+function records(dir: string, warn: (s: string) => void, located: Located) {
+  if (!existsSync(dir)) return;
   for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort()) {
     const file = join(dir, name), data = readFileSync(file);
     let from = 0, index = 0;
@@ -164,11 +164,10 @@ function records(dir: string, warn: (s: string) => void, located?: Located): unk
       let value: unknown;
       try { value = JSON.parse(line); }
       catch { warn(`Skipped damaged JSON at ${file}:${index}`); continue; }
-      result.push(value); located?.(value, file, from, newline - from);
+      located(value, file, from, newline - from);
     }
     if (data.toString('utf8', from).trim()) warn(`Skipped damaged JSON at ${file}:${index + 1}`);
   }
-  return result;
 }
 /** The text of message `i` in the line at `offset`, refusing a line that no longer holds it. */
 function lineText(data: Buffer, offset: number, length: number, i: number, file: string) {
@@ -193,23 +192,39 @@ export class FileStore implements Store {
   private readonly nodeFiles: string[] = [];
   private cached?: { file: string; data: Buffer; timer: ReturnType<typeof setTimeout> };
   constructor(readonly directory: string, private readonly warn: (s: string) => void = console.error) {}
-  load(): Saved {
+  /** Every record as saved, except that with `hot` set only the newest `hot` messages keep their text: an older one whose level-0
+   * summary exists comes back as `{ ...fields, size }` without it, read later through `reader`. Parsing a long log into texts first
+   * and dropping them after held them all at once (~280 MB of log: ~1 GB of RSS and seconds of frozen loop on each reload). */
+  load(hot = Infinity): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
     this.lines.clear(); this.nodes.clear(); this.nodeFiles.length = 0;
-    const main = join(this.directory, 'main'), entries = records(main, this.warn, (value, file, offset, length) => {
+    // The tree loads first, so the log knows which messages are summarized while it parses.
+    const tree: unknown[] = [];
+    records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
+      tree.push(value);
+      const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
+      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
+    });
+    const main = join(this.directory, 'main'), entries: unknown[] = [];
+    records(main, this.warn, (value, file, offset, length) => {
       const i = (value as { i?: unknown } | null)?.i;
       if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+      const old = entries.push(value) - 1 - hot;
+      if (old >= 0) entries[old] = this.cold(entries[old]);
     });
     for (const name of readdirSync(main).filter(n => n.endsWith('.jsonl'))) this.lastSeenBytes.set(join(main, name), statSync(join(main, name)).size);
     const view = join(this.directory, 'view.json');
     // An unreadable view is rebuilt, as a damaged one is.
     let saved: string | undefined;
     if (existsSync(view)) try { saved = readFileSync(view, 'utf8'); } catch { saved = ''; }
-    const tree = records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
-      const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
-      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
-    });
     return { entries, tree, view: saved };
+  }
+  /** A summarized message without its text, with the `size` Memory gives it (the bytes of `kind: text`); anything else as is. */
+  private cold(value: unknown) {
+    const record = value as { i?: unknown; kind?: unknown; text?: unknown } | null;
+    if (!record || typeof record.kind !== 'string' || typeof record.text !== 'string' || !Number.isSafeInteger(record.i) || !this.hasNode(0, record.i as number)) return value;
+    const { text, ...rest } = record;
+    return { ...rest, size: Buffer.byteLength(`${record.kind}: ${text}`) };
   }
   append(entry: Entry): undefined {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
