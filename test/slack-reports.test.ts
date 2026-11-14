@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { projectOf, projectOfRun } from '../src/projects.ts';
-import { composeSummary, DailySummary, logSent, prChange, PrWatch, readDay } from '../src/slack-reports.ts';
+import { BackgroundFailures, composeSummary, DailySummary, logSent, prChange, PrWatch, readDay } from '../src/slack-reports.ts';
 
 const temp = () => mkdtempSync(join(tmpdir(), 'slack-reports-'));
 type Posted = { text: string; channel: string | null; topic?: string };
@@ -158,4 +158,21 @@ test('the two PR searches of a pass run at the same time, not one after the othe
     assert.equal(peak, 2, 'both GitHub searches were in flight together');
     assert.deepEqual(watch.open(dir).map(p => p.url).sort(), [1, 2].map(n => `https://github.com/lennix1337/pi-optchat/pull/${n}`));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a failing background report reaches the agent once, hidden, and never prints over the terminal UI', async () => {
+  const dir = temp(), printed: unknown[] = [], original = console.error;
+  console.error = (...args: unknown[]) => { printed.push(args); };
+  try {
+    const failures = new BackgroundFailures(() => dir);
+    const fail = failures.pass('PR watch', async () => { throw new Error('Command failed: gh api graphql\nPost "https://api.github.com/graphql": dial tcp 4.228.31.149:443: connectex: A connection attempt failed'); });
+    fail(); fail();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(printed, [], 'nothing is written to the terminal');
+    const note = failures.take();
+    assert.ok(note?.message.content.includes('PR watch') && note.message.content.includes('connectex'), 'the agent learns which job failed and why');
+    assert.equal(note?.message.display, false, 'the operator does not see it');
+    assert.equal(failures.take(), undefined, 'one notice per job per session');
+    assert.equal(readFileSync(join(dir, 'exec-log.jsonl'), 'utf8').trim().split('\n').length, 2, 'every failure still goes to the exec log');
+  } finally { console.error = original; rmSync(dir, { recursive: true, force: true }); }
 });
