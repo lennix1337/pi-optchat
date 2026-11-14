@@ -14,8 +14,8 @@ const TICK_MS = 100, STALL_MS = 200, KEEP = 20;
 const KINDS: Record<number, string> = { 1: 'scavenge', 2: 'mark-sweep-compact', 4: 'incremental', 8: 'weak-callbacks' };
 
 /** A watchdog that wakes every TICK_MS: a late wake-up is a stall. `now` and `wall` are injectable so a test needs no real blocking. */
-export function createStallWatch(now: () => number = () => performance.now(), wall: () => number = Date.now) {
-  const stalls: Stall[] = [], gcs: Gc[] = [], spans: Span[] = [];
+export function createStallWatch(now: () => number = () => performance.now(), wall: () => number = Date.now, previous: Stall[] = []) {
+  const stalls: Stall[] = previous.slice(-KEEP), gcs: Gc[] = [], spans: Span[] = [];
   let last = now();
   const noteGc = (start: number, duration: number, kind: number) => {
     gcs.push({ start, end: start + duration, kind });
@@ -47,16 +47,26 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
   return { tick, noteGc, begin, stalls: () => stalls.slice() };
 }
 
-/** Stalls survive an extension reload the way the event-loop histogram does: one watchdog per process. */
+type Watch = ReturnType<typeof createStallWatch>;
+interface Held { watch: Watch; build: typeof createStallWatch; stop: () => void }
+
+/** Stalls survive an extension reload the way the event-loop histogram does: one watchdog per process.
+ * A reload re-evaluates this module, so a watchdog built by older code (another `build`, or the bare watch
+ * stored before `build` existed) is replaced by one with the current API, keeping its stalls. */
 const SHARED = Symbol.for('pi-optchat.loop-stalls');
-export function stallWatch() {
-  const slot = globalThis as Record<symbol, ReturnType<typeof createStallWatch> | undefined>;
-  if (slot[SHARED]) return slot[SHARED]!;
-  const watch = slot[SHARED] = createStallWatch();
-  setInterval(watch.tick, TICK_MS).unref();
+export function stallWatch(): Watch {
+  const slot = globalThis as Record<symbol, unknown>;
+  const held = slot[SHARED] as Partial<Held> & Partial<Watch> | undefined;
+  if (held?.build === createStallWatch) return held.watch!;
+  const old = held?.build ? held.watch : held as Watch | undefined;
+  held?.stop?.();
+  const watch = createStallWatch(undefined, undefined, old?.stalls?.() ?? []);
+  const timer = setInterval(watch.tick, TICK_MS); timer.unref();
+  let observer: PerformanceObserver | undefined;
   try {
-    new PerformanceObserver(list => { for (const e of list.getEntries()) watch.noteGc(e.startTime, e.duration, (e as unknown as { detail?: { kind?: number } }).detail?.kind ?? 0); })
-      .observe({ entryTypes: ['gc'] });
+    observer = new PerformanceObserver(list => { for (const e of list.getEntries()) watch.noteGc(e.startTime, e.duration, (e as unknown as { detail?: { kind?: number } }).detail?.kind ?? 0); });
+    observer.observe({ entryTypes: ['gc'] });
   } catch { /* the stall list still works without GC attribution */ }
+  slot[SHARED] = { watch, build: createStallWatch, stop: () => { clearInterval(timer); observer?.disconnect(); } } satisfies Held;
   return watch;
 }

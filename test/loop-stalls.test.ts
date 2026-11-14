@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStallWatch } from '../src/loop-stalls.ts';
+import { createStallWatch, stallWatch } from '../src/loop-stalls.ts';
 import { heapReport } from '../src/heap-report.ts';
 
 const clock = () => { let t = 1000; return { now: () => t, advance: (ms: number) => { t += ms; } }; };
@@ -47,4 +47,16 @@ test('a stall names the tools that were running (or ended) inside its window; no
   bash();
   c.advance(1100); watch.tick();
   assert.equal(watch.stalls()[1].during, undefined, 'a stall with no tool in flight carries no tool names');
+});
+
+test('a watchdog left in the process by an older build (before an extension reload) is replaced, keeping its stalls', () => {
+  const key = Symbol.for('pi-optchat.loop-stalls'), slot = globalThis as Record<symbol, unknown>, saved = slot[key];
+  const old = { at: '2026-11-14T09:41:16.098Z', blockedMs: 3173, gcMs: 7, gcKind: 'scavenge' };
+  slot[key] = { tick() {}, noteGc() {}, stalls: () => [old] }; // the shape before begin() existed
+  try {
+    const watch = stallWatch();
+    assert.equal(typeof watch.begin, 'function');
+    assert.deepEqual(watch.stalls(), [old]);
+    assert.equal(stallWatch(), watch);
+  } finally { (slot[key] as { stop?: () => void } | undefined)?.stop?.(); slot[key] = saved; }
 });
