@@ -695,10 +695,14 @@ export default function optchat(host: ExtensionAPI) {
         send: items => { if (active?.memory === memory && !stopping) dispatchReports(items.filter(item => reports.includes(item))); },
         setTimer: (run, ms) => setTimeout(run, Math.min(ms, 2 ** 31 - 1)).unref(),
         clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) });
-      const loggedReports = new Set(memory.root.map(e => e.receipt));
-      // Reports a crash held back with their unfinished siblings are delivered now, as they are.
-      reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count, awaitingProcessing: s.awaitingProcessing })
-        .filter(r => r.awaitingProcessing || !loggedReports.has(reportReceipt(r.text)));
+      const mapped = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count, awaitingProcessing: s.awaitingProcessing });
+      if (mapped.some(r => !r.awaitingProcessing)) {
+        const loggedReports = new Set<string>();
+        for (const e of memory.root) if (e.receipt) loggedReports.add(e.receipt);
+        reports = mapped.filter(r => r.awaitingProcessing || !loggedReports.has(reportReceipt(r.text)));
+      } else {
+        reports = mapped;
+      }
       atomicWrite(pending, JSON.stringify(reports));
       rememberProfile(name);
       const sync = new Sync({ profile: name, dir, memory, statusFile: join(dataHome(), 'status.md'), model: () => main && `${main.provider}/${main.model}`,

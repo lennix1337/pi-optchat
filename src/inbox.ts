@@ -49,8 +49,10 @@ export class Inbox {
     this.items = this.items.filter(i => i.id !== id); this.claimed.delete(id); this.save();
   }
   recover(memory: Memory) {
+    if (!this.items.length) { this.claimed.clear(); this.queued.clear(); return 0; }
     let count = 0;
-    const receipts = new Set(memory.root.map(e => e.receipt));
+    const receipts = new Set<string>();
+    for (const e of memory.root) if (e.receipt) receipts.add(e.receipt);
     for (const item of this.items) {
       if (!receipts.has(item.id)) { memory.append('user', item.text, item.date, item.id); count++; }
     }
