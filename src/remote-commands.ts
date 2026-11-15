@@ -1,8 +1,7 @@
 import { brasiliaDayTime } from './pc-health.ts';
-import { accounts } from './quota-health.ts';
+import { accounts, readQuotaState } from './quota-health.ts';
 import { accountLines } from './quota-format.ts';
 import type { Economy } from './quota-economy.ts';
-import { readJsonOr } from './store.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
 
 /**
@@ -164,4 +163,4 @@ export function homeStatus(state: CommandState): string {
   return [`*Modelo:* ${modelName(state.model())}`, '*Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
 }
 
-export function failoverReader(file: string): () => unknown { return () => readJsonOr<unknown>(file, {}); }
+export function failoverReader(file: string): () => unknown { return () => readQuotaState(file); }

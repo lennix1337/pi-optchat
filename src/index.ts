@@ -25,7 +25,7 @@ import { Type } from 'typebox';
 import { DEFER, Memory } from './memory.ts';
 import { Focus } from './focus.ts';
 import { atomicWrite, readJsonOr, storeFor } from './store.ts';
-import { QUOTA_FILE, quotaPlan, routeBlock } from './quota-health.ts';
+import { QUOTA_FILE, quotaPlan, readQuotaState, routeBlock } from './quota-health.ts';
 import { QuotaOutage } from './quota-hold.ts';
 import { REPORT_GATHER_MS, ReportDispatcher } from './report-dispatch.ts';
 import { packReports } from './report-bundle.ts';
@@ -498,7 +498,7 @@ export default function optchat(host: ExtensionAPI) {
         const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
         const config = own()?.config;
         if (!config) return undefined;
-        const state = readJsonOr<unknown>(QUOTA_FILE, {});
+        const state = readQuotaState();
         return pickWakeRoute(wakeRoutes(config, model, knownProviders(state, blocks), pi.getThinkingLevel()), state, blocks, Date.now(),
           choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
       },
@@ -665,7 +665,7 @@ export default function optchat(host: ExtensionAPI) {
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
           route: kind => routeFor(kind, main, config.workerModels), crew, onRunEnd: run => commitments.runEnded(run),
           escalated: (project, id) => { const item = readCommitments(dir).find(found => found.id === id); if (item) heartbeat?.escalate(project, escalationNote(item, project)); },
-          quotaBlock: (provider, model) => routeBlock(readJsonOr<unknown>(QUOTA_FILE, {}), provider, model, Date.now()),
+          quotaBlock: (provider, model) => routeBlock(readQuotaState(), provider, model, Date.now()),
           onPark: ids => wakeWorkers.release(ids),
           // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.
           peerCopy: text => { if (active?.memory === memory && !idle()) peerCopies.push(text); else memory.append('work', text); },
@@ -690,7 +690,7 @@ export default function optchat(host: ExtensionAPI) {
         until: learned => {
           const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id }), own = active?.config;
           if (!model || !own) return undefined;
-          const state = readJsonOr<unknown>(QUOTA_FILE, {});
+          const state = readQuotaState();
           const routes = wakeRoutes({ ...own, wakeModel: undefined, wakeRouteAcrossFamilies: false }, model, knownProviders(state, learned), pi.getThinkingLevel());
           const decision = pickWakeRoute(routes, state, learned, Date.now(), choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
           return decision?.choice ? undefined : decision?.until;
@@ -729,7 +729,7 @@ export default function optchat(host: ExtensionAPI) {
         // The footer is the status line; the bar below the editor then only shows while an inspector page is selected.
         unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav, ctx.hasUI);
         unmountBoard = mountWaitingBoard(ctx, board, shortcut, boardNav);
-        unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readJsonOr<unknown>(QUOTA_FILE, {}), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}`, events: pi.events, thinking: () => pi.getThinkingLevel() });
+        unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readQuotaState(), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}`, events: pi.events, thinking: () => pi.getThinkingLevel() });
       }
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await spanned('open:windows', () => serveWindows(dir, children, () => inPhase('open'), deliverReport));

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accounts, quotaProbe, quotaRisks, routeBlock, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
+import { accounts, quotaProbe, quotaReadBytes, quotaRisks, readQuotaState, routeBlock, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { defaultMonitors, ProdHealth, readHealth, registerProdHealth } from '../src/prod-health.ts';
 import { DailySummary, localDate } from '../src/slack-reports.ts';
 
@@ -95,4 +95,18 @@ test('a route is blocked by what pi-multi-account cached, with its own freshness
   assert.equal(routeBlock({ exhaustedUntilByModel: { 'p/m': NOW + 2 * HOUR } }, 'p', 'other', NOW), undefined, 'a model cooldown stays on its model');
   assert.equal(routeBlock({ usageByProvider: { p: { primary: window(100, 1) } }, exhaustedUntilByProvider: { p: NOW + 4 * HOUR } }, 'p', 'm', NOW), NOW + 4 * HOUR, 'the latest end wins');
   assert.equal(routeBlock({ usageByProvider: { p: { primary: { usedPercent: 100, resetAt: NOW - 1 } } } }, 'p', 'm', NOW), undefined, 'a window that already reset blocks nothing');
+});
+
+test('readQuotaState caches unchanged quota file and invalidates when size or mtime changes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'quota-cache-'));
+  const file = join(dir, 'provider-failover-state.json');
+  try {
+    writeFileSync(file, JSON.stringify({ usageByProvider: { p: { plan: 'max' } } }));
+    assert.deepEqual(readQuotaState(file), { usageByProvider: { p: { plan: 'max' } } });
+    const before = quotaReadBytes;
+    for (let i = 0; i < 6; i++) assert.deepEqual(readQuotaState(file), { usageByProvider: { p: { plan: 'max' } } });
+    assert.equal(quotaReadBytes - before, 0, 'unchanged quota file must not be re-read');
+    writeFileSync(file, JSON.stringify({ usageByProvider: { p: { plan: 'team' } } }));
+    assert.deepEqual(readQuotaState(file), { usageByProvider: { p: { plan: 'team' } } });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

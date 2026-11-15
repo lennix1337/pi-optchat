@@ -1,14 +1,29 @@
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { brasiliaDayTime } from './pc-health.ts';
 import type { LocalProbe, ProbeResult } from './prod-health.ts';
-import { readJsonOr } from './store.ts';
 import { nonnegative, safeIdentifier } from './diagnostic-metadata.ts';
 
 /** Cached usage only: pi-multi-account owns polling, routing and recovery. Never fetch or switch accounts here. */
 export const QUOTA_FILE = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'provider-failover-state.json');
 export const QUOTA_HEALTH_FILE = 'quota-health.json';
 export const QUOTA_NEAR_PERCENT = 90;
+
+export let quotaReadBytes = 0;
+const quotaCache = new Map<string, { stamp: string; value: unknown }>();
+/** Reads and parses the cached quota file only when its size or mtime changes. */
+export function readQuotaState(file = QUOTA_FILE): unknown {
+  let stamp: string;
+  try { const s = statSync(file); stamp = `${s.size}:${s.mtimeMs}`; } catch { quotaCache.delete(file); return {}; }
+  const hit = quotaCache.get(file);
+  if (hit?.stamp === stamp) return hit.value;
+  let value: unknown = {};
+  try { const raw = readFileSync(file, 'utf8'); quotaReadBytes += Buffer.byteLength(raw); value = JSON.parse(raw); } catch { value = {}; }
+  if (quotaCache.size >= 16) quotaCache.delete(quotaCache.keys().next().value!);
+  quotaCache.set(file, { stamp, value });
+  return value;
+}
 
 interface UsageWindow { usedPercent: number; resetAt: number }
 interface Account { id: string; used?: number; resetAt?: number; blockedUntil?: number }
@@ -26,7 +41,7 @@ function windows(value: unknown, now: number): UsageWindow[] {
 
 /** The plan pi-multi-account cached for a provider ("api-key", "max", "team"...); undefined when unknown. */
 export function quotaPlan(provider: string, file = QUOTA_FILE) {
-  const plan = record(record(record(readJsonOr<unknown>(file, {})).usageByProvider)[provider]).plan;
+  const plan = record(record(record(readQuotaState(file)).usageByProvider)[provider]).plan;
   return typeof plan === 'string' ? plan : undefined;
 }
 
@@ -75,7 +90,7 @@ export function quotaProbe(file = QUOTA_FILE, now: () => number = Date.now): Loc
   return {
     name: 'Cota dos modelos',
     check(): ProbeResult {
-      const all = accounts(readJsonOr<unknown>(file, {}), now());
+      const all = accounts(readQuotaState(file), now());
       if (!all.length) return { ok: true, ms: 0, detail: 'sem medição válida; disponibilidade desconhecida' };
       const detail = `leitura em cache: ${all.map(describe).join('; ')}`;
       if (all.some(a => !a.blockedUntil)) return { ok: true, ms: 0, detail };

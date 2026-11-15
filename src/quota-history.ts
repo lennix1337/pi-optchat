@@ -1,7 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { accounts, QUOTA_FILE } from './quota-health.ts';
-import { readJsonOr } from './store.ts';
+import { accounts, QUOTA_FILE, readQuotaState } from './quota-health.ts';
 import { nonnegative, safeIdentifier } from './diagnostic-metadata.ts';
 
 /**
@@ -102,4 +101,4 @@ export function sampleQuota(dir: string, state: unknown, now: number, file = QUO
 }
 
 /** One sampling pass from the real cache file, for the health round. */
-export const sampleQuotaFromCache = (dir: string, now: number, cache = QUOTA_FILE) => sampleQuota(dir, readJsonOr<unknown>(cache, {}), now);
+export const sampleQuotaFromCache = (dir: string, now: number, cache = QUOTA_FILE) => sampleQuota(dir, readQuotaState(cache), now);
