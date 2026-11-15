@@ -44,7 +44,7 @@ export function correctionsWeek(dir: string, since: number): { count: number; re
   return { count: all.filter(e => e.at >= since).length, ...Number.isFinite(first) ? { recordingSince: first } : {} };
 }
 
-export const CORRECTION_NOTICE = '[OptChat correction] The operator\'s latest message reads as a correction. Before this run ends, turn it into a regression test that fails without the fix, or a rule in CODING_STANDARDS.md or AGENTS.md (automated where a check can), or say in your reply why it does not generalize.';
+export const CORRECTION_NOTICE = '[OptChat correction] The operator\'s latest message reads as a correction. Before this run ends, add a scoped rule to src/correction-rules.json and its runnable detector and tests in src/correction-scan.ts and test/correction-scan.test.ts; also add a regression test for the underlying fix where applicable.';
 
 /** Logs operator corrections and reminds the run that received one, once, on its next tool result. */
 export function registerCorrections(pi: ExtensionAPI, owner: () => { dir: string } | undefined, now: () => number = Date.now) {

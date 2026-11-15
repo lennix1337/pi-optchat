@@ -110,11 +110,13 @@ test('the scoreboard posts once a week to #harness, Monday morning only, saving 
   let now = monday - DAY; // Sunday
   const gitwatch = join(dir, 'gitwatch.json');
   writeFileSync(gitwatch, JSON.stringify({ stats: { since: 1, woke: 4, quiet: 1 } }));
-  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async (text, channel) => { posts.push({ text, channel }); }, { now: () => now, gitwatchFile: gitwatch });
+  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async (text, channel) => { posts.push({ text, channel }); }, { now: () => now, gitwatchFile: gitwatch, scan: async () => { await new Promise(r => setTimeout(r, 5)); return 4; } });
   assert.equal(await board.maybePost(), false, 'not on Sunday');
   now = monday;
-  assert.equal(await board.maybePost(), true);
+  const [first, overlapping] = await Promise.all([board.maybePost(), board.maybePost()]);
+  assert.deepEqual([first, overlapping], [true, false], 'a check during the scan does not post twice');
   assert.equal(await board.maybePost(), false, 'once per week');
+  assert.match(posts[0]!.text, /Regras violadas \(7d\): \*4\* candidatos/);
   assert.equal(posts[0]!.channel, 'harness');
   assert.match(posts[0]!.text, /Placar Jarvis/);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'slack-scoreboard.json'), 'utf8')).routing, { since: 1, woke: 4, quiet: 1 });

@@ -1,0 +1,9 @@
+[
+  {"id":"free-action","quote":"já falei umas 300 vezes, pode mergear, pode reiniciar; sim sempre pode recarregar","date":"02/11, 15/11","scope":"assistant final text","detector":"free-action","precision":"Explicit permission questions naming a free action; context and exceptions are not inferred."},
+  {"id":"ending-offer","quote":"se quiser, é só dizer","date":"AGENTS","scope":"assistant final text","detector":"ending-offer","precision":"Only this ending formula; not all offers."},
+  {"id":"pipe-status","quote":"rc=${PIPESTATUS[0]} instead of rc=$? after a pipe","date":"13/11","scope":"bash tool call","detector":"pipe-status","precision":"Literal pipeline to tail/grep/head and literal rc=$?."},
+  {"id":"weaken-test","quote":"não mascarar o erro; timing tests never loosened","date":"14/11","scope":"test edit tool call","detector":"weaken-test","precision":"Edit replacements adding skip/retry or increasing named timeout/budget numeric values only."},
+  {"id":"memory-format","quote":"Memory formats stay in memory","date":"AGENTS","scope":"assistant final text","detector":"memory-format","precision":"Literal markers only."},
+  {"id":"utc-time","quote":"Times in Brasília","date":"AGENTS","scope":"assistant final text","detector":"utc-time","precision":"Explicit Z suffix only; quoted examples may match."},
+  {"id":"force-action","quote":"force-push only on request","date":"AGENTS","scope":"bash tool call","detector":"force-action","precision":"Detects calls, not operator authorization; candidates require review."}
+]
