@@ -223,7 +223,7 @@ class SqliteIndex implements UsageIndex {
   readBytes = 0;
   private readonly summaryCache = new Map<string, SummaryCacheEntry>();
   /** One connection kept warm between calls: a fresh one per call started with an empty page cache and re-read the index's pages
-   * from disk on every footer refresh. It closes after a minute unused, so a dropped ledger (a reload) releases the file. */
+   * from disk on every footer refresh. It closes after 30 s unused, so a dropped ledger (a reload) releases the file. */
   private conn: DatabaseSync | undefined;
   private idle: ReturnType<typeof setTimeout> | undefined;
   /** The ledger's size:mtime when the index last matched it; an unchanged ledger needs no sync. */
@@ -274,7 +274,7 @@ class SqliteIndex implements UsageIndex {
     }
     if (!this.warm) { try { return work(db); } finally { this.close(); } }
     if (this.idle) clearTimeout(this.idle);
-    this.idle = setTimeout(() => this.close(), 60_000);
+    this.idle = setTimeout(() => this.close(), 30_000);
     this.idle.unref?.();
     return work(db);
   }
