@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { FileStore, storeFor, type Saved, type Store, type TerminalRecord } from './store.ts';
+import { FileStore, type Saved, type Store, type TerminalRecord } from './store.ts';
+import { runSliced, runSync, sortSteps } from './sliced.ts';
 
 export const NODE = 512;
 export const VIEW = 128_000;
@@ -227,58 +228,74 @@ export class Memory {
   readonly store: Store;
   lastError?: string;
 
-  /** Opens the memory in `directory` through the store `storeFor` picks, after its load. */
+  /** Resolves only when the complete memory is ready for use. */
   static async open(directory: string, compress: Compressor, warn: (s: string) => void = console.error, budget = VIEW, jobs = 8, retryMs?: number, defer = 1) {
-    const store = storeFor(directory, warn);
-    return new Memory({ directory, store, saved: await store.load(HOT_TEXTS) }, compress, warn, budget, jobs, retryMs, defer);
+    const store = new FileStore(directory, warn), saved = await store.loadAsync(HOT_TEXTS);
+    const memory = new Memory({ directory, store, saved }, compress, warn, budget, jobs, retryMs, defer, true);
+    await runSliced(memory.initialize(saved));
+    return memory;
   }
   /** A directory alone opens a FileStore there. `jobs`: summaries built at once, and how many unbuilt lines a new message's node
    * waits behind. Chat keeps 8; imports pass the "Import: summaries at once" setting. */
   constructor(source: string | { directory: string; store: Store; saved: Saved }, private readonly compress: Compressor,
     private readonly warn: (s: string) => void = console.error,
-    readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number, defer = 1) {
+    readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number, defer = 1, initializeLater = false) {
     this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), budget * Math.max(1, defer));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
     let saved: Saved;
     if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; saved = store.load(HOT_TEXTS); }
     else ({ directory: this.directory, store: this.store, saved } = source);
-    const log = saved.entries;
-    const entries = log.every(value => isEntry(value) || isColdRecord(value)) ? (log as Entry[]).sort((a, b) => a.i - b.i) : undefined;
-    if (!entries || entries.some((entry, i) => entry.i !== i)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.');
-    for (const value of entries) this.root.push(isColdRecord(value) ? new ColdEntry(value, this.store) : { ...value, size: bytes(`${value.kind}: ${value.text}`) });
-    this.loadTree(saved.tree);
-    for (const node of this.tree.values()) this.queueParent(node);
-    for (let i = 0; i < this.root.length; i++) if (!this.node({ l: 0, i })) this.unbuilt.add(i);
-    for (let i = 0; i < this.root.length - HOT_TEXTS; i++) this.chill(i);
+    if (!initializeLater) runSync(this.initialize(saved));
+  }
+  private *initialize(saved: Saved): Generator<void, void> {
+    const entries = saved.entries as Entry[];
+    for (const value of entries) { if (!isEntry(value) && !isColdRecord(value)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.'); yield; }
+    yield* sortSteps(entries, (a, b) => a.i - b.i);
+    for (let i = 0; i < entries.length; i++) { if (entries[i].i !== i) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.'); yield; }
+    for (const value of entries) { this.root.push(isColdRecord(value) ? new ColdEntry(value, this.store) : { ...value, size: bytes(`${value.kind}: ${value.text}`) }); yield; }
+    yield* this.loadTree(saved.tree);
+    for (const node of this.tree.values()) { this.queueParent(node); yield; }
+    for (let i = 0; i < this.root.length; i++) { if (!this.node({ l: 0, i })) this.unbuilt.add(i); yield; }
+    for (let i = 0; i < this.root.length - HOT_TEXTS; i++) { this.chill(i); yield; }
     // Refolding the log gives a different view than the live one, and every cache entry would miss, so the view is saved.
     const loaded = this.load(saved.view);
     for (const part of this.view) this.compaction.push(part);
     this.compaction.fit(loaded, true);
-    for (let i = loaded; i < this.root.length; i++) { this.push(i); this.fit(i + 1); }
-    this.fit(); this.save(); this.schedule();
-    this.chillTree();
+    for (let i = loaded; i < this.root.length; i++) { this.push(i); this.fit(i + 1); yield; }
+    this.fit(); this.save();
+    yield* this.chillTree();
+    this.schedule();
   }
   /** Summaries outside the shown views are read back from disk when needed instead of held as text. */
-  private chillTree() {
+  private *chillTree(): Generator<void, void> {
     if (!this.store.hasNode) return;
     const shown = new Set([...this.chat.parts, ...this.compaction.parts].map(key));
     for (const [id, node] of this.tree) {
       if (!shown.has(id) && Object.getOwnPropertyDescriptor(node, 'text')?.writable && this.store.hasNode(node.l, node.i)) this.tree.set(id, new ColdSummary(node.l, node.i, node.size, this.store));
+      yield;
     }
   }
-  private loadTree(records: unknown[]) {
-    for (const value of records) if (!isSummary(value) && !isTerminalRecord(value)) this.warn('Skipped an invalid OptChat summary record.');
-    const summaries = records.filter(isSummary);
-    this.loadSummaries(summaries.filter(s => !s.revised).sort((a, b) => a.l - b.l || a.i - b.i));
+  private *loadTree(records: unknown[]): Generator<void, void> {
+    const summaries: Summary[] = [], originals: Summary[] = [], terminal: TerminalRecord[] = [];
+    for (const value of records) {
+      if (isSummary(value)) { summaries.push(value); if (!value.revised) originals.push(value); }
+      else if (isTerminalRecord(value)) terminal.push(value);
+      else this.warn('Skipped an invalid OptChat summary record.');
+      yield;
+    }
+    yield* sortSteps(originals, (a, b) => a.l - b.l || a.i - b.i);
+    yield* this.loadSummaries(originals);
     for (const value of summaries) {
+      yield;
       if (!value.revised) continue;
       if (!this.tree.has(key(value)) || !value.text.trim()) { this.warn('Skipped a revision of a missing OptChat summary.'); continue; }
       this.tree.set(key(value), { l: value.l, i: value.i, text: value.text, size: lineBytes(value.text) });
     }
-    this.loadTerminalRecords(records.filter(isTerminalRecord));
+    yield* this.loadTerminalRecords(terminal);
   }
-  private loadSummaries(summaries: Summary[]) {
+  private *loadSummaries(summaries: Summary[]): Generator<void, void> {
     for (const value of summaries) {
+      yield;
       const children = value.l === 0 || (this.tree.has(key({ l: value.l - 1, i: 2 * value.i })) && this.tree.has(key({ l: value.l - 1, i: 2 * value.i + 1 })));
       if (value.l < 0 || value.i < 0 || !value.text.trim() || end(value) > this.root.length || !children || this.tree.has(key(value))) {
         this.warn('Skipped an incomplete or invalid OptChat summary record.');
@@ -287,8 +304,9 @@ export class Memory {
       this.tree.set(key(value), { ...value, size: lineBytes(value.text) });
     }
   }
-  private loadTerminalRecords(records: TerminalRecord[]) {
+  private *loadTerminalRecords(records: TerminalRecord[]): Generator<void, void> {
     for (const value of records) {
+      yield;
       const part = { l: value.l, i: value.i };
       const children = part.l === 0 || (this.node({ l: part.l - 1, i: 2 * part.i }) && this.node({ l: part.l - 1, i: 2 * part.i + 1 }));
       if (part.l < 0 || part.i < 0 || end(part) > this.root.length || !children) {
@@ -298,7 +316,7 @@ export class Memory {
       if (value.type === 'terminal') this.terminal.set(key(part), value.code);
       else this.terminal.delete(key(part));
     }
-    for (const id of this.terminal.keys()) if (this.tree.has(id)) this.terminal.delete(id);
+    for (const id of this.terminal.keys()) { if (this.tree.has(id)) this.terminal.delete(id); yield; }
     if (this.terminal.size) this.lastError = 'Summary blocked by policy refusal; explicit retry required.';
   }
   append(kind: Kind, text: string, date = new Date().toISOString(), receipt?: string, origin?: Origin) {

@@ -1,5 +1,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { readFile } from 'node:fs/promises';
+import { runSliced, runSync } from './sliced.ts';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Entry, Summary } from './memory.ts';
 
@@ -165,21 +167,23 @@ function records(dir: string, warn: (s: string) => void, located: Located) {
   for (const name of logNames(dir)) fileRecords(join(dir, name), warn, located);
 }
 function fileRecords(file: string, warn: (s: string) => void, located: Located) {
-  {
-    const data = readFileSync(file);
-    let from = 0, index = 0;
-    // Newline is the append commit marker. Even a parseable unterminated tail may be a write interrupted before commit.
-    for (let newline = data.indexOf(0x0a); newline >= 0; from = newline + 1, newline = data.indexOf(0x0a, from)) {
-      index++;
-      const line = data.toString('utf8', from, newline);
-      if (!line.trim()) continue;
+  runSync(parseRecords(readFileSync(file), file, warn, located));
+}
+function* parseRecords(data: Buffer, file: string, warn: (s: string) => void, located: Located): Generator<void, void> {
+  let from = 0, index = 0;
+  // Newline is the append commit marker. Even a parseable unterminated tail may be a write interrupted before commit.
+  for (let newline = data.indexOf(0x0a); newline >= 0; from = newline + 1, newline = data.indexOf(0x0a, from)) {
+    index++;
+    const line = data.toString('utf8', from, newline);
+    if (line.trim()) {
       let value: unknown;
       try { value = JSON.parse(line); }
-      catch { warn(`Skipped damaged JSON at ${file}:${index}`); continue; }
+      catch { warn(`Skipped damaged JSON at ${file}:${index}`); yield; continue; }
       located(value, file, from, newline - from);
     }
-    if (data.toString('utf8', from).trim()) warn(`Skipped damaged JSON at ${file}:${index + 1}`);
+    yield;
   }
+  if (data.toString('utf8', from).trim()) warn(`Skipped damaged JSON at ${file}:${index + 1}`);
 }
 /** The text of message `i` in the line at `offset`, refusing a line that no longer holds it. */
 function lineText(data: Buffer, offset: number, length: number, i: number, file: string) {
@@ -243,6 +247,49 @@ export class FileStore implements Store {
     // An unreadable view is rebuilt, as a damaged one is.
     let saved: string | undefined;
     if (existsSync(view)) try { saved = readFileSync(view, 'utf8'); } catch { saved = ''; }
+    return { entries, tree, view: saved };
+  }
+  /** Load without holding the event loop while parsing history. Logs remain authoritative, including damaged tails. */
+  async loadAsync(hot = Infinity): Promise<Saved> {
+    for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
+    this.lines.clear(); this.nodes.clear(); this.nodeFiles.length = 0;
+    const tree: unknown[] = [], entries: unknown[] = [];
+    const observed = new Map<string, { size: number; mtimeMs: number }>();
+    const scan = async (file: string, accept: Located) => {
+      const stat = statSync(file);
+      observed.set(file, { size: stat.size, mtimeMs: stat.mtimeMs });
+      const data = await readFile(file);
+      await runSliced(parseRecords(data, file, this.warn, accept));
+    };
+    const treeDir = join(this.directory, 'tree'), treeNames = logNames(treeDir);
+    for (const name of treeNames) await scan(join(treeDir, name), (value, file, offset) => {
+      tree.push(value);
+      const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
+      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
+    });
+    const main = join(this.directory, 'main'), mainNames = logNames(main);
+    for (const name of mainNames) {
+      const file = join(main, name);
+      await scan(file, (value, _file, offset, length) => {
+        const i = (value as { i?: unknown } | null)?.i;
+        if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+        const old = entries.push(value) - 1 - hot;
+        if (old >= 0) entries[old] = this.cold(entries[old]);
+      });
+    }
+    const view = join(this.directory, 'view.json');
+    let saved: string | undefined;
+    if (existsSync(view)) try { saved = await readFile(view, 'utf8'); } catch { saved = ''; }
+    // A writer during an async slice must not be mistaken for the state we loaded.
+    for (const [dir, names] of [[treeDir, treeNames], [main, mainNames]] as const) {
+      const now = logNames(dir);
+      if (now.length !== names.length || now.some((name, i) => name !== names[i])) throw otherWriter(dir);
+    }
+    for (const [file, before] of observed) {
+      const after = statSync(file);
+      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) throw otherWriter(file);
+      if (dirname(file) === main) this.lastSeenBytes.set(file, before.size);
+    }
     return { entries, tree, view: saved };
   }
   /** A summarized message without its text, with the `size` Memory gives it (the bytes of `kind: text`); anything else as is. */
