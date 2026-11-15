@@ -254,6 +254,7 @@ export default function optchat(host: ExtensionAPI) {
   let records: { epoch: number; text: string } | undefined;
   /** The situation digest (src/situation.ts) and the run it was last asked for: a run says it once, however often the view is rebuilt. */
   let situation: Situation | undefined;
+  let situationWarmTimer: ReturnType<typeof setTimeout> | undefined;
   let runSeq = 0;
   let prompt = '';
   /** A compaction is a call like a turn (recipe §4): once a turn has built them, it gets the turns' system prompt and tools. */
@@ -559,12 +560,15 @@ export default function optchat(host: ExtensionAPI) {
   /** What changed on the PC and in the harness, said at the start of a turn (the `situationDigest` setting); one per main session. */
   const startSituation = (ctx: ExtensionContext, dir: string) => {
     if (ctx.mode === 'print' || ctx.mode === 'json') return;
-    situation = new Situation({ stateFile: join(dir, 'situation-state.json'), logFile: join(dir, 'situation-digest.jsonl'),
+    if (situationWarmTimer) clearTimeout(situationWarmTimer);
+    const current = situation = new Situation({ stateFile: join(dir, 'situation-state.json'), logFile: join(dir, 'situation-digest.jsonl'),
       collector: new Collector(realSources({ agentDir: getAgentDir(), machine: () => machineService()?.sense.now(),
         work: () => ({ agents: active?.children.working.length ?? 0, shells: runningShells(shells).length }) })) });
-    void situation.warm();
+    situationWarmTimer = setTimeout(() => { situationWarmTimer = undefined; if (situation === current && !stopping) void current.warm(); }, 250);
+    situationWarmTimer.unref?.();
   };
   const stop = async (reason?: string) => {
+    if (situationWarmTimer) clearTimeout(situationWarmTimer); situationWarmTimer = undefined;
     situation = undefined;
     machineService()?.stop(); shells.setLifecycleObserver(undefined);
     heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();

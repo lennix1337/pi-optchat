@@ -44,8 +44,14 @@ interface Entry { value?: unknown; loaded?: number; tried?: number; error?: stri
  * of what is stale and never waits for one; a fact that was never read, or whose read keeps failing, is the last good value or
  * simply absent. `refresh()` is for the on-demand view and the first read of a session, and is bounded too.
  */
+const afterTurns = (turns: number, fn: () => void) => {
+  if (turns <= 0) { fn(); return; }
+  setImmediate(() => afterTurns(turns - 1, fn));
+};
+
 export class Collector {
   private readonly entries = new Map<FactKey, Entry>();
+  private burst = 0;
   constructor(private readonly sources: Sources, private readonly now: () => number = Date.now) {}
 
   private entry(key: FactKey) { return this.entries.get(key) ?? this.entries.set(key, {}).get(key)!; }
@@ -56,9 +62,14 @@ export class Collector {
     const entry = this.entry(key), now = this.now();
     if (entry.inflight || entry.tried !== undefined && now - entry.tried < spec.ttlMs) return;
     entry.tried = now;
+    const turn = this.burst++;
+    if (turn === 0) setImmediate(() => { this.burst = 0; });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${spec.timeoutMs} ms`)), spec.timeoutMs); timer.unref?.(); });
-    const read = Promise.resolve().then(() => spec.read());
+    const run = () => Promise.resolve().then(() => spec.read());
+    const read = turn > 0
+      ? new Promise<unknown>((resolve, reject) => afterTurns(turn, () => { run().then(resolve, reject); }))
+      : run();
     // A read that outlives its limit may still land later; its value is kept, it just did not block anyone.
     read.then(value => { entry.value = value; entry.loaded = this.now(); entry.error = undefined; }, () => undefined);
     entry.inflight = Promise.race([read, limit]).then(() => undefined, error => { entry.error = error instanceof Error ? error.message : String(error); })
