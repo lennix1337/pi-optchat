@@ -85,3 +85,10 @@ test('read-only forms are accepted; writes and script executables are rejected',
     assert.throws(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv, expect: 'ok' } }, now), /probe/i, argv.join(' '));
   }
 }));
+test('git log accepts a commit count, and a refusal names what is accepted', () => fixture(async dir => {
+  for (const argv of [['git', 'log', '--oneline', '-30', 'origin/main'], ['git', '-C', dir, 'log', '--max-count=5']]) {
+    assert.doesNotThrow(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv, expect: 'ok' } }, now), argv.join(' '));
+  }
+  assert.throws(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv: ['git', 'log', '--format=%H'], expect: 'ok' } }, now), /accepted:.*--oneline.*--format=%H. is not in the read-only allowlist$/);
+  assert.throws(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv: ['node', 'x.js'], expect: 'ok' } }, now), /accepted:.*git.*gh.*curl/);
+}));
