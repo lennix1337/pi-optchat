@@ -163,6 +163,88 @@ class ColdSummary implements Summary {
   constructor(readonly l: number, readonly i: number, readonly size: number, private readonly store: Store) {}
   get text() { return this.store.nodeText!(this.l, this.i); }
 }
+const MAX_TREE_LEVEL = 32;
+const MAX_TREE_INDEX = 10_000_000;
+/** Stores cold summaries as packed Uint32Array sizes per level (~1.3 MB for 325k nodes instead of ~38 MB of objects and Map buckets). */
+class ColdTreeMap implements Map<number, Summary> {
+  private readonly warm = new Map<number, Summary>();
+  private readonly coldLevels: Uint32Array[] = [];
+  private coldCount = 0;
+  constructor(private readonly store: Store) {}
+  get size() { return this.warm.size + this.coldCount; }
+  get coldSize() { return this.coldCount; }
+  warmValues() { return this.warm.values(); }
+  has(k: number) {
+    if (this.warm.has(k)) return true;
+    const l = Math.floor(k / 2 ** 40), i = k - l * 2 ** 40;
+    return l >= 0 && l < this.coldLevels.length && i >= 0 && i < (this.coldLevels[l]?.length ?? 0) && this.coldLevels[l][i] !== 0;
+  }
+  get(k: number): Summary | undefined {
+    const w = this.warm.get(k);
+    if (w !== undefined) return w;
+    const l = Math.floor(k / 2 ** 40), i = k - l * 2 ** 40;
+    if (l >= 0 && l < this.coldLevels.length && i >= 0 && i < (this.coldLevels[l]?.length ?? 0)) {
+      const v = this.coldLevels[l][i];
+      if (v !== 0) return new ColdSummary(l, i, v - 1, this.store);
+    }
+    return undefined;
+  }
+  set(k: number, value: Summary) {
+    if (value instanceof ColdSummary && value.l >= 0 && value.l < MAX_TREE_LEVEL && value.i >= 0 && value.i < MAX_TREE_INDEX
+      && value.size >= 0 && value.size < 0xffffffff && k === value.l * 2 ** 40 + value.i) {
+      this.warm.delete(k);
+      let level = this.coldLevels[value.l];
+      if (!level || value.i >= level.length) {
+        const next = new Uint32Array(Math.max(value.i + 1, level ? level.length * 2 : 1024));
+        if (level) next.set(level);
+        level = this.coldLevels[value.l] = next;
+      }
+      if (level[value.i] === 0) this.coldCount++;
+      level[value.i] = value.size + 1;
+      return this;
+    }
+    const l = Math.floor(k / 2 ** 40), i = k - l * 2 ** 40;
+    if (l >= 0 && l < this.coldLevels.length && i >= 0 && i < (this.coldLevels[l]?.length ?? 0) && this.coldLevels[l][i] !== 0) {
+      this.coldLevels[l][i] = 0;
+      this.coldCount--;
+    }
+    this.warm.set(k, value);
+    return this;
+  }
+  delete(k: number) {
+    let removed = this.warm.delete(k);
+    const l = Math.floor(k / 2 ** 40), i = k - l * 2 ** 40;
+    if (l >= 0 && l < this.coldLevels.length && i >= 0 && i < (this.coldLevels[l]?.length ?? 0) && this.coldLevels[l][i] !== 0) {
+      this.coldLevels[l][i] = 0;
+      this.coldCount--;
+      removed = true;
+    }
+    return removed;
+  }
+  clear() { this.warm.clear(); this.coldLevels.length = 0; this.coldCount = 0; }
+  *entries(): MapIterator<[number, Summary]> {
+    yield* this.warm.entries();
+    for (let l = 0; l < this.coldLevels.length; l++) {
+      const level = this.coldLevels[l];
+      if (!level) continue;
+      for (let i = 0; i < level.length; i++) if (level[i] !== 0) yield [l * 2 ** 40 + i, new ColdSummary(l, i, level[i] - 1, this.store)];
+    }
+  }
+  *keys(): MapIterator<number> { for (const [k] of this.entries()) yield k; }
+  *values(): MapIterator<Summary> {
+    yield* this.warm.values();
+    for (let l = 0; l < this.coldLevels.length; l++) {
+      const level = this.coldLevels[l];
+      if (!level) continue;
+      for (let i = 0; i < level.length; i++) if (level[i] !== 0) yield new ColdSummary(l, i, level[i] - 1, this.store);
+    }
+  }
+  forEach(cb: (value: Summary, key: number, map: Map<number, Summary>) => void, thisArg?: unknown) {
+    for (const [k, v] of this.entries()) cb.call(thisArg, v, k, this);
+  }
+  [Symbol.iterator]() { return this.entries(); }
+  readonly [Symbol.toStringTag] = 'Map';
+}
 function isSummary(value: unknown): value is Summary {
   return object(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
     && typeof value.text === 'string';
@@ -186,7 +268,7 @@ function isPolicyRefusal(error: unknown) {
  * and again whenever the chat's merges, so parallel compactions read it from the cache. */
 export class Memory {
   readonly root: Entry[] = [];
-  readonly tree = new Map<number, Summary>();
+  readonly tree: ColdTreeMap;
   private readonly events = new EventEmitter();
   private readonly controller = new AbortController();
   private readonly busy = new Map<number, Promise<void>>();
@@ -212,8 +294,8 @@ export class Memory {
     let liveTexts = 0, liveTextBytes = 0;
     for (const entry of this.root) if (Object.getOwnPropertyDescriptor(entry, 'text')?.writable) { liveTexts++; liveTextBytes += Buffer.byteLength(entry.text); }
     // Only summaries that still hold their text count: a ColdSummary reads it from disk, so its bytes are not heap.
-    let treeTextBytes = 0, treeColdNodes = 0;
-    for (const node of this.tree.values()) {
+    let treeTextBytes = 0, treeColdNodes = this.tree.coldSize;
+    for (const node of this.tree.warmValues()) {
       if (Object.getOwnPropertyDescriptor(node, 'text')) treeTextBytes += Buffer.byteLength(node.text); else treeColdNodes++;
     }
     let searchCacheHits = 0;
@@ -247,8 +329,8 @@ export class Memory {
     this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), budget * Math.max(1, defer));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
     let saved: Saved;
-    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; saved = store.load(HOT_TEXTS); }
-    else ({ directory: this.directory, store: this.store, saved } = source);
+    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; this.tree = new ColdTreeMap(store); saved = store.load(HOT_TEXTS); }
+    else { ({ directory: this.directory, store: this.store, saved } = source); this.tree = new ColdTreeMap(this.store); }
     if (!initializeLater) runSync(this.initialize(saved));
   }
   private *initialize(saved: Saved): Generator<void, void> {

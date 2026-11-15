@@ -248,29 +248,92 @@ function lineText(data: Buffer, offset: number, length: number, i: number, file:
 /** How long a log file read for an old message stays in RAM: a scan over a range reads each file once. */
 const READ_CACHE_MS = 1000;
 
+const MAX_PACKED_INDEX = 10_000_000;
+const MAX_PACKED_LEVEL = 32;
+function grow<T extends Float64Array | Uint32Array | Uint16Array>(arr: T, minLength: number, Ctor: { new(n: number): T }): T {
+  const next = new Ctor(Math.max(minLength, arr.length ? arr.length * 2 : 1024));
+  next.set(arr);
+  return next;
+}
+
 /** Memory as files in one directory: `main/` and `tree/` hold dated JSONL, each line fsynced as it is appended; `view.json` and
  * `images/<hash>.<ext>` are replaced atomically. Every write is done when it returns. */
 export class FileStore implements Store {
   /** Each log file's size as this store last left it, so a write by another process is refused instead of interleaved. */
   private readonly lastSeenBytes = new Map<string, number>();
-  /** Where each message's line is, by message index, so its text can be read back. */
-  private readonly lines = new Map<number, { file: string; offset: number; length: number }>();
-  /** Where each summary node's latest line starts, by level and index, as one number (file slot * 2^40 + offset): ~300k of them. */
-  private readonly nodes = new Map<number, number>();
+  /** Where each message's line is, by message index, packed in typed arrays (~14 bytes/msg instead of JS objects + Map). */
+  private readonly lineFiles: string[] = [];
+  private lineSlots = new Uint16Array(0);
+  private lineOffsets = new Float64Array(0);
+  private lineLengths = new Uint32Array(0);
+  private lineCount = 0;
+  private extraLines?: Map<number, { file: string; offset: number; length: number }>;
+  /** Where each summary node's latest line starts, by level and index (slot * 2^40 + offset + 1, 0 = absent). */
+  private readonly nodeLevels: Float64Array[] = [];
+  private extraNodes?: Map<number, number>;
   private readonly nodeFiles: string[] = [];
   private cached?: { file: string; data: Buffer; timer: ReturnType<typeof setTimeout> };
   constructor(readonly directory: string, private readonly warn: (s: string) => void = console.error) {}
+  private clearIndex() {
+    this.lineFiles.length = 0; this.lineSlots = new Uint16Array(0); this.lineOffsets = new Float64Array(0);
+    this.lineLengths = new Uint32Array(0); this.lineCount = 0; this.extraLines = undefined;
+    this.nodeLevels.length = 0; this.extraNodes = undefined; this.nodeFiles.length = 0;
+  }
+  private fileSlot(files: string[], file: string) {
+    const slot = files.lastIndexOf(file);
+    return slot >= 0 ? slot : files.push(file) - 1;
+  }
+  private setLine(i: number, file: string, offset: number, length: number) {
+    if (i < 0 || i >= MAX_PACKED_INDEX) {
+      const extra = (this.extraLines ??= new Map());
+      if (!extra.has(i)) this.lineCount++;
+      extra.set(i, { file, offset, length });
+      return;
+    }
+    if (i >= this.lineOffsets.length) {
+      this.lineSlots = grow(this.lineSlots, i + 1, Uint16Array);
+      this.lineOffsets = grow(this.lineOffsets, i + 1, Float64Array);
+      this.lineLengths = grow(this.lineLengths, i + 1, Uint32Array);
+    }
+    if (this.lineOffsets[i] === 0) this.lineCount++;
+    this.lineSlots[i] = this.fileSlot(this.lineFiles, file);
+    this.lineOffsets[i] = offset + 1;
+    this.lineLengths[i] = length;
+  }
+  private getLine(i: number) {
+    if (i >= 0 && i < this.lineOffsets.length && this.lineOffsets[i] !== 0) {
+      return { file: this.lineFiles[this.lineSlots[i]], offset: this.lineOffsets[i] - 1, length: this.lineLengths[i] };
+    }
+    return this.extraLines?.get(i);
+  }
+  private setNode(l: number, i: number, file: string, offset: number) {
+    const at = this.fileSlot(this.nodeFiles, file) * 2 ** 40 + offset;
+    if (l < 0 || l >= MAX_PACKED_LEVEL || i < 0 || i >= MAX_PACKED_INDEX) {
+      (this.extraNodes ??= new Map()).set(l * 2 ** 40 + i, at);
+      return;
+    }
+    let level = this.nodeLevels[l];
+    if (!level || i >= level.length) level = this.nodeLevels[l] = grow(level ?? new Float64Array(0), i + 1, Float64Array);
+    level[i] = at + 1;
+  }
+  private getNode(l: number, i: number) {
+    if (l >= 0 && l < this.nodeLevels.length && i >= 0 && i < this.nodeLevels[l].length) {
+      const v = this.nodeLevels[l][i];
+      return v === 0 ? undefined : v - 1;
+    }
+    return this.extraNodes?.get(l * 2 ** 40 + i);
+  }
   /** Every record as saved, except that with `hot` set only the newest `hot` messages keep their text: an older one whose level-0
    * summary exists comes back as `{ ...fields, size }` without it, read later through `reader`. Parsing a long log into texts first
    * and dropping them after held them all at once (~280 MB of log: ~1 GB of RSS and seconds of frozen loop on each reload). */
   load(hot = Infinity): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
-    this.lines.clear(); this.nodes.clear(); this.nodeFiles.length = 0;
+    this.clearIndex();
     // The tree loads first, so the log knows which messages are summarized while it parses.
     const tree: unknown[] = [];
     records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
-      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
+      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.setNode(l as number, i as number, file, offset);
       tree.push(hot < Infinity ? (coldSummary(value) ?? value) : value);
     });
     const main = join(this.directory, 'main'), entries: unknown[] = [], names = logNames(main);
@@ -279,18 +342,18 @@ export class FileStore implements Store {
     const slim = new Set<number>();
     for (const file of names.slice(0, -1).map(name => join(main, name))) for (const [offset, length, value, textlessRow] of this.dayIndex(file)) {
       const i = (value as { i?: unknown } | null)?.i;
-      if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+      if (Number.isSafeInteger(i)) this.setLine(i as number, file, offset, length);
       if (textlessRow) slim.add(entries.length);
       entries.push(value);
     }
     if (names.length) fileRecords(join(main, names[names.length - 1]), this.warn, (value, file, offset, length) => {
       const i = (value as { i?: unknown } | null)?.i;
-      if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+      if (Number.isSafeInteger(i)) this.setLine(i as number, file, offset, length);
       const old = entries.push(value) - 1 - hot;
       if (old >= 0 && !slim.has(old)) entries[old] = this.cold(entries[old]);
     });
     for (const k of slim) {
-      const value = entries[k] as { i: number }, line = this.lines.get(value.i);
+      const value = entries[k] as { i: number }, line = this.getLine(value.i);
       if (line && (k >= entries.length - hot || !this.hasNode(0, value.i))) entries[k] = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length));
     }
     this.drop();
@@ -304,7 +367,7 @@ export class FileStore implements Store {
   /** Load without holding the event loop while parsing history. Logs remain authoritative, including damaged tails. */
   async loadAsync(hot = Infinity): Promise<Saved> {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
-    this.lines.clear(); this.nodes.clear(); this.nodeFiles.length = 0;
+    this.clearIndex();
     const tree: unknown[] = [], entries: unknown[] = [];
     const observed = new Map<string, { size: number; mtimeMs: number }>();
     const scan = async (file: string, accept: Located) => {
@@ -315,7 +378,7 @@ export class FileStore implements Store {
     const treeDir = join(this.directory, 'tree'), treeNames = logNames(treeDir);
     for (const name of treeNames) await scan(join(treeDir, name), (value, file, offset) => {
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
-      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
+      if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.setNode(l as number, i as number, file, offset);
       tree.push(hot < Infinity ? (coldSummary(value) ?? value) : value);
     });
     const main = join(this.directory, 'main'), mainNames = logNames(main);
@@ -329,7 +392,7 @@ export class FileStore implements Store {
       let started = performance.now(), steps = 0;
       for (const [offset, length, value, textlessRow] of rows) {
         const i = (value as { i?: unknown } | null)?.i;
-        if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+        if (Number.isSafeInteger(i)) this.setLine(i as number, file, offset, length);
         if (textlessRow) slim.add(entries.length);
         entries.push(value);
         if (++steps % 512 === 0 && performance.now() - started >= 15) { await yieldLoop(); started = performance.now(); }
@@ -340,13 +403,13 @@ export class FileStore implements Store {
       const file = join(main, name);
       await scan(file, (value, _file, offset, length) => {
         const i = (value as { i?: unknown } | null)?.i;
-        if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+        if (Number.isSafeInteger(i)) this.setLine(i as number, file, offset, length);
         const old = entries.push(value) - 1 - hot;
         if (old >= 0 && !slim.has(old)) entries[old] = this.cold(entries[old]);
       });
     }
     for (const k of slim) {
-      const value = entries[k] as { i: number }, line = this.lines.get(value.i);
+      const value = entries[k] as { i: number }, line = this.getLine(value.i);
       if (line && (k >= entries.length - hot || !this.hasNode(0, value.i))) entries[k] = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length));
     }
     this.drop();
@@ -412,21 +475,17 @@ export class FileStore implements Store {
     if (!this.lastSeenBytes.has(file)) this.checkLog(file);
     const length = Buffer.byteLength(JSON.stringify(entry)), size = appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0);
     this.lastSeenBytes.set(file, size);
-    this.lines.set(entry.i, { file, offset: size - length - 1, length });
+    this.setLine(entry.i, file, size - length - 1, length);
     if (this.cached?.file === file) this.drop();
   }
-  lineIndexSize() { return this.lines.size; }
+  lineIndexSize() { return this.lineCount; }
   reader(i: number) {
-    const line = this.lines.get(i);
+    const line = this.getLine(i);
     return line && (() => lineText(this.read(line.file), line.offset, line.length, i, line.file));
   }
-  private nodeSlot(file: string) {
-    const slot = this.nodeFiles.lastIndexOf(file);
-    return slot >= 0 ? slot : this.nodeFiles.push(file) - 1;
-  }
-  hasNode(l: number, i: number) { return this.nodes.has(l * 2 ** 40 + i); }
+  hasNode(l: number, i: number) { return this.getNode(l, i) !== undefined; }
   nodeText(l: number, i: number) {
-    const at = this.nodes.get(l * 2 ** 40 + i), file = this.nodeFiles[Math.floor((at ?? 0) / 2 ** 40)];
+    const at = this.getNode(l, i), file = this.nodeFiles[Math.floor((at ?? 0) / 2 ** 40)];
     let record: { l?: unknown; i?: unknown; text?: unknown } | null = null;
     if (at !== undefined) try {
       const data = this.read(file), offset = at % 2 ** 40, end = data.indexOf(0x0a, offset);

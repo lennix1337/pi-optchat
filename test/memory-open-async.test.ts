@@ -4,6 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileStore } from '../src/store.ts';
+import { Inbox } from '../src/inbox.ts';
 import { Memory } from '../src/memory.ts';
 import { removeDir } from './support.ts';
 
@@ -75,6 +76,26 @@ test('loadAsync streams files past one chunk and returns cold summaries when hot
       assert.equal(memory.root.length, total + 1);
       assert.equal(memory.tree.get(0)?.text, `sum 0 ${pad}`);
       assert.ok(memory.stats().treeColdNodes > 0 && memory.stats().treeColdNodes <= total);
+      // ColdTreeMap supports set/has/delete/values across cold and warm entries without inflating coldSize.
+      const beforeSize = memory.tree.size;
+      assert.equal(memory.tree.has(0), true);
+      memory.tree.set(0, { l: 0, i: 0, text: 'revised 0', size: 9 });
+      assert.equal(memory.tree.size, beforeSize);
+      assert.equal(memory.tree.get(0)?.text, 'revised 0');
+      assert.equal(memory.tree.delete(0), true);
+      assert.equal(memory.tree.has(0), false);
+      assert.equal(memory.tree.size, beforeSize - 1);
     } finally { await memory.close(); }
+  } finally { removeDir(dir); }
+});
+
+test('Inbox.recover skips scanning memory.root when no pending inputs exist', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-inbox-empty-'));
+  try {
+    const inbox = new Inbox(dir);
+    let rootReads = 0;
+    const fakeMemory = { get root() { rootReads++; return []; } } as unknown as Memory;
+    assert.equal(inbox.recover(fakeMemory), 0);
+    assert.equal(rootReads, 0, 'empty inbox must not iterate memory.root');
   } finally { removeDir(dir); }
 });
