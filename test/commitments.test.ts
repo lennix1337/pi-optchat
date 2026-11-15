@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addCommitment, boardWaiting, commitmentsContext, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment, waitingItems } from '../src/commitments.ts';
+import { addCommitment, boardWaiting, COMMITMENTS_FILE, commitmentsContext, commitmentsReadBytes, commitmentsTool, Presence, PRESENCE_REPORT_MS, PRESENCE_STALL_MS, readCommitments, registerCommitments, STALE_MS, summaryLines, updateCommitment, waitingItems } from '../src/commitments.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 import { plainToolResult } from './support.ts';
 
@@ -201,5 +201,22 @@ test('the board keeps overdue operator requests without choices visible with the
     assert.equal(board.find(item => item.id === approval.id)?.ask, 'Aprova o deploy?');
     assert.deepEqual(board.find(item => item.id === asked.id), { id: asked.id, text: asked.text, since: Date.parse(asked.updatedAt), ask: 'sim ou não', choices: ['sim', 'não'] });
     assert.equal(waitingItems(readCommitments(dir), now).length, 4, 'the Home still lists every item the operator owes, with the overdue one too');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('readCommitments caches by stat and does not re-read unchanged commitments.json', () => {
+  const dir = temp();
+  try {
+    addCommitment(dir, { text: 'Check PR', source: '1' }, T0);
+    assert.equal(readCommitments(dir).length, 1);
+    const before = commitmentsReadBytes;
+    assert.equal(readCommitments(dir).length, 1);
+    assert.equal(readCommitments(dir).length, 1);
+    assert.equal(commitmentsReadBytes - before, 0, 'unchanged commitments.json must not be re-read');
+    addCommitment(dir, { text: 'Second item', source: '2' }, T0 + 1000);
+    assert.equal(readCommitments(dir).length, 2);
+    assert.ok(commitmentsReadBytes > before, 'updated commitments.json must be re-read');
+    rmSync(join(dir, COMMITMENTS_FILE));
+    assert.deepEqual(readCommitments(dir), []);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

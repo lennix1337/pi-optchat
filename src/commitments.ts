@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { validateProbe, type Probe } from './probe-policy.ts';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -90,18 +90,30 @@ function isCommitment(value: unknown): value is Commitment {
     && Array.isArray(c.notes) && c.notes.every(note => typeof note === 'object' && note !== null && isTime((note as { at?: unknown }).at) && isText((note as { text?: unknown }).text));
 }
 
+export let commitmentsReadBytes = 0;
+const commitmentsCache = new Map<string, { stamp: string; items: Commitment[] }>();
+
 export function readCommitments(dir: string): Commitment[] {
   const file = join(dir, COMMITMENTS_FILE);
-  if (!existsSync(file)) return [];
-  const parsed = JSON.parse(readFileSync(file, 'utf8')) as Document;
+  let stamp: string;
+  try { const s = statSync(file); stamp = `${s.size}:${s.mtimeMs}`; } catch { commitmentsCache.delete(file); return []; }
+  const hit = commitmentsCache.get(file);
+  if (hit?.stamp === stamp) return [...hit.items];
+  const raw = readFileSync(file, 'utf8');
+  commitmentsReadBytes += Buffer.byteLength(raw);
+  const parsed = JSON.parse(raw) as Document;
   if (parsed?.version !== 1 || !Array.isArray(parsed.items) || !parsed.items.every(isCommitment)) throw new Error(`Unreadable commitments file ${file}`);
-  return parsed.items;
+  if (commitmentsCache.size >= 16) commitmentsCache.delete(commitmentsCache.keys().next().value!);
+  commitmentsCache.set(file, { stamp, items: parsed.items });
+  return [...parsed.items];
 }
 
 function write(dir: string, items: Commitment[], now: number) {
   const kept = items.filter(c => !closed(c.status) || now - Date.parse(c.updatedAt) < CLOSED_KEEP_MS);
   if (kept.filter(c => !closed(c.status)).length > MAX_ITEMS) throw new Error(`More than ${MAX_ITEMS} open commitments: close some first.`);
-  atomicWrite(join(dir, COMMITMENTS_FILE), `${JSON.stringify({ version: 1, items: kept.slice(-MAX_ITEMS * 2) } satisfies Document, null, 1)}\n`);
+  const file = join(dir, COMMITMENTS_FILE);
+  commitmentsCache.delete(file);
+  atomicWrite(file, `${JSON.stringify({ version: 1, items: kept.slice(-MAX_ITEMS * 2) } satisfies Document, null, 1)}\n`);
 }
 
 const iso = (at: number) => new Date(at).toISOString();

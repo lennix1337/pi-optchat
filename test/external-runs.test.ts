@@ -466,3 +466,21 @@ test('repeated ExternalRuns.refresh on unchanged live-foreground files reads 0 b
     assert.equal(runs.readBytes - before, 0, 'unchanged live-foreground files must not be re-read on every 2s tick');
   } finally { removeDir(root); removeDir(profile); }
 });
+
+test('repeated ExternalRuns.refresh skips scanning unchanged async-subagent-runs when no async run is active', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-subagents-async-io-')), profile = mkdtempSync(join(tmpdir(), 'optchat-async-io-'));
+  try {
+    writeRun(root, 'run-a', status({ runId: 'run-a', state: 'complete' }));
+    const runs = new ExternalRuns(profile, { root, throttleMs: 0 });
+    runs.refresh(true);
+    assert.equal(runs.get('pi-run-a')?.state, 'completed');
+    const scansBefore = runs.asyncScans, bytesBefore = runs.readBytes;
+    for (let i = 0; i < 10; i++) runs.refresh();
+    assert.equal(runs.asyncScans - scansBefore, 0, 'idle asyncDir must not be readdir-scanned when mtime is unchanged');
+    assert.equal(runs.readBytes - bytesBefore, 0);
+    writeRun(root, 'run-b', status({ runId: 'run-b', state: 'running', endedAt: undefined }));
+    runs.refresh();
+    assert.equal(runs.asyncScans - scansBefore, 1, 'new async run directory must trigger a scan');
+    assert.equal(runs.get('pi-run-b')?.state, 'running');
+  } finally { removeDir(root); removeDir(profile); }
+});

@@ -1,7 +1,7 @@
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { openCommitments, readCommitments, type Commitment } from './commitments.ts';
 import { PRS, type PrSeen } from './slack-reports.ts';
-import { readJsonOr } from './store.ts';
 
 /**
  * The App Home shows the work as domain items, not chat sessions: the operator's open PRs (the PR watch), the open
@@ -36,8 +36,8 @@ function openPr(key: string, seen: PrSeen): PrItem | undefined {
 
 /** The open PRs of the watch, failing CI first. A missing or damaged watch file lists nothing. */
 export function readPrItems(dir: string): PrItem[] {
-  const watch = readJsonOr<Record<string, PrSeen>>(join(dir, PRS), {});
-  const items = Object.entries(watch ?? {}).map(([key, seen]) => openPr(key, seen)).filter((item): item is PrItem => item !== undefined);
+  const watch = readWatch(dir);
+  const items = Object.entries(watch).map(([key, seen]) => openPr(key, seen)).filter((item): item is PrItem => item !== undefined);
   return items.sort((a, b) => FAILING_FIRST[a.checks] - FAILING_FIRST[b.checks]);
 }
 
@@ -149,4 +149,18 @@ export function stillWaiting<T extends { text: string; ask?: string }>(items: re
   });
 }
 
-export function readWatch(dir: string): Record<string, PrSeen> { return readJsonOr<Record<string, PrSeen>>(join(dir, PRS), {}) ?? {}; }
+export let watchReadBytes = 0;
+const watchCache = new Map<string, { stamp: string; value: Record<string, PrSeen> }>();
+
+export function readWatch(dir: string): Record<string, PrSeen> {
+  const file = join(dir, PRS);
+  let stamp: string;
+  try { const s = statSync(file); stamp = `${s.size}:${s.mtimeMs}`; } catch { watchCache.delete(file); return {}; }
+  const hit = watchCache.get(file);
+  if (hit?.stamp === stamp) return hit.value;
+  let value: Record<string, PrSeen> = {};
+  try { const raw = readFileSync(file, 'utf8'); watchReadBytes += Buffer.byteLength(raw); value = JSON.parse(raw) ?? {}; } catch { value = {}; }
+  if (watchCache.size >= 16) watchCache.delete(watchCache.keys().next().value!);
+  watchCache.set(file, { stamp, value });
+  return value;
+}
