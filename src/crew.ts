@@ -506,7 +506,7 @@ function readCrewTree(c: Crew, args: { action: 'view' | 'zoom'; project?: Specia
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
 export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew'>) => ({
   name: 'crew', label: 'Crew memory',
-  description: `Crew by project slug (a new slug starts one). list: sizes, proposals. read/write/edit: part memory (${MEMORY_BYTES} B), charter (${CHARTER_BYTES} B), missions (no project), proposals (read-only). write: text replaces. edit: edits [{oldText,newText}] each matched once, '' deletes; append: a line; all or none. Over cap: refused, longest lines shown. audit: marks audited. view/zoom: tree (id, n). accept: run, title, text (PR body) ships a worker branch.`,
+  description: `Crew by project slug (new slugs create). list: sizes and proposals. Parts: memory (${MEMORY_BYTES} B), charter (${CHARTER_BYTES} B), missions (no project), proposals (read-only). write replaces; edit matches each oldText once, '' deletes, append adds a line; atomic. audit marks audited; view/zoom: tree (id, n). accept: run, title, text (PR body) ships worker branch.`,
   parameters: CREW_PARAMS,
   async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'edit' | 'audit' | 'view' | 'zoom' | 'accept'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
     edits?: TextEdit[]; append?: string; id?: number; n?: number; findText?: string; run?: string; title?: string }) {

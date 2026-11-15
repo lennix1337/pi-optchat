@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { validateProbe, type Probe } from './probe-policy.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -44,6 +45,8 @@ export interface Commitment {
   choices?: string[];
   /** Events the extension records on it by itself (see `LinkEvent`). */
   links?: Links;
+  probe?: Probe;
+  probeState?: { at: number; failure?: string; signalledAt?: number };
   notes: { at: string; text: string }[];
 }
 /** `prs` are `owner/repo#N`, `runs` worker run ids; `reload` waits for one reload resume; `next` becomes the next step when a linked PR ends or a linked run or the reload arrives. `seen` holds the events already recorded. */
@@ -82,6 +85,8 @@ function isCommitment(value: unknown): value is Commitment {
     && STATUSES.some(status => status === c.status) && isTime(c.createdAt) && isTime(c.updatedAt) && isTime(c.progressAt)
     && (c.due === undefined || isTime(c.due)) && (c.next === undefined || isText(c.next)) && (c.evidence === undefined || isText(c.evidence)) && (c.supersedes === undefined || isText(c.supersedes)) && (c.project === undefined || isText(c.project) && SLUG.test(c.project))
     && (c.choices === undefined || (Array.isArray(c.choices) && c.choices.every(isText))) && (c.links === undefined || isLinks(c.links))
+    && (c.probe === undefined || typeof c.probe === 'object' && c.probe !== null && isTexts((c.probe as Probe).argv) && isText((c.probe as Probe).expect))
+    && (c.probeState === undefined || typeof c.probeState === 'object' && c.probeState !== null && Number.isFinite((c.probeState as { at: number }).at) && ((c.probeState as { failure?: unknown }).failure === undefined || isText((c.probeState as { failure?: unknown }).failure)))
     && Array.isArray(c.notes) && c.notes.every(note => typeof note === 'object' && note !== null && isTime((note as { at?: unknown }).at) && isText((note as { text?: unknown }).text));
 }
 
@@ -140,8 +145,9 @@ function linksOf(given: LinksInput | undefined, old?: Links): Links | undefined 
   return { ...prs.length ? { prs } : {}, ...runs.length ? { runs } : {}, ...reload ? { reload } : {}, ...next ? { next } : {}, ...merged.seen?.length ? { seen: merged.seen } : {} };
 }
 
-export type AddInput = { text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; project?: string; choices?: string[]; links?: LinksInput };
+export type AddInput = { probe?: Probe; text: string; source: string; owner?: CommitmentOwner; next?: string; due?: string; dueInMinutes?: number; supersedes?: string; project?: string; choices?: string[]; links?: LinksInput };
 export function addCommitment(dir: string, input: AddInput, now = Date.now()): Commitment {
+  if (input.probe) validateProbe(input.probe, dir);
   const items = readCommitments(dir);
   const at = iso(now);
   if (input.supersedes) {
@@ -153,6 +159,7 @@ export function addCommitment(dir: string, input: AddInput, now = Date.now()): C
     id: `c_${randomBytes(3).toString('hex')}`, text: clip(input.text), owner: input.owner ?? 'optchat', source: input.source,
     createdAt: at, updatedAt: at, progressAt: at, status: input.owner === 'operator' ? 'waiting_operator' : 'open', notes: [],
     ...(input.next ? { next: clip(input.next) } : {}),
+    ...(input.probe ? { probe: input.probe } : {}),
     ...(dueAt(input, now) ? { due: dueAt(input, now) } : {}),
     ...(input.supersedes ? { supersedes: input.supersedes } : {}),
     ...(projectOf(input.project) ? { project: projectOf(input.project) } : {}),
@@ -175,8 +182,9 @@ export function overdueRefusal(old: Commitment, input: UpdateInput, now: number)
   return `${old.id} is overdue ${span(now - Date.parse(old.due!))}: a note or a next step is not enough; to update it, ${ESCALATION_RULE}.`;
 }
 
-export type UpdateInput = { id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; project?: string; choices?: string[]; links?: LinksInput };
+export type UpdateInput = { probe?: Probe; id: string; status?: CommitmentStatus; next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; project?: string; choices?: string[]; links?: LinksInput };
 export function updateCommitment(dir: string, input: UpdateInput, now = Date.now()): Commitment {
+  if (input.probe) validateProbe(input.probe, dir);
   const items = readCommitments(dir);
   const old = items.find(c => c.id === input.id);
   if (!old) throw new Error(`No commitment ${input.id}`);
@@ -187,6 +195,7 @@ export function updateCommitment(dir: string, input: UpdateInput, now = Date.now
     ...rest, ...(input.project === undefined && oldProject ? { project: oldProject } : {}), ...(project ? { project } : {}),
     ...(choices === undefined && oldChoices ? { choices: oldChoices } : {}), updatedAt: at,
     ...(choices?.length ? { choices } : {}),
+    ...(input.probe ? { probe: input.probe, probeState: undefined } : {}),
     ...(links ? { links } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.next ? { next: clip(input.next) } : {}),
@@ -197,6 +206,20 @@ export function updateCommitment(dir: string, input: UpdateInput, now = Date.now
   };
   write(dir, items.map(c => c.id === old.id ? updated : c), now);
   return updated;
+}
+
+/** Record a completed probe against the current item, without overwriting intervening edits. */
+export function recordProbe(dir: string, id: string, expected: Probe, output: string, passed: boolean, now: number): { item?: Commitment; signal: boolean } {
+  const items = readCommitments(dir), old = items.find(c => c.id === id);
+  if (!old || old.status !== 'open' || JSON.stringify(old.probe) !== JSON.stringify(expected)) return { signal: false };
+  const at = iso(now), tail = output.slice(-300), failure = passed ? undefined : tail;
+  const lastSignal = old.probeState?.signalledAt;
+  const signal = !passed && (old.probeState?.failure !== failure || lastSignal === undefined || now - lastSignal >= 86_400_000);
+  const item: Commitment = { ...old, updatedAt: at, progressAt: at,
+    probeState: { at: now, ...failure !== undefined ? { failure, signalledAt: signal ? now : old.probeState?.signalledAt } : {} },
+    ...passed ? { status: 'done', evidence: `probe ${JSON.stringify(expected.argv)} ${tail} ${at}` } : { notes: [...old.notes, { at, text: clip(`probe failed: ${tail}`, 240) }].slice(-MAX_NOTES) } };
+  write(dir, items.map(c => c.id === id ? item : c), now);
+  return { item, signal };
 }
 
 /** What the extension sees that a commitment may be linked to: a gitwatch event of a PR, the end of a worker run, the reload resume. */
@@ -348,24 +371,25 @@ const params = Type.Object({
   action: stringEnum(['list', 'add', 'update']),
   id: Type.Optional(Type.String()),
   text: Type.Optional(Type.String({ maxLength: 2000 })),
-  source: Type.Optional(Type.String({ description: 'his message id, or "latest"' })),
+  source: Type.Optional(Type.String()),
   owner: Type.Optional(stringEnum(['optchat', 'operator'])),
   status: Type.Optional(stringEnum(STATUSES)),
   next: Type.Optional(Type.String()),
-  progress: Type.Optional(Type.String({ description: 'what moved; resets stall clock' })),
+  progress: Type.Optional(Type.String()),
   evidence: Type.Optional(Type.String()),
   due: Type.Optional(Type.String()),
   dueInMinutes: Type.Optional(Type.Number()),
-  supersedes: Type.Optional(Type.String({ description: 'id it replaces' })),
-  project: Type.Optional(Type.String({ description: 'slug; "" clears' })),
-  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES, description: 'his Slack Home taps; [] clears' })),
+  supersedes: Type.Optional(Type.String()),
+  project: Type.Optional(Type.String()),
+  choices: Type.Optional(Type.Array(Type.String({ maxLength: CHOICE_MAX }), { maxItems: MAX_CHOICES })),
   links: Type.Optional(Type.Object({
     prs: Type.Optional(Type.Array(Type.String())), runs: Type.Optional(Type.Array(Type.String())), reload: Type.Optional(Type.Boolean()), next: Type.Optional(Type.String()),
-  }, { additionalProperties: false, description: 'auto progress, never done: prs owner/repo#N, run ids, reload; next: step once it ends' })),
-  all: Type.Optional(Type.Boolean({ description: 'include closed' })),
+  }, { additionalProperties: false })),
+  probe: Type.Optional(Type.Object({ argv: Type.Array(Type.String()), cwd: Type.Optional(Type.String()), expect: Type.String(), every: Type.Optional(Type.Number()) }, { additionalProperties: false, description: 'expect: JS regex /i; every: minutes, default 30' })),
+  all: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 type Params = { action: 'list' | 'add' | 'update'; id?: string; text?: string; source?: string; owner?: CommitmentOwner; status?: CommitmentStatus;
-  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; project?: string; choices?: string[]; links?: LinksInput; all?: boolean };
+  next?: string; progress?: string; evidence?: string; due?: string; dueInMinutes?: number; supersedes?: string; project?: string; choices?: string[]; links?: LinksInput; probe?: Probe; all?: boolean };
 
 function listText(dir: string, all: boolean, now: number) {
   const items = readCommitments(dir), shown = all ? items : openCommitments(items, now);
@@ -382,7 +406,7 @@ type Owner = { dir: string; sourceExists(id: string): boolean; latestSource?(): 
 export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
   return {
     name: 'commitments', label: 'Commitments',
-    description: 'Promises to the operator and what waits on him. Open items show every turn; done needs evidence.',
+    description: 'Promises: source is a message id or latest; done needs evidence. Attach a read-only probe to each commitment that verifies its own effect. links: prs owner/repo#N; all includes closed; project "" and choices [] clear.',
     parameters: params,
     async execute(_id: string, args: Params) {
       const { dir, sourceExists, latestSource } = owner(), now = Date.now();
