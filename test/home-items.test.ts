@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Commitment } from '../src/commitments.ts';
-import { backgroundSummary, commitmentItems, headline, idleLine, pendingCi, readPrItems, renderWork, renderWorkParts, stillWaiting, type HomeWork } from '../src/home-items.ts';
+import { backgroundSummary, commitmentItems, headline, idleLine, pendingCi, readPrItems, readWatch, renderWork, renderWorkParts, stillWaiting, watchReadBytes, type HomeWork } from '../src/home-items.ts';
+import { PRS } from '../src/slack-reports.ts';
 
 const NOW = Date.parse('2026-11-02T15:00:00Z');
 const commitment = (over: Partial<Commitment>): Commitment => ({
@@ -140,4 +141,22 @@ test('stillWaiting: an item whose named PRs all merged or closed leaves the Home
     { text: 'Ver x#1, que o watch não conhece' },
   ];
   assert.deepEqual(stillWaiting(items, watch).map(i => i.text), ['Ver r#5 e pi-optchat #92', 'Confirmar o resumo das 07:00', 'Ver x#1, que o watch não conhece']);
+});
+
+test('readWatch and readPrItems cache by stat and do not re-read unchanged slack-prs.json', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home-watch-'));
+  try {
+    const file = join(dir, PRS);
+    writeFileSync(file, JSON.stringify({ 'o/r#1': { sig: 'OPEN:SUCCESS', url: 'https://github.com/o/r/pull/1', title: 'One' } }));
+    assert.equal(Object.keys(readWatch(dir)).length, 1);
+    const before = watchReadBytes;
+    assert.equal(Object.keys(readWatch(dir)).length, 1);
+    assert.equal(readPrItems(dir).length, 1);
+    assert.equal(watchReadBytes - before, 0, 'unchanged slack-prs.json must not be re-read');
+    writeFileSync(file, JSON.stringify({ 'o/r#1': { sig: 'OPEN:SUCCESS', url: 'https://github.com/o/r/pull/1', title: 'One' }, 'o/r#2': { sig: 'OPEN:PENDING', url: 'https://github.com/o/r/pull/2', title: 'Two' } }));
+    assert.equal(readPrItems(dir).length, 2);
+    assert.ok(watchReadBytes > before, 'updated slack-prs.json must be re-read');
+    rmSync(file);
+    assert.deepEqual(readWatch(dir), {});
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
