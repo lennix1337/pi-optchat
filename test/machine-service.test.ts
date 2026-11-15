@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { retroPrompt } from '../src/daily-retro.ts';
-import { machineTool, mcpSignatures, renderHistory, renderNow, renderTop } from '../src/machine-service.ts';
+import { machineTool, mcpReadBytes, mcpSignatures, renderHistory, renderNow, renderTop } from '../src/machine-service.ts';
 import type { LedgerRow } from '../src/machine-ledger.ts';
 import { ShellJobs } from '../src/shells.ts';
 import { tempDir } from './support.ts';
@@ -86,4 +86,18 @@ test('the retro prompt carries the measured cost centres, and is unchanged witho
   const text = retroPrompt('2026-11-10', ['cpu: worker ed055130 (bash stress.sh): 45 cpu-min over 3 min alive, up to 21 procs']);
   assert.match(text, /Measured cost centres of the last 24 h[^\n]*\n- cpu: worker ed055130 \(bash stress\.sh\): 45 cpu-min/);
   assert.ok(text.indexOf('cost centres') < text.indexOf('Finish with one short Slack DM'));
+});
+
+test('mcpSignatures caches unchanged mcp.json across 5s sampler ticks and invalidates on edit', () => {
+  const { dir, close } = tempDir('optchat-mcp-cache-');
+  const file = join(dir, 'mcp.json');
+  try {
+    writeFileSync(file, JSON.stringify({ mcpServers: { sentry: { command: 'npx', args: ['-y', '@sentry/mcp-server@0.49.0'] } } }));
+    assert.equal(mcpSignatures(file).length, 1);
+    const before = mcpReadBytes;
+    for (let i = 0; i < 12; i++) assert.equal(mcpSignatures(file).length, 1);
+    assert.equal(mcpReadBytes - before, 0, 'unchanged mcp.json must not be re-read');
+    writeFileSync(file, JSON.stringify({ mcpServers: { sentry: { command: 'npx', args: ['-y', '@sentry/mcp-server@0.49.0'] }, plane: { command: 'uvx', args: ['plane-mcp-server'] } } }));
+    assert.equal(mcpSignatures(file).length, 2);
+  } finally { close(); }
 });
