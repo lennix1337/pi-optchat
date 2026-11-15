@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isStrings, record } from './cache.ts';
@@ -78,9 +78,27 @@ export function decide(contract: Contract, effects: Effect[], now = Date.now()):
 
 /** A removed worktree or a file path still belongs to the checkout around it: use the nearest existing folder. */
 const existing = (path: string) => { let p = path; while (!existsSync(p) && dirname(p) !== p) p = dirname(p); return p; };
+/**
+ * The classifier lowercases paths to compare them; a case-sensitive filesystem (Linux) then finds no folder there.
+ * Restore each missing part's case from its parent's listing; a part that matches nothing leaves the path as it was.
+ */
+export function onDisk(path: string) {
+  if (existsSync(path)) return path;
+  let real = path.startsWith('/') ? '/' : '';
+  for (const part of path.split('/').filter(Boolean)) {
+    const next = real ? join(real, part) : part;
+    if (existsSync(next)) { real = next; continue; }
+    let entries: string[] = [];
+    try { entries = readdirSync(real || '.'); } catch { return path; }
+    const match = entries.find(entry => entry.toLowerCase() === part.toLowerCase());
+    if (!match) return path;
+    real = real ? join(real, match) : match;
+  }
+  return real;
+}
 const exec = promisify(execFile);
 const quiet = async (path: string, args: string[]) => {
-  path = existing(path);
+  path = existing(onDisk(path));
   try { return (await exec('git', ['-C', path, ...args], { encoding: 'utf8', timeout: 3000, windowsHide: true })).stdout.trim() || undefined; }
   catch { return undefined; }
 };
@@ -89,11 +107,11 @@ export const slugOf = (url: string) => /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.g
 export const gitRepo = {
   slug: async (path: string, remote = 'origin') => { const url = await quiet(path, ['remote', 'get-url', remote]); return url && slugOf(url); },
   branch: path => quiet(path, ['rev-parse', '--abbrev-ref', 'HEAD']),
-  merged: (path, branch) => branchMerged(path, branch),
-  worktree: path => worktreeState(path),
+  merged: (path, branch) => branchMerged(onDisk(path), branch),
+  worktree: path => worktreeState(onDisk(path)),
   script: path => {
     // Git Bash `/tmp` is the user's temp folder, not `C:\tmp`.
-    const file = /^\/tmp(?:\/|$)/.test(path) ? join(tmpdir(), path.slice(4)) : path;
+    const file = onDisk(/^\/tmp(?:\/|$)/.test(path) ? join(tmpdir(), path.slice(4)) : path);
     try { return statSync(file).size <= 512 * 1024 ? readFileSync(file, 'utf8') : undefined; } catch { return undefined; }
   },
 } satisfies AsyncRepo;

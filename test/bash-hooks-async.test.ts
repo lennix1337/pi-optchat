@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { registerCommitHookGuard } from '../src/commit-hook-guard.ts';
-import { classifyEffects, classifyEffectsAsync, type AsyncRepo, type Repo } from '../src/autonomy.ts';
+import { classifyEffects, classifyEffectsAsync, gitRepo, type AsyncRepo, type Repo } from '../src/autonomy.ts';
 import { branchMerged } from '../src/merged-branch.ts';
 import { removeDir } from './support.ts';
 
@@ -38,6 +38,20 @@ test('awaited repository answers preserve synchronous classification, including 
     const effects = await classifyEffectsAsync({ tool: 'bash', input: { command: 'git worktree remove --force ../landed' }, cwd: '/repo' }, { ...asyncRepo, ...failure });
     assert.deepEqual(effects, [{ action: 'discard', targets: ['/repo'] }], 'unknown state never frees a destructive cleanup');
   }
+});
+
+test('the live reader finds a mixed-case checkout from the lowercased path the classifier compares', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bash-hooks-'));
+  const dir = join(root, 'MixedCase');
+  mkdirSync(dir);
+  childProcess.execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main'], { stdio: 'ignore' });
+  childProcess.execFileSync('git', ['-C', dir, '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init'], { stdio: 'ignore' });
+  childProcess.execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', 'https://github.com/example/repo.git'], { stdio: 'ignore' });
+  try {
+    const folded = dir.replaceAll('\\', '/').toLowerCase();
+    assert.equal(await gitRepo.slug(folded), 'example/repo');
+    assert.equal(await gitRepo.branch(folded), 'main');
+  } finally { removeDir(root); }
 });
 
 test('merged lookup awaits GitHub and still fails closed on an asynchronous failure', async () => {
