@@ -21,7 +21,7 @@ const validInputs: Record<string, Record<string, unknown>> = {
   operation_state: {}, operational_state: {}, context_metrics: {}, machine: { view: 'top', window: 60 }, heap_report: { gc: true, snapshot: false }, spawn: { tasks: [{ task: 'not launched', cwd: '.' }] },
   tell: { id: 'fixture', message: 'not sent' }, retarget: { id: 'fixture', message: 'not sent', model: 'provider/model' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
   slack_send: { text: 'not sent' }, tool_inventory: {}, skills_on_disk: { name: 'fixture' }, commitments: { action: 'list' },
-  crew: { action: 'read', project: 'harness', part: 'memory' },
+  crew: { action: 'read', project: 'harness', part: 'memory' }, predictions: { day: '2026-11-16', text: 'fixture', status: 'predicted', evidence: 'recurring' },
 };
 test('spawn accepts a worker kind and a project specialist', () => {
   const args = { tasks: [{ task: 'not launched', cwd: '.', kind: 'code', project: 'dentai' }] };
