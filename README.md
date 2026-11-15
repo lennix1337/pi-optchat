@@ -461,11 +461,16 @@ Restart Pi after source changes. Use `OPTCHAT_HOME` to test against a throwaway 
 
 ```sh
 npm run check      # type check
-npm test           # offline tests, no paid model calls
+npm run verify     # type check + full offline suite; waits for another local suite to finish
+npm test           # full offline suite (up to 4 file processes), same machine-wide lock; no paid model calls
 npm run test:one -- --test-name-pattern="<name>" test/<file>.test.ts # one file or test, same loader flags
 npm run test:pi-compat # real Pi runtime compatibility checks, no paid model calls
 npm run test:live  # paid Anthropic calls on synthetic data in a disposable profile
 ```
+
+Checkouts with this runner use a shared loopback lock (port 47821) for `npm test`, `npm run verify` and the `unit` check recipe, including other worktrees. Older branches must pick up this runner to join the same lock. A second call waits before typechecking or starting test processes; the OS releases the lock when its owner exits. `test:one` and direct `node --test` commands remain independent, so do not run a full direct suite alongside these commands. The lock/concurrency regression tests run separately with `node --test test/verify-runner.test.mjs` (the existing full-suite test count is unchanged).
+
+On Windows, `powershell -NoProfile -File scripts/bench-verify.ps1 <label>` measures verify's wall time, sampled peak CPU (normalized across logical processors) and summed working sets for its whole process tree. Process identity includes creation time to exclude reused PIDs; suite detection parses native argv instead of matching fixture source text. Run `powershell -NoProfile -File scripts/bench-verify.ps1 -SelfTest` for its regression checks. File durations, samples and logs go under the user temp directory. It refuses an already-running suite and marks any foreign suite seen during measurement; discard contaminated runs. Keep other load, such as an open game, consistent between measurements. Add `-QueueSecond` to launch a second real verify while the first suite is active; both must exit successfully and `maxActiveTestRunners` must stay at one.
 
 ### Offline reliability and overhead
 

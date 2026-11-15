@@ -423,8 +423,8 @@
       "timeoutMs": 120000
     },
     "unit": {
-      "description": "Full hermetic unit suite; excludes live and paid benchmark entry points",
-      "argv": ["node", "node_modules/tsx/dist/cli.mjs", "--import", "./test/support.ts", "--test", "test/*.test.ts"],
+      "description": "Full hermetic unit suite, serialized across worktrees; no live/paid entry points",
+      "argv": ["node", "scripts/verify.mjs", "--test-only"],
       "timeoutMs": 600000
     }
   }

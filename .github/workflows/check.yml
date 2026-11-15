@@ -56,6 +56,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run check
+      - run: node --test test/verify-runner.test.mjs
       - run: npm test
       - run: npm run test:pi-compat
       - run: npm pack --dry-run
@@ -93,6 +94,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - if: matrix.shard == 1
         run: npm run check
+      - run: powershell -NoProfile -File scripts/bench-verify.ps1 -SelfTest
+      - run: node --test test/verify-runner.test.mjs
       # npm test's file list, split by node's own --test-shard (node expands the quoted glob itself on Windows).
       # On Node 22 --test-timeout also bounds each whole file, over its tests' own timeouts (Node 24 does not):
       # cache-e2e.test.ts takes ~110 s on a normal runner and passed 180 s on a slow one (PR #181), so the cap
