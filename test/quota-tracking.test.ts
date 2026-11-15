@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { QUOTA_HISTORY_FILE, quotaWindows, readQuotaHistory, sampleQuota, type QuotaRow } from '../src/quota-history.ts';
+import { QUOTA_HISTORY_FILE, quotaHistoryReadBytes, quotaWindows, readQuotaHistory, sampleQuota, type QuotaRow } from '../src/quota-history.ts';
 import { analyzeQuota, baseProvider, intervalsOf, readRates, roleKey, toCall, WEEK_MS, type Call, type RateTable } from '../src/quota-economy.ts';
 import { cachedEconomy, loadEconomy, sampleQuotaRound } from '../src/quota-load.ts';
 import { aggregateCalls, readUsageAggregate, scanTail, updateUsageAggregate, USAGE_AGGREGATE_FILE } from '../src/usage-aggregate.ts';
@@ -270,4 +270,22 @@ test('a reading with no fetchedAt is never written, even after the account has h
   const broken = cache(NOW); delete (broken.usageByProvider['anthropic-account-2'] as { fetchedAt?: number }).fetchedAt;
   assert.deepEqual(sampleQuota(dir, broken, NOW + 1), []);
   assert.equal(readQuotaHistory(dir).length, 2);
+});
+
+test('repeated sampleQuota calls on unchanged history read 0 bytes and still pick up external appends', t => {
+  const dir = tmp(t);
+  sampleQuota(dir, cache(NOW), NOW);
+  const before = quotaHistoryReadBytes;
+  for (let i = 1; i <= 5; i++) assert.deepEqual(sampleQuota(dir, cache(NOW), NOW + i * 1000), []);
+  assert.equal(quotaHistoryReadBytes - before, 0, 'unchanged quota-history.jsonl must not be re-read');
+
+  // New fetchedAt appends without re-reading the history file.
+  const beforeAppend = quotaHistoryReadBytes;
+  assert.equal(sampleQuota(dir, cache(NOW + 60_000), NOW + 60_000).length, 2);
+  assert.equal(quotaHistoryReadBytes - beforeAppend, 0);
+
+  // External append invalidates the stat-guarded cache.
+  const external: QuotaRow = { at: NOW + 120_000, provider: 'anthropic', fetchedAt: NOW + 120_000 };
+  appendFileSync(join(dir, QUOTA_HISTORY_FILE), JSON.stringify(external) + '\n');
+  assert.equal(sampleQuota(dir, cache(NOW + 120_000), NOW + 120_000).length, 1);
 });

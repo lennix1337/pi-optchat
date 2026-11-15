@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { cpus, constants, setPriority } from 'node:os';
 import { join } from 'node:path';
 import { Type } from 'typebox';
@@ -18,17 +18,31 @@ export const machineDir = () => join(dataHome(), 'machine');
 /** The running service of this Pi process, or undefined (a worker, a one-shot run, another platform). */
 export const machineService = () => holder[SERVICE];
 
+export let mcpReadBytes = 0;
+const mcpCache = new Map<string, { stamp: string; signatures: McpSignature[] }>();
+
 /** What mcp.json defines, as the words each server's command line holds (package names; versions and flags left out). */
 export function mcpSignatures(file: string): McpSignature[] {
+  let stamp: string;
+  try { const s = statSync(file); stamp = `${s.size}:${s.mtimeMs}`; } catch { mcpCache.delete(file); return []; }
+  const hit = mcpCache.get(file);
+  if (hit?.stamp === stamp) return hit.signatures;
   let servers: unknown;
-  try { servers = (JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: unknown }).mcpServers; } catch { return []; }
+  try {
+    const raw = readFileSync(file, 'utf8');
+    mcpReadBytes += Buffer.byteLength(raw);
+    servers = (JSON.parse(raw) as { mcpServers?: unknown }).mcpServers;
+  } catch { return []; }
   if (typeof servers !== 'object' || servers === null) return [];
-  return Object.entries(servers as Record<string, { command?: unknown; args?: unknown }>).flatMap(([name, config]) => {
+  const signatures = Object.entries(servers as Record<string, { command?: unknown; args?: unknown }>).flatMap(([name, config]) => {
     const args = Array.isArray(config?.args) ? config.args.filter((a): a is string => typeof a === 'string' && !a.startsWith('-')) : [];
     const words = [...args, typeof config?.command === 'string' ? config.command.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat)$/i, '') : '']
       .map(w => w.replace(/(?<=.)(@|==)[\w.\-+]+$/, '')).filter(w => w.length >= 6 && !/^(npx|uvx|node|python|stdio)$/i.test(w));
     return words.length ? [{ name, tokens: [...new Set(words)] }] : [];
   });
+  if (mcpCache.size >= 8) mcpCache.delete(mcpCache.keys().next().value!);
+  mcpCache.set(file, { stamp, signatures });
+  return signatures;
 }
 
 export interface ServiceOptions {

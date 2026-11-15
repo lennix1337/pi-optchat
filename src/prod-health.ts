@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { brasiliaTime } from './heartbeat.ts';
@@ -143,14 +143,39 @@ const FILE = 'prod-health.json';
 const NL = String.fromCharCode(10);
 /** Rows kept in a monitor's history: at 5-minute rounds and three probes, about a day and a half; trimmed to HISTORY_KEEP once it passes HISTORY_MAX. */
 const HISTORY_MAX = 3000, HISTORY_KEEP = 2000;
+export let prodHealthReadBytes = 0;
+const historyLines = new Map<string, { size: number; lines: number }>();
+function fileSize(file: string): number {
+  try { return statSync(file).size; } catch { return 0; }
+}
 /** One row per probe per round, so a slow or failed stretch can be dated afterwards (the state file only keeps the last round). Best effort: a full disk must not stop the probes. */
 function appendHistory(file: string, at: number, results: Map<string, ProbeResult>): void {
+  if (!results.size) return;
   try {
     mkdirSync(join(file, '..'), { recursive: true });
     const row = ([probe, r]: [string, ProbeResult]) => JSON.stringify({ at, probe, ms: r.ms, ok: r.ok, ...(r.waitMs === undefined ? {} : { waitMs: r.waitMs }), ...(r.edge ? { edge: r.edge } : {}), ...(r.problem ? { problem: r.problem } : {}) });
-    appendFileSync(file, [...results].map(row).join(NL) + NL);
-    const rows = readFileSync(file, 'utf8').split(NL).filter(Boolean);
-    if (rows.length > HISTORY_MAX) atomicWrite(file, rows.slice(-HISTORY_KEEP).join(NL) + NL);
+    const text = [...results].map(row).join(NL) + NL;
+    const preSize = fileSize(file), cached = historyLines.get(file);
+    let lines: number;
+    if (cached && cached.size === preSize) lines = cached.lines;
+    else if (preSize === 0) lines = 0;
+    else {
+      const content = readFileSync(file, 'utf8');
+      prodHealthReadBytes += Buffer.byteLength(content);
+      lines = content.split(NL).filter(Boolean).length;
+    }
+    appendFileSync(file, text);
+    lines += results.size;
+    if (lines > HISTORY_MAX) {
+      const content = readFileSync(file, 'utf8');
+      prodHealthReadBytes += Buffer.byteLength(content);
+      const rows = content.split(NL).filter(Boolean);
+      const kept = rows.slice(-HISTORY_KEEP).join(NL) + NL;
+      atomicWrite(file, kept);
+      historyLines.set(file, { size: Buffer.byteLength(kept), lines: Math.min(rows.length, HISTORY_KEEP) });
+    } else {
+      historyLines.set(file, { size: preSize + Buffer.byteLength(text), lines });
+    }
   } catch { /* history is diagnostic only */ }
 }
 export const PC_FILE = 'pc-health.json';

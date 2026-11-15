@@ -451,3 +451,18 @@ test('a pi-subagents transcript opens read-only, with the run own model and thin
     } finally { view.dispose(); await children.close(); await memory.close(); removeDir(dir); }
   } finally { if (previous === undefined) delete process.env.PI_SUBAGENTS_TEMP_ROOT; else process.env.PI_SUBAGENTS_TEMP_ROOT = previous; removeDir(root); }
 });
+
+
+test('repeated ExternalRuns.refresh on unchanged live-foreground files reads 0 bytes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-subagents-live-io-')), profile = mkdtempSync(join(tmpdir(), 'optchat-live-io-'));
+  try {
+    writeLive(root, 'r1-0.json', { version: 1, runId: 'r1', index: 0, agent: 'delegate', task: 'do the thing', cwd: 'C:\\work',
+      sessionId: 'session-1', model: 'anthropic/claude-haiku-5-5:low', startedAt: 100, updatedAt: 200, state: 'running' });
+    const runs = new ExternalRuns(profile, { root, throttleMs: 0, now: () => 300 });
+    runs.refresh(true);
+    assert.equal(runs.snapshot().length, 1);
+    const before = runs.readBytes;
+    for (let i = 0; i < 30; i++) runs.refresh(true);
+    assert.equal(runs.readBytes - before, 0, 'unchanged live-foreground files must not be re-read on every 2s tick');
+  } finally { removeDir(root); removeDir(profile); }
+});

@@ -143,6 +143,7 @@ export type UsageSummary = ReturnType<typeof summarizeUsage> & { calls: number }
 /** What the ledger needs from its index over usage.jsonl, the source of truth. */
 interface UsageIndex {
   readonly invalid: number;
+  readonly readBytes: number;
   /** Appends validated, canonical records whose IDs it has not seen to usage.jsonl and indexes them. */
   append(entries: UsageEntry[]): void;
   all(): UsageEntry[];
@@ -153,10 +154,12 @@ interface UsageIndex {
 /** Fallback index: reads the whole ledger into memory, so opening grows with the ledger. */
 class MemoryIndex implements UsageIndex {
   invalid = 0;
+  readBytes = 0;
   private readonly entries: UsageEntry[] = [];
   private readonly ids = new Set<string>();
   constructor(private readonly file: string) {
     const contents = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    this.readBytes += Buffer.byteLength(contents);
     for (const line of contents.split('\n')) {
       if (!line.trim()) continue;
       const entry = parseLine(line);
@@ -190,20 +193,36 @@ const timed = '(firstMs IS NOT NULL OR responseMs IS NOT NULL)';
 const sqlite = (() => { try { return process.getBuiltinModule('node:sqlite'); } catch { return undefined; } })();
 type Group = Record<typeof amounts[number], number> & { role: UsageRole; provider: string; model: string; first: number; calls: number; failures: number };
 /** Hash of the 4 KiB before `offset`: tells whether the ledger still holds the bytes the index has read. */
-function fingerprint(file: string, offset: number) {
+function fingerprint(file: string, offset: number): { hash: string; bytes: number } {
   const start = Math.max(0, offset - 4096), block = Buffer.alloc(offset - start), fd = openSync(file, 'r');
-  try { readSync(fd, block, 0, block.length, start); } finally { closeSync(fd); }
-  return createHash('sha256').update(block).digest('hex');
+  let bytes = 0;
+  try { bytes = readSync(fd, block, 0, block.length, start); } finally { closeSync(fd); }
+  return { hash: createHash('sha256').update(block).digest('hex'), bytes };
 }
 
 /** usage.db: a disposable SQLite index over usage.jsonl, which stays the only copy of each record. The index keeps each record's
  * byte range, the columns the usage page aggregates, and hourly totals; it reads only the bytes the ledger gained since its last
  * read, and rebuilds itself when missing, unreadable, of another schema, or when the ledger no longer holds what it read.
  * Each operation opens and closes the database, so no handle outlives a call and other processes' appends are picked up. */
+function fileStat(file: string): { size: number; mtimeMs: number } {
+  try { const s = statSync(file); return { size: s.size, mtimeMs: s.mtimeMs }; } catch { return { size: 0, mtimeMs: 0 }; }
+}
+
+interface SummaryCacheEntry {
+  stamp: string;
+  prevBeforeFrom: number;
+  nextAtOrAfterFrom: number;
+  maxIncluded: number;
+  nextFuture: number;
+  value: UsageSummary;
+}
+
 class SqliteIndex implements UsageIndex {
   invalid = 0;
+  readBytes = 0;
+  private readonly summaryCache = new Map<string, SummaryCacheEntry>();
   constructor(private readonly file: string, private readonly db: string) { this.use(() => {}); }
-  private reset() { for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(this.db + suffix, { force: true }); }
+  private reset() { this.summaryCache.clear(); for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(this.db + suffix, { force: true }); }
   private open() {
     const db = new sqlite!.DatabaseSync(this.db, { timeout: 5000 });
     try {
@@ -240,16 +259,16 @@ class SqliteIndex implements UsageIndex {
     try { return work(db); } finally { db.close(); }
   }
   private sync(db: DatabaseSync) {
-    const size = existsSync(this.file) ? statSync(this.file).size : 0;
+    const size = fileStat(this.file).size;
     let offset = Number(this.meta(db, 'offset') ?? 0);
-    if (offset > size || (offset > 0 && fingerprint(this.file, offset) !== this.meta(db, 'tail'))) {
+    if (offset > size || (offset > 0 && (() => { const fp = fingerprint(this.file, offset); this.readBytes += fp.bytes; return fp.hash !== this.meta(db, 'tail'); })())) {
       db.exec("DELETE FROM entries; DELETE FROM hours; DELETE FROM meta WHERE key IN ('offset', 'tail', 'invalid')");
       offset = 0;
     }
     this.invalid = Number(this.meta(db, 'invalid') ?? 0);
     if (size === offset) return;
     const block = Buffer.alloc(size - offset), fd = openSync(this.file, 'r');
-    try { readSync(fd, block, 0, block.length, offset); } finally { closeSync(fd); }
+    try { this.readBytes += readSync(fd, block, 0, block.length, offset); } finally { closeSync(fd); }
     // A last line without its newline is still being written; it is read once it ends.
     const end = block.lastIndexOf(0x0a) + 1;
     if (!end) return;
@@ -274,7 +293,9 @@ class SqliteIndex implements UsageIndex {
         ON CONFLICT DO UPDATE SET first = MIN(first, excluded.first), calls = calls + excluded.calls, failures = failures + excluded.failures,
           ${amounts.map(a => `${a} = ${a} + excluded.${a}`).join(', ')}`).run(last);
       this.setMeta(db, 'offset', offset + end);
-      this.setMeta(db, 'tail', fingerprint(this.file, offset + end));
+      const fp = fingerprint(this.file, offset + end);
+      this.readBytes += fp.bytes;
+      this.setMeta(db, 'tail', fp.hash);
       this.setMeta(db, 'invalid', this.invalid);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
@@ -286,6 +307,7 @@ class SqliteIndex implements UsageIndex {
       return entries.filter(entry => !entry.id || !known.get(entry.id));
     });
     if (!fresh.length) return;
+    this.summaryCache.clear();
     for (const entry of fresh) appendJson(this.file, entry);
     this.use(() => {});
   }
@@ -296,7 +318,7 @@ class SqliteIndex implements UsageIndex {
       if (!rows.length) return [];
       const from = Math.min(...rows.map(r => r.pos)), to = Math.max(...rows.map(r => r.pos + r.len));
       const block = Buffer.alloc(to - from), fd = openSync(this.file, 'r');
-      try { readSync(fd, block, 0, block.length, from); } finally { closeSync(fd); }
+      try { this.readBytes += readSync(fd, block, 0, block.length, from); } finally { closeSync(fd); }
       return rows.flatMap(r => parseLine(block.toString('utf8', r.pos - from, r.pos - from + r.len)) ?? []);
     });
   }
@@ -309,6 +331,15 @@ class SqliteIndex implements UsageIndex {
   /** Same result as summarizeUsage(select(...)) without reading the records: whole hours come from the hourly totals, the partial
    * hours at either end and "This session" from the rows, and medians from the few rows that carry a measured latency. */
   summary(range: UsageRange, session: string, now: number): UsageSummary {
+    const { size, mtimeMs } = fileStat(this.file);
+    const stamp = `${size}:${mtimeMs}`;
+    const timeFiltered = range !== 'This session' && range !== 'All time';
+    const from = timeFiltered ? since(range, now) : 0;
+    const cacheKey = `${range}\0${session}`;
+    const hit = this.summaryCache.get(cacheKey);
+    if (hit && hit.stamp === stamp && (!timeFiltered || (from > hit.prevBeforeFrom && from <= hit.nextAtOrAfterFrom && now >= hit.maxIncluded && now < hit.nextFuture))) {
+      return structuredClone(hit.value);
+    }
     return this.use(db => {
       const rows = (where: string, ...params: (string | number)[]) => db.prepare(`SELECT role, provider, model, MIN(n) AS first, COUNT(*) AS calls,
         SUM(failed) AS failures, ${sums} FROM entries ${where} GROUP BY role, provider, model`).all(...params) as Group[];
@@ -318,7 +349,7 @@ class SqliteIndex implements UsageIndex {
       if (range === 'This session') { parts = rows('WHERE session = ?', session); latencyWhere = `session = ? AND ${timed}`; latencyParams = [session]; }
       else if (range === 'All time') { parts = hours(''); latencyWhere = timed; latencyParams = []; }
       else {
-        const from = since(range, now), low = Math.ceil(from / HOUR), high = Math.floor((now + 1) / HOUR);
+        const low = Math.ceil(from / HOUR), high = Math.floor((now + 1) / HOUR);
         parts = low < high
           ? [...hours('WHERE hour >= ? AND hour < ?', low, high), ...rows('WHERE ts >= ? AND ts < ?', from, low * HOUR), ...rows('WHERE ts >= ? AND ts <= ?', high * HOUR, now)]
           : rows('WHERE ts >= ? AND ts <= ?', from, now);
@@ -347,7 +378,21 @@ class SqliteIndex implements UsageIndex {
         return { role: group.role, provider: group.provider || undefined, model: group.model, usage, calls: group.calls, failures: group.failures,
           latency: samples.summary() };
       });
-      return { total, failures, latency: all.summary(), groups: result, calls };
+      const summaryValue: UsageSummary = { total, failures, latency: all.summary(), groups: result, calls };
+      let prevBeforeFrom = Number.NEGATIVE_INFINITY, nextAtOrAfterFrom = Number.POSITIVE_INFINITY;
+      let maxIncluded = Number.NEGATIVE_INFINITY, nextFuture = Number.POSITIVE_INFINITY;
+      if (timeFiltered) {
+        prevBeforeFrom = (db.prepare('SELECT MAX(ts) AS ts FROM entries WHERE ts < ?').get(from) as { ts: number | null }).ts ?? Number.NEGATIVE_INFINITY;
+        nextAtOrAfterFrom = (db.prepare('SELECT MIN(ts) AS ts FROM entries WHERE ts >= ?').get(from) as { ts: number | null }).ts ?? Number.POSITIVE_INFINITY;
+        maxIncluded = (db.prepare('SELECT MAX(ts) AS ts FROM entries WHERE ts <= ?').get(now) as { ts: number | null }).ts ?? Number.NEGATIVE_INFINITY;
+        nextFuture = (db.prepare('SELECT MIN(ts) AS ts FROM entries WHERE ts > ?').get(now) as { ts: number | null }).ts ?? Number.POSITIVE_INFINITY;
+      }
+      const synced = fileStat(this.file);
+      if (`${synced.size}:${synced.mtimeMs}` === stamp) {
+        if (this.summaryCache.size >= 32) this.summaryCache.delete(this.summaryCache.keys().next().value!);
+        this.summaryCache.set(cacheKey, { stamp, prevBeforeFrom, nextAtOrAfterFrom, maxIncluded, nextFuture, value: structuredClone(summaryValue) });
+      }
+      return summaryValue;
     });
   }
 }
@@ -384,6 +429,7 @@ export class UsageLedger {
   }
   /** Every record, in ledger order. Reads the whole ledger: for tests and tools, not for opening a profile. */
   get entries() { return this.index.all(); }
+  get readBytes() { return this.index.readBytes; }
   get warnings() {
     const invalid = this.index.invalid + this.rejected;
     return [...this.notes, ...invalid ? [`${invalid} unreadable usage records excluded; totals may be incomplete.`] : []];

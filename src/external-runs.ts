@@ -318,10 +318,12 @@ function runnerEvidence(value: unknown): RunnerEvidence {
 export class ExternalRuns {
   readonly records = new Map<string, RunInfo>();
   readonly warnings: string[] = [];
+  readBytes = 0;
   readonly paths: PiSubagentsPaths;
   private readonly hiddenFile: string;
   private readonly hidden: Set<string>;
   private readonly statusCache = new Map<string, CacheEntry>();
+  private readonly liveCache = new Map<string, { stamp: string; run?: RunInfo; updatedAt?: number }>();
   private readonly sessionCache = new Map<string, { stamp: string; meta: { model?: string; thinking?: string } }>();
   private readonly now: () => number;
   private readonly throttleMs: number;
@@ -435,7 +437,9 @@ export class ExternalRuns {
       }
       let runs: RunInfo[] = [], runner: RunnerEvidence | undefined;
       try {
-        const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
+        const raw = readFileSync(file, 'utf8');
+        this.readBytes += Buffer.byteLength(raw);
+        const value: unknown = JSON.parse(raw);
         runs = asyncStatusToRuns(value, entry.name, dir).map(run => this.withSessionMeta(run));
         runner = runnerEvidence(value);
       } catch { runs = []; }
@@ -468,7 +472,9 @@ export class ExternalRuns {
       return;
     }
     try {
-      const runs = foregroundHistoryToRuns(JSON.parse(readFileSync(file, 'utf8'))).map(run => this.withSessionMeta(run));
+      const raw = readFileSync(file, 'utf8');
+      this.readBytes += Buffer.byteLength(raw);
+      const runs = foregroundHistoryToRuns(JSON.parse(raw)).map(run => this.withSessionMeta(run));
       this.foregroundCache = { stamp, runs };
       this.foregroundRecords = new Map(runs.map(run => [run.id, run]));
     } catch (error) {
@@ -481,24 +487,40 @@ export class ExternalRuns {
   private readLiveForeground() {
     let entries: string[];
     try { entries = readdirSync(this.paths.liveForegroundDir); }
-    catch { this.liveRecords.clear(); return; }
-    const now = this.now(), next = new Map<string, RunInfo>();
+    catch { this.liveRecords.clear(); this.liveCache.clear(); return; }
+    const now = this.now(), seen = new Set<string>(), next = new Map<string, RunInfo>();
     for (const entry of entries) {
       if (!entry.endsWith('.json')) continue;
       const file = join(this.paths.liveForegroundDir, entry);
-      let value: unknown;
-      try { value = JSON.parse(readFileSync(file, 'utf8')); }
-      catch { continue; }
-      const run = liveForegroundToRun(value);
+      const stamp = this.stamp(file);
+      if (!stamp) { this.liveCache.delete(file); continue; }
+      seen.add(file);
+      const cached = this.liveCache.get(file);
+      let run: RunInfo | undefined, updatedAt: number | undefined;
+      if (cached?.stamp === stamp) {
+        run = cached.run;
+        updatedAt = cached.updatedAt;
+      } else {
+        let value: unknown;
+        try {
+          const raw = readFileSync(file, 'utf8');
+          this.readBytes += Buffer.byteLength(raw);
+          value = JSON.parse(raw);
+        } catch { continue; }
+        const parsed = liveForegroundToRun(value);
+        updatedAt = count(isRecord(value) ? value.updatedAt : undefined);
+        run = parsed ? this.withSessionMeta(parsed) : undefined;
+        this.liveCache.set(file, { stamp, run, updatedAt });
+      }
       if (!run) continue;
       // A record whose heartbeat stopped belongs to a run that died without cleaning up.
-      const updatedAt = count(isRecord(value) ? value.updatedAt : undefined);
       if (updatedAt !== undefined && now - updatedAt > this.liveTtlMs) continue;
       // Remember the start: the saved history has none, and the live record is gone by then.
       this.liveStarts.set(run.id, run.started);
       if (this.liveStarts.size > 500) this.liveStarts.delete(this.liveStarts.keys().next().value as string);
-      next.set(run.id, this.withSessionMeta(run));
+      next.set(run.id, run);
     }
+    for (const file of this.liveCache.keys()) if (!seen.has(file)) this.liveCache.delete(file);
     this.liveRecords = next;
   }
 
