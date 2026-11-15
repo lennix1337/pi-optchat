@@ -258,6 +258,14 @@ async function startExtras(config: Config, store: import('./store/db.ts').TaskSt
     try { slack = await startSlack(config, config.slack, store); }
     catch { console.error('Slack channel could not be initialized.'); return null; }
   }
+  // The Pi's own timers die with it, so the service that outlives it tells the operator when it fell and did not come back.
+  let piWatch: import('./pi-watch.ts').PiWatch | undefined;
+  const poster = slack?.bridge?.poster;
+  if (poster) {
+    const { PiWatch } = await import('./pi-watch.ts');
+    piWatch = new PiWatch({ send: text => poster.send(text) });
+    piWatch.start(() => console.error('Pi watch pass failed; it keeps retrying.'));
+  }
   let notices: Notices | undefined;
   if (config.notifications) {
     try { notices = await startNotifications(config, config.notifications, store); }
@@ -274,7 +282,7 @@ async function startExtras(config: Config, store: import('./store/db.ts').TaskSt
     catch { google?.stop(); notices?.stop(); slack?.stop(); console.error('Signal journal could not be initialized.'); return null; }
   }
   return {
-    stop() { journal?.stop(); google?.stop(); notices?.stop(); slack?.stop(); },
+    stop() { piWatch?.stop(); journal?.stop(); google?.stop(); notices?.stop(); slack?.stop(); },
     ...(notices ? { notices: () => notices!.list() } : {}),
     server: { ...(google ? { briefings: google.provider } : {}), ...(slack?.bridge ? { slack: slack.bridge } : {}), ...(journal ? { journal: journal.api } : {}) },
   };
