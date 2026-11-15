@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
 import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
+import { addCommitment, readCommitments } from '../src/commitments.ts';
 import type { Patrol } from '../src/patrol-divert.ts';
 import type { Triage } from '../src/wake-signals.ts';
 import type { ModelChoice } from '../src/compactor.ts';
@@ -784,6 +785,27 @@ test('with wakeTriage a commitment whose due passed wakes with `commitment due: 
   assert.equal(h.woken.length, 1, 'each due is consumed once');
   assert.deepEqual(saved(h.dir).dueSeen.sort(), [`c_one@${items[0]!.due}`, `c_two@${items[1]!.due}`]);
   rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a failed real probe wakes with its output once, and stays pending when the wake cap holds it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'beat-probe-'));
+  addCommitment(dir, { text: 'verify', source: 'test', probe: { argv: ['git', 'status'], cwd: dir, expect: 'ok', every: 1 } }, 0);
+  const h = harness({ dir, minutes: 15, wakes: 0, triage: () => triaged({ commitments: readCommitments(dir) }) });
+  h.beat.arm(); await h.advance(15 * MIN);
+  assert.equal(h.woken.length, 0);
+  assert.match(readCommitments(dir)[0].notes.at(-1)!.text, /probe failed/);
+  assert.ok(h.notes.some(note => note.includes('would wake')));
+  rmSync(dir, { recursive: true, force: true });
+
+  const dir2 = mkdtempSync(join(tmpdir(), 'beat-probe-'));
+  addCommitment(dir2, { text: 'verify', source: 'test', probe: { argv: ['git', 'status'], cwd: dir2, expect: 'ok', every: 1 } }, 0);
+  const h2 = harness({ dir: dir2, minutes: 15, wakes: 100, triage: () => triaged({ commitments: readCommitments(dir2) }) });
+  h2.beat.arm(); await h2.advance(15 * MIN);
+  assert.equal(h2.woken.length, 1);
+  assert.match(h2.beats[0].signals![0].lines[0], /probe failed:.*fatal/i);
+  h2.beat.turnSettled(turn); h2.beat.arm(); await h2.advance(15 * MIN);
+  assert.equal(h2.woken.length, 1);
+  rmSync(dir2, { recursive: true, force: true });
 });
 
 test('a due that could not wake (24 h cap) is not consumed: it signals again next tick', async () => {

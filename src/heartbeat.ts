@@ -13,6 +13,8 @@ import { atomicWrite } from './store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { REPORT_TYPE, textContent } from './transcript.ts';
 import { dueFindings, DUE_SLACK_MS, nextDue, type DueFinding } from './commitment-due.ts';
+import { runProbes } from './commitment-probe.ts';
+import { readCommitments } from './commitments.ts';
 import { divert, type Patrol } from './patrol-divert.ts';
 import { heapGrowth, heapGrowthLine, recordHeapSample, type HeapSample } from './heap-trend.ts';
 import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type Signal, type Triage } from './wake-signals.ts';
@@ -487,6 +489,9 @@ export class Heartbeat {
     const radar = this.deps.radar ? await this.deps.radar() : undefined;
     if (spoke()) return;
     if (this.deps.busy() !== undefined) { this.arm(); return; }
+    await runProbes(this.deps.dir, this.deps.now());
+    if (spoke()) return;
+    if (this.deps.busy() !== undefined) { this.arm(); return; }
     const route = this.deps.route?.(this.blocks());
     if (route && !route.choice && route.until !== undefined) {
       const text = `quota: every route out until ${brasiliaTime(route.until)} (UTC-3)`;
@@ -502,8 +507,17 @@ export class Heartbeat {
       if (!verdict.beat) { this.save({ verdict: 'SLEEP', text: 'no signal' }, undefined, undefined, 'skippedIdle'); this.keep(seen); this.arm(); return; }
       beat = verdict.beat;
     }
+    if (!triage) {
+      const saved = this.saved();
+      const checked = dueFindings(readCommitments(this.deps.dir).filter(c => c.probeState?.failure !== undefined).map(c => ({ ...c, due: undefined })), { dueSeen: saved.dueSeen ?? [], escalated: saved.escalated ?? {} }, this.deps.now());
+      if (checked.findings.length) {
+        seen = checked.state;
+        const signals = withCommitments([], checked.findings);
+        beat = { wake: true, trigger: 'signal', signals, text: `signal: ${signals.map(signal => signal.project).join(', ')}` };
+      }
+    }
     const scheduled = this.deps.always();
-    if (!triage && !scheduled) try { beat = await this.deps.check(radar); this.failed = false; }
+    if (!triage && !scheduled && beat.trigger !== 'signal') try { beat = await this.deps.check(radar); this.failed = false; }
     catch (error) {
       if (spoke()) return;
       const message = error instanceof Error ? error.message : String(error);

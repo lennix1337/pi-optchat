@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * What a commitment's deadline makes of it, with no dependencies so the heartbeat, the commitments tool and the patrol read the same rule:
  * a due time that passes is one signal, and an item overdue for a day is escalated once a day until it is closed, narrowed or made a question.
@@ -12,6 +14,7 @@ export const ESCALATION_RULE = 'close it with evidence, narrow it (new due + nex
 /** The part of a commitment the deadline rules read. */
 export interface DueItem {
   id: string; text: string; owner: string; status: string; due?: string; project?: string; choices?: readonly string[];
+  probeState?: { at: number; failure?: string; signalledAt?: number };
 }
 const isClosed = (status: string) => status === 'done' || status === 'dropped';
 /** The specialists a text can name, by the words that name them (the same split as `specialistOf`). */
@@ -47,6 +50,18 @@ export interface DueFinding { id: string; project: string; kind: 'due' | 'overdu
 export function dueFindings(items: readonly DueItem[], state: DueState, now: number): { findings: DueFinding[]; state: DueState } {
   const findings: DueFinding[] = [], dueSeen: string[] = [], escalated: Record<string, number> = {};
   for (const item of items) {
+    if (item.status === 'open' && item.probeState?.failure !== undefined) {
+      const prefix = `probe:${item.id}:`;
+      for (const [previousKey, previousAt] of Object.entries(state.escalated)) {
+        if (previousKey.startsWith(prefix) && now - previousAt < OVERDUE_MS) escalated[previousKey] = previousAt;
+      }
+      const key = `${prefix}${createHash('sha256').update(item.probeState.failure).digest('hex')}`;
+      const last = state.escalated[key];
+      if (last === undefined || now - last >= OVERDUE_MS) {
+        escalated[key] = now;
+        findings.push({ id: item.id, project: GLOBAL_PROJECT, kind: 'due', line: `probe failed: ${item.id} (untrusted output): ${item.probeState.failure}`, key });
+      } else escalated[key] = last;
+    }
     if (!ours(item)) continue;
     const project = item.project ?? inferProject(item.text) ?? GLOBAL_PROJECT, at = dueMs(item);
     if (Number.isFinite(at) && at <= now) {
