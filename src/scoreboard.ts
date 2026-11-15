@@ -3,6 +3,7 @@ import { attention, readCommitments } from './commitments.ts';
 import { localDate, PRS, type PrSeen, type Post, type ReportOwner } from './slack-reports.ts';
 import { slackWeek, type SlackWeek } from './slack-metrics.ts';
 import { correctionsWeek } from './corrections.ts';
+import { scanCorrections, sessionsDir } from './correction-scan.ts';
 import { atomicWrite, envDir, readJsonOr } from './store.ts';
 
 /**
@@ -18,6 +19,7 @@ type Saved = { week?: string; routing?: Routing };
 export type ScoreInputs = {
   from: number; to: number; slack: SlackWeek;
   corrections: { count: number; recordingSince?: number };
+  ruleViolations?: number;
   commitments?: { stuck: number; overdue: number };
   /** Gitwatch routing decisions this week; undefined without a baseline from the previous post. */
   routing?: { woke: number; quiet: number };
@@ -35,7 +37,7 @@ const correctionsLine = ({ count, recordingSince }: ScoreInputs['corrections'], 
   ? '• Correções do operador: não medidas ainda (o registro começa com a próxima correção)'
   : `• Possíveis correções do operador: *${count}* (cada uma recebeu lembrete de virar teste ou regra)${partial(recordingSince, from)}`;
 
-export function composeScoreboard({ from, to, slack, corrections, commitments, routing, merged }: ScoreInputs): string {
+export function composeScoreboard({ from, to, slack, corrections, ruleViolations, commitments, routing, merged }: ScoreInputs): string {
   const lines = [`📊 *Placar Jarvis* · semana ${day(from)}–${day(to - 1)}`];
   if (slack.recordingSince === undefined) lines.push('• "E aí?" e primeira resposta no Slack: não medidos ainda (o registro começa com a próxima mensagem do operador)');
   else {
@@ -45,6 +47,7 @@ export function composeScoreboard({ from, to, slack, corrections, commitments, r
     : `• Primeira resposta no Slack: mediana *${minutes(slack.medianMs)}*, pior ${minutes(slack.worstMs!)} (${slack.answered} de ${slack.received} respondidas${slack.waiting ? `, ${slack.waiting} sem resposta` : ''})`);
   }
   lines.push(correctionsLine(corrections, from));
+  lines.push(ruleViolations === undefined ? '• Regras violadas (7d): não medido' : `• Regras violadas (7d): *${ruleViolations}* candidatos (meta 0; detectores aproximados)`);
   lines.push(commitments
     ? `• Pendências minhas travadas agora: *${commitments.stuck}* sem progresso há 24h+, *${commitments.overdue}* atrasadas (meta 0)`
     : '• Pendências: compromissos ilegíveis, não medido');
@@ -76,7 +79,10 @@ export function weekInputs(dir: string, now: number, saved: Saved,
   const before = saved.routing;
   const delta = routing && before && before.since === routing.since && routing.woke >= before.woke && routing.quiet >= before.quiet
     ? { woke: routing.woke - before.woke, quiet: routing.quiet - before.quiet } : undefined;
-  return { inputs: { from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), commitments, routing: delta, merged }, routing };
+  let ruleViolations: number | undefined;
+  try { ruleViolations = scanCorrections(sessionsDir(), from, now).reduce((sum, rule) => sum + rule.count, 0); }
+  catch (error) { console.error('Correction rules scan failed:', error); }
+  return { inputs: { from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
 }
 
 export class WeeklyScoreboard {
