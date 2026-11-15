@@ -149,6 +149,7 @@ interface UsageIndex {
   all(): UsageEntry[];
   select(range: UsageRange, session: string, now: number): UsageEntry[];
   summary(range: UsageRange, session: string, now: number): UsageSummary;
+  close?(): void;
 }
 
 /** Fallback index: reads the whole ledger into memory, so opening grows with the ledger. */
@@ -221,8 +222,20 @@ class SqliteIndex implements UsageIndex {
   invalid = 0;
   readBytes = 0;
   private readonly summaryCache = new Map<string, SummaryCacheEntry>();
-  constructor(private readonly file: string, private readonly db: string) { this.use(() => {}); }
-  private reset() { this.summaryCache.clear(); for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(this.db + suffix, { force: true }); }
+  /** One connection kept warm between calls: a fresh one per call started with an empty page cache and re-read the index's pages
+   * from disk on every footer refresh. It closes after a minute unused, so a dropped ledger (a reload) releases the file. */
+  private conn: DatabaseSync | undefined;
+  private idle: ReturnType<typeof setTimeout> | undefined;
+  /** The ledger's size:mtime when the index last matched it; an unchanged ledger needs no sync. */
+  private synced = '';
+  constructor(private readonly file: string, private readonly db: string, private readonly warm = false) { this.use(() => {}); }
+  close() {
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = undefined; this.synced = '';
+    try { this.conn?.close(); } catch { /* already closed */ }
+    this.conn = undefined;
+  }
+  private reset() { this.close(); this.summaryCache.clear(); for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(this.db + suffix, { force: true }); }
   private open() {
     const db = new sqlite!.DatabaseSync(this.db, { timeout: 5000 });
     try {
@@ -249,14 +262,21 @@ class SqliteIndex implements UsageIndex {
   private use<T>(work: (db: DatabaseSync) => T): T {
     let db: DatabaseSync | undefined;
     for (let attempt = 1; !db; attempt++) {
-      try { db = this.open(); this.sync(db); }
-      catch (error) {
-        db?.close(); db = undefined;
+      try {
+        db = this.conn ??= this.open();
+        const { size, mtimeMs } = fileStat(this.file), stamp = `${size}:${mtimeMs}`;
+        if (stamp !== this.synced) { this.sync(db); this.synced = stamp; }
+      } catch (error) {
+        db = undefined; this.close();
         if (attempt === 2) throw error;
         this.reset();
       }
     }
-    try { return work(db); } finally { db.close(); }
+    if (!this.warm) { try { return work(db); } finally { this.close(); } }
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = setTimeout(() => this.close(), 60_000);
+    this.idle.unref?.();
+    return work(db);
   }
   private sync(db: DatabaseSync) {
     const size = fileStat(this.file).size;
@@ -407,8 +427,8 @@ function endLastLine(file: string) {
 }
 
 /** The SQLite index when this Node has node:sqlite and it opens; otherwise a full read, with a note saying why. */
-function openIndex(file: string, useSqlite: boolean, notes: string[]): UsageIndex {
-  if (sqlite && useSqlite) try { return new SqliteIndex(file, file.replace(/\.jsonl$/, '.db')); }
+function openIndex(file: string, useSqlite: boolean, warm: boolean, notes: string[]): UsageIndex {
+  if (sqlite && useSqlite) try { return new SqliteIndex(file, file.replace(/\.jsonl$/, '.db'), warm); }
   catch (error) { notes.push(`usage.db unavailable, reading usage.jsonl in full: ${error instanceof Error ? error.message : String(error)}`); }
   return new MemoryIndex(file);
 }
@@ -422,14 +442,17 @@ export class UsageLedger {
   private readonly timings = new PendingTimings();
   private readonly file: string;
   private readonly index: UsageIndex;
-  constructor(directory: string, options: { sqlite?: boolean } = {}) {
+  /** `warm` keeps the index connection open between calls (the live session's footer); the owner must call close(). */
+  constructor(directory: string, options: { sqlite?: boolean; warm?: boolean } = {}) {
     this.file = join(directory, 'usage.jsonl');
     endLastLine(this.file);
-    this.index = openIndex(this.file, options.sqlite !== false, this.notes);
+    this.index = openIndex(this.file, options.sqlite !== false, options.warm === true, this.notes);
   }
   /** Every record, in ledger order. Reads the whole ledger: for tests and tools, not for opening a profile. */
   get entries() { return this.index.all(); }
   get readBytes() { return this.index.readBytes; }
+  /** Releases the index file; the next call reopens it. */
+  close() { this.index.close?.(); }
   get warnings() {
     const invalid = this.index.invalid + this.rejected;
     return [...this.notes, ...invalid ? [`${invalid} unreadable usage records excluded; totals may be incomplete.`] : []];

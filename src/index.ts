@@ -592,7 +592,7 @@ export default function optchat(host: ExtensionAPI) {
       await old.sync.close(); await old.memory.close(reason === 'reload' ? 'reload' : reason ? 'shutdown' : 'memory_close'); await checkpoints;
       await checkpoint(old.dir);
     } finally {
-      await old.crew.closeAll(); await old.memory.close(); await old.unlock(); active = undefined;
+      await old.crew.closeAll(); await old.memory.close(); old.usage.close(); await old.unlock(); active = undefined;
       run = []; previous = []; logged = 0; keep = 0; view = undefined; focusView = undefined; lastRequestAt = undefined; runStarted = false; receipts.clear(); prompt = ''; idle = () => true;
       records = undefined;
       untitle?.(); untitle = undefined; title.clear(); working = false;
@@ -620,7 +620,7 @@ export default function optchat(host: ExtensionAPI) {
       main = ctx.model && { provider: ctx.model.provider, model: ctx.model.id };
       const sessionId = ctx.sessionManager.getSessionId();
       // Each opening step is a named stall span (open:<step>), so a stall at startup or reload says which step held the loop.
-      const usage = spanned('open:usage', () => new UsageLedger(dir));
+      const usage = spanned('open:usage', () => new UsageLedger(dir, { warm: true }));
       const operations = new OperationJournal(dir);
       const metrics = new PerformanceMetrics();
       const outputs = new OutputContext(new OutputStore(dir, sessionId));

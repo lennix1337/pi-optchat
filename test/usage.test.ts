@@ -321,6 +321,24 @@ test('add rejects a record that a reload would reject, so totals match after a r
   } finally { removeDir(dir); }
 });
 
+test('summaries that miss the cache reuse one warm index connection and read no ledger bytes while it is unchanged', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-warm-'));
+  const now = Date.now();
+  let ledger: UsageLedger | undefined;
+  try {
+    writeLedger(dir, Array.from({ length: 40 }, (_, i) => record(i + 1, now - 10_000)));
+    ledger = new UsageLedger(dir, { warm: true });
+    ledger.summary('Today', 's1', now);
+    const before = ledger.readBytes;
+    // Each session key misses the summary cache, so every call queries the index.
+    for (let i = 0; i < 6; i++) ledger.summary('This session', `s${i}`, now);
+    assert.equal(ledger.readBytes - before, 0, 'an unchanged ledger must not be re-fingerprinted on every query');
+    const other = new UsageLedger(dir);
+    other.add(record(41, now));
+    assert.equal(ledger.summary('Today', 's1', now + 1).calls, 41, 'an append by another ledger is still seen');
+  } finally { ledger?.close(); removeDir(dir); }
+});
+
 test('repeated summary calls on an unchanged ledger read 0 bytes and invalidate on append or boundary crossing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-cache-'));
   const now = Date.now();
