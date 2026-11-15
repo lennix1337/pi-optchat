@@ -320,3 +320,32 @@ test('add rejects a record that a reload would reject, so totals match after a r
     assert.equal(live.cost.total, 0.5);
   } finally { removeDir(dir); }
 });
+
+test('repeated summary calls on an unchanged ledger read 0 bytes and invalidate on append or boundary crossing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-cache-'));
+  const now = Date.now();
+  try {
+    writeLedger(dir, Array.from({ length: 40 }, (_, i) => record(i + 1, now - 10_000)));
+    const ledger = new UsageLedger(dir);
+    const first = ledger.summary('Today', 's1', now);
+    const before = ledger.readBytes;
+    for (let i = 0; i < 6; i++) {
+      const again = ledger.summary('Today', 's1', now + i * 1000);
+      assert.deepEqual(again, first);
+    }
+    assert.equal(ledger.readBytes - before, 0, 'unchanged usage.jsonl must not be re-read on repeated summary() calls');
+
+    // External append invalidates the stat-guarded cache.
+    const other = new UsageLedger(dir);
+    other.add(record(41, now + 10_000));
+    const afterAppend = ledger.summary('Today', 's1', now + 10_000);
+    assert.equal(afterAppend.calls, first.calls + 1);
+
+    // Crossing midnight invalidates Today.
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 1, 0);
+    const nextDay = ledger.summary('Today', 's1', tomorrow.getTime());
+    assert.equal(nextDay.calls, 0);
+  } finally { removeDir(dir); }
+});
