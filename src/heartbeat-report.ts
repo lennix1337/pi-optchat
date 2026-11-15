@@ -1,6 +1,9 @@
 import { acceptedPr } from './accepted-pr.ts';
 import { readHeartbeat, type WakeRecord, type WakeSummary } from './heartbeat.ts';
 import { addQueueItem, renderQueue } from './heartbeat-queue.ts';
+import { memoryShapedReply } from './wake-noise.ts';
+
+export { memoryShapedReply };
 
 /** The parts of Pi's messages a woken turn is read from. */
 interface TurnMessage { role: string; content?: unknown; toolCallId?: string; isError?: boolean; stopReason?: string; errorMessage?: string }
@@ -53,15 +56,6 @@ export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
   return { reply: last ? oneLine(textOf(last.content)) || oneLine(last.errorMessage ?? '') : '', tools, commits, ...last?.stopReason ? { stopReason: last.stopReason } : {} };
 }
 
-/**
- * A wake reply shaped like a memory line (`104704-112 OptChat ...`, `id+n|`, `user: ...; echo: ...`): the model summarized the
- * view instead of answering, and the operator reads that text (03/11 16:35 "vc n fez nada"; 13/11 19:34 "bugou isso ai?").
- */
-export function memoryShapedReply(reply: string): boolean {
-  const text = reply.trim();
-  return /^\d{3,}(?:[-+]\d+)?[|\s]/.test(text) || /^(?:user|talk|tool|echo|work|note):\s/.test(text);
-}
-
 /** Sent once into the same wake when its reply was a memory line, whatever ran before it. */
 export const MEMORY_REPLY_RETRY = '[OptChat heartbeat] Your wake reply was a memory summary line, and the operator reads that text as a broken answer. Reply again: if the wake still has work, do it with your tools; then end with a short report in Portuguese (pt-BR) in plain sentences, never in memory-line format (no `id+n|`, no `user:`/`talk:`/`echo:` tags).';
 
@@ -76,6 +70,16 @@ export function wakeRetry(summary: WakeSummary, retried: WakeRetried = {}): stri
   if (summary.stopReason === 'aborted' || summary.stopReason === 'error') return undefined;
   if (memoryShapedReply(summary.reply)) return retried.memory ? undefined : MEMORY_REPLY_RETRY;
   return summary.commits.length || retried.empty ? undefined : EMPTY_WAKE_RETRY;
+}
+
+/**
+ * A settled wake is silent unless it delivered a change and its report reads as one: a wake either works and delivers, or says nothing
+ * (operator, 15/11: "nao quero ser avisado de nada, só quero q vc trabalhe"). The text stays in the wake log; it is not posted.
+ * An abort or an error is a failure the operator should see, not idleness.
+ */
+export function silentWake(summary: WakeSummary): boolean {
+  if (summary.stopReason === 'aborted' || summary.stopReason === 'error') return false;
+  return !summary.commits.length || memoryShapedReply(summary.reply);
 }
 
 export interface ReportContext { now: number; cap: number; minutes: number; /** Every wake of the daily cap's count; without it the report counts the logged wakes. */ wakes?: number[] }

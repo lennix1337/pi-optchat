@@ -517,7 +517,8 @@ export class SlackBridge {
     await this.answer(answering, text, true);
   }
 
-  async runEnded(messages: readonly AgentMessage[], unverified?: string): Promise<void> {
+  /** `quiet`: a wake that delivered nothing (heartbeat-report silentWake): its effects reach the wake log, its text reaches nobody; an `unverified` warning still does. */
+  async runEnded(messages: readonly AgentMessage[], unverified?: string, quiet = false): Promise<void> {
     const answering = this.answering, waking = this.waking, delivered = this.delivered;
     this.answering = undefined; this.waking = false; this.replied = ''; this.delivered = '';
     this.running = false;
@@ -525,7 +526,8 @@ export class SlackBridge {
     this.work = undefined;
     this.cutWake = waking ? { since: work?.since ?? this.options.now(), endedAt: this.options.now() } : undefined;
     if (work && steps && owner) try { recordRun(owner.dir, { start: work.since, end: this.options.now(), about: work.about, origin: work.origin, steps }); } catch { /* the Home's day is a courtesy */ }
-    const last = unverified ? `${unverified}${finalText(messages) ? `\n\n${finalText(messages)}` : ''}` : finalText(messages);
+    const hushed = quiet && waking && !answering && !unverified;
+    const last = hushed ? '' : unverified ? `${unverified}${finalText(messages) ? `\n\n${finalText(messages)}` : ''}` : finalText(messages);
     this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta: ${replyLead(last)}` : ''}`);
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.

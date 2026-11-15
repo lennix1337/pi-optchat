@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beatSnapshot, previousWakeNote, type WakeRecord } from '../src/heartbeat.ts';
-import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedReply, renderReport, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
+import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedReply, renderReport, silentWake, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
 import { queueFile } from '../src/heartbeat-queue.ts';
 import { ACCEPT_CALL, acceptResult, FAILED, REFUSED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
@@ -179,6 +179,27 @@ test('a memory-line reply is sent back even after tools ran and after the empty-
   assert.equal(wakeRetry(leaked, { empty: true, memory: true }), undefined, 'each nudge goes once per wake');
   assert.equal(wakeRetry({ reply: 'Nada novo.', tools: 2, commits: [] }, { empty: true }), undefined);
   assert.doesNotMatch(MEMORY_REPLY_RETRY, /ran no tool/);
+});
+
+test('the 15/11 17:12 and 17:22 wake replies, written in the view\'s own line format, are caught and sent back (they reached the operator as the report)', () => {
+  const first = '15/11 164384-387 OptChat: 17:22 heartbeat wake (machine notice, not user words) repeats the 16:59 pending items. Previous wake\'s open items: flash fix live UNVERIFIED';
+  const second = '15/11 164386-: 17:12 wake heartbeat (machine notice, not user words; 164385). Radar: DentAI API and sites fine (232 rounds/24h, p50 ≤872ms, 0 failed).';
+  for (const reply of [first, second, '<compaction-line>15/11 164376-383 OptChat: PR #1029 merged', '15/11 17:12 wake (machine notice, not user words): radar ok']) {
+    assert.equal(memoryShapedReply(reply), true, reply);
+    assert.equal(wakeRetry({ reply, tools: 0, commits: [] }), MEMORY_REPLY_RETRY, reply);
+  }
+  assert.equal(memoryShapedReply('15/11 17:12 rodei os testes e abri a PR #97.'), false);
+  assert.equal(memoryShapedReply('Abri a PR #97 (15/11) e o merge automático está programado.'), false);
+});
+
+test('a wake is silent unless it delivered a change and reads as a report (operator 15/11: "nao quero ser avisado de nada, só quero q vc trabalhe")', () => {
+  const delivered = ['pr https://github.com/x/y/pull/97'];
+  assert.equal(silentWake({ reply: 'Nada novo.', tools: 3, commits: [] }), true, 'no delivery: nothing is sent');
+  assert.equal(silentWake({ reply: '', tools: 0, commits: [] }), true);
+  assert.equal(silentWake({ reply: '15/11 164384-387 OptChat: wake', tools: 4, commits: delivered }), true, 'delivered, but the text is a memory line');
+  assert.equal(silentWake({ reply: 'PR #97 aberta com auto-merge.', tools: 4, commits: delivered }), false);
+  assert.equal(silentWake({ reply: '429', tools: 1, commits: [], stopReason: 'error' }), false, 'an error is a failure he should see');
+  assert.equal(silentWake({ reply: '', tools: 1, commits: [], stopReason: 'aborted' }), false);
 });
 
 test('a wake that settles with no commit, push, PR or merge is sent back once to build something new (operator 08/11: "não quero que um wake não faça nada")', () => {

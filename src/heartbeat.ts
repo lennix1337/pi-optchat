@@ -195,10 +195,13 @@ export const DELIVERY_RULE = `Every wake delivers a change: one that only re-rea
 /** Said when the radar has not moved since the last wake: the wake still delivers, with new work (operator, 02/11: "mesmo que nao tenha algo pendente, cria algo novo"). */
 export const NEW_WORK_NOTE = `The radar is unchanged since the last wake: nothing pending moved. This wake still delivers: after closing anything the last wake left open, design and build a new capability toward the living assistant that helps the operator through his day on its own (operator, 08/11), above all in the harness (pi-optchat, subagents, gitwatch, multi-account, ripwire, tools), measured before and after, and finish it end to end.`;
 
+/** The operator wants no notice of a wake (15/11: "nao quero ser avisado de nada, só quero q vc trabalhe"): it delivers and reports that, or ends with no text. */
+export const WAKE_SILENCE = 'This call is a turn, never a compaction: work with your tools, and never answer with a memory line (a date and id range such as "15/11 164384-387 OptChat: ...", "machine notice, not user words"). Do not restate or ask again what waits on the operator (commitments in waiting_operator, "awaits user"): he already knows. Never send a "nothing new" summary: deliver a change and report it, or end with no text.';
+
 /** The whole text of a woken turn: the wake text from wakeText(), the previous wake to close first (when there is one), and the report language. */
 export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false) {
   return [wake, ...previous ? [previousWakeNote(previous)] : [], ...unchanged ? [NEW_WORK_NOTE] : [],
-    'Write your final report in Portuguese (pt-BR), with every time in Brasília time (UTC-3, e.g. 15:41).'].join('\n');
+    WAKE_SILENCE, 'Write your final report in Portuguese (pt-BR), with every time in Brasília time (UTC-3, e.g. 15:41).'].join('\n');
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
@@ -220,7 +223,7 @@ Allowed, unattended:
 ${list(plan.allowed)}
 Never, unless the operator already asked for exactly that:
 ${list(plan.never)}
-Follow the operator's standing instructions. End with a short report of what you did and what is left for the operator.`;
+Follow the operator's standing instructions. End with a short report of what you delivered; when you delivered nothing, end with no text.`;
 }
 
 /** The text of a wake that project signals started: what moved (`note`, from crewWakeNote) and the limits of a turn nobody is watching. It carries no
@@ -228,12 +231,12 @@ Follow the operator's standing instructions. End with a short report of what you
 export function signalWakeText(idleMinutes: number, plan: HeartbeatPlan, note: string) {
   return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. Project signals woke you (no model check ran): only the projects below moved since the last wake.
 ${note}
-Settle each signal with the evidence you read from its project now, not from the line alone. A signal needing the operator is reported, not guessed. Stop at acceptance.
+Settle each signal with the evidence you read from its project now, not from the line alone. A signal that needs the operator waits for him: do not guess it and do not report it again. Stop at acceptance.
 Allowed, unattended:
 ${list(plan.allowed)}
 Never, unless the operator already asked for exactly that:
 ${list(plan.never)}
-Follow the operator's standing instructions. End with a short report of what you did and what is left for the operator.`;
+Follow the operator's standing instructions. End with a short report of what you delivered; when you delivered nothing, end with no text.`;
 }
 
 export interface HeartbeatDeps {
