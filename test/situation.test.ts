@@ -252,6 +252,27 @@ test('a source is read again only after its ttl, and a failing source does not h
   assert.equal(collector.snapshot().disk, undefined);
 });
 
+test('a burst of stale sources is staggered across separate event-loop turns', async () => {
+  let turn = 0;
+  const seenTurns: number[] = [];
+  let done = false;
+  const bump = () => {
+    turn++;
+    if (!done) setImmediate(bump);
+  };
+  setImmediate(bump);
+  const collector = new Collector({
+    disk: { ttlMs: 60_000, timeoutMs: 1_000, read: () => { seenTurns.push(turn); return { free: 1, total: 2 }; } },
+    memory: { ttlMs: 60_000, timeoutMs: 1_000, read: () => { seenTurns.push(turn); return { free: 1, total: 2 }; } },
+    docker: { ttlMs: 60_000, timeoutMs: 1_000, read: () => { seenTurns.push(turn); return 'up'; } },
+    reboots: { ttlMs: 60_000, timeoutMs: 1_000, read: () => { seenTurns.push(turn); return []; } },
+  });
+  await collector.refresh(1_000);
+  done = true;
+  assert.equal(seenTurns.length, 4);
+  assert.equal(new Set(seenTurns).size, 4, `expected each source in its own turn, got ${JSON.stringify(seenTurns)}`);
+});
+
 test('a turn with a hung collector still returns inside the budget', () => {
   const collector = new Collector({ docker: { ttlMs: 0, timeoutMs: 60_000, read: () => new Promise<never>(() => {}) }, reboots: { ttlMs: 0, timeoutMs: 60_000, read: () => new Promise<never>(() => {}) } });
   const situation = new Situation({ collector });
