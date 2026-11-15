@@ -31,6 +31,9 @@ export function retroPrompt(date: string, machine: string[] = []) {
     '(edit/write of the file; rules for deploy, production writes, paid runs, messages, consent, publish, force-push, installs, `*` and the default stay his and need his tap).',
     'Each fix gets a regression test or a measurement where one applies; mirror profile changes in dotfiles payload/pi.',
     ...machine.length ? ['Measured cost centres of the last 24 h on this PC (machine ledger; the `machine` tool has the detail). Treat each as a candidate optimisation, and say which you changed:', ...machine.map(line => `- ${line}`)] : [],
+    'Nightly predictions: read today’s operator messages and use `predictions` to score each prediction made yesterday for today as hit (with a short matching quote) or miss; never store full operator messages.',
+    'Based on recurring asks, open PRs/issues and dates, predict the three things he is most likely to ask tomorrow. Record all three with status predicted, tomorrow’s date and brief evidence before acting.',
+    'Then do only those inside existing authority, and record status done with the PR or commit link. Git, PRs, merges, restarts and publishing his own packages are free; never deploy, write production data, spend money, message third parties or change accounts.',
     'Finish with one short Slack DM listing only problem -> fix shipped (with its PR or commit) and anything that needs his decision. Never recap the day\'s work: he lived it.',
   ].join('\n');
 }

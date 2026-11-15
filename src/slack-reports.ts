@@ -1,3 +1,4 @@
+import { donePredictions } from './predictions.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -144,13 +145,13 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[] };
+export type SummaryInputs = { predictions?: { text: string; link: string }[]; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[] };
 /**
  * The 07:00 briefing, most actionable first: what needs him today, a short plan, what closed in the last day, what
  * the harness did and noticed, then state (production, PC, quotas, PRs, agenda) and its cost. A source that failed
  * is named at the end.
  */
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly }: SummaryInputs): string {
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const act = github ? activityLines(github) : { needs: [], closed: [] };
   const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
@@ -159,6 +160,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
   const plan = [...wait.slice(0, 3), ...(risks ?? []).slice(0, Math.max(0, 3 - wait.length))];
   if (plan.length) lines.push('', '*Plano do dia*', ...plan.map((p, i) => `${i + 1}. ${one(p.replace(/<([^|>]+)\|([^>]+)>/g, '$2'), 160)}`));
   if (act.closed.length) lines.push('', '*Fechado nas últimas 24h*', ...act.closed);
+  if (predictions?.length) lines.push('', '*Antecipei*', ...predictions.map(p => `• Você ia pedir: ${one(p.text, 200)} — feito: ${p.link}`));
   if (fixes?.length) lines.push('', '*Resolvi sozinho*', ...fixes.slice(-8).map(f => `• ${one(f, 200)}`));
   const byChannel = new Map<string, string[]>();
   for (const e of latestPerLink(day)) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
@@ -248,7 +250,7 @@ export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<Summa
   try { items = readCommitments(dir); commitments = summaryLines(items, now); } catch { commitments = undefined; }
   const health = readHealth(dir), pc = readHealth(dir, PC_FILE);
   const risks = forecast({ commitments: items, prs: prs.map(outlook), health, pc, now });
-  return { day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now) };
+  return { predictions: donePredictions(dir, localDate(now)), day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now) };
 }
 
 /** Each account's quota with its resets, and the weekly API-equivalent comparison; a failure drops the section, never the summary. */

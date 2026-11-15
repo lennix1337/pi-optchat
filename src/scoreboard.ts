@@ -1,3 +1,4 @@
+import { predictionWeek } from './predictions.ts';
 import { join } from 'node:path';
 import { attention, readCommitments } from './commitments.ts';
 import { localDate, PRS, type PrSeen, type Post, type ReportOwner } from './slack-reports.ts';
@@ -18,6 +19,7 @@ const STATE = 'slack-scoreboard.json';
 type Routing = { since: number; woke: number; quiet: number };
 type Saved = { week?: string; routing?: Routing };
 export type ScoreInputs = {
+  predictions?: { hits: number; total: number };
   from: number; to: number; slack: SlackWeek;
   corrections: { count: number; recordingSince?: number };
   ruleViolations?: number;
@@ -38,7 +40,7 @@ const correctionsLine = ({ count, recordingSince }: ScoreInputs['corrections'], 
   ? '• Correções do operador: não medidas ainda (o registro começa com a próxima correção)'
   : `• Possíveis correções do operador: *${count}* (cada uma recebeu lembrete de virar teste ou regra)${partial(recordingSince, from)}`;
 
-export function composeScoreboard({ from, to, slack, corrections, ruleViolations, commitments, routing, merged }: ScoreInputs): string {
+export function composeScoreboard({ from, to, slack, corrections, ruleViolations, commitments, routing, merged, predictions }: ScoreInputs): string {
   const lines = [`📊 *Placar Jarvis* · semana ${day(from)}–${day(to - 1)}`];
   if (slack.recordingSince === undefined) lines.push('• "E aí?" e primeira resposta no Slack: não medidos ainda (o registro começa com a próxima mensagem do operador)');
   else {
@@ -49,6 +51,7 @@ export function composeScoreboard({ from, to, slack, corrections, ruleViolations
   }
   lines.push(correctionsLine(corrections, from));
   lines.push(ruleViolations === undefined ? '• Regras violadas (7d): não medido' : `• Regras violadas (7d): *${ruleViolations}* candidatos (meta 0; detectores aproximados)`);
+  lines.push(predictions?.total ? `• Previsões acertadas (7d): *${predictions.hits}* de *${predictions.total}*` : '• Previsões acertadas (7d): não medido');
   lines.push(commitments
     ? `• Pendências minhas travadas agora: *${commitments.stuck}* sem progresso há 24h+, *${commitments.overdue}* atrasadas (meta 0)`
     : '• Pendências: compromissos ilegíveis, não medido');
@@ -80,7 +83,7 @@ export function weekInputs(dir: string, now: number, saved: Saved,
   const before = saved.routing;
   const delta = routing && before && before.since === routing.since && routing.woke >= before.woke && routing.quiet >= before.quiet
     ? { woke: routing.woke - before.woke, quiet: routing.quiet - before.quiet } : undefined;
-  return { inputs: { from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
+  return { inputs: { predictions: predictionWeek(dir, from, now), from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
 }
 
 /** Candidate rule violations of the last 7 days, scanned in a child process: the sessions are hundreds of MB. */

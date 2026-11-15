@@ -1,3 +1,4 @@
+import { predictionsTool } from './predictions.ts';
 import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
@@ -1330,6 +1331,7 @@ export default function optchat(host: ExtensionAPI) {
       ctx.ui.notify(JSON.stringify({ ...a.metrics.snapshot(), output: a.outputs.stats() }, null, 2), 'info');
     } });
   pi.registerTool(operationalStateTool(required, flush));
+  pi.registerTool(predictionsTool(required));
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
   // The tool and its prompt line change together, once per toggle, so the cached prefix is otherwise stable.
   // Synced on save too: a report turn started while idle reuses the tool set without before_agent_start.
