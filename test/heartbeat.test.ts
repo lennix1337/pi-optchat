@@ -18,7 +18,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
   route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
   triage = undefined as ((at: number) => Triage | undefined) | undefined, patrol = undefined as ((at: number) => Patrol | undefined) | undefined,
-  heap = undefined as ((at: number) => number) | undefined } = {}) {
+  heap = undefined as ((at: number) => number) | undefined, rss = undefined as ((at: number) => number) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
   const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [], beats: Beat[] = [];
   const beat = new Heartbeat({
@@ -27,6 +27,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     ...triage ? { triage: () => triage(now) } : {},
     ...patrol ? { patrol: () => patrol(now) } : {},
     ...heap ? { heapMb: () => heap(now) } : {},
+    ...rss ? { rssMb: () => rss(now) } : {},
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
@@ -1003,12 +1004,35 @@ test('wakeTriage: a heap signal held back by the 24 h wake cap is signalled agai
   rmSync(h.dir, { recursive: true, force: true });
 });
 
+const rssLines = (h: ReturnType<typeof harness>) => signalLines(h, 'Pi RSS');
+
+test('wakeTriage: an RSS held above the goal signals once under global, and re-arms after it falls', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 1000, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 270, rss: at => at < 3 * HOUR ? 713 : at < 6 * HOUR ? 430 : 720 });
+  await tickFor(h, 2);
+  assert.equal(rssLines(h).length, 1, 'one signal for the whole stretch above the goal');
+  assert.match(rssLines(h)[0]!, /^Pi RSS 713 MB, above the 500 MB goal in the last 3 samples$/);
+  assert.equal(saved(h.dir).rssAlarm, true);
+  await tickFor(h, 4);
+  assert.equal(saved(h.dir).rssAlarm, false, 'back under the goal clears the alarm');
+  await tickFor(h, 1);
+  assert.equal(rssLines(h).length, 2, 'the next stretch above the goal is a new signal');
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('wakeTriage: an RSS under the goal never signals', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 1000, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 270, rss: () => 450 });
+  await tickFor(h, 3);
+  assert.equal(rssLines(h).length, 0);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
 test('a heartbeat.json from before the heap watch loads and gains the samples; a malformed heap field is ignored', async () => {
   for (const heap of [undefined, 'oops', [{ at: 'x' }, null, { at: 1, heapUsedMb: 'big', afterGc: false }]]) {
     const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 1500 });
     writeFileSync(join(h.dir, 'heartbeat.json'), JSON.stringify({ wakes: [], checks: [], wakeLog: [], routeBlocks: {}, routeFailures: {}, daily: [], ...heap === undefined ? {} : { heap, heapAlarm: 'maybe' } }));
     h.beat.arm(); await h.advance(15 * MIN);
-    assert.deepEqual(saved(h.dir).heap, [{ at: 15 * MIN, heapUsedMb: 1500, afterGc: false }]);
+    assert.deepEqual(saved(h.dir).heap.map(({ rssMb: _rss, ...rest }: { rssMb?: number }) => rest), [{ at: 15 * MIN, heapUsedMb: 1500, afterGc: false }]);
+    assert.equal(typeof saved(h.dir).heap[0].rssMb, 'number', 'the sample now carries the process RSS');
     rmSync(h.dir, { recursive: true, force: true });
   }
 });
