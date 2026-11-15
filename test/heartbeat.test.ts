@@ -997,3 +997,9 @@ test('without wakeTriage the heartbeat samples no heap', async () => {
   assert.equal(saved(h.dir).heap, undefined);
   rmSync(h.dir, { recursive: true, force: true });
 });
+
+test('every wake must end with a PR or commit and time-boxes read-only hunts', async () => {
+  const { DELIVERY_RULE } = await import('../src/heartbeat.ts');
+  assert.match(DELIVERY_RULE, /10 tool calls/);
+  assert.match(DELIVERY_RULE, /no PR or commit link failed/);
+});

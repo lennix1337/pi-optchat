@@ -24,12 +24,13 @@ export function markRetro(dir: string, now: number) {
 
 export function retroPrompt(date: string, machine: string[] = []) {
   return [
-    `Daily retro (operator 03/11, standing order), ${date}. Run the \`retro\` skill (~/.agents/skills/retro/SKILL.md) over today's work in this chat:`,
-    'what slowed delivery, what lowered quality, replies he had to correct, Slack/Home UX friction, and what wakes did or failed to do.',
-    'Then apply every relevant fix now, without asking: harness code (PR + auto-merge), the swlucas05 profile AGENTS.md, skills, and autonomy.json',
+    `Daily retro (operator 03/11, standing order), ${date}. A retro is action, not a diary (operator 14/11: "é pra analisar o dia e melhorar o que foi ruim, não me contar o que aconteceu").`,
+    'Run the `retro` skill (~/.agents/skills/retro/SKILL.md) over today\'s work in this chat and list what went badly, each with its evidence:',
+    'slow deliveries, low-quality merges, replies he had to correct, Slack/Home friction, and every wake that ended without shipping a change.',
+    'For each one, find why it happened and ship the fix now, without asking: harness code (PR + auto-merge), the swlucas05 profile AGENTS.md, skills, and autonomy.json',
     '(edit/write of the file; rules for deploy, production writes, paid runs, messages, consent, publish, force-push, installs, `*` and the default stay his and need his tap).',
     'Each fix gets a regression test or a measurement where one applies; mirror profile changes in dotfiles payload/pi.',
     ...machine.length ? ['Measured cost centres of the last 24 h on this PC (machine ledger; the `machine` tool has the detail). Treat each as a candidate optimisation, and say which you changed:', ...machine.map(line => `- ${line}`)] : [],
-    'Finish with one short Slack DM: what changed, what it should improve, and anything that needs his decision.',
+    'Finish with one short Slack DM listing only problem -> fix shipped (with its PR or commit) and anything that needs his decision. Never recap the day\'s work: he lived it.',
   ].join('\n');
 }

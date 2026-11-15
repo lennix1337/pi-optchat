@@ -73,3 +73,10 @@ test('a copy of autonomy.json elsewhere runs by itself when its protected rules 
   const edited = judgeSelfEdit(dir, { tool: 'edit', input: { path: join(dirname(mirror), '..', 'autonomy.json'), edits: [{ oldText: '"*/dist"', newText: '"*/dist",\n        "*/dist/*"' }] } });
   assert.equal(edited?.ok, true);
 });
+
+test('the retro prompt asks for fixes of what went badly, not a recap of the day', () => {
+  const p = retroPrompt('2026-11-14');
+  assert.match(p, /went badly/);
+  assert.match(p, /problem -> fix/);
+  assert.match(p, /Never recap/);
+});
