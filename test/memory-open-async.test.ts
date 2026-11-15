@@ -99,3 +99,28 @@ test('Inbox.recover skips scanning memory.root when no pending inputs exist', ()
     assert.equal(rootReads, 0, 'empty inbox must not iterate memory.root');
   } finally { removeDir(dir); }
 });
+
+test('looking up summaries and messages across day files reads their lines, not whole files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-lookup-io-'));
+  try {
+    mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
+    const pad = 'x'.repeat(1_000_000), entry = (i: number) => ({ i, kind: 'user', text: `message ${i}`, date: '2026-01-01T00:00:00.000Z' });
+    writeFileSync(join(dir, 'main', '2026-01-01.jsonl'), line({ ...entry(0), text: pad }) + line(entry(1)));
+    writeFileSync(join(dir, 'main', '2026-01-02.jsonl'), line(entry(2)) + line(entry(3)));
+    writeFileSync(join(dir, 'tree', '2026-01-01.jsonl'), line({ l: 0, i: 9, text: pad }) + line({ l: 0, i: 0, text: 'zero' }) + line({ l: 0, i: 1, text: 'one' }));
+    writeFileSync(join(dir, 'tree', '2026-01-02.jsonl'), line({ l: 0, i: 8, text: pad }) + line({ l: 1, i: 0, text: 'pair' }) + line({ l: 0, i: 2, text: 'two '.repeat(3000) }));
+    const store = new FileStore(dir, () => {});
+    store.load(1);
+    store.close();
+    const before = store.readBytes;
+    for (let k = 0; k < 5; k++) {
+      assert.equal(store.nodeText(0, 0), 'zero');
+      assert.equal(store.nodeText(1, 0), 'pair');
+      assert.equal(store.nodeText(0, 1), 'one');
+      assert.equal(store.nodeText(0, 2), 'two '.repeat(3000));
+      assert.equal(store.reader(1)?.(), 'message 1');
+      assert.equal(store.reader(3)?.(), 'message 3');
+    }
+    assert.ok(store.readBytes - before < 200_000, `read ${store.readBytes - before} bytes for 30 lookups`);
+  } finally { removeDir(dir); }
+});

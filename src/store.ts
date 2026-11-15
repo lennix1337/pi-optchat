@@ -481,15 +481,14 @@ export class FileStore implements Store {
   lineIndexSize() { return this.lineCount; }
   reader(i: number) {
     const line = this.getLine(i);
-    return line && (() => lineText(this.read(line.file), line.offset, line.length, i, line.file));
+    return line && (() => lineText(this.readAt(line.file, line.offset, line.length), 0, line.length, i, line.file));
   }
   hasNode(l: number, i: number) { return this.getNode(l, i) !== undefined; }
   nodeText(l: number, i: number) {
     const at = this.getNode(l, i), file = this.nodeFiles[Math.floor((at ?? 0) / 2 ** 40)];
     let record: { l?: unknown; i?: unknown; text?: unknown } | null = null;
     if (at !== undefined) try {
-      const data = this.read(file), offset = at % 2 ** 40, end = data.indexOf(0x0a, offset);
-      record = JSON.parse(data.toString('utf8', offset, end < 0 ? data.length : end));
+      record = JSON.parse(this.readLineAt(file, at % 2 ** 40));
     } catch { record = null; }
     if (record?.l !== l || record.i !== i || typeof record.text !== 'string') throw new Error(`Summary ${l}:${i} is no longer where it was${file ? ` in ${file}` : ''}; restart Pi to reload the memory.`);
     return record.text;
@@ -499,10 +498,39 @@ export class FileStore implements Store {
     this.drop();
     const data = readFileSync(file), timer = setTimeout(() => this.drop(), READ_CACHE_MS);
     timer.unref();
+    this.readBytes += data.length;
     this.cached = { file, data, timer };
     return data;
   }
   private drop() { if (this.cached) clearTimeout(this.cached.timer); this.cached = undefined; }
+  /** Bytes this store read from its logs. A status render touches lines in many days, so a single lookup reads its own line,
+   * never the whole day file (whole-file reads of the tree days cost ~40 MB per render). */
+  readBytes = 0;
+  private readAt(file: string, offset: number, length: number) {
+    if (this.cached?.file === file) return this.cached.data.subarray(offset, offset + length);
+    const fd = openSync(file, 'r');
+    try {
+      const data = Buffer.alloc(length), n = readSync(fd, data, 0, length, offset);
+      this.readBytes += n;
+      return data.subarray(0, n);
+    } finally { closeSync(fd); }
+  }
+  /** The line that starts at `offset`, read in growing chunks until its newline or the end of the file. */
+  private readLineAt(file: string, offset: number) {
+    if (this.cached?.file === file) { const data = this.cached.data, end = data.indexOf(0x0a, offset); return data.toString('utf8', offset, end < 0 ? data.length : end); }
+    const fd = openSync(file, 'r');
+    try {
+      let data = Buffer.alloc(0);
+      for (let chunk = 4096; ; chunk *= 2) {
+        const next = Buffer.alloc(chunk), n = readSync(fd, next, 0, chunk, offset + data.length);
+        this.readBytes += n;
+        const nl = next.subarray(0, n).indexOf(0x0a);
+        if (nl >= 0) return Buffer.concat([data, next.subarray(0, nl)]).toString('utf8');
+        data = Buffer.concat([data, next.subarray(0, n)]);
+        if (n < chunk) return data.toString('utf8');
+      }
+    } finally { closeSync(fd); }
+  }
   close() { this.drop(); }
   private checkLog(next: string) {
     const main = dirname(next), names = readdirSync(main).filter(n => n.endsWith('.jsonl'));
