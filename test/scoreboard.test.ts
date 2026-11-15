@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { registerSlackBridge, SlackBridge } from '../src/slack-bridge.ts';
 import { isNudge, recordAnswer, recordInbound, SLACK_METRICS, slackWeek } from '../src/slack-metrics.ts';
-import { composeScoreboard, WeeklyScoreboard, weekInputs } from '../src/scoreboard.ts';
+import { composeScoreboard, fetchBusiness, WeeklyScoreboard, weekInputs } from '../src/scoreboard.ts';
 import { recordCorrection } from '../src/corrections.ts';
 import { withTempDir } from './support.ts';
 
@@ -110,7 +110,7 @@ test('the scoreboard posts once a week to #harness, Monday morning only, saving 
   let now = monday - DAY; // Sunday
   const gitwatch = join(dir, 'gitwatch.json');
   writeFileSync(gitwatch, JSON.stringify({ stats: { since: 1, woke: 4, quiet: 1 } }));
-  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async (text, channel) => { posts.push({ text, channel }); }, { now: () => now, gitwatchFile: gitwatch, scan: async () => { await new Promise(r => setTimeout(r, 5)); return 4; } });
+  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async (text, channel) => { posts.push({ text, channel }); }, { now: () => now, gitwatchFile: gitwatch, scan: async () => { await new Promise(r => setTimeout(r, 5)); return 4; }, business: async () => undefined });
   assert.equal(await board.maybePost(), false, 'not on Sunday');
   now = monday;
   const [first, overlapping] = await Promise.all([board.maybePost(), board.maybePost()]);
@@ -126,4 +126,28 @@ test('the scoreboard posts once a week to #harness, Monday morning only, saving 
   assert.match(posts[1]!.text, /\*3 de 4\* \(75%\)/);
   now = monday + 14 * DAY + 3 * 3_600_000; // 13:00: too late, the week is skipped
   assert.equal(await board.maybePost(), false);
+}));
+
+test('the business line shows GX18MCP npm downloads against last week, stars, and says revenue is not measured', () => {
+  const base = { from: monday - 7 * DAY, to: monday, slack: { received: 0, answered: 0, nudges: 0, waiting: 0 } as never, corrections: { count: 0 }, merged: { green: 0, other: 0 } };
+  const text = composeScoreboard({ ...base, business: { downloads: 1837, previous: 1500, stars: 46 } });
+  assert.match(text, /GX18MCP: \*1837\* downloads npm na semana \(\+337 vs\. semana anterior\), 46 estrelas/);
+  assert.match(text, /Receita \(DentAI, GX18MCP, Vitrine\): não medida/);
+  assert.match(composeScoreboard({ ...base, business: { downloads: 10, stars: 3 } }), /\*10\* downloads npm na semana, 3 estrelas/);
+  assert.match(composeScoreboard(base), /GX18MCP: não medido/);
+});
+
+test('fetchBusiness reads npm weekly downloads and GitHub stars, and degrades to undefined on failure', async () => {
+  const urls: string[] = [];
+  const ok = async (url: string) => { urls.push(url); return { ok: true, json: async () => url.includes('npmjs') ? { downloads: 99 } : { stargazers_count: 7 } } as Response; };
+  assert.deepEqual(await fetchBusiness(ok), { downloads: 99, stars: 7 });
+  assert.ok(urls.some(u => u.includes('last-week/genexus-mcp')) && urls.some(u => u.includes('repos/lennix1337/Genexus18MCP')));
+  assert.equal(await fetchBusiness(async () => { throw new Error('offline'); }), undefined);
+});
+
+test('the weekly post saves downloads as the next week\'s baseline', withDir(async dir => {
+  const posts: string[] = [];
+  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async text => { posts.push(text); }, { now: () => monday, scan: async () => 0, business: async () => ({ downloads: 50, stars: 2 }) });
+  await board.maybePost();
+  assert.equal(JSON.parse(readFileSync(join(dir, 'slack-scoreboard.json'), 'utf8')).downloads, 50);
 }));
