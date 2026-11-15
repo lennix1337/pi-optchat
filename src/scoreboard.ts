@@ -3,7 +3,8 @@ import { attention, readCommitments } from './commitments.ts';
 import { localDate, PRS, type PrSeen, type Post, type ReportOwner } from './slack-reports.ts';
 import { slackWeek, type SlackWeek } from './slack-metrics.ts';
 import { correctionsWeek } from './corrections.ts';
-import { scanCorrections, sessionsDir } from './correction-scan.ts';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { atomicWrite, envDir, readJsonOr } from './store.ts';
 
 /**
@@ -64,7 +65,7 @@ export function composeScoreboard({ from, to, slack, corrections, ruleViolations
 
 /** This week's numbers from disk, and the Gitwatch counters to save as the next week's baseline. */
 export function weekInputs(dir: string, now: number, saved: Saved,
-  gitwatchFile = join(envDir('PI_GITWATCH_DIR', '.pi', 'agent', 'gitwatch'), 'state.json')): { inputs: ScoreInputs; routing?: Routing } {
+  gitwatchFile = join(envDir('PI_GITWATCH_DIR', '.pi', 'agent', 'gitwatch'), 'state.json'), ruleViolations?: number): { inputs: ScoreInputs; routing?: Routing } {
   const from = now - WEEK_MS;
   let commitments: ScoreInputs['commitments'];
   try {
@@ -79,15 +80,23 @@ export function weekInputs(dir: string, now: number, saved: Saved,
   const before = saved.routing;
   const delta = routing && before && before.since === routing.since && routing.woke >= before.woke && routing.quiet >= before.quiet
     ? { woke: routing.woke - before.woke, quiet: routing.quiet - before.quiet } : undefined;
-  let ruleViolations: number | undefined;
-  try { ruleViolations = scanCorrections(sessionsDir(), from, now).reduce((sum, rule) => sum + rule.count, 0); }
-  catch (error) { console.error('Correction rules scan failed:', error); }
   return { inputs: { from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
 }
 
+/** Candidate rule violations of the last 7 days, scanned in a child process: the sessions are hundreds of MB. */
+export function scanRuleViolations(): Promise<number | undefined> {
+  const script = fileURLToPath(new URL('../scripts/correction-scan.mjs', import.meta.url));
+  return new Promise(resolve => execFile(process.execPath, [script, '--since', '7d'], { timeout: 120_000, maxBuffer: 1 << 20, windowsHide: true }, (error, stdout) => {
+    if (error) { console.error('Correction rules scan failed:', error.message); return resolve(undefined); }
+    try { resolve((JSON.parse(stdout.trim().split('\n').at(-1)!) as { count: number }[]).reduce((sum, rule) => sum + rule.count, 0)); }
+    catch { resolve(undefined); }
+  }));
+}
+
 export class WeeklyScoreboard {
+  private scanning = false;
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post,
-    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string } = {}) {}
+    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined> } = {}) {}
 
   /** Posts once a week, the first check on `weekday` (Monday) between `at` (09h) and `until` (noon) local time. */
   async maybePost(): Promise<boolean> {
@@ -97,7 +106,11 @@ export class WeeklyScoreboard {
     if (!owner || local.getDay() !== (this.options.weekday ?? 1) || local.getHours() < (this.options.at ?? 9) || local.getHours() >= (this.options.until ?? 12)) return false;
     const file = join(owner.dir, STATE), saved = readJsonOr<Saved>(file, {}), week = localDate(now);
     if (saved.week === week) return false;
-    const { inputs, routing } = weekInputs(owner.dir, now, saved, this.options.gitwatchFile);
+    if (this.scanning) return false; // the scan awaits a child process: a second check must not post the week again
+    this.scanning = true;
+    let violations: number | undefined;
+    try { violations = await (this.options.scan ?? scanRuleViolations)(); } finally { this.scanning = false; }
+    const { inputs, routing } = weekInputs(owner.dir, now, saved, this.options.gitwatchFile, violations);
     atomicWrite(file, JSON.stringify({ week, ...routing ? { routing } : {} })); // Before posting: a crash mid-post must not post twice.
     await this.post(composeScoreboard(inputs), 'harness');
     return true;

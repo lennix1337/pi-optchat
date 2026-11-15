@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detect, scanCorrections, rules } from '../src/correction-scan.ts';
@@ -33,5 +33,13 @@ test('scan applies time bounds and caps locations without message text', () => {
   assert.equal(result.find(r=>r.id==='free-action')?.count,5); assert.equal(result[0].examples.length,3);
   assert.deepEqual(Object.keys(result[0].examples[0]).sort(),['file','line']);
   assert.equal(scanCorrections(dir,Date.parse('2026-11-15'),Date.parse('2026-11-16'))[0].count,0);
+ } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+test('scan skips files untouched since the window and a half-written last line', () => {
+ const dir = mkdtempSync(join(tmpdir(), 'rules-')); try {
+  writeFileSync(join(dir,'live.jsonl'), JSON.stringify(text('Posso mergear?'))+'\n{"type":"mess');
+  writeFileSync(join(dir,'old.jsonl'), JSON.stringify(text('Posso mergear?'))+'\n');
+  utimesSync(join(dir,'old.jsonl'), new Date('2026-11-01'), new Date('2026-11-01'));
+  assert.equal(scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r=>r.id==='free-action')?.count, 1);
  } finally { rmSync(dir,{recursive:true,force:true}); }
 });

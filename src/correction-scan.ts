@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,12 +41,12 @@ export function detect(rule: Rule, input: object): boolean {
 export function scanCorrections(dir: string, since: number, until: number): ScanResult[] {
   if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) throw new Error('Invalid scan interval');
   const results = rules.map(r => ({ id: r.id, count: 0, examples: [] as { file: string; line: number }[] }));
-  for (const file of readdirSync(dir).filter(f => f.endsWith('.jsonl'))) {
+  for (const file of readdirSync(dir).filter(f => f.endsWith('.jsonl') && statSync(join(dir, f)).mtimeMs >= since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
       let event: Event;
-      try { event = JSON.parse(lines[i]) as Event; } catch (error) { throw new Error(`Invalid JSON in ${file}:${i + 1}`, { cause: error }); }
+      try { event = JSON.parse(lines[i]) as Event; } catch { continue; } // a live session's last line may be half-written
       const at = Date.parse(event.timestamp ?? '');
       if (!(at >= since && at < until)) continue;
       rules.forEach((rule, n) => { if (detect(rule, event)) { results[n].count++; if (results[n].examples.length < 3) results[n].examples.push({ file, line: i + 1 }); } });
