@@ -319,6 +319,7 @@ export class ExternalRuns {
   readonly records = new Map<string, RunInfo>();
   readonly warnings: string[] = [];
   readBytes = 0;
+  asyncScans = 0;
   readonly paths: PiSubagentsPaths;
   private readonly hiddenFile: string;
   private readonly hidden: Set<string>;
@@ -329,6 +330,7 @@ export class ExternalRuns {
   private readonly throttleMs: number;
   private readonly liveTtlMs: number;
   private readonly processAlive: (pid: number) => boolean | undefined;
+  private asyncDirStamp?: string;
   private asyncRecords = new Map<string, RunInfo>();
   private foregroundRecords = new Map<string, RunInfo>();
   private liveRecords = new Map<string, RunInfo>();
@@ -391,7 +393,7 @@ export class ExternalRuns {
     const now = this.now();
     if (!force && now - this.lastRefresh < this.throttleMs) return;
     this.lastRefresh = now;
-    this.readAsync();
+    this.readAsync(force);
     this.readForeground();
     this.readLiveForeground();
     const next = new Map<string, RunInfo>();
@@ -415,22 +417,33 @@ export class ExternalRuns {
     if (this.warnings.length < MAX_WARNINGS) this.warnings.push(message);
   }
 
-  private readAsync() {
+  private readAsync(force = false) {
+    const hasActive = [...this.asyncRecords.values()].some(isActiveRun);
+    const dirStamp = this.dirStamp(this.paths.asyncDir);
+    if (!dirStamp) { this.asyncRecords.clear(); this.statusCache.clear(); this.asyncDirStamp = undefined; return; }
+    if (!force && !hasActive && this.asyncDirStamp === dirStamp) return;
     let entries;
+    this.asyncScans++;
     try { entries = readdirSync(this.paths.asyncDir, { withFileTypes: true }); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { this.asyncRecords.clear(); this.statusCache.clear(); return; }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { this.asyncRecords.clear(); this.statusCache.clear(); this.asyncDirStamp = undefined; return; }
       this.warnOnce(`Could not read pi-subagents async runs: ${String(error)}`);
       return;
     }
+    this.asyncDirStamp = dirStamp;
     const seen = new Set<string>(), next = new Map<string, RunInfo>();
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
       const dir = join(this.paths.asyncDir, entry.name), file = join(dir, 'status.json');
+      const cached = this.statusCache.get(file), cachedRuns = cached?.runs;
+      if (!force && cachedRuns?.length && !cachedRuns.some(isActiveRun)) {
+        seen.add(file);
+        for (const run of cachedRuns) next.set(run.id, run);
+        continue;
+      }
       const stamp = this.stamp(file);
       if (!stamp) { this.statusCache.delete(file); continue; }
       seen.add(file);
-      const cached = this.statusCache.get(file);
       if (cached?.stamp === stamp) {
         for (const run of this.settleLostRunner(cached.runs ?? [], cached.runner)) next.set(run.id, run);
         continue;
@@ -540,6 +553,13 @@ export class ExternalRuns {
       const stat = statSync(file);
       if (!stat.isFile() || stat.size > MAX_STATUS_BYTES) return undefined;
       return `${stat.mtimeMs}:${stat.size}`;
+    } catch { return undefined; }
+  }
+
+  private dirStamp(dir: string): string | undefined {
+    try {
+      const stat = statSync(dir);
+      return stat.isDirectory() ? `${stat.mtimeMs}` : undefined;
     } catch { return undefined; }
   }
 }
