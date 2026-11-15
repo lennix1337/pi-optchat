@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { advance, DEFAULT_PROBES, healthSignals, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState } from '../src/prod-health.ts';
+import { advance, DEFAULT_PROBES, healthSignals, prodHealthReadBytes, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState } from '../src/prod-health.ts';
 import { QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 
@@ -176,5 +176,17 @@ test('every remote probe failing on DNS is this machine\'s network, not producti
     let told: unknown[] = [];
     for (let i = 0; i < FAILURES_BEFORE_ALERT; i++) told = await single.round(dir);
     assert.equal(told.length, 1, 'one probe failing on DNS while the others answer is a real outage');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('repeated rounds append history without re-reading the history file until trim threshold', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'health-io-'));
+  try {
+    const fetcher: Fetcher = async url => ({ status: 200, body: url === api.url ? API_OK : url === web.url ? WEB_OK : US_OK });
+    const health = new ProdHealth({ fetcher, now: () => T0 });
+    await health.round(dir);
+    const before = prodHealthReadBytes;
+    for (let i = 0; i < 5; i++) await health.round(dir);
+    assert.equal(prodHealthReadBytes - before, 0, 'appendHistory must not re-read history.jsonl on every round');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
