@@ -1,7 +1,9 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { readFile } from 'node:fs/promises';
-import { runSliced, runSync } from './sliced.ts';
+import { open, readFile } from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
+import { setImmediate as yieldLoop } from 'node:timers/promises';
+import { runSync } from './sliced.ts';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Entry, Summary } from './memory.ts';
 
@@ -56,6 +58,7 @@ export interface Store {
   nodeText?(l: number, i: number): string;
   /** How many messages' log positions the store keeps in RAM, for diagnostics. */
   lineIndexSize?(): number;
+  close?(): void;
   lock?: Lease;
 }
 
@@ -162,12 +165,61 @@ function textless(value: unknown) {
   const { text, ...rest } = record;
   return { ...rest, size: Buffer.byteLength(`${record.kind}: ${text}`) };
 }
+/** A summary record without its text and with its `size`, or undefined if not a non-empty summary. */
+export interface ColdSummaryRecord { l: number; i: number; size: number; revised?: true; text?: never }
+export function coldSummary(value: unknown): ColdSummaryRecord | undefined {
+  const record = value as { l?: unknown; i?: unknown; text?: unknown; revised?: unknown } | null;
+  if (!record || !Number.isSafeInteger(record.l) || !Number.isSafeInteger(record.i) || typeof record.text !== 'string') return undefined;
+  if (!record.text.trim()) return undefined;
+  const size = Buffer.byteLength(record.text.replace(/[\r\n]+/g, ' '), 'utf8');
+  return { l: record.l as number, i: record.i as number, size, ...(record.revised === true ? { revised: true as const } : {}) };
+}
 const logNames = (dir: string) => existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort() : [];
 function records(dir: string, warn: (s: string) => void, located: Located) {
   for (const name of logNames(dir)) fileRecords(join(dir, name), warn, located);
 }
 function fileRecords(file: string, warn: (s: string) => void, located: Located) {
   runSync(parseRecords(readFileSync(file), file, warn, located));
+}
+async function scanJsonl(file: string, warn: (s: string) => void, located: Located) {
+  const CHUNK = 256 * 1024;
+  const buf = Buffer.allocUnsafe(CHUNK);
+  let carry = Buffer.alloc(0);
+  let baseOffset = 0, index = 0;
+  let started = performance.now(), steps = 0;
+  const fh = await open(file, 'r');
+  try {
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, 0, CHUNK, null);
+      if (bytesRead === 0) break;
+      const view = buf.subarray(0, bytesRead);
+      const data = carry.length ? Buffer.concat([carry, view]) : view;
+      let from = 0;
+      for (let nl = data.indexOf(0x0a); nl >= 0; from = nl + 1, nl = data.indexOf(0x0a, from)) {
+        index++;
+        const line = data.toString('utf8', from, nl);
+        if (line.trim()) {
+          let value: unknown;
+          try { value = JSON.parse(line); }
+          catch { warn(`Skipped damaged JSON at ${file}:${index}`); continue; }
+          located(value, file, baseOffset + from, nl - from);
+        }
+        if (++steps % 256 === 0 && performance.now() - started >= 15) {
+          await yieldLoop();
+          started = performance.now();
+        }
+      }
+      carry = from < data.length ? Buffer.from(data.subarray(from)) : Buffer.alloc(0);
+      baseOffset += data.length - carry.length;
+      if (performance.now() - started >= 15) {
+        await yieldLoop();
+        started = performance.now();
+      }
+    }
+    if (carry.toString('utf8').trim()) warn(`Skipped damaged JSON at ${file}:${index + 1}`);
+  } finally {
+    await fh.close();
+  }
 }
 function* parseRecords(data: Buffer, file: string, warn: (s: string) => void, located: Located): Generator<void, void> {
   let from = 0, index = 0;
@@ -217,9 +269,9 @@ export class FileStore implements Store {
     // The tree loads first, so the log knows which messages are summarized while it parses.
     const tree: unknown[] = [];
     records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
-      tree.push(value);
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
       if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
+      tree.push(hot < Infinity ? (coldSummary(value) ?? value) : value);
     });
     const main = join(this.directory, 'main'), entries: unknown[] = [], names = logNames(main);
     // Past days are no longer written to: each is parsed once into an index of its records without their texts, and later opens
@@ -258,25 +310,46 @@ export class FileStore implements Store {
     const scan = async (file: string, accept: Located) => {
       const stat = statSync(file);
       observed.set(file, { size: stat.size, mtimeMs: stat.mtimeMs });
-      const data = await readFile(file);
-      await runSliced(parseRecords(data, file, this.warn, accept));
+      await scanJsonl(file, this.warn, accept);
     };
     const treeDir = join(this.directory, 'tree'), treeNames = logNames(treeDir);
     for (const name of treeNames) await scan(join(treeDir, name), (value, file, offset) => {
-      tree.push(value);
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
       if (Number.isSafeInteger(l) && Number.isSafeInteger(i) && typeof text === 'string') this.nodes.set((l as number) * 2 ** 40 + (i as number), this.nodeSlot(file) * 2 ** 40 + offset);
+      tree.push(hot < Infinity ? (coldSummary(value) ?? value) : value);
     });
     const main = join(this.directory, 'main'), mainNames = logNames(main);
-    for (const name of mainNames) {
+    const slim = new Set<number>();
+    const pastNames = hot < Infinity ? mainNames.slice(0, -1) : [];
+    for (const name of pastNames) {
+      const file = join(main, name);
+      const stat = statSync(file);
+      observed.set(file, { size: stat.size, mtimeMs: stat.mtimeMs });
+      const rows = await this.dayIndexAsync(file, stat);
+      let started = performance.now(), steps = 0;
+      for (const [offset, length, value, textlessRow] of rows) {
+        const i = (value as { i?: unknown } | null)?.i;
+        if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
+        if (textlessRow) slim.add(entries.length);
+        entries.push(value);
+        if (++steps % 512 === 0 && performance.now() - started >= 15) { await yieldLoop(); started = performance.now(); }
+      }
+    }
+    const tailNames = hot < Infinity ? mainNames.slice(-1) : mainNames;
+    for (const name of tailNames) {
       const file = join(main, name);
       await scan(file, (value, _file, offset, length) => {
         const i = (value as { i?: unknown } | null)?.i;
         if (Number.isSafeInteger(i)) this.lines.set(i as number, { file, offset, length });
         const old = entries.push(value) - 1 - hot;
-        if (old >= 0) entries[old] = this.cold(entries[old]);
+        if (old >= 0 && !slim.has(old)) entries[old] = this.cold(entries[old]);
       });
     }
+    for (const k of slim) {
+      const value = entries[k] as { i: number }, line = this.lines.get(value.i);
+      if (line && (k >= entries.length - hot || !this.hasNode(0, value.i))) entries[k] = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length));
+    }
+    this.drop();
     const view = join(this.directory, 'view.json');
     let saved: string | undefined;
     if (existsSync(view)) try { saved = await readFile(view, 'utf8'); } catch { saved = ''; }
@@ -292,6 +365,24 @@ export class FileStore implements Store {
     }
     return { entries, tree, view: saved };
   }
+  private async dayIndexAsync(file: string, stat: { size: number; mtimeMs: number }): Promise<DayRow[]> {
+    const index = join(this.directory, 'load-index', `${basename(file)}.json`);
+    try {
+      const saved = JSON.parse(await readFile(index, 'utf8')) as { version?: unknown; size?: unknown; mtimeMs?: unknown; rows?: unknown };
+      if (saved.version === 1 && saved.size === stat.size && saved.mtimeMs === stat.mtimeMs && Array.isArray(saved.rows)) return saved.rows as DayRow[];
+    } catch {}
+    const rows: DayRow[] = [];
+    let damaged = false;
+    await scanJsonl(file, msg => { damaged = true; this.warn(msg); }, (value, _file, offset, length) => {
+      const slim = textless(value);
+      rows.push(slim ? [offset, length, slim, 1] : [offset, length, value, 0]);
+    });
+    if (!damaged) {
+      try { mkdirSync(dirname(index), { recursive: true }); atomicWrite(index, JSON.stringify({ version: 1, size: stat.size, mtimeMs: stat.mtimeMs, rows })); }
+      catch (error) { this.warn(`OptChat could not save the load index ${index}: ${(error as Error).message}`); }
+    }
+    return rows;
+  }
   /** A summarized message without its text, with the `size` Memory gives it (the bytes of `kind: text`); anything else as is. */
   private cold(value: unknown) {
     const record = value as { i?: unknown } | null;
@@ -305,12 +396,15 @@ export class FileStore implements Store {
       if (saved.version === 1 && saved.size === stat.size && saved.mtimeMs === stat.mtimeMs && Array.isArray(saved.rows)) return saved.rows as DayRow[];
     } catch {}
     const rows: DayRow[] = [];
-    fileRecords(file, this.warn, (value, _file, offset, length) => {
+    let damaged = false;
+    fileRecords(file, msg => { damaged = true; this.warn(msg); }, (value, _file, offset, length) => {
       const slim = textless(value);
       rows.push(slim ? [offset, length, slim, 1] : [offset, length, value, 0]);
     });
-    try { mkdirSync(dirname(index), { recursive: true }); atomicWrite(index, JSON.stringify({ version: 1, size: stat.size, mtimeMs: stat.mtimeMs, rows })); }
-    catch (error) { this.warn(`OptChat could not save the load index ${index}: ${(error as Error).message}`); }
+    if (!damaged) {
+      try { mkdirSync(dirname(index), { recursive: true }); atomicWrite(index, JSON.stringify({ version: 1, size: stat.size, mtimeMs: stat.mtimeMs, rows })); }
+      catch (error) { this.warn(`OptChat could not save the load index ${index}: ${(error as Error).message}`); }
+    }
     return rows;
   }
   append(entry: Entry): undefined {
@@ -350,6 +444,7 @@ export class FileStore implements Store {
     return data;
   }
   private drop() { if (this.cached) clearTimeout(this.cached.timer); this.cached = undefined; }
+  close() { this.drop(); }
   private checkLog(next: string) {
     const main = dirname(next), names = readdirSync(main).filter(n => n.endsWith('.jsonl'));
     if (names.length !== this.lastSeenBytes.size || names.some(n => statSync(join(main, n)).size !== this.lastSeenBytes.get(join(main, n)))) throw otherWriter(next);
