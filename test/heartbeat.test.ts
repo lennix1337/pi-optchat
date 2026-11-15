@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
-import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
+import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, signalWakeText, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 import { addCommitment, readCommitments } from '../src/commitments.ts';
 import type { Patrol } from '../src/patrol-divert.ts';
@@ -557,6 +557,16 @@ test('the woken turn states the previous wake in Brasília time, its outcome and
   assert.match(text, /"merged PR 12; CI still running, unconfirmed"/);
   assert.match(text, /left something open or unconfirmed[^]*close it first/);
   assert.doesNotMatch(wakeTurn(wakeText('', 'anthropic/claude-haiku-5-5', 15, plan)), /Previous wake/);
+});
+
+test('every woken turn says it is a turn, forbids memory-line replies, re-asking what waits on the operator and "nothing new" reports (15/11 17:12/17:22)', () => {
+  for (const text of [wakeTurn(wakeText('fix PR 9', 'haiku', 30, plan)), wakeTurn(wakeText('', '', 30, plan)), wakeTurn(signalWakeText(15, plan, 'signals'))]) {
+    assert.match(text, /turn, never a compaction/);
+    assert.match(text, /never answer with a memory line/);
+    assert.match(text, /Do not restate or ask again what waits on the operator/);
+    assert.match(text, /Never send a "nothing new" summary/);
+    assert.doesNotMatch(text, /what is left for the operator|is reported, not guessed/);
+  }
 });
 
 test('the final report is asked in Portuguese (pt-BR), with times in Brasília time (UTC-3), for a check wake and a scheduled one', () => {

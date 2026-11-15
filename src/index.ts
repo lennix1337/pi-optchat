@@ -70,7 +70,7 @@ import { registerEffectApprovals } from './authorization-hooks.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
-import { heartbeatCommand, MEMORY_REPLY_RETRY, summarizeTurn, wakeRetry, type WakeRetried } from './heartbeat-report.ts';
+import { heartbeatCommand, MEMORY_REPLY_RETRY, silentWake, summarizeTurn, wakeRetry, type WakeRetried } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
@@ -1286,7 +1286,7 @@ export default function optchat(host: ExtensionAPI) {
       heartbeat?.turnSettled({ ...wake ?? summarizeTurn(turn), ...ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}` } });
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (active && !fault && !stopping) heartbeat?.arm();
-      await slack.runEnded(messages, wakeWorkers.notVerified ? WORKER_UNVERIFIED : undefined);
+      await slack.runEnded(messages, wakeWorkers.notVerified ? WORKER_UNVERIFIED : undefined, !!wake && silentWake(wake));
       clearWakeWorkers();
     }
     if (waitingWorkers || waitingReload || retry) heldWakeMessages = messages;

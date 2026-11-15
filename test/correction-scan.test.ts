@@ -40,6 +40,28 @@ function pacingCount(events: object[], before: object[] = [], otherSession: obje
   return scanCorrections(dir, Date.parse('2026-11-14'), Date.parse('2026-11-15')).find(r=>r.id==='self-work-under-pacing')!.count;
  } finally { rmSync(dir,{recursive:true,force:true}); }
 }
+const wakePrompt = { type: 'custom_message', customType: 'optchat-report', timestamp: '2026-11-14T00:00:00Z', content: '[OptChat heartbeat] You have been idle for 15 min and the operator is away.' };
+const operator = { type: 'message', timestamp: '2026-11-14T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'oi' }] } };
+function wakeSilenceCount(events: object[]): number {
+ const dir = mkdtempSync(join(tmpdir(), 'wake-silence-'));
+ try {
+  writeFileSync(join(dir, 'session.jsonl'), events.map(e => JSON.stringify(e)).join(String.fromCharCode(10)));
+  return scanCorrections(dir, Date.parse('2026-11-14'), Date.parse('2026-11-15')).find(r => r.id === 'wake-silence')!.count;
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+test('wake-silence flags a wake run that ends in a memory line, a re-asked operator item or a "nothing new" report (15/11 17:12, 17:22)', () => {
+ for (const bad of ['15/11 164386-: 17:12 wake heartbeat (machine notice, not user words; 164385). Radar fine.', '15/11 164384-387 OptChat: 17:22 wake', 'c_022f4e waiting_operator 2d9h past due, ainda aguardando.', 'Nada novo desde o último wake.'])
+  assert.equal(wakeSilenceCount([wakePrompt, text(bad)]), 1, bad);
+ assert.equal(wakeSilenceCount([wakePrompt, call('bash', { command: 'git status' }), text('Abri a PR #97 com o ajuste do radar.')]), 0, 'a delivered report is fine');
+});
+test('wake-silence counts only runs that a heartbeat prompt started', () => {
+ const bad = text('15/11 164386-: 17:12 wake heartbeat (machine notice, not user words)');
+ assert.equal(wakeSilenceCount([bad]), 0, 'no wake before it');
+ assert.equal(wakeSilenceCount([wakePrompt, operator, bad]), 0, 'the operator spoke after the wake prompt');
+ assert.equal(wakeSilenceCount([{ ...wakePrompt, content: 'Subagent finished' }, bad]), 0, 'another report is not a wake');
+ assert.equal(wakeSilenceCount([wakePrompt, message({ type: 'text', text: 'Nada novo.' }, 'toolUse')]), 0, 'a mid-run text is not a final report');
+ assert.equal(wakeSilenceCount([wakePrompt, bad, operator, bad]), 1);
+});
 test('self-work-under-pacing counts sustained direct work, not one quick manager action', () => {
  assert.equal(pacingCount([pacing(), ...selfWork]), 1);
  assert.equal(pacingCount([pacing(), ...selfWork, ...selfWork]), 1, 'one candidate per uninterrupted run');

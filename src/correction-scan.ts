@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
 export type Rule = { id: string; quote: string; date: string; scope: string; detector: string; precision: string };
 export type ScanResult = { id: string; count: number; examples: { file: string; line: number }[] };
@@ -8,8 +9,9 @@ export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', 
 export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions', '--C--Users-swluc--');
 
 type Content = { type?: string; text?: string; name?: string; arguments?: Record<string, unknown> };
-type Event = { type?: string; timestamp?: string; message?: { role?: string; stopReason?: string; content?: Content[] | string } };
-type Pacing = { active: boolean; directWork: number };
+type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; content?: Content[] | string } };
+/** `wake`: the run in progress started with an OptChat heartbeat prompt, so its final text is a wake report. */
+type Pacing = { active: boolean; directWork: number; wake?: boolean };
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
 function toolCalls(event: Event): Content[] {
@@ -22,7 +24,9 @@ function toolCalls(event: Event): Content[] {
 
 function nextPacing(previous: Pacing, event: Event): Pacing {
   const msg = event.message;
-  let state = previous;
+  let state: Pacing = previous;
+  if (event.type === 'custom_message' && event.customType === 'optchat-report') state = { ...state, wake: typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]') };
+  else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -37,8 +41,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-worker\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0 };
-  return { active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake };
+  return { wake: state.wake, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
 export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): boolean {
@@ -50,6 +54,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
   switch (rule.detector) {
     case 'free-action': return /\b(?:posso|pode|quer que eu|rodo|devo)\b[^?\n]{0,80}\b(?:merge\w*|push\w*|recarreg\w*|reload\w*|reinici\w*|restart\w*|public\w*|publish\w*|pr)\b[^?\n]{0,60}\?/iu.test(final);
     case 'ending-offer': return /se quiser\s*,?\s*(?:é|e) só (?:dizer|avisar|falar)[.!]?\s*$/iu.test(final);
+    case 'wake-silence': return !!pacing.wake && !!final && (memoryShapedReply(final) || reasksPending(final) || nothingNewReply(final));
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
     case 'utc-time': return /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u.test(final);
     case 'abandoned-cause': return /\b(?:causas?\s+n[ãa]o\s+(?:(?:foi|foram)\s+)?encontrad[ao]s?|sem\s+causa\s+encontrada|causes?\s+(?:(?:is|were|was|still)\s+)*not\s+found)\b/iu.test(final);

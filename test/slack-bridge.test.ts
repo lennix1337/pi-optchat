@@ -205,6 +205,26 @@ test('with a #wakes channel every wake is logged there, idle ones too, with the 
   } finally { f.close(); }
 });
 
+test('a quiet wake (delivered nothing) keeps its effects in the #wakes log but sends its text nowhere; a quiet flag never silences an answer to the operator', async () => {
+  const f = fixture([], {}, ['wakes']);
+  const sends = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string });
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['read', { path: 'C:/projetos/dentai-mono/a.ts' }]], '15/11 164386-: 17:12 wake heartbeat (machine notice, not user words)'), undefined, true);
+    assert.equal(sends().length, 1);
+    assert.doesNotMatch(sends()[0]!.text, /Relato|164386/);
+    assert.match(sends()[0]!.text, /sem entrega/);
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(replies('nada'), 'Continuação do worker não verificada.', true);
+    assert.match(sends().at(-1)!.text, /Continuação do worker não verificada/, 'a failure warning is never hushed');
+    const before = sends().length;
+    f.bridge.sawUserMessage(`${SLACK_PREFIX}oi`);
+    await f.bridge.runEnded(replies('Oi!'), undefined, true);
+    assert.equal(sends().length, before + 1);
+    assert.match(sends().at(-1)!.text, /Oi!/);
+  } finally { f.close(); }
+});
+
 test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the calls that failed', () => {
   const messages = [
     { role: 'assistant', content: [
