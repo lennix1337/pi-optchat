@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { FileStore, type Saved, type Store, type TerminalRecord } from './store.ts';
+import { FileStore, type ColdSummaryRecord, type Saved, type Store, type TerminalRecord } from './store.ts';
 import { runSliced, runSync, sortSteps } from './sliced.ts';
 
 export const NODE = 512;
@@ -167,6 +167,10 @@ function isSummary(value: unknown): value is Summary {
   return object(value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
     && typeof value.text === 'string';
 }
+function isColdSummary(value: unknown): value is ColdSummaryRecord {
+  return object(value) && !('text' in value) && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i)
+    && typeof value.size === 'number' && value.size > 0;
+}
 function isTerminalRecord(value: unknown): value is TerminalRecord {
   return object(value) && !('text' in value) && (value.type === 'terminal' || value.type === 'retry')
     && Number.isSafeInteger(value.l) && Number.isSafeInteger(value.i) && value.code === POLICY_REFUSAL;
@@ -271,14 +275,19 @@ export class Memory {
     if (!this.store.hasNode) return;
     const shown = new Set([...this.chat.parts, ...this.compaction.parts].map(key));
     for (const [id, node] of this.tree) {
-      if (!shown.has(id) && Object.getOwnPropertyDescriptor(node, 'text')?.writable && this.store.hasNode(node.l, node.i)) this.tree.set(id, new ColdSummary(node.l, node.i, node.size, this.store));
+      if (shown.has(id)) {
+        if (node instanceof ColdSummary) this.tree.set(id, { l: node.l, i: node.i, text: node.text, size: node.size });
+      } else if (Object.getOwnPropertyDescriptor(node, 'text')?.writable && this.store.hasNode(node.l, node.i)) {
+        this.tree.set(id, new ColdSummary(node.l, node.i, node.size, this.store));
+      }
       yield;
     }
+    this.store.close?.();
   }
   private *loadTree(records: unknown[]): Generator<void, void> {
-    const summaries: Summary[] = [], originals: Summary[] = [], terminal: TerminalRecord[] = [];
+    const summaries: (Summary | ColdSummaryRecord)[] = [], originals: (Summary | ColdSummaryRecord)[] = [], terminal: TerminalRecord[] = [];
     for (const value of records) {
-      if (isSummary(value)) { summaries.push(value); if (!value.revised) originals.push(value); }
+      if (isSummary(value) || isColdSummary(value)) { summaries.push(value); if (!value.revised) originals.push(value); }
       else if (isTerminalRecord(value)) terminal.push(value);
       else this.warn('Skipped an invalid OptChat summary record.');
       yield;
@@ -288,20 +297,24 @@ export class Memory {
     for (const value of summaries) {
       yield;
       if (!value.revised) continue;
-      if (!this.tree.has(key(value)) || !value.text.trim()) { this.warn('Skipped a revision of a missing OptChat summary.'); continue; }
-      this.tree.set(key(value), { l: value.l, i: value.i, text: value.text, size: lineBytes(value.text) });
+      if (!this.tree.has(key(value)) || (!isColdSummary(value) && !value.text.trim())) { this.warn('Skipped a revision of a missing OptChat summary.'); continue; }
+      this.tree.set(key(value), isColdSummary(value) && this.store.hasNode?.(value.l, value.i)
+        ? new ColdSummary(value.l, value.i, value.size, this.store)
+        : { l: value.l, i: value.i, text: isColdSummary(value) ? this.store.nodeText!(value.l, value.i) : value.text, size: isColdSummary(value) ? value.size : lineBytes(value.text) });
     }
     yield* this.loadTerminalRecords(terminal);
   }
-  private *loadSummaries(summaries: Summary[]): Generator<void, void> {
+  private *loadSummaries(summaries: (Summary | ColdSummaryRecord)[]): Generator<void, void> {
     for (const value of summaries) {
       yield;
       const children = value.l === 0 || (this.tree.has(key({ l: value.l - 1, i: 2 * value.i })) && this.tree.has(key({ l: value.l - 1, i: 2 * value.i + 1 })));
-      if (value.l < 0 || value.i < 0 || !value.text.trim() || end(value) > this.root.length || !children || this.tree.has(key(value))) {
+      if (value.l < 0 || value.i < 0 || (!isColdSummary(value) && !value.text.trim()) || end(value) > this.root.length || !children || this.tree.has(key(value))) {
         this.warn('Skipped an incomplete or invalid OptChat summary record.');
         continue;
       }
-      this.tree.set(key(value), { ...value, size: lineBytes(value.text) });
+      this.tree.set(key(value), isColdSummary(value) && this.store.hasNode?.(value.l, value.i)
+        ? new ColdSummary(value.l, value.i, value.size, this.store)
+        : { ...(value as Summary), size: isColdSummary(value) ? value.size : lineBytes((value as Summary).text) });
     }
   }
   private *loadTerminalRecords(records: TerminalRecord[]): Generator<void, void> {
@@ -683,5 +696,6 @@ export class Memory {
   async close(reason: 'reload' | 'shutdown' | 'import' | 'memory_close' = 'memory_close') {
     this.stopped = true; this.controller.abort(new DOMException(reason, 'AbortError')); clearTimeout(this.retryTimer);
     this.events.emit('change'); await Promise.allSettled(this.busy.values()); await this.writing;
+    this.searchCache.clear(); this.store.close?.();
   }
 }

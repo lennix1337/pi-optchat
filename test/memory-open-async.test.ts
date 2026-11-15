@@ -50,3 +50,31 @@ test('sliced load refuses a concurrent append instead of accepting a stale snaps
     await rejected;
   } finally { removeDir(dir); }
 });
+
+test('loadAsync streams files past one chunk and returns cold summaries when hot is bounded', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-open-cold-'));
+  try {
+    mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
+    const pad = 'x'.repeat(500);
+    const total = 700; // > 350 KB total, crossing the 256 KB scanJsonl chunk boundary
+    const date = '2026-01-01T00:00:00.000Z';
+    writeFileSync(join(dir, 'main', '2026-01-01.jsonl'), Array.from({ length: total }, (_, i) => line({ i, kind: 'user', text: `msg ${i} ${pad}`, date })).join(''));
+    writeFileSync(join(dir, 'main', '2026-01-02.jsonl'), line({ i: total, kind: 'user', text: 'latest', date: '2026-01-02T00:00:00.000Z' }));
+    writeFileSync(join(dir, 'tree', '2026-01-01.jsonl'),
+      Array.from({ length: total }, (_, i) => line({ l: 0, i, text: `sum ${i} ${pad}` })).join('') +
+      Array.from({ length: total / 2 }, (_, i) => line({ l: 1, i, text: `l1 ${i}` })).join(''));
+    const store = new FileStore(dir, () => {});
+    const saved = await store.loadAsync(1);
+    assert.equal(saved.entries.length, total + 1);
+    assert.equal(saved.tree.length, total + total / 2);
+    assert.ok(saved.tree.every(node => !('text' in (node as object)) && typeof (node as { size?: unknown }).size === 'number'), 'loadAsync with bounded hot drops summary texts before Memory initializes');
+    assert.equal(store.nodeText(0, 0), `sum 0 ${pad}`);
+    assert.equal(store.reader(0)?.(), `msg 0 ${pad}`);
+    const memory = await Memory.open(dir, (_input, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })), () => {});
+    try {
+      assert.equal(memory.root.length, total + 1);
+      assert.equal(memory.tree.get(0)?.text, `sum 0 ${pad}`);
+      assert.ok(memory.stats().treeColdNodes > 0 && memory.stats().treeColdNodes <= total);
+    } finally { await memory.close(); }
+  } finally { removeDir(dir); }
+});
