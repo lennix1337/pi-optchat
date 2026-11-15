@@ -77,7 +77,7 @@ import { boardWaiting, readCommitments, registerCommitments, waitingItems } from
 import { latestOperatorMessage } from './operator-words.ts';
 import { registerCorrections } from './corrections.ts';
 import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.ts';
-import { cleanClosedOnce, closedConflictsOf } from './closed-conflicts.ts';
+import { cleanClosedOnce, closedConflictsOf, misattributed } from './closed-conflicts.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
 import { spanHooks, spanned } from './loop-stalls.ts';
@@ -624,7 +624,10 @@ export default function optchat(host: ExtensionAPI) {
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
       let diagnosticsFailed = false;
-      const closed = closedConflictsOf(dir, warning => ctx.ui.notify(warning, 'warning'));
+      const listed = closedConflictsOf(dir, warning => ctx.ui.notify(warning, 'warning'));
+      let opened: Memory | undefined;
+      const credited = misattributed(i => opened?.root[i]?.kind);
+      const closed = () => [...listed(), credited];
       const compress = createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
         usage.compression(message, 'compactor', sessionId, attribution);
         status(ctx);
@@ -638,6 +641,7 @@ export default function optchat(host: ExtensionAPI) {
         finally { metrics.record('compaction', performance.now() - started); }
       }, warning => ctx.ui.notify(warning, 'error'), undefined, undefined, undefined, DEFER));
       openingMemory = memory;
+      opened = memory;
       void cleanClosedOnce(dir, memory, closed()).then(changed => { if (changed) ctx.ui.notify(`OptChat rewrote ${changed} memory lines that cited closed conflicts.`, 'info'); },
         error => ctx.ui.notify(`Could not clean closed conflicts from memory: ${errorText(error)}`, 'warning'));
       const inbox = new Inbox(dir);

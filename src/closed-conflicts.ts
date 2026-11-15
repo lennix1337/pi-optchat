@@ -58,6 +58,24 @@ export function closedConflictsOf(dir: string, warn: (text: string) => void = ()
   };
 }
 
+/** "user 142336" credits words to the operator, so message 142336 must be his. On 10/11 the compactor credited a tool call
+ * (142336, a read_many) with "merges need tests, review, green CI", and two others (122880, 145488) with a reload ban; for days
+ * most lines repeated them as his rules, and the assistant obeyed a memory he never wrote. Ids it cannot see (imports) pass. */
+const CREDITED = /\b(?:user|operator|operador)\s+(\d{5,6})\b/gi;
+const NOT_HIS = new Set(['tool', 'echo', 'talk', 'work']);
+export function misattributed(kindOf: (i: number) => string | undefined): ClosedConflict {
+  let wrong: string[] = [];
+  return {
+    id: 'misattributed-user',
+    get say() { return `${wrong.join(', ')} ${wrong.length === 1 ? 'is' : 'are'} not the user's message (${wrong.map(id => kindOf(Number(id))).join(', ')}): never credit it to the user or operator; say what it is, or drop the claim.`; },
+    cites: segment => {
+      const found = [...segment.matchAll(CREDITED)].map(match => match[1]).filter(id => NOT_HIS.has(kindOf(Number(id)) ?? ''));
+      if (found.length) wrong = [...new Set(found)];
+      return found.length > 0;
+    },
+  };
+}
+
 // Lines separate items with ";" and sentences; a parenthesis often carries the stale remark on its own.
 const items = (line: string) => line.split(/(?<=[;.])\s+/);
 export function cited(line: string, list: readonly ClosedConflict[]): ClosedConflict[] {
