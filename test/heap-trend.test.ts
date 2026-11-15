@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { heapGrowth, heapGrowthLine, recordHeapSample, type HeapSample } from '../src/heap-trend.ts';
+import { heapGrowth, heapGrowthLine, recordHeapSample, rssLine, type HeapSample } from '../src/heap-trend.ts';
 
 const H = 3_600_000;
 /** One sample per `everyH` hours over `hours`, the heap starting at `start` MB and rising `rate` MB/h. */
@@ -57,4 +57,13 @@ test('recording keeps the last 24 h only, relative to the new sample', () => {
   assert.deepEqual(kept.map(sample => sample.heapUsedMb), [2, 3]);
   assert.deepEqual(recordHeapSample(old, { at: 25 * H, heapUsedMb: 3, afterGc: true }, 100 * H).length, 3, 'keepMs is adjustable');
   assert.equal(old.length, 2, 'the input list is not changed');
+});
+
+test('rssLine: names the Pi RSS once the last three samples all sit above the goal, and stays quiet otherwise', () => {
+  const at = (rssMb: number | undefined, i: number): HeapSample => ({ at: i * H, heapUsedMb: 260, afterGc: false, ...rssMb === undefined ? {} : { rssMb } });
+  assert.equal(rssLine([at(713, 0), at(720, 1), at(705, 2)]), 'Pi RSS 705 MB, above the 500 MB goal in the last 3 samples');
+  assert.equal(rssLine([at(713, 0), at(480, 1), at(705, 2)]), undefined, 'one sample under the goal breaks the stretch');
+  assert.equal(rssLine([at(713, 0), at(720, 1)]), undefined, 'two samples are not enough');
+  assert.equal(rssLine([at(undefined, 0), at(undefined, 1), at(undefined, 2)]), undefined, 'samples from before the RSS watch carry no RSS');
+  assert.equal(rssLine([at(600, 0), at(610, 1), at(620, 2)], { limitMb: 650 }), undefined, 'the goal is adjustable');
 });
