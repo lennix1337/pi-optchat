@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { cited, cleanClosedOnce, closedConflictsOf, dropClosed, fromRecords, CLOSED_FILE } from '../src/closed-conflicts.ts';
+import { cited, cleanClosedOnce, closedConflictsOf, dropClosed, fromRecords, misattributed, CLOSED_FILE } from '../src/closed-conflicts.ts';
 import { dropCarried, foreignIds } from '../src/carried-ids.ts';
 import { createCompressor } from '../src/compactor.ts';
 import { Memory } from '../src/memory.ts';
@@ -185,4 +185,16 @@ test('a merge of two lines may name what its lines name', async () => {
     assert.match(line, /38f9c222/);
     assert.equal(calls(), 1);
   } finally { removeDir(dir); }
+});
+
+test('a line that credits a tool call to the user is refused, his own messages pass', () => {
+  // 10/11: "user 142336: merges need tests, review, green CI" named a read_many call; the false rule spread for days.
+  const kinds: Record<number, string> = { 142336: 'tool', 145488: 'tool', 150487: 'user', 162493: 'work' };
+  const credited = misattributed(i => kinds[i]);
+  const hits = cited('#348 merged pre-CI (breaks user 142336 tests, review, green CI); user 150487 nao mascarar', [credited]);
+  assert.deepEqual(hits.map(hit => hit.id), ['misattributed-user']);
+  assert.match(hits[0].say, /142336 is not the user's message \(tool\)/);
+  assert.deepEqual(cited('user 150487 asked not to mask errors; operator 99999 unknown', [credited]), []);
+  assert.equal(cited('Operator 162493 wake said deliver', [credited]).length, 1);
+  assert.equal(dropClosed('reload done. Consent per user 145488 open.', [credited]), 'reload done.');
 });
