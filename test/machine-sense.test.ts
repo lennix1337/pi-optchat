@@ -549,3 +549,23 @@ test('sizes() counts what the sampler keeps, and a churn of short-lived processe
     assert.ok(sizes.machineFrames <= 400 && sizes.machineExternals <= 4 && sizes.machineUnattributed <= 4, JSON.stringify(sizes));
   } finally { close(); }
 });
+
+
+test('MachineLedger.read skips day files older than 2h before since and caches unchanged files', () => {
+  const { dir, close } = tempDir('machine-ledger-io-');
+  try {
+    const ledger = new MachineLedger(dir);
+    const day0 = Date.UTC(2026, 10, 13, 12, 0), day1 = Date.UTC(2026, 10, 14, 15, 0), day2 = Date.UTC(2026, 10, 15, 12, 0);
+    ledger.append([
+      { t: day0, owner: 'bash', kind: 'bash', cpuS: 10, rssMb: 10, procs: 1, wallS: 60, host: 1 },
+      { t: day1, owner: 'bash', kind: 'bash', cpuS: 20, rssMb: 10, procs: 1, wallS: 60, host: 1 },
+      { t: day2, owner: 'bash', kind: 'bash', cpuS: 30, rssMb: 10, procs: 1, wallS: 60, host: 1 },
+    ]);
+    const rows = ledger.read(day1);
+    assert.equal(rows.length, 2);
+    assert.ok(ledger.readBytes > 0);
+    const afterFirst = ledger.readBytes;
+    assert.equal(ledger.read(day1).length, 2);
+    assert.equal(ledger.readBytes - afterFirst, 0, 'unchanged day files must not be re-read');
+  } finally { close(); }
+});

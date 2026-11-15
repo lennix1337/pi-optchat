@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** What one owner cost the machine in one minute. Nothing here is a secret: owners are names and command heads, never arguments in full. */
@@ -27,30 +27,50 @@ const dayOf = (t: number) => new Date(t).toLocaleDateString('sv-SE');
 const FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
 export class MachineLedger {
+  readBytes = 0;
+  private readonly fileCache = new Map<string, { stamp: string; rows: LedgerRow[] }>();
   constructor(private dir: string) {}
   append(rows: LedgerRow[]) {
     if (!rows.length) return;
     mkdirSync(this.dir, { recursive: true });
     const byDay = new Map<string, string[]>();
     for (const row of rows) { const day = dayOf(row.t); byDay.set(day, [...byDay.get(day) ?? [], JSON.stringify(row)]); }
-    for (const [day, lines] of byDay) appendFileSync(join(this.dir, `${day}.jsonl`), `${lines.join('\n')}\n`);
+    for (const [day, lines] of byDay) {
+      const path = join(this.dir, `${day}.jsonl`);
+      appendFileSync(path, `${lines.join('\n')}\n`);
+      this.fileCache.delete(path);
+    }
   }
   /** The rows from `since` on, in time order. A torn or foreign line is skipped. */
   read(since: number, until = Number.POSITIVE_INFINITY): LedgerRow[] {
     let files: string[];
     try { files = readdirSync(this.dir).filter(f => FILE.test(f)).sort(); } catch { return []; }
-    const first = dayOf(since - 24 * 3_600_000), rows: LedgerRow[] = [];
+    const first = dayOf(since - 2 * 3_600_000), last = until === Number.POSITIVE_INFINITY ? '9999-99-99' : dayOf(until + 2 * 3_600_000), rows: LedgerRow[] = [];
     for (const file of files) {
-      if (file.slice(0, 10) < first) continue;
-      let text: string;
-      try { text = readFileSync(join(this.dir, file), 'utf8'); } catch { continue; }
-      for (const line of text.split('\n')) {
-        if (!line) continue;
-        try {
-          const row = JSON.parse(line) as LedgerRow;
-          if (typeof row.t === 'number' && typeof row.owner === 'string' && typeof row.cpuS === 'number' && row.t >= since && row.t < until) rows.push(row);
-        } catch { /* a line cut short by a crash */ }
+      const day = file.slice(0, 10);
+      if (day < first || day > last) continue;
+      const path = join(this.dir, file);
+      let stamp: string;
+      try { const s = statSync(path); stamp = `${s.size}:${s.mtimeMs}`; } catch { this.fileCache.delete(path); continue; }
+      let parsed: LedgerRow[];
+      const hit = this.fileCache.get(path);
+      if (hit?.stamp === stamp) {
+        parsed = hit.rows;
+      } else {
+        let text: string;
+        try { text = readFileSync(path, 'utf8'); this.readBytes += Buffer.byteLength(text); } catch { continue; }
+        parsed = [];
+        for (const line of text.split('\n')) {
+          if (!line) continue;
+          try {
+            const row = JSON.parse(line) as LedgerRow;
+            if (typeof row.t === 'number' && typeof row.owner === 'string' && typeof row.cpuS === 'number') parsed.push(row);
+          } catch { /* a line cut short by a crash */ }
+        }
+        if (this.fileCache.size >= 16) this.fileCache.delete(this.fileCache.keys().next().value!);
+        this.fileCache.set(path, { stamp, rows: parsed });
       }
+      for (const row of parsed) if (row.t >= since && row.t < until) rows.push(row);
     }
     return rows.sort((a, b) => a.t - b.t);
   }
