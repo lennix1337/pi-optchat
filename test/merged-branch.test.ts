@@ -83,28 +83,28 @@ const base: Record<string, string | Error> = {
 };
 const prList = 'gh pr list --head feat/x --state merged --json headRefOid,baseRefName --limit 10';
 
-test('branchMerged: the tip reachable from origin\'s default branch', () => {
-  assert.equal(branchMerged('/r', 'feat/x', script({ ...base, [`git merge-base --is-ancestor ${TIP} origin/main`]: '' })), true);
+test('branchMerged: the tip reachable from origin\'s default branch', async () => {
+  assert.equal(await branchMerged('/r', 'feat/x', script({ ...base, [`git merge-base --is-ancestor ${TIP} origin/main`]: '' })), true);
 });
 
-test('branchMerged: a merged PR whose head is the local tip (squash merge), into the default branch only', () => {
+test('branchMerged: a merged PR whose head is the local tip (squash merge), into the default branch only', async () => {
   const run = (prs: unknown) => script({ ...base, [`git merge-base --is-ancestor ${TIP} origin/main`]: new Error('exit 1'), [prList]: JSON.stringify(prs) });
-  assert.equal(branchMerged('/r', 'feat/x', run([{ headRefOid: TIP, baseRefName: 'main' }])), true);
-  assert.equal(branchMerged('/r', 'feat/x', run([{ headRefOid: 'b'.repeat(40), baseRefName: 'main' }])), false, 'commits pushed after the PR head');
-  assert.equal(branchMerged('/r', 'feat/x', run([{ headRefOid: TIP, baseRefName: 'feat/base' }])), false, 'merged into another feature branch');
-  assert.equal(branchMerged('/r', 'feat/x', run([])), false);
-  assert.equal(branchMerged('/r', 'feat/x', run('not json')), false);
+  assert.equal(await branchMerged('/r', 'feat/x', run([{ headRefOid: TIP, baseRefName: 'main' }])), true);
+  assert.equal(await branchMerged('/r', 'feat/x', run([{ headRefOid: 'b'.repeat(40), baseRefName: 'main' }])), false, 'commits pushed after the PR head');
+  assert.equal(await branchMerged('/r', 'feat/x', run([{ headRefOid: TIP, baseRefName: 'feat/base' }])), false, 'merged into another feature branch');
+  assert.equal(await branchMerged('/r', 'feat/x', run([])), false);
+  assert.equal(await branchMerged('/r', 'feat/x', run('not json')), false);
 });
 
-test('branchMerged: any failure of the lookup is "not merged"', () => {
+test('branchMerged: any failure of the lookup is "not merged"', async () => {
   const ancestor = `git merge-base --is-ancestor ${TIP} origin/main`;
-  assert.equal(branchMerged('/r', 'feat/x', script({ ...base, [ancestor]: new Error('exit 1'), [prList]: new Error('gh: timeout') })), false);
-  assert.equal(branchMerged('/r', 'feat/x', script({ ...base, [ancestor]: new Error('exit 1') })), false, 'gh printed nothing');
-  assert.equal(branchMerged('/r', 'feat/x', script({})), false, 'no such branch');
-  assert.equal(branchMerged('/r', 'main', script({ ...base, 'git rev-parse --verify --quiet refs/heads/main': TIP })), false, 'the default branch is never "merged"');
+  assert.equal(await branchMerged('/r', 'feat/x', script({ ...base, [ancestor]: new Error('exit 1'), [prList]: new Error('gh: timeout') })), false);
+  assert.equal(await branchMerged('/r', 'feat/x', script({ ...base, [ancestor]: new Error('exit 1') })), false, 'gh printed nothing');
+  assert.equal(await branchMerged('/r', 'feat/x', script({})), false, 'no such branch');
+  assert.equal(await branchMerged('/r', 'main', script({ ...base, 'git rev-parse --verify --quiet refs/heads/main': TIP })), false, 'the default branch is never "merged"');
 });
 
-test('gitRepo.merged on a real repository: reachable from origin/main is merged, a branch with its own commit is not (no gh needed)', () => {
+test('gitRepo.merged on a real repository: reachable from origin/main is merged, a branch with its own commit is not (no gh needed)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'merged-branch-'));
   const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   try {
@@ -120,7 +120,7 @@ test('gitRepo.merged on a real repository: reachable from origin/main is merged,
     writeFileSync(join(clone, 'b.txt'), '2');
     git(clone, 'add', '.'); git(clone, 'commit', '-m', 'two');
     const noGh: Runner = (command, args, cwd) => command === 'gh' ? undefined : execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    assert.equal(branchMerged(clone, 'landed', noGh), true);
-    assert.equal(branchMerged(clone, 'wip', noGh), false);
+    assert.equal(await branchMerged(clone, 'landed', noGh), true);
+    assert.equal(await branchMerged(clone, 'wip', noGh), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

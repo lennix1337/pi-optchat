@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
 import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval, type Settled } from './authorization.ts';
-import { classifyEffects, describeDecision, logReported, type Decision, type Effect, type Repo } from './autonomy.ts';
+import { classifyEffectsAsync, describeDecision, logReported, type AsyncRepo, type Decision, type Effect } from './autonomy.ts';
 import { readProfileEffectPolicy } from './effect-policy.ts';
 import { judgeSelfEdit } from './autonomy-self-edit.ts';
 import { appendFileSync } from 'node:fs';
@@ -72,7 +72,7 @@ const RESULTS = { embedded: undefined, invalid: { action: 'handled' }, standing:
 /** The operator's typed order covering an effect (a line for the log), or undefined; see `orderGrantFor`. */
 export type OrderGrant = (effect: Effect) => string | undefined;
 /** Where the contract lives, how its targets are read, and which typed orders can lift its `ask` rules. */
-interface ContractSource { dir: ContractDir; repo?: Repo; orderGrant?: OrderGrant }
+interface ContractSource { dir: ContractDir; repo?: AsyncRepo; orderGrant?: OrderGrant }
 
 function reportEffect(dir: string, decision: Decision, pending: PendingApproval, ctx: ExtensionContext) {
   const { effect } = decision;
@@ -102,7 +102,7 @@ export function orderHint(action: string | undefined) {
 }
 
 /** The contract's word on a refused call: `run`, a refusal note, or undefined when no profile is open (the operator decides). */
-function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): 'run' | { note: string } | undefined {
+async function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): Promise<'run' | { note: string } | undefined> {
   if (touchesContract(call, contractDir())) {
     const self = judgeSelfEdit(contractDir(), call);
     if (self?.ok) {
@@ -114,7 +114,7 @@ function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource,
     }
     return { note: `Only the operator changes autonomy.json here${self ? ` (${self.reason})` : ''}: the contract cannot approve it. An edit/write of the file that leaves the protected rules and the default alone runs by itself. ` };
   }
-  const dir = contractDir(), effects = classifyEffects(call, repo);
+  const dir = contractDir(), effects = await classifyEffectsAsync(call, repo);
   let decision = readProfileEffectPolicy(dir, () => effects);
   if (decision?.level === 'ask' && !decision.problem && orderGrant && dir) {
     const lifted = liftOrdered(dir, effects, orderGrant, pending, ctx);
@@ -133,17 +133,17 @@ function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource,
 function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
   const notes = new Map<string, string>();
   /** The refusal note for a pending call, or undefined once the contract approved it. */
-  const decide = (pending: PendingApproval, call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
-    const verdict = contractVerdict(contract, pending, call, ctx);
+  const decide = async (pending: PendingApproval, call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
+    const verdict = await contractVerdict(contract, pending, call, ctx);
     if (verdict === 'run') { gate.approveByContract(call.session, pending.token); return undefined; }
     return verdict ? verdict.note : '';
   };
   return {
-    admit(call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) {
+    async admit(call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) {
       const refusal = gate.admit(call);
       const pending = refusal?.token ? gate.pendingFor(call.session).find(p => p.token === refusal.token) : undefined;
       if (!pending || notes.has(pending.token)) return { refusal, note: (pending && notes.get(pending.token)) ?? '' };
-      const note = decide(pending, call, ctx);
+      const note = await decide(pending, call, ctx);
       // Approved: admitting the same call again consumes the one-shot approval.
       if (note === undefined) return { refusal: gate.admit(call), note: '' };
       if (note) notes.set(pending.token, note);
@@ -180,7 +180,7 @@ function heldUntilRunEnds(gate: EffectApprovals, announce: (pending: PendingAppr
 
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell,
-  contractDir = (() => undefined) as ContractDir, repo = undefined as Repo | undefined,
+  contractDir = (() => undefined) as ContractDir, repo = undefined as AsyncRepo | undefined,
   /** The operator's typed order that lifts an `ask` rule for one effect (see `orderGrantFor`). */
   orderGrant = undefined as OrderGrant | undefined,
   /** Called once per call that waits for the operator (after the contract), e.g. to ask on Slack. */
@@ -221,7 +221,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };
     if (!grant) return gate.admit(call) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
-    const { refusal, note } = admission.admit(call, ctx);
+    const { refusal, note } = await admission.admit(call, ctx);
     display.show(ctx);
     if (!refusal) return;
     const pending = gate.pendingFor(session).find(p => p.token === refusal.token);

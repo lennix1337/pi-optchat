@@ -23,6 +23,29 @@ export interface Repo {
   worktree?(path: string): { branch: string; clean: boolean } | undefined;
 }
 
+/** The same repository queries, awaited by live hooks; injected synchronous readers keep pure classification cheap. */
+export type AsyncRepo = { [K in keyof Repo]: NonNullable<Repo[K]> extends (...args: infer A) => infer R ? (...args: A) => R | Promise<R> : never };
+type Evaluation<T> = Generator<unknown, T, unknown>;
+function* lookup<T>(value: T | Promise<T>): Evaluation<T> { return (yield value) as T; }
+function synchronous<T>(evaluation: Evaluation<T>): T {
+  let step = evaluation.next();
+  while (!step.done) {
+    if (step.value instanceof Promise) throw new Error('Synchronous classification requires synchronous repository queries');
+    step = evaluation.next(step.value);
+  }
+  return step.value;
+}
+async function asynchronous<T>(evaluation: Evaluation<T>): Promise<T> {
+  let step = evaluation.next();
+  while (!step.done) {
+    let value: unknown;
+    try { value = await step.value; }
+    catch (error) { step = evaluation.throw(error); continue; }
+    step = evaluation.next(value);
+  }
+  return step.value;
+}
+
 /** Source markers of a script that talks to a model provider: SDK runtimes, provider clients, provider endpoints. */
 const modelClient = /\b(?:ModelRuntime|createAgentSession|completeSimple|streamSimple)\b|from\s+['"](?:@anthropic-ai\/sdk|openai|@google\/genai|@google\/generative-ai)['"]|api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com/;
 
@@ -186,34 +209,34 @@ function processKill(lower: string, args: string[]): string[] | undefined {
   return undefined;
 }
 
-function repoTargets(path: string, repo: Repo, args: string[], remote?: string) {
+function* repoTargets(path: string, repo: AsyncRepo, args: string[], remote?: string): Evaluation<string[]> {
   const at = args.findIndex(arg => arg === '-R' || arg === '--repo' || arg.startsWith('--repo='));
   const named = at < 0 ? undefined : args[at].startsWith('--repo=') ? args[at].slice(7) : args[at + 1];
-  const slug = (named && /^[\w.-]+\/[\w.-]+$/.test(unquote(named)) ? unquote(named).toLowerCase() : undefined) ?? repo.slug(path, remote);
+  const slug = (named && /^[\w.-]+\/[\w.-]+$/.test(unquote(named)) ? unquote(named).toLowerCase() : undefined) ?? (yield* lookup(repo.slug(path, remote)));
   return [...new Set([path, ...slug ? [slug] : []])];
 }
 
-function pushEffect(args: string[], path: string, repo: Repo): Effect {
+function* pushEffect(args: string[], path: string, repo: AsyncRepo): Evaluation<Effect> {
   const [remote, ...refs] = args.filter(arg => !arg.startsWith('-'));
   // A URL or path as the remote names no configured remote; origin is the best local guess.
-  const targets = repoTargets(path, repo, args, remote && /^[\w.-]+$/.test(remote) ? remote : undefined);
+  const targets = yield* repoTargets(path, repo, args, remote && /^[\w.-]+$/.test(remote) ? remote : undefined);
   // Deleting a remote branch (`--delete x`, `-d x`, `:x`) removes work others may still need.
   if (args.some(arg => arg === '--delete' || arg === '-d') || refs.some(ref => /^:[^:]/.test(unquote(ref)))) return { action: 'discard', targets };
   if (args.some(arg => /^(?:--force(?:-with-lease)?(?:=.*)?|-f|--mirror|-[a-z]*f[a-z]*)$/.test(arg) || /^\+/.test(arg))) return { action: 'force-push', targets };
   const main = (ref: string) => /^(?:main|master)$/i.test(unquote(ref).split(':').at(-1)!.replace(/^refs\/heads\//, ''));
-  const toMain = refs.length ? refs.some(main) : /^(?:main|master)$/i.test(repo.branch(path) ?? '');
+  const toMain = refs.length ? refs.some(main) : /^(?:main|master)$/i.test((yield* lookup(repo.branch(path))) ?? '');
   return { action: toMain ? 'push-main' : 'push', targets };
 }
 
 /** The source of a script run (not a test run, a check or an inline body), when it can be read. */
-function scriptSource(w: string[], script: string, dir: string, repo: Repo) {
+function* scriptSource(w: string[], script: string, dir: string, repo: AsyncRepo): Evaluation<string | undefined> {
   if (!repo.script || w.some(arg => /^(?:--test|-e|--eval|-c|--check|-p|--print|-h|--help)$/.test(arg)) || !/\.(?:[cm]?[jt]s|py)$/i.test(unquote(script))) return;
-  return repo.script(normalPath(script, dir));
+  return yield* lookup(repo.script(normalPath(script, dir)));
 }
 
 /** A script run whose source calls a model provider is paid; its writes to production and messages count as well. */
-function scriptRunEffects(w: string[], script: string, dir: string, repo: Repo): Effect[] {
-  const source = scriptSource(w, script, dir, repo);
+function* scriptRunEffects(w: string[], script: string, dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
+  const source = yield* scriptSource(w, script, dir, repo);
   if (source === undefined) return [];
   return [...modelClient.test(source) ? [{ action: 'paid' as const, targets: ['model-run'] }] : [], ...scriptFileEffects(source, w.slice(w.indexOf(script) + 1))];
 }
@@ -221,84 +244,86 @@ function scriptRunEffects(w: string[], script: string, dir: string, repo: Repo):
 const maintenanceTarget = (name: string) => /pcmaintenance/i.test(name) ? 'pc-maintenance' : 'worktree-cleanup';
 
 /** `pwsh`/`bash`/`node`...: an inline `-Command`/`-c` body is classified like any shell text; a script argument by name or source. */
-function interpreterEffects(w: string[], lower: string, dir: string, repo: Repo, depth: number): Effect[] {
+function* interpreterEffects(w: string[], lower: string, dir: string, repo: AsyncRepo, depth: number): Evaluation<Effect[]> {
   const effects: Effect[] = [];
   const inline = w.findIndex(arg => /^-(?:c|Command|EncodedCommand)$/i.test(arg));
   if (inline >= 0 && w[inline + 1] && depth < 3) {
     const body = w.slice(inline + 1).map(unquote).join(' ');
-    for (const segment of segments(body, dir)) effects.push(...segmentEffects(segment.command, segment.dir, repo, depth + 1));
+    for (const segment of segments(body, dir)) effects.push(...yield* segmentEffects(segment.command, segment.dir, repo, depth + 1));
   }
   const script = w.slice(1).find(arg => !arg.startsWith('-'));
-  if (script) effects.push(...namedScriptEffects(unquote(script), w, dir, repo));
+  if (script) effects.push(...yield* namedScriptEffects(unquote(script), w, dir, repo));
   if (lower === 'node' && script && /(?:^|[/\\])bench\.mjs$/.test(unquote(script)) && w.includes('run')) return [...effects, { action: 'paid', targets: ['model-run'] }];
   // `node --import tsx file.ts`: the first argument that names a file is the script.
   const file = w.slice(1).find(arg => !arg.startsWith('-') && /\.(?:[cm]?[jt]s|py)$/i.test(unquote(arg)));
-  if (file) effects.push(...scriptRunEffects(w, file, dir, repo));
+  if (file) effects.push(...yield* scriptRunEffects(w, file, dir, repo));
   return effects;
 }
 
 /** A script known by its name: deploy*, release/publish, or the maintenance cleanups with -Apply. */
-function namedScriptEffects(script: string, w: string[], dir: string, repo: Repo): Effect[] {
+function* namedScriptEffects(script: string, w: string[], dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const name = script.split(/[/\\]/).at(-1)!;
   if (/^invoke-(?:pcmaintenance|worktreecleanup)/i.test(name)) return w.some(arg => /^-Apply$/i.test(arg)) ? [{ action: 'discard', targets: [maintenanceTarget(name)] }] : [];
   if (w.some(isDryRun)) return [];
-  if (isDeployScript(script)) return [{ action: 'deploy', targets: repoTargets(dir, repo, w) }];
-  if (isReleaseScript(script)) return [{ action: 'publish', targets: repoTargets(dir, repo, w) }];
+  if (isDeployScript(script)) return [{ action: 'deploy', targets: yield* repoTargets(dir, repo, w) }];
+  if (isReleaseScript(script)) return [{ action: 'publish', targets: yield* repoTargets(dir, repo, w) }];
   return [];
 }
 
 /** `git`: pushes by destination, and the subcommands that discard work. */
-function gitEffects(w: string[], dir: string, repo: Repo): Effect[] {
+function* gitEffects(w: string[], dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   let at = 1, path = dir;
   while (at < w.length && w[at].startsWith('-')) { if (w[at] === '-C' && w[at + 1] !== undefined) path = normalPath(w[++at], dir); else if (w[at] === '-c') at++; at++; }
   const [sub, ...args] = w.slice(at);
-  if (sub === 'push') return dryRunFlag(args, true) ? [] : [pushEffect(args, path, repo)];
+  if (sub === 'push') return dryRunFlag(args, true) ? [] : [yield* pushEffect(args, path, repo)];
   const rest = args.join(' ');
   const discards = (sub === 'reset' && /(?:^|\s)--hard\b/.test(rest)) || (sub === 'clean' && /(?:^|\s)-[a-z]*f/i.test(rest))
     || (sub === 'worktree' && /^remove\b/.test(rest) && /--force|-f\b/.test(rest)) || (sub === 'branch' && /(?:^|\s)-D\b/.test(rest))
     || (sub === 'stash' && /^(?:drop|clear)\b/.test(rest)) || ((sub === 'checkout' || sub === 'restore') && args.some(arg => arg === '.'));
   // Work that already went forward is recreatable: say so in the targets, so the operator's rules can free it.
-  return discards ? [{ action: 'discard', targets: [path, ...mergedWork(sub, args, path, repo)] }] : [];
+  return discards ? [{ action: 'discard', targets: [path, ...yield* mergedWork(sub, args, path, repo)] }] : [];
 }
 
 /** `merged-branch` when every branch `git branch -D` deletes is merged; `worktree-cleanup` when `git worktree remove --force` removes a clean worktree whose branch is merged. */
-function mergedWork(sub: string, args: string[], path: string, repo: Repo): string[] {
+function* mergedWork(sub: string, args: string[], path: string, repo: AsyncRepo): Evaluation<string[]> {
   const operands = args.slice(sub === 'worktree' ? 1 : 0).map(unquote);
   // A lookup that throws or cannot tell leaves the discard as strict as before; the default branch is never "merged".
-  const isMerged = (name: string) => { try { return !/^(?:main|master|HEAD)$/i.test(name) && repo.merged?.(path, name) === true; } catch { return false; } };
+  const isMerged = function* (name: string): Evaluation<boolean> { try { return !/^(?:main|master|HEAD)$/i.test(name) && (yield* lookup(repo.merged?.(path, name))) === true; } catch { return false; } };
   if (sub === 'branch') {
     const names = operands.filter(arg => !arg.startsWith('-'));
     // Only `-D` with branch names: `-r` and friends delete something else.
-    return operands.some(arg => arg.startsWith('-') && arg !== '-D') || !names.length || !names.every(isMerged) ? [] : ['merged-branch'];
+    if (operands.some(arg => arg.startsWith('-') && arg !== '-D') || !names.length) return [];
+    for (const name of names) if (!(yield* isMerged(name))) return [];
+    return ['merged-branch'];
   }
   const [folder, ...extra] = operands.filter(arg => !arg.startsWith('-'));
   let state: ReturnType<NonNullable<Repo['worktree']>>;
-  try { state = sub === 'worktree' && folder !== undefined && !extra.length ? repo.worktree?.(normalPath(folder, path)) : undefined; } catch { state = undefined; }
-  return state?.clean && isMerged(state.branch) ? ['worktree-cleanup'] : [];
+  try { state = sub === 'worktree' && folder !== undefined && !extra.length ? yield* lookup(repo.worktree?.(normalPath(folder, path))) : undefined; } catch { state = undefined; }
+  return state?.clean && (yield* isMerged(state.branch)) ? ['worktree-cleanup'] : [];
 }
 
 /** `gh`: merges, releases and repository creation/deletion, deploy workflows. */
-function ghEffects(w: string[], dir: string, repo: Repo): Effect[] {
+function* ghEffects(w: string[], dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const [group, verb] = w.slice(1), targets = () => repoTargets(dir, repo, w);
   // `--admin` merges past failing or missing required checks: that is not merging, it is bypassing the CI.
-  if (group === 'pr' && verb === 'merge') return [{ action: w.includes('--admin') ? 'merge-bypass' : 'merge', targets: targets() }];
+  if (group === 'pr' && verb === 'merge') return [{ action: w.includes('--admin') ? 'merge-bypass' : 'merge', targets: yield* targets() }];
   if ((group === 'release' && /^(?:create|upload|edit)$/.test(verb ?? '')) || (group === 'repo' && /^(?:create|delete)$/.test(verb ?? '')))
-    return [{ action: 'publish', targets: targets() }];
+    return [{ action: 'publish', targets: yield* targets() }];
   if (group === 'workflow' && verb === 'run') {
     const names = w.slice(3).filter(arg => !arg.startsWith('-'));
     // A deploy or prod workflow reaches live services; a release/publish one ships a package or tag.
-    if (names.some(arg => /deploy|prod/i.test(arg))) return [{ action: 'deploy', targets: targets() }];
-    if (names.some(arg => /release|publish/i.test(arg))) return [{ action: 'publish', targets: targets() }];
+    if (names.some(arg => /deploy|prod/i.test(arg))) return [{ action: 'deploy', targets: yield* targets() }];
+    if (names.some(arg => /release|publish/i.test(arg))) return [{ action: 'publish', targets: yield* targets() }];
   }
   return [];
 }
 
 /** Package managers, deploy CLIs, `pi -p` and recursive deletes. */
-function toolEffects(w: string[], lower: string, dir: string, repo: Repo): Effect[] {
+function* toolEffects(w: string[], lower: string, dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const args = w.slice(1).map(unquote);
   if (/^(?:npm|pnpm|yarn|cargo|vsce)$/.test(lower)) {
     const effects: Effect[] = [];
-    if (args[0] === 'publish' && !dryRunFlag(args)) effects.push({ action: 'publish', targets: repoTargets(dir, repo, w) });
+    if (args[0] === 'publish' && !dryRunFlag(args)) effects.push({ action: 'publish', targets: yield* repoTargets(dir, repo, w) });
     if (/^(?:i|install|add|link)$/.test(args[0] ?? '') && args.some(arg => arg === '-g' || arg === '--global') || (lower === 'cargo' && args[0] === 'install'))
       effects.push({ action: 'global-install', targets: ['machine'] });
     return effects;
@@ -306,8 +331,8 @@ function toolEffects(w: string[], lower: string, dir: string, repo: Repo): Effec
   if (/^(?:winget|choco|scoop)$/.test(lower) && args[0] === 'install') return [{ action: 'global-install', targets: ['machine'] }];
   const tool = lower === 'npx' ? args[0] ?? '' : lower, toolArgs = lower === 'npx' ? args.slice(1) : args;
   if (/^(?:wrangler|netlify|fly|flyctl|railway)$/.test(tool) && toolArgs[0] === 'deploy' && !toolArgs.some(arg => /^(?:-h|--help|--dry-run)$/.test(arg)))
-    return [{ action: 'deploy', targets: repoTargets(dir, repo, w) }];
-  if (tool === 'vercel' && (toolArgs.includes('--prod') || toolArgs[0] === 'deploy')) return [{ action: 'deploy', targets: repoTargets(dir, repo, w) }];
+    return [{ action: 'deploy', targets: yield* repoTargets(dir, repo, w) }];
+  if (tool === 'vercel' && (toolArgs.includes('--prod') || toolArgs[0] === 'deploy')) return [{ action: 'deploy', targets: yield* repoTargets(dir, repo, w) }];
   if ((tool === 'docker' && (toolArgs[0] === 'push' || (toolArgs[0] === 'image' && toolArgs[1] === 'push'))) || (tool === 'kubectl' && /^(?:apply|rollout)$/.test(toolArgs[0] ?? '')))
     return [{ action: 'deploy', targets: [dir] }];
   if (lower === 'pi' && args.some(arg => arg === '-p' || arg === '--print')) return [{ action: 'paid', targets: ['model-run'] }];
@@ -318,7 +343,7 @@ function toolEffects(w: string[], lower: string, dir: string, repo: Repo): Effec
 }
 
 /** The effects of one command segment, recursing into `pwsh -Command "..."`, `bash -c "..."`. */
-function segmentEffects(command: string, dir: string, repo: Repo, depth: number): Effect[] {
+function* segmentEffects(command: string, dir: string, repo: AsyncRepo, depth: number): Evaluation<Effect[]> {
   const w = commandWords(command);
   if (!w.length) return [];
   // A page script handed to any runner (a browser helper's `eval`, node -e...) writes where its fetch points.
@@ -326,17 +351,17 @@ function segmentEffects(command: string, dir: string, repo: Repo, depth: number)
   if (page.length) return page;
   const head = unquote(w[0]).replace(/^&$/, '').replace(/\.exe$/i, '');
   const lower = head.toLowerCase().split(/[/\\]/).at(-1)!;
-  if (interpreters.test(lower)) return interpreterEffects(w, lower, dir, repo, depth);
+  if (interpreters.test(lower)) return yield* interpreterEffects(w, lower, dir, repo, depth);
   if (lower === 'npx' && /^(?:tsx|ts-node)$/.test(unquote(w[1] ?? ''))) {
     const script = w.slice(2).find(arg => !arg.startsWith('-'));
-    return script ? scriptRunEffects(w, script, dir, repo) : [];
+    return script ? yield* scriptRunEffects(w, script, dir, repo) : [];
   }
-  const named = namedScriptEffects(head, w, dir, repo);
+  const named = yield* namedScriptEffects(head, w, dir, repo);
   if (named.length) return named;
-  if (lower === 'git') return gitEffects(w, dir, repo);
-  if (lower === 'gh') return ghEffects(w, dir, repo);
+  if (lower === 'git') return yield* gitEffects(w, dir, repo);
+  if (lower === 'gh') return yield* ghEffects(w, dir, repo);
   const external = commandExternalEffects(w);
-  return external.length ? external : toolEffects(w, lower, dir, repo);
+  return external.length ? external : yield* toolEffects(w, lower, dir, repo);
 }
 
 /**
@@ -354,7 +379,7 @@ function expandKnownVariables(text: string) {
 
 const noRepo: Repo = { slug: () => undefined, branch: () => undefined };
 /** Whether shell text runs a deploy (a deploy script, `wrangler deploy`, a deploy workflow, `docker push`...). */
-export const runsDeploy = (text: string) => segments(text, '').some(({ command, dir }) => segmentEffects(command, dir, noRepo, 0).some(e => e.action === 'deploy'));
+export const runsDeploy = (text: string) => segments(text, '').some(({ command, dir }) => synchronous(segmentEffects(command, dir, noRepo, 0)).some(e => e.action === 'deploy'));
 
 /** Messages to third parties and production HTTP writes in shell text (see external-effects.ts). */
 export const externalEffectsOf = (text: string) => segments(text, '').flatMap(({ command }) => commandExternalEffects(commandWords(command)));
@@ -365,7 +390,12 @@ const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'valida
 export const scriptCommands = (code: string) => [...code.matchAll(/\bcommand\s*:\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(m => m[2].replace(/\\n/g, '\n').replace(/\\(["'`\\])/g, '$1'));
 
 /** Every high-impact effect of a call, read from its arguments alone. Not a sandbox: obfuscated commands pass. */
-export function classifyEffects({ tool, input, cwd }: { tool: string; input: unknown; cwd: string }, repo: Repo): Effect[] {
+export type EffectCall = { tool: string; input: unknown; cwd: string };
+/** Pure/injected synchronous classification; live repository readers use the async entry point below. */
+export const classifyEffects = (call: EffectCall, repo: Repo): Effect[] => synchronous(evaluateEffects(call, repo));
+export const classifyEffectsAsync = (call: EffectCall, repo: AsyncRepo): Promise<Effect[]> => asynchronous(evaluateEffects(call, repo));
+
+function* evaluateEffects({ tool, input, cwd }: EffectCall, repo: AsyncRepo): Evaluation<Effect[]> {
   // Targets name the kind of spend: delegated agents on the operator's plan, or a direct model run (bench, pi -p, models.*).
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? [] : [{ action: 'paid', targets: ['subagent'] }];
   if (tool === 'browser_harness') { const consent = browserConsentEffect(input); return [...(consent ? [consent] : []), ...browserScriptEffects(input)]; }
@@ -381,7 +411,7 @@ export function classifyEffects({ tool, input, cwd }: { tool: string; input: unk
     const text = expandKnownVariables(raw);
     const host = productionWriteHost(text);
     if (host) effects.push({ action: 'production-write', targets: [`ssh:${host}`] });
-    for (const { command, dir } of segments(text, cwd)) effects.push(...segmentEffects(command, dir, repo, 0));
+    for (const { command, dir } of segments(text, cwd)) effects.push(...yield* segmentEffects(command, dir, repo, 0));
     if (databaseDestructive(text)) effects.push({ action: 'database-destructive', targets: ['database'] });
   }
   return effects;

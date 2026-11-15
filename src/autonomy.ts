@@ -1,13 +1,14 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isStrings, record } from './cache.ts';
-import { ACTIONS, classifyEffects as classify, IRREVERSIBLE, type Action, type Effect, type Repo } from './effect-classifier.ts';
+import { ACTIONS, classifyEffects as classify, classifyEffectsAsync as classifyAsync, IRREVERSIBLE, type Action, type AsyncRepo, type Effect, type EffectCall, type Repo } from './effect-classifier.ts';
 import { branchMerged, worktreeState } from './merged-branch.ts';
 import { parseWhenChanged } from './mtime-cache.ts';
 
-export { ACTIONS, IRREVERSIBLE, productionWriteHost, segments, normalPath, type Action, type Effect, type Repo } from './effect-classifier.ts';
+export { ACTIONS, IRREVERSIBLE, productionWriteHost, segments, normalPath, type Action, type AsyncRepo, type Effect, type Repo } from './effect-classifier.ts';
 
 /**
  * The operator's autonomy contract (`autonomy.json` in the profile folder): which high-impact effects the agent may run
@@ -77,15 +78,16 @@ export function decide(contract: Contract, effects: Effect[], now = Date.now()):
 
 /** A removed worktree or a file path still belongs to the checkout around it: use the nearest existing folder. */
 const existing = (path: string) => { let p = path; while (!existsSync(p) && dirname(p) !== p) p = dirname(p); return p; };
-const quiet = (path: string, args: string[]) => {
+const exec = promisify(execFile);
+const quiet = async (path: string, args: string[]) => {
   path = existing(path);
-  try { return execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; }
+  try { return (await exec('git', ['-C', path, ...args], { encoding: 'utf8', timeout: 3000, windowsHide: true })).stdout.trim() || undefined; }
   catch { return undefined; }
 };
 export const slugOf = (url: string) => /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(url)?.[1].toLowerCase();
 /** Reads a checkout's GitHub slug and current branch with local git only (no network). */
-export const gitRepo: Repo = {
-  slug: (path, remote = 'origin') => { const url = quiet(path, ['remote', 'get-url', remote]); return url && slugOf(url); },
+export const gitRepo = {
+  slug: async (path: string, remote = 'origin') => { const url = await quiet(path, ['remote', 'get-url', remote]); return url && slugOf(url); },
   branch: path => quiet(path, ['rev-parse', '--abbrev-ref', 'HEAD']),
   merged: (path, branch) => branchMerged(path, branch),
   worktree: path => worktreeState(path),
@@ -94,10 +96,15 @@ export const gitRepo: Repo = {
     const file = /^\/tmp(?:\/|$)/.test(path) ? join(tmpdir(), path.slice(4)) : path;
     try { return statSync(file).size <= 512 * 1024 ? readFileSync(file, 'utf8') : undefined; } catch { return undefined; }
   },
-};
+} satisfies AsyncRepo;
 
-/** Every high-impact effect of a call, read from its arguments alone (local git only resolves slugs and branches). */
-export const classifyEffects = (call: { tool: string; input: unknown; cwd: string }, repo: Repo = gitRepo) => classify(call, repo);
+/** Injected synchronous classification, or awaited live classification when no repository reader is supplied. */
+export function classifyEffects(call: EffectCall, repo: Repo): Effect[];
+export function classifyEffects(call: EffectCall): Promise<Effect[]>;
+export function classifyEffects(call: EffectCall, repo?: Repo): Effect[] | Promise<Effect[]> {
+  return repo ? classify(call, repo) : classifyAsync(call, gitRepo);
+}
+export const classifyEffectsAsync = (call: EffectCall, repo: AsyncRepo = gitRepo) => classifyAsync(call, repo);
 
 /** One line per effect the agent ran under a `report` rule, for the operator's briefing. */
 export function logReported(dir: string, entry: { at: number; action: Action | 'unclassified'; targets: string[]; summary: string; rule?: string }) {
