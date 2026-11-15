@@ -49,29 +49,29 @@ function fixtures() {
   return { root, gitHook, husky, hooksPath, plain, worktree };
 }
 
-test('a pre-commit hook is found where git runs one, and a sample hook is not', () => {
+test('a pre-commit hook is found where git runs one, and a sample hook is not', async () => {
   const f = fixtures();
   try {
-    assert.equal(real(activePreCommitHook(f.gitHook)), real(join(f.gitHook, '.git', 'hooks', 'pre-commit')));
-    assert.equal(real(activePreCommitHook(f.husky)), real(join(f.husky, '.husky', 'pre-commit')));
-    assert.equal(real(activePreCommitHook(f.hooksPath)), real(join(f.hooksPath, '.husky', '_', 'pre-commit')));
-    assert.equal(real(activePreCommitHook(f.worktree)), real(join(f.gitHook, '.git', 'hooks', 'pre-commit')), 'a linked worktree shares its repository hooks');
-    assert.equal(activePreCommitHook(f.plain), undefined, 'git init leaves only pre-commit.sample');
-    assert.equal(activePreCommitHook(join(f.root, 'not-a-repo')), undefined);
+    assert.equal(real(await activePreCommitHook(f.gitHook)), real(join(f.gitHook, '.git', 'hooks', 'pre-commit')));
+    assert.equal(real(await activePreCommitHook(f.husky)), real(join(f.husky, '.husky', 'pre-commit')));
+    assert.equal(real(await activePreCommitHook(f.hooksPath)), real(join(f.hooksPath, '.husky', '_', 'pre-commit')));
+    assert.equal(real(await activePreCommitHook(f.worktree)), real(join(f.gitHook, '.git', 'hooks', 'pre-commit')), 'a linked worktree shares its repository hooks');
+    assert.equal(await activePreCommitHook(f.plain), undefined, 'git init leaves only pre-commit.sample');
+    assert.equal(await activePreCommitHook(join(f.root, 'not-a-repo')), undefined);
   } finally { removeDir(f.root); }
 });
 
-test('a commit in a repo with a hook is found, wherever the directory comes from', () => {
+test('a commit in a repo with a hook is found, wherever the directory comes from', async () => {
   const f = fixtures();
   try {
-    assert.ok(hookedCommit('git commit -m "feat: x"', f.husky));
-    assert.ok(hookedCommit(`cd ${slash(f.husky)} && git add -A && git commit -m "feat: x" && git push`, f.plain));
-    assert.ok(hookedCommit(`git -C ${slash(f.husky)} commit -m x`, f.plain));
-    assert.ok(hookedCommit('git commit -m x', f.worktree));
-    assert.ok(hookedCommit('git -c core.quotepath=off commit -m x', f.gitHook));
-    assert.equal(hookedCommit('git commit -m x', f.plain), undefined, 'a repo without a hook is not affected');
-    assert.equal(hookedCommit(`git -C ${slash(f.plain)} commit -m x`, f.husky), undefined);
-    assert.equal(hookedCommit('git commit -m x', join(f.root, 'not-a-repo')), undefined);
+    assert.ok(await hookedCommit('git commit -m "feat: x"', f.husky));
+    assert.ok(await hookedCommit(`cd ${slash(f.husky)} && git add -A && git commit -m "feat: x" && git push`, f.plain));
+    assert.ok(await hookedCommit(`git -C ${slash(f.husky)} commit -m x`, f.plain));
+    assert.ok(await hookedCommit('git commit -m x', f.worktree));
+    assert.ok(await hookedCommit('git -c core.quotepath=off commit -m x', f.gitHook));
+    assert.equal(await hookedCommit('git commit -m x', f.plain), undefined, 'a repo without a hook is not affected');
+    assert.equal(await hookedCommit(`git -C ${slash(f.plain)} commit -m x`, f.husky), undefined);
+    assert.equal(await hookedCommit('git commit -m x', join(f.root, 'not-a-repo')), undefined);
   } finally { removeDir(f.root); }
 });
 
@@ -83,15 +83,15 @@ test('the commit directory keeps its case, so the hook is found on a case-sensit
   assert.equal(normalPath('Sub/Dir', '/Base'), '/base/sub/dir', 'the classifier still compares lowercase');
 });
 
-test('the exemptions and non-commit commands do not count', () => {
+test('the exemptions and non-commit commands do not count', async () => {
   const f = fixtures();
   try {
-    assert.equal(hookedCommit('git commit --no-verify -m x', f.husky), undefined);
-    assert.equal(hookedCommit('git commit -n -m x', f.husky), undefined);
-    assert.equal(hookedCommit('git commit --dry-run -m x', f.husky), undefined);
-    assert.equal(hookedCommit('git status && git log --oneline -3', f.husky), undefined);
-    assert.equal(hookedCommit('grep -n "git commit" docs/notes.md', f.husky), undefined);
-    assert.equal(hookedCommit('cat > /tmp/x.md <<\'EOF\'\ngit commit -m x\nEOF', f.husky), undefined, 'a heredoc body is data');
+    assert.equal(await hookedCommit('git commit --no-verify -m x', f.husky), undefined);
+    assert.equal(await hookedCommit('git commit -n -m x', f.husky), undefined);
+    assert.equal(await hookedCommit('git commit --dry-run -m x', f.husky), undefined);
+    assert.equal(await hookedCommit('git status && git log --oneline -3', f.husky), undefined);
+    assert.equal(await hookedCommit('grep -n "git commit" docs/notes.md', f.husky), undefined);
+    assert.equal(await hookedCommit('cat > /tmp/x.md <<\'EOF\'\ngit commit -m x\nEOF', f.husky), undefined, 'a heredoc body is data');
   } finally { removeDir(f.root); }
 });
 
@@ -100,16 +100,16 @@ function harness(active: string[] = ['bash', 'shell_start']) {
   const pi = { on(name: string, handler: (...args: unknown[]) => unknown) { hooks.set(name, handler); }, getActiveTools: () => active } as unknown as ExtensionAPI;
   registerCommitHookGuard(pi);
   return (command: string, options: { timeout?: number | null; toolName?: string; cwd: string }) => hooks.get('tool_call')!(
-    { toolName: options.toolName ?? 'bash', toolCallId: 'c', input: { command, timeout: options.timeout } }, { cwd: options.cwd }) as { block: true; reason: string } | undefined;
+    { toolName: options.toolName ?? 'bash', toolCallId: 'c', input: { command, timeout: options.timeout } }, { cwd: options.cwd }) as Promise<{ block: true; reason: string } | undefined>;
 }
 
-test('a foreground commit in a hooked repo with a short timeout is refused before it runs', () => {
+test('a foreground commit in a hooked repo with a short timeout is refused before it runs', async () => {
   const f = fixtures();
   try {
     const call = harness();
     const command = `git add apps && git commit -m "feat: x" && git push -u origin HEAD`;
     for (const timeout of [180, 899]) {
-      const blocked = call(command, { timeout, cwd: f.husky });
+      const blocked = await call(command, { timeout, cwd: f.husky });
       assert.equal(blocked?.block, true, `timeout ${timeout}`);
       assert.match(blocked!.reason, /shell_start/);
       assert.match(blocked!.reason, new RegExp(`at least ${MIN_COMMIT_HOOK_TIMEOUT_SECONDS} s`));
@@ -118,26 +118,26 @@ test('a foreground commit in a hooked repo with a short timeout is refused befor
   } finally { removeDir(f.root); }
 });
 
-test('a timeout of at least 900 s, a repo without hooks, and other tools are not affected', () => {
+test('a timeout of at least 900 s, a repo without hooks, and other tools are not affected', async () => {
   const f = fixtures();
   try {
     const call = harness();
     assert.equal(MIN_COMMIT_HOOK_TIMEOUT_SECONDS, 900);
-    assert.equal(call('git commit -m x', { timeout: 900, cwd: f.husky }), undefined);
-    assert.equal(call('git commit -m x', { timeout: 1800, cwd: f.husky }), undefined);
+    assert.equal(await call('git commit -m x', { timeout: 900, cwd: f.husky }), undefined);
+    assert.equal(await call('git commit -m x', { timeout: 1800, cwd: f.husky }), undefined);
     // Pi's bash tool has no default timeout: without one the call waits for the hook, however long it runs.
-    assert.equal(call('git commit -m x', { timeout: undefined, cwd: f.husky }), undefined, 'no timeout');
-    assert.equal(call('git commit -m x', { timeout: null, cwd: f.husky }), undefined, 'null timeout');
-    assert.equal(call('git commit -m x', { timeout: 180, cwd: f.plain }), undefined);
-    assert.equal(call('git commit -m x', { timeout: 180, cwd: f.husky, toolName: 'shell_start' }), undefined, 'a background shell waits for nothing');
-    assert.equal(call('git status', { timeout: 60, cwd: f.husky }), undefined);
+    assert.equal(await call('git commit -m x', { timeout: undefined, cwd: f.husky }), undefined, 'no timeout');
+    assert.equal(await call('git commit -m x', { timeout: null, cwd: f.husky }), undefined, 'null timeout');
+    assert.equal(await call('git commit -m x', { timeout: 180, cwd: f.plain }), undefined);
+    assert.equal(await call('git commit -m x', { timeout: 180, cwd: f.husky, toolName: 'shell_start' }), undefined, 'a background shell waits for nothing');
+    assert.equal(await call('git status', { timeout: 60, cwd: f.husky }), undefined);
   } finally { removeDir(f.root); }
 });
 
-test('without shell_start the refusal still names the timeout alternative', () => {
+test('without shell_start the refusal still names the timeout alternative', async () => {
   const f = fixtures();
   try {
-    const blocked = harness(['bash'])('git commit -m x', { timeout: 180, cwd: f.husky });
+    const blocked = await harness(['bash'])('git commit -m x', { timeout: 180, cwd: f.husky });
     assert.equal(blocked?.block, true);
     assert.doesNotMatch(blocked!.reason, /shell_start/);
     assert.match(blocked!.reason, /timeout of at least 900 s/);

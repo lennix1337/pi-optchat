@@ -48,5 +48,6 @@ export function validateProbe(probe: Probe, cwd: string): void {
   }
   // The reason goes last: a heartbeat signal keeps only the tail of a probe failure.
   if (!safe) throw new Error(`probe: accepted: ${ACCEPTED}. \`${probe.argv.join(' ')}\` is not in the read-only allowlist`);
-  if (classifyEffects({ tool: 'bash', input: { command: probe.argv.join(' ') }, cwd: probe.cwd ?? cwd }).length) throw new Error('probe: command has classified effects');
+  // The allowlist above excludes repository mutations; this extra textual check needs no live git queries.
+  if (classifyEffects({ tool: 'bash', input: { command: probe.argv.join(' ') }, cwd: probe.cwd ?? cwd }, { slug: () => undefined, branch: () => undefined }).length) throw new Error('probe: command has classified effects');
 }
