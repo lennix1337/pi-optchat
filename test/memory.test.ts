@@ -1298,7 +1298,10 @@ test('a turn waits for a slow summary of a recent message only for its grace, th
     assert.ok(performance.now() - began < 1000, 'the turn starts after the grace, not after the summary');
     assert.equal(memory.ready, false);
     assert.match(memory.render(), /0\+1\|\(not summarized yet: zoom it\)/);
-    await assert.rejects(memory.settle(AbortSignal.timeout(100)), /cancelled/, 'without a grace the turn still waits for the summary');
+    // A ref'd timer: AbortSignal.timeout is unref'd, and with only the pending summary the event loop would drain.
+    const wait = new AbortController(); const held = setTimeout(() => wait.abort(), 100);
+    await assert.rejects(memory.settle(wait.signal), /cancelled/, 'without a grace the turn still waits for the summary');
+    clearTimeout(held);
     release();
     await memory.settle(AbortSignal.timeout(2000));
     assert.ok(memory.ready);
