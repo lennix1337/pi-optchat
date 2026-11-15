@@ -8,9 +8,40 @@ export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', 
 export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions', '--C--Users-swluc--');
 
 type Content = { type?: string; text?: string; name?: string; arguments?: Record<string, unknown> };
-type Event = { type?: string; timestamp?: string; message?: { role?: string; stopReason?: string; content?: Content[] } };
+type Event = { type?: string; timestamp?: string; message?: { role?: string; stopReason?: string; content?: Content[] | string } };
+type Pacing = { active: boolean; directWork: number };
+const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
-export function detect(rule: Rule, input: object): boolean {
+function toolCalls(event: Event): Content[] {
+  if (event.type !== 'message' || event.message?.role !== 'assistant' || !Array.isArray(event.message.content)) return [];
+  return event.message.content.filter(c => c.type === 'toolCall').flatMap(c => {
+    if (c.name !== 'multi_tool_use.parallel' || !Array.isArray(c.arguments?.tool_uses)) return [c];
+    return c.arguments.tool_uses.filter(t => typeof t?.recipient_name === 'string').map(t => ({ name: t.recipient_name.replace(/^functions\./u, ''), arguments: t.parameters }));
+  });
+}
+
+function nextPacing(previous: Pacing, event: Event): Pacing {
+  const msg = event.message;
+  let state = previous;
+  if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = noPacing();
+    else if (!text.includes('?') && (/^quota pacing active\b/u.test(text) || (
+      /\b(?:quota|cota)(?: semanal)?\b[^.\n]{0,80}\b(?:acabando|apertando|gastando mais rapido)\b/u.test(text) &&
+      (msg.role === 'assistant' || /^(?:ja falei[^.\n]{0,40}|use|usa|delegue|coloca)\b[^.\n]{0,80}\bworkers?\b/u.test(text))
+    ))) state = { active: true, directWork: previous.directWork };
+  }
+  const calls = toolCalls(event);
+  const delegated = calls.some(c => c.name === 'spawn' || c.name === 'tell' || (
+    (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
+      /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-worker\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
+  ));
+  if (delegated) return { active: state.active, directWork: 0 };
+  return { active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+}
+
+export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): boolean {
   const event = input as Event;
   const msg = event.message;
   if (event.type !== 'message' || msg?.role !== 'assistant' || !Array.isArray(msg.content)) return false;
@@ -21,6 +52,8 @@ export function detect(rule: Rule, input: object): boolean {
     case 'ending-offer': return /se quiser\s*,?\s*(?:é|e) só (?:dizer|avisar|falar)[.!]?\s*$/iu.test(final);
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
     case 'utc-time': return /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u.test(final);
+    case 'abandoned-cause': return /\b(?:causas?\s+n[ãa]o\s+(?:(?:foi|foram)\s+)?encontrad[ao]s?|sem\s+causa\s+encontrada|causes?\s+(?:(?:is|were|was|still)\s+)*not\s+found)\b/iu.test(final);
+    case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b[^;\n|]*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(String(c.arguments?.command ?? '')));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'weaken-test': return calls.some(c => {
@@ -43,13 +76,15 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
   const results = rules.map(r => ({ id: r.id, count: 0, examples: [] as { file: string; line: number }[] }));
   for (const file of readdirSync(dir).filter(f => f.endsWith('.jsonl') && statSync(join(dir, f)).mtimeMs >= since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
+    let pacing = noPacing();
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
       let event: Event;
       try { event = JSON.parse(lines[i]) as Event; } catch { continue; } // a live session's last line may be half-written
       const at = Date.parse(event.timestamp ?? '');
-      if (!(at >= since && at < until)) continue;
-      rules.forEach((rule, n) => { if (detect(rule, event)) { results[n].count++; if (results[n].examples.length < 3) results[n].examples.push({ file, line: i + 1 }); } });
+      if (!Number.isFinite(at) || at >= until) continue;
+      rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) { results[n].count++; if (results[n].examples.length < 3) results[n].examples.push({ file, line: i + 1 }); } });
+      pacing = nextPacing(pacing, event);
     }
   }
   return results;
