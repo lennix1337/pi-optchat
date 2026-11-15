@@ -564,10 +564,13 @@ export class Memory {
     return this.terminal.size > 0 && (until === 'tree'
       || until === 'ahead' && this.busy.size === 0 && !this.scheduled && !this.retryTimer);
   }
-  async settle(signal?: AbortSignal, until: 'turn' | 'tree' | 'ahead' = 'turn'): Promise<void> {
+  /** `graceMs` (turn only): past it, a turn stops waiting for summaries of single messages, which it shows as not summarized yet
+   * (zoomable); a merged line still waits, since its placeholder would hide several. */
+  async settle(signal?: AbortSignal, until: 'turn' | 'tree' | 'ahead' = 'turn', graceMs?: number): Promise<void> {
+    let graceOver = false;
     const done = () => until === 'tree' ? this.ready && this.busy.size === 0 && this.tree.size === this.expectedNodes()
       : until === 'ahead' ? this.unbuilt.size + this.merges.size < this.jobs
-      : this.ready || this.stalled;
+      : this.ready || this.stalled || graceOver && this.view.every(p => p.l === 0 || this.node(p));
     const blockedError = () => new Error('Memory wait blocked by policy refusal; explicit retry required.');
     if (done()) return;
     if (this.stopped || signal?.aborted) throw new Error('Memory wait cancelled.');
@@ -575,7 +578,8 @@ export class Memory {
     const flush = until !== 'ahead';
     if (flush) { this.flushing++; this.schedule(); }
     await new Promise<void>((resolve, reject) => {
-      const cleanup = () => { if (flush) this.flushing--; this.events.off('change', check); signal?.removeEventListener('abort', abort); };
+      const timer = until === 'turn' && graceMs !== undefined ? setTimeout(() => { graceOver = true; check(); }, graceMs) : undefined;
+      const cleanup = () => { clearTimeout(timer); if (flush) this.flushing--; this.events.off('change', check); signal?.removeEventListener('abort', abort); };
       const abort = () => { cleanup(); reject(new Error('Memory wait cancelled.')); };
       const check = () => {
         if (this.stopped) abort();

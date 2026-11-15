@@ -1286,3 +1286,24 @@ test('a zoom range that is not aligned names the aligned lines that read the sam
   // A very long range lists a bounded number of lines.
   assert.ok(noLine(1, 1000, 5000).message.length < 400);
 });
+
+test('a turn waits for a slow summary of a recent message only for its grace, then shows it as not summarized yet', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-settle-grace-')); let release!: () => void;
+  const slow = new Promise<void>(resolve => { release = resolve; });
+  const memory = new Memory(dir, async input => { await slow; return input.source.slice(0, 100); }, () => {});
+  try {
+    memory.append('user', 'large message '.repeat(100));
+    const began = performance.now();
+    await memory.settle(AbortSignal.timeout(2000), 'turn', 50);
+    assert.ok(performance.now() - began < 1000, 'the turn starts after the grace, not after the summary');
+    assert.equal(memory.ready, false);
+    assert.match(memory.render(), /0\+1\|\(not summarized yet: zoom it\)/);
+    // A ref'd timer: AbortSignal.timeout is unref'd, and with only the pending summary the event loop would drain.
+    const wait = new AbortController(); const held = setTimeout(() => wait.abort(), 100);
+    await assert.rejects(memory.settle(wait.signal), /cancelled/, 'without a grace the turn still waits for the summary');
+    clearTimeout(held);
+    release();
+    await memory.settle(AbortSignal.timeout(2000));
+    assert.ok(memory.ready);
+  } finally { release(); await memory.close(); removeDir(dir); }
+});
