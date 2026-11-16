@@ -17,6 +17,7 @@ const [group, verb, ...rest] = args;
 if (group !== 'pr') fail(`fake gh: unsupported ${args.join(' ')}`, 2);
 
 if (verb === 'view') {
+  if (state.viewDrops > 0) { state.viewDrops -= 1; save(); fail('Post "https://api.github.com/graphql": dial tcp 4.228.31.149:443: connectex: A connection attempt failed'); } // dropped connection
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for branch "${rest[0]}"`);
   const fields = (flag('--json') ?? '').split(',').filter(Boolean);

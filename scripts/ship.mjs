@@ -119,8 +119,12 @@ function gh(args, kind = 'gh', free) {
 }
 
 // --- pull requests and checks ---
+// A read, so a dropped connection is retried once (the GitHub API blips for seconds); a write is never retried here.
+const DROPPED = /dial tcp|TLS handshake timeout|connectex|connection (?:reset|refused)|i\/o timeout|EOF/i;
 async function viewPr(ref) {
-  const r = await gh(['pr', 'view', String(ref), '--json', PR_FIELDS]);
+  const args = ['pr', 'view', String(ref), '--json', PR_FIELDS];
+  let r = await gh(args);
+  if (r.code !== 0 && DROPPED.test(r.err)) { await new Promise(done => setTimeout(done, 1500)); r = await gh(args); }
   if (r.code === 0) {
     try { return { pr: JSON.parse(r.out) }; } catch { return { error: { ...r, err: 'gh devolveu JSON inválido' } }; }
   }
