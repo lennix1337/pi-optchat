@@ -6,6 +6,7 @@ import { agentModel } from '../src/agent-model.ts';
 import { runContextBenchmark } from './context-benchmark.ts';
 import { focusedChildView } from '../src/child-context.ts';
 import { PerformanceMetrics, registerPerformance } from '../src/performance.ts';
+import { createStallWatch } from '../src/loop-stalls.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 test('sanitized log fixtures retain required evidence with fewer estimated tokens and bounded local cost', () => {
@@ -63,6 +64,23 @@ test('telemetry is bounded, numeric-only and measures stable system/tool overhea
   assert.equal(snapshot.request.prefixChanges, 1);
   snapshot.stages.context!.count = 0; assert.equal(metrics.snapshot().stages.context!.count, 10000);
 });
+test('abandoned tool spans end when the agent settles or the session shuts down', () => {
+  const slot = globalThis as Record<symbol, unknown>, key = Symbol.for('pi-optchat.loop-stalls'), previous = slot[key];
+  let time = 1000; const watch = createStallWatch(() => time);
+  slot[key] = { watch, build: createStallWatch };
+  try {
+    const handlers = new Map<string, Function[]>(), metrics = new PerformanceMetrics();
+    registerPerformance({ on: (name: string, fn: Function) => { handlers.set(name, [...handlers.get(name) ?? [], fn]); } } as unknown as ExtensionAPI, () => metrics);
+    const emit = (name: string, event: object = {}) => { for (const fn of handlers.get(name) ?? []) fn(event); };
+    emit('tool_execution_start', { toolCallId: 'a', toolName: 'bash' }); emit('agent_settled');
+    time += 100; watch.tick(); time += 500; watch.tick();
+    assert.equal(watch.stalls()[0].during, undefined);
+    emit('tool_execution_start', { toolCallId: 'b', toolName: 'bash' }); emit('session_shutdown');
+    time += 100; watch.tick(); time += 500; watch.tick();
+    assert.equal(watch.stalls()[1].during, undefined);
+  } finally { slot[key] = previous; }
+});
+
 test('real registered timing boundaries record tools and provider phases without storing payloads', async () => {
   const handlers = new Map<string, Function[]>(), metrics = new PerformanceMetrics();
   registerPerformance({ on: (name: string, fn: Function) => { handlers.set(name, [...handlers.get(name) ?? [], fn]); } } as unknown as ExtensionAPI, () => metrics);

@@ -81,7 +81,7 @@ import { SKILL_INVOCATION_TYPE, skillInvocationNote } from './skill-invocation.t
 import { cleanClosedOnce, closedConflictsOf, misattributed } from './closed-conflicts.ts';
 import { retrySummary } from './summary-retry.ts';
 import { checkpoint } from './checkpoint.ts';
-import { spanHooks, spanned } from './loop-stalls.ts';
+import { registerStallPhases, spanHooks, spanned } from './loop-stalls.ts';
 import { memoryDirectory, pendingImport, prepareImport, runImport, discardImport } from './import/job.ts';
 import { chooseImport, showProgress } from './import/ui.ts';
 import { UsageLedger } from './usage.ts';
@@ -157,6 +157,7 @@ const brand = version ? `OptChat v${version}` : 'OptChat';
 
 export default function optchat(host: ExtensionAPI) {
   const pi = spanHooks(host);
+  registerStallPhases(pi);
   quietGhTelemetry();
   basicPythonRepl();
   // Shells a /reload handed over keep running under the same IDs; another profile opening first stops them.

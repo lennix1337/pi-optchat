@@ -1,13 +1,14 @@
 import { constants, PerformanceObserver, performance } from 'node:perf_hooks';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 export interface CpuFrame { frame: string; ms: number }
 export interface CpuStack { stack: string[]; ms: number }
 export interface StallCpu { topSelf: CpuFrame[]; topStacks: CpuStack[]; samples: number }
 /** One event-loop stall: when it ended, how long the loop was blocked past its tick, and how much of that a garbage collection explains. */
 export interface Stall { at: string; blockedMs: number; gcMs: number; gcKind: string | null; startMs: number; endMs: number; cpu?: StallCpu;
-  /** Names (tool:<name>) of the spans in flight or finished inside the stall window; absent when none, i.e. the block ran outside any tool. */
+  /** Names of instrumented spans overlapping the window. Missing names do not rule out work in uninstrumented code. */
   during?: string[];
-  /** Milliseconds each span spent inside the stall window (spans under 10 ms left out), so a stall over several steps names the heaviest. */
+  /** Wall-time overlap with the stall window (spans under 10 ms omitted); async spans can include waiting, not CPU use. */
   spanMs?: Record<string, number> }
 interface Gc { start: number; end: number; kind: number }
 interface Span { name: string; start: number; end?: number }
@@ -74,7 +75,13 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
       if (stalls.length > KEEP) stalls.shift();
     }
     last = t;
-    while (spans.length > KEEP * 5 || (spans[0]?.end !== undefined && spans[0].end <= last - 60_000)) spans.shift();
+    // Keep active spans even if many short hooks finish during them. Only completed history is evicted.
+    let excess = Math.max(0, spans.length - KEEP * 5), kept = 0;
+    for (const span of spans) {
+      if (span.end !== undefined && (excess > 0 || span.end <= last - 60_000)) { if (excess > 0) excess--; continue; }
+      spans[kept++] = span;
+    }
+    spans.length = kept;
   };
   return { tick, noteGc, begin, stalls: () => stalls.slice() };
 }
@@ -106,6 +113,36 @@ export function spanHooks<T extends { on: (event: any, handler: (...args: any[])
   };
   return new Proxy(pi, { get: (target, property, receiver) => property === 'on' ? on : Reflect.get(target, property, receiver) });
 }
+/** Broad lifecycle overlaps only: they locate a stall in an interval, not the code that consumed CPU. No inputs or ids are recorded. */
+export function registerStallPhases(pi: ExtensionAPI, watch: Pick<Watch, 'begin'> = stallWatch()) {
+  type End = () => void;
+  let agent: End | undefined, turn: End | undefined, provider: End | undefined, stream: End | undefined, compact: End | undefined;
+  const bash = new Map<string, { before?: End; after?: End }>();
+  const close = (end: End | undefined) => { end?.(); };
+  const clear = () => {
+    close(agent); close(turn); close(provider); close(stream); close(compact);
+    agent = turn = provider = stream = compact = undefined;
+    for (const phase of bash.values()) { close(phase.before); close(phase.after); }
+    bash.clear();
+  };
+  pi.on('agent_start', () => { close(agent); agent = watch.begin('phase:agent'); });
+  pi.on('turn_start', () => { close(turn); turn = watch.begin('phase:turn'); });
+  pi.on('turn_end', () => { close(turn); turn = undefined; });
+  pi.on('before_provider_request', () => { close(provider); provider = watch.begin('phase:provider'); });
+  pi.on('message_start', event => { if (event.message.role === 'assistant') { close(stream); stream = watch.begin('phase:assistant-stream'); } });
+  pi.on('message_end', event => { if (event.message.role === 'assistant') { close(stream); close(provider); stream = provider = undefined; } });
+  pi.on('session_before_compact', () => { close(compact); compact = watch.begin('phase:compact'); });
+  pi.on('session_compact', () => { close(compact); compact = undefined; });
+  pi.on('session_compact_failed', () => { close(compact); compact = undefined; });
+  // Pi fires tool_call before execution and tool_result after it, but other extensions may run before or after our handlers.
+  pi.on('tool_execution_start', event => { if (event.toolName === 'bash') { const old = bash.get(event.toolCallId); close(old?.before); close(old?.after); bash.set(event.toolCallId, {}); } });
+  pi.on('tool_call', event => { const phase = bash.get(event.toolCallId); if (phase && event.toolName === 'bash') { close(phase.before); phase.before = watch.begin('phase:bash-call-to-result'); } });
+  pi.on('tool_result', event => { const phase = bash.get(event.toolCallId); if (phase && event.toolName === 'bash') { close(phase.before); close(phase.after); phase.before = undefined; phase.after = watch.begin('phase:bash-result-to-end'); } });
+  pi.on('tool_execution_end', event => { const phase = bash.get(event.toolCallId); if (phase) { close(phase.before); close(phase.after); bash.delete(event.toolCallId); } });
+  pi.on('agent_settled', clear);
+  pi.on('session_shutdown', clear);
+}
+
 interface Held { watch: Watch; build: typeof createStallWatch; stop: () => void }
 
 /** Stalls survive an extension reload the way the event-loop histogram does: one watchdog per process.
