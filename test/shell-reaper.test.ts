@@ -93,11 +93,16 @@ const MARKER = `reaperprobe${process.pid}`;
 const survivors = () => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
   `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${MARKER}*' -and $_.Name -notin 'powershell.exe','node.exe' } | ForEach-Object { $_.ProcessId }`],
 { encoding: 'utf8', windowsHide: true }).split(/\s+/).filter(Boolean);
+// On failure, name each survivor (image, parent, age) so a CI flake shows which stage escaped the reap.
+const describeSurvivors = (pids: string[]) => pids.length ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+  `Get-CimInstance Win32_Process | Where-Object { @(${pids.join(',')}) -contains $_.ProcessId } | ForEach-Object { "$($_.ProcessId) $($_.Name) parent=$($_.ParentProcessId) created=$($_.CreationDate.ToString('HH:mm:ss.fff'))" }`],
+{ encoding: 'utf8', windowsHide: true }).trim() : '';
+const assertNoSurvivors = () => { const left = survivors(); assert.deepEqual(left, [], describeSurvivors(left)); };
 
 test('a timed-out Git Bash pipeline leaves no process behind', { skip: process.platform !== 'win32', timeout: 60_000 }, async () => {
   try {
     await assert.rejects(reapingBashOperations().exec(`cat /dev/zero | grep -c ${MARKER} | head -1`, process.cwd(), { onData: () => {}, timeout: 1 }), /timeout:1/);
-    assert.deepEqual(survivors(), []);
+    assertNoSurvivors();
   } finally {
     const left = survivors();
     if (left.length) execFileSync('taskkill.exe', ['/F', ...left.flatMap(pid => ['/PID', pid])], { stdio: 'ignore' });
@@ -111,10 +116,10 @@ test('the bash tool and ! commands Pi runs use the reaping kill', { skip: proces
   try {
     const result = await tools.get('bash').execute('call-1', { command: `cat /dev/zero | grep -c ${MARKER} | head -1`, timeout: 1 }, undefined, undefined, ctx).catch((error: Error) => error);
     assert.match(String((result as Error).message ?? JSON.stringify(result)), /timed out/i);
-    assert.deepEqual(survivors(), []);
+    assertNoSurvivors();
     const { operations } = events.get('user_bash')({}, ctx);
     await assert.rejects(operations.exec(`cat /dev/zero | grep -c ${MARKER} | head -1`, process.cwd(), { onData: () => {}, timeout: 1 }), /timeout:1/);
-    assert.deepEqual(survivors(), []);
+    assertNoSurvivors();
   } finally {
     const left = survivors();
     if (left.length) execFileSync('taskkill.exe', ['/F', ...left.flatMap(pid => ['/PID', pid])], { stdio: 'ignore' });
