@@ -51,6 +51,7 @@ export function latestPerLink(day: DayEntry[]): DayEntry[] {
 
 // ---- The operator's PRs. ----
 type Gh = (args: string[]) => Promise<string>;
+const DROPPED = /dial tcp|TLS handshake timeout|connectex|connection (?:reset|refused)|i\/o timeout|EOF/i;
 const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
 const PR_QUERY = `query($q:String!){search(query:$q,type:ISSUE,first:50){nodes{... on PullRequest{number title url state isDraft createdAt updatedAt repository{name nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}`;
 type PrNode = { number: number; title: string; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; isDraft: boolean; createdAt: string; updatedAt?: string; repository: { name: string; nameWithOwner: string }; commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] } };
@@ -104,7 +105,18 @@ export class PrWatch {
     const now = this.now();
     const since = new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
     // Open PRs come whatever their age: a quiet one must still be seen when it merges or gets comments.
-    const search = async (q: string) => ((JSON.parse(await this.gh(['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=${q}`])) as { data?: { search?: { nodes?: PrNode[] } } })
+    const read = async (q: string) => {
+      const args = ['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=${q}`];
+      // A read, so a dropped connection (the GitHub API blips for seconds) is retried once; any other failure stays loud.
+      try { return await this.gh(args); }
+      catch (error) {
+        const e = error as { message?: string; stderr?: string };
+        if (!DROPPED.test(`${e?.stderr ?? ''} ${e?.message ?? ''}`)) throw error;
+        await new Promise(done => setTimeout(done, 1500));
+        return this.gh(args);
+      }
+    };
+    const search = async (q: string) => ((JSON.parse(await read(q)) as { data?: { search?: { nodes?: PrNode[] } } })
       .data?.search?.nodes ?? []).filter(n => typeof n?.number === 'number');
     const byKey = new Map<string, PrNode>();
     // Independent reads: the open list and the recently updated ones go out together (one round trip of waiting, not two).
