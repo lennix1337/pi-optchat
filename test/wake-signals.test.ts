@@ -44,6 +44,12 @@ test('two radars that differ only in ages, probe latency, free disk and quiet mi
   assert.deepEqual(Object.keys(first).sort(), ['dotfiles', 'genexus18mcp', 'global', 'harness']);
 });
 
+test('a radar section with nothing notable adds no line to the global signal', () => {
+  const text = radar('## Idle collector\n- nothing notable\n\n## Another\n- nothing notable\n');
+  const global = signals({ radar: text, previous: {}, missions: '', lastRuns: {}, now: 0 }).find(s => s.project === 'global')?.lines ?? [];
+  assert.ok(global.length > 0 && global.every(line => !/nothing notable/.test(line)), global.join(' | '));
+});
+
 test('a line is filed under the project of the repository it names: owner/repo, a repo before "@" or ":" and a worktree line', () => {
   const lines = (text: string, project: string) => signals({ radar: text, previous: {}, missions: '', lastRuns: {}, now: 0 }).find(s => s.project === project)?.lines ?? [];
   const text = radar();
