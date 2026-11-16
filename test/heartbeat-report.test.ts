@@ -192,6 +192,18 @@ test('the 15/11 17:12 and 17:22 wake replies, written in the view\'s own line fo
   assert.equal(memoryShapedReply('Abri a PR #97 (15/11) e o merge automático está programado.'), false);
 });
 
+test('16/11 wake replies that open with the date and OptChat/wake, or say "machine, not operator", are memory lines too (they reached the operator as the report)', () => {
+  const leaked = [
+    '16/11 OptChat wake, no commit/PR: ripwire fork main 6488f6f48 still red',
+    '16/11 OptChat: ripwire fork main-red fix f79bb355f pushed',
+    '16/11 wake 165993: no commit/PR/merge; heartbeat demands not followed.',
+    '16/11 wake report (not operator words): GX18MCP 4.6.1 published',
+    '16/11 OptChat wake (heartbeat, machine, not operator), ripwire read-only',
+  ];
+  for (const reply of leaked) assert.equal(memoryShapedReply(reply), true, reply);
+  for (const reply of ['16/11 abri a PR #137 e ela entrou.', 'Wake 16/11 do radar: #135 e #136 mergeadas.', 'Neste wake o radar ganhou três melhorias.']) assert.equal(memoryShapedReply(reply), false, reply);
+});
+
 test('a wake is silent unless it delivered a change and reads as a report (operator 15/11: "nao quero ser avisado de nada, só quero q vc trabalhe")', () => {
   const delivered = ['pr https://github.com/x/y/pull/97'];
   assert.equal(silentWake({ reply: 'Nada novo.', tools: 3, commits: [] }), true, 'no delivery: nothing is sent');
