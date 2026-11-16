@@ -314,6 +314,15 @@ test('a PR whose checks show up a moment after it opens is re-read within a seco
   assert.ok(times[1] - times[0] < 1800, `second read came ${times[1] - times[0]} ms after the first`);
 });
 
+test('a dropped connection on the PR lookup is retried once instead of failing after the commit', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ viewDrops: 1 });
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt']);
+  assert.equal(r.out.status, 'queued', r.raw + r.err);
+  assert.ok(fx.ghCalls().filter(args => args[1] === 'view').length >= 2, 'the lookup ran again');
+});
+
 test('CLEAN with checks still running would merge at once, so it is not queued', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ defaults: { mergeStateStatus: 'CLEAN', checks: PENDING_CI } });
