@@ -176,3 +176,21 @@ test('a failing background report reaches the agent once, hidden, and never prin
     assert.equal(readFileSync(join(dir, 'exec-log.jsonl'), 'utf8').trim().split('\n').length, 2, 'every failure still goes to the exec log');
   } finally { console.error = original; rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a dropped GitHub connection is retried once by the PR watch instead of surfacing as a failure notice', async () => {
+  const dir = temp();
+  writeFileSync(join(dir, 'assistant.json'), '{}');
+  try {
+    let calls = 0;
+    const gh = async () => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error('Command failed'), { stderr: 'Post "https://api.github.com/graphql": dial tcp 4.228.31.149:443: connectex: A connection attempt failed' });
+      return JSON.stringify({ data: { search: { nodes: [] } } });
+    };
+    const watch = new PrWatch(() => ({ dir, name: 'p' }), recorder().post, gh, () => Date.parse('2026-10-29T12:00:00Z'));
+    assert.equal(await watch.poll(), 0);
+    assert.equal(calls, 3, 'one failed read retried, plus the second search');
+    const hard = new PrWatch(() => ({ dir, name: 'p' }), recorder().post, async () => { throw Object.assign(new Error('Command failed'), { stderr: 'HTTP 401: Bad credentials' }); });
+    await assert.rejects(hard.poll(), /Command failed/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
