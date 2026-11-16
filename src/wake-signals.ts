@@ -70,7 +70,7 @@ function radarLines(radar: string | undefined): Map<string, string[]> {
     if (section.some(line => TRUNCATED.test(line.trim()))) continue;
     let project = GLOBAL;
     for (const line of section) {
-      if (!line.trim()) continue;
+      if (!line.trim() || /^-\s+nothing notable$/.test(line.trim())) continue;
       // A bullet picks its project; its indented detail lines follow it; a line that is not a bullet is global.
       if (/^-\s/.test(line)) project = projectOfBullet(line.replace(/^-\s+/, ''));
       else if (!/^\s/.test(line)) project = GLOBAL;
