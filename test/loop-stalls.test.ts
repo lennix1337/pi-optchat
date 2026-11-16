@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { constants } from 'node:perf_hooks';
 import { createStallWatch, spanHooks, spanned, stallWatch } from '../src/loop-stalls.ts';
 import { heapReport } from '../src/heap-report.ts';
 
@@ -16,13 +17,39 @@ test('a tick that arrives on time records nothing; a late one records the blocke
 test('a garbage collection inside the stall window is named as its cause; one outside is not', () => {
   const c = clock(), watch = createStallWatch(c.now);
   watch.noteGc(1000 - 500, 50, 2); // before the stall window
-  watch.noteGc(1300, 400, 2);
-  watch.noteGc(1750, 30, 1);
+  watch.noteGc(1300, 400, constants.NODE_PERFORMANCE_GC_MAJOR);
+  watch.noteGc(1750, 30, constants.NODE_PERFORMANCE_GC_MINOR);
   c.advance(1100); watch.tick();
   const [stall] = watch.stalls();
   assert.equal(stall.blockedMs, 1000);
   assert.equal(stall.gcMs, 430);
   assert.equal(stall.gcKind, 'mark-sweep-compact');
+});
+
+test('GC notifications arriving after the watchdog tick update the overlapping stall', () => {
+  const c = clock(), watch = createStallWatch(c.now);
+  c.advance(1100); watch.tick();
+  watch.noteGc(1300, 400, constants.NODE_PERFORMANCE_GC_MAJOR);
+  watch.noteGc(1750, 30, constants.NODE_PERFORMANCE_GC_MINOR);
+  watch.noteGc(2200, 50, constants.NODE_PERFORMANCE_GC_MINOR); // after the recorded stall
+  const [stall] = watch.stalls();
+  assert.equal(stall.gcMs, 430);
+  assert.equal(stall.gcKind, 'mark-sweep-compact');
+});
+
+test('GC kinds use the runtime constants', () => {
+  for (const [kind, label] of [
+    [constants.NODE_PERFORMANCE_GC_MINOR, 'scavenge'],
+    [2, 'minor-mark-sweep'],
+    [constants.NODE_PERFORMANCE_GC_MAJOR, 'mark-sweep-compact'],
+    [constants.NODE_PERFORMANCE_GC_INCREMENTAL, 'incremental'],
+    [constants.NODE_PERFORMANCE_GC_WEAKCB, 'weak-callbacks'],
+  ] as const) {
+    const c = clock(), watch = createStallWatch(c.now);
+    watch.noteGc(1300, 100, kind);
+    c.advance(1100); watch.tick();
+    assert.equal(watch.stalls()[0].gcKind, label);
+  }
 });
 
 test('only the last 20 stalls are kept', () => {

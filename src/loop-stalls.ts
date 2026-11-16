@@ -1,4 +1,4 @@
-import { PerformanceObserver, performance } from 'node:perf_hooks';
+import { constants, PerformanceObserver, performance } from 'node:perf_hooks';
 
 export interface CpuFrame { frame: string; ms: number }
 export interface CpuStack { stack: string[]; ms: number }
@@ -13,15 +13,36 @@ interface Gc { start: number; end: number; kind: number }
 interface Span { name: string; start: number; end?: number }
 
 const TICK_MS = 100, STALL_MS = 200, KEEP = 20;
-const KINDS: Record<number, string> = { 1: 'scavenge', 2: 'mark-sweep-compact', 4: 'incremental', 8: 'weak-callbacks' };
+const KINDS: Record<number, string> = { [constants.NODE_PERFORMANCE_GC_MINOR]: 'scavenge', 2: 'minor-mark-sweep',
+  [constants.NODE_PERFORMANCE_GC_MAJOR]: 'mark-sweep-compact', [constants.NODE_PERFORMANCE_GC_INCREMENTAL]: 'incremental',
+  [constants.NODE_PERFORMANCE_GC_WEAKCB]: 'weak-callbacks' };
+type GcTotals = WeakMap<Stall, { total: number; worst?: Gc }>;
+
+function attributeLateGc(stalls: Stall[], gc: Gc, totalsByStall: GcTotals) {
+  for (const stall of stalls) {
+    const totals = totalsByStall.get(stall);
+    if (!totals || gc.end <= stall.startMs || gc.start >= stall.endMs) continue;
+    const duration = gc.end - gc.start;
+    totals.total += duration;
+    stall.gcMs = Math.round(totals.total);
+    if (!totals.worst || duration > totals.worst.end - totals.worst.start) {
+      totals.worst = gc;
+      stall.gcKind = KINDS[gc.kind] ?? String(gc.kind);
+    }
+  }
+}
 
 /** A watchdog that wakes every TICK_MS: a late wake-up is a stall. `now` and `wall` are injectable so a test needs no real blocking. */
 export function createStallWatch(now: () => number = () => performance.now(), wall: () => number = Date.now, previous: Stall[] = []) {
   const stalls: Stall[] = previous.slice(-KEEP), gcs: Gc[] = [], spans: Span[] = [];
+  const gcTotals: GcTotals = new WeakMap();
   let last = now();
   const noteGc = (start: number, duration: number, kind: number) => {
-    gcs.push({ start, end: start + duration, kind });
+    const gc = { start, end: start + duration, kind };
+    gcs.push(gc);
     if (gcs.length > KEEP) gcs.shift();
+    // PerformanceObserver delivers GC entries asynchronously, sometimes after the watchdog tick.
+    attributeLateGc(stalls, gc, gcTotals);
   };
   /** Marks a named span of work (a tool execution); call the returned function when it ends. Names only, never arguments or output. */
   const begin = (name: string) => {
@@ -34,10 +55,12 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
     if (blocked >= STALL_MS) {
       const overlapping = gcs.filter(gc => gc.end > last && gc.start < t);
       const worst = overlapping.reduce<Gc | undefined>((a, b) => !a || b.end - b.start > a.end - a.start ? b : a, undefined);
+      const total = overlapping.reduce((sum, gc) => sum + gc.end - gc.start, 0);
       const stall = { at: new Date(wall()).toISOString(), blockedMs: Math.round(blocked),
-        gcMs: Math.round(overlapping.reduce((sum, gc) => sum + gc.end - gc.start, 0)), gcKind: worst ? KINDS[worst.kind] ?? String(worst.kind) : null } as Stall;
+        gcMs: Math.round(total), gcKind: worst ? KINDS[worst.kind] ?? String(worst.kind) : null } as Stall;
       // Monotonic bounds stay non-enumerable so existing deepEqual assertions and heap_report JSON keep their exact shape.
       Object.defineProperties(stall, { startMs: { value: last }, endMs: { value: t } });
+      gcTotals.set(stall, { total, worst });
       const inside = spans.filter(sp => sp.start < t && (sp.end === undefined || sp.end > last));
       const during = [...new Set(inside.map(sp => sp.name))];
       if (during.length) stall.during = during;
