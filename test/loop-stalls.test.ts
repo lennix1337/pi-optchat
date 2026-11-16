@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { constants } from 'node:perf_hooks';
-import { createStallWatch, spanHooks, spanned, stallWatch } from '../src/loop-stalls.ts';
+import { createStallWatch, registerStallPhases, spanHooks, spanned, stallWatch } from '../src/loop-stalls.ts';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { heapReport } from '../src/heap-report.ts';
 
 const clock = () => { let t = 1000; return { now: () => t, advance: (ms: number) => { t += ms; } }; };
@@ -58,12 +59,52 @@ test('only the last 20 stalls are kept', () => {
   assert.equal(watch.stalls().length, 20);
 });
 
+test('a long active span survives the bounded history of short finished spans', () => {
+  const c = clock(), watch = createStallWatch(c.now);
+  const end = watch.begin('phase:assistant-stream');
+  for (let i = 0; i < 150; i++) watch.begin('hook:message_update')();
+  c.advance(100); watch.tick();
+  c.advance(500); watch.tick();
+  assert.deepEqual(watch.stalls()[0].during, ['phase:assistant-stream']);
+  end();
+});
+
+test('phase spans distinguish provider streaming, bash result handling and idle without recording inputs', () => {
+  const c = clock(), watch = createStallWatch(c.now), handlers = new Map<string, (event: any) => unknown>();
+  const pi = { on: (name: string, handler: (event: any) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+  registerStallPhases(pi, watch);
+  const emit = (name: string, event: object = {}) => handlers.get(name)?.(event);
+  emit('agent_start'); emit('turn_start'); emit('before_provider_request'); emit('message_start', { message: { role: 'assistant' } });
+  c.advance(500); watch.tick();
+  assert.deepEqual(watch.stalls()[0].during, ['phase:agent', 'phase:turn', 'phase:provider', 'phase:assistant-stream']);
+  emit('message_end', { message: { role: 'assistant' } });
+  emit('tool_execution_start', { toolName: 'bash', toolCallId: 'secret-id' });
+  emit('tool_call', { toolName: 'bash', toolCallId: 'secret-id', input: { command: 'private command' } });
+  c.advance(500); watch.tick();
+  assert.ok(watch.stalls()[1].during?.includes('phase:bash-call-to-result'));
+  emit('tool_result', { toolName: 'bash', toolCallId: 'secret-id', content: 'private output' });
+  c.advance(500); watch.tick();
+  assert.ok(watch.stalls()[2].during?.includes('phase:bash-result-to-end'));
+  assert.ok(!watch.stalls()[2].during?.includes('phase:bash-call-to-result'));
+  emit('tool_execution_end', { toolName: 'bash', toolCallId: 'secret-id' }); emit('turn_end'); emit('agent_settled');
+  c.advance(500); watch.tick();
+  assert.equal(watch.stalls()[3].during, undefined);
+  emit('session_before_compact'); c.advance(500); watch.tick();
+  assert.ok(watch.stalls()[4].during?.includes('phase:compact'));
+  emit('session_compact_failed'); c.advance(500); watch.tick();
+  assert.equal(watch.stalls()[5].during, undefined);
+  emit('tool_execution_start', { toolName: 'bash', toolCallId: 'secret-id' });
+  emit('tool_call', { toolName: 'bash', toolCallId: 'secret-id' }); emit('session_shutdown');
+  c.advance(500); watch.tick(); assert.equal(watch.stalls()[6].during, undefined);
+  assert.doesNotMatch(JSON.stringify(watch.stalls()), /private|secret-id/);
+});
+
 test('heap_report carries the stall list inside eventLoop', async () => {
   const report = await heapReport({}, {});
   assert.ok(Array.isArray((report.eventLoop as { stalls: unknown }).stalls));
 });
 
-test('a stall names the tools that were running (or ended) inside its window; none means the block was outside any tool', () => {
+test('a stall names instrumented tools overlapping its window; no span makes no claim about uninstrumented work', () => {
   const c = clock(), watch = createStallWatch(c.now);
   const early = watch.begin('tool:read'); c.advance(100); early(); // ended before the stall window
   watch.tick();

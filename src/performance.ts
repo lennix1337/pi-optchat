@@ -113,7 +113,7 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
     if (lastMessage !== undefined) metrics()?.record('pi_boundary', performance.now() - lastMessage);
     lastMessage = undefined;
   });
-  pi.on('tool_execution_start', event => { if (metrics()) tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now(), end: stallWatch().begin(`tool:${event.toolName ?? 'unknown'}`) }); });
+  pi.on('tool_execution_start', event => { if (metrics()) { tools.get(event.toolCallId)?.end(); tools.set(event.toolCallId, { name: event.toolName ?? 'unknown', start: performance.now(), end: stallWatch().begin(`tool:${event.toolName ?? 'unknown'}`) }); } });
   pi.on('tool_execution_end', event => {
     const started = tools.get(event.toolCallId); tools.delete(event.toolCallId);
     started?.end();
@@ -140,7 +140,9 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
       onLatency?.(event.message.timestamp, { ...(firstMs === undefined ? {} : { firstMs }), responseMs });
     }
   });
-  pi.on('agent_settled', () => { tools.clear(); request = undefined; beforeRequest = undefined; lastMessage = undefined; });
+  const clearTools = () => { for (const tool of tools.values()) tool.end(); tools.clear(); };
+  pi.on('agent_settled', () => { clearTools(); request = undefined; beforeRequest = undefined; lastMessage = undefined; });
+  pi.on('session_shutdown', clearTools);
 }
 export const performanceTool = (metrics: () => PerformanceMetrics, outputs: () => object) => ({
   name: 'context_metrics', label: 'Context performance', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
