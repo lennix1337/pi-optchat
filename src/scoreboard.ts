@@ -18,7 +18,7 @@ const STATE = 'slack-scoreboard.json';
 
 type Routing = { since: number; woke: number; quiet: number };
 type Saved = { week?: string; routing?: Routing; downloads?: number };
-export type Business = { downloads: number; stars: number; previous?: number };
+export type Business = { downloads: number; stars: number; previous?: number; issues?: { open: number; closedWeek: number } };
 export type ScoreInputs = {
   predictions?: { hits: number; total: number };
   from: number; to: number; slack: SlackWeek;
@@ -55,7 +55,7 @@ export function composeScoreboard({ from, to, slack, corrections, ruleViolations
   lines.push(ruleViolations === undefined ? '• Regras violadas (7d): não medido' : `• Regras violadas (7d): *${ruleViolations}* candidatos (meta 0; detectores aproximados)`);
   lines.push(predictions?.total ? `• Previsões acertadas (7d): *${predictions.hits}* de *${predictions.total}*` : '• Previsões acertadas (7d): não medido');
   lines.push(business
-    ? `• GX18MCP: *${business.downloads}* downloads npm na semana${business.previous === undefined ? '' : ` (${business.downloads >= business.previous ? '+' : '−'}${Math.abs(business.downloads - business.previous)} vs. semana anterior)`}, ${business.stars} estrelas`
+    ? `• GX18MCP: *${business.downloads}* downloads npm na semana${business.previous === undefined ? '' : ` (${business.downloads >= business.previous ? '+' : '−'}${Math.abs(business.downloads - business.previous)} vs. semana anterior)`}, ${business.stars} estrelas${business.issues ? `, *${business.issues.open}* issues abertas (${business.issues.closedWeek} fechadas na semana)` : ''}`
     : '• GX18MCP: não medido (npm ou GitHub fora do ar)');
   lines.push('• Receita (DentAI, GX18MCP, Vitrine): não medida (sem leitura automática de Stripe/GA4; só o operador decide gasto)');
   lines.push(commitments
@@ -92,15 +92,25 @@ export function weekInputs(dir: string, now: number, saved: Saved,
   return { inputs: { predictions: predictionWeek(dir, from, now), from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
 }
 
-/** GX18MCP traction from public endpoints: npm downloads of the last week and GitHub stars. Undefined when either read fails. */
-export async function fetchBusiness(get: (url: string) => Promise<Response> = url => fetch(url, { signal: AbortSignal.timeout(10_000) })): Promise<{ downloads: number; stars: number } | undefined> {
+/** GX18MCP traction from public endpoints: npm downloads of the last week, GitHub stars and, when the search API answers, open and weekly-closed issues. Undefined when npm or the repo read fails. */
+export async function fetchBusiness(get: (url: string) => Promise<Response> = url => fetch(url, { signal: AbortSignal.timeout(10_000) }), now = Date.now()): Promise<Omit<Business, 'previous'> | undefined> {
+  const json = async <T>(url: string) => {
+    const res = await get(url);
+    if (!res.ok) throw new Error(`${url}: ${res.status}`);
+    return await res.json() as T;
+  };
+  const count = async (query: string) => (await json<{ total_count?: number }>(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(`repo:lennix1337/Genexus18MCP is:issue ${query}`)}`)).total_count;
   try {
-    const [npm, repo] = await Promise.all(['https://api.npmjs.org/downloads/point/last-week/genexus-mcp', 'https://api.github.com/repos/lennix1337/Genexus18MCP'].map(async url => {
-      const res = await get(url);
-      if (!res.ok) throw new Error(`${url}: ${res.status}`);
-      return await res.json() as { downloads?: number; stargazers_count?: number };
-    }));
-    return Number.isFinite(npm.downloads) && Number.isFinite(repo.stargazers_count) ? { downloads: npm.downloads!, stars: repo.stargazers_count! } : undefined;
+    const since = new Date(now - 7 * 86_400_000).toISOString().slice(0, 10);
+    const [npm, repo, open, closedWeek] = await Promise.all([
+      json<{ downloads?: number }>('https://api.npmjs.org/downloads/point/last-week/genexus-mcp'),
+      json<{ stargazers_count?: number }>('https://api.github.com/repos/lennix1337/Genexus18MCP'),
+      count('state:open').catch(() => undefined),
+      count(`closed:>=${since}`).catch(() => undefined),
+    ]);
+    if (!Number.isFinite(npm.downloads) || !Number.isFinite(repo.stargazers_count)) return undefined;
+    const issues = Number.isFinite(open) && Number.isFinite(closedWeek) ? { issues: { open: open!, closedWeek: closedWeek! } } : {};
+    return { downloads: npm.downloads!, stars: repo.stargazers_count!, ...issues };
   } catch { return undefined; }
 }
 
@@ -117,7 +127,7 @@ export function scanRuleViolations(): Promise<number | undefined> {
 export class WeeklyScoreboard {
   private scanning = false;
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post,
-    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined>; business?: () => Promise<{ downloads: number; stars: number } | undefined> } = {}) {}
+    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined>; business?: () => Promise<Omit<Business, 'previous'> | undefined> } = {}) {}
 
   /** Posts once a week, the first check on `weekday` (Monday) between `at` (09h) and `until` (noon) local time. */
   async maybePost(): Promise<boolean> {

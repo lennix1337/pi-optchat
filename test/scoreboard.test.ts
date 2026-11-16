@@ -145,6 +145,17 @@ test('fetchBusiness reads npm weekly downloads and GitHub stars, and degrades to
   assert.equal(await fetchBusiness(async () => { throw new Error('offline'); }), undefined);
 });
 
+test('the business line adds open issues and issues closed in the week when known; fetchBusiness reads them best-effort', async () => {
+  const base = { from: monday - 7 * DAY, to: monday, slack: { received: 0, answered: 0, nudges: 0, waiting: 0 } as never, corrections: { count: 0 }, merged: { green: 0, other: 0 } };
+  assert.match(composeScoreboard({ ...base, business: { downloads: 10, stars: 3, issues: { open: 9, closedWeek: 4 } } }), /3 estrelas, \*9\* issues abertas \(4 fechadas na semana\)/);
+  const urls: string[] = [];
+  const get = async (url: string) => { urls.push(url); return { ok: true, json: async () => url.includes('npmjs') ? { downloads: 99 } : url.includes('search/issues') ? { total_count: url.includes('state%3Aopen') || url.includes('state:open') ? 9 : 4 } : { stargazers_count: 7 } } as Response; };
+  assert.deepEqual(await fetchBusiness(get), { downloads: 99, stars: 7, issues: { open: 9, closedWeek: 4 } });
+  assert.ok(urls.some(u => u.includes('closed:>=') || u.includes('closed%3A%3E%3D')));
+  const noSearch = async (url: string) => url.includes('search/issues') ? { ok: false, status: 403 } as Response : get(url);
+  assert.deepEqual(await fetchBusiness(noSearch), { downloads: 99, stars: 7 });
+});
+
 test('the weekly post saves downloads as the next week\'s baseline', withDir(async dir => {
   const posts: string[] = [];
   const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async text => { posts.push(text); }, { now: () => monday, scan: async () => 0, business: async () => ({ downloads: 50, stars: 2 }) });
