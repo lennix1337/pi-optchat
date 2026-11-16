@@ -124,6 +124,16 @@ test('unparseable or oversized single-line blobs are not projected as useful pre
   assert.equal(previewOutput(`{"payload":"${'x'.repeat(1_100_000)}"}`).useful, false);
 });
 
+test('long numeric bash output stays within the 200 ms event-loop budget', () => {
+  const text = `${'1'.repeat(45_000)}\n[Showing last 50KB of output]`;
+  const started = performance.now();
+  const preview = previewOutput(text);
+  const elapsed = performance.now() - started;
+  assert.equal(preview.format, 'build/log');
+  assert.ok(elapsed < 200, `numeric output preview blocked the event loop for ${elapsed.toFixed(1)} ms`);
+  assert.equal(previewOutput('prefix\n123 matches in 4 files').format, 'search');
+});
+
 test('clipped diagnostic lines retain evidence near the end of long lines', () => {
   const preview = previewOutput(`${'context '.repeat(80)}exit code: 17`);
   assert.match(preview.text, /exit code: 17/);

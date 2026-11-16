@@ -20,7 +20,8 @@ const DIAGNOSTIC = /error|fail|exception|warning|panic|fatal|tests?:|passed|exit
 const EVIDENCE_TOKEN = /\b(?:error|fail(?:ed|ure)?|exception|warning|panic|fatal|tests?|passed|stderr|stdout|status|signal|exit[\s_-]?code)\b|(?:CS|TS|src|spc)\d{4}/gi;
 const SEARCH_LINE = /^(?:[A-Za-z]:)?[^:\r\n]+:\d+(?::\d+)?:/;
 const DIFF_MARKER = /^(?:diff --git |Index: |\*\*\* (?:Begin|End) Patch|@@\s)/;
-const SEARCH_SUMMARY = /(?:\d+ matches?(?: in \d+ files?)?|found \d+ matches?|search completed)/i;
+// Only existence matters: matching the final digit avoids quadratic backtracking on long numeric lines.
+const SEARCH_SUMMARY = /(?:\d matches?|search completed)/i;
 const JSON_KEY = /error|exception|fail|warn|stderr|stdout|exit.?code|status|diagnostic|test|message|\bcode\b/i;
 
 const byteLength = (value: string) => Buffer.byteLength(value);
