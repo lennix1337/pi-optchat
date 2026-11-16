@@ -43,7 +43,10 @@ export function isNoMatch(command: string | undefined, text: string): boolean {
   // after `&&` or `||` it may be an earlier command's exit, so only an empty output shows a miss.
   const before = tokens.pop();
   if (before === ';' || before === '|' || before === '\n') return true;
-  return text.replace(/\n*Command exited with code \d+\s*$/, '').replace(/^\(no output\)$/i, '').trim() === '';
+  const trailer = /Command exited with code \d+\s*$/.exec(text);
+  let end = trailer?.index ?? text.length;
+  if (trailer) while (end > 0 && text[end - 1] === '\n') end--;
+  return text.slice(0, end).replace(/^\(no output\)$/i, '').trim() === '';
 }
 
 /** `ship.mjs` exits 3 (`not_queued`) when it opened the PR but its checks are still pending: the work is shipped and gitwatch reports the rest, so it is not a failed call. */
@@ -81,7 +84,7 @@ export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined)
     if (!where) return;
     const text = resultText(event.result);
     // Only bash's own trailer is this call's exit code; shell_status, zoom or a grep that quote someone else's exit are not failures.
-    const exit = event.toolName === 'bash' ? /\n*Command exited with code (\d+)\s*$/.exec(text) : null;
+    const exit = event.toolName === 'bash' ? /Command exited with code (\d+)\s*$/.exec(text) : null;
     const answered = (exit?.[1] === '1' && isNoMatch(raw, text)) || (event.toolName === 'bash' && isShipWait(raw, text));
     const kind = classify(!answered && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,

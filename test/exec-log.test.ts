@@ -40,6 +40,26 @@ test('every tool call is logged with its class, and failures keep the reason', (
   assert.match(b.detail, /boom/);
 });
 
+test('bash output with many blank lines stays within the 200 ms event-loop budget', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
+  const handlers: Record<string, (e: any) => void> = {};
+  registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
+  handlers.tool_execution_start({ toolCallId: '1', toolName: 'bash', args: { command: 'cat output' } });
+  const started = performance.now();
+  handlers.tool_execution_end({ toolCallId: '1', toolName: 'bash', isError: false, result: { content: [{ type: 'text', text: '\n'.repeat(40_000) }] } });
+  const elapsed = performance.now() - started;
+  assert.equal(lines(dir)[0].class, 'ok');
+  assert.ok(elapsed < 200, `bash completion blocked the event loop for ${elapsed.toFixed(1)} ms`);
+});
+
+test('grep no-match classification stays within budget with many blank lines', () => {
+  const text = `${'\n'.repeat(40_000)}found\nCommand exited with code 1`;
+  const started = performance.now();
+  assert.equal(isNoMatch('grep x file', text), false);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 200, `grep classification blocked the event loop for ${elapsed.toFixed(1)} ms`);
+});
+
 test('words in a finished command output do not make it a timeout, network error or refusal', () => {
   const dir = mkdtempSync(join(tmpdir(), 'execlog-'));
   const handlers: Record<string, (e: any) => void> = {};

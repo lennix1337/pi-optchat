@@ -104,6 +104,19 @@ test('spanHooks names a stall inside a hook handler, sync or async, and keeps th
   assert.equal(pi.on, original, 'the host object is not mutated (a host Proxy keeps its own on)');
 });
 
+test('tool completion stalls distinguish OptChat handlers without exposing source paths', () => {
+  const c = clock(), watch = createStallWatch(c.now);
+  const handlers: ((...args: unknown[]) => unknown)[] = [];
+  const pi = spanHooks({ on: (_event: string, handler: (...args: unknown[]) => unknown) => { handlers.push(handler); } }, watch);
+  pi.on('tool_result', () => { c.advance(500); watch.tick(); });
+  pi.on('tool_result', () => { c.advance(500); watch.tick(); });
+  handlers.forEach(handler => handler());
+  const names = watch.stalls().map(stall => stall.during?.find(name => name.startsWith('handler:tool_result:')));
+  assert.match(names[0] ?? '', /^handler:tool_result:loop-stalls\.test\.ts:\d+$/);
+  assert.match(names[1] ?? '', /^handler:tool_result:loop-stalls\.test\.ts:\d+$/);
+  assert.notEqual(names[0], names[1]);
+});
+
 test('spanned names a stall inside one step, sync or async, and ends the span when the step does', async () => {
   const c = clock(), watch = createStallWatch(c.now);
   assert.equal(spanned('open:usage', () => { c.advance(1100); watch.tick(); return 'kept'; }, watch), 'kept');

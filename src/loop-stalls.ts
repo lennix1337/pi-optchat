@@ -91,11 +91,19 @@ export function spanned<T>(name: string, step: () => T, watch: Pick<Watch, 'begi
   return result;
 }
 
-/** Names every extension hook handler as a stall span (`hook:<event>`), so a stall outside a tool says which hook held the loop;
- * one with no name at all ran in Pi itself. Returns a view of `pi` whose `on` times each handler; `pi` itself is left untouched,
- * since the host may hand extensions a wrapper (a Proxy) whose own `on` must keep seeing the original handlers' registration. */
+/** Names OptChat's hook handlers as stall spans (`hook:<event>`); tool completion handlers also name their source file and line.
+ * Other extensions and Pi itself are not wrapped here. Returns a view of `pi` without mutating the host, which may be a Proxy. */
 export function spanHooks<T extends { on: (event: any, handler: (...args: any[]) => any) => unknown }>(pi: T, watch: Pick<Watch, 'begin'> = stallWatch()): T {
-  const on: T['on'] = (event, handler) => pi.on(event, (...args: unknown[]) => spanned(`hook:${event}`, () => handler(...args), watch));
+  const on: T['on'] = (event, handler) => {
+    // Registration happens once; retain only the source basename and line, never an absolute user path.
+    const location = event === 'tool_result' || event === 'tool_execution_end'
+      ? new Error().stack?.split('\n').map(line => /(?:^|[\\/ (])([^\\/(): ]+\.[cm]?[jt]s):(\d+):\d+\)?$/.exec(line))
+        .find(match => match && match[1] !== 'loop-stalls.ts')
+      : undefined;
+    const detail = location ? `handler:${event}:${location[1]}:${location[2]}` : undefined;
+    return pi.on(event, (...args: unknown[]) => spanned(`hook:${event}`,
+      () => detail ? spanned(detail, () => handler(...args), watch) : handler(...args), watch));
+  };
   return new Proxy(pi, { get: (target, property, receiver) => property === 'on' ? on : Reflect.get(target, property, receiver) });
 }
 interface Held { watch: Watch; build: typeof createStallWatch; stop: () => void }
