@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ModelRegistry, ModelRuntime, SessionManager, initTheme } from '@earendil-works/pi-coding-agent';
@@ -472,6 +472,8 @@ test('repeated ExternalRuns.refresh skips scanning unchanged async-subagent-runs
   try {
     writeRun(root, 'run-a', status({ runId: 'run-a', state: 'complete' }));
     const runs = new ExternalRuns(profile, { root, throttleMs: 0 });
+    const settled = new Date(Date.now() - 5000);
+    utimesSync(runs.paths.asyncDir, settled, settled);
     runs.refresh(true);
     assert.equal(runs.get('pi-run-a')?.state, 'completed');
     const scansBefore = runs.asyncScans, bytesBefore = runs.readBytes;
@@ -482,5 +484,21 @@ test('repeated ExternalRuns.refresh skips scanning unchanged async-subagent-runs
     runs.refresh();
     assert.equal(runs.asyncScans - scansBefore, 1, 'new async run directory must trigger a scan');
     assert.equal(runs.get('pi-run-b')?.state, 'running');
+  } finally { removeDir(root); removeDir(profile); }
+});
+
+test('ExternalRuns.refresh still discovers a new async run added in the same mtime tick as the previous scan', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-subagents-async-same-tick-')), profile = mkdtempSync(join(tmpdir(), 'optchat-async-same-tick-'));
+  try {
+    writeRun(root, 'run-a', status({ runId: 'run-a', state: 'complete' }));
+    const runs = new ExternalRuns(profile, { root, throttleMs: 0 });
+    const beforeMtime = statSync(runs.paths.asyncDir).mtimeMs;
+    runs.refresh(true);
+    assert.equal(runs.get('pi-run-a')?.state, 'completed');
+    writeRun(root, 'run-b', status({ runId: 'run-b', state: 'running', endedAt: undefined }));
+    // Simulate coarse filesystem mtime granularity where creating run-b leaves asyncDir mtime unchanged.
+    utimesSync(runs.paths.asyncDir, beforeMtime / 1000, beforeMtime / 1000);
+    runs.refresh();
+    assert.equal(runs.get('pi-run-b')?.state, 'running', 'same-tick async run must not be skipped permanently');
   } finally { removeDir(root); removeDir(profile); }
 });

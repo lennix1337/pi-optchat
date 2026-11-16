@@ -419,9 +419,9 @@ export class ExternalRuns {
 
   private readAsync(force = false) {
     const hasActive = [...this.asyncRecords.values()].some(isActiveRun);
-    const dirStamp = this.dirStamp(this.paths.asyncDir);
-    if (!dirStamp) { this.asyncRecords.clear(); this.statusCache.clear(); this.asyncDirStamp = undefined; return; }
-    if (!force && !hasActive && this.asyncDirStamp === dirStamp) return;
+    const dir = this.dirStamp(this.paths.asyncDir);
+    if (!dir) { this.asyncRecords.clear(); this.statusCache.clear(); this.asyncDirStamp = undefined; return; }
+    if (!force && !hasActive && this.asyncDirStamp === dir.stamp) return;
     let entries;
     this.asyncScans++;
     try { entries = readdirSync(this.paths.asyncDir, { withFileTypes: true }); }
@@ -430,7 +430,8 @@ export class ExternalRuns {
       this.warnOnce(`Could not read pi-subagents async runs: ${String(error)}`);
       return;
     }
-    this.asyncDirStamp = dirStamp;
+    // Only trust the directory mtime once it has aged past coarse OS timestamp ticks (e.g. Windows NTFS).
+    this.asyncDirStamp = Date.now() - dir.mtimeMs > 100 ? dir.stamp : undefined;
     const seen = new Set<string>(), next = new Map<string, RunInfo>();
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
@@ -556,10 +557,10 @@ export class ExternalRuns {
     } catch { return undefined; }
   }
 
-  private dirStamp(dir: string): string | undefined {
+  private dirStamp(dir: string): { stamp: string; mtimeMs: number } | undefined {
     try {
       const stat = statSync(dir);
-      return stat.isDirectory() ? `${stat.mtimeMs}` : undefined;
+      return stat.isDirectory() ? { stamp: `${stat.mtimeMs}`, mtimeMs: stat.mtimeMs } : undefined;
     } catch { return undefined; }
   }
 }
