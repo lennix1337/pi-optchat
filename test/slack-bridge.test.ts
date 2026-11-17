@@ -630,7 +630,7 @@ test('progress posted with slack_send during a Slack-started run goes in the thr
   try {
     await f.bridge.poll();
     f.bridge.sawUserMessage(f.sent[0]!.text);
-    await f.bridge.post('Etapa 1 de 3 feita.', null);
+    await f.bridge.report('Etapa 1 de 3 feita.', 'dm');
     await f.bridge.runEnded(replies('Migração concluída.'));
     const sends = f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body);
     assert.deepEqual(sends, [
@@ -948,7 +948,7 @@ test('App Home: a work reader that throws leaves the Home to go out without the 
 const sendsOf = bodiesFor<{ text: string; threadTs: string | null; channel?: string }>('/v1/slack/send');
 const paragraphs = (n: number) => Array.from({ length: n }, (_, i) => `Parágrafo ${i + 1}: ${Array.from({ length: 30 }, () => 'palavra').join(' ')}.`).join('\n\n');
 
-test('a final answer over the DM budget goes out as a short head, then the full text in a thread reply', async () => {
+test('a final answer over the DM budget goes out as a short head, then the rest of it in a thread reply', async () => {
   const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'resume o dia' }]);
   try {
     await f.bridge.poll();
@@ -956,12 +956,13 @@ test('a final answer over the DM budget goes out as a short head, then the full 
     const long = paragraphs(6);
     await f.bridge.runEnded(replies(long));
     const sends = sendsOf(f);
-    assert.equal(sends.length, 2, 'a head, then the full text');
+    assert.equal(sends.length, 2, 'a head, then the rest');
     assert.ok(words(sends[0]!.text) <= 100, `head has ${words(sends[0]!.text)} words`);
-    assert.match(sends[0]!.text, /texto completo na thread/);
+    assert.match(sends[0]!.text, /continua na thread/);
     assert.equal(sends[0]!.threadTs, null, 'the head is the answer, in the DM as before');
-    assert.equal(sends[1]!.text, long, 'the full text is kept whole');
-    assert.equal(sends[1]!.threadTs, '1.1', "the full text replies in the head's thread");
+    assert.ok(!sends[1]!.text.includes('Parágrafo 1:'), 'the thread does not repeat the head');
+    assert.equal(words(sends[0]!.text.split('\n\n_')[0]!) + words(sends[1]!.text), words(long), 'head and rest together are the whole answer');
+    assert.equal(sends[1]!.threadTs, '1.1', "the rest replies in the head's thread");
   } finally { f.close(); }
 });
 
@@ -983,7 +984,7 @@ test('slack_send over the channel budget posts a head in the channel and the ful
     const sends = sendsOf(f);
     assert.deepEqual(sends.map(s => s.channel), ['dentai', 'dentai']);
     assert.ok(words(sends[0]!.text) <= 100);
-    assert.equal(sends[1]!.text, long);
+    assert.ok(long.endsWith(sends[1]!.text) && !sends[1]!.text.startsWith('item0 '), 'the thread gets what the head left out');
     assert.equal(sends[1]!.threadTs, '1.1');
   } finally { f.close(); }
 });
@@ -998,8 +999,8 @@ test('a topic post over the budget keeps its topic thread, and the full text goe
     const sends = sendsOf(f);
     assert.equal(sends.length, 2);
     assert.equal(sends[0]!.threadTs, '1.1', 'the topic reply goes in the topic thread');
-    assert.equal(sends[1]!.threadTs, '1.1', 'and so does the full text');
-    assert.equal(sends[1]!.text, long);
+    assert.equal(sends[1]!.threadTs, '1.1', 'and so does the rest');
+    assert.ok(long.endsWith(sends[1]!.text) && !sends[1]!.text.startsWith('t0 '));
   } finally { f.close(); }
 });
 
@@ -1023,7 +1024,7 @@ test('a wake report over the budget is split the same way, in the repo channel',
     const sends = sendsOf(f);
     assert.equal(sends.length, 2, JSON.stringify(sends.map(s => s.text.slice(0, 40))));
     assert.ok(words(sends[0]!.text) <= 100);
-    assert.equal(sends[1]!.text, `*Wake* · ${paragraphs(5)}`);
+    assert.ok(`*Wake* · ${paragraphs(5)}`.endsWith(sends[1]!.text) && !sends[1]!.text.includes('Parágrafo 1:'), 'the thread carries what the head left out');
   } finally { f.close(); }
 });
 

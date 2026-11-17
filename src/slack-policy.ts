@@ -1,7 +1,7 @@
 /**
  * Per-channel rules for what OptChat posts on Slack. The DM and each project channel have a word budget (100 by
  * default: the IM cap the DeepSeek Harness article verified). A post over its budget goes out as a short head with a
- * pointer, and the full text follows as a thread reply, so nothing is cut silently.
+ * pointer, and the rest follows as a thread reply, so nothing is cut silently.
  */
 export const DEFAULT_WORD_BUDGET = 100;
 /** Budgets of project channels by name; a channel without one uses the default. The DM is never overridden. */
@@ -20,18 +20,32 @@ export const MID_RUN = '\n\n(Arrived while you were working: answer it with slac
 /** His message without the notes the bridge appended to it: what he actually wrote. */
 export const withoutBridgeNotes = (text: string): string => text.replace(MID_RUN, '').replace(BUDGET_NOTE, '');
 
-const POINTER = '_… texto completo na thread._';
+const POINTER = '_… continua na thread._';
 export const words = (text: string): number => text.match(/\S+/g)?.length ?? 0;
 
-/** What goes out in the channel (`head`) and, when the post was over budget, the full text for the thread reply. */
-export type FittedPost = { head: string; full?: string };
+/** What goes out in the channel (`head`) and, when the post was over budget, what the head left out, for the thread reply. */
+export type FittedPost = { head: string; rest?: string };
 
-/** The head is the leading part of the post that fits in the budget with the pointer; the full text is never trimmed. */
+/**
+ * The head is the leading part of the post that fits in the budget with the pointer; the thread reply carries the rest,
+ * never the whole text again, so head and reply read as one message and nothing shows twice.
+ */
 export function fitPost(text: string, budget: number): FittedPost {
   if (words(text) <= budget) return { head: text };
   const room = Math.max(0, budget - words(POINTER));
   const lead = leadingWords(text, room);
-  return { head: lead ? `${lead}\n\n${POINTER}` : POINTER, full: text };
+  return { head: lead ? `${lead}\n\n${POINTER}` : POINTER, rest: text.slice(endOf(lead, text)).trim() };
+}
+
+/** Where the head's words end in the original text: each word is found in order, so formatting in between does not matter. */
+function endOf(lead: string, text: string): number {
+  let at = 0;
+  for (const word of lead.match(/\S+/g) ?? []) {
+    const found = text.indexOf(word, at);
+    if (found < 0) break;
+    at = found + word.length;
+  }
+  return at;
 }
 
 /**
