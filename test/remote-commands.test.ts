@@ -56,6 +56,19 @@ test('status and modelo name the selected model, i.e. the account, and the last 
   assert.match((await run('modelos')).text, /\*openai-codex\*: gpt-6\.1-sol/);
 });
 
+test('thinking shows the level and the ones the model accepts, sets it through Pi, and refuses one the model lacks', async () => {
+  let level = 'medium';
+  const s = state({ thinking: () => ({ level, levels: ['off', 'low', 'medium', 'high'] }), setThinking: l => (level = l) });
+  assert.match((await run('thinking', s)).text, /\*Thinking:\* medium \(este modelo aceita: off, low, medium, high\)/);
+  assert.match((await run('thinking HIGH', s)).text, /Thinking agora em \*high\*/);
+  assert.equal(level, 'high');
+  assert.match((await run('/thinking xhigh', s)).text, /não serve para este modelo/);
+  assert.equal(level, 'high');
+  assert.match((await run('status', s)).text, /thinking high/);
+  assert.match(homeStatus(s), /thinking high/);
+  assert.match((await run('thinking')).text, /Não consigo ler/);
+});
+
 test('a model name resolves on the current account first, then anywhere; ambiguity is said, never guessed', () => {
   const cur = 'anthropic-account-2/claude-sonnet-5-5';
   assert.deepEqual(resolveModel('opus', MODELS, cur), { provider: 'anthropic-account-2', id: 'claude-opus-5-5' });

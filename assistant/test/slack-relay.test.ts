@@ -347,6 +347,36 @@ test('HTTP: the Home carries Status agora, Parar (with confirm) while working an
   } finally { await new Promise(done => server.close(done)); r.close(); }
 });
 
+test('Home menus: model and thinking are selects; a pick becomes the modelo/thinking DM command, odd values never pass', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/slack/home`;
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  const settings = { model: 'anthropic/claude-opus-5-5', models: [{ value: 'anthropic/claude-opus-5-5', label: 'Opus 5.5 \u00b7 conta 1' }, { value: 'openai-codex/gpt-6.1-sol', label: 'gpt-6.1-sol \u00b7 Codex conta 1' }], level: 'high', levels: ['off', 'low', 'high'] };
+  try {
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'Livre', settings }) })).status, 200);
+    const selects = (slack.calls[0].body.view as { blocks: { elements?: { type: string; action_id: string; initial_option?: { value: string }; options?: unknown[] }[] }[] }).blocks
+      .flatMap(b => b.elements ?? []).filter(e => e.type === 'static_select');
+    assert.deepEqual(selects.map(s => [s.action_id, s.initial_option?.value, s.options?.length]), [['optchat_home_model', 'anthropic/claude-opus-5-5', 2], ['optchat_home_thinking', 'high', 3]]);
+    for (const bad of [{ ...settings, model: 'x y' }, { ...settings, levels: ['$(rm)'] }, { ...settings, extra: 1 }, { ...settings, models: [{ value: 'a b', label: 'x' }] }])
+      assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'x', settings: bad }) })).status, 400, JSON.stringify(bad));
+  } finally { await new Promise(done => server.close(done)); r.close(); }
+
+  const c = relayFixture();
+  const pick = (action: string, ts: string, value: string, over: Record<string, unknown> = {}) => ({ ...homeClick(action, ts, over), actions: [{ action_id: action, action_ts: ts, selected_option: { value } }] });
+  try {
+    c.relay.after(0, 0);
+    assert.equal(c.channel.accept(pick('optchat_home_model', '1793000002.000100', 'openai-codex/gpt-6.1-sol')).outcome, 'relayed');
+    assert.equal(c.channel.accept(pick('optchat_home_thinking', '1793000002.000200', 'low')).outcome, 'relayed');
+    assert.equal(c.channel.accept(pick('optchat_home_thinking', '1793000002.000300', 'low; parar')).outcome, 'ignored');
+    assert.equal(c.channel.accept(pick('optchat_home_thinking', '1793000002.000400', 'low', { user: { id: 'U0STRANGER' } })).outcome, 'unauthorized_sender');
+    assert.deepEqual(c.relay.after(0, 10).map(m => [m.channel, m.text]), [['home', 'modelo openai-codex/gpt-6.1-sol'], ['home', 'thinking low']]);
+  } finally { c.close(); }
+});
+
 test('long poll: a waiting inbox read ends when a message arrives, not at its deadline', async () => {
   const r = relayFixture();
   try {

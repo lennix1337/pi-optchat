@@ -27,6 +27,10 @@ export interface CommandState {
   abort?(): boolean;
   /** The quota economy (US$ per 1%), when the profile keeps a quota history; read-only and cached by the caller. */
   economy?(): Economy | undefined;
+  /** The thinking level and the levels the selected model accepts, as `/thinking` in the terminal. */
+  thinking?(): { level: string; levels: readonly string[] } | undefined;
+  /** Sets it through Pi and answers the level now in force. */
+  setThinking?(level: string): string;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
@@ -45,7 +49,8 @@ function lastSwitch(state: CommandState): string | undefined {
   return `última troca: ${last.to} (${brasiliaDayTime(last.at)})`;
 }
 
-const modelLine = (state: CommandState) => `*Modelo:* ${state.model() ?? 'nenhum selecionado'}`;
+const thinkingNote = (state: CommandState) => { const level = state.thinking?.()?.level; return level ? ` \u00b7 thinking ${level}` : ''; };
+const modelLine = (state: CommandState) => `*Modelo:* ${state.model() ?? 'nenhum selecionado'}${thinkingNote(state)}`;
 const withSwitch = (state: CommandState, lines: string[]) => [...lines, ...(lastSwitch(state) ? [lastSwitch(state)!] : [])].join('\n');
 const MAX_LISTED = 40;
 
@@ -82,6 +87,16 @@ async function changeModel(state: CommandState, query: string): Promise<CommandR
   return { text: await apply() };
 }
 
+function changeThinking(state: CommandState, arg: string): CommandResult {
+  const current = state.thinking?.();
+  if (!current || !state.setThinking) return { text: 'Não consigo ler o nível de thinking nesta sessão.' };
+  const accepted = current.levels.join(', ');
+  if (!arg) return { text: `*Thinking:* ${current.level} (este modelo aceita: ${accepted}). Troque com *thinking high*.` };
+  const level = arg.toLowerCase();
+  if (!current.levels.includes(level)) return { text: `"${arg}" não serve para este modelo; ele aceita: ${accepted}.` };
+  return { text: `Thinking agora em *${state.setThinking(level)}*.` };
+}
+
 export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
   { name: 'status', aliases: ['estado'], summary: 'o que estou fazendo, modelo e conta atuais', run: state => ({ text: withSwitch(state, [state.activity(), modelLine(state)]) }) },
   {
@@ -93,6 +108,7 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
     name: 'modelo', aliases: ['model'], summary: 'modelo em uso; *modelo sonnet* troca (outra conta pede aprovação)',
     run: (state, arg) => arg ? changeModel(state, arg) : { text: withSwitch(state, [modelLine(state)]) },
   },
+  { name: 'thinking', aliases: ['pensamento', 'pensar'], summary: 'nível de thinking; *thinking high* troca', run: (state, arg) => changeThinking(state, arg) },
   {
     name: 'modelos', aliases: ['models'], summary: 'modelos disponíveis por conta',
     run: state => {
@@ -111,7 +127,7 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
 ];
 
 /** Commands that take an argument; for the others only the bare word counts. */
-const TAKES_ARG = new Set(['modelo']);
+const TAKES_ARG = new Set(['modelo', 'thinking']);
 
 /**
  * The command a whole message names (`status`, `/cota`, `Jarvis modelo`, `modelo sonnet`), or undefined for anything
@@ -160,7 +176,7 @@ function homeQuota(state: CommandState): string[] {
 
 /** The status block of the App Home: model, account and quota under what the agent is doing. */
 export function homeStatus(state: CommandState): string {
-  return [`*Modelo:* ${modelName(state.model())}`, '*Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
+  return [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`, '*Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
 }
 
 export function failoverReader(file: string): () => unknown { return () => readQuotaState(file); }
