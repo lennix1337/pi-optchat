@@ -915,7 +915,7 @@ export default function optchat(host: ExtensionAPI) {
         const a = active;
         if (!a || !inPhase('open', 'import-paused')) return NO_WORK;
         const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running').map(r => `subagente ${r.id} \u00b7 ${oneLine(r.task)}`);
-        return readHomeWork(a.dir, runningShells(shells).map(job => `${job.id} \u00b7 ${job.command}`), Date.now(), agents);
+        return readHomeWork(a.dir, runningShells(shells).map(job => job.label ?? `${job.id} \u00b7 ${job.command}`), Date.now(), agents);
       } });
   // The App Home lists what waits on him: approvals pending in this chat and commitments blocked on him.
   slack.setWaiting(() => {

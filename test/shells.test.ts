@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ShellJobs, adoptShells, alertReport, endNoticeWanted, handOffShells, readShell, registerShells, runningShells, shellReport, type ShellJob } from '../src/shells.ts';
+import { ShellJobs, adoptShells, alertReport, endNoticeWanted, handOffShells, readShell, registerShells, runningShells, shellReport, shellTitle, type ShellJob } from '../src/shells.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from '../src/shell-alerts.ts';
 import { Check } from 'typebox/value';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -286,6 +286,22 @@ test('shell_start takes notify and alert, uses the profile default when notify i
   await start.execute('default', { command: 'node -e 0' }, undefined, undefined, { cwd: '.' });
   await start.execute('explicit', { command: 'node -e 0', notify: 'end' }, undefined, undefined, { cwd: '.' });
   assert.deepEqual(jobs.list().map(job => job.notify).sort(), ['end', 'failure']);
+  await jobs.close();
+});
+
+test('shell_start keeps a label, and people see it instead of the command (Home "Rodando agora", shell lists)', async () => {
+  const jobs = new ShellJobs(), tools = new Map<string, any>();
+  registerShells(fakePi(tools), jobs, () => {}, {});
+  const start = tools.get('shell_start'), status = tools.get('shell_status');
+  assert.equal(Check(start.parameters, { command: 'x', label: '' }), false, 'an empty label is refused');
+  await start.execute('a', { command: 'node -e "setTimeout(()=>{},300)"', label: 'agy: #1040 memória do gateway' }, undefined, undefined, { cwd: '.' });
+  await start.execute('b', { command: 'node -e "setTimeout(()=>{},300)"' }, undefined, undefined, { cwd: '.' });
+  const [labelled, plain] = ['agy: #1040 memória do gateway', undefined].map(label => jobs.list().find(job => job.label === label)!);
+  assert.equal(shellTitle(labelled), 'agy: #1040 memória do gateway');
+  assert.equal(shellTitle(plain), plain.command, 'no label: the command, as before');
+  const listed = (await status.execute('s', {})).content[0].text;
+  assert.match(listed, /agy: #1040 memória do gateway/);
+  assert.doesNotMatch(listed.split('\n').find((line: string) => line.startsWith(labelled.id)), /node -e/);
   await jobs.close();
 });
 
