@@ -31,7 +31,8 @@ test('a cap splits the pack in order, a solo report travels alone, and a bundle 
   assert.deepEqual(pack([reports[0], huge, reports[1]], 25).map(m => m.text.length), [10, 100, 10], 'a report over the cap goes whole, alone');
 });
 
-/** Pi 1.5: a send from idle starts a turn after a delay; a second send made meanwhile is refused and lost. */
+/** Pi 1.5: a send from idle starts a turn after a delay; a second send made meanwhile is refused and lost.
+ * The start wait is far above that delay: a CI runner stalling the event loop must not read as a Pi that never started. */
 const fakePi = () => {
   const pi = { running: false, starting: false, delivered: [] as R[], lost: 0,
     send(report: R, fromIdle: boolean) {
@@ -40,7 +41,7 @@ const fakePi = () => {
       pi.starting = true;
       setTimeout(() => { pi.starting = false; pi.running = true; pi.delivered.push(report); dispatcher.started(); }, 10).unref();
     } };
-  const dispatcher: ReportDispatcher<R> = new ReportDispatcher<R>({ idle: () => !pi.running, send: pi.send, pollMs: 1, startWaitMs: 60,
+  const dispatcher: ReportDispatcher<R> = new ReportDispatcher<R>({ idle: () => !pi.running, send: pi.send, pollMs: 1, startWaitMs: 5_000,
     pack: waiting => pack(waiting, 120), gatherMs: 15, failed: () => undefined });
   return { pi, dispatcher };
 };
@@ -56,6 +57,15 @@ test('30 reports pushed at once while idle leave in ceil(size/cap) messages, non
   const bundled = packReports(texts.map(text => ({ text })), () => false, make, 120).length;
   assert.equal(pi.delivered.length, bundled);
   assert.ok(pi.delivered.length < 30 / 3, `${pi.delivered.length} messages`);
+});
+
+test('an event-loop stall longer than the fake start delay does not lose a report', async () => {
+  const { pi, dispatcher } = fakePi();
+  dispatcher.pushAll([{ text: '[one] done' }]);
+  for (const end = Date.now() + 80; Date.now() < end;) { /* stall the loop while the start is pending */ }
+  await sleep(60);
+  assert.equal(pi.lost, 0);
+  assert.deepEqual(pi.delivered.map(m => m.text), ['[one] done']);
 });
 
 test('one fresh report while idle goes out at once and alone', async () => {
