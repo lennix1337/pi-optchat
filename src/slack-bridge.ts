@@ -10,7 +10,8 @@ import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, projectOfRepo, toolCalls } from './projects.ts';
 import { readDay, recordRun, renderDay } from './home-day.ts';
 import type { Economy } from './quota-economy.ts';
-import { failoverReader, homeStatus, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
+import { failoverReader, homeStatus, modelName, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
 import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
@@ -92,6 +93,8 @@ const HOME_CHARS = 11_000;
 const IDLE = /^\u2705 \*Livre\*/;
 /** What the service queues for the Home's Ver tudo / Ver menos buttons (assistant/src/channels/slack-relay.ts HOME_ACTIONS). */
 const HOME_FOLD = { channel: 'home', more: 'tudo', less: 'menos' } as const;
+/** A model the Home's menu may offer: what the service accepts and the `modelo` command can take back. */
+const HOME_SETTING_VALUE = /^[\w./:-]{1,80}$/;
 /** At most `max` characters, cut at a word and marked with \u2026, so a quote or a link is never cut in half silently. */
 /** A service that refuses a field it predates answers 400; the client reports it as `HttpError`, whose message never names the status. */
 const refused = (error: unknown) => error instanceof HttpError ? error.status === 400 : error instanceof Error && /HTTP 400/.test(error.message);
@@ -196,6 +199,8 @@ export class SlackBridge {
     models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean>;
     /** The quota economy (US$ per 1%) the `cota` command adds to each account, when there is one. */
     economy?: () => Economy | undefined;
+    /** The thinking level as `/thinking` sees it, and setting it: the `thinking` command and the Home's menu. */
+    thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking'];
     /** On (setting `slackEveryAnswer`, for a Pi nobody watches at a terminal): the final answer of every run, not only of Slack and wakes, goes to the DM. */
     everyAnswer?: () => boolean;
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
@@ -412,7 +417,16 @@ export class SlackBridge {
     // A service from before these fields refuses them (HTTP 400): the old 3000-character text alone still goes out,
     // and the warning says to restart it. 03/11: the check read the message, which never says "HTTP 400", so the Home froze for hours.
     const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
-    this.publishHome(owner, { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}) }, old);
+    const settings = this.settings();
+    this.publishHome(owner, { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}), ...(settings ? { settings } : {}) }, old);
+  }
+
+  /** The Home's menus: model (the account is its provider) and thinking level; each pick comes back as the `modelo`/`thinking` command. */
+  private settings(): { model?: string; models: { value: string; label: string }[]; level?: string; levels?: readonly string[] } | undefined {
+    const refs = this.options.models().map(m => `${m.provider}/${m.id}`).filter(ref => HOME_SETTING_VALUE.test(ref)).slice(0, 100);
+    if (!refs.length) return undefined;
+    const model = this.options.model(), thinking = this.options.thinking?.();
+    return { ...(model && refs.includes(model) ? { model } : {}), models: refs.map(value => ({ value, label: modelName(value).slice(0, 75) })), ...(thinking ? { level: thinking.level, levels: thinking.levels } : {}) };
   }
 
   /** One Home publication at a time: requests that overlap can finish out of order and leave an older view on screen.
@@ -446,14 +460,14 @@ export class SlackBridge {
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
-    const { model, failover, now, models, select, abort, economy } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select, abort, economy };
+    const { model, failover, now, models, select, abort, economy, thinking, setThinking } = this.options;
+    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking };
   }
 
   /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
   private async command({ command, arg }: NonNullable<ReturnType<typeof remoteCommand>>): Promise<void> {
     const result = await command.run(this.commandState(), arg);
-    if (!result.confirm) { await this.send(result.text); this.answered(null); return; }
+    if (!result.confirm) { await this.send(result.text); this.answered(null); this.refreshHome(); return; }
     const { summary, apply } = result.confirm;
     let ran = false;
     const posted = await this.askApproval({
@@ -741,16 +755,20 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   let model: string | undefined;
   const named = (m: { provider: string; id: string } | undefined) => m ? `${m.provider}/${m.id}` : undefined;
   let registry: { getAvailable(): readonly ModelRef[]; find(provider: string, id: string): unknown } | undefined;
+  let selected: Parameters<typeof getSupportedThinkingLevels>[0] | undefined;
   const bridge = new SlackBridge(pi, owner, {
     warn: text => warn(text), sent, model: () => model, abort: () => abort(),
+    thinking: () => selected ? { level: pi.getThinkingLevel(), levels: getSupportedThinkingLevels(selected) } : undefined,
+    // Through Pi, like `/thinking`: it keeps the level within what the model accepts.
+    setThinking: level => { pi.setThinkingLevel(level as never); return pi.getThinkingLevel(); },
     models: () => registry?.getAvailable().map(m => ({ provider: m.provider, id: m.id })) ?? [],
     // Through Pi, like `/model`: pi-multi-account sees an ordinary user switch.
     select: async ({ provider, id }) => { const found = registry?.find(provider, id); return found ? pi.setModel(found as never) : false; },
     ...options,
   });
-  pi.on('session_start', (_event, ctx) => { abort = () => { if (ctx.isIdle()) return false; ctx.abort(); return true; }; warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); registry = ctx.modelRegistry; bridge.start(); });
+  pi.on('session_start', (_event, ctx) => { abort = () => { if (ctx.isIdle()) return false; ctx.abort(); return true; }; warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); selected = ctx.model; registry = ctx.modelRegistry; bridge.start(); });
   // pi-multi-account switches by selecting the other account's model, so this follows its failovers too.
-  pi.on('model_select', event => { model = named(event.model); });
+  pi.on('model_select', event => { model = named(event.model); selected = event.model; });
   pi.on('session_shutdown', () => bridge.stop());
   pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); else bridge.assistantSaid(message); });
   pi.on('agent_start', () => bridge.runStarted(options.deferEnd));

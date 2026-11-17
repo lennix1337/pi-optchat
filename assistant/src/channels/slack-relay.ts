@@ -168,7 +168,11 @@ export const HOME_CHOICE = 'optchat_home_choice';
 /** The Home's text budget, split into Slack sections of at most SECTION_MAX. */
 export const HOME_MAX = 12_000;
 export type HomeChoice = { label: string; options: string[] };
-export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less' };
+/** The Home's menus, each pick queued as the DM command that changes it (`modelo <provider/id>`, `thinking <level>`). */
+export const HOME_SETTINGS: Readonly<Record<string, 'modelo' | 'thinking'>> = { optchat_home_model: 'modelo', optchat_home_thinking: 'thinking' };
+export const SETTING_VALUE = /^[\w./:-]{1,80}$/;
+export type HomeSettings = { model?: string; models: { value: string; label: string }[]; level?: string; levels?: string[] };
+export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings };
 
 /** Whole lines per section; a single line longer than a section is cut at the limit. */
 function sections(text: string): string[] {
@@ -203,7 +207,21 @@ export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
     ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [],
     ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : [],
   ];
-  return [...sections(text).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...choices, { type: 'actions', elements }];
+  return [...sections(text).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...choices, ...settingBlocks(options.settings), { type: 'actions', elements }];
+}
+
+function settingBlocks(settings: HomeSettings | undefined): unknown[] {
+  if (!settings?.models.length) return [];
+  const option = (o: { value: string; label: string }) => ({ text: { type: 'plain_text', text: o.label }, value: o.value });
+  const select = (action_id: string, placeholder: string, options: { value: string; label: string }[], current: string | undefined) => {
+    const initial = options.find(o => o.value === current);
+    return { type: 'static_select', action_id, placeholder: { type: 'plain_text', text: placeholder }, options: options.map(option), ...(initial ? { initial_option: option(initial) } : {}) };
+  };
+  const levels = (settings.levels ?? []).map(l => ({ value: l, label: `Thinking ${l}` }));
+  return [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '*Configura\u00e7\u00f5es* (como /model e /thinking no Pi)' }] },
+    { type: 'actions', elements: [select('optchat_home_model', 'Modelo / conta', settings.models, settings.model), ...levels.length ? [select('optchat_home_thinking', 'Thinking', levels, settings.level)] : []] },
+  ];
 }
 
 function approvalBlocks(text: string): unknown[] {
