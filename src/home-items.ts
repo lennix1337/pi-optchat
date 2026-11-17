@@ -76,7 +76,9 @@ export function headline(text: string, words = 8): string {
   return clip(list.length > words ? `${list.slice(0, words).join(' ').replace(/[,.;:]$/, '')}\u2026` : head.replace(/[,.;:]$/, ''), 80);
 }
 
-const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').pop()}#${p.number} ${headline(p.title)}`)}> \u00b7 checks ${p.checks}`;
+/** A dot the eye finds before the words: red needs him or me, yellow is running, green is done. */
+const CHECK_DOT: Record<PrItem['checks'], string> = { vermelhos: '\ud83d\udd34', pendentes: '\ud83d\udfe1', verdes: '\ud83d\udfe2', 'sem checks': '\u26aa' };
+const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').pop()}#${p.number} ${headline(p.title)}`)}> \u00b7 ${CHECK_DOT[p.checks]} checks ${p.checks}`;
 const commitLine = (c: CommitmentItem) => `\u2022 ${c.url ? `<${c.url}|${escape(headline(c.text))}>` : escape(headline(c.text))} \u00b7 ${c.status}`;
 const jobLine = (j: string) => `\u2022 ${escape(clip(j, 120))}`;
 
@@ -101,9 +103,10 @@ function section(title: string, lines: readonly string[], expanded: boolean): { 
 export function renderWorkParts(work: HomeWork, expanded = false): { text: string; hidden: number } {
   const running = [...work.agents ?? [], ...work.jobs];
   const parts = [
-    ...work.prs.length ? [section(`*PRs abertas* (${work.prs.length})`, work.prs.map(prLine), expanded)] : [],
-    ...work.commitments.length ? [section(`*Compromissos abertos* (${work.commitments.length})`, work.commitments.map(commitLine), expanded)] : [],
-    ...running.length ? [section(`*Rodando agora* (${running.length})`, running.map(jobLine), expanded)] : [],
+    // What is happening now comes first: 17/11 a stuck watcher sat at the bottom, under the PRs, and the Home read as idle.
+    ...running.length ? [section(`\u2699\ufe0f *Rodando agora* (${running.length})`, running.map(jobLine), expanded)] : [],
+    ...work.prs.length ? [section(`\ud83d\udd00 *PRs abertas* (${work.prs.length})`, work.prs.map(prLine), expanded)] : [],
+    ...work.commitments.length ? [section(`\ud83d\udccc *Compromissos abertos* (${work.commitments.length})`, work.commitments.map(commitLine), expanded)] : [],
   ];
   return { text: parts.map(p => p.text).join('\n\n'), hidden: parts.reduce((n, p) => n + p.hidden, 0) };
 }

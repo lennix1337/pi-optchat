@@ -171,12 +171,21 @@ function homeQuota(state: CommandState): string[] {
   for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
   return [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
     ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
-    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label}: ${a.used}% usado, renova ${brasiliaDayTime(a.resetAt!)}`));
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${usageBar(a.used ?? 0)} ${a.used}% \u00b7 renova ${brasiliaDayTime(a.resetAt!)}`));
 }
 
-/** The status block of the App Home: model, account and quota under what the agent is doing. */
-export function homeStatus(state: CommandState): string {
-  return [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`, '*Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
+/** Ten cells of use, so the phone compares accounts at a glance (`▰▰▰▱▱▱▱▱▱▱`). */
+export function usageBar(used: number): string {
+  const full = Math.max(0, Math.min(10, Math.round(used / 10)));
+  return `\`${'\u25b0'.repeat(full)}${'\u25b1'.repeat(10 - full)}\``;
+}
+
+/**
+ * The status block of the App Home: model, account and quota under what the agent is doing. With the Home's model menus
+ * the model line only repeated what the menu right below shows (17/11), so it goes out only without them.
+ */
+export function homeStatus(state: CommandState, menus = false): string {
+  return [...menus ? [] : [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`], '\ud83d\udd0b *Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
 }
 
 export function failoverReader(file: string): () => unknown { return () => readQuotaState(file); }

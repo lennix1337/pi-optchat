@@ -407,7 +407,8 @@ export class SlackBridge {
     const waiting = this.readWaiting(), items = renderWorkParts(work, this.expanded);
     let status = SlackBridge.waitingBlock(waiting) + (items.text ? `\n\n${items.text}` : '');
     try { if (owner) { const today = renderDay(readDay(owner.dir, this.options.now()), this.options.now(), this.options.nextWake()); if (today) status += `\n\n${today}`; } } catch { /* the Home goes out without the day */ }
-    try { status += `\n\n${homeStatus(this.commandState())}`; } catch { /* the activity line still goes out */ }
+    const settings = this.settings();
+    try { status += `\n\n${homeStatus(this.commandState(), !!settings)}`; } catch { /* the activity line still goes out */ }
     // Buttons: Parar only while working; Aprovar decides the newest pending approval post, as a tap on that post would.
     const approval = [...this.approvals].filter(([, p]) => p.request.expires > this.options.now()).at(-1)?.[0];
     if (!owner) return;
@@ -417,7 +418,6 @@ export class SlackBridge {
     // A service from before these fields refuses them (HTTP 400): the old 3000-character text alone still goes out,
     // and the warning says to restart it. 03/11: the check read the message, which never says "HTTP 400", so the Home froze for hours.
     const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
-    const settings = this.settings();
     this.publishHome(owner, { text: full, working: !!this.work, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}), ...(settings ? { settings } : {}) }, old);
   }
 

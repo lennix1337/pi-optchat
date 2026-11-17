@@ -52,7 +52,7 @@ test('status and modelo name the selected model, i.e. the account, and the last 
   assert.match(text, /última troca: anthropic-account-2\/claude-sonnet-5-5/);
   assert.match((await run('modelo', state({ model: () => undefined }))).text, /nenhum selecionado/);
   assert.equal(REMOTE_COMMANDS.filter(c => remoteCommand(c.name)?.command === c).length, REMOTE_COMMANDS.length);
-  assert.match(homeStatus(state()), /42% usado/);
+  assert.match(homeStatus(state()), /42% ·/);
   assert.match((await run('modelos')).text, /\*openai-codex\*: gpt-6\.1-sol/);
 });
 
@@ -124,8 +124,9 @@ test('a command DM is answered by the bridge without reaching the agent; other D
     f.bridge.sawUserMessage('[Slack] cota da openai acabou?');
     const home = f.posts.findLast(p => p.path === '/v1/slack/home')!;
     assert.match(home.body.text, /Trabalhando/);
-    assert.match(home.body.text, /Modelo:\* Sonnet 5\.5 · conta 2/);
-    assert.match(home.body.text, /42% usado/);
+    assert.equal(home.body.settings.model, 'anthropic-account-2/claude-sonnet-5-5', 'the model shows in the menu, not repeated as a line');
+    assert.doesNotMatch(home.body.text, /Modelo:\*/);
+    assert.match(home.body.text, /42% ·/);
   } finally { f.close(); }
 });
 
@@ -175,7 +176,8 @@ test('homeStatus: the model as he names it, spent families on one line, unmeasur
   } };
   const text = homeStatus(state({ model: () => 'anthropic-account-2/claude-opus-5-5', failover: () => failover }));
   assert.match(text, /\*Modelo:\* Opus 5\.5 · conta 2\n/);
-  assert.match(text, /• Claude conta 2: 56% usado/);
+  assert.match(text, /• Claude conta 2 `▰▰▰▰▰▰▱▱▱▱` 56% · renova /);
+  assert.doesNotMatch(homeStatus(state({ failover: () => failover }), true), /\*Modelo:\*/, 'the Home menus already show the model');
   assert.match(text, /• Codex \*esgotado\* até 01\/11 17:00/);
   assert.doesNotMatch(text, /sem medição|openai-codex|anthropic/);
   assert.match(homeStatus(state({ model: () => 'openai-codex-account-2/gpt-6.1-sol' })), /gpt-6\.1-sol · Codex conta 2/);

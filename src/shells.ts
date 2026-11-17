@@ -324,16 +324,29 @@ function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, c
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(id, alert) });
     return runShell(id, cwd, args, abort, update, watch);
   }, { notify, alert: args.alert, agent, label: args.label });
+  labelled(jobs, id, args.label);
   return id;
+}
+
+/**
+ * Sets the label on the job record itself. A /reload hands the running ShellJobs over (adoptShells), so its start() is the
+ * code of the OptChat that created it: 17/11 a labelled watcher showed on the Home as id and command, because that
+ * inventory came from before labels.
+ */
+function labelled(jobs: ShellJobs, id: string, label: string | undefined): void {
+  const job = label ? jobs.find(id) : undefined;
+  if (job && !job.label) job.label = label;
 }
 
 /** Follows a durable shell as a managed background job under its own id: its end and alerts reach the agent as any shell's. */
 function followShell(jobs: ShellJobs, settings: ShellSettings, root: string, record: DurableRecord): string {
   const pattern = record.alert === undefined ? undefined : alertPattern(record.alert);
-  return jobs.start(record.command, record.cwd, (abort, update) => {
+  const id: string = jobs.start(record.command, record.cwd, (abort, update) => {
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(record.id, alert) });
     return followDurable(root, record, abort, update, { feed: watch ? chunk => watch.feed(chunk) : undefined }).finally(() => watch?.end());
   }, { notify: record.notify, alert: record.alert, id: record.id, started: record.started, label: record.label });
+  labelled(jobs, id, record.label);
+  return id;
 }
 /** On profile open: follows again the durable shells a crash, restart or quit left without a reported end. A /reload's are already followed. */
 export function resumeDurableShells(jobs: ShellJobs, settings: ShellSettings): string[] {

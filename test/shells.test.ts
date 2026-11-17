@@ -305,6 +305,16 @@ test('shell_start keeps a label, and people see it instead of the command (Home 
   await jobs.close();
 });
 
+test('a label survives a ShellJobs handed over by a /reload from before labels (17/11: the Home showed id and command)', async () => {
+  // An inventory adopted across /reload keeps the old start(), which dropped the label option.
+  class OldJobs extends ShellJobs { override start(command: string, cwd: string, run: any, options: any = {}) { const { label: _drop, ...rest } = options; return super.start(command, cwd, run, rest); } }
+  const jobs = new OldJobs(), tools = new Map<string, any>();
+  registerShells(fakePi(tools), jobs, () => {}, {});
+  await tools.get('shell_start').execute('a', { command: 'node -e "setTimeout(()=>{},300)"', label: 'GX18MCP release patch 4.7.1' }, undefined, undefined, { cwd: '.' });
+  assert.equal(shellTitle(jobs.list()[0]!), 'GX18MCP release patch 4.7.1');
+  await jobs.close();
+});
+
 test('output alerts see every line exactly once, whatever the chunk boundaries, with CRLF, UTF-8 and case-insensitive matches', () => {
   const lines = Array.from({ length: 4_000 }, (_, i) => i % 9 === 0 ? `café ✓ MATCH ${i + 1} ção 🚀${i % 18 === 0 ? '\r' : ''}` : `plain ${i + 1} naïve${i % 5 === 0 ? '\r' : ''}`);
   const bytes = Buffer.from(lines.join('\n') + '\n', 'utf8');
