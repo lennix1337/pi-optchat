@@ -1,4 +1,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { commandWords, segments } from './effect-classifier.ts';
 
 /**
@@ -9,8 +12,11 @@ import { commandWords, segments } from './effect-classifier.ts';
  * once saw merges land over red CI). `--admin`, which skips the checks, is an effect the approval gate reserves for him.
  *
  * One exception: a failing check whose Actions job never ran a step (GitHub refused to start it: billing or spending
- * limit) tested nothing and does not block.
+ * limit) tested nothing, so it does not block once the repository's own verification passed on that exact head:
+ * `scripts/local-verify.mjs` leaves a receipt named after the commit in the local-verify folder.
  */
+export const localVerifyDir = () => process.env.PI_LOCAL_VERIFY_DIR ?? join(homedir(), '.pi', 'agent', 'local-verify');
+const locallyVerified = (sha?: string) => !!sha && /^[0-9a-f]{40}$/.test(sha) && existsSync(join(localVerifyDir(), `${sha}.json`));
 const unquote = (word: string) => word.replace(/^(['"])([^]*)\1$/, '$2');
 export type Exec = (command: string, args: string[], options: { cwd: string; timeout: number }) => Promise<{ code: number; stdout: string; stderr: string; killed?: boolean }>;
 
@@ -72,7 +78,9 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
       else {
         const view = JSON.parse(out.stdout) as Rollup;
         problem = ciProblem(view, merge.auto);
-        if (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir)) problem = undefined;
+        if (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir)) {
+          problem = locallyVerified(view.headRefOid) ? undefined : `its CI never started (billing) and no local verification receipt exists for head ${view.headRefOid?.slice(0, 8) ?? '?'}: check out that head and run \`node ~/projetos/pi-optchat/scripts/local-verify.mjs <repo-dir>\`, then merge`;
+        }
         else if (problem?.startsWith('failing checks') && (view.statusCheckRollup ?? []).some(c => c.status && c.status !== 'COMPLETED')) problem += ' (another check is still running: a billing-refused job is only waved through once every check has finished, so retry the same merge in a few seconds; never `--admin`)';
       }
     } catch (error) { problem = `could not read its checks (${error instanceof Error ? error.message.slice(0, 160) : 'gh failed'})`; }

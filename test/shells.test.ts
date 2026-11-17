@@ -593,3 +593,15 @@ test('shell_status and shell_stop accept the short id that notices and summaries
   await tools.get('shell_stop').execute('s', { id: id.slice(0, 8) });
   await jobs.close();
 });
+
+test('an exit 0 that a trailing reader produced is flagged unless the output echoes the work\'s own exit code', () => {
+  const job: ShellJob = { id: 'sh-2', command: 'timeout 1500 ssh pc "dotnet test" > /tmp/t.log 2>&1; tail -20 /tmp/t.log', cwd: '.', mode: 'background',
+    state: 'completed', started: Date.now() - 1_000, ended: Date.now(), output: 'FINDSTR: Cannot open echo', exitCode: 0, notify: 'end' };
+  assert.match(shellReport(job), /Exit 0 is `tail`'s, the last command's: .*not proven/);
+  assert.match(shellReport({ ...job, command: 'git push origin x 2>&1 | tail -3' }), /Exit 0 is `tail`'s/, 'a pipe into tail');
+  assert.match(shellReport({ ...job, command: 'release.ps1 > log; type C:\\tmp\\log', output: '' }), /Exit 0 is `type`'s/);
+  assert.doesNotMatch(shellReport({ ...job, output: 'Passed!\nrc=0' }), /not proven/, 'an echoed rc proves it');
+  assert.doesNotMatch(shellReport({ ...job, command: 'npm test' }), /not proven/, 'the work itself ends the line');
+  assert.doesNotMatch(shellReport({ ...job, exitCode: 1 }), /not proven/, 'a failure needs no warning');
+  assert.match(shellReport({ ...job, output: 'commit_rc=1' }), /Inner exit codes: commit_rc=1/, 'an echoed failure keeps its own line');
+});
