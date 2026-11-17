@@ -7,6 +7,7 @@ import { Type } from 'typebox';
 import type { ShellNotify } from './settings.ts';
 import { OutputAlerts, SHOWN_MATCHES, alertLabel, alertPattern, type ShellAlert } from './shell-alerts.ts';
 import { stringEnum } from './string-enum.ts';
+import { commandWords, segments } from './effect-classifier.ts';
 import { textContent } from './transcript.ts';
 import { followDurable, launchDurable, pendingDurable, type DurableRecord } from './durable-shells.ts';
 
@@ -46,6 +47,19 @@ export const plainText = (text: string) => text.replace(TERMINAL_ESCAPES, '');
 /** `build_exit=1`, `rc=2`, or `rc: 3` as ship.mjs prints it: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
 export function innerExitFailures(output: string): string[] {
   return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))(?:=|:[ \t]*)([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
+}
+/** Commands that only print what something else produced: when one ends the command line, its exit code says nothing about the work. */
+const READERS = /^(?:tail|head|cat|echo|printf|grep|egrep|type|findstr|more|less|sed|awk|get-content|gc|select-string|write-output|write-host|true|ls|dir|fi|done)$/i;
+/**
+ * A background shell's `exit 0` that belongs to a reader at the end of the line (`work > log; tail log`, `work | tail`),
+ * when the output echoes no exit code of its own (`rc=0`, `build_exit=0`): the work's success is then unproven.
+ */
+export function readerExitNote(command: string, output: string, exitCode: number | undefined): string | undefined {
+  if (exitCode !== 0 || /^\s*[\w.-]*(?:exit|rc)(?:=|:[ \t]*)\d+\s*$/im.test(output)) return undefined;
+  const last = segments(command, '').at(-1);
+  const head = last ? commandWords(last.command)[0]?.replace(/^['"]|['"]$/g, '').split(/[/\\]/).at(-1)?.replace(/\.exe$/i, '') : undefined;
+  if (!head || !READERS.test(head)) return undefined;
+  return `Exit 0 is \`${head}\`'s, the last command's: nothing in the output shows the work's own exit code, so its success is not proven. Read the log or echo \`rc=$?\` right after the work.`;
 }
 const field = (value: unknown, key: string): unknown => typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 /** Session-local execution inventory. Only explicitly managed jobs can be stopped individually. */
@@ -198,7 +212,8 @@ export function shellReport(job: ShellJob): string {
   const output = tail.trim() ? `Last output${omitted > 0 ? ` (${omitted} earlier lines not shown)` : ''}:\n${tail}` : 'Output: (no output)';
   const closing = job.state === 'stopped' ? 'It was stopped and will not run again.' : 'It has finished.';
   const inner = innerExitFailures(job.output);
-  const innerLine = inner.length ? [`Inner exit codes: ${inner.join(', ')} (the shell itself exited ${job.exitCode ?? 'normally'})`] : [];
+  const reader = inner.length ? undefined : readerExitNote(job.command, job.output, job.exitCode);
+  const innerLine = inner.length ? [`Inner exit codes: ${inner.join(', ')} (the shell itself exited ${job.exitCode ?? 'normally'})`] : reader ? [reader] : [];
   const alertLine = job.alert === undefined ? [] : [`Alert ${alertLabel(job.alert)}: ${job.matches ?? 0} ${job.matches === 1 ? 'match' : 'matches'} in total.`];
   return [`[shell ${job.id}] ${outcome}`, `Command: ${shortCommand}`, ...innerLine, ...alertLine, output,
     `Full output: ${job.log ?? `not kept; shell_status shows the last ${outputLimit / 1000} KB`}`,

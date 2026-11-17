@@ -342,7 +342,34 @@ function* toolEffects(w: string[], lower: string, dir: string, repo: AsyncRepo):
   return deleted ? [{ action: 'recursive-delete', targets: deleted.length ? deleted : [dir] }] : [];
 }
 
-/** The effects of one command segment, recursing into `pwsh -Command "..."`, `bash -c "..."`. */
+const SSH_VALUED = /^-[ipoFJLRDElbcmSWweOQB]$/;
+/**
+ * The command another program runs for this one: the remote command of `ssh host "..."`, the `/tr` of
+ * `schtasks /create`, and what `cmd /c` or `conhost --headless` start. A deploy handed to the PC through any of them is
+ * still a deploy. Undefined when the segment relays nothing.
+ */
+function relayedCommand(w: string[], lower: string): string | undefined {
+  // Inside double quotes bash keeps `\"`, `\\`, `\$` escaped: the program that receives the body sees them plain.
+  const body = (word: string) => /^".*"$/s.test(word) ? word.slice(1, -1).replace(/\\(["\\$`])/g, '$1') : unquote(word);
+  const rest = (from: number) => from < w.length ? w.slice(from).map(body).join(' ') : undefined;
+  if (lower === 'ssh') {
+    let at = 1;
+    while (at < w.length && w[at].startsWith('-')) at += SSH_VALUED.test(w[at]) ? 2 : 1;
+    return rest(at + 1);
+  }
+  if (lower === 'schtasks') {
+    const tr = w.findIndex(arg => /^\/tr$/i.test(arg));
+    return tr >= 0 && w[tr + 1] !== undefined ? body(w[tr + 1]) : undefined;
+  }
+  if (lower === 'cmd') {
+    const c = w.findIndex(arg => /^\/[ck]$/i.test(arg));
+    return c >= 0 ? rest(c + 1) : undefined;
+  }
+  if (lower === 'conhost') return rest(w.slice(1).findIndex(arg => !arg.startsWith('-')) + 1 || w.length);
+  return undefined;
+}
+
+/** The effects of one command segment, recursing into `pwsh -Command "..."`, `bash -c "..."`, ssh and scheduled tasks. */
 function* segmentEffects(command: string, dir: string, repo: AsyncRepo, depth: number): Evaluation<Effect[]> {
   const w = commandWords(command);
   if (!w.length) return [];
@@ -351,6 +378,13 @@ function* segmentEffects(command: string, dir: string, repo: AsyncRepo, depth: n
   if (page.length) return page;
   const head = unquote(w[0]).replace(/^&$/, '').replace(/\.exe$/i, '');
   const lower = head.toLowerCase().split(/[/\\]/).at(-1)!;
+  const relayed = relayedCommand(w, lower);
+  if (relayed !== undefined) {
+    if (depth >= 6) return [];
+    const effects: Effect[] = [];
+    for (const segment of segments(relayed, dir)) effects.push(...yield* segmentEffects(segment.command, segment.dir, repo, depth + 1));
+    return effects;
+  }
   if (interpreters.test(lower)) return yield* interpreterEffects(w, lower, dir, repo, depth);
   if (lower === 'npx' && /^(?:tsx|ts-node)$/.test(unquote(w[1] ?? ''))) {
     const script = w.slice(2).find(arg => !arg.startsWith('-'));

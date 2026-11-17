@@ -288,8 +288,12 @@ test('a merge the guard cannot check before it runs is refused with the way thro
   assert.doesNotMatch(created!, /Wait for the checks/);
 });
 
-test('a red check whose Actions job never ran a step (GitHub refused to start it: billing) does not block a merge; a job that ran steps does', async () => {
+test('a red check whose Actions job never ran a step (GitHub refused to start it: billing) does not block a merge once the head passed local verification; a job that ran steps does', async t => {
   const sha = '6b02a198341438d5e800cbfdcce9de7874e47d0d';
+  const receipts = mkdtempSync(join(tmpdir(), 'local-verify-'));
+  const previous = process.env.PI_LOCAL_VERIFY_DIR;
+  process.env.PI_LOCAL_VERIFY_DIR = receipts;
+  t.after(() => { rmSync(receipts, { recursive: true, force: true }); if (previous === undefined) delete process.env.PI_LOCAL_VERIFY_DIR; else process.env.PI_LOCAL_VERIFY_DIR = previous; });
   const neverRan = { statusCheckRollup: [
     { name: 'changes', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/lennix1337/dotfiles/actions/runs/1/job/11' },
     { name: 'instruction-guard', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/lennix1337/dotfiles/actions/runs/1/job/12' },
@@ -297,7 +301,9 @@ test('a red check whose Actions job never ran a step (GitHub refused to start it
   const gh = (view: object, steps: Record<string, string>): Exec => async (_c, args) =>
     args[0] === 'api' ? { code: 0, stdout: steps[args[1]!] ?? '', stderr: '' } : { code: 0, stdout: JSON.stringify(view), stderr: '' };
   const zero = { 'repos/lennix1337/dotfiles/actions/jobs/11': '0', 'repos/lennix1337/dotfiles/actions/jobs/12': '0' };
-  assert.equal(await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero)), undefined, 'no step ran in any red job: nothing failed');
+  assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero)))!, /never started \(billing\) and no local verification receipt exists for head 6b02a198.*local-verify\.mjs/, 'CI that never ran tested nothing: the local verification must stand in');
+  writeFileSync(join(receipts, `${sha}.json`), '{}');
+  assert.equal(await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero)), undefined, 'no step ran in any red job and the head passed local verification');
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, { ...zero, 'repos/lennix1337/dotfiles/actions/jobs/12': '4' })))!, /failing checks/, 'a job that ran steps failed for real');
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, {})))!, /failing checks/, 'steps that cannot be read are not proof');
   const legacy = { ...neverRan, statusCheckRollup: [{ context: 'ci/legacy', state: 'FAILURE' }] };
