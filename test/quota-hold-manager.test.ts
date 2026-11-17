@@ -92,7 +92,7 @@ for (const recovery of ['its quota returns at the time it was told', 'the operat
     assert.deepEqual(errors, []);
     const outageNotices = notices.filter(text => /cota esgotada/.test(text));
     assert.equal(outageNotices.length, 1, `one notice: ${JSON.stringify(notices)}`);
-    assert.match(outageNotices[0], /^cota esgotada em todas as contas; volto às \d\d:\d\d \(Brasília\)$/);
+    assert.match(outageNotices[0], /^cota esgotada em todas as contas; volto às (\d\d\/\d\d )?\d\d:\d\d \(Brasília\)$/);
 
     // The failover tried another account meanwhile and got a 16-hour limit: it says nothing about the main agent's account.
     const failed: AssistantMessage = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'You have hit your ChatGPT usage limit (team plan). Try again in ~998 min.',
