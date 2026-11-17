@@ -131,6 +131,22 @@ test('a run without a Slack message posts nothing; an empty run still answers th
   } finally { f.close(); }
 });
 
+test('with every answer on, a run from anywhere but Slack or WhatsApp sends its answer or its error to the DM', async () => {
+  const f = fixture([], { everyAnswer: () => true });
+  const texts = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string; threadTs: null });
+  try {
+    f.bridge.sawUserMessage('[gitwatch] lennix1337/pi-optchat #56 MERGED');
+    await f.bridge.runEnded(replies('O #56 entrou.'));
+    assert.deepEqual(texts(), [{ text: 'O #56 entrou.', threadTs: null }]);
+    f.bridge.sawUserMessage('[WhatsApp] teste');
+    await f.bridge.runEnded(replies('Chegou.'));
+    assert.equal(texts().length, 1, 'the WhatsApp bridge answers its own run');
+    f.bridge.sawUserMessage('[shell 1234] exit 1');
+    await f.bridge.runEnded([{ role: 'assistant', content: [], stopReason: 'error', errorMessage: '429 rate limited' } as unknown as AgentMessage]);
+    assert.match(texts().at(-1)!.text, /429 rate limited/);
+  } finally { f.close(); }
+});
+
 /** An assistant message with these tool calls, then the final answer. */
 const calling = (calls: [string, unknown][], answer: string) => [
   { role: 'assistant', content: calls.map(([name, args], i) => ({ type: 'toolCall', id: `c${i}`, name, arguments: args })) },

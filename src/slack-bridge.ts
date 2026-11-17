@@ -35,6 +35,7 @@ export const SLACK_PREFIX = '[Slack] ';
 /** `[Slack] ` for the DM, `[Slack #dentai] ` for a project channel. */
 const slackPrefix = (channel: string | null) => channel ? `[Slack #${channel}] ` : SLACK_PREFIX;
 export const FROM_SLACK = /^\[Slack(?: #([a-z0-9][a-z0-9_-]{0,79}))?\] /;
+const FROM_WHATSAPP = /^\[WhatsApp\] /;
 export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
 type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[] };
@@ -147,6 +148,12 @@ export function finalText(messages: readonly AgentMessage[]): string {
   return last ? textContent(last.content, false).trim() : '';
 }
 
+/** Why a run ended without an answer: its last assistant message's error (quota, network, abort), if any. */
+function failure(messages: readonly AgentMessage[]): string {
+  const last = [...messages].reverse().find(m => m.role === 'assistant') as { stopReason?: string; errorMessage?: string } | undefined;
+  return last && (last.stopReason === 'error' || last.stopReason === 'aborted') ? `⚠️ A execução parou sem resposta (${last.stopReason}): ${last.errorMessage ?? 'sem detalhes'}` : '';
+}
+
 export class SlackBridge {
   private generation = 0;
   /** The inbox read in flight, cancelled by stop(). */
@@ -157,6 +164,8 @@ export class SlackBridge {
   /** The last Home failure said, so a service that keeps refusing is reported once, not at every run end. */
   private homeFailure: string | undefined;
   private homeInflight = false;
+  /** A `[WhatsApp]` message entered the current run: its answer goes back there, not to Slack. */
+  private whatsapp = false;
   private homeNext: { owner: NonNullable<ReturnType<SlackBridge['owner']>>; body: object; old: object } | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
@@ -187,6 +196,8 @@ export class SlackBridge {
     models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean>;
     /** The quota economy (US$ per 1%) the `cota` command adds to each account, when there is one. */
     economy?: () => Economy | undefined;
+    /** On (setting `slackEveryAnswer`, for a Pi nobody watches at a terminal): the final answer of every run, not only of Slack and wakes, goes to the DM. */
+    everyAnswer?: () => boolean;
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
     abort: () => boolean;
     /** When the heartbeat next checks for a wake, if armed. */
@@ -468,6 +479,7 @@ export class SlackBridge {
       this.showWork();
     }
     if (wake) { this.waking = true; return; }
+    if (FROM_WHATSAPP.test(text)) this.whatsapp = true;
     if (!match) {
       // Another message (a gitwatch notice, a wake) steering this run would otherwise replace the answer the operator is waiting for.
       if (this.answering && this.replied && this.replied !== this.delivered) { this.delivered = this.replied; void this.answer(this.answering, this.replied, false); }
@@ -519,8 +531,8 @@ export class SlackBridge {
 
   /** `quiet`: a wake that delivered nothing (heartbeat-report silentWake): its effects reach the wake log, its text reaches nobody; an `unverified` warning still does. */
   async runEnded(messages: readonly AgentMessage[], unverified?: string, quiet = false): Promise<void> {
-    const answering = this.answering, waking = this.waking, delivered = this.delivered;
-    this.answering = undefined; this.waking = false; this.replied = ''; this.delivered = '';
+    const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp;
+    this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
     const steps = this.work?.steps ?? 0, work = this.work, owner = this.owner();
     this.work = undefined;
@@ -532,10 +544,16 @@ export class SlackBridge {
     if (answering) {
       // After progress in the thread, the answer closes it and also shows in the conversation.
       if (last && last === delivered) return;
-      await this.answer(answering, last || EMPTY_RUN, true);
+      await this.answer(answering, last || failure(messages) || EMPTY_RUN, true);
       return;
     }
-    if (!waking) return;
+    if (!waking) {
+      // The WhatsApp bridge answers a run its message started.
+      const text = whatsapp || !this.options.everyAnswer?.() ? '' : last || failure(messages);
+      if (text) try { await this.publish(text, null, null); this.answered(null); }
+      catch (error) { this.options.warn(`Answer not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
+      return;
+    }
     const text = last;
     // Every wake, idle ones too, goes to the #wakes log; a service without that channel keeps the per-repo report.
     try { await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), null, WAKE_LOG_CHANNEL); return; }
@@ -717,7 +735,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;

@@ -213,6 +213,8 @@ function record(i: number, now: number, extra: Partial<UsageEntry> = {}): UsageE
   return { id: `r${i}`, date: new Date(now - i * 600_000).toISOString(), role: i % 3 ? 'main' : 'compactor', provider: i % 2 ? 'anthropic' : undefined,
     model: `m${i % 4}`, session: i % 5 ? 's1' : 's2', usage, ...(i % 4 ? { latency: { firstMs: 100 * i, responseMs: 200 * i } } : {}), ...(i % 7 ? {} : { failed: true }), ...extra };
 }
+/** 40 records 10 minutes apart all fall on the same local day, whatever the hour the suite runs. */
+const middayYesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); d.setHours(12, 0, 0, 0); return d.getTime(); };
 const writeLedger = (dir: string, lines: unknown[]) => writeFileSync(join(dir, 'usage.jsonl'), lines.map(l => JSON.stringify(l) + '\n').join(''));
 /** The index's SQL totals must equal summing the same records in JavaScript, for every range. */
 function assertSummariesMatch(ledger: UsageLedger, session: string, now: number) {
@@ -323,7 +325,7 @@ test('add rejects a record that a reload would reject, so totals match after a r
 
 test('summaries that miss the cache reuse one warm index connection and read no ledger bytes while it is unchanged', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-warm-'));
-  const now = Date.now();
+  const now = middayYesterday();
   let ledger: UsageLedger | undefined;
   try {
     writeLedger(dir, Array.from({ length: 40 }, (_, i) => record(i + 1, now - 10_000)));
@@ -341,7 +343,7 @@ test('summaries that miss the cache reuse one warm index connection and read no 
 
 test('repeated summary calls on an unchanged ledger read 0 bytes and invalidate on append or boundary crossing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-usage-cache-'));
-  const now = Date.now();
+  const now = middayYesterday();
   try {
     writeLedger(dir, Array.from({ length: 40 }, (_, i) => record(i + 1, now - 10_000)));
     const ledger = new UsageLedger(dir);
