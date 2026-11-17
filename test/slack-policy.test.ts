@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { DEFAULT_WORD_BUDGET, fitPost, words, wordBudget } from '../src/slack-policy.ts';
 
-const POINTER_WORDS = 5;
+const POINTER_WORDS = 4;
 const sentence = (n: number, tag: string) => Array.from({ length: n }, (_, i) => i === 0 ? tag : 'palavra').join(' ') + '.';
 
 test('the DM and project channels share a 100-word default; a channel override wins', () => {
@@ -24,14 +24,15 @@ test('a post within the budget goes out whole, with no thread reply', () => {
   assert.deepEqual(fitPost('Feito.', 100), { head: 'Feito.' });
 });
 
-test('a post over the budget: a head within the budget, a pointer, and the full text kept for the thread', () => {
+test('a post over the budget: a head within the budget, a pointer, and only the rest for the thread, so nothing is said twice', () => {
   const paragraphs = [sentence(40, 'primeiro'), sentence(40, 'segundo'), sentence(40, 'terceiro')];
   const text = paragraphs.join('\n\n');
   const fitted = fitPost(text, 100);
-  assert.equal(fitted.full, text, 'nothing is dropped: the thread gets the whole text');
+  assert.equal(fitted.rest, paragraphs[2], 'the thread continues where the head stopped');
+  assert.ok(!fitted.rest!.includes('primeiro'), 'the head is not repeated in the thread');
   assert.ok(words(fitted.head) <= 100, `head has ${words(fitted.head)} words`);
   assert.ok(fitted.head.startsWith(paragraphs[0]!), 'the head starts with the first paragraph');
-  assert.ok(fitted.head.includes('texto completo na thread'), 'the pointer says where the rest is');
+  assert.ok(fitted.head.includes('continua na thread'), 'the pointer says where the rest is');
   assert.ok(!fitted.head.includes('terceiro'), 'a paragraph that does not fit is not cut into the head mid-way');
 });
 
@@ -47,8 +48,9 @@ test('a single paragraph over budget is cut at a sentence boundary, not mid-sent
 
 test('a sentence longer than the room is cut at a word, so the head still says something', () => {
   const text = Array.from({ length: 300 }, (_, i) => `w${i}`).join(' ');
-  const { head, full } = fitPost(text, 100);
-  assert.equal(full, text);
+  const { head, rest } = fitPost(text, 100);
+  const shown = words(head.split('\n\n_')[0]!);
+  assert.equal(rest, Array.from({ length: 300 - shown }, (_, i) => `w${i + shown}`).join(' '), 'the thread picks up at the next word');
   assert.ok(words(head) <= 100 && words(head) > 90, `head has ${words(head)} words`);
   assert.ok(head.startsWith('w0 w1 w2'));
 });
@@ -60,9 +62,9 @@ test('a cut never leaves a code fence open in the head', () => {
   assert.ok(head.startsWith('Veja o diff:'));
 });
 
-test('a budget smaller than the pointer still posts a head (the pointer) and keeps the full text', () => {
+test('a budget smaller than the pointer still posts a head (the pointer) and the whole text goes to the thread', () => {
   const text = 'uma frase qualquer com algumas palavras';
   const fitted = fitPost(text, 2);
-  assert.equal(fitted.full, text);
+  assert.equal(fitted.rest, text);
   assert.ok(words(fitted.head) <= Math.max(2, POINTER_WORDS));
 });

@@ -659,8 +659,9 @@ export class SlackBridge {
   async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; thread: string }> {
     const owner = this.owner();
     if (!topic || !owner) {
+      // A progress post in the thread of his message stays in that thread: only the final answer also shows in the conversation, so he never reads it twice.
       const thread = this.progressThread(channel);
-      const sent = await this.publish(text, thread, channel, this.answering?.channel === channel ? options : {});
+      const sent = await this.publish(text, thread, channel, this.answering?.channel === channel && !thread ? options : {});
       return { ...sent, thread: thread ?? sent.ts };
     }
     const file = join(owner.dir, TOPICS), now = this.options.now();
@@ -708,12 +709,12 @@ export class SlackBridge {
 
   /**
    * A post the agent wants to make (a final answer, a wake report, slack_send): within its channel's word budget it is one
-   * post; over it, the short head goes first and the full text follows as a reply in the same thread (or under the head).
+   * post; over it, the short head goes first and the rest follows as a reply in the same thread (or under the head).
    */
   private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
-    const { head, full } = fitPost(text, wordBudget(channel, this.options.wordBudgets));
+    const { head, rest } = fitPost(text, wordBudget(channel, this.options.wordBudgets));
     const sent = await this.send(head, threadTs, channel, options);
-    if (full !== undefined) await this.send(full, threadTs ?? sent.ts, channel);
+    if (rest) await this.send(rest, threadTs ?? sent.ts, channel);
     return sent;
   }
 
@@ -776,7 +777,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('agent_end', event => { if (!options.deferEnd) return bridge.runEnded(event.messages); });
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles), or `dm` for the DM. Omitted, it goes to the project of the topic, else of the repos this run touched, else the DM; during a run started by his DM it answers there. Pass `dm` for general matters, urgent blockers and decisions. A post under a known topic replies in its thread and also shows in the conversation. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and its full text follows in the thread.",
+    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles), or `dm` for the DM. Omitted, it goes to the project of the topic, else of the repos this run touched, else the DM; during a run started by his DM it answers there. Pass `dm` for general matters, urgent blockers and decisions. A post under a known topic replies in its thread and also shows in the conversation. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and the rest follows in the thread.",
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #, or dm; omit to follow the work.' })),
