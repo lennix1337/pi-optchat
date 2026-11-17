@@ -925,7 +925,7 @@ test('App Home shows the work as items: open PRs and commitments with links, run
     await f.bridge.runEnded(replies('CI verde.'));
     const text = homeBodies(f).at(-1)!.text;
     assert.match(text, /\*PRs abertas\* \(1\)/);
-    assert.match(text, /<https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|pi-optchat#13 Assistente> \u00b7 checks verdes/);
+    assert.match(text, /<https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|pi-optchat#13 Assistente> \u00b7 \ud83d\udfe2 checks verdes/);
     assert.match(text, /\*Compromissos abertos\* \(1\)\n\u2022 <https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|Revisar o #13> \u00b7 em aberto/);
     assert.match(text, /\*Rodando agora\* \(1\)\n\u2022 bash-3 \u00b7 npm test/);
     assert.deepEqual([...new Set(f.requests.map(r => r.path))], ['/v1/slack/home'], 'reads only; nothing is sent to Slack for the items');

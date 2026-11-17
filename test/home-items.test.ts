@@ -59,7 +59,8 @@ const pr = (n: number, title = 'um PR') => ({ repo: 'lennix1337/pi-optchat', num
 test('renderWork: sections of open PRs (linked), commitments and running jobs; empty sections are not shown', () => {
   const text = renderWork(work({ prs: [pr(13, 'Assistente pessoal')], commitments: [{ text: 'Revisar', status: 'em aberto' }], jobs: ['bash-3 · npm test'] }));
   assert.match(text, /\*PRs abertas\* \(1\)/);
-  assert.match(text, /• <https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|pi-optchat#13 Assistente pessoal> · checks verdes/);
+  assert.match(text, /• <https:\/\/github\.com\/lennix1337\/pi-optchat\/pull\/13\|pi-optchat#13 Assistente pessoal> · 🟢 checks verdes/);
+  assert.ok(text.indexOf('Rodando agora') < text.indexOf('PRs abertas'), 'what runs now comes first');
   assert.match(text, /\*Compromissos abertos\* \(1\)\n• Revisar · em aberto/);
   assert.match(text, /\*Rodando agora\* \(1\)\n• bash-3 · npm test/);
   assert.equal(renderWork(work()), '', 'nothing open: nothing shown');
