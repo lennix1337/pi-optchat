@@ -12,6 +12,8 @@ import { followDurable, launchDurable, pendingDurable, type DurableRecord } from
 
 export interface ShellJob {
   id: string; command: string; cwd: string; mode: 'foreground' | 'background';
+  /** What the shell is for, in a few words ("agy: #1040 memória do gateway"): the Home and shell lists show it instead of the command. */
+  label?: string;
   state: 'running' | 'stopping' | 'completed' | 'failed' | 'stopped';
   started: number; ended?: number; output: string; owner?: string;
   /** The subagent that started it with its own shell_start: its end and alerts go into that agent's session, not the main agent's. */
@@ -36,7 +38,7 @@ export interface ShellReporter {
   /** Sends what is still waiting to go out together; called when another reporter replaces this one. */
   flush?(): void;
 }
-export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string; /** A durable shell's own id and start, when OptChat follows it again. */ id?: string; started?: number }
+export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string; label?: string; /** A durable shell's own id and start, when OptChat follows it again. */ id?: string; started?: number }
 const outputLimit = 32_000;
 /** CSI, OSC (hyperlinks, titles), charset designations (`tput sgr0` prints ESC ( B) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
 const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()*+][ -~]|\u001b[@-_]/g;
@@ -73,7 +75,7 @@ export class ShellJobs {
   setLifecycleObserver(observer: { began(job: ShellJob): void; ended(job: ShellJob): void } | undefined) { this.lifecycle = observer; }
   private changed() { for (const listener of this.listeners) listener(); }
   begin(id: string, command: string, cwd: string, mode: ShellJob['mode'], owner = 'main', options: ShellOptions = {}) {
-    this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: options.started ?? Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert, ...options.agent === undefined ? {} : { agent: options.agent } });
+    this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: options.started ?? Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert, ...options.label ? { label: options.label } : {}, ...options.agent === undefined ? {} : { agent: options.agent } });
     this.changed();
     try { this.lifecycle?.began(this.jobs.get(id)!); } catch { /* an observer never owns the job */ }
   }
@@ -180,6 +182,8 @@ const REPORT_LINES = 30, REPORT_CHARS = 3_000, REPORT_COMMAND_CHARS = 300;
 /** Whether a shell that ended in `state` is reported under its notify mode: every end, failures only (failed or timed out), or never. */
 export const endNoticeWanted = (notify: ShellNotify, state: ShellJob['state']) => notify === 'end' || (notify === 'failure' && state === 'failed');
 /** Background shells still running, for the status line. */
+/** A shell's title for people: its label when it has one, else its command. */
+export const shellTitle = (job: Pick<ShellJob, 'command' | 'label'>) => job.label ?? job.command;
 export const runningShells = (jobs: ShellJobs) => jobs.list().filter(job => job.mode === 'background' && (job.state === 'running' || job.state === 'stopping'));
 /** The message the main agent receives when a managed background shell ends: its outcome, command and the end of its output, never all of it. */
 export function shellReport(job: ShellJob): string {
@@ -278,7 +282,7 @@ export interface ShellSettings {
 }
 
 /** The shell_start arguments that a run needs. */
-interface ShellArgs { command: string; timeout?: number; notify?: ShellNotify; alert?: string; durable?: boolean }
+interface ShellArgs { command: string; timeout?: number; notify?: ShellNotify; alert?: string; durable?: boolean; label?: string }
 /** The bash tool, run for one shell. Its raw output feeds the alerts, when there are any, and the last matches go out when the run ends. */
 async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSignal, update: (output: string, log?: string) => void, watch: OutputAlerts | undefined) {
   try {
@@ -297,14 +301,14 @@ function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, c
   if (args.durable && !root) throw new Error('durable needs the main agent with an open profile');
   if (root) {
     const started = Date.now();
-    const record = launchDurable(root, { id: randomUUID(), command: args.command, cwd, started, notify, alert: args.alert,
+    const record = launchDurable(root, { id: randomUUID(), command: args.command, cwd, started, notify, alert: args.alert, ...args.label ? { label: args.label } : {},
       ...args.timeout === undefined ? {} : { deadline: started + args.timeout * 1000 } });
     return followShell(jobs, settings, root, record);
   }
   const id: string = jobs.start(args.command, cwd, (abort, update) => {
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(id, alert) });
     return runShell(id, cwd, args, abort, update, watch);
-  }, { notify, alert: args.alert, agent });
+  }, { notify, alert: args.alert, agent, label: args.label });
   return id;
 }
 
@@ -314,7 +318,7 @@ function followShell(jobs: ShellJobs, settings: ShellSettings, root: string, rec
   return jobs.start(record.command, record.cwd, (abort, update) => {
     const watch = pattern && new OutputAlerts({ pattern, intervalMs: settings.alertIntervalMs ?? ALERT_INTERVAL_MS, onAlert: alert => jobs.alerted(record.id, alert) });
     return followDurable(root, record, abort, update, { feed: watch ? chunk => watch.feed(chunk) : undefined }).finally(() => watch?.end());
-  }, { notify: record.notify, alert: record.alert, id: record.id, started: record.started });
+  }, { notify: record.notify, alert: record.alert, id: record.id, started: record.started, label: record.label });
 }
 /** On profile open: follows again the durable shells a crash, restart or quit left without a reported end. A /reload's are already followed. */
 export function resumeDurableShells(jobs: ShellJobs, settings: ShellSettings): string[] {
@@ -394,7 +398,8 @@ export function registerShellTools(pi: ExtensionAPI, jobs: ShellJobs, canStart: 
   pi.registerTool({ name: 'shell_start', label: 'Start background shell',
     description: 'Start an explicitly requested background shell (e.g. a local server or long build); returns its ID immediately. Use only when background execution serves the user request. When it ends or is stopped, OptChat sends you a "[shell ID]" message with outcome, exit code and the end of its output, between tool calls or as a new turn. Do not poll or sleep: go on with other work, or end your turn saying what runs. shell_status only reads more output while it runs. Jobs keep running across /reload and are stopped when the profile closes or Pi quits; durable: true runs one detached that also survives a Pi crash, restart or quit (its end is reported when OptChat reopens; for long workers such as agy, not servers); detached children are not managed. No secrets in commands. notify picks which ends reach you: "end" (default), "failure" (failed or timed-out only) or "none". alert is a JavaScript regular expression (plain text matches case-sensitively; /pattern/flags takes i, m, s or u, e.g. /merged|fail/i); a new output line matching it reaches you with the two before it, at most once per 10 seconds (further matches are counted).',
     parameters: Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1 })),
-      notify: Type.Optional(stringEnum(['end', 'failure', 'none'])), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), durable: Type.Optional(Type.Boolean()) }, { additionalProperties: false }),
+      notify: Type.Optional(stringEnum(['end', 'failure', 'none'])), alert: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })), durable: Type.Optional(Type.Boolean()),
+      label: Type.Optional(Type.String({ minLength: 1, maxLength: 120, description: 'What it is for, in a few words of the operator\'s language (e.g. "agy: #1040 memória do gateway"); the Slack Home lists it under Rodando agora instead of the command.' })) }, { additionalProperties: false }),
     async execute(_id, args, signal, _update, ctx) {
       canStart();
       if (signal?.aborted) throw new Error('Shell start cancelled');
@@ -407,7 +412,7 @@ export function registerShellTools(pi: ExtensionAPI, jobs: ShellJobs, canStart: 
     async execute(_id, args) {
       const list = listMine(), job = args.id ? findMine(args.id) : undefined;
       if (args.id && !job) throw unknownShell(args.id, list);
-      return { content: [{ type: 'text', text: job ? readShell(job, reads) : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${j.command}`).join('\n') || 'No shells this session.' }], details: {} };
+      return { content: [{ type: 'text', text: job ? readShell(job, reads) : list.map(j => `${j.id} · ${j.state} · ${j.mode} · ${shellTitle(j)}`).join('\n') || 'No shells this session.' }], details: {} };
     },
   });
   pi.registerTool({ name: 'shell_stop', label: 'Stop background shell', description: 'Stop a managed background shell by ID. Does not stop ordinary foreground tools or detached processes.',

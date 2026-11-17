@@ -10,7 +10,7 @@ import type { ShellNotify } from './settings.ts';
  * when it ends. A /reload hands it over as any shell; a crash, a restart or Pi quitting leaves it running, and the next
  * OptChat that opens the profile follows it again and reports its end. Only a machine restart cuts it, reported as such.
  */
-export interface DurableRecord { id: string; command: string; cwd: string; pid: number; started: number; notify: ShellNotify; alert?: string; deadline?: number }
+export interface DurableRecord { id: string; command: string; cwd: string; pid: number; started: number; notify: ShellNotify; alert?: string; deadline?: number; label?: string }
 const RECORD = 'job.json', LOG = 'output.log', EXIT = 'exit', REPORTED = 'reported';
 const POLL_MS = 2_000, TAIL_BYTES = 32_000, KEEP_MS = 7 * 86_400_000;
 
