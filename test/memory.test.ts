@@ -1307,3 +1307,48 @@ test('a turn waits for a slow summary of a recent message only for its grace, th
     assert.ok(memory.ready);
   } finally { release(); await memory.close(); removeDir(dir); }
 });
+
+test('cold entries preserve kind, size, canonical and non-canonical dates, receipt and lazy-loaded origin', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-cold-meta-'));
+  const line = (value: object) => `${JSON.stringify(value)}\n`;
+  mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
+  const total = HOT_TEXTS + 3;
+  const origin0 = { source: 'pi' as const, conversation: 'conv-1', message: 'msg-0', title: 'Imported Chat', project: 'proj' };
+  const nonIso = '2026-10-09 12:00:00Z';
+  writeFileSync(join(dir, 'main', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => {
+    const date = i === 1 ? nonIso : '2026-10-09T12:00:00.000Z';
+    return line({ i, kind: i % 2 === 0 ? 'user' : 'talk', text: `msg ${i}`, date,
+      ...(i === 0 ? { receipt: 'rcpt-0', origin: origin0 } : {}),
+      ...(i === 1 ? { receipt: 'rcpt-1' } : {}) });
+  }).join(''));
+  writeFileSync(join(dir, 'tree', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) =>
+    line({ l: 0, i, text: `${i % 2 === 0 ? 'user' : 'talk'}: msg ${i}` })).join(''));
+  const memory = new Memory(dir, async input => input.source, () => {});
+  try {
+    const e0 = memory.root[0], e1 = memory.root[1], e2 = memory.root[2];
+    assert.equal(Object.getOwnPropertyDescriptor(e0, 'text')?.writable, undefined);
+    assert.equal(e0.kind, 'user');
+    assert.equal(e0.date, '2026-10-09T12:00:00.000Z');
+    assert.equal(e0.receipt, 'rcpt-0');
+    assert.deepEqual(e0.origin, origin0);
+    assert.equal(e0.text, 'msg 0');
+    assert.equal(e1.kind, 'talk');
+    assert.equal(e1.date, nonIso);
+    assert.equal(e1.receipt, 'rcpt-1');
+    assert.equal(e1.origin, undefined);
+    assert.equal(e2.receipt, undefined);
+    assert.equal(e2.origin, undefined);
+  } finally { await memory.close(); removeDir(dir); }
+});
+
+test('newly built summaries are chilled once they leave the shown views', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-chill-new-'));
+  const memory = new Memory(dir, async input => `work: ${input.part.l}:${input.part.i} ${'.'.repeat(40)}`, () => {}, 1000);
+  try {
+    for (let i = 0; i < 160; i++) memory.append('user', `msg ${i} ${'.'.repeat(80)}`);
+    await memory.settle(AbortSignal.timeout(10000), 'tree');
+    const stats = memory.stats();
+    assert.ok(stats.treeColdNodes > 100, `expected >100 cold tree nodes, got ${stats.treeColdNodes}`);
+    assert.ok(memory.node({ l: 0, i: 0 })?.text.startsWith('user: msg 0'), 'chilled node still reads back from disk');
+  } finally { await memory.close(); removeDir(dir); }
+});
