@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { FileStore, type ColdSummaryRecord, type Saved, type Store, type TerminalRecord } from './store.ts';
 import { runSliced, runSync, sortSteps } from './sliced.ts';
+import { scrubSecrets } from './secret-scrub.ts';
 
 export const NODE = 512;
 export const VIEW = 128_000;
@@ -504,7 +505,8 @@ export class Memory {
   append(kind: Kind, text: string, date = new Date().toISOString(), receipt?: string, origin?: Origin) {
     if (this.stopped) throw new Error('Memory is closed.');
     if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
-    const entry: Entry = { i: this.root.length, kind, text, date, size: bytes(`${kind}: ${text}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
+    const clean = kind === 'echo' ? scrubSecrets(text) : text;
+    const entry: Entry = { i: this.root.length, kind, text: clean, date, size: bytes(`${kind}: ${clean}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
     // New messages retry ordinary failures, but policy refusals stay blocked until an explicit retry action.
     this.retryAt.clear();
     void this.enqueue(() => this.store.append(entry), error => {
@@ -720,11 +722,14 @@ export class Memory {
     return false;
   }
   private async build(part: Part) {
-    const source = part.l === 0 ? `${this.root[part.i].kind}: ${this.root[part.i].text}`
+    const leaf = part.l === 0 ? this.root[part.i] : undefined;
+    const leafText = leaf ? (leaf.kind === 'echo' ? scrubSecrets(leaf.text) : leaf.text) : '';
+    const source = leaf ? `${leaf.kind}: ${leafText}`
       : [0, 1].map(offset => this.text({ l: part.l - 1, i: 2 * part.i + offset })).join('\n');
     const mergeSource = part.l > 0 ? [0, 1].map(offset => flat(this.text({ l: part.l - 1, i: 2 * part.i + offset }))).join('\n')
-      : this.root[part.i].kind === 'echo' ? cap(source) : source;
-    const result = part.l === 0 && this.root[part.i].kind === 'tool' ? this.resultOf(part.i) : undefined;
+      : leaf?.kind === 'echo' ? cap(source) : source;
+    const rawResult = leaf?.kind === 'tool' ? this.resultOf(part.i) : undefined;
+    const result = rawResult === undefined ? undefined : scrubSecrets(rawResult);
     const call = part.l === 0 ? this.callOf(part.i) : undefined;
     let text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
       historical: this.hasOriginInRange(start(part), end(part)),
