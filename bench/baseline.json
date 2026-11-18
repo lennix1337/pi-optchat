@@ -1,27 +1,27 @@
 {
   "context.base_assembly_ms": {
-    "value": 0.289,
+    "value": 0.217,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 50,
     "runs": 3
   },
   "context.memory_construction_ms": {
-    "value": 0.732,
+    "value": 0.712,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 50,
     "runs": 3
   },
   "context.memory_render_ms": {
-    "value": 0.032,
+    "value": 0.02,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 50,
     "runs": 3
   },
   "context.projection_cold_ms": {
-    "value": 37.97,
+    "value": 30.021,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 50
@@ -51,19 +51,19 @@
     "tolerancePct": 20
   },
   "memory.175k.max_block_ms": {
-    "value": 297.9,
+    "value": 170.8,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 50
   },
   "memory.175k.open_ms": {
-    "value": 2466.8,
+    "value": 1628.9,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 35
   },
   "memory.175k.rss_mb": {
-    "value": 269.2,
+    "value": 258.6,
     "unit": "MB",
     "lowerIsBetter": true,
     "tolerancePct": 20
@@ -75,7 +75,7 @@
     "tolerancePct": 5
   },
   "output_preview.diff_median_ms": {
-    "value": 5.373,
+    "value": 2.572,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 35
@@ -87,7 +87,7 @@
     "tolerancePct": 5
   },
   "output_preview.log_median_ms": {
-    "value": 8.255,
+    "value": 4.027,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 35
@@ -99,7 +99,7 @@
     "tolerancePct": 5
   },
   "output_preview.search_median_ms": {
-    "value": 5.895,
+    "value": 2.891,
     "unit": "ms",
     "lowerIsBetter": true,
     "tolerancePct": 35
@@ -159,21 +159,24 @@
     "tolerancePct": 5
   },
   "turn_start.prompt_to_provider_p50_ms": {
-    "value": 57.2,
+    "value": 87.68,
     "unit": "ms",
     "lowerIsBetter": true,
-    "tolerancePct": 35
+    "tolerancePct": 35,
+    "runs": 3
   },
   "turn_start.prompt_to_provider_p95_ms": {
-    "value": 113.98,
+    "value": 352.02,
     "unit": "ms",
     "lowerIsBetter": true,
-    "tolerancePct": 40
+    "tolerancePct": 40,
+    "runs": 3
   },
   "turn_start.whole_turn_p50_ms": {
-    "value": 1151.95,
+    "value": 454.52,
     "unit": "ms",
     "lowerIsBetter": true,
-    "tolerancePct": 35
+    "tolerancePct": 35,
+    "runs": 3
   }
 }
