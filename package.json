@@ -18,6 +18,7 @@
     "test:one": "node --experimental-transform-types --no-warnings --import ./test/support.ts --test",
     "test:pi-compat": "node --import tsx --test test/pi-runtime-compat.test.mjs",
     "quota:report": "node --experimental-transform-types --no-warnings scripts/quota-report.mjs",
+    "debug:capture": "node scripts/debug-capture.mjs",
     "measure:foreign-ids": "node --experimental-transform-types scripts/foreign-id-rate.mjs",
     "test:live": "tsx test/live.ts",
     "benchmark:agents": "tsx test/agent-benchmark.ts",
