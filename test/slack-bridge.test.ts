@@ -12,6 +12,7 @@ import { REPORT_TYPE } from '../src/transcript.ts';
 import { hookedPi } from './support.ts';
 import { DEFAULT_HEARTBEAT, wakeText } from '../src/heartbeat.ts';
 import { wakeEffects } from '../src/wake-log.ts';
+import { claimRetryText, unbackedNote } from '../src/claim-check.ts';
 import { ACCEPT_CALL, acceptResult, FAILED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
 /** `channels`: the service's configured Slack channels besides the projects; without `wakes` a wake falls back to its repo channel. */
@@ -82,6 +83,21 @@ test('a notice steering a Slack run does not swallow the answer the operator was
     await new Promise(resolve => setImmediate(resolve));
     const sent = f.requests.filter(r => r.path === '/v1/slack/send').map(r => (r.body as { text: string }).text);
     assert.deepEqual(sent.sort(), ['Fechado. Regra registrada.', 'O #56 espera o #57.']);
+  } finally { f.close(); }
+});
+
+test('the claim check sending a reply back keeps its draft from the operator: only the checked reply goes out, marked', async () => {
+  const f = fixture([{ seq: 1, ts: '6.0', thread: null, text: 'passou?' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(`${SLACK_PREFIX}passou?`);
+    f.bridge.assistantSaid(replies('API 31/31 verde.')[0]!);
+    f.bridge.sawUserMessage(claimRetryText(['31/31']));
+    f.bridge.assistantSaid(replies('API: 27 de 31 passaram, 4 falharam.')[0]!);
+    await f.bridge.runEnded(replies('API: 27 de 31 passaram, 4 falharam.'), unbackedNote(['27 de 31']));
+    await new Promise(resolve => setImmediate(resolve));
+    const sent = f.requests.filter(r => r.path === '/v1/slack/send').map(r => (r.body as { text: string }).text);
+    assert.deepEqual(sent, [`${unbackedNote(['27 de 31'])}\n\nAPI: 27 de 31 passaram, 4 falharam.`]);
   } finally { f.close(); }
 });
 

@@ -17,6 +17,7 @@ const cases: [string, object, object][] = [
  ['memory-format', text('UNRESOLVED'), text('Concluído.')],
  ['utc-time', text('Às 03:17Z.'), text('Às 00:17.')],
  ['force-action', call('bash',{command:'git push --force'}), call('bash',{command:'git push origin main'})],
+ ['unchecked-own-work', text('O worker foi relançado. Não confirmei que ele começou de fato.'), text('O worker está rodando: tarefa Running e passo 43 no log.')],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {

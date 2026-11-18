@@ -58,6 +58,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
     case 'utc-time': return /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u.test(final);
     case 'abandoned-cause': return /\b(?:causas?\s+n[ãa]o\s+(?:(?:foi|foram)\s+)?encontrad[ao]s?|sem\s+causa\s+encontrada|causes?\s+(?:(?:is|were|was|still)\s+)*not\s+found)\b/iu.test(final);
+    case 'unchecked-own-work': return /\b(?:(?:ainda\s+)?n[ãa]o\s+(?:confirmei|verifiquei|conferi|chequei|validei)|I\s+(?:did\s+not|didn't|have\s+not|haven't)\s+(?:confirm|verif|check)\w*)\b/iu.test(final);
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b[^;\n|]*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(String(c.arguments?.command ?? '')));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));

@@ -1,0 +1,72 @@
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { textContent } from './transcript.ts';
+
+/**
+ * A reply's verifiable claims that no output of the run shows: a pass count ("31/31", "105 de 105"), a commit hash, a merged PR
+ * or "no ar" with no health check. The operator reads them as observed facts (13-18/11: "31/31", "no ar", "causa encontrada" sent
+ * with no output behind them), so the run gets one chance to check them before the reply leaves, and what is still unbacked goes
+ * out marked.
+ */
+export const CLAIM_CHECK_PREFIX = '[OptChat claim check]';
+
+const KEYWORD = /\b(?:test|teste|testes|tests|pass|passed|passou|passaram|passando|verde|green|checks?|specs?|suites?|ok|falh\w*|fail\w*|validad\w*|verificad\w*)\b|✓/iu;
+const MERGED = /\b(?:mesclad[oa]s?|merged|mergead[oa]s?|entrou na main)\b/iu;
+const LIVE = /\b(?:no ar|est[aá] live|deployed|deployad[oa])\b/iu;
+const LIVE_EVIDENCE = /\b(?:200|healthy|rollouts? done|RESUMO)\b/u;
+
+/** A test runner's own lines back "a/b": a passed next to b in total (or nothing failed, when a is b). */
+function runnerShows(evidence: string, a: number, b: number): boolean {
+  for (const m of evidence.matchAll(new RegExp(`\\bpass(?:ed)?\\s*[:=]?\\s*${a}\\b|\\b${a}\\s+pass(?:ed|ing)?\\b`, 'giu'))) {
+    // The match's line and the two after it: a runner prints its pass and fail counts together (vitest one line, node:test two).
+    const near = evidence.slice(evidence.lastIndexOf('\n', m.index) + 1).split('\n').slice(0, 3).join('\n');
+    if (a === b ? !/\bfail(?:ed|ures?)?\s*[:=]?\s*[1-9]|\b[1-9]\d*\s+fail(?:ed|ing|ures?)?\b/iu.test(near) : new RegExp(`\\b(?:tests?|total)\\s*[:=]?\\s*${b}\\b|\\(${b}\\)`, 'iu').test(near)) return true;
+  }
+  return false;
+}
+
+function sentences(text: string): string[] {
+  return text.replace(/`/gu, '').split(/(?<=[.!?;])\s+|\n+/u).filter(Boolean);
+}
+
+/** The text every tool result and incoming message of the run showed: what a claim may rest on. */
+export function evidenceText(messages: readonly AgentMessage[]): string {
+  return messages.filter(m => m.role !== 'assistant').map(m => textContent((m as { content?: unknown }).content, false)).join('\n');
+}
+
+export function unbackedClaims(reply: string, evidence: string): string[] {
+  const out = new Set<string>();
+  const seen = (token: string) => evidence.includes(token);
+  for (const s of sentences(reply)) {
+    if (KEYWORD.test(s)) {
+      for (const m of s.matchAll(/(?<![\d/]|\d[.,])([1-9]\d{0,5})\s*(?:\/|de|of)\s*([1-9]\d{0,5})(?![\d/]|[.,]\d)/gu)) {
+        const [a, b] = [Number(m[1]), Number(m[2])];
+        if (a <= b && ![`${a}/${b}`, `${a} de ${b}`, `${a} of ${b}`].some(seen) && !runnerShows(evidence, a, b)) out.add(m[0].trim());
+      }
+    }
+    for (const m of s.matchAll(/(?<![\w/.-])([0-9a-f]{7,40})(?![\w/-])/gu)) {
+      const sha = m[1]!;
+      if (/\d/u.test(sha) && /[a-f]/u.test(sha) && !evidence.toLowerCase().includes(sha.slice(0, 7))) out.add(sha);
+    }
+    for (const w of s.matchAll(new RegExp(MERGED.source, 'giu'))) {
+      // "ainda não foi mesclado", "não vai ser mergeado": a denial is not a claim.
+      if (/\b(?:n[aã]o|not|nem)\b[^.#]{0,25}$/iu.test(s.slice(0, w.index))) continue;
+      const near = s.slice(Math.max(0, w.index - 40), w.index + w[0].length + 40);
+      for (const m of near.matchAll(/#(\d{1,6})\b/gu)) {
+        const n = m[1]!;
+        if (!new RegExp(`(?:#|/pull/|PR\\s?)${n}\\b[\\s\\S]{0,200}\\b(?:MERGED|merged|Merged)\\b|\\b(?:MERGED|merged|Merged)\\b[\\s\\S]{0,200}(?:#|/pull/|PR\\s?)${n}\\b`, 'u').test(evidence)) out.add(`#${n} mesclado`);
+      }
+    }
+    if (LIVE.test(s) && !/\b(?:n[aã]o|ainda n[aã]o|not)\b[^.]{0,30}\b(?:no ar|live|deployed)/iu.test(s) && !LIVE_EVIDENCE.test(evidence)) out.add('no ar');
+  }
+  return [...out];
+}
+
+export function claimRetryText(claims: readonly string[]): string {
+  return `${CLAIM_CHECK_PREFIX} Your reply states facts that no output of this run shows: ${claims.join(', ')}. ` +
+    'Before it reaches the operator, check each one with a read-only tool (test run, gh, curl, git log) and correct the reply, ' +
+    'or say plainly which ones are not verified. Then give the final reply again, in Portuguese.';
+}
+
+export function unbackedNote(claims: readonly string[]): string {
+  return `⚠️ Não verificado nesta execução: ${claims.join(', ')}.`;
+}
