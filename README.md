@@ -9,6 +9,7 @@ pi-optchat turns Pi into a long-running teammate. It lives on a small VM, keeps 
 What a normal day looks like:
 
 - **Orders from the phone.** A Slack DM or channel message becomes a turn. The answer comes back to the same thread; long work reports progress there without being asked.
+- **Voice notes.** A voice note sent on Slack arrives as text, transcribed locally with faster-whisper (`pip install --user faster-whisper av`, no ffmpeg, no API cost); if transcription fails the agent gets the reason and the file path.
 - **CI wakes it up.** [pi-gitwatch](https://github.com/lennix1337/pi-gitwatch) follows every PR it opens. A red check, a conflict or a green "ready to merge" arrives as a message, and the agent fixes, rebases or merges. When Actions is blocked, the repository's own local gate stands in for CI.
 - **A crew, not a single model.** The main model plans, reviews and integrates; workers on other routes (Claude, Codex accounts, Gemini through Antigravity on the operator's PC) take implementation and investigations in parallel worktrees. Quota is paced across accounts so the week never runs dry before the reset.
 - **Wakes.** With nobody watching, scheduled wakes work the open PRs and issues first, then build something new, and post a report with every link.
