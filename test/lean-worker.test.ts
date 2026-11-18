@@ -87,7 +87,7 @@ test('plan and hard workers add lsp, codemode and the web tools to the code set;
   for (const kind of ['plan', 'mechanical'] as const) {
     assert.ok(FAST_WORKER_KINDS.has(kind));
     assert.deepEqual(workerBuiltins(all, { kind }), ['codemode', 'tool-search'], `${kind} skips mcp by default`);
-    assert.deepEqual(workerBuiltins(all, { kind, mcp: true }), all, `${kind} keeps mcp when contract opts out`);
+    assert.deepEqual(workerBuiltins(all, { kind, mcp: true }), all, `${kind} keeps mcp when the contract opts in`);
   }
   for (const kind of ['code', 'hard', undefined] as const) {
     assert.deepEqual(workerBuiltins(all, { kind }), all, `${kind ?? 'plain'} keeps mcp by default`);

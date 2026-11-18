@@ -20,7 +20,7 @@ export const WORKER_TOOLS: Record<WorkerKind, readonly string[]> = {
 /** Worker kinds that skip external MCP servers by default for fast startup and lower RSS. */
 export const FAST_WORKER_KINDS: ReadonlySet<WorkerKind> = new Set(['plan', 'mechanical']);
 
-/** Built-in extensions loaded for a child session: `plan` and `mechanical` skip `mcp` unless `mcp: true` opts out. */
+/** Built-in extensions loaded for a child session: `plan` and `mechanical` skip `mcp` unless `mcp: true` opts them in. */
 export function workerBuiltins(builtins: Iterable<string>, { kind, mcp }: { kind?: WorkerKind; mcp?: boolean }): string[] {
   const list = [...builtins];
   const useMcp = mcp ?? !(kind !== undefined && FAST_WORKER_KINDS.has(kind));
