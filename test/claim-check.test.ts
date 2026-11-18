@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { evidenceText, unbackedClaims } from '../src/claim-check.ts';
+import { branchEvidenceMessages, evidenceText, unbackedClaims } from '../src/claim-check.ts';
 
 test('a pass count no output showed is unbacked; the counts a test runner prints back it', () => {
   // 18/11: "API 31/31" was sent while the run's own vitest output showed 4 FAIL.
@@ -41,4 +41,15 @@ test('a denied merge is no claim, and a merge word names only the PR next to it'
   assert.deepEqual(unbackedClaims('O PR #152 ainda não foi mesclado: o CI falhou.', ''), []);
   assert.deepEqual(unbackedClaims('O PR #186 está aberto e não vai ser mergeado.', ''), []);
   assert.deepEqual(unbackedClaims('Abri o PR #157 para o navegador, testado à parte; o #155 já estava mesclado.', '#155 MERGED'), []);
+});
+
+test('a gitwatch notice injected between runs backs the merge it reports', () => {
+  // 18/11: "#167 merged" was sent back three times although the notice "#167 merged af268f09" sat in the session.
+  const entries = [
+    { type: 'custom_message', content: '[gitwatch] lennix1337/dotfiles · 05:19\n#167 merged af268f09\n  #167 MERGED af268f09 · checks pass 4✓' },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'O #168 foi mesclado.' }] } },
+  ];
+  const evidence = evidenceText(branchEvidenceMessages(entries as never));
+  assert.deepEqual(unbackedClaims('O #167 foi mesclado (af268f0).', evidence), []);
+  assert.deepEqual(unbackedClaims('O #168 foi mesclado.', evidence), ['#168 mesclado']);
 });
