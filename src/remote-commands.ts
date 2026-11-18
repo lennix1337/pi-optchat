@@ -1,6 +1,7 @@
 import { brasiliaDayTime } from './pc-health.ts';
 import { accounts, readQuotaState } from './quota-health.ts';
-import { accountLines } from './quota-format.ts';
+import { accountLines, resetText } from './quota-format.ts';
+import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import type { Economy } from './quota-economy.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
 
@@ -171,7 +172,23 @@ function homeQuota(state: CommandState): string[] {
   for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
   return [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
     ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
-    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${usageBar(a.used ?? 0)} ${a.used}% \u00b7 renova ${brasiliaDayTime(a.resetAt!)}`));
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(record(state.failover()).usageByProvider)[a.id], state.now())}`));
+}
+
+/** Older than this, a cached reading says when it was taken. */
+const STALE_READING_MS = 3_600_000;
+
+/**
+ * Both windows, named, each with its own reset (one unnamed percentage mixes the 5h window of one account with the 7d of
+ * another); a window already renewed is 0%, and a reading over an hour old says its time.
+ */
+function homeWindows(usage: unknown, now: number): string {
+  const { w5h, w7d } = quotaWindows(usage), fetchedAt = record(usage).fetchedAt;
+  const live = (w?: QuotaWindowRow) => w && w.resetAt > now ? w : undefined;
+  const text = (name: string, w?: QuotaWindowRow) => w ? live(w) ? `${name} ${Math.round(w.used)}% (renova ${resetText(w.resetAt, now, name === '7d')})` : `${name} 0% (renovou)` : undefined;
+  const fullest = Math.max(live(w5h)?.used ?? 0, live(w7d)?.used ?? 0);
+  const old = typeof fetchedAt === 'number' && now - fetchedAt > STALE_READING_MS ? ` \u00b7 _leitura de ${brasiliaDayTime(fetchedAt)}_` : '';
+  return `${usageBar(fullest)} ${[text('5h', w5h), text('7d', w7d)].filter(Boolean).join(' \u00b7 ')}${old}`;
 }
 
 /** Ten cells of use, so the phone compares accounts at a glance (`▰▰▰▱▱▱▱▱▱▱`). */

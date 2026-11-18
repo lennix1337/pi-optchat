@@ -52,7 +52,7 @@ test('status and modelo name the selected model, i.e. the account, and the last 
   assert.match(text, /última troca: anthropic-account-2\/claude-sonnet-5-5/);
   assert.match((await run('modelo', state({ model: () => undefined }))).text, /nenhum selecionado/);
   assert.equal(REMOTE_COMMANDS.filter(c => remoteCommand(c.name)?.command === c).length, REMOTE_COMMANDS.length);
-  assert.match(homeStatus(state()), /42% ·/);
+  assert.match(homeStatus(state()), /5h 42% \(renova 16:00\)/);
   assert.match((await run('modelos')).text, /\*openai-codex\*: gpt-6\.1-sol/);
 });
 
@@ -126,7 +126,7 @@ test('a command DM is answered by the bridge without reaching the agent; other D
     assert.match(home.body.text, /Trabalhando/);
     assert.equal(home.body.settings.model, 'anthropic-account-2/claude-sonnet-5-5', 'the model shows in the menu, not repeated as a line');
     assert.doesNotMatch(home.body.text, /Modelo:\*/);
-    assert.match(home.body.text, /42% ·/);
+    assert.match(home.body.text, /5h 42% \(renova 16:00\)/);
   } finally { f.close(); }
 });
 
@@ -176,9 +176,23 @@ test('homeStatus: the model as he names it, spent families on one line, unmeasur
   } };
   const text = homeStatus(state({ model: () => 'anthropic-account-2/claude-opus-5-5', failover: () => failover }));
   assert.match(text, /\*Modelo:\* Opus 5\.5 · conta 2\n/);
-  assert.match(text, /• Claude conta 2 `▰▰▰▰▰▰▱▱▱▱` 56% · renova /);
+  assert.match(text, /• Claude conta 2 `▰▰▰▰▰▰▱▱▱▱` 5h 56% \(renova /);
   assert.doesNotMatch(homeStatus(state({ failover: () => failover }), true), /\*Modelo:\*/, 'the Home menus already show the model');
   assert.match(text, /• Codex \*esgotado\* até 01\/11 17:00/);
   assert.doesNotMatch(text, /sem medição|openai-codex|anthropic/);
   assert.match(homeStatus(state({ model: () => 'openai-codex-account-2/gpt-6.1-sol' })), /gpt-6\.1-sol · Codex conta 2/);
+});
+
+test('homeStatus: every account shows both windows by name, a renewed window as 0% and an old reading with its time', () => {
+  const HOUR = 3_600_000, failover = { usageByProvider: {
+    'anthropic-account-2': { fetchedAt: NOW - 60_000,
+      primary: { usedPercent: 40, resetAt: NOW + HOUR, windowSeconds: 18_000 },
+      secondary: { usedPercent: 6, resetAt: NOW + 150 * HOUR, windowSeconds: 604_800 } },
+    agy: { fetchedAt: NOW - 24 * HOUR,
+      primary: { usedPercent: 70, resetAt: NOW - 20 * HOUR, windowSeconds: 18_000 },
+      secondary: { usedPercent: 38, resetAt: NOW + 80 * HOUR, windowSeconds: 604_800 } },
+  } };
+  const text = homeStatus(state({ failover: () => failover }), true);
+  assert.match(text, /• Claude conta 2 `▰▰▰▰▱▱▱▱▱▱` 5h 40% \(renova \d\d:\d\d\) · 7d 6% \(renova \d\d\/\d\d \d\d:\d\d\)\n/);
+  assert.match(text, /• agy conta 1 `▰▰▰▰▱▱▱▱▱▱` 5h 0% \(renovou\) · 7d 38% \(renova \d\d\/\d\d \d\d:\d\d\) · _leitura de \d\d\/\d\d \d\d:\d\d_/);
 });
