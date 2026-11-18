@@ -1,0 +1,179 @@
+{
+  "context.base_assembly_ms": {
+    "value": 0.289,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 50,
+    "runs": 3
+  },
+  "context.memory_construction_ms": {
+    "value": 0.732,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 50,
+    "runs": 3
+  },
+  "context.memory_render_ms": {
+    "value": 0.032,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 50,
+    "runs": 3
+  },
+  "context.projection_cold_ms": {
+    "value": 37.97,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 50
+  },
+  "context.projection_min_saved_pct": {
+    "value": 96,
+    "unit": "percent",
+    "lowerIsBetter": false,
+    "tolerancePct": 5
+  },
+  "context.projection_preview_tokens": {
+    "value": 971,
+    "unit": "tokens",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "context.zoom_description_bytes": {
+    "value": 625,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "memory.175k.heap_mb": {
+    "value": 5.5,
+    "unit": "MB",
+    "lowerIsBetter": true,
+    "tolerancePct": 20
+  },
+  "memory.175k.max_block_ms": {
+    "value": 297.9,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 50
+  },
+  "memory.175k.open_ms": {
+    "value": 2466.8,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 35
+  },
+  "memory.175k.rss_mb": {
+    "value": 269.2,
+    "unit": "MB",
+    "lowerIsBetter": true,
+    "tolerancePct": 20
+  },
+  "output_preview.diff_bytes": {
+    "value": 915,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "output_preview.diff_median_ms": {
+    "value": 5.373,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 35
+  },
+  "output_preview.log_bytes": {
+    "value": 2354,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "output_preview.log_median_ms": {
+    "value": 8.255,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 35
+  },
+  "output_preview.search_bytes": {
+    "value": 1247,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "output_preview.search_median_ms": {
+    "value": 5.895,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 35
+  },
+  "prefix.bookkeeping_tools_bytes": {
+    "value": 2643,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "prefix.estimated_context_tokens": {
+    "value": 4605,
+    "unit": "tokens",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "prefix.extension_tool_count": {
+    "value": 25,
+    "unit": "count",
+    "lowerIsBetter": true,
+    "tolerancePct": 0
+  },
+  "prefix.extension_tools_bytes": {
+    "value": 21392,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "prefix.request_bytes": {
+    "value": 19223,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "prefix.system_bytes": {
+    "value": 4537,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "prompt_cache.prefix_changes": {
+    "value": 0,
+    "unit": "count",
+    "lowerIsBetter": true,
+    "tolerancePct": 0
+  },
+  "prompt_cache.system_bytes": {
+    "value": 31636,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "prompt_cache.tool_schema_bytes": {
+    "value": 19825,
+    "unit": "bytes",
+    "lowerIsBetter": true,
+    "tolerancePct": 5
+  },
+  "turn_start.prompt_to_provider_p50_ms": {
+    "value": 57.2,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 35
+  },
+  "turn_start.prompt_to_provider_p95_ms": {
+    "value": 113.98,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 40
+  },
+  "turn_start.whole_turn_p50_ms": {
+    "value": 1151.95,
+    "unit": "ms",
+    "lowerIsBetter": true,
+    "tolerancePct": 35
+  }
+}
