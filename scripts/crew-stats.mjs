@@ -15,11 +15,13 @@ const USAGE = 'usage: crew-stats.mjs <profileDir> [sinceISO] [untilISO] [--metri
 const UNAVAILABLE = 'unavailable';
 const DAY_MS = 86_400_000;
 const REREAD_WINDOW_MS = DAY_MS;
+const BRASILIA_OFFSET_MS = 3 * 3_600_000;
 const QUOTA_ERROR = /usage limit|insufficient_credits|\b429\b|credit balance|rate.?limit|quota|billing/i;
 const PROJECT_PREFIX = /^(?:.*?\/)?(?=(?:src|test|scripts|apps|packages)\/)/;
 
 export function crewStats(lines, sinceMs = 0, untilMs = Infinity) {
   const groups = new Map();
+  const opusByDay = {};
   for (const line of lines) {
     let row;
     try { row = JSON.parse(line); } catch { continue; }
@@ -31,6 +33,13 @@ export function crewStats(lines, sinceMs = 0, untilMs = Infinity) {
     group.cost += Number(row.usage?.cost?.total ?? 0);
     group.tokens += Number(row.usage?.totalTokens ?? 0);
     groups.set(key, group);
+    if (row.role === 'main' && /opus/.test(row.model ?? '')) {
+      const day = new Date(at - BRASILIA_OFFSET_MS).toISOString().slice(0, 10);
+      const entry = opusByDay[day] ?? { calls: 0, cost: 0 };
+      entry.calls++;
+      entry.cost += Number(row.usage?.cost?.total ?? 0);
+      opusByDay[day] = entry;
+    }
   }
   const rows = [...groups.values()]
     .map(g => ({ role: g.role, model: g.model, calls: g.calls, cost: Math.round(g.cost * 100) / 100, tokensPerCall: Math.round(g.tokens / g.calls) }))
@@ -40,6 +49,7 @@ export function crewStats(lines, sinceMs = 0, untilMs = Infinity) {
   return {
     opusMain: { calls: opus.reduce((s, r) => s + r.calls, 0), cost: Math.round(opus.reduce((s, r) => s + r.cost, 0) * 100) / 100 },
     total: Math.round(total * 100) / 100,
+    opusMainByDay: Object.fromEntries(Object.keys(opusByDay).sort().map(d => [d, { calls: opusByDay[d].calls, cost: Math.round(opusByDay[d].cost * 100) / 100 }])),
     rows,
   };
 }

@@ -24,6 +24,16 @@ test('crew stats sums main Opus calls and cost inside the window only', () => {
   assert.equal(stats.rows[1].tokensPerCall, 500);
 });
 
+test('crew stats splits main Opus cost by Brasília day', () => {
+  const lines = [
+    row('2026-11-05T02:30:00Z', 'main', 'claude-opus-5-5', 1, 100),
+    row('2026-11-05T12:00:00Z', 'main', 'claude-opus-5-5', 2, 100),
+    row('2026-11-05T12:30:00Z', 'main', 'claude-sonnet-5-5', 4, 100),
+  ];
+  const stats = crewStats(lines);
+  assert.deepEqual(stats.opusMainByDay, { '2026-11-04': { calls: 1, cost: 1 }, '2026-11-05': { calls: 1, cost: 2 } });
+});
+
 const HOUR = 3_600_000;
 const T0 = Date.parse('2026-11-10T00:00:00Z');
 
