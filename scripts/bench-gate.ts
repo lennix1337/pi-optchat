@@ -43,6 +43,23 @@ export interface CompareResult {
 
 export const DEFAULT_TOLERANCE_PCT = 5;
 
+/** Units whose values depend on the machine (CPU, Node, GC); their baseline lives per machine. */
+const MACHINE_UNITS = new Set(['ms', 'MB', 'ms/MB']);
+
+export function isMachineMetric(entry: { unit: string }): boolean {
+  return MACHINE_UNITS.has(entry.unit);
+}
+
+/** Splits a baseline into the committed part (sizes, counts) and the per-machine part (timings, memory). */
+export function splitBaseline(baseline: BaselineMap): { shared: BaselineMap; machine: BaselineMap } {
+  const shared: BaselineMap = {};
+  const machine: BaselineMap = {};
+  for (const [metric, entry] of Object.entries(baseline)) {
+    (isMachineMetric(entry) ? machine : shared)[metric] = entry;
+  }
+  return { shared, machine };
+}
+
 export function median(values: readonly number[]): number {
   if (values.length === 0) throw new Error('median requires at least one value');
   const sorted = [...values].sort((a, b) => a - b);
@@ -275,11 +292,15 @@ function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const benchDir = join(root, 'scripts', 'bench');
   const baselinePath = join(root, 'bench', 'baseline.json');
+  const machineBaselinePath = join(root, 'bench', 'baseline.local.json');
   const latestPath = join(root, 'bench', 'latest.json');
 
-  const existingBaseline: BaselineMap = existsSync(baselinePath)
-    ? JSON.parse(readFileSync(baselinePath, 'utf8')) as BaselineMap
-    : {};
+  const readBaseline = (path: string): BaselineMap =>
+    existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as BaselineMap : {};
+  const existingBaseline: BaselineMap = {
+    ...splitBaseline(readBaseline(baselinePath)).shared,
+    ...splitBaseline(readBaseline(machineBaselinePath)).machine,
+  };
 
   const plugins = readdirSync(benchDir)
     .filter(name => (name.endsWith('.mjs') || name.endsWith('.ts')) && (!filterArg || name.includes(filterArg)))
@@ -308,8 +329,10 @@ function main() {
 
   if (update) {
     const updated = buildUpdatedBaseline(allMetrics, existingBaseline);
-    writeFileSync(baselinePath, JSON.stringify(updated, null, 2) + '\n');
-    console.log(`Updated ${baselinePath} with ${Object.keys(updated).length} metrics:`);
+    const { shared, machine } = splitBaseline(updated);
+    writeFileSync(baselinePath, JSON.stringify(shared, null, 2) + '\n');
+    writeFileSync(machineBaselinePath, JSON.stringify(machine, null, 2) + '\n');
+    console.log(`Updated ${baselinePath} (${Object.keys(shared).length}) and ${machineBaselinePath} (${Object.keys(machine).length}):`);
     for (const metric of Object.keys(updated).sort()) {
       const m = updated[metric]!;
       console.log(`  ${metric}: ${m.value} ${m.unit} (lowerIsBetter=${m.lowerIsBetter}, tol=${m.tolerancePct}%)`);

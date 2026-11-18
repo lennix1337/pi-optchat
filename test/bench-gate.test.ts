@@ -5,6 +5,7 @@ import {
   compareMetrics,
   median,
   normalizePluginOutput,
+  splitBaseline,
   type BaselineMap,
   type MetricsMap,
 } from '../scripts/bench-gate.ts';
@@ -95,4 +96,19 @@ test('median and buildUpdatedBaseline preserve tolerances and compute odd/even m
   assert.equal(updated['a.ms']?.tolerancePct, 25);
   assert.equal(updated['a.ms']?.runs, 3);
   assert.equal(updated['b.bytes']?.tolerancePct, 5);
+});
+
+test('timings and memory baseline per machine; sizes and counts stay shared', () => {
+  const { shared, machine } = splitBaseline({
+    'a.ms': { value: 1, unit: 'ms', lowerIsBetter: true },
+    'b.heap': { value: 5, unit: 'MB', lowerIsBetter: true },
+    'c.bytes': { value: 9, unit: 'bytes', lowerIsBetter: true },
+    'd.count': { value: 0, unit: 'count', lowerIsBetter: true },
+  });
+  assert.deepEqual(Object.keys(shared), ['c.bytes', 'd.count']);
+  assert.deepEqual(Object.keys(machine), ['a.ms', 'b.heap']);
+  // A timing with no baseline on this machine is reported, never failed.
+  const result = compareMetrics({ 'a.ms': { value: 99, unit: 'ms', lowerIsBetter: true } }, shared);
+  assert.equal(result.passed, true);
+  assert.equal(result.added[0]?.metric, 'a.ms');
 });

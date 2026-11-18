@@ -8,12 +8,14 @@ Offline, zero-cost regression gate covering core `pi-optchat` performance points
 # Run all plugins, write bench/latest.json, and compare against bench/baseline.json
 npm run bench:gate
 
-# Rewrite bench/baseline.json with the current measurements
+# Rewrite the baselines with the current measurements
 npm run bench:gate -- --update
 
 # Run a subset or override median sample runs per plugin
 npm run bench:gate -- --filter=memory --runs=3
 ```
+
+Sizes, counts and tokens are machine-independent and live in the committed `bench/baseline.json`. Timings and memory (`ms`, `MB`, `ms/MB`) depend on the machine, so `--update` writes them to the git-ignored `bench/baseline.local.json`; on a machine without one they show as `[NEW]` and do not gate.
 
 Exit code is `0` when all metrics are within tolerance (or improved / new without baseline), and `1` when any metric regresses past its `tolerancePct`.
 
