@@ -52,6 +52,8 @@ export interface Store {
   image(name: string): Maybe<{ mimeType: Mime; data: Uint8Array } | undefined>;
   /** Reads message `i`'s text back from the log, so Memory can drop old texts from RAM. Undefined when the store cannot. */
   reader?(i: number): (() => string) | undefined;
+  /** Reads message `i`'s full JSON record back from the log when available. */
+  readRecord?(i: number): Record<string, unknown> | undefined;
   /** Whether summary node (`l`, `i`) can be read back from the tree files, so Memory can drop old summaries from RAM. */
   hasNode?(l: number, i: number): boolean;
   /** Reads summary node (`l`, `i`) back from the tree files. */
@@ -483,6 +485,12 @@ export class FileStore implements Store {
     const line = this.getLine(i);
     return line && (() => lineText(this.readAt(line.file, line.offset, line.length), 0, line.length, i, line.file));
   }
+  readRecord(i: number): Record<string, unknown> | undefined {
+    const line = this.getLine(i);
+    if (!line) return undefined;
+    try { return JSON.parse(this.readAt(line.file, line.offset, line.length).toString('utf8')) as Record<string, unknown>; }
+    catch { return undefined; }
+  }
   hasNode(l: number, i: number) { return this.getNode(l, i) !== undefined; }
   nodeText(l: number, i: number) {
     const at = this.getNode(l, i), file = this.nodeFiles[Math.floor((at ?? 0) / 2 ** 40)];
@@ -537,7 +545,13 @@ export class FileStore implements Store {
     if (names.length !== this.lastSeenBytes.size || names.some(n => statSync(join(main, n)).size !== this.lastSeenBytes.get(join(main, n)))) throw otherWriter(next);
   }
   appendNode(node: Summary | TerminalRecord): undefined {
-    appendJson(join(this.directory, 'tree', `${localDay()}.jsonl`), node);
+    const file = join(this.directory, 'tree', `${localDay()}.jsonl`);
+    const length = Buffer.byteLength(JSON.stringify(node));
+    const size = appendJson(file, node);
+    if ('text' in node && Number.isSafeInteger(node.l) && Number.isSafeInteger(node.i)) {
+      this.setNode(node.l, node.i, file, size - length - 1);
+    }
+    if (this.cached?.file === file) this.drop();
   }
   appendTerminal(record: TerminalRecord): undefined { this.appendNode(record); }
   saveView(view: string): undefined { atomicWrite(join(this.directory, 'view.json'), view); }

@@ -141,17 +141,84 @@ export function isEntry(value: unknown): value is Entry {
     && KINDS.some(kind => kind === value.kind)
     && typeof value.text === 'string' && typeof value.date === 'string';
 }
-/** A summarized message whose text lives on disk. Its fields are plain and its one getter is shared, so it stays a small fast-mode
- * object; an accessor and a closure per entry made each one a ~450-byte dictionary-mode object, ~150k of them. */
-class ColdEntry implements Entry {
-  readonly i: number; readonly kind: Kind; readonly size: number; readonly date: string; readonly receipt?: string; readonly origin?: Origin;
-  constructor(entry: Entry, private readonly store: Store) {
-    this.i = entry.i; this.kind = entry.kind; this.size = entry.size; this.date = entry.date;
-    if (entry.receipt) this.receipt = entry.receipt;
-    if (entry.origin) this.origin = entry.origin;
+const FLAG_ORIGIN = 1;
+const FLAG_RECEIPT = 2;
+const KIND_INDEX = new Map<Kind, number>(KINDS.map((k, i) => [k, i]));
+
+/** Packed metadata for cold messages (typed arrays + sparse maps), keeping ColdEntry to two fields (~24 B) and zero date strings in RAM. */
+class ColdIndex {
+  private kinds = new Uint8Array(0);
+  private sizes = new Uint32Array(0);
+  private dates = new Float64Array(0);
+  private flags = new Uint8Array(0);
+  private extraDates?: Map<number, string>;
+  private receipts?: Map<number, string>;
+  private origins?: Map<number, Origin>;
+  constructor(readonly store: Store) {}
+
+  reserve(capacity: number) {
+    if (capacity <= this.kinds.length) return;
+    const nextKinds = new Uint8Array(capacity); nextKinds.set(this.kinds); this.kinds = nextKinds;
+    const nextSizes = new Uint32Array(capacity); nextSizes.set(this.sizes); this.sizes = nextSizes;
+    const nextDates = new Float64Array(capacity); nextDates.set(this.dates); this.dates = nextDates;
+    const nextFlags = new Uint8Array(capacity); nextFlags.set(this.flags); this.flags = nextFlags;
   }
-  get text() { return this.store.reader?.(this.i)?.() ?? ''; }
-  toJSON() { return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(this.receipt ? { receipt: this.receipt } : {}), ...(this.origin ? { origin: this.origin } : {}) }; }
+  set(entry: Entry) {
+    const i = entry.i;
+    if (i >= this.kinds.length) {
+      this.reserve(Math.max(i + 1, this.kinds.length ? this.kinds.length * 2 : 1024));
+    }
+    this.kinds[i] = KIND_INDEX.get(entry.kind) ?? 0;
+    this.sizes[i] = entry.size;
+    const ms = Date.parse(entry.date);
+    if (!Number.isNaN(ms) && new Date(ms).toISOString() === entry.date) {
+      this.dates[i] = ms;
+    } else {
+      this.dates[i] = Number.NaN;
+      (this.extraDates ??= new Map()).set(i, entry.date);
+    }
+    let f = 0;
+    if (entry.origin) {
+      f |= FLAG_ORIGIN;
+      if (!this.store.readRecord) (this.origins ??= new Map()).set(i, entry.origin);
+    }
+    if (entry.receipt) {
+      f |= FLAG_RECEIPT;
+      (this.receipts ??= new Map()).set(i, entry.receipt);
+    }
+    this.flags[i] = f;
+  }
+
+  kind(i: number): Kind { return KINDS[this.kinds[i]]; }
+  size(i: number): number { return this.sizes[i]; }
+  date(i: number): string {
+    const ms = this.dates[i];
+    return Number.isNaN(ms) ? (this.extraDates?.get(i) ?? '') : new Date(ms).toISOString();
+  }
+  hasOrigin(i: number): boolean { return (this.flags[i] & FLAG_ORIGIN) !== 0; }
+  receipt(i: number): string | undefined { return (this.flags[i] & FLAG_RECEIPT) !== 0 ? this.receipts?.get(i) : undefined; }
+  origin(i: number): Origin | undefined {
+    if ((this.flags[i] & FLAG_ORIGIN) === 0) return undefined;
+    if (this.origins?.has(i)) return this.origins.get(i);
+    const rec = this.store.readRecord?.(i);
+    return rec && object(rec.origin) ? (rec.origin as unknown as Origin) : undefined;
+  }
+  text(i: number): string { return this.store.reader?.(i)?.() ?? ''; }
+}
+
+/** A summarized message whose text lives on disk. Holds only (i, cold) so each object stays ~24 bytes in V8. */
+class ColdEntry implements Entry {
+  constructor(readonly i: number, private readonly cold: ColdIndex) {}
+  get kind(): Kind { return this.cold.kind(this.i); }
+  get size(): number { return this.cold.size(this.i); }
+  get date(): string { return this.cold.date(this.i); }
+  get receipt(): string | undefined { return this.cold.receipt(this.i); }
+  get origin(): Origin | undefined { return this.cold.origin(this.i); }
+  get text(): string { return this.cold.text(this.i); }
+  toJSON() {
+    const receipt = this.receipt, origin = this.origin;
+    return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
+  }
 }
 /** A message the store loaded without its text (`FileStore.load(hot)`): its size travels instead, and `reader` gives the text. */
 function isColdRecord(value: unknown): boolean {
@@ -172,6 +239,7 @@ class ColdTreeMap implements Map<number, Summary> {
   private coldCount = 0;
   constructor(private readonly store: Store) {}
   get size() { return this.warm.size + this.coldCount; }
+  get warmSize() { return this.warm.size; }
   get coldSize() { return this.coldCount; }
   warmValues() { return this.warm.values(); }
   has(k: number) {
@@ -312,6 +380,7 @@ export class Memory {
   /** Where this memory's local files live: all of it for a FileStore, and the browser page, runs and imports for any store. */
   readonly directory: string;
   readonly store: Store;
+  private readonly cold: ColdIndex;
   lastError?: string;
 
   /** Resolves only when the complete memory is ready for use. */
@@ -331,6 +400,7 @@ export class Memory {
     let saved: Saved;
     if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; this.tree = new ColdTreeMap(store); saved = store.load(HOT_TEXTS); }
     else { ({ directory: this.directory, store: this.store, saved } = source); this.tree = new ColdTreeMap(this.store); }
+    this.cold = new ColdIndex(this.store);
     if (!initializeLater) runSync(this.initialize(saved));
   }
   private *initialize(saved: Saved): Generator<void, void> {
@@ -338,8 +408,15 @@ export class Memory {
     for (const value of entries) { if (!isEntry(value) && !isColdRecord(value)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.'); yield; }
     yield* sortSteps(entries, (a, b) => a.i - b.i);
     for (let i = 0; i < entries.length; i++) { if (entries[i].i !== i) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.'); yield; }
-    for (const value of entries) { this.root.push(isColdRecord(value) ? new ColdEntry(value, this.store) : { ...value, size: bytes(`${value.kind}: ${value.text}`) }); yield; }
+    this.cold.reserve(Math.max(0, entries.length - HOT_TEXTS));
+    for (const value of entries) {
+      if (isColdRecord(value)) { this.cold.set(value); this.root.push(new ColdEntry(value.i, this.cold)); }
+      else { this.root.push({ ...value, size: bytes(`${value.kind}: ${value.text}`) }); }
+      yield;
+    }
+    entries.length = 0;
     yield* this.loadTree(saved.tree);
+    saved.tree.length = 0;
     for (const node of this.tree.values()) { this.queueParent(node); yield; }
     for (let i = 0; i < this.root.length; i++) { if (!this.node({ l: 0, i })) this.unbuilt.add(i); yield; }
     for (let i = 0; i < this.root.length - HOT_TEXTS; i++) { this.chill(i); yield; }
@@ -366,19 +443,29 @@ export class Memory {
     }
     this.store.close?.();
   }
+  private chillUnshownTree() {
+    if (!this.store.hasNode || this.tree.warmSize <= this.chat.parts.length + this.compaction.parts.length + 64) return;
+    const shown = new Set([...this.chat.parts, ...this.compaction.parts].map(key));
+    for (const node of [...this.tree.warmValues()]) {
+      const id = key(node);
+      if (!shown.has(id) && Object.getOwnPropertyDescriptor(node, 'text')?.writable && this.store.hasNode(node.l, node.i)) {
+        this.tree.set(id, new ColdSummary(node.l, node.i, node.size, this.store));
+      }
+    }
+  }
   private *loadTree(records: unknown[]): Generator<void, void> {
-    const summaries: (Summary | ColdSummaryRecord)[] = [], originals: (Summary | ColdSummaryRecord)[] = [], terminal: TerminalRecord[] = [];
+    const revisions: (Summary | ColdSummaryRecord)[] = [], originals: (Summary | ColdSummaryRecord)[] = [], terminal: TerminalRecord[] = [];
     for (const value of records) {
-      if (isSummary(value) || isColdSummary(value)) { summaries.push(value); if (!value.revised) originals.push(value); }
+      if (isSummary(value) || isColdSummary(value)) { if (value.revised) revisions.push(value); else originals.push(value); }
       else if (isTerminalRecord(value)) terminal.push(value);
       else this.warn('Skipped an invalid OptChat summary record.');
       yield;
     }
     yield* sortSteps(originals, (a, b) => a.l - b.l || a.i - b.i);
     yield* this.loadSummaries(originals);
-    for (const value of summaries) {
+    originals.length = 0;
+    for (const value of revisions) {
       yield;
-      if (!value.revised) continue;
       if (!this.tree.has(key(value)) || (!isColdSummary(value) && !value.text.trim())) { this.warn('Skipped a revision of a missing OptChat summary.'); continue; }
       this.tree.set(key(value), isColdSummary(value) && this.store.hasNode?.(value.l, value.i)
         ? new ColdSummary(value.l, value.i, value.size, this.store)
@@ -431,7 +518,10 @@ export class Memory {
   private chill(i: number) {
     const entry = this.root[i];
     if (!entry || !this.node({ l: 0, i }) || !Object.getOwnPropertyDescriptor(entry, 'text')?.writable) return;
-    if (this.store.reader?.(i)) this.root[i] = new ColdEntry(entry, this.store);
+    if (this.store.reader?.(i)) {
+      this.cold.set(entry);
+      this.root[i] = new ColdEntry(i, this.cold);
+    }
   }
   node(part: Part) { return this.tree.get(key(part)); }
   /** Explicitly reset a policy-refused node; normal appends never clear this terminal block. */
@@ -622,6 +712,13 @@ export class Memory {
     for (let j = i + 1; j < this.root.length; j++) if (this.root[j].kind !== 'tool' && this.root[j].kind !== 'echo') return false;
     return true;
   }
+  private hasOriginInRange(from: number, to: number) {
+    for (let i = from; i < to && i < this.root.length; i++) {
+      const entry = this.root[i];
+      if (entry instanceof ColdEntry ? this.cold.hasOrigin(i) : !!entry.origin) return true;
+    }
+    return false;
+  }
   private async build(part: Part) {
     const source = part.l === 0 ? `${this.root[part.i].kind}: ${this.root[part.i].text}`
       : [0, 1].map(offset => this.text({ l: part.l - 1, i: 2 * part.i + offset })).join('\n');
@@ -630,7 +727,7 @@ export class Memory {
     const result = part.l === 0 && this.root[part.i].kind === 'tool' ? this.resultOf(part.i) : undefined;
     const call = part.l === 0 ? this.callOf(part.i) : undefined;
     let text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
-      historical: this.root.slice(start(part), end(part)).some(entry => !!entry.origin),
+      historical: this.hasOriginInRange(start(part), end(part)),
       ...(result === undefined ? {} : { result: cap(result, RESULT) }),
       ...(call ? { call: { i: call.i, text: cap(`tool: ${call.text}`, 4000) } } : {}) }, this.controller.signal)).trim();
     // A model may copy a differently tagged line from <chat>; the source message keeps its own kind.
@@ -645,6 +742,7 @@ export class Memory {
     if (!part.l) { this.unbuilt.delete(part.i); this.chat.built(part.i); this.compaction.built(part.i); }
     if (!this.retryAt.size && !this.terminal.size) this.lastError = undefined;
     if (this.fit()) this.save();
+    this.chillUnshownTree();
   }
   /** The tool call a result answers: a run of calls is followed by their results in the same order. A result that doesn't
    * start with the call's tool name (an `Agent error`, an odd import) has none. */
@@ -753,9 +851,9 @@ export class Memory {
   private extendHits(needle: string, index: HitIndex, end: number) {
     for (let i = index.scanned; i < end; i++) {
       this.scans++;
-      const entry = this.root[i];
-      if ((entry.kind === 'tool' || entry.kind === 'echo') && /^(zoom|search)[ :]/.test(entry.text)) continue;
-      if (entry.text.toLowerCase().includes(needle)) index.hits.push(i);
+      const entry = this.root[i], text = entry.text;
+      if ((entry.kind === 'tool' || entry.kind === 'echo') && /^(zoom|search)[ :]/.test(text)) continue;
+      if (text.toLowerCase().includes(needle)) index.hits.push(i);
     }
     index.scanned = Math.max(index.scanned, end);
   }
