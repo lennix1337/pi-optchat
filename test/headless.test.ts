@@ -436,7 +436,7 @@ test('an ended background shell reaches the model once as its own message: betwe
     await mid.ask('shell probe mid');
     const marker = `[shell ${midIds[0]}] `;
     // shell_start, then a foreground bash call that outlasts the shell: the report must join the same turn, before the reply.
-    assert.equal(mid.turns.length, 3, 'no extra model turn: the report was steered between the tool calls');
+    assert.equal(mid.turns.length, 3, `no extra model turn: the report was steered between the tool calls${mid.turns.length === 3 ? '' : reportDiagnostic(mid, marker)}`);
     assert.equal(mid.turns[2].split(marker).length - 1, 1, 'once, in the request after the bash result');
     assert.match(mid.turns[2], /mid-done/);
     assert.deepEqual(mid.errors, []);
@@ -463,7 +463,7 @@ test('a shell stopped with shell_stop reports the stop once, not as a failure', 
       diagnostic = `; shell_status=${status?.role === 'toolResult' ? textContent(status.content).slice(0, 500) : 'missing'}${reportDiagnostic(pi, marker)}`;
     }
     assert.equal(reported.length, 1, `the stop is reported in one model request${diagnostic}`);
-    assert.equal(reported[0].split(marker).length - 1, 1, 'once');
+    assert.equal(reported[0].split(marker).length - 1, 1, `once${reported[0].split(marker).length === 2 ? '' : reportDiagnostic(pi, marker)}`);
     assert.match(reported[0], /\[shell [^\]]+\] stopped · ran /);
     assert.deepEqual(pi.errors, []);
   } finally { await pi.close(); }
