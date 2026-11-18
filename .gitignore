@@ -1,3 +1,5 @@
 node_modules
 .env
 scratchpad/
+bench/latest.json
+bench/baseline.local.json
