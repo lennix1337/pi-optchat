@@ -35,6 +35,8 @@ test('spawn accepts a worker kind and a project specialist', () => {
   const explicit = { tasks: [{ task: 'not launched', kind: 'code', model: 'anthropic-account-2/claude-sonnet-5-5' }] };
   assert.deepEqual(validate(tools.get('spawn')!, explicit), explicit, 'a task may carry an explicit provider/model');
   assert.match(JSON.stringify(tools.get('spawn')!.parameters), /Explicit model as provider\/model/, 'the schema documents it');
+  const mcpOpt = { tasks: [{ task: 'not launched', kind: 'plan', mcp: true }, { task: 'not launched', kind: 'code', mcp: false }] };
+  assert.deepEqual(validate(tools.get('spawn')!, mcpOpt), mcpOpt, 'a task may opt in/out of external MCP servers');
   const crewCall = { action: 'read', project: 'lolidle-save-editor', part: 'proposals' };
   assert.deepEqual(validate(tools.get('crew')!, crewCall), crewCall);
   const linked = { action: 'add', text: 'fixture', source: 'latest', links: { prs: ['o/r#1'], runs: ['abcd1234'], reload: true, next: 'verify' } };

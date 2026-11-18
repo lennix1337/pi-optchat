@@ -11,7 +11,7 @@ import { Memory } from '../src/memory.ts';
 import { VIEW_DOC } from '../src/prompts.ts';
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
-import { leanProfile, leanSkill, WORKER_TOOLS } from '../src/lean-worker.ts';
+import { FAST_WORKER_KINDS, leanProfile, leanSkill, WORKER_TOOLS, workerBuiltins } from '../src/lean-worker.ts';
 import { removeDir } from './support.ts';
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
@@ -83,4 +83,14 @@ test('plan and hard workers add lsp, codemode and the web tools to the code set;
   assert.match(lean, /^# profile\nwho the operator is/);
   assert.deepEqual(['ripwire-orient', 'ripwire-resident', 'local-validation', 'systematic-debugging', 'verification-before-completion', 'writing-for-agents'].filter(leanSkill), ['ripwire-orient', 'ripwire-resident', 'local-validation', 'systematic-debugging', 'verification-before-completion', 'writing-for-agents']);
   assert.ok(!leanSkill('stripe-billing') && !leanSkill('skill-catalog') && !leanSkill('impeccable'));
+  const all = ['mcp', 'codemode', 'tool-search'];
+  for (const kind of ['plan', 'mechanical'] as const) {
+    assert.ok(FAST_WORKER_KINDS.has(kind));
+    assert.deepEqual(workerBuiltins(all, { kind }), ['codemode', 'tool-search'], `${kind} skips mcp by default`);
+    assert.deepEqual(workerBuiltins(all, { kind, mcp: true }), all, `${kind} keeps mcp when the contract opts in`);
+  }
+  for (const kind of ['code', 'hard', undefined] as const) {
+    assert.deepEqual(workerBuiltins(all, { kind }), all, `${kind ?? 'plain'} keeps mcp by default`);
+    assert.deepEqual(workerBuiltins(all, { kind, mcp: false }), ['codemode', 'tool-search'], `${kind ?? 'plain'} skips mcp when mcp: false`);
+  }
 });

@@ -6,7 +6,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import * as sdk from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { getSupportedThinkingLevels, type Api, type Model } from '@earendil-works/pi-ai';
-import { leanProfile, leanSkill, PATROL_TOOLS, WORKER, WORKER_CWD, WORKER_TOOLS } from './lean-worker.ts';
+import { leanProfile, leanSkill, PATROL_TOOLS, WORKER, WORKER_CWD, WORKER_TOOLS, workerBuiltins } from './lean-worker.ts';
 import { patrolBashRefusal, patrolTool } from './patrol.ts';
 import { allowSearch, CONNECTED, cutOffChildren, delegation, NO_DELEGATION, NOT_CONNECTED, RESTARTED, SEARCH_DOC, STEERABLE, SUBAGENT, VIEW_DOC } from './prompts.ts';
 import { memoryTools, runPage, searchTool } from './tools.ts';
@@ -148,7 +148,8 @@ export function specialistMemoryTool(crew: () => Crew, project: Specialist, tran
 /** `model` is `provider/model` and overrides the kind's route; it may be any account or provider. */
 /** `peer` pairs a contract worker with an existing one of the same project (a reviewer names its author): both get tell_peer. */
 /** `patrol`: a read-only worker of the project (see patrol.ts), started by the heartbeat only; its report is recorded, never delivered, unless it fails. */
-export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist; model?: string; peer?: string; patrol?: boolean }
+/** `mcp`: explicit opt-in/out for external MCP servers (plan/mechanical skip `mcp` by default). */
+export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist; model?: string; peer?: string; patrol?: boolean; mcp?: boolean }
 /** Why `task` may not pair with its `peer` (undefined: it may): only two of the main agent's contract workers of one project, each with no other peer. */
 export function peerRefusal(records: ReadonlyMap<string, RunInfo>, task: SpawnTask, project: string | undefined) {
   const id = task.peer;
@@ -670,12 +671,12 @@ export class Children {
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = ids?.[index] ?? randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
-        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined, patrol: task.patrol,
+        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined, patrol: task.patrol, mcp: task.mcp,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
           parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [], ...(connected ? { connected: true } : {}),
-          ...(task.kind ? { kind: task.kind, project } : {}), ...(task.patrol ? { patrol: true } : {}), ...(task.peer ? { peer: { id: task.peer, sent: 0 } } : {}) };
+          ...(task.kind ? { kind: task.kind, project } : {}), ...(task.patrol ? { patrol: true } : {}), ...(task.mcp !== undefined ? { mcp: task.mcp } : {}), ...(task.peer ? { peer: { id: task.peer, sent: 0 } } : {}) };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
         launched.push(live); this.save(info); this.running.set(id, live);
         this.launching--; reserved--;
@@ -700,7 +701,7 @@ export class Children {
   /** `project`: a contract worker's specialist, whose memory tree it may read with specialist_memory. `peer`: it is paired, so it gets tell_peer now;
    * an unpaired worker gets it when a later spawn pairs it (peerTools). `contract`: the child has a worker kind. */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; connected: boolean; provider: string; model: Model<Api>;
-    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind; contract?: boolean; patrol?: boolean }) {
+    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind; contract?: boolean; patrol?: boolean; mcp?: boolean }) {
     const { id, directory, depth, parentId, connected, kind } = o;
     const crew = this.options.crew;
     const specialist = crew && o.project ? [specialistMemoryTool(() => crew, o.project, run => this.transcript(run))] : [];
@@ -719,7 +720,7 @@ export class Children {
       noPromptTemplates: true,
       ...(kind ? { skillsOverride: <T extends { name: string }, D>(base: { skills: T[]; diagnostics: D[] }) => ({ ...base, skills: base.skills.filter(skill => leanSkill(skill.name)) }) } : {}),
       extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(e => !isOptchat(e.resolvedPath)) }),
-      extensionFactories: [...builtinExtensions(this.options.builtins?.() ?? []), pi => {
+      extensionFactories: [...builtinExtensions(workerBuiltins(this.options.builtins?.() ?? [], { kind, mcp: o.mcp })), pi => {
         registerPerformance(pi, () => metrics);
         pi.on('model_select', event => {
           const live = this.running.get(id);
@@ -1355,7 +1356,7 @@ export class Children {
     this.launching++; this.resuming.add(id);
     let reserved = true;
     try {
-      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol });
+      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol, mcp: run.mcp });
       // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
       if (!this.resumeOpenValid(id, run, session, snapshot, route, automaticGeneration)) {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping, or the worker or route changed while opening; nothing was started.');
