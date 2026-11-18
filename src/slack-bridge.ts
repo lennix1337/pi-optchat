@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
 import { textContent } from './transcript.ts';
+import { transcribeAudio } from './transcribe.ts';
 import { budgetNote, fitPost, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
 import { WAKE_LOG_CHANNEL, wakeLogPost } from './wake-log.ts';
@@ -207,7 +208,9 @@ export class SlackBridge {
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
     abort: () => boolean;
     /** When the heartbeat next checks for a wake, if armed. */
-    nextWake: () => number | undefined };
+    nextWake: () => number | undefined;
+    /** A voice note he sent, as text (src/transcribe.ts). */
+    transcribe: (path: string) => Promise<string> };
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
@@ -222,7 +225,7 @@ export class SlackBridge {
   constructor(private readonly pi: Pick<ExtensionAPI, 'sendUserMessage'>, private readonly owner: () => SlackOwner | undefined,
     options: Partial<SlackBridge['options']> = {}) {
     this.options = { intervalMs: 3000, waitMs: LONG_POLL_MS, heldMs: HELD_MS, now: Date.now, request: defaultRequest, warn: () => {}, sent: () => {}, schedule: (run, ms) => { setTimeout(run, ms).unref?.(); }, wordBudgets: {}, items: () => NO_WORK, accepting: () => true, model: () => undefined, failover: failoverReader(QUOTA_FILE),
-      models: () => [], select: async () => false, abort: () => false, nextWake: () => undefined, ...options };
+      models: () => [], select: async () => false, abort: () => false, nextWake: () => undefined, transcribe: transcribeAudio, ...options };
   }
 
   /**
@@ -376,8 +379,15 @@ export class SlackBridge {
   private async attachment(owner: SlackOwner, file: SlackFile): Promise<string> {
     try {
       const { path } = await this.options.request(owner, '/v1/slack/download', { url: file.url, name: file.name }) as { path: string };
-      const hint = file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') ? ' (transcreva com transcribe_file)' : file.mimetype.startsWith('image/') ? ' (veja com read)' : '';
-      return `- ${file.name} [${file.mimetype}]: ${path}${hint}`;
+      const line = `- ${file.name} [${file.mimetype}]: ${path}`;
+      if (file.mimetype.startsWith('audio/')) {
+        // A voice note is read as he spoke it: the agent gets the words, not a file it may have no tool to open.
+        try {
+          const words = (await this.options.transcribe(path)).trim();
+          return words ? `${line}\n  Transcrição: "${words}"` : `${line} (transcrição local vazia)`;
+        } catch (error) { return `${line} (transcrição local falhou: ${error instanceof Error ? error.message : String(error)})`; }
+      }
+      return `${line}${file.mimetype.startsWith('video/') ? ' (vídeo: transcreva o áudio dele)' : file.mimetype.startsWith('image/') ? ' (veja com read)' : ''}`;
     } catch (error) { return `- ${file.name} [${file.mimetype}]: não baixou (${error instanceof Error ? error.message : String(error)})`; }
   }
 
