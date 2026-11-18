@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { errorCategory } from './compactor-diagnostics.ts';
-import type { DueItem } from './commitment-due.ts';
+import { dueFindings, type DueItem, type DueState } from './commitment-due.ts';
 import { missionProjects, specialistOf } from './crew.ts';
 import type { RunInfo } from './runs.ts';
 
@@ -139,4 +139,102 @@ export function invalidTriage(value: unknown) {
   const positive = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0;
   return plan && positive(plan.buildMinutes) && (plan.stallHours === undefined || positive(plan.stallHours)) ? undefined
     : 'wakeTriage must be { "buildMinutes": minutes, "stallHours": hours (optional) }, each a positive number.';
+}
+
+export type TriageDecision = 'drop' | 'react';
+
+export interface PreTriageInput {
+  /** Current radar snapshot text, or undefined if no radar is configured. */
+  radar?: string;
+  /** Normalized radar digest from the previous tick/wake, if any. */
+  previousRadarDigest?: string;
+  /** Whether the work queue (`heartbeat-queue.md`) has an open `[ ]` item. */
+  queued?: boolean;
+  /** How the last turn ended, when it was not a normal stop. */
+  lastStop?: string;
+  /** Open commitments that might be due, overdue, or have a failed probe. */
+  commitments?: readonly DueItem[];
+  /** Previous commitment due/escalation tracking state. */
+  dueState?: DueState;
+  /** Number of currently running subagents. */
+  runningAgents?: number;
+  /** Number of currently running background shells. */
+  runningShells?: number;
+  /** Current time in ms (for commitment due checks). */
+  now: number;
+}
+
+export interface PreTriageResult {
+  decision: TriageDecision;
+  /** Short reason for the wake log and diagnostics. */
+  reason: string;
+  /** Normalized radar digest when radar was readable, so callers can persist it. */
+  radarDigest?: string;
+}
+
+const MIN_NOISE_FREE_GIB = 10;
+const RADAR_INTRO = /^Read-only snapshot for choosing work\b/i;
+const PROBES_OK = /^-\s*(\d+)\s+of\s+(\d+)\s+probes?\s+OK\b/i;
+const DISK_FREE = /^-\s*\S+\s+([\d.,]+)\s*(GiB|TiB|MiB|KiB|B)\s+free\b/i;
+
+/** True when every non-header line in a readable radar is non-actionable noise (healthy probes, plenty of disk, or `nothing notable`). */
+export function isRadarNoiseOnly(radar: string): boolean {
+  if (!radar || radar.startsWith(UNAVAILABLE)) return false;
+  let sawContent = false;
+  for (const raw of radar.split('\n')) {
+    const line = raw.trim();
+    if (!line || /^#/.test(line) || RADAR_INTRO.test(line)) continue;
+    if (TRUNCATED.test(line)) return false;
+    sawContent = true;
+    if (/^-\s*nothing notable$/i.test(line) || /^\(none\)$/i.test(line)) continue;
+    const probe = PROBES_OK.exec(line);
+    if (probe && Number(probe[2]) > 0 && Number(probe[1]) === Number(probe[2])) continue;
+    const disk = DISK_FREE.exec(line);
+    if (disk) {
+      const amount = Number(disk[1].replace(/,/g, '')), unit = disk[2];
+      const gib = unit === 'TiB' ? amount * 1024 : unit === 'GiB' ? amount : 0;
+      if (gib >= MIN_NOISE_FREE_GIB) continue;
+    }
+    return false;
+  }
+  return sawContent;
+}
+
+/** Normalized digest of a readable radar (volatile figures stripped); undefined when missing or unavailable. */
+export function normalizedRadarDigest(radar: string | undefined): string | undefined {
+  if (!radar || radar.startsWith(UNAVAILABLE)) return undefined;
+  const lines = radar.split('\n').filter(line => !/^# Wake radar\b/.test(line)).map(steadyLine).filter(Boolean);
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+/**
+ * Deterministic zero-cost pre-triage before calling the cloud heartbeat model (`HEARTBEAT_PROMPT`).
+ * Fails open (`react`) whenever anything is uncertain, missing, or actionable.
+ */
+export function preTriage(input: PreTriageInput): PreTriageResult {
+  const digest = normalizedRadarDigest(input.radar);
+  if (input.queued) return { decision: 'react', reason: 'queued work item', ...digest ? { radarDigest: digest } : {} };
+  const stop = input.lastStop?.trim();
+  if (stop && !/^(?:normally|stop)$/i.test(stop)) {
+    return { decision: 'react', reason: `last turn stopped (${stop.slice(0, 60)})`, ...digest ? { radarDigest: digest } : {} };
+  }
+  if ((input.runningAgents ?? 0) > 0 || (input.runningShells ?? 0) > 0) {
+    return { decision: 'react', reason: 'running agents or shells', ...digest ? { radarDigest: digest } : {} };
+  }
+  if (input.commitments?.length) {
+    const due = dueFindings(input.commitments, input.dueState ?? { dueSeen: [], escalated: {} }, input.now);
+    if (due.findings.length > 0) {
+      return { decision: 'react', reason: `commitment: ${due.findings[0]!.line.slice(0, 60)}`, ...digest ? { radarDigest: digest } : {} };
+    }
+  }
+  if (!input.radar || input.radar.startsWith(UNAVAILABLE) || digest === undefined) {
+    return { decision: 'react', reason: input.radar ? 'radar unavailable (fail-open)' : 'no radar (fail-open)' };
+  }
+  if (isRadarNoiseOnly(input.radar)) {
+    return { decision: 'drop', reason: 'radar noise only', radarDigest: digest };
+  }
+  if (input.previousRadarDigest !== undefined && digest === input.previousRadarDigest) {
+    return { decision: 'drop', reason: 'nothing changed', radarDigest: digest };
+  }
+  return { decision: 'react', reason: input.previousRadarDigest === undefined ? 'initial radar has signals' : 'radar changed', radarDigest: digest };
 }

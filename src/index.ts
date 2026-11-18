@@ -30,7 +30,7 @@ import { QUOTA_FILE, quotaPlan, readQuotaState, routeBlock } from './quota-healt
 import { QuotaOutage } from './quota-hold.ts';
 import { REPORT_GATHER_MS, ReportDispatcher } from './report-dispatch.ts';
 import { packReports } from './report-bundle.ts';
-import { knownProviders, pickWakeRoute } from './wake-route.ts';
+import { knownProviders, pickWakeRoute, queryLocalTriage } from './wake-route.ts';
 import { createCompressor, resolveModel } from './compactor.ts';
 import { writeCacheDiagnostic, writeCompactorDiagnostic, writeRecoveryDiagnostic, sanitizeRecoveryDiagnostic } from './compactor-diagnostics.ts';
 import { createProfile, dataHome, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, modelFor, profilePath, rememberProfile, roleModel, saveConfig, wakeModelFor, wakeRoutes, ProfileBusyError, type MainModel, type ProfileConfig } from './profiles.ts';
@@ -59,7 +59,7 @@ import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
 import { registerReadChainHint } from './read-chain.ts';
 import { Crew, MANAGER_DOC, crewTool, crewWakeNote, pauseOnApiKey, routeFor } from './crew.ts';
-import { lastRunsOf } from './wake-signals.ts';
+import { lastRunsOf, preTriage } from './wake-signals.ts';
 import { createPatrol, escalationNote } from './patrol.ts';
 import { registerPowerShellQuotingGuard } from './powershell-quoting.ts';
 import { registerBashTimezoneGuard } from './bash-timezone.ts';
@@ -498,6 +498,28 @@ export default function optchat(host: ExtensionAPI) {
       },
       check: radar => own() ? checkBeat(ctx.modelRegistry, modelFor(profile.config, 'compactor', main), beatState(ctx, profile, radar),
         message => profile.usage.compression(message, 'heartbeat', profile.sessionId)) : Promise.reject(new Error('profile closed')),
+      preTriage: async (radar, previousRadarDigest, dueState) => {
+        const current = own();
+        if (!current) return { decision: 'react', reason: 'profile closed' };
+        const det = preTriage({
+          radar,
+          previousRadarDigest,
+          queued: nextQueueItem(current.dir) !== undefined,
+          lastStop: lastStopOf(ctx),
+          commitments: readCommitments(current.dir),
+          dueState,
+          runningAgents: current.children.ids.flatMap(id => current.children.live(id)?.info ?? []).length,
+          runningShells: runningShells(shells).length,
+          now: Date.now(),
+        });
+        if (det.decision === 'drop') return det;
+        const local = current.config.localTriage;
+        if (local?.enabled) {
+          const localResult = await queryLocalTriage(local, beatState(ctx, current, radar));
+          if (localResult.decision === 'drop') return { ...localResult, ...det.radarDigest ? { radarDigest: det.radarDigest } : {} };
+        }
+        return det;
+      },
       // Cached quota only (pi-multi-account keeps the file): a wake never starts on a provider known to be out, and never probes one.
       route: blocks => {
         const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
