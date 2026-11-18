@@ -153,7 +153,7 @@ test('grep query matches regex with merged context hunks and bounds', () => {
   } finally { f.close(); }
 });
 
-test('json query supports array filter, limit, and per-item fields', () => {
+test('json query supports array filter and per-item fields', () => {
   const f = fixture();
   try {
     const store = new OutputStore(f.dir, 'session');
@@ -165,8 +165,8 @@ test('json query supports array filter, limit, and per-item fields', () => {
       ],
     };
     const ref = store.put(JSON.stringify(payload));
-    const filtered = store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'status', equals: 'failure' }, fields: ['id', 'msg'], limit: 1 });
-    assert.ok(filtered.endsWith('[{"id":2,"msg":"timeout on auth"}]'));
+    const filtered = store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'status', equals: 'failure' }, fields: ['id', 'msg'] });
+    assert.ok(filtered.endsWith('[{"id":2,"msg":"timeout on auth"},{"id":3,"msg":"db error"}]'));
     const contains = store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'msg', contains: 'AUTH' }, fields: ['id'] });
     assert.ok(contains.endsWith('[{"id":2}]'));
     assert.throws(() => store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'constructor', equals: 1 } }), /Invalid JSON filter field/);

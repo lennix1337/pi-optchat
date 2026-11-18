@@ -38,10 +38,12 @@ test('zoom, search and output_read reject unknown keys, nested query keys includ
       assert.deepEqual(validate(search, { text: 'alpha', before: 3 }), { text: 'alpha', before: 3 });
       assert.deepEqual(validate(outputRead, { ref: REF, offset: 0, limit: 10, findText: 'x' }), { ref: REF, offset: 0, limit: 10, findText: 'x' });
       assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'lines', startLine: 1, endLine: 2 } }).query, { kind: 'lines', startLine: 1, endLine: 2 });
-      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'json', path: '$.a', fields: ['b'], filter: { field: 'b', equals: 'ok' }, limit: 10 } }).query,
-        { kind: 'json', path: '$.a', fields: ['b'], filter: { field: 'b', equals: 'ok' }, limit: 10 });
-      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'grep', pattern: 'err', ignoreCase: true, context: 2, maxMatches: 10 } }).query,
-        { kind: 'grep', pattern: 'err', ignoreCase: true, context: 2, maxMatches: 10 });
+      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'json', path: '$.a', fields: ['b'], filter: { field: 'b', equals: 'ok' } } }).query,
+        { kind: 'json', path: '$.a', fields: ['b'], filter: { field: 'b', equals: 'ok' } });
+      assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'json', path: '$.a', limit: 10 } }), /limit/);
+      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'grep', pattern: 'err', ignoreCase: true, context: 2 } }).query,
+        { kind: 'grep', pattern: 'err', ignoreCase: true, context: 2 });
+      assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'grep', pattern: 'err', maxMatches: 10 } }), /maxMatches/);
       assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'outline', maxDepth: 3 } }).query, { kind: 'outline', maxDepth: 3 });
     } finally { await memory.close(); }
   });

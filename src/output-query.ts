@@ -1,7 +1,7 @@
 export const OUTPUT_QUERY_MAX_LINES = 200;
 export const OUTPUT_QUERY_MAX_FIELDS = 50;
 export const OUTPUT_QUERY_MAX_BYTES = 24_000;
-export const OUTPUT_QUERY_MAX_MATCHES = 200;
+export const OUTPUT_QUERY_MAX_MATCHES = 50;
 export const OUTPUT_QUERY_MAX_CONTEXT = 10;
 
 export type JsonFilter = {
@@ -12,8 +12,8 @@ export type JsonFilter = {
 
 export type OutputQuery =
   | { kind: 'lines'; startLine: number; endLine: number }
-  | { kind: 'json'; path?: string; fields?: string[]; filter?: JsonFilter; limit?: number }
-  | { kind: 'grep'; pattern: string; ignoreCase?: boolean; context?: number; maxMatches?: number }
+  | { kind: 'json'; path?: string; fields?: string[]; filter?: JsonFilter }
+  | { kind: 'grep'; pattern: string; ignoreCase?: boolean; context?: number }
   | { kind: 'outline'; maxDepth?: number };
 
 type PathSegment = string | number;
@@ -171,12 +171,6 @@ function jsonQuery(text: string, query: Extract<OutputQuery, { kind: 'json' }>) 
   catch { throw new Error('Stored output is not valid JSON'); }
   let value = query.path === undefined ? root : resolvePath(root, parsePath(query.path));
   if (query.filter !== undefined) value = filterJsonArray(value, query.filter);
-  if (query.limit !== undefined) {
-    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 200)
-      throw new Error('Invalid JSON limit; use 1-200');
-    if (!Array.isArray(value)) throw new Error('JSON limit requires an array');
-    value = value.slice(0, query.limit);
-  }
   const result = query.fields === undefined
     ? value
     : Array.isArray(value)
@@ -191,11 +185,8 @@ function grepQuery(text: string, query: Extract<OutputQuery, { kind: 'grep' }>) 
   if (typeof query.pattern !== 'string' || !query.pattern.length || query.pattern.length > 500)
     throw new Error('Invalid grep pattern: provide 1-500 characters');
   const context = query.context ?? 2;
-  const maxMatches = query.maxMatches ?? 50;
   if (!Number.isSafeInteger(context) || context < 0 || context > OUTPUT_QUERY_MAX_CONTEXT)
     throw new Error(`Invalid grep context: use 0-${OUTPUT_QUERY_MAX_CONTEXT}`);
-  if (!Number.isSafeInteger(maxMatches) || maxMatches < 1 || maxMatches > OUTPUT_QUERY_MAX_MATCHES)
-    throw new Error(`Invalid grep maxMatches: use 1-${OUTPUT_QUERY_MAX_MATCHES}`);
   let regex: RegExp;
   try { regex = new RegExp(query.pattern, query.ignoreCase ? 'i' : ''); }
   catch (error) { throw new Error(`Invalid grep pattern: ${error instanceof Error ? error.message : String(error)}`); }
@@ -206,7 +197,7 @@ function grepQuery(text: string, query: Extract<OutputQuery, { kind: 'grep' }>) 
   for (let i = 0; i < lines.length; i++) {
     if (regex.test(lines[i])) {
       totalMatches++;
-      if (matched.length < maxMatches) matched.push(i);
+      if (matched.length < OUTPUT_QUERY_MAX_MATCHES) matched.push(i);
     }
   }
   const flags = query.ignoreCase ? 'i' : '';
@@ -227,7 +218,7 @@ function grepQuery(text: string, query: Extract<OutputQuery, { kind: 'grep' }>) 
   });
   const shown = totalMatches > matched.length ? ` (showing first ${matched.length})` : '';
   const header = `[Grep /${query.pattern}/${flags}: ${totalMatches} ${totalMatches === 1 ? 'match' : 'matches'}${shown} in ${lines.length} lines]`;
-  return boundedResult(`${header}\n${hunks.join('\n--\n')}`, 'a narrower pattern, smaller context, or smaller maxMatches');
+  return boundedResult(`${header}\n${hunks.join('\n--\n')}`, 'a narrower pattern or smaller context');
 }
 
 function describeJson(value: unknown, depth: number, maxDepth: number): string {
