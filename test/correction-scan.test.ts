@@ -18,6 +18,7 @@ const cases: [string, object, object][] = [
  ['utc-time', text('Às 03:17Z.'), text('Às 00:17.')],
  ['force-action', call('bash',{command:'git push --force'}), call('bash',{command:'git push origin main'})],
  ['unchecked-own-work', text('O worker foi relançado. Não confirmei que ele começou de fato.'), text('O worker está rodando: tarefa Running e passo 43 no log.')],
+ ['cause-claim', call('bash',{command:'gh issue comment 168 --body "Causa achada: o merge com GITHUB_TOKEN não dispara push."'}), call('bash',{command:'gh issue comment 168 --body "Hipótese, não verificada: o merge com GITHUB_TOKEN pode não disparar push."'})],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
@@ -121,4 +122,10 @@ test('scan skips files untouched since the window and a half-written last line',
   utimesSync(join(dir,'old.jsonl'), new Date('2026-11-01'), new Date('2026-11-01'));
   assert.equal(scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r=>r.id==='free-action')?.count, 1);
  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+test('cause-claim flags only gh issue/PR comments or closes that state a cause as fact (18/11 #168)', () => {
+ const rule = rules.find(r => r.id === 'cause-claim')!;
+ for (const c of ['gh issue close 168 -c "Root cause found: token"', 'gh pr comment 5 --body "A causa raiz é o cache"', 'gh issue comment 1 -b "causa encontrada"']) assert.equal(detect(rule, call('bash',{command:c})), true, c);
+ for (const c of ['gh issue comment 1 -b "causa encontrada (hipótese, não verificada)"', 'echo "causa achada"', 'gh issue comment 1 -b "Resolvida pelo #170"']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
+ assert.equal(detect(rule, text('Causa achada: o cache.')), false);
 });
