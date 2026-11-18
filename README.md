@@ -1,10 +1,25 @@
-![Pi-OptChat: persistent memory for Pi](https://raw.githubusercontent.com/jonaslsaa/pi-optchat/main/docs/banner.jpg)
+![pi-optchat: an always-on engineering agent that remembers everything](docs/hero.svg)
 
 # pi-optchat
 
-**Persistent memory, supervised agents, and safer long-running work inside Pi.**
+**An always-on engineering agent for [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) that remembers everything, works through the night and ships on its own.**
 
-This is [lennix1337's fork](https://github.com/lennix1337/pi-optchat) of [jonaslsaa/pi-optchat](https://github.com/jonaslsaa/pi-optchat), built on [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449). One endless chat per profile, remembered through a summary tree rather than repeatedly replacing the conversation with a single summary. Originals stay available through `zoom`.
+pi-optchat turns Pi into a long-running teammate. It lives on a small VM, keeps one endless conversation with its operator (about 174,000 messages so far, all still reachable), takes orders from Slack on the phone, and carries each one to done: code, tests, pull request, CI, merge and, when the operator says so, a production deploy with a live check at the end.
+
+What a normal day looks like:
+
+- **Orders from the phone.** A Slack DM or channel message becomes a turn. The answer comes back to the same thread; long work reports progress there without being asked.
+- **CI wakes it up.** [pi-gitwatch](https://github.com/lennix1337/pi-gitwatch) follows every PR it opens. A red check, a conflict or a green "ready to merge" arrives as a message, and the agent fixes, rebases or merges. When Actions is blocked, the repository's own local gate stands in for CI.
+- **A crew, not a single model.** The main model plans, reviews and integrates; workers on other routes (Claude, Codex accounts, Gemini through Antigravity on the operator's PC) take implementation and investigations in parallel worktrees. Quota is paced across accounts so the week never runs dry before the reset.
+- **Wakes.** With nobody watching, scheduled wakes work the open PRs and issues first, then build something new, and post a report with every link.
+- **Guardrails it cannot talk its way past.** Production deploys, spending, account changes and messages to other people need the operator's words, recorded verbatim with a scope and an expiry. Uncertain effects are reconciled from evidence, never retried blind.
+- **It learns.** A daily retro turns each correction into a rule or a fix with a test, and every night it predicts tomorrow's requests and scores itself the next day.
+
+The memory is the core. Every message is logged and summarized into a binary tree, so each turn starts from a fresh, bounded view of the whole history instead of a single lossy summary; `zoom` opens any line down to the original message. The idea comes from [Victor Taelin's OptChat recipe](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
+
+> **Origins.** This repository started on 5 October 2026 as a fork of [jonaslsaa/pi-optchat](https://github.com/jonaslsaa/pi-optchat). Since then it has taken about 500 commits and 392 merged pull requests, and grown into a different product: Slack, wakes, the crew, quota pacing, approvals, gitwatch, the deploy path and the assistant service are all new. Thanks to Jonas for the starting point.
+
+Under the hood, per profile:
 
 - **Memory**: every message is logged and summarized into a binary tree. Each turn starts from a fresh context holding a bounded memory view; the agent uses `zoom` and `date` to read originals.
 - **Profiles**: separate memories and instructions, such as `work` and `personal`.
@@ -14,7 +29,7 @@ This is [lennix1337's fork](https://github.com/lennix1337/pi-optchat) of [jonasl
 
 It runs inside ordinary Pi, without a Pi runtime fork or separate launcher.
 
-## What this fork adds
+## Capabilities
 
 | Area | Current capabilities |
 | --- | --- |
