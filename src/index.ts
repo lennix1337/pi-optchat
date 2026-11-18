@@ -3,7 +3,7 @@ import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { finalText, registerSlackBridge } from './slack-bridge.ts';
-import { CLAIM_CHECK_PREFIX, claimRetryText, evidenceText, unbackedClaims, unbackedNote } from './claim-check.ts';
+import { CLAIM_CHECK_PREFIX, branchEvidenceMessages, claimRetryText, evidenceText, unbackedClaims, unbackedNote } from './claim-check.ts';
 import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
@@ -1309,7 +1309,7 @@ export default function optchat(host: ExtensionAPI) {
     const settled = !waitingReload && !waitingWorkers && !fault && !stopping;
     const settledCleanly = settled && !_event.aborted;
     // What earlier runs of the session showed backs a claim too (a merge seen an hour ago); the agent's own words never do.
-    const recent = () => ctx.sessionManager.getBranch().slice(-CLAIM_HISTORY).flatMap(e => e.type === 'message' ? [e.message] : []);
+    const recent = () => branchEvidenceMessages(ctx.sessionManager.getBranch().slice(-CLAIM_HISTORY) as Parameters<typeof branchEvidenceMessages>[0]);
     const claims = settledCleanly && finalText(messages) ? unbackedClaims(finalText(messages), evidenceText([...recent(), ...messages])) : [];
     const retry = (wake && settled ? wakeRetry(wake, wakeRetried) : undefined) ??
       (claims.length && !claimRetried && settledCleanly ? claimRetryText(claims) : undefined);

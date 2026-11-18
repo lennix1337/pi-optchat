@@ -33,6 +33,15 @@ export function evidenceText(messages: readonly AgentMessage[]): string {
   return messages.filter(m => m.role !== 'assistant').map(m => textContent((m as { content?: unknown }).content, false)).join('\n');
 }
 
+/**
+ * What the session branch holds that may back a claim: its messages and the notices injected between runs (gitwatch's
+ * "#167 merged af268f09" is a custom message, not a message entry, and was left out: a merge it reported was flagged as unbacked).
+ */
+export function branchEvidenceMessages(entries: readonly { type: string; message?: AgentMessage; content?: unknown }[]): AgentMessage[] {
+  return entries.flatMap((e): AgentMessage[] => e.type === 'message' && e.message ? [e.message]
+    : e.type === 'custom_message' ? [{ role: 'user', content: e.content, timestamp: 0 } as AgentMessage] : []);
+}
+
 export function unbackedClaims(reply: string, evidence: string): string[] {
   const out = new Set<string>();
   const seen = (token: string) => evidence.includes(token);
