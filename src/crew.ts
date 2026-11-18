@@ -9,6 +9,7 @@ import { Memory, type Compressor } from './memory.ts';
 import { SLUG } from './slug.ts';
 import type { RunInfo } from './runs.ts';
 import { atomicWrite } from './store.ts';
+import { scrubSecrets } from './secret-scrub.ts';
 import { stringEnum } from './string-enum.ts';
 import { readMemory, result } from './tools.ts';
 import type { Signal } from './wake-signals.ts';
@@ -215,7 +216,7 @@ function capBytes(text: string, cap: number) {
 export function digestOf(info: RunInfo) {
   const iso = (ms: number | undefined) => ms === undefined ? '?' : new Date(ms).toISOString();
   const head = `[run ${info.id}] ${info.kind ?? 'subagent'} ${info.state} ${iso(info.started)} → ${iso(info.ended)}, cwd ${info.cwd}, model ${info.model}\nGoal: ${goalOf(info.task)}`;
-  return capBytes(`${head}\n${withoutProposal(info.report ?? '')}`.trimEnd(), DIGEST_BYTES);
+  return capBytes(scrubSecrets(`${head}\n${withoutProposal(info.report ?? '')}`.trimEnd()), DIGEST_BYTES);
 }
 const ago = (ms: number) => { const hours = Math.max(0, ms) / 3_600_000; return hours < 48 ? `${hours.toFixed(1)} h ago` : `${(hours / 24).toFixed(1)} d ago`; };
 /** The view a brief carries: whole under SPECIALIST_VIEW_BYTES (the view folds at that budget), else its newest lines that fit. */
@@ -282,7 +283,7 @@ export class Crew {
   private savePending(list: Proposal[]) { mkdirSync(this.dir, { recursive: true }); atomicWrite(this.pendingFile(), `${JSON.stringify(list, null, 1)}\n`); }
   /** Records a run's proposal; a run reporting again replaces its earlier one. */
   propose(specialist: Specialist, runId: string, text: string, date = new Date().toISOString()) {
-    this.savePending([...this.pending().filter(p => p.runId !== runId), { specialist, runId, date, text }]);
+    this.savePending([...this.pending().filter(p => p.runId !== runId), { specialist, runId, date, text: scrubSecrets(text) }]);
   }
   /** How many proposals wait for each specialist, and how many days (one decimal) the oldest has waited. */
   pendingCounts(now = Date.now()) {
@@ -303,7 +304,8 @@ export class Crew {
   stored(specialist: Specialist, part: 'charter' | 'memory') { return storedText(this.file(specialist, part)); }
   /** Replaces a charter or memory whole. */
   write(specialist: Specialist, part: 'charter' | 'memory', text: string) {
-    const size = writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, text, 'trim stale or duplicated lines');
+    const clean = part === 'memory' ? scrubSecrets(text) : text;
+    const size = writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, clean, 'trim stale or duplicated lines');
     // Writing the memory is the manager's answer to what the workers proposed.
     if (part === 'memory' && this.pending().some(p => p.specialist === specialist)) this.savePending(this.pending().filter(p => p.specialist !== specialist));
     // A rewritten memory is a reviewed one.

@@ -6,6 +6,7 @@ import { setImmediate as yieldLoop } from 'node:timers/promises';
 import { runSync } from './sliced.ts';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Entry, Summary } from './memory.ts';
+import { scrubSecrets } from './secret-scrub.ts';
 
 /** The image types memory keeps, and the file extension each is saved under. */
 export const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' } as const;
@@ -475,9 +476,11 @@ export class FileStore implements Store {
   append(entry: Entry): undefined {
     const file = join(this.directory, 'main', `${localDay()}.jsonl`);
     if (!this.lastSeenBytes.has(file)) this.checkLog(file);
-    const length = Buffer.byteLength(JSON.stringify(entry)), size = appendJson(file, entry, this.lastSeenBytes.get(file) ?? 0);
+    const clean = entry.kind === 'echo' ? scrubSecrets(entry.text) : entry.text;
+    const record = clean === entry.text ? entry : { ...entry, text: clean, size: Buffer.byteLength(`${entry.kind}: ${clean}`, 'utf8') };
+    const length = Buffer.byteLength(JSON.stringify(record)), size = appendJson(file, record, this.lastSeenBytes.get(file) ?? 0);
     this.lastSeenBytes.set(file, size);
-    this.setLine(entry.i, file, size - length - 1, length);
+    this.setLine(record.i, file, size - length - 1, length);
     if (this.cached?.file === file) this.drop();
   }
   lineIndexSize() { return this.lineCount; }
