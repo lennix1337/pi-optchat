@@ -163,3 +163,54 @@ test('a child whose extensions fail to start still closes its MCP connections', 
     assert.equal(children.active, false, 'the failed child holds no agent slot');
   } finally { await children.close(); await memory.close(); removeDir(dir); rmSync(join(agentDir, 'mcp.json'), { force: true }); }
 });
+
+test('plan and mechanical workers skip external MCP servers unless the contract sets mcp: true, preserving WORKER_TOOLS', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-fast-worker-'));
+  const log = join(dir, 'servers.log');
+  writeFileSync(join(agentDir, 'mcp.json'), JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [server, log], exposure: 'direct' } } }));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const seen = new Map<string, string[]>();
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+  runtime.registerProvider('optchat-test', {
+    baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+    models: [{ id: 'child', name: 'Synthetic child', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+    streamSimple(model, context) {
+      const task = textContent(context.messages.find(m => m.role === 'user')?.content).split('Your task:\n').at(-1) ?? '';
+      seen.set(task, getCurrentTools(context.messages).map(t => t.name));
+      const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'done' }],
+        api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message }); stream.end(); });
+      return stream;
+    },
+  });
+  const contract = (label: string) => `Goal: ${label}\nAcceptance: ok\nEvidence: ok\nAuthority: read-only`;
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
+    async () => {}, () => {}, dir, { settings: nested, builtins: () => ALL, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
+  const servers = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : [];
+  try {
+    const planTask = contract('plan fast'), mechTask = contract('mechanical fast');
+    await children.spawn([{ task: planTask, kind: 'plan' }, { task: mechTask, kind: 'mechanical' }], dir);
+    await until(() => !children.active);
+    assert.deepEqual(servers(), [], 'plan and mechanical workers start zero external MCP servers');
+    assert.ok(!seen.get(planTask)?.includes('mcp__fake__echo'), 'plan has no MCP tools');
+    assert.ok(seen.get(planTask)?.includes('read') && seen.get(planTask)?.includes('codemode'), 'plan keeps WORKER_TOOLS.plan');
+    assert.ok(!seen.get(mechTask)?.includes('mcp__fake__echo') && !seen.get(mechTask)?.includes('zoom'), 'mechanical keeps WORKER_TOOLS.mechanical');
+    assert.ok(!seen.get(planTask)?.includes('spawn') && !seen.get(mechTask)?.includes('spawn'), 'isOptchat boundary preserved');
+
+    // Opt-out: mcp: true on a plan worker starts the MCP server and preserves it on resume.
+    const optOutTask = contract('plan with mcp');
+    const [optOutId] = await children.spawn([{ task: optOutTask, kind: 'plan', mcp: true }], dir);
+    await until(() => !children.active);
+    assert.ok(seen.get(optOutTask)?.includes('codemode'), 'mcp: true preserves WORKER_TOOLS.plan');
+    await until(() => servers().length === 2);
+    assert.deepEqual(servers().map(line => line.split(' ')[0]).sort(), ['exit', 'start'], 'mcp: true starts the external MCP server');
+    await until(() => exited(log));
+
+    await children.tell(optOutId, 'follow up');
+    await until(() => !children.active);
+    await until(() => servers().length === 4);
+    assert.deepEqual(servers().map(line => line.split(' ')[0]).sort(), ['exit', 'exit', 'start', 'start']);
+    await until(() => exited(log));
+  } finally { await children.close(); await memory.close(); removeDir(dir); rmSync(join(agentDir, 'mcp.json'), { force: true }); }
+});

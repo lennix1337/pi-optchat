@@ -17,6 +17,16 @@ export const WORKER_TOOLS: Record<WorkerKind, readonly string[]> = {
   hard: HARD,
 };
 
+/** Worker kinds that skip external MCP servers by default for fast startup and lower RSS. */
+export const FAST_WORKER_KINDS: ReadonlySet<WorkerKind> = new Set(['plan', 'mechanical']);
+
+/** Built-in extensions loaded for a child session: `plan` and `mechanical` skip `mcp` unless `mcp: true` opts out. */
+export function workerBuiltins(builtins: Iterable<string>, { kind, mcp }: { kind?: WorkerKind; mcp?: boolean }): string[] {
+  const list = [...builtins];
+  const useMcp = mcp ?? !(kind !== undefined && FAST_WORKER_KINDS.has(kind));
+  return useMcp ? list : list.filter(name => name !== 'mcp');
+}
+
 /** The profile instructions' `## ` sections a worker keeps, by heading name (a heading's parenthesised dating note is ignored); the text before the first heading stays. */
 export const WORKER_SECTIONS = ['Global rules', 'Authority', 'Talking to the operator', 'Code changes'] as const;
 
