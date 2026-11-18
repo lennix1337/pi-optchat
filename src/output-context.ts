@@ -4,7 +4,7 @@ import { OutputStore } from './output-store.ts';
 import { previewOutput } from './output-preview.ts';
 import type { OutputQuery } from './output-query.ts';
 
-const MIN_BYTES = 8192;
+const MIN_BYTES = 2048;
 const REPORT_TOOLS = new Set(['mcp__google_analytics__run_report', 'mcp__google_analytics__run_realtime_report']);
 const ACTIONABLE = /error|fail|exception|warning|panic|fatal|status|exit.?code|truncat|limit reached/i;
 

@@ -307,3 +307,22 @@ test('projecting many outputs scans the quota once', () => {
     assert.equal(store.scans, 1);
   } finally { f.close(); }
 });
+test('2 KB gate projects 2-8 KB bash outputs while preserving exact original in OutputStore', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'two-kb'), context = new OutputContext(store);
+    const json3k = JSON.stringify(Array.from({ length: 24 }, (_, i) => ({
+      id: i,
+      status: i === 12 ? 'failed' : 'ok',
+      detail: `entry_${i}_${'x'.repeat(60)}`,
+    })), null, 2);
+    assert.ok(Buffer.byteLength(json3k) > 2048 && Buffer.byteLength(json3k) < 8192);
+    const original = toolResultMessage('call-3k', 'bash', json3k, { isError: false, timestamp: 1 });
+    const [projected] = context.project([original]);
+    const text = projected.content[0].type === 'text' ? projected.content[0].text : '';
+    const ref = /output:([a-f0-9]{64})/.exec(text)?.[1];
+    assert.ok(ref, 'outputs >= 2048 bytes should be projected and stored');
+    assert.ok(Buffer.byteLength(text) < Buffer.byteLength(json3k) * 0.8);
+    assert.equal(store.read(ref), json3k);
+  } finally { f.close(); }
+});
