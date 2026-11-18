@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Type } from 'typebox';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { CLAIM_CHECK_PREFIX } from './claim-check.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest, HttpError } from './assistant-client.ts';
 import type { Settled } from './authorization.ts';
@@ -493,6 +494,8 @@ export class SlackBridge {
       this.showWork();
     }
     if (wake) { this.waking = true; return; }
+    // The run's own claim check sends its reply back once: the operator still waits for that reply, not the draft.
+    if (text.startsWith(CLAIM_CHECK_PREFIX)) return;
     if (FROM_WHATSAPP.test(text)) this.whatsapp = true;
     if (!match) {
       // Another message (a gitwatch notice, a wake) steering this run would otherwise replace the answer the operator is waiting for.

@@ -2,7 +2,8 @@ import { predictionsTool } from './predictions.ts';
 import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
-import { registerSlackBridge } from './slack-bridge.ts';
+import { finalText, registerSlackBridge } from './slack-bridge.ts';
+import { CLAIM_CHECK_PREFIX, claimRetryText, evidenceText, unbackedClaims, unbackedNote } from './claim-check.ts';
 import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
@@ -313,6 +314,9 @@ export default function optchat(host: ExtensionAPI) {
   let settledAt = Date.now();
   /** The open wake was already sent back once for a memory-line reply; a second one settles as it is. */
   let wakeRetried: WakeRetried = {};
+  /** The run's reply already went back once to check its unbacked claims; the next settle sends it, marked. */
+  let claimRetried = false;
+  const CLAIM_HISTORY = 400;
   const wakeWorkers = new WakeWorkers();
   /** Peer-message copies that arrived while a manager run was in progress (see `peerCopy`). */
   let peerCopies: string[] = [];
@@ -1280,15 +1284,24 @@ export default function optchat(host: ExtensionAPI) {
     const reload = wake && active && !fault && !stopping ? selfReload.ready(ctx, _event.aborted) : undefined;
     if (reload && active) { heartbeat?.holdReload(reload, Date.now() + HOLD_MAX_MS, wake); watchWakeReload(reload, ctx, active); }
     const waitingReload = wake && !fault && !stopping && !_event.aborted && wake.stopReason !== 'error' && heartbeat?.awaitingReload;
-    const retry = wake && !waitingReload && !waitingWorkers && !fault && !stopping ? wakeRetry(wake, wakeRetried) : undefined;
+    const settled = !waitingReload && !waitingWorkers && !fault && !stopping;
+    const settledCleanly = settled && !_event.aborted;
+    // What earlier runs of the session showed backs a claim too (a merge seen an hour ago); the agent's own words never do.
+    const recent = () => ctx.sessionManager.getBranch().slice(-CLAIM_HISTORY).flatMap(e => e.type === 'message' ? [e.message] : []);
+    const claims = settledCleanly && finalText(messages) ? unbackedClaims(finalText(messages), evidenceText([...recent(), ...messages])) : [];
+    const retry = (wake && settled ? wakeRetry(wake, wakeRetried) : undefined) ??
+      (claims.length && !claimRetried && settledCleanly ? claimRetryText(claims) : undefined);
     if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
     else if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
+    else if (retry?.startsWith(CLAIM_CHECK_PREFIX)) { claimRetried = true; void deliverReport(retry); }
     else if (retry) { wakeRetried = { ...wakeRetried, [retry === MEMORY_REPLY_RETRY ? 'memory' : 'empty']: true }; void deliverReport(retry); }
     else {
       heartbeat?.turnSettled({ ...wake ?? summarizeTurn(turn), ...ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}` } });
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (active && !fault && !stopping) heartbeat?.arm();
-      await slack.runEnded(messages, wakeWorkers.notVerified ? WORKER_UNVERIFIED : undefined, !!wake && silentWake(wake));
+      const unverified = [wakeWorkers.notVerified ? WORKER_UNVERIFIED : '', claims.length ? unbackedNote(claims) : ''].filter(Boolean).join('\n');
+      claimRetried = false;
+      await slack.runEnded(messages, unverified || undefined, !!wake && silentWake(wake));
       clearWakeWorkers();
     }
     if (waitingWorkers || waitingReload || retry) heldWakeMessages = messages;
