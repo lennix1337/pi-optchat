@@ -319,6 +319,8 @@ test('2 KB gate projects 2-8 KB bash outputs while preserving exact original in 
     assert.ok(Buffer.byteLength(json3k) > 2048 && Buffer.byteLength(json3k) < 8192);
     const original = toolResultMessage('call-3k', 'bash', json3k, { isError: false, timestamp: 1 });
     const [projected] = context.project([original]);
+    assert.equal(projected.role, 'toolResult');
+    if (projected.role !== 'toolResult') throw new Error('expected toolResult');
     const text = projected.content[0].type === 'text' ? projected.content[0].text : '';
     const ref = /output:([a-f0-9]{64})/.exec(text)?.[1];
     assert.ok(ref, 'outputs >= 2048 bytes should be projected and stored');
