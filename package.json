@@ -48,7 +48,7 @@
   "overrides": {
     "undici": "^8.12.2"
   },
-  "description": "OptChat memory for Pi: persistent profiles, zoomable history, background agents, and conversation imports.",
+  "description": "An always-on engineering agent for Pi: endless zoomable memory, Slack, CI wakes, a crew of workers across accounts, and guarded deploys.",
   "keywords": [
     "pi-package",
     "pi-extension",
