@@ -29,13 +29,20 @@ test('zoom, search and output_read reject unknown keys, nested query keys includ
       assert.throws(() => validate(date, { id: 0, text: 'alpha' }), /text/);
       assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'lines', startLine: 1, endLine: 2, extra: true } }), /extra/);
       assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'json', field: ['status'] } }), /field/);
+      assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'json', filter: { field: 'status', equals: 'ok', extra: 1 } } }), /extra/);
+      assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'grep', pattern: 'err', badKey: true } }), /badKey/);
+      assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'outline', badKey: true } }), /badKey/);
       // Documented inputs still pass unchanged.
       assert.deepEqual(validate(zoom, { id: 0, n: 1, findText: 'alpha', offset: 2 }), { id: 0, n: 1, findText: 'alpha', offset: 2 });
       assert.deepEqual(validate(date, { id: 0 }), { id: 0 });
       assert.deepEqual(validate(search, { text: 'alpha', before: 3 }), { text: 'alpha', before: 3 });
       assert.deepEqual(validate(outputRead, { ref: REF, offset: 0, limit: 10, findText: 'x' }), { ref: REF, offset: 0, limit: 10, findText: 'x' });
       assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'lines', startLine: 1, endLine: 2 } }).query, { kind: 'lines', startLine: 1, endLine: 2 });
-      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'json', path: '$.a', fields: ['b'] } }).query, { kind: 'json', path: '$.a', fields: ['b'] });
+      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'json', path: '$.a', fields: ['b'], filter: { field: 'b', equals: 'ok' }, limit: 10 } }).query,
+        { kind: 'json', path: '$.a', fields: ['b'], filter: { field: 'b', equals: 'ok' }, limit: 10 });
+      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'grep', pattern: 'err', ignoreCase: true, context: 2, maxMatches: 10 } }).query,
+        { kind: 'grep', pattern: 'err', ignoreCase: true, context: 2, maxMatches: 10 });
+      assert.deepEqual(validate(outputRead, { ref: REF, query: { kind: 'outline', maxDepth: 3 } }).query, { kind: 'outline', maxDepth: 3 });
     } finally { await memory.close(); }
   });
 });
