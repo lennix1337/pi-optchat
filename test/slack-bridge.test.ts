@@ -672,10 +672,31 @@ test('files he sends are saved and pointed to; Slack links he pastes are read an
   try {
     await bridge.poll();
     const text = sent[0]!;
-    assert.match(text, /audio\.m4a \[audio\/mp4\]: C:\/x\/audio\.m4a \(transcreva com transcribe_file\)/);
+    assert.match(text, /audio\.m4a \[audio\/mp4\]: C:\/x\/audio\.m4a \(transcrição local falhou: /);
     assert.match(text, /tela\.png \[image\/png\]: não baixou \(slack_file_forbidden\)/);
     assert.match(text, /Mensagem linkada \(<@U0ALICE> em <#C0GERAL>\):\n> o servidor caiu/);
     assert.match(text, /<#C0PRIV>: não consegui ler \(not_in_channel/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a voice note he sends arrives transcribed; a failed transcription says why and keeps the file path', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const sent: string[] = [];
+  const inbox = [{ seq: 1, ts: '1793000000.000100', thread: null, channel: 'D0OWNER', text: '',
+    files: [{ id: 'F1', name: 'audio.m4a', mimetype: 'audio/mp4', url: 'https://files.slack.com/a' }, { id: 'F2', name: 'ruido.webm', mimetype: 'audio/webm', url: 'https://files.slack.com/b' }] }];
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    request: async (_o, path, body: any) => {
+      if (path.startsWith('/v1/slack/inbox')) return { messages: inbox };
+      if (path === '/v1/slack/download') return { path: `/tmp/x/${body.name}` };
+      return { ok: true };
+    },
+    transcribe: async path => { if (path.endsWith('.webm')) throw new Error('modelo ausente'); return ' faz o deploy da landing \n'; },
+  });
+  try {
+    await bridge.poll();
+    const text = sent[0]!;
+    assert.match(text, /audio\.m4a \[audio\/mp4\]: \/tmp\/x\/audio\.m4a\n {2}Transcrição: "faz o deploy da landing"/);
+    assert.match(text, /ruido\.webm \[audio\/webm\]: \/tmp\/x\/ruido\.webm \(transcrição local falhou: modelo ausente\)/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
