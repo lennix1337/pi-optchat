@@ -88,8 +88,10 @@ test('search preview retains match locations, summary, and errors across a large
   const preview = previewOutput(original);
 
   assert.equal(preview.format, 'search');
-  assert.match(preview.text, /src\/file0\.ts:1:/);
-  assert.match(preview.text, /src\/file1\.ts:90:/);
+  assert.match(preview.text, /src\/file0\.ts \(23 matches\):/);
+  assert.match(preview.text, /1: match_0/);
+  assert.match(preview.text, /src\/file1\.ts \(23 matches\):/);
+  assert.match(preview.text, /90: match_89/);
   assert.match(preview.text, /90 matches in 4 files/);
   assert.match(preview.text, /error: missing export/);
   assert.ok(preview.omittedLines > 0);
@@ -139,4 +141,65 @@ test('clipped diagnostic lines retain evidence near the end of long lines', () =
   assert.match(preview.text, /exit code: 17/);
   assert.match(preview.text, /line clipped/);
   assert.equal(preview.useful, true);
+});
+
+test('JSON array tabulation shows head, tail, and middle outliers past 40 rows', () => {
+  const items = Array.from({ length: 60 }, (_, i) => ({
+    id: i,
+    state: i === 28 ? 'FAILED' : 'MERGED',
+    title: i === 28 ? 'fix: critical auth error' : `chore: routine update ${i}`,
+    author: { login: `dev-${i % 3}` },
+  }));
+  const preview = previewOutput(JSON.stringify(items, null, 2));
+  assert.equal(preview.format, 'json');
+  assert.equal(preview.useful, true);
+  assert.match(preview.text, /JSON table \$ \(60 rows/);
+  assert.match(preview.text, /\[0\]/);
+  assert.match(preview.text, /\[28\]\*.*FAILED.*critical auth error/);
+  assert.match(preview.text, /\[59\]/);
+  assert.match(preview.text, /rows omitted; 1 outliers shown/);
+  assert.ok(savings(preview) >= 60);
+});
+
+test('unified diff collapses lockfile sections to +A/-B while preserving code hunks', () => {
+  const diff = [
+    'diff --git a/package-lock.json b/package-lock.json',
+    '--- a/package-lock.json',
+    '+++ b/package-lock.json',
+    '@@ -1,4 +1,5 @@',
+    '-    "version": "1.0.0"',
+    '-    "old": true',
+    '+    "version": "1.0.1"',
+    '+    "new": true',
+    '+    "extra": 1',
+    'diff --git a/src/auth.ts b/src/auth.ts',
+    '--- a/src/auth.ts',
+    '+++ b/src/auth.ts',
+    '@@ -10,2 +10,2 @@',
+    '-return false;',
+    '+return true;',
+  ].join('\n');
+  const preview = previewOutput(diff);
+  assert.equal(preview.format, 'diff');
+  assert.match(preview.text, /\[lockfile collapsed: package-lock\.json \(\+3\/-2 lines\)\]/);
+  assert.match(preview.text, /diff --git a\/src\/auth\.ts/);
+  assert.match(preview.text, /\+return true;/);
+});
+
+test('HTML preview strips scripts/styles/tags and decodes entities to plain text', () => {
+  const html = [
+    '<!DOCTYPE html><html><head><title>502 &amp; Timeout</title>',
+    '<style>body{color:red}</style>',
+    `<script>var secret = "${'x'.repeat(3000)}";</script>`,
+    '</head><body><h1>Bad Gateway</h1><p>Upstream error: connection refused.</p></body></html>',
+  ].join('\n');
+  const preview = previewOutput(html);
+  assert.equal(preview.format, 'html');
+  assert.equal(preview.useful, true);
+  assert.match(preview.text, /Title: 502 & Timeout/);
+  assert.match(preview.text, /Bad Gateway/);
+  assert.match(preview.text, /Upstream error: connection refused/);
+  assert.ok(!preview.text.includes('var secret'));
+  assert.ok(!preview.text.includes('color:red'));
+  assert.ok(savings(preview) >= 70);
 });

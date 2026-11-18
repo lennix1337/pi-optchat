@@ -138,3 +138,58 @@ test('structured queries preserve session isolation, expiry, and integrity check
     assert.throws(() => store.query(freshRef, { kind: 'json' }), /expired/);
   } finally { f.close(); }
 });
+
+test('grep query matches regex with merged context hunks and bounds', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'session');
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}${i === 5 ? ' ERROR: alpha' : i === 7 ? ' error: beta' : i === 24 ? ' FAIL: gamma' : ''}`).join('\n');
+    const ref = store.put(lines);
+    const res = store.query(ref, { kind: 'grep', pattern: 'error|fail', ignoreCase: true, context: 1 });
+    assert.match(res, /\[Grep \/error\|fail\/i: 3 matches in 30 lines\]/);
+    assert.match(res, /5: line 5\n6: line 6 ERROR: alpha\n7: line 7\n8: line 8 error: beta\n9: line 9\n--\n24: line 24\n25: line 25 FAIL: gamma\n26: line 26/);
+    assert.match(store.query(ref, { kind: 'grep', pattern: 'NOMATCH' }), /0 matches in 30 lines/);
+    assert.throws(() => store.query(ref, { kind: 'grep', pattern: '[invalid' }), /Invalid grep pattern/);
+  } finally { f.close(); }
+});
+
+test('json query supports array filter and per-item fields', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'session');
+    const payload = {
+      runs: [
+        { id: 1, status: 'success', msg: 'ok' },
+        { id: 2, status: 'failure', msg: 'timeout on auth' },
+        { id: 3, status: 'failure', msg: 'db error' },
+      ],
+    };
+    const ref = store.put(JSON.stringify(payload));
+    const filtered = store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'status', equals: 'failure' }, fields: ['id', 'msg'] });
+    assert.ok(filtered.endsWith('[{"id":2,"msg":"timeout on auth"},{"id":3,"msg":"db error"}]'));
+    const contains = store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'msg', contains: 'AUTH' }, fields: ['id'] });
+    assert.ok(contains.endsWith('[{"id":2}]'));
+    assert.throws(() => store.query(ref, { kind: 'json', path: '$.runs', filter: { field: 'constructor', equals: 1 } }), /Invalid JSON filter field/);
+  } finally { f.close(); }
+});
+
+test('outline query summarizes JSON schema, diff files, and text logs', () => {
+  const f = fixture();
+  try {
+    const store = new OutputStore(f.dir, 'session');
+    const jsonRef = store.put(JSON.stringify({ meta: { total: 2 }, items: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }] }));
+    const jsonOutline = store.query(jsonRef, { kind: 'outline', maxDepth: 3 });
+    assert.match(jsonOutline, /\[Outline: json;/);
+    assert.match(jsonOutline, /items: Array\(2\)</);
+
+    const diffRef = store.put('diff --git a/src/a.ts b/src/a.ts\n@@ -1,1 +1,2 @@\n-old\n+new\n+more');
+    const diffOutline = store.query(diffRef, { kind: 'outline' });
+    assert.match(diffOutline, /\[Outline: diff;/);
+    assert.match(diffOutline, /L1: a\/src\/a\.ts b\/src\/a\.ts \(\+2\/-1, 1 hunks\)/);
+
+    const logRef = store.put('## Build\nok\nerror TS2322: bad\nexit code 1');
+    const logOutline = store.query(logRef, { kind: 'outline' });
+    assert.match(logOutline, /\[Outline: text; 4 lines; .* 1 diagnostic lines\]/);
+    assert.match(logOutline, /3: error TS2322: bad/);
+  } finally { f.close(); }
+});
