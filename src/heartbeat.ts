@@ -12,12 +12,12 @@ import { askOneLine } from './one-line.ts';
 import { atomicWrite } from './store.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { REPORT_TYPE, textContent } from './transcript.ts';
-import { dueFindings, DUE_SLACK_MS, nextDue, type DueFinding } from './commitment-due.ts';
+import { dueFindings, DUE_SLACK_MS, nextDue, type DueFinding, type DueState } from './commitment-due.ts';
 import { runProbes } from './commitment-probe.ts';
 import { readCommitments } from './commitments.ts';
 import { divert, type Patrol } from './patrol-divert.ts';
 import { heapGrowth, heapGrowthLine, recordHeapSample, rssLine, type HeapSample } from './heap-trend.ts';
-import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type Signal, type Triage } from './wake-signals.ts';
+import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type PreTriageResult, type Signal, type Triage } from './wake-signals.ts';
 
 /** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
 export interface Beat {
@@ -259,6 +259,8 @@ export interface HeartbeatDeps {
   route?: (blocks: Readonly<Record<string, number>>) => RouteDecision | undefined;
   /** A profile's `wakeTriage`: wakes only for a project with news (see wake-signals.ts) or once per build cadence, with no model check. Absent: wakes as before. */
   triage?: () => Triage | undefined;
+  /** Optional zero-cost / local pre-triage before calling `check`: decides `drop` (skip cloud model, log short dropped line) or `react`. Fails open on error. */
+  preTriage?: (radar: string | undefined, previousRadarDigest: string | undefined, dueState: DueState) => Promise<PreTriageResult> | PreTriageResult;
   /** A profile's `specialistPatrol` (see patrol-divert.ts): a specialist's deadline findings go to a patrol worker instead of the wake. Absent: they all go to the wake. */
   patrol?: () => Patrol | undefined;
   /** The Pi heap in MB, sampled each wakeTriage tick for the growth watch. Default: this process's heapUsed. */
@@ -279,7 +281,7 @@ type Check = { at: number; verdict: 'WAKE' | 'SLEEP' | 'FAILED'; text: string };
 export interface WakeSummary { reply: string; tools: number; commits: string[]; stopReason?: string; /** `provider/model` the turn ended on. */ model?: string }
 /** One wake in heartbeat.json: why it fired and how its turn ended. `running` and `unsettled` have no end; `interrupted` is the operator speaking or aborting. */
 export interface WakeRecord {
-  at: number; trigger: 'schedule' | 'check' | 'signal' | 'build'; reason: string; outcome: 'running' | 'done' | 'interrupted' | 'error' | 'unsettled';
+  at: number; trigger: 'schedule' | 'check' | 'signal' | 'build' | 'pre-triage'; reason: string; outcome: 'running' | 'done' | 'interrupted' | 'error' | 'unsettled' | 'dropped';
   endedAt?: number; reply?: string; tools?: number; commits?: string[];
   /** `provider/model` the wake was routed to, then the one its turn ended on. */
   model?: string;
@@ -348,8 +350,8 @@ function readSaved(file: string): Saved {
 }
 /** The profile's saved wakes and checks, for the /heartbeat report. */
 export const readHeartbeat = (dir: string) => readSaved(join(dir, 'heartbeat.json'));
-/** The wake before the one starting now: the newest logged wake that is not running (the one just saved is). */
-export const previousWake = (dir: string) => readHeartbeat(dir).wakeLog.filter(wake => wake.outcome !== 'running').at(-1);
+/** The wake before the one starting now: the newest logged wake that is not running or dropped. */
+export const previousWake = (dir: string) => readHeartbeat(dir).wakeLog.filter(wake => wake.outcome !== 'running' && wake.outcome !== 'dropped').at(-1);
 
 /** The tick's project signals with the commitment findings added, each to the signal of its project. */
 function withCommitments(signals: Signal[], findings: readonly DueFinding[]): Signal[] {
@@ -523,15 +525,37 @@ export class Heartbeat {
       }
     }
     const scheduled = this.deps.always();
-    if (!triage && !scheduled && beat.trigger !== 'signal') try { beat = await this.deps.check(radar); this.failed = false; }
-    catch (error) {
-      if (spoke()) return;
-      const message = error instanceof Error ? error.message : String(error);
-      if (!this.failed) this.deps.note(`Heartbeat check failed: ${message}`);
-      this.failed = true; this.save({ verdict: 'FAILED', text: message }); this.arm(); return;
+    let pre: PreTriageResult | undefined;
+    if (!triage && !scheduled && beat.trigger !== 'signal') {
+      if (this.deps.preTriage) {
+        const saved = this.saved();
+        try {
+          pre = await this.deps.preTriage(radar, saved.radarDigest, { dueSeen: saved.dueSeen ?? [], escalated: saved.escalated ?? {} });
+        } catch {
+          pre = { decision: 'react', reason: 'pre-triage error (fail-open)' };
+        }
+        if (spoke()) return;
+        if (pre.decision === 'drop') {
+          this.save({ verdict: 'SLEEP', text: `pre-triage drop: ${pre.reason}` }, undefined,
+            { at: this.deps.now(), trigger: 'pre-triage', reason: pre.reason, outcome: 'dropped' }, 'skippedIdle');
+          if (pre.radarDigest !== undefined) this.keep({ radarDigest: pre.radarDigest });
+          this.arm(); return;
+        }
+      }
+      try { beat = await this.deps.check(radar); this.failed = false; }
+      catch (error) {
+        if (spoke()) return;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!this.failed) this.deps.note(`Heartbeat check failed: ${message}`);
+        this.failed = true; this.save({ verdict: 'FAILED', text: message }); this.arm(); return;
+      }
     }
     if (spoke()) return;
-    if (!beat.wake) { this.save({ verdict: 'SLEEP', text: beat.text }, undefined, undefined, 'skippedIdle'); this.arm(); return; }
+    if (!beat.wake) {
+      this.save({ verdict: 'SLEEP', text: beat.text }, undefined, undefined, 'skippedIdle');
+      if (pre?.radarDigest !== undefined) this.keep({ radarDigest: pre.radarDigest });
+      this.arm(); return;
+    }
     const at = this.deps.now(), recent = this.saved().wakes.filter(wake => at - wake < DAY), cap = this.deps.maxWakes();
     if (recent.length >= cap) {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);

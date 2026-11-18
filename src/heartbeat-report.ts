@@ -90,7 +90,11 @@ const cut = (text: string, max: number) => text.length > max ? `${text.slice(0, 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 function wakeLine(wake: WakeRecord) {
-  const trigger = wake.trigger === 'check' ? `check: ${cut(wake.reason, 80)}` : wake.trigger === 'signal' ? cut(wake.reason, 80) : wake.trigger === 'build' ? 'build' : 'fixed schedule';
+  const trigger = wake.trigger === 'pre-triage' ? `pre-triage: ${cut(wake.reason, 80)}`
+    : wake.trigger === 'check' ? `check: ${cut(wake.reason, 80)}`
+    : wake.trigger === 'signal' ? cut(wake.reason, 80)
+    : wake.trigger === 'build' ? 'build' : 'fixed schedule';
+  if (wake.outcome === 'dropped') return [`  ${clock(wake.at)} ${trigger} → dropped`];
   const took = wake.endedAt === undefined ? '' : ` after ${Math.round((wake.endedAt - wake.at) / 60_000)} min, ${plural(wake.tools ?? 0, 'tool')}`;
   const outcome = wake.outcome === 'running' ? 'still running' : wake.outcome === 'unsettled' ? 'never settled' : wake.outcome === 'error' ? `ended on an error${took}` : `${wake.outcome}${took}`;
   const reply = wake.reply ? `: ${cut(wake.reply, SHOWN_REPLY)}` : '';
@@ -100,8 +104,9 @@ function wakeLine(wake: WakeRecord) {
 /** Today's wakes (local calendar day), oldest first, and what is left of the rolling 24-hour wake budget. */
 export function renderReport(log: WakeRecord[], { now, cap, minutes, wakes }: ReportContext) {
   const today = log.filter(wake => new Date(wake.at).toDateString() === new Date(now).toDateString());
-  const used = (wakes ?? log.map(wake => wake.at)).filter(at => now - at < DAY).length;
-  const head = `${minutes > 0 ? `Heartbeat every ${minutes} min` : 'Heartbeat is off (see Heartbeat in /optchat settings)'}: ${today.length ? `${plural(today.length, 'wake')} today` : 'no wakes today'} · ${Math.max(0, cap - used)} of ${cap} wakes left in 24 h`;
+  const todayWakes = today.filter(wake => wake.outcome !== 'dropped');
+  const used = (wakes ?? log.filter(wake => wake.outcome !== 'dropped').map(wake => wake.at)).filter(at => now - at < DAY).length;
+  const head = `${minutes > 0 ? `Heartbeat every ${minutes} min` : 'Heartbeat is off (see Heartbeat in /optchat settings)'}: ${todayWakes.length ? `${plural(todayWakes.length, 'wake')} today` : 'no wakes today'} · ${Math.max(0, cap - used)} of ${cap} wakes left in 24 h`;
   return [head, ...today.flatMap(wakeLine)].join('\n');
 }
 
