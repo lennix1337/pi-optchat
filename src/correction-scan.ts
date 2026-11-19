@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { UNCHECKED_ADMISSION } from './claim-check.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
-export type Rule = { id: string; quote: string; date: string; scope: string; detector: string; precision: string };
-export type ScanResult = { id: string; count: number; examples: { file: string; line: number }[] };
+/** `guardedAt` (ISO) is when a live guard started refusing or retrying the behaviour: hits after it got past the guard. */
+export type Rule = { id: string; guardedAt?: string; quote: string; date: string; scope: string; detector: string; precision: string };
+export type ScanResult = { id: string; count: number; afterGuard?: number; examples: { file: string; line: number }[] };
 export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', import.meta.url), 'utf8')) as Rule[];
 /** The sessions root: the PC keeps one project folder in it, the VM several, so the scan reads every subdirectory. */
 export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions');
@@ -108,12 +109,11 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
 
 export function scanCorrections(dir: string, since: number, until: number): ScanResult[] {
   if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) throw new Error('Invalid scan interval');
-  const results = rules.map(r => ({ id: r.id, count: 0, examples: [] as { file: string; line: number }[] }));
+  const results = rules.map(r => ({ id: r.id, count: 0, ...r.guardedAt ? { afterGuard: 0 } : {}, examples: [] as { file: string; line: number }[] }));
   for (const file of sessionFiles(dir, since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     let pacing = noPacing();
-    const merges = new Map<string, { result: number; example?: { file: string; line: number } }>(); // premature-merge hits by tool call id, to withdraw the ones the guard refused
-    const premature = rules.findIndex(r => r.detector === 'premature-merge');
+    const calls = new Map<string, { result: number; at: number; example?: { file: string; line: number } }[]>(); // tool-call hits by call id: a call a guard refused ("Not run:") never happened, so its hit is withdrawn
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
       let event: Event;
@@ -122,16 +122,19 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
       if (!Number.isFinite(at) || at >= until) continue;
       rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) {
         results[n].count++;
+        if (rule.guardedAt && at >= Date.parse(rule.guardedAt)) results[n].afterGuard!++;
         const example = results[n].examples.length < 3 ? { file, line: i + 1 } : undefined;
         if (example) results[n].examples.push(example);
-        if (n === premature) for (const c of toolCalls(event)) if (c.id) merges.set(c.id, { result: n, example });
+        for (const c of toolCalls(event)) if (c.id) calls.set(c.id, [...calls.get(c.id) ?? [], { result: n, at, example }]);
       } });
       const reply = event.message;
-      if (reply?.role === 'toolResult' && reply.toolCallId && merges.has(reply.toolCallId) && Array.isArray(reply.content) && reply.content.some(c => c.type === 'text' && /^Not run:/u.test(c.text ?? ''))) {
-        const hit = merges.get(reply.toolCallId)!;
-        results[hit.result].count--;
-        if (hit.example) results[hit.result].examples = results[hit.result].examples.filter(e => e !== hit.example);
-        merges.delete(reply.toolCallId);
+      if (reply?.role === 'toolResult' && reply.toolCallId && calls.has(reply.toolCallId) && Array.isArray(reply.content) && reply.content.some(c => c.type === 'text' && /^(?:Not run|Não executado):/u.test(c.text ?? ''))) {
+        for (const hit of calls.get(reply.toolCallId)!) {
+          results[hit.result].count--;
+          if (results[hit.result].afterGuard !== undefined && hit.at >= Date.parse(rules[hit.result].guardedAt!)) results[hit.result].afterGuard!--;
+          if (hit.example) results[hit.result].examples = results[hit.result].examples.filter(e => e !== hit.example);
+        }
+        calls.delete(reply.toolCallId);
       }
       pacing = nextPacing(pacing, event);
     }

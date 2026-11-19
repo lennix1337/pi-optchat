@@ -132,7 +132,7 @@ export function scanRuleViolations(): Promise<number | undefined> {
   const script = fileURLToPath(new URL('../scripts/correction-scan.mjs', import.meta.url));
   return new Promise(resolve => execFile(process.execPath, [script, '--since', '7d'], { timeout: 120_000, maxBuffer: 1 << 20, windowsHide: true }, (error, stdout) => {
     if (error) { console.error('Correction rules scan failed:', error.message); return resolve(undefined); }
-    try { resolve((JSON.parse(stdout.trim().split('\n').at(-1)!) as { count: number }[]).reduce((sum, rule) => sum + rule.count, 0)); }
+    try { resolve((JSON.parse(stdout.trim().split('\n').at(-1)!) as { count: number; afterGuard?: number }[]).reduce((sum, rule) => sum + (rule.afterGuard ?? rule.count), 0)); }
     catch { resolve(undefined); }
   }));
 }
