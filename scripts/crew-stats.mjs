@@ -22,6 +22,7 @@ const PROJECT_PREFIX = /^(?:.*?\/)?(?=(?:src|test|scripts|apps|packages)\/)/;
 export function crewStats(lines, sinceMs = 0, untilMs = Infinity) {
   const groups = new Map();
   const opusByDay = {};
+  const routeByDay = {};
   for (const line of lines) {
     let row;
     try { row = JSON.parse(line); } catch { continue; }
@@ -33,8 +34,16 @@ export function crewStats(lines, sinceMs = 0, untilMs = Infinity) {
     group.cost += Number(row.usage?.cost?.total ?? 0);
     group.tokens += Number(row.usage?.totalTokens ?? 0);
     groups.set(key, group);
+    const day = new Date(at - BRASILIA_OFFSET_MS).toISOString().slice(0, 10);
+    if (row.role === 'main' || row.role === 'subagent') {
+      const routes = routeByDay[day] ?? {};
+      const route = routes[row.provider ?? '?'] ?? { calls: 0, tokens: 0 };
+      route.calls++;
+      route.tokens += Number(row.usage?.totalTokens ?? 0);
+      routes[row.provider ?? '?'] = route;
+      routeByDay[day] = routes;
+    }
     if (row.role === 'main' && /opus/.test(row.model ?? '')) {
-      const day = new Date(at - BRASILIA_OFFSET_MS).toISOString().slice(0, 10);
       const entry = opusByDay[day] ?? { calls: 0, cost: 0 };
       entry.calls++;
       entry.cost += Number(row.usage?.cost?.total ?? 0);
@@ -50,6 +59,10 @@ export function crewStats(lines, sinceMs = 0, untilMs = Infinity) {
     opusMain: { calls: opus.reduce((s, r) => s + r.calls, 0), cost: Math.round(opus.reduce((s, r) => s + r.cost, 0) * 100) / 100 },
     total: Math.round(total * 100) / 100,
     opusMainByDay: Object.fromEntries(Object.keys(opusByDay).sort().map(d => [d, { calls: opusByDay[d].calls, cost: Math.round(opusByDay[d].cost * 100) / 100 }])),
+    routesByDay: Object.fromEntries(Object.keys(routeByDay).sort().map(d => {
+      const all = Object.values(routeByDay[d]).reduce((sum, r) => sum + r.tokens, 0);
+      return [d, Object.fromEntries(Object.entries(routeByDay[d]).map(([provider, r]) => [provider, { ...r, share: all ? Math.round(r.tokens / all * 100) / 100 : 0 }]))];
+    })),
     rows,
   };
 }
