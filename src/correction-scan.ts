@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { UNCHECKED_ADMISSION } from './claim-check.ts';
+import { ABANDONED_CAUSE, UNCHECKED_ADMISSION } from './claim-check.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
 /** `guardedAt` (ISO) is when a live guard started refusing or retrying the behaviour: hits after it got past the guard. */
@@ -71,7 +71,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'wake-silence': return !!pacing.wake && !!final && (memoryShapedReply(final) || reasksPending(final) || nothingNewReply(final));
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
     case 'utc-time': return /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u.test(final);
-    case 'abandoned-cause': return /\b(?:causas?\s+n[ãa]o\s+(?:(?:foi|foram)\s+)?encontrad[ao]s?|sem\s+causa\s+encontrada|causes?\s+(?:(?:is|were|was|still)\s+)*not\s+found)\b/iu.test(final);
+    case 'abandoned-cause': return ABANDONED_CAUSE.test(final);
     case 'unchecked-own-work': return UNCHECKED_ADMISSION.test(final);
     case 'cause-claim': return calls.some(c => {
       const command = String(c.arguments?.command ?? '');
