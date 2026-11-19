@@ -600,6 +600,13 @@ test('every wake names the end goal and asks for a new capability toward it, not
   assert.ok(/scripts[\\/]council\.mjs/.test(BRAINSTORM_NOTE) && /--reply/.test(BRAINSTORM_NOTE), 'the wake asks the council before it decides');
 });
 
+test('the wake builds through a worker on another account, not on the Claude session (operator 18/11)', () => {
+  assert.match(BRAINSTORM_NOTE, /worker/);
+  assert.match(BRAINSTORM_NOTE, /agy/);
+  assert.match(BRAINSTORM_NOTE, /openai-codex/);
+  assert.match(BRAINSTORM_NOTE, /you review/);
+});
+
 test('every wake is told to deliver a change, and one after an empty wake is told it was empty', () => {
   const wake = wakeText('', 'haiku', 15, plan);
   assert.ok(wake.includes(DELIVERY_RULE));
