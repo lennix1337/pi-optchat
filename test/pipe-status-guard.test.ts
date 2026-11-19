@@ -7,7 +7,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 for (const command of ['npm test 2>&1 | tail -5; echo rc=$?', 'make | grep -E "error"; echo "rc=$?"', 'cd x && node a.mjs | head -3 && echo rc=$?'])
   test(`refuses ${command}`, () => assert.match(pipeStatusRefusal(command) ?? '', /PIPESTATUS/));
 
-for (const command of ['npm test 2>&1 | tail -5; echo rc=${PIPESTATUS[0]}', 'npm test; echo rc=$?', 'ls | head -3'])
+for (const command of ['npm test 2>&1 | tail -5; echo rc=${PIPESTATUS[0]}', 'npm test; echo rc=$?', 'ls | head -3', 'git status | head -4 && node t.mjs > log 2>&1; echo rc=$?'])
   test(`allows ${command}`, () => assert.equal(pipeStatusRefusal(command), undefined));
 
 test('the bash tool_call hook blocks the tail-then-rc pattern before it runs', async () => {
