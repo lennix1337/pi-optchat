@@ -597,7 +597,7 @@ test('every wake names the end goal and asks for a new capability toward it, not
   assert.ok(wakeText('', 'haiku', 15, plan).includes(BRAINSTORM_NOTE), 'the build wake brainstorms before it picks');
   assert.match(BRAINSTORM_NOTE, /5 concrete candidates/);
   assert.match(BRAINSTORM_NOTE, /personality/);
-  assert.ok(BRAINSTORM_NOTE.includes('scripts/council.mjs') && /--reply/.test(BRAINSTORM_NOTE), 'the wake asks the council before it decides');
+  assert.ok(/scripts[\\/]council\.mjs/.test(BRAINSTORM_NOTE) && /--reply/.test(BRAINSTORM_NOTE), 'the wake asks the council before it decides');
 });
 
 test('every wake is told to deliver a change, and one after an empty wake is told it was empty', () => {
