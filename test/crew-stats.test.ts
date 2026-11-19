@@ -34,6 +34,22 @@ test('crew stats splits main Opus cost by Brasília day', () => {
   assert.deepEqual(stats.opusMainByDay, { '2026-11-04': { calls: 1, cost: 1 }, '2026-11-05': { calls: 1, cost: 2 } });
 });
 
+test('crew stats shows each day\'s share of main and subagent work by provider, compactor left out', () => {
+  const at = (date: string, role: string, provider: string, totalTokens: number) =>
+    JSON.stringify({ date, role, model: 'm', provider, usage: { totalTokens, cost: { total: 0 } } });
+  const stats = crewStats([
+    at('2026-11-05T12:00:00Z', 'main', 'anthropic-account-2', 300),
+    at('2026-11-05T13:00:00Z', 'subagent', 'openai-codex-account-2', 100),
+    at('2026-11-05T14:00:00Z', 'compactor', 'anthropic-account-2', 9000),
+  ]);
+  assert.deepEqual(stats.routesByDay, {
+    '2026-11-05': {
+      'anthropic-account-2': { calls: 1, tokens: 300, share: 0.75 },
+      'openai-codex-account-2': { calls: 1, tokens: 100, share: 0.25 },
+    },
+  });
+});
+
 const HOUR = 3_600_000;
 const T0 = Date.parse('2026-11-10T00:00:00Z');
 
