@@ -48,7 +48,7 @@ export async function discardRefusal(text: string, cwd: string): Promise<string 
     const saved = previous?.cwd === repo && /^\s*&&\s*$/.test(between) && (previous.words.join(' ') === 'stash' || previous.words.join(' ') === 'stash push' || patch);
     if (status && (!saved || stash)) {
       const loss = stash ? 'alterações guardadas no stash' : clean ? 'arquivos não rastreados' : 'alterações locais rastreadas';
-      return `Não executado: ${loss} podem ser descartados. Há alterações locais; faça commit ou stash antes e preserve os arquivos ou stashes necessários.`;
+      return `Não executado: ${loss} podem se perder. Há alterações locais; faça commit ou stash antes e preserve os arquivos ou stashes necessários.`;
     }
     if (reset) {
       const target = args.find(a => a !== '--hard' && !a.startsWith('-')) ?? 'HEAD';
