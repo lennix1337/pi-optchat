@@ -35,6 +35,6 @@ export function renderDay(runs: readonly DayRun[], now: number, nextWake?: numbe
     const last = ago < 60_000 ? 'agora há pouco' : `há ${duration(ago)}`;
     lines.push(`*Hoje* \u00b7 ${runs.length} trabalho${runs.length === 1 ? '' : 's'} \u00b7 ${duration(total)} trabalhando \u00b7 último ${last}`);
   }
-  if (nextWake && nextWake > now) lines.push(`\u23f0 Pr\u00f3xima checagem de wake \u00e0s ${hhmm(nextWake)} (acordo se houver trabalho e voc\u00ea n\u00e3o falar antes)`);
+  if (nextWake && nextWake > now) lines.push(`\u23f0 Pr\u00f3ximo wake \u00e0s ${hhmm(nextWake)} (antes disso, s\u00f3 se aparecer novidade ou voc\u00ea falar)`);
   return lines.filter(Boolean).join('\n');
 }

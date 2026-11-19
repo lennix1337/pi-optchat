@@ -942,7 +942,7 @@ export default function optchat(host: ExtensionAPI) {
   // A paused import still takes the reports out, but a DM is delivered only to a profile that can run it: the input hook drops
   // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
-    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextAt, deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
+    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
       everyAnswer: () => active?.config.slackEveryAnswer === true,
       // The App Home's work items: read-only, from this profile's files and the shells running now (src/home-items.ts).
       items: () => {

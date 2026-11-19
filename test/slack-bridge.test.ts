@@ -803,7 +803,7 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
     assert.doesNotMatch(text, /`09h/, 'no hour bar: it could not be read on the phone (03/11)');
     assert.match(text, /^Última resposta: CI verde\.$/m);
     assert.doesNotMatch(text, /• 09:00/, 'the Home shows work items, not one row per chat run');
-    assert.match(text, /Próxima checagem de wake às 10:10/);
+    assert.match(text, /Próximo wake às 10:10 \(antes disso, só se aparecer novidade ou você falar\)/);
     assert.equal(readDay(f.dir, now).length, 1, 'a reload reads the day back');
     assert.equal(readDay(f.dir, now + 86_400_000).length, 0, 'tomorrow starts empty');
   } finally { f.close(); }

@@ -1070,3 +1070,22 @@ test('every wake must end with a PR or commit and time-boxes read-only hunts', a
   assert.match(DELIVERY_RULE, /10 tool calls/);
   assert.match(DELIVERY_RULE, /no PR or commit link failed/);
 });
+
+test('with wakeTriage nextWakeAt is the tick of the build wake, not the next check that may sleep (19/11: Home said 10:34, nothing ran)', async () => {
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged() });
+  h.beat.arm();
+  assert.equal(h.beat.nextAt, 15 * MIN, 'the next check is in 15 min');
+  assert.equal(h.beat.nextWakeAt, 120 * MIN, 'but the first wake without news is the build tick at 120 min');
+  await h.advance(15 * MIN); h.beat.arm();
+  assert.equal(h.beat.nextWakeAt, 120 * MIN);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('without wakeTriage every armed check may wake, so nextWakeAt is the next check', async () => {
+  const h = harness({ minutes: 30 });
+  h.beat.arm();
+  assert.equal(h.beat.nextWakeAt, 30 * MIN);
+  h.beat.disarm();
+  assert.equal(h.beat.nextWakeAt, undefined);
+  rmSync(h.dir, { recursive: true, force: true });
+});

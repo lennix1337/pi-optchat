@@ -434,6 +434,17 @@ export class Heartbeat {
     this.timer = this.deps.setTimer(() => { this.timer = undefined; this.nextAt = undefined; this.running = this.fireOnce(); }, wait);
   }
   disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; this.nextAt = undefined; }
+  /**
+   * When a wake is sure to start if nobody speaks: with wakeTriage a check without news sleeps, so it is the first tick
+   * at or after the build cadence; without it, the next check. 19/11 the Home showed the next check (10:34) and nothing ran.
+   */
+  get nextWakeAt(): number | undefined {
+    if (this.nextAt === undefined) return undefined;
+    const triage = this.deps.triage?.(), step = this.deps.minutes() * 60_000;
+    if (!triage || step <= 0) return this.nextAt;
+    const build = (this.saved().wakes.at(-1) ?? this.startedAt) + triage.buildMinutes * 60_000;
+    return build <= this.nextAt ? this.nextAt : this.nextAt + Math.ceil((build - this.nextAt) / step) * step;
+  }
   /** The operator is back: their turn decides what comes next. */
   operatorSpoke() {
     this.disarm(); this.epoch++;
