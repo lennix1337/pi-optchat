@@ -189,3 +189,9 @@ test('a pipe-status call the guard refused ("Not run:") is not a violation after
   assert.deepEqual([row.count, row.afterGuard], [0, 0]);
  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('pipe-status ignores the pattern inside quoted text or a heredoc, as in code that only mentions it', () => {
+ const rule = rules.find(r => r.id === 'pipe-status')!;
+ for (const command of ["cat > t.ts <<'EOF'\nrun('npm test | tail -5; echo rc=$?')\nEOF", 'git commit -m "o guard recusa `cmd | tail; echo rc=$?`"', "echo 'make | grep x; echo rc=$?'"]) assert.equal(detect(rule, call('bash', { command })), false, command);
+ assert.equal(detect(rule, call('bash', { command: 'make | tail -3; echo rc=$?' })), true);
+});
