@@ -70,10 +70,20 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
   return [...out];
 }
 
-export function claimRetryText(claims: readonly string[]): string {
-  return `${CLAIM_CHECK_PREFIX} Your reply states facts that no output of this run shows: ${claims.join(', ')}. ` +
-    'Before it reaches the operator, check each one with a read-only tool (test run, gh, curl, git log) and correct the reply, ' +
-    'or say plainly which ones are not verified. Then give the final reply again, in Portuguese.';
+/** First-person "I did not confirm/verify/check": the operator's rule is that the run always has a way to check (18/11). */
+export const UNCHECKED_ADMISSION = /\b(?:(?:ainda\s+)?n[ãa]o\s+(?:confirmei|verifiquei|conferi|chequei|validei)|I\s+(?:did\s+not|didn't|have\s+not|haven't)\s+(?:confirm|verif|check)\w*)\b/iu;
+
+export function uncheckedAdmissions(reply: string): string[] {
+  return sentences(reply).filter(s => UNCHECKED_ADMISSION.test(s));
+}
+
+export function claimRetryText(claims: readonly string[], admissions: readonly string[] = []): string {
+  const parts = [`${CLAIM_CHECK_PREFIX}`];
+  if (claims.length) parts.push(`Your reply states facts that no output of this run shows: ${claims.join(', ')}.`);
+  if (admissions.length) parts.push(`Your reply admits not having checked: ${admissions.map(a => `"${a}"`).join(' ')}`);
+  parts.push('Before it reaches the operator, check each one with a read-only tool (test run, gh, curl, git log) and correct the reply, ' +
+    'or say plainly which ones are not verified. Then give the final reply again, in Portuguese.');
+  return parts.join(' ');
 }
 
 export function unbackedNote(claims: readonly string[]): string {
