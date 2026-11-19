@@ -6,7 +6,19 @@ import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.
 export type Rule = { id: string; quote: string; date: string; scope: string; detector: string; precision: string };
 export type ScanResult = { id: string; count: number; examples: { file: string; line: number }[] };
 export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', import.meta.url), 'utf8')) as Rule[];
-export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions', '--C--Users-swluc--');
+/** The sessions root: the PC keeps one project folder in it, the VM several, so the scan reads every subdirectory. */
+export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions');
+
+/** The `.jsonl` sessions directly in `dir` or in its subdirectories (paths relative to `dir`). */
+function sessionFiles(dir: string, since: number): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...readdirSync(path).filter(f => f.endsWith('.jsonl')).map(f => join(entry.name, f)));
+    else if (entry.name.endsWith('.jsonl')) out.push(entry.name);
+  }
+  return out.filter(f => statSync(join(dir, f)).mtimeMs >= since);
+}
 
 type Content = { type?: string; text?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; content?: Content[] | string } };
@@ -96,7 +108,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
 export function scanCorrections(dir: string, since: number, until: number): ScanResult[] {
   if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) throw new Error('Invalid scan interval');
   const results = rules.map(r => ({ id: r.id, count: 0, examples: [] as { file: string; line: number }[] }));
-  for (const file of readdirSync(dir).filter(f => f.endsWith('.jsonl') && statSync(join(dir, f)).mtimeMs >= since)) {
+  for (const file of sessionFiles(dir, since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     let pacing = noPacing();
     for (let i = 0; i < lines.length; i++) {

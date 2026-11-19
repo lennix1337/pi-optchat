@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detect, scanCorrections, rules } from '../src/correction-scan.ts';
@@ -141,4 +141,14 @@ test('premature-merge ignores auto-merge and merges that carry verify evidence',
   const rule = rules.find(r => r.id === 'premature-merge')!;
   for (const c of ['gh pr merge 5 --auto --squash', 'npm run verify && gh pr merge 5 --squash', 'gh pr view 5 --json statusCheckRollup && gh pr merge 5', 'echo gh']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
   assert.equal(detect(rule, call('bash',{command:'cd repo && gh pr merge 9 --squash'})), true);
+});
+
+test('scan reads sessions kept in per-project subdirectories of the sessions root (the VM layout)', () => {
+ const root = mkdtempSync(join(tmpdir(), 'rules-root-')); try {
+  mkdirSync(join(root, '--home-ubuntu--')); mkdirSync(join(root, '--home-ubuntu-scratch--'));
+  writeFileSync(join(root, '--home-ubuntu--', 'a.jsonl'), JSON.stringify(text('Posso mergear?')) + '\n');
+  writeFileSync(join(root, '--home-ubuntu-scratch--', 'b.jsonl'), JSON.stringify(text('Posso mergear?')) + '\n');
+  const result = scanCorrections(root, Date.parse('2026-11-13'), Date.parse('2026-11-15'));
+  assert.equal(result.find(r => r.id === 'free-action')?.count, 2);
+ } finally { rmSync(root, { recursive: true, force: true }); }
 });
