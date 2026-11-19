@@ -61,6 +61,11 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'unchecked-own-work': return /\b(?:(?:ainda\s+)?n[ãa]o\s+(?:confirmei|verifiquei|conferi|chequei|validei)|I\s+(?:did\s+not|didn't|have\s+not|haven't)\s+(?:confirm|verif|check)\w*)\b/iu.test(final);
     case 'cause-claim': return calls.some(c => {
       const command = String(c.arguments?.command ?? '');
+      const message = String(c.arguments?.text ?? '');
+      if (c.name === 'whatsapp_send' || c.name === 'slack_send') {
+        return /\b(?:achei\s+(?:o\s+buraco|a\s+causa)|causa\s+(?:achada|encontrada|raiz)|found\s+the\s+(?:cause|bug))\b/iu.test(message) &&
+          !/\b(?:hip[óo]tese|n[ãa]o\s+verificad\w*|unverified|hypothesis)\b/iu.test(message);
+      }
       return c.name === 'bash' && /\bgh\s+(?:issue|pr)\s+(?:comment|close)\b/u.test(command) &&
         /\b(?:causa\s+(?:achada|encontrada|raiz)|root\s+cause\s+(?:found|is))\b/iu.test(command) &&
         !/\b(?:hip[óo]tese|n[ãa]o\s+verificad\w*|unverified|hypothesis)\b/iu.test(command);

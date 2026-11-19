@@ -130,6 +130,13 @@ test('cause-claim flags only gh issue/PR comments or closes that state a cause a
  for (const c of ['gh issue comment 1 -b "causa encontrada (hipótese, não verificada)"', 'echo "causa achada"', 'gh issue comment 1 -b "Resolvida pelo #170"']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
  assert.equal(detect(rule, text('Causa achada: o cache.')), false);
 });
+test('cause-claim also flags a WhatsApp/Slack report that states a cause as found (18/11 wacli "Achei o buraco")', () => {
+ const rule = rules.find(r => r.id === 'cause-claim')!;
+ assert.equal(detect(rule, call('whatsapp_send',{text:'Achei o buraco: o wacli não avisou a sessão.'})), true);
+ assert.equal(detect(rule, call('slack_send',{text:'Achei a causa: o cache.'})), true);
+ assert.equal(detect(rule, call('whatsapp_send',{text:'Hipótese, não verificada: o aviso do wacli não saiu.'})), false);
+ assert.equal(detect(rule, call('slack_send',{text:'Corrigi o envio; a causa ainda não foi achada.'})), false);
+});
 test('premature-merge ignores auto-merge and merges that carry verify evidence', () => {
   const rule = rules.find(r => r.id === 'premature-merge')!;
   for (const c of ['gh pr merge 5 --auto --squash', 'npm run verify && gh pr merge 5 --squash', 'gh pr view 5 --json statusCheckRollup && gh pr merge 5', 'echo gh']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
