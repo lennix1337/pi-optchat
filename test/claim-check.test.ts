@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims } from '../src/claim-check.ts';
+import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims } from '../src/claim-check.ts';
 
 test('a pass count no output showed is unbacked; the counts a test runner prints back it', () => {
   // 18/11: "API 31/31" was sent while the run's own vitest output showed 4 FAIL.
@@ -70,4 +70,12 @@ test('"não confirmei" in the reply is an admission the run must check before se
   assert.match(claimRetryText([], ['Não confirmei X.']), /Não confirmei X\.[\s\S]*read-only tool/);
   // 19/11: describing the feature itself, with the phrase in quotes, fired the retry.
   assert.deepEqual(uncheckedAdmissions('Quando uma resposta diz "não confirmei" ou \u201cI did not verify\u201d, ela volta uma vez.'), []);
+});
+
+test('a reply that gives up on a cause goes back once to take one more step (operator 15/11)', () => {
+  assert.deepEqual(abandonedCauses('Os stalls seguem; causa não encontrada. Fim.'), ['causa não encontrada.']);
+  assert.equal(abandonedCauses('Stall cause not found.').length, 1);
+  assert.deepEqual(abandonedCauses('A causa foi encontrada no carregamento.'), []);
+  assert.deepEqual(abandonedCauses('O detector procura "causa não encontrada" no texto.'), []);
+  assert.match(claimRetryText([], [], ['Causa não encontrada.']), /gives up on a cause[\s\S]*one more cheap step/);
 });
