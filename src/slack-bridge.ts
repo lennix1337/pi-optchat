@@ -619,20 +619,21 @@ export class SlackBridge {
   }
 
   /** The call of an approval post stopped waiting outside Slack (terminal, a newer call, expiry): the post says so. */
-  settled(token: string, outcome: Settled): Promise<unknown> {
+  settled(token: string, outcome: Settled, via?: string): Promise<unknown> {
     const found = [...this.approvals].find(([, post]) => post.request.token === token);
     if (!found) return this.settling;
     this.approvals.delete(found[0]);
     this.refreshHome();
-    return this.retire(found[0], found[1], outcome);
+    const where = via && (outcome === 'approved' || outcome === 'denied') ? `${outcome === 'approved' ? '\u2705 *Aprovado' : '\u{1f6ab} *Negado'} no ${via}*` : undefined;
+    return this.retire(found[0], found[1], outcome, where);
   }
 
   /** Settles pending post rewrites (tests). */
   idle(): Promise<unknown> { return this.settling; }
 
   /** Rewrites the post without its buttons; a service without `update` (or a post without its DM id) gets a thread reply. */
-  private retire(ts: string, { request, channel }: Post, outcome: keyof typeof SETTLED_TEXT): Promise<unknown> {
-    const text = `${SETTLED_TEXT[outcome]} \u00b7 ${request.label}: ${request.summary}`;
+  private retire(ts: string, { request, channel }: Post, outcome: keyof typeof SETTLED_TEXT, head = SETTLED_TEXT[outcome]): Promise<unknown> {
+    const text = `${head} \u00b7 ${request.label}: ${request.summary}`;
     const owner = this.owner();
     this.settling = this.settling.then(async () => {
       try {

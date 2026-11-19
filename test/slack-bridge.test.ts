@@ -456,6 +456,10 @@ test('an approval decided at the terminal rewrites its Slack post without button
     await f.bridge.askApproval({ token: 'c'.repeat(24), summary: 'rm x', label: 'delete', expires: 1_000_000 + 600_000, decide: () => true });
     await f.bridge.settled('c'.repeat(24), 'superseded');
     assert.match((f.requests.at(-1)!.body as { text: string }).text, /Substitu\u00edda/);
+    // Decided on WhatsApp: the Slack post names where, not "no terminal".
+    await f.bridge.askApproval({ token: 'd'.repeat(24), summary: 'deploy', label: 'deploy', expires: 1_000_000 + 600_000, decide: () => true });
+    await f.bridge.settled('d'.repeat(24), 'approved', 'WhatsApp');
+    assert.match((f.requests.at(-1)!.body as { text: string }).text, /^\u2705 \*Aprovado no WhatsApp\* \u00b7 deploy: deploy$/u);
   } finally { f.close(); }
 });
 
