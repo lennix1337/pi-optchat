@@ -65,6 +65,11 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
         /\b(?:causa\s+(?:achada|encontrada|raiz)|root\s+cause\s+(?:found|is))\b/iu.test(command) &&
         !/\b(?:hip[óo]tese|n[ãa]o\s+verificad\w*|unverified|hypothesis)\b/iu.test(command);
     });
+    case 'premature-merge': return calls.some(c => {
+      const command = String(c.arguments?.command ?? '');
+      return c.name === 'bash' && /\bgh\s+pr\s+merge\b/u.test(command) && !/\s--auto\b/u.test(command) &&
+        !/\b(?:gh\s+pr\s+checks|statusCheckRollup|mergeStateStatus|gh\s+run\s+(?:watch|view)|npm\s+(?:run\s+)?verify|dentai-ship)\b/u.test(command);
+    });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b[^;\n|]*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(String(c.arguments?.command ?? '')));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
