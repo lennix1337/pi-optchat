@@ -6,6 +6,7 @@ import { judgeSelfEdit } from './autonomy-self-edit.ts';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { worktreeRemovalRefusal } from './worktree-guard.ts';
+import { discardRefusal } from './discard-guard.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
@@ -192,7 +193,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   const guard = async (event: { toolName: string; input: unknown }, cwd: string) => {
     if (event.toolName !== 'bash' || !event.input || typeof event.input !== 'object' || !('command' in event.input) || typeof event.input.command !== 'string') return;
-    const reason = await worktreeRemovalRefusal(event.input.command, cwd);
+    const reason = await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd);
     if (reason) return { block: true as const, reason };
   };
   if (!(enabled ?? (env === '1' || env === 'risk'))) {
