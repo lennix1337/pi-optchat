@@ -84,7 +84,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     });
     case 'premature-merge': return calls.some(c => {
       const command = String(c.arguments?.command ?? '');
-      return c.name === 'bash' && /\bgh\s+pr\s+merge\b/u.test(command) && !/\s--auto\b/u.test(command) &&
+      return c.name === 'bash' && /(?:^|[;&|\n])\s*gh\s+pr\s+merge\b/u.test(command) && !/\s--(?:auto|disable-auto)\b/u.test(command) &&
         !/\b(?:gh\s+pr\s+checks|statusCheckRollup|mergeStateStatus|gh\s+run\s+(?:watch|view)|npm\s+(?:run\s+)?verify|dentai-ship)\b/u.test(command);
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
