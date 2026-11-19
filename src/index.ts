@@ -202,6 +202,7 @@ export default function optchat(host: ExtensionAPI) {
   // Each owned browser tab's last page, so input on a consent, account or billing page waits for the operator.
   registerBrowserPages(pi);
   // The profile's autonomy.json decides a gated call; what it has no rule for runs and is logged.
+  let approvalVia: string | undefined; // set while a WhatsApp vote decides, so the Slack post says where
   const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir,
   // "pode fazer o merge e o deploy", recorded as grants quoting it, covers the calls it names instead of one prompt each.
   orderGrant: effect => {
@@ -215,10 +216,17 @@ export default function optchat(host: ExtensionAPI) {
     catch { return undefined; /* an unreadable state file lifts nothing: the call waits for the operator */ }
   },
   // A call that waits for the operator is also posted to their Slack DM, where its buttons or `aprovar`/`negar` in its
-  // thread decide it; decided anywhere else, the post is rewritten to say so.
-  onPending: (pending, session, gate) => void slack.askApproval({ token: pending.token, summary: pending.summary, detail: pending.detail, label: pending.kind ?? pending.tool, expires: pending.expires,
-    decide: approve => gate.decideFromPhone(session, pending.token, approve) }),
-  onSettled: (token, outcome) => void slack.settled(token, outcome) });
+  // thread decide it; decided anywhere else, the post is rewritten to say so. The same call goes out on the
+  // `optchat:approval` bus event, so pi-wacli can ask on his WhatsApp (a poll with Aprovar/Negar) and decide it there.
+  onPending: (pending, session, gate) => {
+    const request = { token: pending.token, summary: pending.summary, detail: pending.detail, label: pending.kind ?? pending.tool, expires: pending.expires };
+    void slack.askApproval({ ...request, decide: approve => gate.decideFromPhone(session, pending.token, approve) });
+    pi.events.emit('optchat:approval', { type: 'pending', ...request, decide: (approve: boolean) => {
+      approvalVia = 'WhatsApp';
+      try { return gate.decideFromPhone(session, pending.token, approve); } finally { approvalVia = undefined; }
+    } });
+  },
+  onSettled: (token, outcome) => { void slack.settled(token, outcome, approvalVia); pi.events.emit('optchat:approval', { type: 'settled', token, outcome }); } });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
   registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
   // A production deploy in flight (src/deploy.ts): launches are refused, running workers hold heavy work.
