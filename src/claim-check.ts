@@ -74,7 +74,8 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
 export const UNCHECKED_ADMISSION = /\b(?:(?:ainda\s+)?n[ãa]o\s+(?:confirmei|verifiquei|conferi|chequei|validei)|I\s+(?:did\s+not|didn't|have\s+not|haven't)\s+(?:confirm|verif|check)\w*)\b/iu;
 
 export function uncheckedAdmissions(reply: string): string[] {
-  return sentences(reply).filter(s => UNCHECKED_ADMISSION.test(s));
+  // A phrase in quotes is cited, not admitted (describing this very check fired it).
+  return sentences(reply).filter(s => UNCHECKED_ADMISSION.test(s.replace(/"[^"]*"|“[^”]*”|'[^']*'/gu, '')));
 }
 
 export function claimRetryText(claims: readonly string[], admissions: readonly string[] = []): string {

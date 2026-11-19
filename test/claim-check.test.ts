@@ -68,4 +68,6 @@ test('"não confirmei" in the reply is an admission the run must check before se
   // Reporting a verification gap of the world, or a check that was done, is not the admission.
   assert.deepEqual(uncheckedAdmissions('Não verificado: CI. Verifiquei o merge no GitHub.'), []);
   assert.match(claimRetryText([], ['Não confirmei X.']), /Não confirmei X\.[\s\S]*read-only tool/);
+  // 19/11: describing the feature itself, with the phrase in quotes, fired the retry.
+  assert.deepEqual(uncheckedAdmissions('Quando uma resposta diz "não confirmei" ou \u201cI did not verify\u201d, ela volta uma vez.'), []);
 });
