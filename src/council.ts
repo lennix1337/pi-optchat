@@ -1,6 +1,7 @@
 // A wake's council: before it picks the delivery, the wake posts its candidates to Slack and the least used
 // Codex account answers in the same thread, under its own name, with a pick, an objection and a gap. One round;
 // the wake decides. Claude (the wake itself) never advises itself, and an exhausted account never advises.
+import { execFile } from 'node:child_process';
 import { accounts } from './quota-health.ts';
 
 export const ADVISOR_MODEL = 'gpt-6.1-terra';
@@ -26,6 +27,20 @@ Responda em português, em até 90 palavras, direto, sem cumprimentos:
 1. Qual você escolheria e por quê, em uma frase.
 2. A objeção mais forte à escolha de maior nota (risco, custo, ou por que não é o que mais importa agora).
 3. O que ficou de fora e merecia estar na lista, se houver.`;
+}
+
+/** Runs the advisor (`pi -p ...` by default) and returns its answer or a short error. Stdin is closed at once:
+ *  `pi -p` reads a piped stdin to its end, so an open pipe hangs it until the timeout. */
+export function askAdvisor(args: string[], options: { command?: string; timeoutMs?: number } = {}): Promise<{ text?: string; error?: string }> {
+  const timeoutMs = options.timeoutMs ?? 180_000;
+  return new Promise(resolve => {
+    const child = execFile(options.command ?? 'pi', args, { timeout: timeoutMs, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+      if (!error) return resolve({ text: stdout.trim() });
+      if (error.killed) return resolve({ error: `sem resposta em ${timeoutMs / 1000} s` });
+      resolve({ error: (stderr.trim() || `saiu com código ${error.code}`).slice(-300) });
+    });
+    child.stdin?.end();
+  });
 }
 
 /** The thread line that shows who said it. */

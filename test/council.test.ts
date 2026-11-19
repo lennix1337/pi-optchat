@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { advisorLine, advisorPrompt, pickAdvisor } from '../src/council.ts';
+import { advisorLine, advisorPrompt, askAdvisor, pickAdvisor } from '../src/council.ts';
 
 const now = Date.parse('2026-11-19T03:00:00Z');
 const later = now + 86_400_000;
@@ -31,4 +31,17 @@ test('the prompt carries the candidates and asks for a pick, an objection and a 
 test('every post names who spoke', () => {
   assert.equal(advisorLine({ account: 'openai-codex', model: 'openai-codex/gpt-6.1-terra', used: 0 }, 'Fico com o 2.'),
     '🤖 *gpt-6.1-terra · openai-codex* (conselheiro): Fico com o 2.');
+});
+
+test('the advisor run closes stdin, so a print run that reads it does not hang until the timeout', async () => {
+  // Like `pi -p`: waits for stdin EOF before answering. An open pipe would hang it.
+  const fake = ['-e', "process.stdin.resume(); process.stdin.on('end', () => console.log('escolho o 2'))"];
+  const answer = await askAdvisor(fake, { command: process.execPath, timeoutMs: 5_000 });
+  assert.deepEqual(answer, { text: 'escolho o 2' });
+});
+
+test('an advisor that times out says so, without echoing the prompt back', async () => {
+  const answer = await askAdvisor(['-e', 'setTimeout(() => {}, 10_000)', 'PROMPT LONGO'], { command: process.execPath, timeoutMs: 300 });
+  assert.match(answer.error ?? '', /sem resposta em 0\.3 s/);
+  assert.doesNotMatch(answer.error ?? '', /PROMPT LONGO/);
 });
