@@ -97,7 +97,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
         !/\b(?:gh\s+pr\s+checks|statusCheckRollup|mergeStateStatus|gh\s+run\s+(?:watch|view)|npm\s+(?:run\s+)?verify|dentai-ship)\b/u.test(command);
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
-    case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b[^;\n|]*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
+    case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b(?:[^;\n|&]|&(?!&))*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'weaken-test': return calls.some(c => {
       if (c.name !== 'edit' || !/(?:^|[\\/])(?:test|tests|__tests__)(?:[\\/])|\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(String(c.arguments?.path ?? ''))) return false;
