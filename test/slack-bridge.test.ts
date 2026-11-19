@@ -722,7 +722,7 @@ test('App Home: a run typed in the terminal shows working too, with the live ste
     f.advance(30_000);
     f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/slack-bridge.ts' });
     await settle();
-    assert.match(homes().at(-1)!, /há 0 min[\s\S]*Agora: editando slack-bridge\.ts · 3 passos/);
+    assert.match(homes().at(-1)!, /há 0 min[\s\S]*Agora: editando slack-bridge\.ts · rodando há 0s · 3 passos/);
     await settle();
     assert.match(homes().at(-1)!, /Esperando você[\s\S]*rk_live/);
     await f.bridge.runEnded(replies('Pronto.'));
@@ -1080,7 +1080,60 @@ test('a Slack message tells the model the reply budget of its own channel', asyn
 
 type HomeBody = { text: string; working?: boolean; choices?: { label: string; options: string[] }[]; fold?: string };
 const homes$ = bodiesFor<HomeBody>('/v1/slack/home');
+
+test('App Home: pensamentos recentes e duração avançam durante um comando e param no fim', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  const thought = (...texts: string[]) => ({ role: 'assistant', content: texts.map(thinking => ({ type: 'thinking', thinking })) }) as unknown as AgentMessage;
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('tarefa no terminal');
+    f.bridge.assistantSaid(thought('primeiro', 'segundo'));
+    f.bridge.assistantSaid(thought('terceiro'));
+    f.bridge.toolStarted('bash', { command: 'npm test' });
+    await settle();
+    let text = homes$(f).at(-1)!.text;
+    assert.match(text, /\*Pensando\*[\s\S]*> primeiro[\s\S]*> segundo[\s\S]*> terceiro[\s\S]*Agora:.*rodando há 0s/);
+    f.bridge.assistantSaid(thought('quarto'));
+    f.advance(20_000); t.mock.timers.tick(20_000);
+    await settle();
+    text = homes$(f).at(-1)!.text;
+    assert.doesNotMatch(text, /> primeiro/);
+    assert.match(text, /> segundo[\s\S]*> terceiro[\s\S]*> quarto[\s\S]*Agora:.*rodando há 20s/);
+    f.bridge.assistantSaid(thought('Authorization: Bearer tok_live_9876543210fedcbaABCDEF'));
+    f.advance(40_000); t.mock.timers.tick(40_000);
+    await settle();
+    text = homes$(f).at(-1)!.text;
+    assert.match(text, /Authorization: Bearer \[segredo:bearer\]/);
+    assert.doesNotMatch(text, /tok_live_9876543210fedcbaABCDEF/);
+    assert.match(text, /rodando há 1min 0s/);
+    await f.bridge.runEnded([]);
+    await settle();
+    const count = homes$(f).length;
+    f.advance(20_000); t.mock.timers.tick(20_000);
+    await settle();
+    assert.equal(homes$(f).length, count);
+  } finally { f.bridge.stop(); f.close(); }
+});
 const MANY = { ...WORK, prs: Array.from({ length: 7 }, (_, i) => ({ ...WORK.prs[0]!, number: i + 1 })) };
+
+test('App Home: pensamento do wake anterior ao início mantém a origem e stop cancela o timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    f.bridge.runStarted();
+    f.bridge.assistantSaid({ role: 'assistant', content: [{ type: 'thinking', thinking: '   wake\n  em andamento  ' }] } as unknown as AgentMessage);
+    f.bridge.toolStarted('bash', { command: 'true' });
+    await settle();
+    assert.match(homes$(f).at(-1)!.text, /wake[\s\S]*> wake em andamento[\s\S]*Agora:/);
+    f.bridge.stop();
+    const count = homes$(f).length;
+    f.advance(20_000); t.mock.timers.tick(20_000);
+    await settle();
+    assert.equal(homes$(f).length, count);
+  } finally { f.bridge.stop(); f.close(); }
+});
 
 test('App Home: idle in the chat with a shell or a subagent still running says so instead of "Livre"', async () => {
   const f = fixture([], { items: () => ({ ...WORK, agents: ['subagente a1 \u00b7 revisar #830'] }) });
