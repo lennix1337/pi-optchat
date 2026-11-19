@@ -1,5 +1,5 @@
 export interface CrewStatsRow { role: string; model: string; calls: number; cost: number; tokensPerCall: number }
-export interface CrewStats { opusMain: { calls: number; cost: number }; total: number; opusMainByDay: Record<string, { calls: number; cost: number }>; routesByDay: Record<string, Record<string, { calls: number; tokens: number; share: number }>>; rows: CrewStatsRow[] }
+export interface CrewStats { opusMain: { calls: number; cost: number }; total: number; opusMainByDay: Record<string, { calls: number; cost: number }>; routesByDay: Record<string, Record<string, { calls: number; tokens: number; share: number }>>; mainRoutesByDay: Record<string, Record<string, { calls: number; tokens: number; share: number }>>; rows: CrewStatsRow[] }
 export function crewStats(lines: readonly string[], sinceMs?: number, untilMs?: number): CrewStats;
 
 /** A metric whose source is missing is the string "unavailable", never 0. */
