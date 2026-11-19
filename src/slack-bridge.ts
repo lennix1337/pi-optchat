@@ -121,7 +121,7 @@ function recentThoughts(previous: string[], content: unknown): string[] {
   if (!Array.isArray(content)) return previous;
   const thoughts = [...previous];
   for (const part of content) {
-    if (part?.type !== 'thinking' || typeof part.thinking !== 'string') continue;
+    if (part?.type !== 'thinking' || part.redacted || typeof part.thinking !== 'string') continue;
     const text = clipWords(scrubSecrets(part.thinking).replace(/\s+/g, ' ').trim(), 220);
     if (text) thoughts.push(text);
   }
