@@ -38,6 +38,7 @@ const RADAR_VOLATILE: [RegExp, string][] = [
   [/\d+ rounds in \d+ h/g, 'rounds'],
   [/\d+ slow or failed/g, 'slow'],
   [/no write for \d+ min/g, 'no write'],
+  [/\d+% of \d+ calls/g, 'share'],
   [/[\d.,]+\s*[KMGTP]i?B free(?: of [\d.,]+\s*[KMGTP]i?B)?/g, 'free'],
 ];
 /** One radar line with the figures that change on every read replaced by a word, and its spaces collapsed. */
