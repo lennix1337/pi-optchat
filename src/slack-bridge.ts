@@ -16,6 +16,7 @@ import { failoverReader, homeStatus, modelName, remoteCommand, type CommandState
 import { randomUUID } from 'node:crypto';
 import { QUOTA_FILE } from './quota-health.ts';
 import { atomicWrite } from './store.ts';
+import { scrubSecrets } from './secret-scrub.ts';
 import { textContent } from './transcript.ts';
 import { transcribeAudio } from './transcribe.ts';
 import { budgetNote, fitPost, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
@@ -116,6 +117,16 @@ export function clipWords(text: string, max: number): string {
   const cut = text.slice(0, max - 1), space = cut.search(/\s\S*$/);
   return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
 }
+function recentThoughts(previous: string[], content: unknown): string[] {
+  if (!Array.isArray(content)) return previous;
+  const thoughts = [...previous];
+  for (const part of content) {
+    if (part?.type !== 'thinking' || part.redacted || typeof part.thinking !== 'string') continue;
+    const text = clipWords(scrubSecrets(part.thinking).replace(/\s+/g, ' ').trim(), 220);
+    if (text) thoughts.push(text);
+  }
+  return thoughts.slice(-3);
+}
 const base = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).pop() ?? path : '';
 
 /** Runs `run` on every item, at most `limit` at a time; results keep the input order. `run` must not throw. */
@@ -214,7 +225,8 @@ export class SlackBridge {
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
-  private work: { since: number; origin: string; about: string; step: string; steps: number; shown: number } | undefined;
+  private work: { since: number; origin: string; about: string; step: string; stepSince: number; steps: number; shown: number; thoughts: string[] } | undefined;
+  private workTimer: ReturnType<typeof setTimeout> | undefined;
   /** The wake whose run a provider error cut short: pi-multi-account resumes it with a user message that is no wake prompt. */
   private cutWake: { since: number; endedAt: number } | undefined;
   private waiting: () => readonly (string | WaitingItem)[] = () => [];
@@ -257,8 +269,9 @@ export class SlackBridge {
   stop(): void {
     this.generation++; this.cancelRead?.abort(); this.cancelRead = undefined;
     this.answering = undefined; this.waking = false; this.running = false;
+    clearTimeout(this.workTimer); this.workTimer = undefined; this.work = undefined;
   }
-  runStarted(continuing = false): void { if (!continuing || !this.running) { this.work = undefined; this.touched = []; } this.running = true; }
+  runStarted(continuing = false): void { if (!continuing || !this.running) { clearTimeout(this.workTimer); this.workTimer = undefined; if (this.running) this.work = undefined; this.touched = []; } this.running = true; }
   /** What waits for the operator (approvals, items blocked on him); shown on the App Home, working or free. */
   setWaiting(read: () => readonly (string | WaitingItem)[]): void { this.waiting = read; }
 
@@ -268,7 +281,19 @@ export class SlackBridge {
     if (!this.work) return;
     this.work.steps++;
     this.work.step = stepLabel(tool, args);
+    this.work.stepSince = this.options.now();
     if (this.work.steps === 1 || this.options.now() - this.work.shown >= HOME_STEP_MS) this.showWork();
+    if (!this.workTimer) this.scheduleWork();
+  }
+
+  private scheduleWork(): void {
+    this.workTimer = setTimeout(() => {
+      this.workTimer = undefined;
+      if (!this.running || !this.work?.steps) return;
+      if (this.options.now() - this.work.shown >= HOME_STEP_MS) this.showWork();
+      this.scheduleWork();
+    }, Math.max(1, HOME_STEP_MS - (this.options.now() - (this.work?.shown ?? this.options.now()))));
+    this.workTimer.unref?.();
   }
 
   private showWork(): void {
@@ -276,8 +301,11 @@ export class SlackBridge {
     const now = this.options.now();
     w.shown = now;
     const minutes = Math.floor((now - w.since) / 60_000);
+    const seconds = Math.max(0, Math.floor((now - w.stepSince) / 1000));
+    const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}min ${seconds % 60}s`;
     this.home([`\u{1f504} *Trabalhando* há ${minutes} min (desde ${clock(w.since)}, ${w.origin})`, `> ${w.about}`,
-      ...w.steps ? [`Agora: ${w.step} · ${w.steps} passo${w.steps === 1 ? '' : 's'}`] : []].join('\n'));
+      ...w.thoughts.length ? ['*Pensando*', ...w.thoughts.map(thought => `> ${thought}`)] : [],
+      ...w.steps ? [`Agora: ${w.step} · rodando há ${elapsed} · ${w.steps} passo${w.steps === 1 ? '' : 's'}`] : []].join('\n'));
   }
 
   /** The work as items (PRs, commitments, jobs, subagents); a reader that fails leaves them out, and the Home still goes out. */
@@ -500,7 +528,7 @@ export class SlackBridge {
     const about = wake ? 'turno automático (wake)' : text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
     // The first message of a run names it, wherever it came from; a later Slack message renames it, a gitwatch notice does not.
     if (!this.work || match) {
-      this.work = { since: this.work?.since ?? resumed?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: '', steps: this.work?.steps ?? 0, shown: 0 };
+      this.work = { since: this.work?.since ?? resumed?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: this.work?.step ?? '', stepSince: this.work?.stepSince ?? this.options.now(), steps: this.work?.steps ?? 0, shown: 0, thoughts: this.work?.thoughts ?? [] };
       this.showWork();
     }
     if (wake) { this.waking = true; return; }
@@ -531,8 +559,10 @@ export class SlackBridge {
   /** At the end of a run that received a Slack message, its final answer goes back to the DM. */
   /** Every finished assistant message: a text-only one is the reply so far to the Slack message of this run. */
   assistantSaid(message: AgentMessage): void {
-    if (message.role !== 'assistant' || !this.answering) return;
+    if (message.role !== 'assistant') return;
     const content = (message as { content?: unknown }).content;
+    if (this.running && this.work) this.work.thoughts = recentThoughts(this.work.thoughts, content);
+    if (!this.answering) return;
     if (Array.isArray(content) && content.some(part => (part as { type?: string })?.type === 'toolCall')) return;
     const text = textContent(message.content, false).trim();
     if (text) this.replied = text;
@@ -561,6 +591,7 @@ export class SlackBridge {
     const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp;
     this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
+    clearTimeout(this.workTimer); this.workTimer = undefined;
     const steps = this.work?.steps ?? 0, work = this.work, owner = this.owner();
     this.work = undefined;
     this.cutWake = waking ? { since: work?.since ?? this.options.now(), endedAt: this.options.now() } : undefined;
