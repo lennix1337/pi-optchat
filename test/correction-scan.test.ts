@@ -141,6 +141,8 @@ test('premature-merge ignores auto-merge and merges that carry verify evidence',
   const rule = rules.find(r => r.id === 'premature-merge')!;
   for (const c of ['gh pr merge 5 --auto --squash', 'npm run verify && gh pr merge 5 --squash', 'gh pr view 5 --json statusCheckRollup && gh pr merge 5', 'echo gh']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
   assert.equal(detect(rule, call('bash',{command:'cd repo && gh pr merge 9 --squash'})), true);
+  assert.equal(detect(rule, call('bash',{command:'gh pr merge 9 --squash | tail -1; echo done'})), true);
+  for (const c of ['gh pr merge 430 --disable-auto', 'node -e "m.ownMerges(\'gh pr merge 9 --squash\')"', 'git commit -m "gh pr merge --disable-auto nao conta como merge"', 'gh pr diff 40 | grep "gh pr merge"']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
 });
 
 test('scan reads sessions kept in per-project subdirectories of the sessions root (the VM layout)', () => {
