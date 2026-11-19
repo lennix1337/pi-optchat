@@ -201,3 +201,8 @@ test('pipe-status does not flag a pipe that ends before an && chain', () => {
  assert.equal(detect(rule, call('bash', { command: 'git status | head -4 && node t.mjs > log 2>&1; echo rc=$?' })), false);
  assert.equal(detect(rule, call('bash', { command: 'make 2>&1 | tail -3; echo rc=$?' })), true);
 });
+test('a quoted admission or cause phrase is a citation, not a violation', () => {
+ for (const [id, s] of [['unchecked-own-work', 'A regra proíbe "Não confirmei que ele começou" e eu cumpro.'], ['abandoned-cause', 'O detector procura “causa não encontrada” nos relatórios.']] as const) {
+  assert.equal(detect(rules.find(r => r.id === id)!, text(s)), false, id);
+ }
+});

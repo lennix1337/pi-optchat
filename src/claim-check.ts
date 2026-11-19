@@ -73,16 +73,18 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
 /** First-person "I did not confirm/verify/check": the operator's rule is that the run always has a way to check (18/11). */
 export const UNCHECKED_ADMISSION = /\b(?:(?:ainda\s+)?n[ãa]o\s+(?:confirmei|verifiquei|conferi|chequei|validei)|I\s+(?:did\s+not|didn't|have\s+not|haven't)\s+(?:confirm|verif|check)\w*)\b/iu;
 
+/** A phrase in quotes is cited, not admitted (describing a check fired it). */
+export const withoutQuotes = (s: string): string => s.replace(/"[^"]*"|“[^”]*”|'[^']*'/gu, '');
+
 export function uncheckedAdmissions(reply: string): string[] {
-  // A phrase in quotes is cited, not admitted (describing this very check fired it).
-  return sentences(reply).filter(s => UNCHECKED_ADMISSION.test(s.replace(/"[^"]*"|“[^”]*”|'[^']*'/gu, '')));
+  return sentences(reply).filter(s => UNCHECKED_ADMISSION.test(withoutQuotes(s)));
 }
 
 /** "Cause not found": the operator's rule (15/11, "se nao sabe pq parou de investigar?") is that a run does not stop at an unknown cause. */
 export const ABANDONED_CAUSE = /\b(?:causas?\s+n[ãa]o\s+(?:(?:foi|foram)\s+)?encontrad[ao]s?|sem\s+causa\s+encontrada|causes?\s+(?:(?:is|were|was|still)\s+)*not\s+found)\b/iu;
 
 export function abandonedCauses(reply: string): string[] {
-  return sentences(reply).filter(s => ABANDONED_CAUSE.test(s.replace(/"[^"]*"|“[^”]*”|'[^']*'/gu, '')));
+  return sentences(reply).filter(s => ABANDONED_CAUSE.test(withoutQuotes(s)));
 }
 
 export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = []): string {
