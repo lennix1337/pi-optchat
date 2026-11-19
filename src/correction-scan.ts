@@ -20,8 +20,8 @@ function sessionFiles(dir: string, since: number): string[] {
   return out.filter(f => statSync(join(dir, f)).mtimeMs >= since);
 }
 
-type Content = { type?: string; text?: string; name?: string; arguments?: Record<string, unknown> };
-type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; content?: Content[] | string } };
+type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
+type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
 /** `wake`: the run in progress started with an OptChat heartbeat prompt, so its final text is a wake report. */
 type Pacing = { active: boolean; directWork: number; wake?: boolean };
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
@@ -111,13 +111,27 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
   for (const file of sessionFiles(dir, since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     let pacing = noPacing();
+    const merges = new Map<string, { result: number; example?: { file: string; line: number } }>(); // premature-merge hits by tool call id, to withdraw the ones the guard refused
+    const premature = rules.findIndex(r => r.detector === 'premature-merge');
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
       let event: Event;
       try { event = JSON.parse(lines[i]) as Event; } catch { continue; } // a live session's last line may be half-written
       const at = Date.parse(event.timestamp ?? '');
       if (!Number.isFinite(at) || at >= until) continue;
-      rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) { results[n].count++; if (results[n].examples.length < 3) results[n].examples.push({ file, line: i + 1 }); } });
+      rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) {
+        results[n].count++;
+        const example = results[n].examples.length < 3 ? { file, line: i + 1 } : undefined;
+        if (example) results[n].examples.push(example);
+        if (n === premature) for (const c of toolCalls(event)) if (c.id) merges.set(c.id, { result: n, example });
+      } });
+      const reply = event.message;
+      if (reply?.role === 'toolResult' && reply.toolCallId && merges.has(reply.toolCallId) && Array.isArray(reply.content) && reply.content.some(c => c.type === 'text' && /^Not run:/u.test(c.text ?? ''))) {
+        const hit = merges.get(reply.toolCallId)!;
+        results[hit.result].count--;
+        if (hit.example) results[hit.result].examples = results[hit.result].examples.filter(e => e !== hit.example);
+        merges.delete(reply.toolCallId);
+      }
       pacing = nextPacing(pacing, event);
     }
   }

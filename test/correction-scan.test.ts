@@ -154,3 +154,14 @@ test('scan reads sessions kept in per-project subdirectories of the sessions roo
   assert.equal(result.find(r => r.id === 'free-action')?.count, 2);
  } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('premature-merge does not count a merge the guard refused ("Not run:"), only the ones that ran', () => {
+ const dir = mkdtempSync(join(tmpdir(), 'rules-')); try {
+  const at = '2026-11-14T12:00:00Z';
+  const merge = (id: string) => ({ type: 'message', timestamp: at, message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id, name: 'bash', arguments: { command: 'gh pr merge 5 --squash' } }] } });
+  const result = (id: string, out: string) => ({ type: 'message', timestamp: at, message: { role: 'toolResult', toolCallId: id, toolName: 'bash', isError: out.startsWith('Not run:'), content: [{ type: 'text', text: out }] } });
+  writeFileSync(join(dir,'a.jsonl'), [merge('refused'), result('refused','Not run: PR 5 is not mergeable over green CI: checks still running.'), merge('ran'), result('ran','merged')].map(e => JSON.stringify(e)).join('\n')+'\n');
+  const found = scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r => r.id === 'premature-merge')!;
+  assert.equal(found.count, 1); assert.deepEqual(found.examples, [{ file: 'a.jsonl', line: 3 }]);
+ } finally { rmSync(dir,{recursive:true,force:true}); }
+});
