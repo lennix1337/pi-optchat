@@ -165,3 +165,27 @@ test('premature-merge does not count a merge the guard refused ("Not run:"), onl
   assert.equal(found.count, 1); assert.deepEqual(found.examples, [{ file: 'a.jsonl', line: 3 }]);
  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+
+test('a rule with a guard reports how many violations happened after the guard went live', () => {
+ const pipe = (timestamp: string) => ({ ...call('bash', { command: 'npm test | tail -3; echo rc=' + '$' + '?' }), timestamp });
+ const dir = mkdtempSync(join(tmpdir(), 'after-guard-'));
+ try {
+  writeFileSync(join(dir, 'session.jsonl'), [pipe('2026-11-18T10:00:00Z'), pipe('2026-11-18T11:00:00Z'), pipe('2026-11-20T10:00:00Z')].map(e => JSON.stringify(e)).join('\n'));
+  const found = scanCorrections(dir, Date.parse('2026-11-17'), Date.parse('2026-11-21'));
+  const row = found.find(r => r.id === 'pipe-status')!;
+  assert.deepEqual([row.count, row.afterGuard], [3, 1]);
+  assert.equal(found.find(r => r.id === 'force-action')!.afterGuard, undefined, 'an unguarded rule has no after-guard count');
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a pipe-status call the guard refused ("Not run:") is not a violation after the guard', () => {
+ const bad = { ...call('bash', { command: 'npm test | tail -3; echo rc=' + '$' + '?' }), timestamp: '2026-11-20T10:00:00Z' };
+ (bad.message.content[0] as { id?: string }).id = 'c1';
+ const refused = { type: 'message', timestamp: '2026-11-20T10:00:01Z', message: { role: 'toolResult', toolCallId: 'c1', content: [{ type: 'text', text: 'Não executado: troque rc por PIPESTATUS' }] } };
+ const dir = mkdtempSync(join(tmpdir(), 'refused-pipe-'));
+ try {
+  writeFileSync(join(dir, 'session.jsonl'), [bad, refused].map(e => JSON.stringify(e)).join('\n'));
+  const row = scanCorrections(dir, Date.parse('2026-11-19'), Date.parse('2026-11-21')).find(r => r.id === 'pipe-status')!;
+  assert.deepEqual([row.count, row.afterGuard], [0, 0]);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
