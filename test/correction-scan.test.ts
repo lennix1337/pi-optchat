@@ -19,6 +19,7 @@ const cases: [string, object, object][] = [
  ['force-action', call('bash',{command:'git push --force'}), call('bash',{command:'git push origin main'})],
  ['unchecked-own-work', text('O worker foi relançado. Não confirmei que ele começou de fato.'), text('O worker está rodando: tarefa Running e passo 43 no log.')],
  ['cause-claim', call('bash',{command:'gh issue comment 168 --body "Causa achada: o merge com GITHUB_TOKEN não dispara push."'}), call('bash',{command:'gh issue comment 168 --body "Hipótese, não verificada: o merge com GITHUB_TOKEN pode não disparar push."'})],
+ ['premature-merge', call('bash',{command:'gh pr merge 193 --squash --delete-branch'}), call('bash',{command:'gh pr checks 193 && gh pr merge 193 --squash'})],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
@@ -128,4 +129,9 @@ test('cause-claim flags only gh issue/PR comments or closes that state a cause a
  for (const c of ['gh issue close 168 -c "Root cause found: token"', 'gh pr comment 5 --body "A causa raiz é o cache"', 'gh issue comment 1 -b "causa encontrada"']) assert.equal(detect(rule, call('bash',{command:c})), true, c);
  for (const c of ['gh issue comment 1 -b "causa encontrada (hipótese, não verificada)"', 'echo "causa achada"', 'gh issue comment 1 -b "Resolvida pelo #170"']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
  assert.equal(detect(rule, text('Causa achada: o cache.')), false);
+});
+test('premature-merge ignores auto-merge and merges that carry verify evidence', () => {
+  const rule = rules.find(r => r.id === 'premature-merge')!;
+  for (const c of ['gh pr merge 5 --auto --squash', 'npm run verify && gh pr merge 5 --squash', 'gh pr view 5 --json statusCheckRollup && gh pr merge 5', 'echo gh']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
+  assert.equal(detect(rule, call('bash',{command:'cd repo && gh pr merge 9 --squash'})), true);
 });
