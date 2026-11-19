@@ -179,3 +179,8 @@ test('a signal wake text names the signals and, when settling them changes nothi
   assert.ok(!/only the projects below moved/.test(text), 'the signals are where to start, not the whole wake');
   assert.ok(wakeText('', 'haiku', 15, DEFAULT_HEARTBEAT).includes(DELIVERY_RULE), 'the build wake keeps it');
 });
+
+test('the Claude-share radar line does not change the digest when only its percentage and call count move', () => {
+  const share = (pct: number, calls: number) => `## Claude share of model calls (last 24 h)\n- 19/11: anthropic ${pct}% of ${calls} calls (main and subagents)\n`;
+  assert.deepEqual(projectDigests(radar(share(59, 406))), projectDigests(radar(share(58, 396))));
+});
