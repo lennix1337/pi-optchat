@@ -20,6 +20,7 @@ const sdk: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 
 test('native self reload replaces extensions then resumes tool execution and final answer exactly once', { timeout: 20000 }, async t => {
+  const started = performance.now(), marks: Record<string, number> = {}, mark = (name: string) => { marks[name] = Math.round(performance.now() - started); };
   const dir = mkdtempSync(join(tmpdir(), 'oc-self-reload-')), prior = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = join(dir, 'home');
   let network = 0;
@@ -77,17 +78,22 @@ test('native self reload replaces extensions then resumes tool execution and fin
         inspections++; assert.equal(readFileSync(receipt, 'utf8'), '1'); return { content: [{ type: 'text', text: 'verified effect-count=1' }], details: {} };
       } });
     }] });
+  mark('runtime');
   await loader.reload();
+  mark('loader');
   const manager = sdk.SessionManager.create(dir, join(dir, 'sessions'));
   manager.appendCustomEntry('optchat.profile', { name: 'reload-fixture' });
   const { session } = await sdk.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('reload-fixture', 'fixture'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['fixture_effect', 'self_reload', 'fixture_inspect'] });
+  mark('session');
   try {
     await session.bindExtensions({ mode: 'print', onError: event => errors.push(event.error),
       uiContext: { ...session.extensionRunner!.getUIContext(), notify: text => { notices.push(text); } },
       commandContextActions: { reload: async () => { reloads++; await session.reload(); } } as any });
     session.subscribe(event => { if (event.type === 'agent_settled' && final) finish(); });
     await session.prompt('Do one disposable local action, reload, and verify it without repeating it.');
+    mark('prompt');
     await finished;
+    mark('settled');
     assert.equal(reloads, 1); assert.equal(generations, 2); assert.equal(executions, 1); assert.equal(inspections, 1); assert.equal(calls, 5); assert.equal(continuationSeen, true);
     const entries = manager.getBranch();
     const ticket = entries.findLast(e => e.type === 'custom' && e.customType === RELOAD_ENTRY);
@@ -104,6 +110,7 @@ test('native self reload replaces extensions then resumes tool execution and fin
     assert.equal(calls, 5, 'later manual reload never replays continuation');
     console.log(JSON.stringify({ generations, reloads, executions, inspections, calls, network, final, nativeRuntime: process.env.OPTCHAT_TEST_PI_ENTRY ?? 'pinned' }));
   } finally {
+    mark('end'); console.log(`self-reload phase ms ${JSON.stringify(marks)}`);
     await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     if (prior === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = prior;
     removeDir(dir);
