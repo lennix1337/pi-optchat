@@ -38,6 +38,8 @@ test('native self reload replaces extensions then resumes tool execution and fin
   let generations = 0, executions = 0, inspections = 0, calls = 0, reloads = 0;
   let continuationSeen = false, final = '';
   const errors: string[] = [], notices: string[] = [];
+  // Dump the state shortly before the 20 s limit so a Windows hang shows which step it stuck at (the finally block never prints on a timeout).
+  const hangDump = setTimeout(() => console.log(`# self-reload still running at 15 s ${JSON.stringify({ marks, generations, reloads, executions, inspections, calls, continuationSeen, errors, notices })}`), 15000);
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
   const runtime = await sdk.ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -110,6 +112,7 @@ test('native self reload replaces extensions then resumes tool execution and fin
     assert.equal(calls, 5, 'later manual reload never replays continuation');
     console.log(JSON.stringify({ generations, reloads, executions, inspections, calls, network, final, nativeRuntime: process.env.OPTCHAT_TEST_PI_ENTRY ?? 'pinned' }));
   } finally {
+    clearTimeout(hangDump);
     mark('end'); console.log(`self-reload phase ms ${JSON.stringify(marks)}`);
     await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     if (prior === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = prior;
