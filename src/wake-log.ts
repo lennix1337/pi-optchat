@@ -53,6 +53,19 @@ function shellEffects(segment: string, output: string): string[] {
   return found;
 }
 
+/** The #wakes thread the wake's council opened (council.mjs prints its ts), so the wake's log lands under its own
+ *  council instead of as a separate post; undefined when the wake held no council. */
+export function councilThread(messages: readonly Message[]): string | undefined {
+  const councils = new Set<string>();
+  for (const m of messages) if (m.role === 'assistant') for (const call of blocks(m.content))
+    if (call.type === 'toolCall' && call.id && /\bcouncil\.mjs\b/.test(String((call.arguments as { command?: unknown } | undefined)?.command ?? ''))) councils.add(call.id);
+  for (const m of messages) if (m.role === 'toolResult' && m.toolCallId && councils.has(m.toolCallId)) {
+    const ts = /"channel":"wakes","ts":"(\d+\.\d+)"/.exec(textOf(m.content))?.[1];
+    if (ts) return ts;
+  }
+  return undefined;
+}
+
 /** Each effect of a run, in order, as `repo: what` (failed calls say so); repeated lines are kept once. */
 export function wakeEffects(messages: readonly Message[]): string[] {
   const results = new Map<string, { text: string; error: boolean }>();

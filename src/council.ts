@@ -4,13 +4,14 @@
 import { execFile } from 'node:child_process';
 import { accounts } from './quota-health.ts';
 
-export const ADVISOR_MODEL = 'gpt-6.1-terra';
+export const ADVISOR_MODEL = 'gpt-6.2-sol';
 export interface Advisor { account: string; model: string; used: number }
 
-/** The Codex account with the most room now (lowest used % of its fullest window); undefined when none can answer. */
-export function pickAdvisor(state: unknown, now: number): Advisor | undefined {
+/** The Codex account that offers the advisor model with the most room now (lowest used % of its fullest window);
+ *  undefined when none can answer. */
+export function pickAdvisor(state: unknown, now: number, offers: (account: string) => boolean = () => true): Advisor | undefined {
   const usable = accounts(state, now)
-    .filter(a => a.id.startsWith('openai-codex') && a.blockedUntil === undefined && a.used !== undefined && a.used < 100)
+    .filter(a => a.id.startsWith('openai-codex') && offers(a.id) && a.blockedUntil === undefined && a.used !== undefined && a.used < 100)
     .sort((a, b) => a.used! - b.used! || a.id.localeCompare(b.id));
   const best = usable[0];
   return best && { account: best.id, model: `${best.id}/${ADVISOR_MODEL}`, used: best.used! };
@@ -27,6 +28,13 @@ Responda em português, em até 90 palavras, direto, sem cumprimentos:
 1. Qual você escolheria e por quê, em uma frase.
 2. A objeção mais forte à escolha de maior nota (risco, custo, ou por que não é o que mais importa agora).
 3. O que ficou de fora e merecia estar na lista, se houver.`;
+}
+
+/** Whether a provider in Pi's models.json lists the advisor model; a missing or unreadable file offers none. */
+export function offersModel(modelsJson: string | undefined, model = ADVISOR_MODEL): (account: string) => boolean {
+  let providers: Record<string, { models?: { id?: string }[] }> = {};
+  try { providers = JSON.parse(modelsJson ?? '{}').providers ?? {}; } catch { /* none */ }
+  return account => !!providers[account]?.models?.some(m => m.id === model);
 }
 
 /** Runs the advisor (`pi -p ...` by default) and returns its answer or a short error. Stdin is closed at once:
