@@ -5,6 +5,7 @@ import { localDate, PRS, type PrSeen, type Post, type ReportOwner } from './slac
 import { slackWeek, type SlackWeek } from './slack-metrics.ts';
 import { correctionsWeek } from './corrections.ts';
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { atomicWrite, envDir, readJsonOr } from './store.ts';
 
@@ -21,6 +22,8 @@ type Saved = { week?: string; routing?: Routing; downloads?: number };
 export type Business = { downloads: number; stars: number; previous?: number; issues?: { open: number; closedWeek: number } };
 export type ScoreInputs = {
   predictions?: { hits: number; total: number };
+  /** Wake councils decided this week and how many the debate changed ("Mudou: sim"); undefined without a record. */
+  council?: { changed: number; total: number };
   from: number; to: number; slack: SlackWeek;
   corrections: { count: number; recordingSince?: number };
   ruleViolations?: number;
@@ -42,7 +45,16 @@ const correctionsLine = ({ count, recordingSince }: ScoreInputs['corrections'], 
   ? '• Correções do operador: não medidas ainda (o registro começa com a próxima correção)'
   : `• Possíveis correções do operador: *${count}* (cada uma recebeu lembrete de virar teste ou regra)${partial(recordingSince, from)}`;
 
-export function composeScoreboard({ from, to, slack, corrections, ruleViolations, business, commitments, routing, merged, predictions }: ScoreInputs): string {
+/** Council decisions of the week from council.jsonl (written by scripts/council.mjs --reply). */
+function councilWeek(dir: string, from: number, to: number): ScoreInputs['council'] {
+  let raw: string;
+  try { raw = readFileSync(join(dir, 'council.jsonl'), 'utf8'); } catch { return undefined; }
+  const rows = raw.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line) as { at?: string; changed?: boolean | null }; } catch { return undefined; } })
+    .filter(r => { const at = Date.parse(r?.at ?? ''); return at >= from && at < to; });
+  return rows.length ? { changed: rows.filter(r => r?.changed === true).length, total: rows.length } : undefined;
+}
+
+export function composeScoreboard({ from, to, slack, corrections, ruleViolations, business, commitments, routing, merged, predictions, council }: ScoreInputs): string {
   const lines = [`📊 *Placar Jarvis* · semana ${day(from)}–${day(to - 1)}`];
   if (slack.recordingSince === undefined) lines.push('• "E aí?" e primeira resposta no Slack: não medidos ainda (o registro começa com a próxima mensagem do operador)');
   else {
@@ -54,6 +66,7 @@ export function composeScoreboard({ from, to, slack, corrections, ruleViolations
   lines.push(correctionsLine(corrections, from));
   lines.push(ruleViolations === undefined ? '• Regras violadas (7d): não medido' : `• Regras violadas (7d): *${ruleViolations}* candidatos (meta 0; detectores aproximados)`);
   lines.push(predictions?.total ? `• Previsões acertadas (7d): *${predictions.hits}* de *${predictions.total}*` : '• Previsões acertadas (7d): não medido');
+  lines.push(council ? `• Conselho do wake (7d): mudou minha decisão em *${council.changed}* de *${council.total}*` : '• Conselho do wake (7d): não medido');
   lines.push(business
     ? `• GX18MCP: *${business.downloads}* downloads npm na semana${business.previous === undefined ? '' : ` (${business.downloads >= business.previous ? '+' : '−'}${Math.abs(business.downloads - business.previous)} vs. semana anterior)`}, ${business.stars} estrelas${business.issues ? `, *${business.issues.open}* issues abertas (${business.issues.closedWeek} fechadas na semana)` : ''}`
     : '• GX18MCP: não medido (npm ou GitHub fora do ar)');
@@ -89,7 +102,7 @@ export function weekInputs(dir: string, now: number, saved: Saved,
   const before = saved.routing;
   const delta = routing && before && before.since === routing.since && routing.woke >= before.woke && routing.quiet >= before.quiet
     ? { woke: routing.woke - before.woke, quiet: routing.quiet - before.quiet } : undefined;
-  return { inputs: { predictions: predictionWeek(dir, from, now), from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
+  return { inputs: { predictions: predictionWeek(dir, from, now), council: councilWeek(dir, from, now), from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
 }
 
 /** GX18MCP traction from public endpoints: npm downloads of the last week, GitHub stars and, when the search API answers, open and weekly-closed issues. Undefined when npm or the repo read fails. */

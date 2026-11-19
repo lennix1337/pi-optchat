@@ -162,3 +162,18 @@ test('the weekly post saves downloads as the next week\'s baseline', withDir(asy
   await board.maybePost();
   assert.equal(JSON.parse(readFileSync(join(dir, 'slack-scoreboard.json'), 'utf8')).downloads, 50);
 }));
+
+test('the council line counts decisions the debate changed this week from council.jsonl; no record is unmeasured', withDir(dir => {
+  const iso = (at: number) => new Date(at).toISOString();
+  writeFileSync(join(dir, 'council.jsonl'), [
+    { at: iso(monday - DAY), ts: '1', changed: true },
+    { at: iso(monday - 2 * DAY), ts: '2', changed: false },
+    { at: iso(monday - 3 * DAY), ts: '3', changed: null },
+    { at: iso(monday - 8 * DAY), ts: '4', changed: true },
+  ].map(r => JSON.stringify(r)).join('\n') + '\n');
+  const { inputs } = weekInputs(dir, monday, {}, join(dir, 'none.json'));
+  assert.deepEqual(inputs.council, { changed: 1, total: 3 });
+  const empty = { received: 0, answered: 0, waiting: 0, nudges: 0 };
+  assert.match(composeScoreboard(inputs), /Conselho do wake \(7d\): mudou minha decisão em \*1\* de \*3\*/);
+  assert.match(composeScoreboard({ from: 0, to: DAY, slack: empty, corrections: { count: 0 }, merged: { green: 0, other: 0 } }), /Conselho do wake \(7d\): não medido/);
+}));
