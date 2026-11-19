@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DELIVERY_RULE, previousWakeNote } from '../src/heartbeat.ts';
-import { DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, signalWakeText, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
+import { BRAINSTORM_NOTE, DEFAULT_HEARTBEAT, HEARTBEAT_PROMPT, Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, radarDigest, runRadar, runRadarFresh, NEW_WORK_NOTE, signalWakeText, wakeText, wakeTurn, type Beat, type WakeRecord } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 import { addCommitment, readCommitments } from '../src/commitments.ts';
 import type { Patrol } from '../src/patrol-divert.ts';
@@ -594,6 +594,9 @@ test('every wake names the end goal and asks for a new capability toward it, not
   }
   assert.match(wake, /ambitious/);
   assert.match(wake, /Clearing the queue is the floor/);
+  assert.ok(wakeText('', 'haiku', 15, plan).includes(BRAINSTORM_NOTE), 'the build wake brainstorms before it picks');
+  assert.match(BRAINSTORM_NOTE, /5 concrete candidates/);
+  assert.match(BRAINSTORM_NOTE, /personality/);
 });
 
 test('every wake is told to deliver a change, and one after an empty wake is told it was empty', () => {

@@ -192,6 +192,9 @@ If that wake left something open or unconfirmed (a CI run still running, a PR no
  * nothing and committed nothing failed, even when every pending item waits on an event or on him. */
 export const DELIVERY_RULE = `Every wake delivers a change: one that only re-reads state and reports "nothing new" failed (operator, 03/11). The end goal of this harness is a living assistant that helps the operator through his day on its own: it notices what he needs, decides and acts without being asked (operator, 08/11). Clearing the queue is the floor, not the delivery: be ambitious. When the pending items wait on events or on the operator, build a new capability toward that goal in the harness (pi-optchat, subagents, gitwatch, multi-account, ripwire, tools, or a new package), measured before and after and finished end to end. Time-box investigation: when a hunt (an issue cause, a stall) has gone 10 tool calls without a fix in sight, ship what it produced (a red test, a diagnostic that would have answered it, a tool) or switch to building; a wake whose report has no PR or commit link failed (operator 14/11: "quero que todos entreguem algo, mesmo que precise criar algo novo").`;
 
+/** How a wake picks what to build, so it never settles for upkeep (operator 19/11). */
+export const BRAINSTORM_NOTE = `Before you pick the delivery, brainstorm: write 5 concrete candidates from different areas (a harness capability, DentAI conversion or revenue, Genexus18MCP, an open issue, something he asked for in recent days), score each 1-5 on fit with what we are building here (a living assistant that notices, decides and acts on its own) and with his personality (YAGNI and KISS, results over reports, speed, autonomy), pick the highest and say why in one line, then build it to a merged PR. Do not repeat the last wake's pick (operator 19/11: "sempre tem algo a fazer, inovar em algo, brainstorm e escolher a opcao que mais combina com o que estamos fazendo aqui e a minha personalidade").`;
+
 /** Said when the radar has not moved since the last wake: the wake still delivers, with new work (operator, 02/11: "mesmo que nao tenha algo pendente, cria algo novo"). */
 export const NEW_WORK_NOTE = `The radar is unchanged since the last wake: nothing pending moved. This wake still delivers: after closing anything the last wake left open, design and build a new capability toward the living assistant that helps the operator through his day on its own (operator, 08/11), above all in the harness (pi-optchat, subagents, gitwatch, multi-account, ripwire, tools), measured before and after, and finish it end to end.`;
 
@@ -217,6 +220,7 @@ Read the backlog to inspect other open items before choosing, within the limits 
   return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
 Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance. ${DELIVERY_RULE}
+${BRAINSTORM_NOTE}
 The operator's jobs for idle time (candidates, not a priority order):
 ${list(plan.jobs)}
 Allowed, unattended:
@@ -226,12 +230,13 @@ ${list(plan.never)}
 Follow the operator's standing instructions. End with a short report of what you delivered; when you delivered nothing, end with no text.`;
 }
 
-/** The text of a wake that project signals started: what moved (`note`, from crewWakeNote) and the limits of a turn nobody is watching. It carries no
- * delivery rule or new-work request: the signals are the work, and the periodic build wake is the one that builds. */
+/** The text of a wake that project signals started: what moved (`note`, from crewWakeNote), then the delivery rule, since a signal that
+ * needs nothing still leaves a wake that must deliver (19/11), and the limits of a turn nobody is watching. */
 export function signalWakeText(idleMinutes: number, plan: HeartbeatPlan, note: string) {
-  return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. Project signals woke you (no model check ran): only the projects below moved since the last wake.
+  return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. Project signals woke you (no model check ran): the projects below moved since the last wake.
 ${note}
-Settle each signal with the evidence you read from its project now, not from the line alone. A signal that needs the operator waits for him: do not guess it and do not report it again. Stop at acceptance.
+Settle each signal first, with the evidence you read from its project now, not from the line alone. A signal that needs the operator waits for him: do not guess it and do not report it again. When settling them left no commit or PR, the wake is not done: ${DELIVERY_RULE}
+${BRAINSTORM_NOTE}
 Allowed, unattended:
 ${list(plan.allowed)}
 Never, unless the operator already asked for exactly that:
