@@ -15,6 +15,14 @@ test('dates, versions and times are not pass counts', () => {
   assert.deepEqual(unbackedClaims('Os testes rodaram em 18/11 e a cota renova em 24/11 às 23:06; 05/10 foi o fork; versão 4.7.1 passou.', ''), []);
 });
 
+test('digits around "de" or "of" inside an ID are not a pass count', () => {
+  // A shell ID such as 43733b62-5de6-… was read as "5 de 6" and sent a scripted run back for a claim check (CI flake).
+  const id = '43733b62-5de6-4f1a-9b2c-0d7de7261234';
+  assert.deepEqual(unbackedClaims(`OK: [shell ${id}] failed · exit 3\nfail-out`, `Background shell ${id} started`), []);
+  assert.deepEqual(unbackedClaims('Os testes passaram: 3de4 e 2of9 são nomes.', ''), []);
+  assert.deepEqual(unbackedClaims('Testes: 5 de 6 passaram.', ''), ['5 de 6']);
+});
+
 test('a commit hash must appear in some output; plain words that look hex do not count', () => {
   assert.deepEqual(unbackedClaims('Mesclado como 1d3ae355, deploy de 8a77c8c0. A decade facade.', 'commit 1d3ae3558e849a16522d6dbc0cf885dbf0439b1c'), ['8a77c8c0']);
 });
