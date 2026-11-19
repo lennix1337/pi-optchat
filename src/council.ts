@@ -7,6 +7,19 @@ import { accounts } from './quota-health.ts';
 export const ADVISOR_MODEL = 'gpt-6.2-sol';
 export interface Advisor { account: string; model: string; used: number }
 
+/** The second advisor: agy (Gemini, its own quota) on the PC, through agy-pc.mjs --ask (plan mode, no repo). */
+export const AGY_ADVISOR: Advisor = { account: 'agy', model: 'agy/gemini-4-neon-high', used: 0 };
+
+/** What agy-worker answered, from agy-pc's output: the lines after agy-worker's conversation line and before its
+ *  "(agy model: ...)" footer; undefined when the footer is missing (a refused or failed run). */
+export function agyAnswer(output: string): string | undefined {
+  const end = output.indexOf('\n(agy model:');
+  if (end < 0) return undefined;
+  const lines = output.slice(0, end).split('\n');
+  const start = lines.findLastIndex(l => l.startsWith('agy-worker: conversation'));
+  return lines.slice(start + 1).filter(l => !/^(started PiTask|Fetching available models)/.test(l)).join('\n').trim() || undefined;
+}
+
 /** The Codex account that offers the advisor model with the most room now (lowest used % of its fullest window);
  *  undefined when none can answer. */
 export function pickAdvisor(state: unknown, now: number, offers: (account: string) => boolean = () => true): Advisor | undefined {

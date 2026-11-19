@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { advisorLine, advisorPrompt, askAdvisor, offersModel, pickAdvisor } from '../src/council.ts';
+import { AGY_ADVISOR, advisorLine, agyAnswer, advisorPrompt, askAdvisor, offersModel, pickAdvisor } from '../src/council.ts';
 
 const now = Date.parse('2026-11-19T03:00:00Z');
 const later = now + 86_400_000;
@@ -51,4 +51,11 @@ test('an advisor that times out says so, without echoing the prompt back', async
   const answer = await askAdvisor(['-e', 'setTimeout(() => {}, 10_000)', 'PROMPT LONGO'], { command: process.execPath, timeoutMs: 300 });
   assert.match(answer.error ?? '', /sem resposta em 0\.3 s/);
   assert.doesNotMatch(answer.error ?? '', /PROMPT LONGO/);
+});
+
+test('the agy advisor answer is the text agy-worker printed, without pc-task and agy-worker framing', () => {
+  const out = 'started PiTask-agy-council at 2026-11-19T12:43:00Z\nFetching available models...\nagy-worker: conversation 52a0 (continue with --resume 52a0)\nFico com o 2.\nObjeção: custo.\n\n\n(agy model: gemini-4-neon-high; quota left: 100%)\n\nrc=0 after 0.5 min; full log C:\\x\\out.log\n';
+  assert.equal(agyAnswer(out), 'Fico com o 2.\nObjeção: custo.');
+  assert.equal(agyAnswer('started PiTask-x\nagy-worker: model not offered\nrc=2 after 0.1 min'), undefined);
+  assert.equal(advisorLine(AGY_ADVISOR, 'Fico com o 1.'), '🤖 *gemini-4-neon-high · agy* (conselheiro): Fico com o 1.');
 });
