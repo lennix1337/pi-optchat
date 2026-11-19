@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crewWakeNote, missionProjects } from '../src/crew.ts';
-import { DEFAULT_HEARTBEAT, DELIVERY_RULE, NEW_WORK_NOTE, signalWakeText, wakeTask, wakeText } from '../src/heartbeat.ts';
+import { BRAINSTORM_NOTE, DEFAULT_HEARTBEAT, DELIVERY_RULE, NEW_WORK_NOTE, signalWakeText, wakeTask, wakeText } from '../src/heartbeat.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 import { lastRunsOf, projectDigests, signals, stalledMissions } from '../src/wake-signals.ts';
 
@@ -167,11 +167,15 @@ test('wakeTriage is validated in the profile config', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a signal wake text is still a wake prompt, names the signals, and asks for neither new work nor the delivery rule', () => {
+// 19/11: three signal wakes in a row settled a billing-blocked CI line, found nothing to fix and ended with no delivery, because this
+// text said the signals were the whole work (operator: "nao podemos ter wake que nao tem nada entregue, sempre tem algo a fazer").
+test('a signal wake text names the signals and, when settling them changes nothing, still delivers through the brainstorm', () => {
   const note = crewWakeNote('', [], [], [{ project: 'harness', lines: ['- pi-optchat @ main: 1 behind origin/main'], lastRun: 'c_42ab' }]);
   const text = signalWakeText(15, DEFAULT_HEARTBEAT, note);
   assert.equal(wakeTask(text), '', 'recognised as a wake that no model check suggested');
   assert.ok(text.includes(note));
-  assert.ok(!text.includes(DELIVERY_RULE) && !text.includes(NEW_WORK_NOTE));
+  assert.ok(text.includes(DELIVERY_RULE) && text.includes(BRAINSTORM_NOTE));
+  assert.ok(!text.includes(NEW_WORK_NOTE));
+  assert.ok(!/only the projects below moved/.test(text), 'the signals are where to start, not the whole wake');
   assert.ok(wakeText('', 'haiku', 15, DEFAULT_HEARTBEAT).includes(DELIVERY_RULE), 'the build wake keeps it');
 });
