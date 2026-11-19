@@ -45,11 +45,14 @@ test('bash output with many blank lines stays within the 200 ms event-loop budge
   const handlers: Record<string, (e: any) => void> = {};
   registerExecLog({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any, () => dir);
   handlers.tool_execution_start({ toolCallId: '1', toolName: 'bash', args: { command: 'cat output' } });
+  const cpu0 = process.cpuUsage();
   const started = performance.now();
   handlers.tool_execution_end({ toolCallId: '1', toolName: 'bash', isError: false, result: { content: [{ type: 'text', text: '\n'.repeat(40_000) }] } });
   const elapsed = performance.now() - started;
+  const cpu = process.cpuUsage(cpu0);
   assert.equal(lines(dir)[0].class, 'ok');
-  assert.ok(elapsed < 200, `bash completion blocked the event loop for ${elapsed.toFixed(1)} ms`);
+  // CPU time next to wall time tells a slow runner (wall high, cpu low) from slow code (both high).
+  assert.ok(elapsed < 200, `bash completion blocked the event loop for ${elapsed.toFixed(1)} ms (cpu user ${(cpu.user / 1000).toFixed(1)} ms, system ${(cpu.system / 1000).toFixed(1)} ms)`);
 });
 
 test('grep no-match classification stays within budget with many blank lines', () => {
