@@ -32,6 +32,17 @@ export async function discardRefusal(text: string, cwd: string): Promise<string 
     const restore = sub === 'restore' && (!args.some(a => a === '--staged' || /^-[^-]*S/.test(a)) || args.some(a => a === '--worktree' || /^-[^-]*W/.test(a)));
     const clean = sub === 'clean' && args.some(a => a === '--force' || /^-[^-]*f/.test(a)) && !args.some(a => a === '--dry-run' || /^-[^-]*n/.test(a));
     const stash = sub === 'stash' && (args[0] === 'drop' || args[0] === 'clear');
+    const forced = args.some(a => a === '--force' || /^-[^-]*f/.test(a));
+    const deleting = args.some(a => a === '--delete' || /^-[^-]*[dD]/.test(a));
+    const branchDelete = sub === 'branch' && deleting && (forced || args.some(a => /^-[^-]*D/.test(a)));
+    if (branchDelete) {
+      const names = args.filter(a => !a.startsWith('-'));
+      for (const name of names) {
+        const lost = await git(repo, 'for-each-ref', '--count=1', '--contains', `refs/heads/${name}`, '--format=%(refname)', 'refs/remotes/origin') === '';
+        if (lost && await git(repo, 'rev-parse', '--verify', '-q', `refs/heads/${name}`)) return `Não executado: os commits da branch ${name} não publicados em nenhuma origin podem ser perdidos. Publique a branch ou use git branch -d depois de mesclar.`;
+      }
+      continue;
+    }
     if (!reset && !checkout && !restore && !clean && !stash) continue;
     if (await git(repo, 'rev-parse', '--git-dir') === undefined) continue;
     const status = await git(repo, 'status', '--porcelain', '--untracked-files=no');
