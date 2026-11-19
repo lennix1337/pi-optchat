@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { branchEvidenceMessages, evidenceText, unbackedClaims } from '../src/claim-check.ts';
+import { branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims } from '../src/claim-check.ts';
 
 test('a pass count no output showed is unbacked; the counts a test runner prints back it', () => {
   // 18/11: "API 31/31" was sent while the run's own vitest output showed 4 FAIL.
@@ -60,4 +60,12 @@ test('a gitwatch notice injected between runs backs the merge it reports', () =>
   const evidence = evidenceText(branchEvidenceMessages(entries as never));
   assert.deepEqual(unbackedClaims('O #167 foi mesclado (af268f0).', evidence), []);
   assert.deepEqual(unbackedClaims('O #168 foi mesclado.', evidence), ['#168 mesclado']);
+});
+
+test('"não confirmei" in the reply is an admission the run must check before sending (operator 18/11)', () => {
+  assert.deepEqual(uncheckedAdmissions('Feito o PR. Não confirmei que ele começou de fato. Resto ok.'), ['Não confirmei que ele começou de fato.']);
+  assert.deepEqual(uncheckedAdmissions('I did not verify the deploy.'), ['I did not verify the deploy.']);
+  // Reporting a verification gap of the world, or a check that was done, is not the admission.
+  assert.deepEqual(uncheckedAdmissions('Não verificado: CI. Verifiquei o merge no GitHub.'), []);
+  assert.match(claimRetryText([], ['Não confirmei X.']), /Não confirmei X\.[\s\S]*read-only tool/);
 });
