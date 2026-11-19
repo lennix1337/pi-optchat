@@ -21,7 +21,7 @@ import { textContent } from './transcript.ts';
 import { transcribeAudio } from './transcribe.ts';
 import { budgetNote, fitPost, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
-import { WAKE_LOG_CHANNEL, wakeLogPost } from './wake-log.ts';
+import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
 
 /**
@@ -614,7 +614,9 @@ export class SlackBridge {
     }
     const text = last;
     // Every wake, idle ones too, goes to the #wakes log; a service without that channel keeps the per-repo report.
-    try { await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), null, WAKE_LOG_CHANNEL); return; }
+    // A wake that held a council logs under that thread (and in the channel), so council and wake read as one story.
+    const council = councilThread(messages);
+    try { await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), council ?? null, WAKE_LOG_CHANNEL, council ? { broadcast: true } : {}); return; }
     catch (error) {
       if (!(error instanceof Error && error.message.startsWith('Unknown Slack channel'))) { this.options.warn(`Wake log not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); return; }
     }

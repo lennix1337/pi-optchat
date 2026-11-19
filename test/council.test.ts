@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { advisorLine, advisorPrompt, askAdvisor, pickAdvisor } from '../src/council.ts';
+import { advisorLine, advisorPrompt, askAdvisor, offersModel, pickAdvisor } from '../src/council.ts';
 
 const now = Date.parse('2026-11-19T03:00:00Z');
 const later = now + 86_400_000;
@@ -11,7 +11,14 @@ const state = (usage: Record<string, number>, cooldowns: Record<string, number> 
 
 test('the advisor is the least used Codex account, never Claude itself', () => {
   const pick = pickAdvisor(state({ 'anthropic-account-2': 2, 'openai-codex': 30, 'openai-codex-account-2': 5 }), now);
-  assert.deepEqual(pick, { account: 'openai-codex-account-2', model: 'openai-codex-account-2/gpt-6.1-terra', used: 5 });
+  assert.deepEqual(pick, { account: 'openai-codex-account-2', model: 'openai-codex-account-2/gpt-6.2-sol', used: 5 });
+});
+
+test('only an account whose models.json lists the advisor model advises', () => {
+  const offers = offersModel(JSON.stringify({ providers: { 'openai-codex-account-2': { models: [{ id: 'gpt-6.2-sol' }] }, 'openai-codex': { models: [{ id: 'gpt-6.1-terra' }] } } }));
+  assert.equal(pickAdvisor(state({ 'openai-codex': 0, 'openai-codex-account-2': 40 }), now, offers)?.account, 'openai-codex-account-2');
+  assert.equal(pickAdvisor(state({ 'openai-codex': 0 }), now, offers), undefined);
+  assert.equal(pickAdvisor(state({ 'openai-codex': 0 }), now, offersModel('not json')), undefined);
 });
 
 test('a blocked or exhausted account never advises; none left means no council', () => {

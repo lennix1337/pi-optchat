@@ -237,6 +237,25 @@ test('with a #wakes channel every wake is logged there, idle ones too, with the 
   } finally { f.close(); }
 });
 
+test('a wake that held a council logs in the council\'s #wakes thread, broadcast to the channel', async () => {
+  const f = fixture([], {}, ['wakes']);
+  const sends = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string; channel?: string; threadTs?: string | null; broadcast?: boolean });
+  try {
+    f.bridge.sawUserMessage(WAKE);
+    const calls = calling([['bash', { command: 'node scripts/council.mjs --me x < /tmp/c.txt' }]], 'Fiz o 1.');
+    calls.push({ role: 'toolResult', toolCallId: 'c0', content: '{"channel":"wakes","ts":"1795081691.555109","advisor":{}}' } as unknown as AgentMessage);
+    await f.bridge.runEnded(calls);
+    const log = sends().at(-1)!;
+    assert.equal(log.channel, 'wakes');
+    assert.equal(log.threadTs, '1795081691.555109');
+    assert.match(log.text, /^\*Wake\*/);
+
+    f.bridge.sawUserMessage(WAKE);
+    await f.bridge.runEnded(calling([['read', { path: 'C:/projetos/x/a.ts' }]], 'Nada.'));
+    assert.ok(!sends().at(-1)!.threadTs, 'no council, top-level post as before');
+  } finally { f.close(); }
+});
+
 test('a quiet wake (delivered nothing) keeps its effects in the #wakes log but sends its text nowhere; a quiet flag never silences an answer to the operator', async () => {
   const f = fixture([], {}, ['wakes']);
   const sends = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => r.body as { text: string });
