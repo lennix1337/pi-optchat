@@ -47,7 +47,7 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
   const seen = (token: string) => evidence.includes(token);
   for (const s of sentences(reply)) {
     if (KEYWORD.test(s)) {
-      for (const m of s.matchAll(/(?<![\d/]|\d[.,])([1-9]\d{0,5})\s*(?:\/|de|of)\s*([1-9]\d{0,5})(?![\d/]|[.,]\d)/gu)) {
+      for (const m of s.matchAll(/(?<![\w/]|\d[.,])([1-9]\d{0,5})(?:\s*\/\s*|\s+(?:de|of)\s+)([1-9]\d{0,5})(?![\w/]|[.,]\d)/gu)) {
         const [a, b] = [Number(m[1]), Number(m[2])];
         if (a <= b && ![`${a}/${b}`, `${a} de ${b}`, `${a} of ${b}`].some(seen) && !runnerShows(evidence, a, b)) out.add(m[0].trim());
       }
