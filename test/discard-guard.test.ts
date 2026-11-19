@@ -63,3 +63,15 @@ test('bash hook refuses dirty resets even when approvals are disabled', async ()
     assert.match(result.reason, /alterações/i);
   } finally { f.cleanup(); }
 });
+
+test('branch -D refuses a branch whose commits no origin ref contains; pushed, missing or plain -d stay allowed', async () => {
+  const f = fixture(); try {
+    f.git('checkout', '-b', 'feat/x'); writeFileSync(join(f.dir, 'file'), 'two'); f.git('commit', '-am', 'local only'); f.git('checkout', '-');
+    for (const command of ['git branch -D feat/x', 'git branch -d -f feat/x', 'git branch --delete --force feat/x', 'git branch -fd feat/x'])
+      assert.match(await discardRefusal(command, f.dir) ?? '', /commits.*não publicados/i, command);
+    assert.equal(await discardRefusal('git branch -d feat/x', f.dir), undefined);
+    assert.equal(await discardRefusal('git branch -D no-such-branch', f.dir), undefined);
+    f.git('update-ref', 'refs/remotes/origin/feat/x', f.git('rev-parse', 'feat/x'));
+    assert.equal(await discardRefusal('git branch -D feat/x', f.dir), undefined);
+  } finally { f.cleanup(); }
+});
