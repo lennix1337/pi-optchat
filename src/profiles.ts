@@ -26,6 +26,8 @@ export type Role = 'compactor' | 'subagent';
 export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes;
   /** Whether a wake whose main-model family is out of quota may run on another family's wakeModel (default true; see wakeRoutes). */
   wakeRouteAcrossFamilies?: boolean;
+  /** Use the wake model for eligible machine-notice turns (default true). */
+  machineTurnsOnWakeModel?: boolean;
   /** Event-driven wakes (see wake-signals.ts): a heartbeat tick wakes the agent only for a project with news, or once every `buildMinutes` to build something new. Absent: every tick wakes as before. */
   wakeTriage?: { buildMinutes: number; stallHours?: number };
   /** Optional local LLM pre-triage endpoint (Ollama/llama.cpp). Off by default; fails open. */
@@ -143,6 +145,7 @@ export function loadConfig(dir: string): ProfileConfig {
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
     || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))
     || value.wakeRouteAcrossFamilies !== undefined && typeof value.wakeRouteAcrossFamilies !== 'boolean'
+    || value.machineTurnsOnWakeModel !== undefined && typeof value.machineTurnsOnWakeModel !== 'boolean'
     || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)
     || value.lazyTools !== undefined && !(Array.isArray(value.lazyTools) && value.lazyTools.every(entry => typeof entry === 'string' && entry.trim() !== ''))
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
@@ -151,7 +154,7 @@ export function loadConfig(dir: string): ProfileConfig {
     if (problem) throw new Error(problem);
     // The optional fields were validated above; an absent or empty one stays out of the config.
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;
-    return { compactor: value.compactor, subagent: value.subagent, ...present, ...value.wakeRouteAcrossFamilies === false ? { wakeRouteAcrossFamilies: false } : {}, ...readSettings(value) };
+    return { compactor: value.compactor, subagent: value.subagent, ...present, ...value.wakeRouteAcrossFamilies === false ? { wakeRouteAcrossFamilies: false } : {}, ...value.machineTurnsOnWakeModel === false ? { machineTurnsOnWakeModel: false } : {}, ...readSettings(value) };
   }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
