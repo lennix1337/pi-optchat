@@ -291,3 +291,11 @@ test('gh run view --log on a run that never started points at the jobs API, not 
   assert.equal(bashHint('gh run view 1 --log-failed', false, 'not ok 3 - something'), undefined);
   assert.equal(bashHint('gh run list', false, 'log not found'), undefined);
 });
+
+test('a rejected git push points at fetch and rebase, never a force-push', () => {
+  const rejected = ' ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs\nhint: Updates were rejected because the tip of your current branch is behind';
+  assert.equal(bashHint('git push origin main', false, rejected), 'pushrejected');
+  assert.equal(bashHint('cd r && git push', false, ' ! [rejected]        x -> x (fetch first)'), 'pushrejected');
+  assert.equal(bashHint('git push origin main', false, 'To github.com:o/r.git\n   a..b  main -> main'), undefined);
+  assert.equal(bashHint('git log', false, rejected), undefined);
+});
