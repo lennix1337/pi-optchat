@@ -64,7 +64,7 @@ test('registered quota monitor persists, alerts once without model wake, and rea
   await commands.get('optchat-health')!.handler('', ctx);
   assert.equal(posts.length, 2, 'recovery is reported once');
   const daily = new DailySummary(() => ({ dir, name: 'fixture' }), async text => { posts.push(text); }, { open: () => [] } as never, () => 0, {
-    at: '00:00', until: 24, now: () => NOW, quotaFile: file,
+    at: '00:00', until: 24, now: () => NOW, quotaFile: file, interventionScoreboard: async () => 'Intervenções: fixture',
     request: async (_owner, path) => path.startsWith('/v1/briefing') ? { localDate: localDate(NOW), items: [], sources: [] } : { tasks: [] },
   });
   assert.equal(await daily.maybePost(), true);

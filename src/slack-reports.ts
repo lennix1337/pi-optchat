@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { assistantConfig, assistantRequest } from './assistant-client.ts';
 import { readCommitments, summaryLines, type Commitment } from './commitments.ts';
@@ -160,13 +161,13 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { predictions?: { text: string; link: string }[]; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[]; opusMachineShare?: string; wakeWithoutDelivery?: string };
+export type SummaryInputs = { predictions?: { text: string; link: string }[]; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[]; opusMachineShare?: string; wakeWithoutDelivery?: string; interventionScoreboard?: string };
 /**
  * The 07:00 briefing, most actionable first: what needs him today, a short plan, what closed in the last day, what
  * the harness did and noticed, then state (production, PC, quotas, PRs, agenda) and its cost. A source that failed
  * is named at the end.
  */
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions, opusMachineShare, wakeWithoutDelivery }: SummaryInputs): string {
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions, opusMachineShare, wakeWithoutDelivery, interventionScoreboard }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const act = github ? activityLines(github) : { needs: [], closed: [] };
   const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
@@ -204,13 +205,23 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
     if (off.length) lines.push(`_Fontes incompletas: ${off.join(', ')}_`);
   } else lines.push('', '_Briefing do Google indisponível agora._');
   if (cost || weekly?.length || opusMachineShare || wakeWithoutDelivery) lines.push('', '*Custo do harness*', ...cost ? [`• ${cost}`] : [], ...weekly?.map(h => `• ${one(h, 450)}`) ?? [], ...opusMachineShare ? [`• ${opusMachineShare}`] : [], ...wakeWithoutDelivery ? [`• ${wakeWithoutDelivery}`] : []);
+  if (interventionScoreboard) lines.push('', `• ${interventionScoreboard}`);
   if (github?.failed.length) lines.push(`_Fontes incompletas: ${github.failed.join(', ')}_`);
   return lines.join('\n');
 }
 
+function scanInterventions(): Promise<string> {
+  const script = fileURLToPath(new URL('../scripts/scoreboard.mjs', import.meta.url));
+  return new Promise(resolve => execFile(process.execPath, [script], { timeout: 120_000, maxBuffer: 1 << 20, windowsHide: true }, (error, stdout) => {
+    if (error) { console.error('Intervention scoreboard failed:', error.message); resolve('Intervenções por PR: indisponível (sessões ou GitHub).'); return; }
+    const line = stdout.trim().split('\n').at(-1);
+    resolve(line?.startsWith('Intervenções: ') ? line : 'Intervenções por PR: resposta inválida.');
+  }));
+}
+
 export class DailySummary {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly prs: PrWatch,
-    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh; sessionsDir?: string } = {}) {}
+    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh; sessionsDir?: string; interventionScoreboard?: () => Promise<string> } = {}) {}
 
   /** Posts once a day, the first check after `at` (07:00) and before `until` (noon): a late start skips the day. */
   async maybePost(): Promise<boolean> {
@@ -225,7 +236,8 @@ export class DailySummary {
     atomicWrite(file, JSON.stringify({ date: today })); // Before posting: a crash mid-post must not post twice.
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
-    const sent = await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
+    const interventionScoreboard = await (this.options.interventionScoreboard ?? scanInterventions)();
+    const sent = await this.post(composeSummary({ interventionScoreboard, ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
       approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...sessionShares(this.options.sessionsDir ?? join(homedir(), '.pi', 'agent', 'sessions'), now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE) }), null);
     // The date above says "tried"; `sentAt` and Slack's `ts` say "delivered": a date alone cannot tell a failed post from a sent one.
     const ts = (sent as { ts?: unknown } | undefined)?.ts;
