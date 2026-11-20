@@ -4,7 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 // files 15.3% (13.6% Python tracebacks), and text-mode Python on Windows turned LF files into CRLF.
 // A bash result for such a command gets one short hint line; it never changes isError or the exit code.
 
-type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du' | 'winpath' | 'ffonly' | 'stashclash';
+type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du' | 'winpath' | 'ffonly' | 'stashclash' | 'ghlog';
 const HINTS: Record<HintKind, string> = {
   edit: 'Hint: use the native edit/write tools for source changes; fewer errors, line endings kept.',
   read: 'Hint: use the native read tool with offset/limit instead of bash sed/cat/head.',
@@ -15,6 +15,7 @@ const HINTS: Record<HintKind, string> = {
   winpath: 'Hint: C:/projetos/... does not exist on Linux (the VM); the same repo is ~/projetos/<repo>. Use that path.',
   ffonly: 'Hint: the checkout is not on a branch that main can fast-forward to; run `git status -sb`, and if its branch is already merged `git switch main` first (never reset to force it).',
   stashclash: 'Hint: the stash was not applied and is still kept; compare with `git stash show -p stash@{0}` against `git diff`, or `git stash show -p stash@{0} | git apply --3way`; never `git stash drop` or checkout the file until its content is in the tree.',
+  ghlog: 'Hint: no log means the job never ran a step (GitHub refused to start it: billing or spending limit), not a code failure; confirm with `gh api repos/<o>/<r>/actions/runs/<id>/jobs -q \'.jobs[]|[.conclusion,(.steps|length)]\'` (0 steps) and stand on the local `npm run verify`.',
   du: 'Hint: du walks every file of a Windows tree (node_modules included) and timed out; use `git ls-files | wc -l`, `find . -maxdepth 2` or skip node_modules.',
   ripwire: 'Hint: use the native ripwire tool (map/task/search/symbol/callers/callees/impact/exemplar/edit_check/quality/test_gate); CLI only for other flags.',
 };
@@ -77,6 +78,9 @@ const FF_REFUSED = /Not possible to fast-forward/;
 const STASH_RESTORE = /\bgit\b[^\n]*\bstash\s+(?:pop|apply)\b/;
 const STASH_CLASH = /local changes[^\n]*would be overwritten/;
 
+const GH_RUN_LOG = /\bgh\s+run\s+view\b[^\n]*--log(?:-failed)?\b/;
+const GH_LOG_MISSING = /log not found|no logs? (?:available|found)/i;
+
 const RIPWIRE_FLAGS = /(?:^|[;&|(]\s*)ripwire\b[^\n]*\s--(?:for|grep|callers|callees|impact|edit-check|quality-delta|test-gate)(?=[\s=]|$)/;
 
 /** First applicable hint, or undefined. Pure so patterns are testable without a session. */
@@ -89,6 +93,7 @@ export function bashHint(command: string, ripwireTool: boolean, output = ''): Hi
   if (WINDOWS_PROJECT_PATH.test(command) && PATH_MISS.test(output)) return 'winpath';
   if (FF_ONLY.test(command) && FF_REFUSED.test(output)) return 'ffonly';
   if (STASH_RESTORE.test(command) && STASH_CLASH.test(output)) return 'stashclash';
+  if (GH_RUN_LOG.test(command) && GH_LOG_MISSING.test(output)) return 'ghlog';
   if (DU_SUMMARY.test(command) && TIMED_OUT.test(output)) return 'du';
   if (ripwireTool && RIPWIRE_FLAGS.test(command)) return 'ripwire';
   if (readsOneFile(command)) return 'read';
