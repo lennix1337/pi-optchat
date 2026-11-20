@@ -1355,7 +1355,8 @@ test('newly built summaries are chilled once they leave the shown views', async 
 
 test('a turn settle with graceMs 0 resolves immediately and renders the bounded head of an unbuilt message', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-unbuilt-head-')); let release!: () => void;
-  const slow = new Promise<void>(resolve => { release = resolve; });
+  let summarizerReleased = false;
+  const slow = new Promise<void>(resolve => { release = () => { summarizerReleased = true; resolve(); }; });
   const memory = new Memory(dir, async input => { await slow; return `user: ${input.source.slice(0, 60)}`; }, () => {});
   try {
     const shortMsg = 'short\nline\r\nfits';
@@ -1365,9 +1366,9 @@ test('a turn settle with graceMs 0 resolves immediately and renders the bounded 
     assert.match(memory.render(), /0\+1\|short line fits\n/);
     memory.append('user', longMsg);
     memory.append('user', utf8Msg);
-    const began = performance.now();
+    // The summarizer stays blocked until `release`: settle returning means it did not wait for it. A wall-clock bound measured the runner, not this.
     await memory.settle(AbortSignal.timeout(2000), 'turn', 0);
-    assert.ok(performance.now() - began < 100, 'turn settle with graceMs 0 resolves without waiting');
+    assert.equal(summarizerReleased, false, 'turn settle with graceMs 0 returns while the summaries are still pending');
     const rendered = memory.render();
     assert.match(rendered, /0\+1\|user: short line fits\n/);
     assert.match(rendered, new RegExp(`1\\+1\\|HEAD_START ${'a'.repeat(389)} …\\(not summarized yet: zoom it\\)`));
