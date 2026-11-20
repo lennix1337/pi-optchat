@@ -75,6 +75,10 @@ node --import tsx scripts/repair-ai-memory.mjs --memory-dir <existing-profile-di
 
 Repair reads a snapshot without opening the live compaction scheduler or rewriting the view/forward cursor. It creates new ai-memory versions only for the named finished blocks; it never deletes old versions, retries an uncertain write automatically, or invokes a model. Other legacy pages remain summaries until explicitly repaired. Server sanitization can redact exported text; hashes describe the full local original, not a promise that the server exposes every byte.
 
+## Machine-triggered model turns
+
+`node scripts/machine-turn-share.mjs [--hours N] [--since ISO]` counts assistant messages by model and nearest trigger in local Pi sessions, including the Opus machine share before and after an optional cut.
+
 ## Production host check
 
 `node scripts/prod-check.mjs [--host hetzner-dentai|producao-dentai|all] [--since MIN] [--json]` replaces hand-built ssh calls to the DentAI hosts. It opens one `ssh -o BatchMode=yes` session per host and runs a fixed read-only script: load and uptime, memory, disk, containers (health, image tag), top docker stats, nginx status-class and TLS-version counts for the last `--since` minutes (default 10; counts only, no log line leaves the host), origin TTFB to `/health` (median of 3) and Prometheus blackbox probe success and duration. The summary is ~30 flat `key: value` lines with a problems list (unhealthy, restarting or recently crashed container, 5xx spike, disk above 85%, probe down or slow, origin TTFB above 1 s). Exit 0 healthy, 1 problems found, 3 could not check (ssh failed or the answer was incomplete).
