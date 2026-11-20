@@ -44,6 +44,7 @@ export function branchEvidenceMessages(entries: readonly { type: string; message
 
 export function unbackedClaims(reply: string, evidence: string): string[] {
   const out = new Set<string>();
+  let lowercaseEvidence: string | undefined;
   const seen = (token: string) => evidence.includes(token);
   for (const s of sentences(reply)) {
     if (KEYWORD.test(s)) {
@@ -54,7 +55,7 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
     }
     for (const m of s.matchAll(/(?<![\w/.-])([0-9a-f]{7,40})(?![\w/-])/gu)) {
       const sha = m[1]!;
-      if (/\d/u.test(sha) && /[a-f]/u.test(sha) && !evidence.toLowerCase().includes(sha.slice(0, 7))) out.add(sha);
+      if (/\d/u.test(sha) && /[a-f]/u.test(sha) && !(lowercaseEvidence ??= evidence.toLowerCase()).includes(sha.slice(0, 7))) out.add(sha);
     }
     for (const w of s.matchAll(new RegExp(MERGED.source, 'giu'))) {
       // "ainda não foi mesclado", "não vai ser mergeado": a denial is not a claim.
