@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -120,6 +120,40 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
     assert.ok(!text.includes('newsletter') && !text.includes('Aprovação pendente'));
     now = new Date(2026, 9, 30, 12, 30).getTime();
     assert.equal(await daily.maybePost(), false, 'a start after noon skips the day');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('morning DM reports the 24h Opus machine share only when complete session data is available', async () => {
+  const dir = temp(), sessionsDir = join(dir, 'sessions');
+  const now = new Date(2026, 9, 29, 7, 1).getTime();
+  try {
+    mkdirSync(join(sessionsDir, 'project'), { recursive: true });
+    const event = (type: string, message: object, at = now - 1000) => ({ type, timestamp: new Date(at).toISOString(), message });
+    const lines = [
+      event('message', { role: 'user', content: 'oi' }),
+      event('message', { role: 'assistant', model: 'claude-opus-4' }),
+      { type: 'custom_message', customType: 'gitwatch', content: 'update' },
+      event('message', { role: 'assistant', model: 'claude-opus-4' }),
+      event('message', { role: 'assistant', model: 'claude-opus-4' }, now - 86_400_001),
+      event('message', { role: 'assistant', model: 'other' }),
+      event('message', { role: 'assistant', model: 'claude-opus-4' }, now + 1),
+    ];
+    const file = join(sessionsDir, 'project', 'session.jsonl');
+    writeFileSync(file, lines.map(e => JSON.stringify(e)).join('\n'));
+    const post = async () => {
+      rmSync(join(dir, 'slack-daily.json'), { force: true });
+      const r = recorder(), prs = new PrWatch(() => ({ dir, name: 'p' }), r.post);
+      const options = { now: () => now, sessionsDir, request: async () => { throw new Error('offline'); }, gh: async () => { throw new Error('offline'); } };
+      await new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 0, options).maybePost();
+      return r.posts[0]!.text;
+    };
+    assert.match(await post(), /Opus em avisos de máquina: 1\/2 \(50%\) — meta: perto de 0 depois do #447/);
+    writeFileSync(file, '');
+    assert.doesNotMatch(await post(), /Opus em avisos de máquina/);
+    writeFileSync(file, '{invalid');
+    assert.doesNotMatch(await post(), /Opus em avisos de máquina/);
+    rmSync(sessionsDir, { recursive: true });
+    assert.doesNotMatch(await post(), /Opus em avisos de máquina/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
