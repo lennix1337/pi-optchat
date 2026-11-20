@@ -206,3 +206,29 @@ test('a quoted admission or cause phrase is a citation, not a violation', () => 
   assert.equal(detect(rules.find(r => r.id === id)!, text(s)), false, id);
  }
 });
+function ruleCount(id: string, events: object[]): number {
+ const dir = mkdtempSync(join(tmpdir(), 'rule-count-'));
+ try {
+  writeFileSync(join(dir, 'session.jsonl'), events.map(e => JSON.stringify(e)).join(String.fromCharCode(10)));
+  return scanCorrections(dir, Date.parse('2026-11-14'), Date.parse('2026-11-15')).find(r => r.id === id)!.count;
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+// 19/11: every wake built its own pi-optchat PRs by hand (#433-#445) while agy and Codex sat with quota left.
+test('self-build-in-wake counts a wake that edits source three times without handing it to a worker', () => {
+ const edit = (path: string) => call('edit', { path, edits: [] });
+ const build = [edit('src/a.ts'), call('bash', { command: 'npm test' }), edit('test/a.test.ts'), call('write', { path: 'src/b.ts', content: '' })];
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...build]), 1);
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...build, ...build]), 1, 'one candidate per uninterrupted run');
+ assert.equal(ruleCount('self-build-in-wake', build), 0, 'the operator\'s own task is not a wake');
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, operator, ...build]), 0, 'the operator spoke: his task now');
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...Array(6).fill(call('bash', { command: 'gh pr list' }))]), 0, 'reads and reviews are not building');
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...build.slice(0, 2), call('shell_start', { command: 'node ~/.pi/agent/bin/agy-pc.mjs --repo C:\\projetos\\x --name y < b.md' }), ...build.slice(2)]), 0, 'agy-pc delegation resets it');
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, edit('a'), call('spawn', { tasks: [] }), edit('b'), edit('c')]), 0, 'spawn resets it');
+});
+test('self-build-in-wake counts shell writes and survives other reports until the operator speaks', () => {
+ const claimCheck = { ...wakePrompt, content: '[OptChat claim check] the reply admits it did not check' };
+ const shellBuild = [call('bash', { command: "cat >> test/a.test.ts <<'X'\nx\nX" }), call('bash', { command: "python3 - <<'X'\nopen('src/a.ts','w').write('')\nX" }), call('bash', { command: 'git commit -am fix' })];
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...shellBuild]), 1);
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, shellBuild[0], claimCheck, ...shellBuild.slice(1)]), 1, 'a claim check does not end the wake');
+ assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...Array(3).fill(call('bash', { command: 'npm test > /tmp/full.log 2>&1; cat > /tmp/x.ts' }))]), 0, 'scratch files in /tmp are not building');
+});
