@@ -19,6 +19,7 @@ test('Windows keeps its own paths', () => assert.equal(winPathRefusal('node C:/p
 
 test('the bash tool_call hook blocks a C:/projetos path before it runs on Linux', async () => {
   if (process.platform !== 'linux') return;
+  delete process.env.OPTCHAT_WINPATH_GUARD;
   const hooks = new Map<string, (...args: any[]) => any>();
   registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI, { enabled: false });
   const blocked = await hooks.get('tool_call')!({ toolName: 'bash', input: { command: 'node C:/projetos/pi-optchat/scripts/ship.mjs' } }, { cwd: '/tmp' });

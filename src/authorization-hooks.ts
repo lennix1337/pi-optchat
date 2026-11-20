@@ -195,7 +195,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
   const guard = async (event: { toolName: string; input: unknown }, cwd: string) => {
     if (event.toolName !== 'bash' || !event.input || typeof event.input !== 'object' || !('command' in event.input) || typeof event.input.command !== 'string') return;
-    const reason = pipeStatusRefusal(event.input.command) ?? winPathRefusal(event.input.command) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd);
+    const reason = pipeStatusRefusal(event.input.command) ?? (process.env.OPTCHAT_WINPATH_GUARD === 'off' ? undefined : winPathRefusal(event.input.command)) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd);
     if (reason) return { block: true as const, reason };
   };
   if (!(enabled ?? (env === '1' || env === 'risk'))) {
