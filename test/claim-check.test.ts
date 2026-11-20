@@ -3,6 +3,20 @@ import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims } from '../src/claim-check.ts';
 
+test('multiple hash claims normalize the evidence at most once', () => {
+  const evidence = 'ABC1234 DEF5678 '.repeat(1000);
+  const original = String.prototype.toLowerCase;
+  let normalizations = 0;
+  String.prototype.toLowerCase = function () {
+    if (String(this) === evidence) normalizations++;
+    return original.call(this);
+  };
+  try {
+    assert.deepEqual(unbackedClaims('Commits abc1234 e def5678.', evidence), []);
+    assert.equal(normalizations, 1);
+  } finally { String.prototype.toLowerCase = original; }
+});
+
 test('a pass count no output showed is unbacked; the counts a test runner prints back it', () => {
   // 18/11: "API 31/31" was sent while the run's own vitest output showed 4 FAIL.
   assert.deepEqual(unbackedClaims('Validado: API 31/31 e web 10/10.', ' Test Files  4 failed | 2 passed\n Tests  4 failed | 27 passed (31)\n Tests 10 passed (10)'), ['31/31']);
