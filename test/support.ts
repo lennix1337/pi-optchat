@@ -12,6 +12,8 @@ process.env.TMP = nested && process.env.TMP ? process.env.TMP : root;
 // os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so both are sandboxed: no test may touch the user's real ~/.optchat or ~/.pi.
 for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR']) process.env[name] = mkdtempSync(join(root, `optchat-${name.toLowerCase()}-`));
 // The operator's own settings must not change test behavior; OPTCHAT_EFFECT_APPROVALS=risk would gate fixture subagent calls.
+// Fixtures name C:/projetos repos on every platform; the Linux-only C:/projetos refusal would block them before the gate under test.
+process.env.OPTCHAT_WINPATH_GUARD = 'off';
 for (const name of ['OPTCHAT_PROFILE', 'OPTCHAT_REFRESH_AT', 'OPTCHAT_EFFECT_APPROVALS']) delete process.env[name];
 
 /** Removes a test's temp dir. On Windows a process that just exited can hold its cwd a moment longer than `process.kill(pid, 0)` admits, so rmdir fails with EBUSY (#164). rmSync's own `maxRetries` doesn't cover that: it retries only after ENOTEMPTY, not a first rmdir that fails EBUSY. Under the full suite's load the hold outlasted ten 100 ms waits (headless.test.ts EPERM, 2026-10-25), so each wait grows: 5.5 s in all. */
