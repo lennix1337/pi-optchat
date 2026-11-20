@@ -49,6 +49,9 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
   const events: { type: string; text: string }[] = [], errors: string[] = [];
   let done!: () => void, reloadAttempted!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
+  // A timeout kills the test before any assertion or finally block prints, so dump the state just before the limit to show which step stuck.
+  const started = Date.now(), marks: Record<string, number> = {}, mark = (name: string) => { marks[name] = Date.now() - started; };
+  const hangDump = originalTimer(() => console.log(`# wake-reload ${mode} still running at 12 s ${JSON.stringify({ marks, calls, reloads, effects, shutdown, observedContinuation, wakeAt, fired: !!fire, recoveryTimers: recoveryTimers.size, errors })}`), 12000);
   const reloadAttempt = new Promise<void>(resolve => { reloadAttempted = resolve; });
   try {
     createProfile('fixture'); const profile = profilePath('fixture');
@@ -127,7 +130,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
       }
       if (event.type === 'agent_settled' && observedContinuation) done();
     });
-    await session.prompt('Initialize the synthetic session.');
+    await session.prompt('Initialize the synthetic session.'); mark('initialized');
     assert.ok(fire, 'heartbeat must have been armed'); fire();
     if (mode !== 'success') await reloadAttempt;
     if (mode === 'partial') {
@@ -143,7 +146,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
       assert.equal(active.length, 1, 'one bounded recovery is armed');
       active[0].active = false; active[0].fire();
     }
-    await finished;
+    mark('fired'); await finished; mark('settled');
     const requested = manager.getBranch().find(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolCallId === 'reload');
     assert.ok(requested && requested.type === 'message' && requested.message.role === 'toolResult' && !requested.message.isError, 'self_reload must actually accept the request');
     const ticket = manager.getBranch().findLast(e => e.type === 'custom' && e.customType === RELOAD_ENTRY);
@@ -160,6 +163,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
     assert.equal(saved.wakeLog[0].continuation, mode === 'success' ? 'started' : 'not-verified');
     if (mode === 'lost') { await session.agent.waitForIdle(); await reopen(); }
   } finally {
+    originalClear(hangDump);
     if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (previous === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = previous;
     removeDir(dir);
