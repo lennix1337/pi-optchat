@@ -15,7 +15,7 @@ const HINTS: Record<HintKind, string> = {
   winpath: 'Hint: C:/projetos/... does not exist on Linux (the VM); the same repo is ~/projetos/<repo>. Use that path.',
   ffonly: 'Hint: the checkout is not on a branch that main can fast-forward to; run `git status -sb`, and if its branch is already merged `git switch main` first (never reset to force it).',
   stashclash: 'Hint: the stash was not applied and is still kept; compare with `git stash show -p stash@{0}` against `git diff`, or `git stash show -p stash@{0} | git apply --3way`; never `git stash drop` or checkout the file until its content is in the tree.',
-  ghlog: 'Hint: no log means the job never ran a step (GitHub refused to start it: billing or spending limit), not a code failure; confirm with `gh api repos/<o>/<r>/actions/runs/<id>/jobs -q \'.jobs[]|[.conclusion,(.steps|length)]\'` (0 steps) and stand on the local `npm run verify`.',
+  ghlog: 'Hint: no log usually means the job never ran a step (a billing or spending-limit refusal is one possible cause, not proven), not a code failure; check with `gh api repos/<o>/<r>/actions/runs/<id>/jobs -q \'.jobs[]|[.conclusion,(.steps|length)]\'` (0 steps), then read the run annotations for the reason; the local `npm run verify` stands in only when the cause is billing.',
   du: 'Hint: du walks every file of a Windows tree (node_modules included) and timed out; use `git ls-files | wc -l`, `find . -maxdepth 2` or skip node_modules.',
   ripwire: 'Hint: use the native ripwire tool (map/task/search/symbol/callers/callees/impact/exemplar/edit_check/quality/test_gate); CLI only for other flags.',
 };

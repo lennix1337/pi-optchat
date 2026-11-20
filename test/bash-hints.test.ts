@@ -284,8 +284,8 @@ test('a git stash pop/apply refused over local changes points at the diff, not a
   assert.equal(bashHint('git merge x', false, refused), undefined);
 });
 
-test('gh run view --log on a run that never started points at billing, not code', () => {
-  // 20/11: pi-wacli run 44440242498 answered "log not found"; its job had 0 steps (Actions billing limit).
+test('gh run view --log on a run that never started points at the jobs API, not code', () => {
+  // 20/11: pi-wacli run 44440242498 answered "log not found"; its job had 0 steps (billing suspected, unproven).
   assert.equal(bashHint('gh run view 44440242498 --repo o/r --log-failed | tail -25', false, 'log not found: 135278984654'), 'ghlog');
   assert.equal(bashHint('gh run view 1 --log', false, 'log not found'), 'ghlog');
   assert.equal(bashHint('gh run view 1 --log-failed', false, 'not ok 3 - something'), undefined);
