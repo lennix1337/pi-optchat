@@ -94,7 +94,7 @@ test('accept ships the clean branch once, links the PR to the commitments of the
   const text = (await crewTool(() => fx.crew, () => ({ commitmentsDir: fx.commitments, ship: fx.deps.ship })).execute('id', { action: 'accept', run: 'run-1', title: 'feat: dois commits', text: 'Problema, mudança, evidência.' })).content[0].text;
   assert.equal(fx.calls.length, 1, 'ship ran once');
   assert.equal(fx.calls[0]!.cwd, fx.work);
-  assert.deepEqual(fx.calls[0]!.args, ['--title', 'feat: dois commits', '-b', 'Problema, mudança, evidência.']);
+  assert.deepEqual(fx.calls[0]!.args, ['--title', 'feat: dois commits', '--subscriber', 'run-1', '-b', 'Problema, mudança, evidência.']);
   assert.match(text, /PR: https:\/\/github\.com\/acme\/app\/pull\/7/);
   assert.match(text, /auto-merge: queued/);
   assert.match(text, new RegExp(`commitments: ${linked.id} got acme/app#7`));

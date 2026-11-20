@@ -174,7 +174,7 @@ export async function acceptRun(deps: AcceptDeps, input: { runId: string; title:
   if (!state.base) throw new Error(`Run ${runId}: no origin/main to compare ${state.branch} with. Nothing was shipped.`);
   if (state.ahead === 0) throw new Error(`Run ${runId}: ${state.branch} has no commits ahead of ${state.base}. Nothing was shipped.`);
 
-  const shipped = await ship(cwd, ['--title', title, '-b', body]);
+  const shipped = await ship(cwd, ['--title', title, '--subscriber', runId, '-b', body]);
   const fields = parseShip(shipped.out), status = fields.status ?? (shipped.code === null ? 'uncertain' : 'failed');
   const head = `Run ${runId}, ${state.branch}, ${state.ahead} commit${state.ahead === 1 ? '' : 's'} ahead of ${state.base}`;
   if (shipped.code === null || shipped.code === 4 || status === 'uncertain') {

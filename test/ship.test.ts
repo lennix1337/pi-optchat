@@ -222,6 +222,23 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   for (const forbidden of ['--no-verify', '--force', '--admin']) assert.equal(traced.includes(forbidden) || calls.join(' ').includes(forbidden), false, forbidden);
 });
 
+test('--subscriber names the worker run in the follow request, so red CI of its PR goes back to it', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', '--subscriber', 'run-7f3', 'a.txt']);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(JSON.parse(readFileSync(join(fx.dir, 'gitwatch', 'follow', 'acme__app#1.json'), 'utf8')), { repo: 'acme/app', pr: 1, subscriber: 'run-7f3' });
+});
+
+test('--subscriber with an unsafe label is refused before anything is pushed', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'feat: a', '--subscriber', 'a b;rm', 'a.txt']);
+  assert.equal(r.code, 2);
+  assert.equal(r.out.error, 'invalid_value');
+  assert.deepEqual(fx.ghCalls(), []);
+});
+
 test('a description that closes an issue by keyword is refused: a fix not yet reproduced says refs #N', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');
