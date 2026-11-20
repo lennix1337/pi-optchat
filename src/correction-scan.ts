@@ -25,7 +25,9 @@ function sessionFiles(dir: string, since: number): string[] {
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
 /** `wake`: the run in progress started with an OptChat heartbeat prompt, so its final text is a wake report. */
-type Pacing = { active: boolean; directWork: number; wake?: boolean };
+/** `wakeEdits`: source writes since the heartbeat or the last hand-off to a worker; undefined outside a wake. Other reports (claim checks,
+ * worker messages) keep it, since the wake goes on until the operator speaks. */
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number };
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
 function toolCalls(event: Event): Content[] {
@@ -39,8 +41,10 @@ function toolCalls(event: Event): Content[] {
 function nextPacing(previous: Pacing, event: Event): Pacing {
   const msg = event.message;
   let state: Pacing = previous;
-  if (event.type === 'custom_message' && event.customType === 'optchat-report') state = { ...state, wake: typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]') };
-  else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false };
+  if (event.type === 'custom_message' && event.customType === 'optchat-report') {
+    const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -53,10 +57,19 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   const calls = toolCalls(event);
   const delegated = calls.some(c => c.name === 'spawn' || c.name === 'tell' || (
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
-      /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-worker\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
+      /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake };
-  return { wake: state.wake, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
+  return { wake: state.wake, wakeEdits, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+}
+
+/** An edit/write call, or a shell command that writes a file outside /tmp (redirect into a source file, sed -i, git apply/commit, ship -m). */
+function writesSource(call: Content): boolean {
+  if (call.name === 'edit' || call.name === 'write') return true;
+  if (call.name !== 'bash') return false;
+  const command = String(call.arguments?.command ?? '');
+  return /(?:>>?\s*(?!\/tmp\/)[^\s&|;<>]+\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b|\bsed\s+-i\b|\bgit\s+(?:apply|commit)\b|\bship\.mjs\b[^\n]*\s-m\s|open\([^)]*,\s*['"]w)/u.test(command);
 }
 
 /** Shell text with heredoc bodies and quoted strings blanked, so code that only mentions a command is not read as running it. */
@@ -97,6 +110,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
         !/\b(?:gh\s+pr\s+checks|statusCheckRollup|mergeStateStatus|gh\s+run\s+(?:watch|view)|npm\s+(?:run\s+)?verify|dentai-ship)\b/u.test(command);
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
+    case 'self-build-in-wake': return (pacing.wakeEdits ?? 0) < 3 && (nextPacing(pacing, event).wakeEdits ?? 0) >= 3;
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b(?:[^;\n|&]|&(?!&))*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'weaken-test': return calls.some(c => {
