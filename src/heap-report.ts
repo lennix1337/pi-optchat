@@ -48,7 +48,9 @@ export interface SessionLike {
 }
 export interface HeapSources { session?: SessionLike; optchat?: OptChatSide }
 export interface SnapshotSummary { nodes?: number; selfBytes?: number; byType?: Record<string, { count: number; selfBytes: number }>;
-  topConstructors: { name: string; type?: string; count: number; selfBytes: number }[] }
+  topConstructors: { name: string; type?: string; count: number; selfBytes: number }[];
+  /** Non-weak incoming references, not unique or retained bytes. */
+  stringRetainers?: { ownerType: string; edge: string; references: number; referencedSelfBytes: number }[] }
 /** Everything that touches the machine, so tests can inject a heap that is too big or a snapshot that is never written. */
 export interface HeapDeps {
   heapStats(): v8.HeapInfo;
