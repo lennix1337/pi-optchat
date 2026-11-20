@@ -4,7 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 // files 15.3% (13.6% Python tracebacks), and text-mode Python on Windows turned LF files into CRLF.
 // A bash result for such a command gets one short hint line; it never changes isError or the exit code.
 
-type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du';
+type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du' | 'winpath';
 const HINTS: Record<HintKind, string> = {
   edit: 'Hint: use the native edit/write tools for source changes; fewer errors, line endings kept.',
   read: 'Hint: use the native read tool with offset/limit instead of bash sed/cat/head.',
@@ -12,6 +12,7 @@ const HINTS: Record<HintKind, string> = {
   tmp: String.raw`Hint: Windows node/python read /tmp as C:\tmp, not Git Bash's /tmp; pass $(cygpath -w /tmp/FILE) or a project-relative path.`,
   poll: 'Hint: do not sleep-poll CI or a PR; gitwatch wakes you on its result (watch the repo, PR or branch), so keep working instead.',
   ghauth: 'Hint: to confirm the active gh account, `gh config get -h github.com user` reads it locally in ~50 ms; `gh auth status` calls the network (0.6 s, up to 12 s).',
+  winpath: 'Hint: C:/projetos/... does not exist on Linux (the VM); the same repo is ~/projetos/<repo>. Use that path.',
   du: 'Hint: du walks every file of a Windows tree (node_modules included) and timed out; use `git ls-files | wc -l`, `find . -maxdepth 2` or skip node_modules.',
   ripwire: 'Hint: use the native ripwire tool (map/task/search/symbol/callers/callees/impact/exemplar/edit_check/quality/test_gate); CLI only for other flags.',
 };
@@ -65,6 +66,10 @@ const GH_AUTH_SWITCH = /(?:^|[;&|(]\s*)gh\s+auth\s+(?:switch|login|refresh)\b/;
 const DU_SUMMARY = /(?:^|[;&|(]\s*)du\s+-[A-Za-z]*s/;
 const TIMED_OUT = /timed out after \d+ seconds/;
 
+// Profile text names Windows paths (C:/projetos/...); on the Linux VM they resolve to nothing.
+const WINDOWS_PROJECT_PATH = /\bC:[\\/]projetos[\\/]/i;
+const PATH_MISS = /MODULE_NOT_FOUND|No such file or directory|ENOENT|not found/i;
+
 const RIPWIRE_FLAGS = /(?:^|[;&|(]\s*)ripwire\b[^\n]*\s--(?:for|grep|callers|callees|impact|edit-check|quality-delta|test-gate)(?=[\s=]|$)/;
 
 /** First applicable hint, or undefined. Pure so patterns are testable without a session. */
@@ -74,6 +79,7 @@ export function bashHint(command: string, ripwireTool: boolean, output = ''): Hi
   if (command.includes('/tmp/') && WINDOWS_TMP_MISS.test(output)) return 'tmp';
   if (SLEEP_POLL.test(command)) return 'poll';
   if (GH_AUTH_STATUS.test(command) && !GH_AUTH_SWITCH.test(command)) return 'ghauth';
+  if (WINDOWS_PROJECT_PATH.test(command) && PATH_MISS.test(output)) return 'winpath';
   if (DU_SUMMARY.test(command) && TIMED_OUT.test(output)) return 'du';
   if (ripwireTool && RIPWIRE_FLAGS.test(command)) return 'ripwire';
   if (readsOneFile(command)) return 'read';
