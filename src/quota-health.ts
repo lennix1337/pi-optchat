@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { brasiliaDayTime } from './pc-health.ts';
@@ -116,4 +116,39 @@ export function quotaProbe(file = QUOTA_FILE, now: () => number = Date.now): Loc
 export function quotaRisks(state: unknown, now: number): string[] {
   return accounts(state, now).filter(a => !a.blockedUntil && (a.used ?? 0) >= QUOTA_NEAR_PERCENT)
     .map(a => `🪫 cota ${a.id} em ${a.used}% (leitura em cache), renova ${brasiliaDayTime(a.resetAt!)}`);
+}
+
+export const PROVIDER_LOG_FILE = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'provider-failover-debug.log');
+export const PROVIDER_LOG_HEALTH_FILE = 'provider-log-health.json';
+const LOG_TAIL_BYTES = 1_000_000;
+const LOG_REPEATS = 3;
+
+/** Reads the log's tail and flags any `*_failed` event that repeated within the last hour (e.g. a meter that never refreshes). */
+export function providerLogProbe(file = PROVIDER_LOG_FILE, now: () => number = Date.now): LocalProbe {
+  return {
+    name: 'Falhas de provedor no log do Pi',
+    check(): ProbeResult {
+      let text = '';
+      try {
+        const fd = openSync(file, 'r');
+        try {
+          const size = fstatSync(fd).size, start = Math.max(0, size - LOG_TAIL_BYTES), buffer = Buffer.alloc(size - start);
+          readSync(fd, buffer, 0, buffer.length, start);
+          text = buffer.toString('utf8');
+        } finally { closeSync(fd); }
+      } catch { return { ok: true, ms: 0, detail: 'log ausente' }; }
+      const since = now() - 3_600_000, counts = new Map<string, number>();
+      for (const line of text.split('\n')) {
+        if (!line.includes('_failed"')) continue;
+        try {
+          const event = record(JSON.parse(line));
+          const kind = event.kind, at = typeof event.t === 'string' ? Date.parse(event.t) : NaN;
+          if (typeof kind === 'string' && /^[a-z_]+_failed$/.test(kind) && at >= since) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+        } catch { /* a cut first line or a partial write */ }
+      }
+      const repeated = [...counts].filter(([, n]) => n >= LOG_REPEATS);
+      if (!repeated.length) return { ok: true, ms: 0, detail: 'sem falha repetida na última hora' };
+      return { ok: false, ms: 0, problem: `falha repetida no log do Pi: ${repeated.map(([k, n]) => `${k} ×${n} na última hora`).join('; ')}` };
+    },
+  };
 }

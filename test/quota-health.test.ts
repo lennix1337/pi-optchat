@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accounts, quotaProbe, quotaReadBytes, quotaRisks, readQuotaState, routeBlock, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
+import { accounts, providerLogProbe, quotaProbe, quotaReadBytes, quotaRisks, readQuotaState, routeBlock, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { defaultMonitors, ProdHealth, readHealth, registerProdHealth } from '../src/prod-health.ts';
 import { DailySummary, localDate } from '../src/slack-reports.ts';
 
@@ -122,4 +122,21 @@ test('a meter that stopped refreshing is a problem, with its age, even when the 
   assert.doesNotMatch(result.problem!, /live/);
   writeFileSync(file, JSON.stringify({ usageByProvider: { live: fresh } }));
   assert.equal((await quotaProbe(file, () => NOW).check()).ok, true);
+});
+
+test('a provider failure that repeats in the Pi log is a problem the radar names', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plog-'));
+  try {
+    const file = join(dir, 'provider-failover-debug.log');
+    const line = (kind: string, ago: number, extra = {}) => JSON.stringify({ t: new Date(NOW - ago).toISOString(), kind, ...extra });
+    writeFileSync(file, [
+      line('agy_quota_failed', 50 * 60_000, { reason: 'spawn agy ENOENT' }), line('agy_quota_failed', 35 * 60_000), line('agy_quota_failed', 20 * 60_000),
+      line('agy_quota_failed', 5 * HOUR), line('other_failed', 10 * 60_000), 'not json',
+    ].join('\n'));
+    const result = providerLogProbe(file, () => NOW).check() as { ok: boolean; problem?: string };
+    assert.equal(result.ok, false);
+    assert.match(result.problem!, /agy_quota_failed ×3 na última hora/);
+    assert.doesNotMatch(result.problem!, /other_failed/);
+    assert.equal((providerLogProbe(join(dir, 'missing.log'), () => NOW).check() as { ok: boolean }).ok, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
