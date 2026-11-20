@@ -22,7 +22,7 @@ Each message has a kind:
 The summaries form a binary tree: each message is compressed into a line (a
 short message is its own line), then adjacent lines are merged in pairs, again
 and again. So recent lines cover one message each, and older lines cover more. A
-message not summarized yet shows as "(not summarized yet: zoom it)". A text too
+message not summarized yet shows the start of its text, ending in "(not summarized yet: zoom it)" when cut. A text too
 long for one message is split over several in a row.
 
 Tools:

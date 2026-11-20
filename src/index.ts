@@ -1121,8 +1121,6 @@ export default function optchat(host: ExtensionAPI) {
     }
     if (bounded !== event.message) return { message: bounded };
   });
-  /** A turn waits this long for summaries of the last messages, then zooms them instead (a summary takes ~5 s, up to 30 s). */
-  const TURN_SETTLE_GRACE_MS = 3000;
   const memoryView = async (ctx: ExtensionContext, signal = ctx.signal) => {
     const a = required();
     let shown: string | undefined;
@@ -1134,7 +1132,7 @@ export default function optchat(host: ExtensionAPI) {
     show();
     const unsubscribe = a.memory.onChange(show);
     const started = performance.now();
-    try { await a.memory.settle(signal, 'turn', TURN_SETTLE_GRACE_MS); } finally { a.metrics.record('settle', performance.now() - started); unsubscribe(); ctx.ui.setWorkingMessage(); }
+    try { await a.memory.settle(signal, 'turn', 0); } finally { a.metrics.record('settle', performance.now() - started); unsubscribe(); ctx.ui.setWorkingMessage(); }
     return a.memory.render();
   };
   pi.on('context_with_system', async (event, ctx) => {

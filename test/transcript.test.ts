@@ -7,6 +7,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type TextContent } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
+import { Memory } from '../src/memory.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { asUser, buildContext, PREVIOUS_EXCHANGE, previousExchange, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from '../src/transcript.ts';
 import { isCompaction } from './support.ts';
@@ -400,8 +401,17 @@ test('a /skill: command is logged once, as its expansion, and never recovered as
   }
 });
 
-/** Runs a second turn that waits on a summary which never lands: the compactor stalls, or fails with `failure`. Returns the working messages shown. */
-async function waitForSummaries(failure: string | undefined, shown: (working: (string | undefined)[], asked: string[]) => boolean) {
+// A normal view cannot contain an unbuilt merged line: Sawtooth merges only built parents.
+// Force the real settle to wait for leaves to exercise its abort/error UI paths.
+function forceSummaryWait(settle: typeof Memory.prototype.settle) {
+  Memory.prototype.settle = function (signal, until, graceMs) {
+    return settle.call(this, signal, until, until === 'turn' && graceMs === 0 ? undefined : graceMs);
+  };
+}
+
+/** Exercise the real UI and compactor with either the normal zero grace or a forced wait to test the waiting UI lifecycle. */
+async function waitForSummaries(failure: string | undefined, shown: (working: (string | undefined)[], asked: string[]) => boolean, forceWait = true) {
+  const settle = Memory.prototype.settle;
   const dir = mkdtempSync(join(tmpdir(), 'optchat-wait-'));
   const oldHome = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = dir;
@@ -446,17 +456,25 @@ async function waitForSummaries(failure: string | undefined, shown: (working: (s
     await session.bindExtensions({ uiContext: ui });
     await session.prompt('First question. ' + 'padding '.repeat(400));
     working.length = 0;
+    if (forceWait) forceSummaryWait(settle);
     const second = session.prompt('Second question.');
     for (let i = 0; i < 200 && !shown(working, asked); i++) await new Promise(resolve => setTimeout(resolve, 10));
     const seen = [...working];
     await session.abort(); await second;
     return { seen, working, asked };
   } finally {
+    Memory.prototype.settle = settle;
     if (session) { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
     removeDir(dir);
   }
 }
+
+test('a turn clears the working message without waiting for an unbuilt leaf', async () => {
+  const { seen, asked } = await waitForSummaries(undefined, (_, asked) => asked.length > 1, false);
+  assert.deepEqual(seen, ['Waiting for OptChat summaries…', undefined]);
+  assert.match(asked.at(-1)!, /not summarized yet: zoom it\)[\s\S]*Second question\./);
+});
 
 test('an aborted wait for summaries clears the working message', async () => {
   const { seen, working } = await waitForSummaries(undefined, w => w.includes('Waiting for OptChat summaries…'));

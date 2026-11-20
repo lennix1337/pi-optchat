@@ -31,7 +31,7 @@ Each message has a kind:
 The summaries form a binary tree: each message is compressed into a line (a
 short message is its own line), then adjacent lines are merged in pairs, again
 and again. So recent lines cover one message each, and older lines cover more. A
-message not summarized yet shows as "(not summarized yet: zoom it)".
+message not summarized yet shows the start of its text, ending in "(not summarized yet: zoom it)" when cut.
 
 # Compactions
 
@@ -109,7 +109,7 @@ A summary tags each item with its kind: user (the user's words), talk
 (memories from before this chat), or work (the report of a subagent or
 a computer task, starting "[id] "). A short message is its own line, word for word. Recent lines
 cover one message each; the older the messages, the more a line covers.
-A message not summarized yet shows as "(not summarized yet: zoom it)".
+A message not summarized yet shows the start of its text, ending in "(not summarized yet: zoom it)" when cut.
 
 Navigating: zoom(id, n) opens line id+n into the two lines of n/2
 messages it was made from; zoom(id, 1) gives message id in full.

@@ -76,7 +76,7 @@ test('query-hit cache bounds both retained queries and total message indexes', a
 test('a search hit names the view line that holds it, so the agent can zoom from there; a hit that is its own line does not', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-search-line-'));
   // Allow for labels and framing while keeping the four oldest messages folded into one line.
-  const memory = new Memory(dir, async input => input.part.l ? 's'.repeat(300) : `user: ${'s'.repeat(294)}`, () => {}, 1560);
+  const memory = new Memory(dir, async input => input.part.l ? 's'.repeat(300) : `user: ${'s'.repeat(294)}`, () => {}, 1900);
   try {
     // Each message is summarized before the next, as each turn waits for summaries, so the batch finds its parents built.
     for (let i = 0; i < 8; i++) { memory.append('user', `${i} banner ${'.'.repeat(600)}`); await memory.settle(undefined, 'tree'); }

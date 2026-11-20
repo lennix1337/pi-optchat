@@ -599,8 +599,8 @@ test('a throwing crew compressor leaves the leaf unbuilt while the view, brief a
     const tree = crew.memory('harness');
     await tree.settle();
     assert.equal(tree.node({ l: 0, i: 0 }), undefined, 'the leaf stays unbuilt');
-    assert.match(tree.render(), /^<chat>\n0\+1\|\(not summarized yet: zoom it\)\n<\/chat>$/);
-    assert.match(crew.brief('code', 'harness'), /<specialist-memory project="harness">\n<chat>\n0\+1\|\(not summarized yet/);
+    assert.match(tree.render(), /^<chat>\n0\+1\|\[run run00001\].* …\(not summarized yet: zoom it\)\n<\/chat>$/);
+    assert.match(crew.brief('code', 'harness'), /<specialist-memory project="harness">\n<chat>\n0\+1\|\[run run00001\]/);
     assert.match(tree.zoom(0, 1), /\[run run00001\]/, 'the original stays readable');
     assert.match(warnings.join('\n'), /QUOTA_GONE/);
     assert.equal(crew.record(runOf(2, 'harness', 'short')), true, 'later runs still record');

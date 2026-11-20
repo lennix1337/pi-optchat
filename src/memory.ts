@@ -30,10 +30,10 @@ export type Compressor = (input: Compression, signal: AbortSignal) => Promise<st
 const key = ({ l, i }: Part) => l * 2 ** 40 + i;
 const POLICY_REFUSAL = 'OPTCHAT_POLICY_REFUSAL' as const;
 const UNBUILT = '(not summarized yet: zoom it)';
+const HEAD = 400;
 export const start = ({ l, i }: Part) => i * 2 ** l;
 export const end = (part: Part) => start(part) + 2 ** part.l;
 export const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
-const UNBUILT_BYTES = bytes(UNBUILT);
 /** The most of a tool result a call's summary task shows. */
 const RESULT = 12_000;
 /** Bound repeated-search caching to eight queries and 20,000 message indexes; broad and long queries are not retained. */
@@ -48,6 +48,17 @@ const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
 /** A cheap model can head a summary with the kind of a <chat> line it copied, so the code sets the message's own. */
 export const labeled = (kind: Kind, text: string) => `${kind}: ${text.replace(KIND_HEAD, '')}`;
 export const flat = (s: string) => s.replace(/[\r\n]+/g, ' ');
+function unbuiltHead(text: string) {
+  const line = flat(text);
+  if (bytes(line) <= HEAD) return line;
+  let head = '', size = 0;
+  for (const char of line) {
+    const n = bytes(char);
+    if (size + n > HEAD) break;
+    head += char; size += n;
+  }
+  return `${head} …${UNBUILT}`;
+}
 const messageScope = (count: number) => count === 0 ? 'Memory has no messages yet.' : `Messages run 0-${count - 1}`;
 /** The aligned blocks id+n (n a power of two, as zoom requires) that tile messages from..to-1, oldest first. */
 export function alignedBlocks(from: number, to: number) {
@@ -104,8 +115,8 @@ class Sawtooth {
   private measured = 0;
   merging = false;
   constructor(private readonly high: number, private readonly low: number, private readonly node: (part: Part) => Summary | undefined,
-    private readonly ceiling = high) {}
-  private lineSize(part: Part) { return bytes(`${start(part)}+${2 ** part.l}|\n`) + (this.node(part)?.size ?? UNBUILT_BYTES); }
+    private readonly unbuilt: (i: number) => string, private readonly ceiling = high) {}
+  private lineSize(part: Part) { return bytes(`${start(part)}+${2 ** part.l}|\n`) + (this.node(part)?.size ?? bytes(this.unbuilt(part.i))); }
   get size() { return VIEW_FRAME_BYTES + this.measured + (this.parts.length ? 0 : 1); } // render() keeps a blank line in an empty view.
   push(part: Part) { this.parts.push(part); this.measured += this.lineSize(part); }
   /** The line covering message `at`. The lines tile the log in order, so a binary search finds it. */
@@ -120,7 +131,7 @@ class Sawtooth {
   /** A shown line's text changed size (Memory.revise). */
   resized(part: Part, delta: number) { if (this.parts.some(p => p.l === part.l && p.i === part.i)) this.measured += delta; }
   /** A message got its node. Its line is usually still shown, but after a damaged tree file a saved parent can already hide it. */
-  built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - UNBUILT_BYTES; }
+  built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - bytes(this.unbuilt(i)); }
   /** Returns whether any lines merged. */
   fit(total: number, force = false, cold = false) {
     const lines = this.parts.length;
@@ -396,8 +407,8 @@ export class Memory {
   constructor(source: string | { directory: string; store: Store; saved: Saved }, private readonly compress: Compressor,
     private readonly warn: (s: string) => void = console.error,
     readonly budget = VIEW, private readonly jobs = 8, private readonly retryMs?: number, defer = 1, initializeLater = false) {
-    this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), budget * Math.max(1, defer));
-    this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part));
+    this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), i => this.unbuiltText(i), budget * Math.max(1, defer));
+    this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part), i => this.unbuiltText(i));
     let saved: Saved;
     if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; this.tree = new ColdTreeMap(store); saved = store.load(HOT_TEXTS); }
     else { ({ directory: this.directory, store: this.store, saved } = source); this.tree = new ColdTreeMap(this.store); }
@@ -540,7 +551,8 @@ export class Memory {
     this.schedule(); this.events.emit('change');
     return true;
   }
-  private text(part: Part) { return this.node(part)?.text ?? UNBUILT; }
+  private unbuiltText(i: number) { return unbuiltHead(this.root[i].text); }
+  private text(part: Part) { return this.node(part)?.text ?? (part.l === 0 ? this.unbuiltText(part.i) : UNBUILT); }
   /** Runs a store write at once when none is running, so a store that finishes its writes as it returns (FileStore) throws here
    * as before; otherwise after the running ones, so writes land in the order Memory makes them. Returns the queued write, settled
    * through `failed`, unless it finished at once. */
