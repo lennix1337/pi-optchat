@@ -108,3 +108,38 @@ test('a Codex wake goes to the lighter model and back to the main one on the sam
   await wakeOff(d, h);
   assert.deepEqual([state.model, state.thinking], [sol, 'xhigh']);
 });
+
+test('machine-triggered turns use the wake model, never human turns or disabled configuration', async () => {
+  const { machineWakeOn } = await import('../src/wake-model.ts');
+  const { defaults } = await import('../src/profiles.ts');
+  const config = { ...defaults, wakeModel: wake };
+  for (const [type, text] of [['gitwatch', '[gitwatch] repo'], ['optchat-reload-resume', 'resume'], ['optchat-report', '[shell 1] done'], ['optchat-report', '[OptChat claim check] verify']]) {
+    const d = dir(), { h, state } = host([opus, sonnet]);
+    await machineWakeOn(d, config, { messageType: 'custom', message: { customType: type!, content: text! } }, h);
+    assert.deepEqual(state.model, sonnet, type);
+    await wakeOff(d, h); assert.deepEqual(state.model, opus);
+  }
+  for (const [cfg, event] of [
+    [config, { messageType: 'user' }],
+    [config, { messageType: 'custom', message: { customType: 'optchat-report', content: '[Slack] operator said hello' } }],
+    [config, { messageType: 'custom', message: { customType: 'optchat-report', content: 'Daily retro (operator: \"quote\")' } }],
+    [config, { messageType: 'custom', message: { customType: 'unknown', content: '[shell 1] done' } }],
+    [config, { messageType: 'custom', message: { customType: 'optchat-report', content: '[shell 1] done\n\nOperator message: quote', details: { count: 2 } } }],
+    [{ ...config, machineTurnsOnWakeModel: false }, { messageType: 'custom', message: { customType: 'gitwatch', content: 'notice' } }],
+    [{ ...config, wakeModel: undefined }, { messageType: 'custom', message: { customType: 'gitwatch', content: 'notice' } }],
+  ] as const) {
+    const d = dir(), { h, state } = host([opus, sonnet]);
+    await machineWakeOn(d, cfg, event, h);
+    assert.deepEqual(state.model, opus); assert.equal(existsSync(join(d, WAKE_RESTORE_FILE)), false);
+  }
+});
+
+test('an already active wake is not switched again by a machine notice', async () => {
+  const { machineWakeOn } = await import('../src/wake-model.ts');
+  const { defaults } = await import('../src/profiles.ts');
+  const d = dir(), { h, state } = host([opus, sonnet]);
+  await wakeOn(d, wake, h);
+  let calls = 0; const original = h.setModel; h.setModel = async m => { calls++; return original(m); };
+  await machineWakeOn(d, { ...defaults, wakeModel: wake }, { messageType: 'custom', message: { customType: 'gitwatch', content: 'notice' } }, h);
+  assert.equal(calls, 0); await wakeOff(d, h); assert.deepEqual(state.model, opus);
+});

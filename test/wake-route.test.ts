@@ -74,3 +74,13 @@ test('the accounts a wake could be routed across come from the cached file and t
   assert.deepEqual(knownProviders(null), []);
   assert.deepEqual(knownProviders({ usageByProvider: [1, 2] }), []);
 });
+
+test('machineTurnsOnWakeModel defaults to enabled and preserves false, rejecting invalid values', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-machine-config-'));
+  try {
+    saveConfig(dir, defaults); assert.equal(loadConfig(dir).machineTurnsOnWakeModel, undefined);
+    saveConfig(dir, { ...defaults, machineTurnsOnWakeModel: false }); assert.equal(loadConfig(dir).machineTurnsOnWakeModel, false);
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...defaults, machineTurnsOnWakeModel: 'no' }));
+    assert.throws(() => loadConfig(dir), /Invalid profile config/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

@@ -39,7 +39,7 @@ import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, NAVIGATION_DOC, SEARCH_DOC, T
 import { cachePayload, coldAfter, prefixRetention, record, ViewEntries } from './cache.ts';
 import { nativeHead, StableHead, type SavedHead } from './stable-head.ts';
 import { saveImages } from './images.ts';
-import { wakeOff, wakeOn, type WakeHost } from './wake-model.ts';
+import { machineWakeOn, wakeOff, wakeOn, type WakeHost } from './wake-model.ts';
 import { quietGhTelemetry } from './gh-quiet.ts';
 import { basicPythonRepl } from './python-repl.ts';
 import { reportsBlockReload } from './pending-reports.ts';
@@ -1017,14 +1017,14 @@ export default function optchat(host: ExtensionAPI) {
     previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
   };
-  // A report sent while Pi is idle starts its run without before_agent_start; it reuses the last built prompt.
   pi.on('agent_start', (_event, ctx) => {
     reportDispatch?.started();
     working = true; turn = []; showTitle(ctx); heartbeat?.disarm();
     if (active && !runStarted) startRun(ctx);
   });
-  pi.on('before_agent_start', (event, ctx) => {
+  pi.on('before_agent_start', async (event, ctx) => {
     if (!active) return; // Plain Pi run: leave Pi's own prompt untouched.
+    await machineWakeOn(active.dir, active.config, event, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'));
     if (event.messageType === 'custom' && event.message.customType === RELOAD_RESUME) {
       const id = (event.message.details as { id?: unknown } | undefined)?.id;
       if (typeof id === 'string') commitments.reloadResumed(id);

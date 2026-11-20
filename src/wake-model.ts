@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelChoice } from './compactor.ts';
-import { accountGroup as family } from './profiles.ts';
+import { accountGroup as family, wakeModelFor, type ProfileConfig } from './profiles.ts';
 import { atomicWrite } from './store.ts';
 
 /** The main model a wake switched away from, and the wake model it switched to. On disk, so a /reload or crash in the
@@ -57,4 +57,20 @@ export async function wakeOff<M>(dir: string, host: WakeHost<M>) {
   }
   host.setThinking(back.thinking);
   drop();
+}
+
+/** Only machine-originated custom messages are eligible, never user messages. */
+export function machineTurn(customType: string, content: string | readonly { type: string; text?: string }[]): boolean {
+  if (customType === 'gitwatch' || customType === 'optchat-reload-resume') return true;
+  if (customType !== 'optchat-report') return false;
+  const text = typeof content === 'string' ? content : content.map(part => part.type === 'text' ? part.text ?? '' : '').join('');
+  return text.startsWith('[shell ') || text.startsWith('[OptChat claim check]');
+}
+
+export async function machineWakeOn<M>(dir: string, config: ProfileConfig, event: { messageType: 'user' } | { messageType: 'custom'; message: { customType: string; content: string | readonly { type: string; text?: string }[]; details?: unknown } }, host: WakeHost<M>) {
+  if (config.machineTurnsOnWakeModel === false || event.messageType !== 'custom' || !machineTurn(event.message.customType, event.message.content) || existsSync(join(dir, WAKE_RESTORE_FILE))) return;
+  const details = event.message.details as { count?: unknown } | undefined;
+  if (event.message.customType === 'optchat-report' && details?.count !== undefined && details.count !== 1) return;
+  const current = host.current();
+  await wakeOn(dir, wakeModelFor(config, current && { provider: current.provider, model: current.id }), host);
 }
