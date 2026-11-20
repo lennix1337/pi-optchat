@@ -25,6 +25,7 @@ test('counts only operator messages in OptChat and merged PRs in Brasilia calend
   assert.deepEqual(result.days.at(-1), { date: '2026-11-20', interventions: 3, mergedPRs: 1, perPR: 3 });
   assert.deepEqual(result.week, { interventions: 4, mergedPRs: 2, perPR: 2, kinds: { corrections: 1, approvals: 1, questions: 1, other: 1 } });
   assert.match(scoreboardLine(result), /hoje.*3.*1.*3/);
+  assert.match(scoreboardLine(result), /ontem 1 intervenções \/ 1 PRs \(1 por PR\)/);
 });
 
 test('simple classification has precedence and zero PRs are undefined, not zero', () => {
