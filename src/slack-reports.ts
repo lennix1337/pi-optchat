@@ -18,6 +18,7 @@ import { logBackgroundFailure } from './exec-log.ts';
 import { loadEconomy } from './quota-load.ts';
 import { accountLines, weeklyLines } from './quota-format.ts';
 import { tallySession } from './machine-turn-share.ts';
+import { wakeYield } from './wake-yield.ts';
 
 /**
  * What the operator hears on Slack without asking, each in its project's channel: his PRs changing (CI green or red,
@@ -159,13 +160,13 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { predictions?: { text: string; link: string }[]; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[]; opusMachineShare?: string };
+export type SummaryInputs = { predictions?: { text: string; link: string }[]; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[]; opusMachineShare?: string; wakeWithoutDelivery?: string };
 /**
  * The 07:00 briefing, most actionable first: what needs him today, a short plan, what closed in the last day, what
  * the harness did and noticed, then state (production, PC, quotas, PRs, agenda) and its cost. A source that failed
  * is named at the end.
  */
-export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions, opusMachineShare }: SummaryInputs): string {
+export function composeSummary({ day, waiting, prs, briefing, approvals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions, opusMachineShare, wakeWithoutDelivery }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const act = github ? activityLines(github) : { needs: [], closed: [] };
   const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
@@ -202,7 +203,7 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, commitm
     const off = briefing.sources.filter(s => s.state !== 'ok').map(s => `${s.sourceId} ${s.state}`);
     if (off.length) lines.push(`_Fontes incompletas: ${off.join(', ')}_`);
   } else lines.push('', '_Briefing do Google indisponível agora._');
-  if (cost || weekly?.length || opusMachineShare) lines.push('', '*Custo do harness*', ...cost ? [`• ${cost}`] : [], ...weekly?.map(h => `• ${one(h, 450)}`) ?? [], ...opusMachineShare ? [`• ${opusMachineShare}`] : []);
+  if (cost || weekly?.length || opusMachineShare || wakeWithoutDelivery) lines.push('', '*Custo do harness*', ...cost ? [`• ${cost}`] : [], ...weekly?.map(h => `• ${one(h, 450)}`) ?? [], ...opusMachineShare ? [`• ${opusMachineShare}`] : [], ...wakeWithoutDelivery ? [`• ${wakeWithoutDelivery}`] : []);
   if (github?.failed.length) lines.push(`_Fontes incompletas: ${github.failed.join(', ')}_`);
   return lines.join('\n');
 }
@@ -225,7 +226,7 @@ export class DailySummary {
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
     const sent = await this.post(composeSummary({ ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
-      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), opusMachineShare: opusShare(this.options.sessionsDir ?? join(homedir(), '.pi', 'agent', 'sessions'), now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE) }), null);
+      approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...sessionShares(this.options.sessionsDir ?? join(homedir(), '.pi', 'agent', 'sessions'), now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE) }), null);
     // The date above says "tried"; `sentAt` and Slack's `ts` say "delivered": a date alone cannot tell a failed post from a sent one.
     const ts = (sent as { ts?: unknown } | undefined)?.ts;
     atomicWrite(file, JSON.stringify({ date: today, sentAt: (this.options.now ?? Date.now)(), ...(typeof ts === 'string' ? { ts } : {}) }));
@@ -234,14 +235,18 @@ export class DailySummary {
 }
 
 /** A failed or incomplete session scan cannot support a trustworthy share. */
-function opusShare(root: string, now: number): string | undefined {
-  let total = 0, machine = 0;
+export function sessionShares(root: string, now: number): Pick<SummaryInputs, 'opusMachineShare' | 'wakeWithoutDelivery'> {
+  let total = 0, machine = 0, wakes = 0, without = 0;
   const scan = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) scan(path);
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        const { models } = tallySession(readFileSync(path, 'utf8'), now - 86_400_000, undefined, now);
+        const jsonl = readFileSync(path, 'utf8');
+        const { models } = tallySession(jsonl, now - 86_400_000, undefined, now);
+        const yieldSummary = wakeYield(jsonl, now - 86_400_000, now).summary;
+        wakes += yieldSummary.wakes;
+        without += yieldSummary.without;
         for (const [model, counts] of models) if (model.startsWith('claude-opus')) {
           machine += counts.machine;
           total += counts.human + counts.machine + counts.heartbeat + counts.unknown + counts.worker;
@@ -249,8 +254,11 @@ function opusShare(root: string, now: number): string | undefined {
       }
     }
   };
-  try { scan(root); } catch { return undefined; } // Optional source: omit rather than publish a partial count.
-  return total ? `Opus em avisos de máquina: ${machine}/${total} (${Number((100 * machine / total).toFixed(1))}%) — meta: perto de 0 depois do #447` : undefined;
+  try { scan(root); } catch { return {}; } // Optional source: omit rather than publish a partial count.
+  return {
+    opusMachineShare: total ? `Opus em avisos de máquina: ${machine}/${total} (${Number((100 * machine / total).toFixed(1))}%) — meta: perto de 0 depois do #447` : undefined,
+    wakeWithoutDelivery: wakes ? `Wakes sem entrega: ${without}/${wakes} (${Math.round(100 * without / wakes)}%) — um wake sem PR/commit/spawn conta como vazio` : undefined,
+  };
 }
 
 /** GitHub around the operator in the last day; without `gh` or a login, the summary names the gap instead. */

@@ -157,6 +157,33 @@ test('morning DM reports the 24h Opus machine share only when complete session d
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('morning DM reports wakes without delivery across sessions only for a complete scan', async () => {
+  const dir = temp(), sessionsDir = join(dir, 'sessions');
+  const now = new Date(2026, 9, 29, 7, 1).getTime();
+  const heartbeat = { type: 'custom_message', timestamp: new Date(now - 1000).toISOString(), content: '[OptChat heartbeat] check' };
+  const delivery = { type: 'message', timestamp: new Date(now - 500).toISOString(), message: { role: 'assistant', content: [{ type: 'toolCall', name: 'spawn', arguments: {} }] } };
+  const jsonl = (...events: object[]) => events.map(e => JSON.stringify(e)).join('\n');
+  try {
+    mkdirSync(join(sessionsDir, 'project'), { recursive: true });
+    const a = join(sessionsDir, 'project', 'a.jsonl'), b = join(sessionsDir, 'project', 'b.jsonl');
+    writeFileSync(a, jsonl(heartbeat, delivery, heartbeat));
+    writeFileSync(b, jsonl(heartbeat, delivery));
+    const post = async () => {
+      rmSync(join(dir, 'slack-daily.json'), { force: true });
+      const r = recorder(), prs = new PrWatch(() => ({ dir, name: 'p' }), r.post);
+      await new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 0, { now: () => now, sessionsDir, request: async () => { throw new Error('offline'); }, gh: async () => { throw new Error('offline'); } }).maybePost();
+      return r.posts[0]!.text;
+    };
+    assert.match(await post(), /Wakes sem entrega: 1\/3 \(33%\) — um wake sem PR\/commit\/spawn conta como vazio/);
+    writeFileSync(b, '{invalid');
+    assert.doesNotMatch(await post(), /Wakes sem entrega/);
+    writeFileSync(a, ''); writeFileSync(b, '');
+    assert.doesNotMatch(await post(), /Wakes sem entrega/);
+    rmSync(sessionsDir, { recursive: true });
+    assert.doesNotMatch(await post(), /Wakes sem entrega/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('the Feito list keeps the latest post of each PR, not one line per state change', () => {
   const pr = (n: number, what: string) => ({ at: n, channel: 'harness', line: `${what} · <https://github.com/lennix1337/pi-optchat/pull/84|pi-optchat#84> relay` });
   const day = [pr(1, '🆕 PR aberto'), pr(2, '✅ CI verde'), pr(3, '🟣 Mergeado'), { at: 4, channel: 'harness', line: 'Corrigi o EPERM' }];
