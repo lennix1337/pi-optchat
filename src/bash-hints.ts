@@ -68,7 +68,7 @@ const TIMED_OUT = /timed out after \d+ seconds/;
 
 // Profile text names Windows paths (C:/projetos/...); on the Linux VM they resolve to nothing.
 const WINDOWS_PROJECT_PATH = /\bC:[\\/]projetos[\\/]/i;
-const PATH_MISS = /MODULE_NOT_FOUND|No such file or directory|ENOENT|not found/i;
+const PATH_MISS = /MODULE_NOT_FOUND|Cannot find module|No such file or directory|ENOENT|not found/i;
 
 const RIPWIRE_FLAGS = /(?:^|[;&|(]\s*)ripwire\b[^\n]*\s--(?:for|grep|callers|callees|impact|edit-check|quality-delta|test-gate)(?=[\s=]|$)/;
 

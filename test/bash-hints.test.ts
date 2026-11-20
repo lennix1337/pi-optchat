@@ -260,6 +260,8 @@ test('a C:/projetos path that does not exist on Linux suggests the ~/projetos ho
   const missing = "Error: Cannot find module '/home/ubuntu/projetos/Genexus18MCP/worktrees/x/C:/projetos/pi-optchat/scripts/ship.mjs'\ncode: 'MODULE_NOT_FOUND'";
   assert.equal(bashHint('cd w && node C:/projetos/pi-optchat/scripts/ship.mjs --help', false, missing), 'winpath');
   assert.equal(bashHint('cat C:/projetos/app/x.md', false, 'cat: C:/projetos/app/x.md: No such file or directory'), 'winpath');
+  // `| head` can cut the code line off; the first line alone still names the miss.
+  assert.equal(bashHint('node C:/projetos/x/a.mjs | head -5', false, "Error: Cannot find module '/home/ubuntu/C:/projetos/x/a.mjs'"), 'winpath');
   // A Windows run that works, or a missing file elsewhere, gets nothing.
   assert.equal(bashHint('node C:/projetos/pi-optchat/scripts/ship.mjs --help', false, 'usage: ship'), undefined);
   assert.equal(bashHint('node scripts/a.mjs', false, "Cannot find module 'x' MODULE_NOT_FOUND"), undefined);
