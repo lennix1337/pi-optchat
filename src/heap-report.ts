@@ -48,11 +48,14 @@ export interface SessionLike {
 }
 export interface HeapSources { session?: SessionLike; optchat?: OptChatSide }
 export interface SnapshotSummary { nodes?: number; selfBytes?: number; byType?: Record<string, { count: number; selfBytes: number }>;
-  topConstructors: { name: string; type?: string; count: number; selfBytes: number }[] }
+  topConstructors: { name: string; type?: string; count: number; selfBytes: number }[];
+  /** Non-weak incoming references, not unique or retained bytes. */
+  stringRetainers?: { ownerType: string; edge: string; references: number; referencedSelfBytes: number }[] }
 /** Everything that touches the machine, so tests can inject a heap that is too big or a snapshot that is never written. */
 export interface HeapDeps {
   heapStats(): v8.HeapInfo;
   freeMemory(): number;
+  rssBytes(): number;
   collect(): void;
   writeSnapshot(file: string): string;
   summarize(file: string): Promise<SnapshotSummary>;
@@ -79,7 +82,7 @@ function summarize(file: string): Promise<SnapshotSummary> {
     });
   });
 }
-const realDeps: HeapDeps = { heapStats: () => v8.getHeapStatistics(), freeMemory: freemem, collect, summarize,
+const realDeps: HeapDeps = { heapStats: () => v8.getHeapStatistics(), freeMemory: freemem, rssBytes: () => process.memoryUsage.rss(), collect, summarize,
   writeSnapshot: file => v8.writeHeapSnapshot(file) };
 
 /** Counts only: never entry text, prompts or tool output. */
@@ -138,8 +141,10 @@ async function snapshot(heap: v8.HeapInfo, deps: HeapDeps) {
     : free < 2 * used ? `free memory is ${mb(free)} MB, under twice the heap (${mb(used)} MB)` : undefined;
   if (refusal) return { refused: true, reason: refusal, heapUsedBytes: used, heapLimitBytes: limit, freeMemoryBytes: free };
   const started = performance.now(), file = join(tmpdir(), `pi-optchat-heap-${process.pid}-${Date.now()}.heapsnapshot`);
-  const written = deps.writeSnapshot(file), wroteMs = round(performance.now() - started);
-  const out: Record<string, unknown> = { file: written, bytes: (() => { try { return statSync(written).size; } catch { return null; } })(), writeMs: wroteMs };
+  const rssBefore = deps.rssBytes(), written = deps.writeSnapshot(file), rssAfter = deps.rssBytes(), wroteMs = round(performance.now() - started);
+  const out: Record<string, unknown> = { file: written, bytes: (() => { try { return statSync(written).size; } catch { return null; } })(), writeMs: wroteMs,
+    rssBeforeMb: mb(rssBefore), rssAfterMb: mb(rssAfter) };
+  if (rssAfter - rssBefore > 100 * MB) out.warning = 'O snapshot em processo pode inflar o RSS; a memória pode não ser devolvida até reiniciar.';
   try { Object.assign(out, await deps.summarize(written), { summaryMs: round(performance.now() - started - wroteMs) }); }
   catch (error) { out.summaryError = error instanceof Error ? error.message : String(error); }
   return out;
@@ -148,7 +153,7 @@ async function snapshot(heap: v8.HeapInfo, deps: HeapDeps) {
 export const heapReportTool = (optchat: () => OptChatSide | undefined) => ({
   name: 'heap_report', label: 'Heap report', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
   description: 'Memory and event-loop numbers of this Pi process, its session and OptChat memory: process.memoryUsage, V8 heap and space statistics, event-loop delay p50/p99/max since the last report plus the last stalls over 200 ms (time, blocked ms, and the garbage collection that overlapped it), exit listeners and active resources, session entry counts and file size, OptChat memory rows, live texts and caches. Counts and sizes only, no text. '
-    + 'gc:true forces a collection first (reports the pause and heap after it). snapshot:true writes a .heapsnapshot to the temp folder and summarizes its top constructors in a child process; it is refused when the heap is over 25% of V8\'s limit or free memory is under twice the heap. Never attach the V8 inspector to a live Pi: use this.',
+    + 'gc:true forces a collection first (reports the pause and heap after it). snapshot:true writes a .heapsnapshot in this process, which can inflate RSS and may not return memory until restart; it summarizes the file in a child process and is refused when the heap is over 25% of V8\'s limit or free memory is under twice the heap. Never attach the V8 inspector to a live Pi: use this.',
   parameters: Type.Object({
     gc: Type.Optional(Type.Boolean({ description: 'Force a garbage collection first and report the heap after it, with the pause.' })),
     snapshot: Type.Optional(Type.Boolean({ description: 'Write a heap snapshot to the temp folder and summarize its top constructors; refused when the heap is large or memory is short.' })),

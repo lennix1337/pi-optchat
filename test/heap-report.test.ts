@@ -26,7 +26,7 @@ const stats = (used: number, limit: number): HeapInfo => ({ used_heap_size: used
   total_global_handles_size: 0, used_global_handles_size: 0, external_memory: 0 });
 const injected = (over: Partial<HeapDeps> = {}): HeapDeps & { written: string[] } => {
   const written: string[] = [];
-  return { heapStats: () => stats(300 * MB, 4096 * MB), freeMemory: () => 8192 * MB, writeSnapshot: file => { written.push(file); return file; },
+  return { heapStats: () => stats(300 * MB, 4096 * MB), freeMemory: () => 8192 * MB, rssBytes: () => 600 * MB, writeSnapshot: file => { written.push(file); return file; },
     summarize: async () => ({ topConstructors: [] }), written, ...over } as HeapDeps & { written: string[] };
 };
 
@@ -36,6 +36,7 @@ test('heap_report is a read-only deferred tool that stays out of the default too
   assert.equal(tool.exposure, 'deferred');
   assert.equal(tool.defaultActive, false);
   assert.equal(tool.annotations?.readOnlyHint, true);
+  assert.match(tool.description, /inflate RSS.*until restart/);
 });
 
 test('a memory of N rows reports root=N and keeps at most the hot texts in RAM', async () => {
@@ -94,6 +95,19 @@ test('the event-loop delay is measured from load and reset after each report', a
   assert.ok(first.maxMs >= 80, `blocked loop shows in the max (${first.maxMs} ms)`);
   const second = (await heapReport({}, {}, injected())).eventLoop as { maxMs: number; samples: number };
   assert.ok(second.maxMs < first.maxMs, 'the next report starts from a reset histogram');
+});
+
+test('snapshot reports its RSS before and after the write and warns only above 100 MiB', async () => {
+  for (const delta of [100 * MB, 100 * MB + 1, 240 * MB]) {
+    let rss = 600 * MB;
+    const deps = injected({ rssBytes: () => rss, writeSnapshot: file => { rss += delta; return file; } });
+    const report = await heapReport({ snapshot: true }, {}, deps);
+    const snapshot = report.snapshot as { rssBeforeMb: number; rssAfterMb: number; warning?: string };
+    assert.equal(snapshot.rssBeforeMb, 600);
+    assert.equal(snapshot.rssAfterMb, Math.round((600 * MB + delta) / MB * 10) / 10);
+    if (delta > 100 * MB) assert.match(snapshot.warning ?? '', /snapshot em processo.*RSS.*reiniciar/i);
+    else assert.equal(snapshot.warning, undefined);
+  }
 });
 
 test('a snapshot is refused when the heap is over a quarter of its limit or memory is short, and nothing is written', async () => {
