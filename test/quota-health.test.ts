@@ -110,3 +110,16 @@ test('readQuotaState caches unchanged quota file and invalidates when size or mt
     assert.deepEqual(readQuotaState(file), { usageByProvider: { p: { plan: 'team' } } });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a meter that stopped refreshing is a problem, with its age, even when the cached numbers look healthy', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'quota-stale-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'state.json');
+  const fresh = { primary: window(10), fetchedAt: NOW - 10 * 60_000 };
+  writeFileSync(file, JSON.stringify({ usageByProvider: { live: fresh, agy: { primary: window(38, 100), fetchedAt: NOW - 4 * 24 * HOUR } } }));
+  const result = await quotaProbe(file, () => NOW).check();
+  assert.equal(result.ok, false);
+  assert.match(result.problem!, /leitura de cota parada: agy desde 26\/10 20:00/);
+  assert.doesNotMatch(result.problem!, /live/);
+  writeFileSync(file, JSON.stringify({ usageByProvider: { live: fresh } }));
+  assert.equal((await quotaProbe(file, () => NOW).check()).ok, true);
+});
