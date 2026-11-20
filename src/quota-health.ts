@@ -86,13 +86,26 @@ export function routeBlock(state: unknown, provider: string, model: string, now:
 const describe = (a: Account) => a.blockedUntil ? `${a.id} esgotada até ${brasiliaDayTime(a.blockedUntil)}`
   : `${a.id} ${a.used}% (renova ${brasiliaDayTime(a.resetAt!)})`;
 
+/** Meters refresh every 15 minutes at most; one silent for an hour stopped updating and its cached numbers are no longer news. */
+export const QUOTA_STALE_MS = 60 * 60_000;
+
+/** Accounts whose meter has a reading older than QUOTA_STALE_MS, with when it was taken. */
+export function staleReadings(state: unknown, now: number) {
+  return Object.entries(record(record(state).usageByProvider)).flatMap(([id, usage]) => {
+    const at = record(usage).fetchedAt;
+    return safeIdentifier(id) && nonnegative(at) && now - at > QUOTA_STALE_MS ? [{ id, fetchedAt: at }] : [];
+  }).sort((a, b) => a.id.localeCompare(b.id));
+}
+
 export function quotaProbe(file = QUOTA_FILE, now: () => number = Date.now): LocalProbe {
   return {
     name: 'Cota dos modelos',
     check(): ProbeResult {
-      const all = accounts(readQuotaState(file), now());
-      if (!all.length) return { ok: true, ms: 0, detail: 'sem medição válida; disponibilidade desconhecida' };
+      const state = readQuotaState(file), at = now();
+      const all = accounts(state, at), stale = staleReadings(state, at);
+      if (!all.length && !stale.length) return { ok: true, ms: 0, detail: 'sem medição válida; disponibilidade desconhecida' };
       const detail = `leitura em cache: ${all.map(describe).join('; ')}`;
+      if (stale.length) return { ok: false, ms: 0, detail, problem: `leitura de cota parada: ${stale.map(s => `${s.id} desde ${brasiliaDayTime(s.fetchedAt)}`).join('; ')}` };
       if (all.some(a => !a.blockedUntil)) return { ok: true, ms: 0, detail };
       return { ok: false, ms: 0, detail, problem: `contas monitoradas esgotadas; a primeira volta ${brasiliaDayTime(Math.min(...all.map(a => a.blockedUntil!)))}` };
     },
