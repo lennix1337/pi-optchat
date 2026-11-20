@@ -263,7 +263,8 @@ test('a merge runs only over green CI; --auto may wait only where GitHub itself 
   assert.match(ciProblem({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }] })!, /failing checks: unit/);
   assert.match(ciProblem({ statusCheckRollup: [{ name: 'windows', status: 'IN_PROGRESS' }] })!, /still running: windows/);
   assert.match(ciProblem({ statusCheckRollup: [{ context: 'ci/legacy', state: 'FAILURE' }] })!, /failing checks: ci\/legacy/);
-  assert.equal(ciProblem({ statusCheckRollup: [] }), undefined, 'a repository without CI merges');
+  // 18/11: pi-wacli #1-#5 (no workflow) and dentai #193 (checks not registered yet) merged with no check at all; #2 had a red local test.
+  assert.match(ciProblem({ statusCheckRollup: [] })!, /no CI check/, 'a PR without any check tested nothing');
   const calls: string[][] = [];
   const exec = (view: object | Error): Exec => async (_c, args) => { calls.push(args); if (view instanceof Error) throw view; return { code: 0, stdout: JSON.stringify(view), stderr: '' }; };
   assert.match((await mergeRefusal('gh pr merge 31 --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }] })))!, /Not run: PR 31 .*failing checks: unit/);
@@ -302,8 +303,12 @@ test('a red check whose Actions job never ran a step (GitHub refused to start it
     args[0] === 'api' ? { code: 0, stdout: steps[args[1]!] ?? '', stderr: '' } : { code: 0, stdout: JSON.stringify(view), stderr: '' };
   const zero = { 'repos/lennix1337/dotfiles/actions/jobs/11': '0', 'repos/lennix1337/dotfiles/actions/jobs/12': '0' };
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero)))!, /never started \(billing\) and no local verification receipt exists for head 6b02a198.*local-verify\.mjs/, 'CI that never ran tested nothing: the local verification must stand in');
+  const noChecks = { statusCheckRollup: [], mergeStateStatus: 'CLEAN', headRefOid: sha };
+  assert.match((await mergeRefusal('gh pr merge 5 --squash', 'C:/', gh(noChecks, {})))!, /no CI check.*no local verification receipt exists for head 6b02a198.*local-verify\.mjs/, 'a PR with no check at all needs the local verification too');
+  assert.match((await mergeRefusal('gh pr merge 5 --auto --squash', 'C:/', gh(noChecks, {})))!, /no CI check/, 'without required checks GitHub merges --auto at once');
   writeFileSync(join(receipts, `${sha}.json`), '{}');
   assert.equal(await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, zero)), undefined, 'no step ran in any red job and the head passed local verification');
+  assert.equal(await mergeRefusal('gh pr merge 5 --squash', 'C:/', gh(noChecks, {})), undefined, 'no CI, but the head passed local verification');
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, { ...zero, 'repos/lennix1337/dotfiles/actions/jobs/12': '4' })))!, /failing checks/, 'a job that ran steps failed for real');
   assert.match((await mergeRefusal('gh pr merge 78 --squash', 'C:/', gh(neverRan, {})))!, /failing checks/, 'steps that cannot be read are not proof');
   const legacy = { ...neverRan, statusCheckRollup: [{ context: 'ci/legacy', state: 'FAILURE' }] };
