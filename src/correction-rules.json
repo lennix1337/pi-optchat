@@ -1,16 +1,126 @@
 [
-  {"id":"free-action","quote":"já falei umas 300 vezes, pode mergear, pode reiniciar; sim sempre pode recarregar","date":"02/11, 15/11","scope":"assistant final text","detector":"free-action","precision":"Explicit permission questions naming a free action; context and exceptions are not inferred."},
-  {"id":"ending-offer","quote":"se quiser, é só dizer","date":"AGENTS","scope":"assistant final text","detector":"ending-offer","precision":"Only this ending formula; not all offers."},
-  {"id":"pipe-status","guardedAt":"2026-11-19T19:20:00Z","quote":"rc=${PIPESTATUS[0]} instead of rc=$? after a pipe","date":"13/11","scope":"bash tool call","detector":"pipe-status","precision":"Literal pipeline to tail/grep/head and literal rc=$?."},
-  {"id":"weaken-test","quote":"não mascarar o erro; timing tests never loosened","date":"14/11","scope":"test edit tool call","detector":"weaken-test","precision":"Edit replacements adding skip/retry or increasing named timeout/budget numeric values only."},
-  {"id":"memory-format","quote":"Memory formats stay in memory","date":"AGENTS","scope":"assistant final text","detector":"memory-format","precision":"Literal markers only."},
-  {"id":"utc-time","quote":"Times in Brasília","date":"AGENTS","scope":"assistant final text","detector":"utc-time","precision":"Explicit Z suffix only; quoted examples may match."},
-  {"id":"force-action","quote":"force-push only on request","date":"AGENTS","scope":"bash tool call","detector":"force-action","precision":"Detects calls, not operator authorization; candidates require review."},
-  {"id":"unchecked-own-work","guardedAt":"2026-11-19T20:10:00Z","quote":"vc nunca pode falar isso: \"Não confirmei que ele começou de fato.\" vc sempre tem que ter alguma forma de se validar","date":"18/11","scope":"assistant final text","detector":"unchecked-own-work","precision":"First-person admissions of not having checked or confirmed something (não confirmei/verifiquei/conferi, I did not confirm/verify); quoted text may match."},
-  {"id":"abandoned-cause","guardedAt":"2026-11-19T21:10:00Z","quote":"se nao sabe pq parou de investigar? ta com preguiça?","date":"15/11","scope":"assistant final text","detector":"abandoned-cause","precision":"Literal unresolved-cause statements in final reports; candidates require review for continued investigation, shipped diagnostics, quotations or a real blocker."},
-  {"id":"self-work-under-pacing","quote":"ja falei pra usar os workers pq sua quota ta acabando","date":"15/11","scope":"assistant tool-call sequence after explicit quota pacing signal in the same session","detector":"self-work-under-pacing","precision":"One candidate per run of at least three direct bash/shell_start/edit/write calls after an explicit user delegation request under quota pressure or assistant quota-pressure statement. Spawn/tell delegation or an agy-worker launch resets the run. Does not infer pacing from percentages, tool results, or other sessions; review/integration calls can match and require review."},
-  {"id":"self-build-in-wake","quote":"vc tem usado o claude demais tbm, temos outras contas com 0 de uso ... precisa ser melhor balanceado o uso das outras contas como workers","date":"18/11","scope":"assistant tool calls of a run started by an OptChat heartbeat prompt","detector":"self-build-in-wake","precision":"One candidate per run of at least three edit/write calls in a wake with no spawn/tell, agy-worker or agy-pc launch since the wake began or the last hand-off; bash builds are not counted, and a few-line fix the profile allows may match and requires review."},
-  {"id":"wake-silence","quote":"chegou esses 2 wakes e vc n fez nada todo bugado ... nao quero ser avisado de nada, só quero q vc trabalhe","date":"15/11","scope":"assistant final text of a run started by an OptChat heartbeat prompt","detector":"wake-silence","precision":"final text shaped like a memory line (date and id range, machine-notice wording, id+n|), a commitment id restated as waiting on the operator, or a 'nothing new' opening, after a [OptChat heartbeat] prompt and before the next user message; a wake that merely reports work in Portuguese is not counted"},
-  {"id":"cause-claim","quote":"comentário #168 \"causa achada\" excede a evidência (era hipótese); não mascarar o erro","date":"18/11","scope":"bash, whatsapp_send or slack_send tool call","detector":"cause-claim","precision":"gh issue/pr comment or close, or a WhatsApp/Slack report (achei o buraco/a causa), whose text says the cause was found (causa achada/encontrada/raiz, root cause found) with no hedge (hipótese, não verificad, unverified, hypothesis); candidates require review."},
-  {"id":"premature-merge","guardedAt":"2026-11-20T00:06:50Z","quote":"AGENTS.md Authority (operador 11/11): merge só \"with CI green\"; sem CI, o verify local no head (\"sempre que estiver bloqueado la mas estiver passando tudo localmente pode concluir\")","date":"18/11","scope":"bash tool call","detector":"premature-merge","precision":"manual `gh pr merge` (no --auto) whose command shows no CI or local-verify evidence (gh pr checks, statusCheckRollup, mergeStateStatus, gh run view/watch, npm run verify, dentai-ship); a green gitwatch notice earlier in the turn is not visible here, so candidates require review."}
+  {
+    "id": "free-action",
+    "quote": "já falei umas 300 vezes, pode mergear, pode reiniciar; sim sempre pode recarregar",
+    "date": "02/11, 15/11",
+    "scope": "assistant final text",
+    "detector": "free-action",
+    "precision": "Explicit permission questions naming a free action; context and exceptions are not inferred."
+  },
+  {
+    "id": "ending-offer",
+    "quote": "se quiser, é só dizer",
+    "date": "AGENTS",
+    "scope": "assistant final text",
+    "detector": "ending-offer",
+    "precision": "Only this ending formula; not all offers."
+  },
+  {
+    "id": "pipe-status",
+    "guardedAt": "2026-11-19T19:20:00Z",
+    "quote": "rc=${PIPESTATUS[0]} instead of rc=$? after a pipe",
+    "date": "13/11",
+    "scope": "bash tool call",
+    "detector": "pipe-status",
+    "precision": "Literal pipeline to tail/grep/head and literal rc=$?."
+  },
+  {
+    "id": "weaken-test",
+    "quote": "não mascarar o erro; timing tests never loosened",
+    "date": "14/11",
+    "scope": "test edit tool call",
+    "detector": "weaken-test",
+    "precision": "Edit replacements adding skip/retry or increasing named timeout/budget numeric values only."
+  },
+  {
+    "id": "memory-format",
+    "quote": "Memory formats stay in memory",
+    "date": "AGENTS",
+    "scope": "assistant final text",
+    "detector": "memory-format",
+    "precision": "Literal markers only."
+  },
+  {
+    "id": "utc-time",
+    "quote": "Times in Brasília",
+    "date": "AGENTS",
+    "scope": "assistant final text",
+    "detector": "utc-time",
+    "precision": "Explicit Z suffix only; quoted examples may match."
+  },
+  {
+    "id": "force-action",
+    "quote": "force-push only on request",
+    "date": "AGENTS",
+    "scope": "bash tool call",
+    "detector": "force-action",
+    "precision": "Detects calls, not operator authorization; candidates require review."
+  },
+  {
+    "id": "unchecked-own-work",
+    "guardedAt": "2026-11-19T20:10:00Z",
+    "quote": "vc nunca pode falar isso: \"Não confirmei que ele começou de fato.\" vc sempre tem que ter alguma forma de se validar",
+    "date": "18/11",
+    "scope": "assistant final text",
+    "detector": "unchecked-own-work",
+    "precision": "First-person admissions of not having checked or confirmed something (não confirmei/verifiquei/conferi, I did not confirm/verify); quoted text may match."
+  },
+  {
+    "id": "abandoned-cause",
+    "guardedAt": "2026-11-19T21:10:00Z",
+    "quote": "se nao sabe pq parou de investigar? ta com preguiça?",
+    "date": "15/11",
+    "scope": "assistant final text",
+    "detector": "abandoned-cause",
+    "precision": "Literal unresolved-cause statements in final reports; candidates require review for continued investigation, shipped diagnostics, quotations or a real blocker."
+  },
+  {
+    "id": "self-work-under-pacing",
+    "quote": "ja falei pra usar os workers pq sua quota ta acabando",
+    "date": "15/11",
+    "scope": "assistant tool-call sequence after explicit quota pacing signal in the same session",
+    "detector": "self-work-under-pacing",
+    "precision": "One candidate per run of at least three direct bash/shell_start/edit/write calls after an explicit user delegation request under quota pressure or assistant quota-pressure statement. Spawn/tell delegation or an agy-worker launch resets the run. Does not infer pacing from percentages, tool results, or other sessions; review/integration calls can match and require review."
+  },
+  {
+    "id": "self-build-in-wake",
+    "quote": "vc tem usado o claude demais tbm, temos outras contas com 0 de uso ... precisa ser melhor balanceado o uso das outras contas como workers",
+    "date": "18/11",
+    "scope": "assistant tool calls of a run started by an OptChat heartbeat prompt",
+    "detector": "self-build-in-wake",
+    "precision": "One candidate per run of at least three edit/write calls in a wake with no spawn/tell, agy-worker or agy-pc launch since the wake began or the last hand-off; bash builds are not counted, and a few-line fix the profile allows may match and requires review."
+  },
+  {
+    "id": "wake-silence",
+    "quote": "chegou esses 2 wakes e vc n fez nada todo bugado ... nao quero ser avisado de nada, só quero q vc trabalhe",
+    "date": "15/11",
+    "scope": "assistant final text of a run started by an OptChat heartbeat prompt",
+    "detector": "wake-silence",
+    "precision": "final text shaped like a memory line (date and id range, machine-notice wording, id+n|), a commitment id restated as waiting on the operator, or a 'nothing new' opening, after a [OptChat heartbeat] prompt and before the next user message; a wake that merely reports work in Portuguese is not counted"
+  },
+  {
+    "id": "cause-claim",
+    "quote": "comentário #168 \"causa achada\" excede a evidência (era hipótese); não mascarar o erro",
+    "date": "18/11",
+    "scope": "bash, whatsapp_send or slack_send tool call",
+    "detector": "cause-claim",
+    "precision": "gh issue/pr comment or close, or a WhatsApp/Slack report (achei o buraco/a causa), whose text says the cause was found (causa achada/encontrada/raiz, root cause found) with no hedge (hipótese, não verificad, unverified, hypothesis); candidates require review."
+  },
+  {
+    "id": "premature-merge",
+    "guardedAt": "2026-11-20T00:06:50Z",
+    "quote": "AGENTS.md Authority (operador 11/11): merge só \"with CI green\"; sem CI, o verify local no head (\"sempre que estiver bloqueado la mas estiver passando tudo localmente pode concluir\")",
+    "date": "18/11",
+    "scope": "bash tool call",
+    "detector": "premature-merge",
+    "precision": "manual `gh pr merge` (no --auto) whose command shows no CI or local-verify evidence (gh pr checks, statusCheckRollup, mergeStateStatus, gh run view/watch, npm run verify, dentai-ship); a green gitwatch notice earlier in the turn is not visible here, so candidates require review."
+  },
+  {
+    "id": "live-claim",
+    "quote": "nao pode ser entregue algo que nao foi validado (17/11); DMs \"no ar\" sem conferir erradas (18/11)",
+    "date": "17/11, 18/11",
+    "scope": "slack_send or whatsapp_send tool call",
+    "detector": "live-claim",
+    "precision": "Report opening with \"No ar\"/\"Já está no ar\"/\"ao vivo\" and no hedge, when no curl, gh run/pr/api, git log, release verifier or browser call ran since the last user or wake message; candidates require review (a check made by another tool is not seen)."
+  }
 ]

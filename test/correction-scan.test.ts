@@ -20,6 +20,7 @@ const cases: [string, object, object][] = [
  ['unchecked-own-work', text('O worker foi relançado. Não confirmei que ele começou de fato.'), text('O worker está rodando: tarefa Running e passo 43 no log.')],
  ['cause-claim', call('bash',{command:'gh issue comment 168 --body "Causa achada: o merge com GITHUB_TOKEN não dispara push."'}), call('bash',{command:'gh issue comment 168 --body "Hipótese, não verificada: o merge com GITHUB_TOKEN pode não disparar push."'})],
  ['premature-merge', call('bash',{command:'gh pr merge 193 --squash --delete-branch'}), call('bash',{command:'gh pr checks 193 && gh pr merge 193 --squash'})],
+ ['live-claim', call('slack_send',{text:'No ar às 10:52: a correção do Seus Projetos.'}), call('slack_send',{text:'Mesclei o #192; o deploy ainda não foi verificado.'})],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
@@ -231,4 +232,19 @@ test('self-build-in-wake counts shell writes and survives other reports until th
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...shellBuild]), 1);
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, shellBuild[0], claimCheck, ...shellBuild.slice(1)]), 1, 'a claim check does not end the wake');
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...Array(3).fill(call('bash', { command: 'npm test > /tmp/full.log 2>&1; cat > /tmp/x.ts' }))]), 0, 'scratch files in /tmp are not building');
+});
+
+test('live-claim is cleared by a live check since the last user message, and reset by the next one', () => {
+ const rule = rules.find(r => r.id === 'live-claim')!;
+ const claim = call('slack_send',{text:'Já está no ar (versão 91d8e16).'});
+ assert.equal(detect(rule, claim), true);
+ assert.equal(detect(rule, call('slack_send',{text:'No ar às 10:52. Não testei a troca de conta em produção.'})), false);
+ assert.equal(detect(rule, claim, {active:false,directWork:0,checked:true}), false);
+ assert.equal(detect(rule, {type:'message',timestamp:'2026-11-14T00:00:00Z',message:{role:'assistant',stopReason:'toolUse',content:[{type:'toolCall',name:'bash',arguments:{command:'curl -sI https://dentai.com.br'}},{type:'toolCall',name:'slack_send',arguments:{text:'No ar: confirmado.'}}]}}), false);
+ const dir = mkdtempSync(join(tmpdir(), 'live-claim-')); try {
+  const user = (s: string) => ({type:'message',timestamp:'2026-11-14T00:00:00Z',message:{role:'user',content:[{type:'text',text:s}]}});
+  const events = [user('deploy'), call('bash',{command:'gh run view 1'}), claim, user('outra'), claim];
+  writeFileSync(join(dir,'s.jsonl'), events.map(e=>JSON.stringify(e)).join('\n'));
+  assert.equal(scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r=>r.id==='live-claim')!.count, 1);
+ } finally { rmSync(dir,{recursive:true,force:true}); }
 });
