@@ -44,6 +44,7 @@ const PASSED = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
 /** Why the PR's checks do not allow the merge now, or undefined when every check passed (or GitHub will wait, for --auto). */
 export function ciProblem(view: Rollup, auto = false): string | undefined {
   const checks = view.statusCheckRollup ?? [];
+  if (!checks.length) return 'no CI check ran on this PR';
   const failed = checks.filter(c => (c.conclusion && !PASSED.has(c.conclusion)) || (c.state && ['FAILURE', 'ERROR'].includes(c.state)));
   if (failed.length) return `failing checks: ${failed.map(c => c.name ?? c.context ?? '?').slice(0, 5).join(', ')}`;
   const pending = checks.filter(c => (c.status && c.status !== 'COMPLETED') || (c.state && ['PENDING', 'EXPECTED'].includes(c.state)));
@@ -78,8 +79,9 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
       else {
         const view = JSON.parse(out.stdout) as Rollup;
         problem = ciProblem(view, merge.auto);
-        if (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir)) {
-          problem = locallyVerified(view.headRefOid) ? undefined : `its CI never started (billing) and no local verification receipt exists for head ${view.headRefOid?.slice(0, 8) ?? '?'}: check out that head and run \`node ~/projetos/pi-optchat/scripts/local-verify.mjs <repo-dir>\`, then merge`;
+        const noChecks = problem?.startsWith('no CI check');
+        if (noChecks || (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir))) {
+          problem = locallyVerified(view.headRefOid) ? undefined : `${noChecks ? 'no CI check ran on this PR' : 'its CI never started (billing)'} and no local verification receipt exists for head ${view.headRefOid?.slice(0, 8) ?? '?'}: check out that head and run \`node ~/projetos/pi-optchat/scripts/local-verify.mjs <repo-dir>\`, then merge`;
         }
         else if (problem?.startsWith('failing checks') && (view.statusCheckRollup ?? []).some(c => c.status && c.status !== 'COMPLETED')) problem += ' (another check is still running: a billing-refused job is only waved through once every check has finished, so retry the same merge in a few seconds; never `--admin`)';
       }
