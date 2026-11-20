@@ -596,6 +596,7 @@ test('every wake names the end goal and asks for a new capability toward it, not
   assert.match(wake, /Clearing the queue is the floor/);
   assert.ok(wakeText('', 'haiku', 15, plan).includes(BRAINSTORM_NOTE), 'the build wake brainstorms before it picks');
   assert.match(BRAINSTORM_NOTE, /5 concrete candidates/);
+  assert.doesNotMatch(BRAINSTORM_NOTE, /DentAI conversion|DentAI.{0,20}revenue/i, 'operator 20/11: he is DentAI\'s dev, not its owner: a wake never proposes business experiments there');
   assert.match(BRAINSTORM_NOTE, /personality/);
   assert.ok(/scripts[\\/]council\.mjs/.test(BRAINSTORM_NOTE) && /--reply/.test(BRAINSTORM_NOTE), 'the wake asks the council before it decides');
 });
