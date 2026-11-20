@@ -102,7 +102,7 @@ test('the morning summary posts once a day between 07:00 and noon, with work don
       return { tasks: [{ status: 'needs_input', title: 'Qual conta usar?' }, { status: 'working', title: 'x' }] };
     };
     const prs = new PrWatch(() => ({ dir, name: 'p' }), r.post, async () => '{}');
-    const daily = new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 1, { now: () => now, request, gh: async () => { throw new Error('gh: not logged in'); } });
+    const daily = new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 1, { now: () => now, request, interventionScoreboard: async () => 'Intervenções: fixture', gh: async () => { throw new Error('gh: not logged in'); } });
     assert.equal(await daily.maybePost(), false, 'before 07:00');
     writeFileSync(join(dir, 'pr-watch.json'), JSON.stringify({ 'o/pi-optchat#9': { sig: 'OPEN:FAILURE', seen: now, since: now - 5 * 3_600_000, title: 'Quebrado', url: 'https://github.com/o/pi-optchat/pull/9', channel: 'harness' } }));
     writeFileSync(join(dir, 'pc-health.json'), JSON.stringify({ 'PC: disco C:': { failures: 0, down: false, since: now, ms: 0, detail: '122 GB livres de 1023 GB' } }));
@@ -143,11 +143,13 @@ test('morning DM reports the 24h Opus machine share only when complete session d
     const post = async () => {
       rmSync(join(dir, 'slack-daily.json'), { force: true });
       const r = recorder(), prs = new PrWatch(() => ({ dir, name: 'p' }), r.post);
-      const options = { now: () => now, sessionsDir, request: async () => { throw new Error('offline'); }, gh: async () => { throw new Error('offline'); } };
+      const options = { now: () => now, sessionsDir, interventionScoreboard: async () => 'Intervenções: fixture', request: async () => { throw new Error('offline'); }, gh: async () => { throw new Error('offline'); } };
       await new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 0, options).maybePost();
       return r.posts[0]!.text;
     };
-    assert.match(await post(), /Opus em avisos de máquina: 1\/2 \(50%\) — meta: perto de 0 depois do #447/);
+    const message = await post();
+    assert.match(message, /Intervenções: fixture/);
+    assert.match(message, /Opus em avisos de máquina: 1\/2 \(50%\) — meta: perto de 0 depois do #447/);
     writeFileSync(file, '');
     assert.doesNotMatch(await post(), /Opus em avisos de máquina/);
     writeFileSync(file, '{invalid');
@@ -171,7 +173,7 @@ test('morning DM reports wakes without delivery across sessions only for a compl
     const post = async () => {
       rmSync(join(dir, 'slack-daily.json'), { force: true });
       const r = recorder(), prs = new PrWatch(() => ({ dir, name: 'p' }), r.post);
-      await new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 0, { now: () => now, sessionsDir, request: async () => { throw new Error('offline'); }, gh: async () => { throw new Error('offline'); } }).maybePost();
+      await new DailySummary(() => ({ dir, name: 'p' }), r.post, prs, () => 0, { now: () => now, sessionsDir, interventionScoreboard: async () => 'Intervenções: fixture', request: async () => { throw new Error('offline'); }, gh: async () => { throw new Error('offline'); } }).maybePost();
       return r.posts[0]!.text;
     };
     assert.match(await post(), /Wakes sem entrega: 1\/3 \(33%\) — um wake sem PR\/commit\/spawn conta como vazio/);

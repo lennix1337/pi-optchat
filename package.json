@@ -74,6 +74,7 @@
   },
   "files": [
     "src",
+    "scripts/scoreboard.mjs",
     "assistant/src",
     "assistant/scripts",
     "assistant/web/index.html",

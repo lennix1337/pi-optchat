@@ -37,7 +37,7 @@ test('the 07:00 summary lists every account with both resets and the weekly API-
   await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'no-prices.json') });
   const posts: string[] = [];
   const daily = new DailySummary(() => ({ dir, name: 'fixture' }), async text => { posts.push(text); }, { open: () => [] } as never, () => 0, {
-    at: '00:00', until: 24, now: () => NOW, quotaFile: cacheFile, gh: async () => { throw new Error('offline'); },
+    at: '00:00', until: 24, now: () => NOW, quotaFile: cacheFile, interventionScoreboard: async () => 'Intervenções: fixture', gh: async () => { throw new Error('offline'); },
     request: async (_owner, path) => path.startsWith('/v1/briefing') ? { localDate: localDate(NOW), items: [], sources: [] } : { tasks: [] },
   });
   assert.equal(await daily.maybePost(), true);
