@@ -4,7 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { brasiliaTime } from './heartbeat.ts';
 import { assistantProbe, ASSISTANT_HEALTH_FILE, ASSISTANT_WAKE_NOTE } from './assistant-health.ts';
 import { pcProbes } from './pc-health.ts';
-import { quotaProbe, QUOTA_HEALTH_FILE } from './quota-health.ts';
+import { providerLogProbe, PROVIDER_LOG_HEALTH_FILE, quotaProbe, QUOTA_HEALTH_FILE } from './quota-health.ts';
 import { sampleQuotaRound } from './quota-load.ts';
 import { applyRemedies, type Remedy } from './self-fix.ts';
 import { appendSignals } from './journal-spool.ts';
@@ -219,6 +219,7 @@ export const defaultMonitors = (): Monitor[] => [
   { health: new ProdHealth(), ...PRODUCTION },
   { health: new ProdHealth({ probes: pcProbes(), file: PC_FILE }), channel: null, wakes: false },
   { health: new ProdHealth({ probes: [quotaProbe()], file: QUOTA_HEALTH_FILE }), channel: null, wakes: false },
+  { health: new ProdHealth({ probes: [providerLogProbe()], file: PROVIDER_LOG_HEALTH_FILE }), channel: null, wakes: false },
   /** Slack runs through this service: its outage wakes the agent in the terminal and does not post to Slack. */
   { health: new ProdHealth({ probes: [assistantProbe()], file: ASSISTANT_HEALTH_FILE }), channel: null, wakes: true, slack: false, wakeNote: ASSISTANT_WAKE_NOTE },
 ];
