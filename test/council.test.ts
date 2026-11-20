@@ -89,3 +89,12 @@ test('the decision records whether the debate changed the leaning', () => {
   assert.equal(decisionChanged('Decido 1. mudou: não; a objeção do sol não se sustenta.'), false);
   assert.equal(decisionChanged('Decido 1.'), undefined);
 });
+
+test('the council pushes ambition up, never trims it (operator 20/11: "quero um conselho com essa intencao")', () => {
+  for (const role of ['critic', 'second', 'rebuttal'] as const) {
+    const prompt = debatePrompt('1. placar (4/5)\nInclino para 1.', [], role);
+    assert.match(prompt, /unreasonably ambitious/i);
+    assert.match(prompt, /nunca proponha reduzir a ambição/i);
+    assert.doesNotMatch(prompt, /valoriza YAGNI/);
+  }
+});
