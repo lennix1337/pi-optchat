@@ -274,3 +274,12 @@ test('a failed git merge --ff-only points at the checked-out branch', () => {
   assert.equal(bashHint('git merge --ff-only origin/main', false, 'Already up to date.'), undefined);
   assert.equal(bashHint('git pull origin main', false, refused), undefined);
 });
+
+test('a git stash pop/apply refused over local changes points at the diff, not a drop', () => {
+  // 20/11: restoring stash@{0} was refused ("local changes would be overwritten") and the edit was redone by hand.
+  const refused = 'error: Your local changes to the following files would be overwritten by merge:\n\tsrc/bash-hints.ts\nPlease commit your changes or stash them before you merge.';
+  assert.equal(bashHint('git stash pop', false, refused), 'stashclash');
+  assert.equal(bashHint('cd r && git stash apply stash@{0}', false, refused), 'stashclash');
+  assert.equal(bashHint('git stash pop', false, 'On branch main\nChanges not staged for commit'), undefined);
+  assert.equal(bashHint('git merge x', false, refused), undefined);
+});
