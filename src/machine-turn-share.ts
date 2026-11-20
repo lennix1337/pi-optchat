@@ -3,7 +3,7 @@ type Content = string | { type?: string; text?: string }[];
 type Event = { type?: string; customType?: string; content?: Content; timestamp?: string; message?: { role?: string; content?: Content; model?: string } };
 export type Counts = Record<Trigger, number>;
 export type Share = { total: number; machine: number };
-export type Tally = { models: Map<string, Counts>; opusBefore: Share; opusAfter: Share };
+export type Tally = { models: Map<string, Counts>; opusBefore: Share; opusAfter: Share; machineAfter: Map<string, number> };
 
 const textOf = (content?: Content): string => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(p => p?.type === 'text').map(p => p.text ?? '').join('') : '';
 
@@ -16,7 +16,7 @@ export function classifyTrigger(event: Event): Trigger {
 }
 
 export function tallySession(jsonl: string, start: number, cut?: number, end = Infinity): Tally {
-  const result: Tally = { models: new Map(), opusBefore: { total: 0, machine: 0 }, opusAfter: { total: 0, machine: 0 } };
+  const result: Tally = { models: new Map(), opusBefore: { total: 0, machine: 0 }, opusAfter: { total: 0, machine: 0 }, machineAfter: new Map() };
   let trigger: Trigger = 'unknown';
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
@@ -30,6 +30,7 @@ export function tallySession(jsonl: string, start: number, cut?: number, end = I
       const counts = result.models.get(model) ?? { human: 0, machine: 0, heartbeat: 0, unknown: 0 };
       counts[trigger]++;
       result.models.set(model, counts);
+      if (cut !== undefined && time >= cut && trigger === 'machine') result.machineAfter.set(model, (result.machineAfter.get(model) ?? 0) + 1);
       if (model.startsWith('claude-opus') && cut !== undefined) {
         const share = time < cut ? result.opusBefore : result.opusAfter;
         share.total++;

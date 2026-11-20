@@ -32,3 +32,16 @@ test('tallies JSONL within the window by model, trigger and cut; tool results do
   assert.deepEqual(result.opusBefore, { total: 1, machine: 1 });
   assert.deepEqual(result.opusAfter, { total: 1, machine: 1 });
 });
+
+test('counts machine turns after the cut for every model, so a move to another model is visible', () => {
+  const events = [
+    { type: 'custom_message', customType: 'gitwatch', content: 'event' },
+    { type: 'message', timestamp: '2026-01-01T01:00:00Z', message: { role: 'assistant', model: 'claude-opus-5' } },
+    { type: 'message', timestamp: '2026-01-01T03:00:00Z', message: { role: 'assistant', model: 'claude-sonnet-5' } },
+    { type: 'message', timestamp: '2026-01-01T03:30:00Z', message: { role: 'assistant', model: 'claude-sonnet-5' } },
+    { type: 'custom_message', customType: 'optchat-report', content: '[OptChat heartbeat] wake' },
+    { type: 'message', timestamp: '2026-01-01T04:00:00Z', message: { role: 'assistant', model: 'claude-sonnet-5' } },
+  ];
+  const result = tallySession(events.map(e => JSON.stringify(e)).join('\n'), 0, Date.parse('2026-01-01T02:00:00Z'));
+  assert.deepEqual([...result.machineAfter], [['claude-sonnet-5', 2]]);
+});

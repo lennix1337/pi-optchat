@@ -20,7 +20,7 @@ function* sessionFiles(dir) {
     else if (entry.isFile() && entry.name.endsWith('.jsonl')) yield path;
   }
 }
-const models = new Map(), before = { total: 0, machine: 0 }, after = { total: 0, machine: 0 };
+const machineAfter = new Map(), models = new Map(), before = { total: 0, machine: 0 }, after = { total: 0, machine: 0 };
 for (const file of sessionFiles(root)) {
   let tally;
   try { tally = tallySession(readFileSync(file, 'utf8'), start, cut, end); }
@@ -30,6 +30,7 @@ for (const file of sessionFiles(root)) {
     for (const key of Object.keys(total)) total[key] += counts[key];
     models.set(model, total);
   }
+  for (const [model, n] of tally.machineAfter) machineAfter.set(model, (machineAfter.get(model) ?? 0) + n);
   for (const [to, from] of [[before, tally.opusBefore], [after, tally.opusAfter]]) {
     to.total += from.total; to.machine += from.machine;
   }
@@ -44,3 +45,4 @@ for (const [model, counts] of [...models].sort(([a], [b]) => a.localeCompare(b))
 }
 const share = ({ machine, total }) => `${machine}/${total} (${total ? (100 * machine / total).toFixed(1) + '%' : 'n/a'})`;
 console.log(`Opus machine share: ${share(opus)}; ${cut === undefined ? 'before/after: specify --since ISO' : `before ${new Date(cut).toISOString()}: ${share(before)}; after: ${share(after)}`}`);
+if (cut !== undefined) console.log(`Machine turns after cut by model: ${[...machineAfter].map(([m, n]) => `${m} ${n}`).join(', ') || 'none'}`);
