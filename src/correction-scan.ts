@@ -27,7 +27,7 @@ type Event = { type?: string; customType?: string; content?: unknown; timestamp?
 /** `wake`: the run in progress started with an OptChat heartbeat prompt, so its final text is a wake report. */
 /** `wakeEdits`: source writes since the heartbeat or the last hand-off to a worker; undefined outside a wake. Other reports (claim checks,
  * worker messages) keep it, since the wake goes on until the operator speaks. */
-type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number };
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean };
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
 function toolCalls(event: Event): Content[] {
@@ -43,8 +43,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
-    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits };
-  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined };
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -55,13 +55,20 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
     ))) state = { active: true, directWork: previous.directWork };
   }
   const calls = toolCalls(event);
+  if (calls.some(verifiesLive)) state = { ...state, checked: true };
   const delegated = calls.some(c => c.name === 'spawn' || c.name === 'tell' || (
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
   const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
-  return { wake: state.wake, wakeEdits, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  return { wake: state.wake, wakeEdits, checked: state.checked, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+}
+
+/** A call that looks at the live system: an HTTP probe, GitHub run/PR state, git history, the release verifier or a browser. */
+function verifiesLive(call: Content): boolean {
+  if (call.name === 'browser_harness') return true;
+  return call.name === 'bash' && /\b(?:curl|gh\s+(?:run|pr|api)|git\s+log|dentai-ship|verify-release|release-verif\w*)\b|\/health\b/u.test(String(call.arguments?.command ?? ''));
 }
 
 /** An edit/write call, or a shell command that writes a file outside /tmp (redirect into a source file, sed -i, git apply/commit, ship -m). */
@@ -111,6 +118,10 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'self-build-in-wake': return (pacing.wakeEdits ?? 0) < 3 && (nextPacing(pacing, event).wakeEdits ?? 0) >= 3;
+    case 'live-claim': return !pacing.checked && !calls.some(verifiesLive) && calls.some(c =>
+      (c.name === 'slack_send' || c.name === 'whatsapp_send') &&
+      /^\W*(?:j[áa]\s+(?:est[áa]|est[ãa]o)\s+no\s+ar|no\s+ar\b|(?:est[áa]|est[ãa]o)\s+no\s+ar|ao\s+vivo\b)/iu.test(String(c.arguments?.text ?? '')) &&
+      !/\b(?:hip[óo]tese|n[ãa]o\s+verific\w*|n[ãa]o\s+confirm\w*|n[ãa]o\s+testei|unverified)\b/iu.test(String(c.arguments?.text ?? '')));
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b(?:[^;\n|&]|&(?!&))*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'weaken-test': return calls.some(c => {
