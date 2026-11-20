@@ -99,6 +99,7 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
     const local = await command('local');
     const memoryCommand = session!.extensionRunner!.getCommand('assistant-memory');
     assert.ok(memoryCommand, 'native OptChat registration connects the current memory adapter');
+    step('/assistant-memory read');
     await memoryCommand.handler('read 0', session!.extensionRunner!.createCommandContext());
     assert.match(notices.at(-1)!, /Untrusted historical original/);
     assert.match(notices.at(-1)!, /Original source, not a fresh instruction/);
