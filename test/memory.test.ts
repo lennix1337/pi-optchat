@@ -1297,7 +1297,7 @@ test('a turn waits for a slow summary of a recent message only for its grace, th
     await memory.settle(AbortSignal.timeout(2000), 'turn', 50);
     assert.ok(performance.now() - began < 1000, 'the turn starts after the grace, not after the summary');
     assert.equal(memory.ready, false);
-    assert.match(memory.render(), /0\+1\|\(not summarized yet: zoom it\)/);
+    assert.match(memory.render(), /0\+1\|large message .* …\(not summarized yet: zoom it\)/);
     // A ref'd timer: AbortSignal.timeout is unref'd, and with only the pending summary the event loop would drain.
     const wait = new AbortController(); const held = setTimeout(() => wait.abort(), 100);
     await assert.rejects(memory.settle(wait.signal), /cancelled/, 'without a grace the turn still waits for the summary');
@@ -1351,4 +1351,51 @@ test('newly built summaries are chilled once they leave the shown views', async 
     assert.ok(stats.treeColdNodes > 100, `expected >100 cold tree nodes, got ${stats.treeColdNodes}`);
     assert.ok(memory.node({ l: 0, i: 0 })?.text.startsWith('user: msg 0'), 'chilled node still reads back from disk');
   } finally { await memory.close(); removeDir(dir); }
+});
+
+test('a turn settle with graceMs 0 resolves immediately and renders the bounded head of an unbuilt message', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-unbuilt-head-')); let release!: () => void;
+  const slow = new Promise<void>(resolve => { release = resolve; });
+  const memory = new Memory(dir, async input => { await slow; return `user: ${input.source.slice(0, 60)}`; }, () => {});
+  try {
+    const shortMsg = 'short\nline\r\nfits';
+    const longMsg = 'HEAD_START ' + 'a'.repeat(600);
+    const utf8Msg = 'é'.repeat(300); // cut at 200 chars (400 bytes)
+    memory.append('user', shortMsg);
+    assert.match(memory.render(), /0\+1\|short line fits\n/);
+    memory.append('user', longMsg);
+    memory.append('user', utf8Msg);
+    const began = performance.now();
+    await memory.settle(AbortSignal.timeout(2000), 'turn', 0);
+    assert.ok(performance.now() - began < 100, 'turn settle with graceMs 0 resolves without waiting');
+    const rendered = memory.render();
+    assert.match(rendered, /0\+1\|user: short line fits\n/);
+    assert.match(rendered, new RegExp(`1\\+1\\|HEAD_START ${'a'.repeat(389)} …\\(not summarized yet: zoom it\\)`));
+    assert.match(rendered, new RegExp(`2\\+1\\|${'é'.repeat(200)} …\\(not summarized yet: zoom it\\)`));
+  } finally { release(); await memory.close(); removeDir(dir); }
+});
+
+test('accounted view size equals Buffer.byteLength(render()) with unbuilt lines present, before and after one gets built', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-unbuilt-size-'));
+  let releaseFirst!: () => void;
+  const firstDone = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let releaseRest!: () => void;
+  const gate = [firstDone, new Promise<void>(resolve => { releaseRest = resolve; })];
+  let idx = 0;
+  const memory = new Memory(dir, async () => { await gate[idx++]; return 'user: summarized line'; }, () => {}, 128_000, 1);
+  try {
+    memory.append('user', 'first\nmessage ' + 'x'.repeat(600));
+    memory.append('user', 'second\nshort ' + '😀'.repeat(150)); // cut on a 4-byte character boundary
+    memory.append('user', 'third ' + '中'.repeat(200)); // 606 bytes, cut on 3-byte char boundary
+    await memory.settle(AbortSignal.timeout(2000), 'turn', 0);
+    assert.equal(memory.ready, false);
+    assert.equal(memory.size, Buffer.byteLength(memory.render(), 'utf8'), 'size matches before any unbuilt line is built');
+    releaseFirst();
+    for (const deadline = Date.now() + 2000; !memory.node({ l: 0, i: 0 }) && Date.now() < deadline;) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+    assert.ok(memory.node({ l: 0, i: 0 }), 'first line was built');
+    assert.equal(memory.ready, false, 'other unbuilt lines still remain');
+    assert.equal(memory.size, Buffer.byteLength(memory.render(), 'utf8'), 'size matches after one unbuilt line gets built');
+  } finally { releaseFirst(); releaseRest(); await memory.close(); removeDir(dir); }
 });
