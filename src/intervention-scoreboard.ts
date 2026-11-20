@@ -61,7 +61,8 @@ export function readSessions(root: string): Event[][] {
 }
 export function scoreboardLine(result: InterventionScoreboard): string {
   const today = result.days.at(-1)!;
+  const yesterday = result.days.at(-2);
   const fmt = (d: { interventions: number; mergedPRs: number; perPR: number | null }) => `${d.interventions} intervenções / ${d.mergedPRs} PRs (${d.perPR === null ? 'sem PR' : `${d.perPR.toLocaleString('pt-BR')} por PR`})`;
   const k = result.week.kinds;
-  return `Intervenções: hoje ${fmt(today)}; 7 dias ${fmt(result.week)} · tipos aproximados: ${k.corrections} correções, ${k.approvals} aprovações, ${k.questions} perguntas, ${k.other} outras. Sessões locais${result.coverage.earliestSession ? ` desde ${result.coverage.earliestSession}` : ''}; histórico possivelmente incompleto.`;
+  return `Intervenções: ${yesterday ? `ontem ${fmt(yesterday)}; ` : ''}hoje ${fmt(today)}; 7 dias ${fmt(result.week)} · tipos aproximados: ${k.corrections} correções, ${k.approvals} aprovações, ${k.questions} perguntas, ${k.other} outras. Sessões locais${result.coverage.earliestSession ? ` desde ${result.coverage.earliestSession}` : ''}; histórico possivelmente incompleto.`;
 }
