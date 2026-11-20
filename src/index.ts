@@ -1,3 +1,4 @@
+import { ciBackToWorker, SUBSCRIBER_NOTICE_CHANNEL } from './ci-back-to-worker.ts';
 import { predictionsTool } from './predictions.ts';
 import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
 import { registerAssistant } from './assistant-client.ts';
@@ -189,6 +190,10 @@ export default function optchat(host: ExtensionAPI) {
     catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
+  // Red CI of a PR shipped by `crew accept` goes back to the worker that wrote it (pi-gitwatch routes by run id).
+  const unsubscribeCiBack = pi.events.on(SUBSCRIBER_NOTICE_CHANNEL, ciBackToWorker({
+    info: id => active?.children.info(id), notice: (id, text) => active ? active.children.shellNotice(id, text) : Promise.resolve(false),
+    toManager: text => deliverReport(text, { once: true }) }) as (claim: unknown) => void);
   // First: a PowerShell script bash would rewrite (`$_` inside double quotes) is refused before it runs, so it needs no
   // approval and leaves no operation to journal. A foreground wait is not refused: the bash mover runs it as a shell (shells.ts).
   registerPowerShellQuotingGuard(pi);
@@ -904,7 +909,7 @@ export default function optchat(host: ExtensionAPI) {
     if (event.reason === 'reload') noteReload();
     try { await stop(event.reason); }
     // The shells outlive a /reload in this process: they must not keep this instance's closure alive, nor report into it.
-    finally { unsubscribeRecovery(); recoveryIncidents.clear(); shells.setEndObserver(undefined); }
+    finally { unsubscribeRecovery(); unsubscribeCiBack(); recoveryIncidents.clear(); shells.setEndObserver(undefined); }
   });
   // Pi shows nothing when a switch is cancelled, so say why and what lets it through.
   const blockSwitch = (command: string, ctx: ExtensionContext) => {

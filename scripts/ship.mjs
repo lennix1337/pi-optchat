@@ -18,7 +18,7 @@ const FORBIDDEN_HINT = {
   '--force': 'ship não força push', '-f': 'ship não força push', '--force-with-lease': 'ship não força push',
   '--no-verify': 'ship não pula hooks', '--admin': 'merge com --admin é decisão do operador',
 };
-const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--title "título da PR"] [--pr N] [--no-auto] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
+const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--title "título da PR"] [--pr N] [--no-auto] [--subscriber RUN] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
   --title TEXTO        título da PR (padrão: o assunto do commit, ou o nome da branch com vários commits)
   -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
@@ -27,6 +27,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --all                git add -A antes do commit
   --pr N               só enfileira o auto-merge da PR N (sem commit, push ou PR)
   --no-auto            abre a PR sem enfileirar o auto-merge
+  --subscriber RUN     a PR é de um worker: o CI vermelho volta a ele (o gitwatch roteia pelo id)
   --closes-verified    permite fixes/closes #N na descrição: a falha foi reproduzida e a reprodução passa
   --direct-main        envia a branch padrão direto, sem PR
   --branch NOME        estando na branch padrão, cria a branch NOME com as mudanças atuais e envia por ela
@@ -240,6 +241,7 @@ function nextFor(reason, number) {
  * src/follow-requests.ts). Its bash hook never sees this process's `gh pr create`, so without this the merge of a
  * shipped PR woke nobody (03/11: #91, #92, #94).
  */
+let followSubscriber;
 function requestFollow(url) {
   const m = /github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/.exec(url ?? '');
   if (!m) return 'not_requested';
@@ -247,7 +249,7 @@ function requestFollow(url) {
     const dir = join(process.env.PI_GITWATCH_DIR ?? join(homedir(), '.pi', 'agent', 'gitwatch'), 'follow');
     mkdirSync(dir, { recursive: true });
     const name = `${m[1].replace('/', '__')}#${m[2]}`, tmp = join(dir, `${name}.${process.pid}.tmp`);
-    writeFileSync(tmp, JSON.stringify({ repo: m[1], pr: Number(m[2]) }));
+    writeFileSync(tmp, JSON.stringify({ repo: m[1], pr: Number(m[2]), ...followSubscriber ? { subscriber: followSubscriber } : {} }));
     renameSync(tmp, join(dir, `${name}.json`));
     return 'requested';
   } catch { return 'request_failed'; }
@@ -493,6 +495,10 @@ function parseArgs(argv) {
     else if (arg === '--all') opts.all = true;
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
+    else if (arg === '--subscriber') {
+      opts.subscriber = valueOf(arg, i); i++;
+      if (!/^[A-Za-z0-9._:-]{1,64}$/.test(opts.subscriber)) throw refuse('invalid_value', `${arg} pede até 64 letras, dígitos, ponto, dois-pontos, sublinhado ou hífen`);
+    }
     else if (arg === '--closes-verified') opts.closesVerified = true;
     else if (arg === '--sync') opts.sync = true;
     else if (arg === '--direct-main') opts.directMain = true;
@@ -534,6 +540,7 @@ async function main(argv) {
   let opts;
   try {
     opts = parseArgs(argv);
+    followSubscriber = opts.subscriber;
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
     process.stderr.write(`${USAGE}\n`);
