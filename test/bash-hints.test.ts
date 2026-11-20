@@ -266,3 +266,11 @@ test('a C:/projetos path that does not exist on Linux suggests the ~/projetos ho
   assert.equal(bashHint('node C:/projetos/pi-optchat/scripts/ship.mjs --help', false, 'usage: ship'), undefined);
   assert.equal(bashHint('node scripts/a.mjs', false, "Cannot find module 'x' MODULE_NOT_FOUND"), undefined);
 });
+
+test('a failed git merge --ff-only points at the checked-out branch', () => {
+  // 20/11: the GX18MCP checkout was left on a merged fix branch, so `git merge --ff-only origin/main` aborted.
+  const refused = 'fatal: Not possible to fast-forward, aborting.';
+  assert.equal(bashHint('cd r && git fetch -q origin && git merge -q --ff-only origin/main', false, refused), 'ffonly');
+  assert.equal(bashHint('git merge --ff-only origin/main', false, 'Already up to date.'), undefined);
+  assert.equal(bashHint('git pull origin main', false, refused), undefined);
+});
