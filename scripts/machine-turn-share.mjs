@@ -26,7 +26,7 @@ for (const file of sessionFiles(root)) {
   try { tally = tallySession(readFileSync(file, 'utf8'), start, cut, end); }
   catch (error) { throw new Error(`Failed to read session ${file}`, { cause: error }); }
   for (const [model, counts] of tally.models) {
-    const total = models.get(model) ?? { human: 0, machine: 0, heartbeat: 0, unknown: 0 };
+    const total = models.get(model) ?? { human: 0, machine: 0, heartbeat: 0, unknown: 0, worker: 0 };
     for (const key of Object.keys(total)) total[key] += counts[key];
     models.set(model, total);
   }
@@ -36,11 +36,11 @@ for (const file of sessionFiles(root)) {
   }
 }
 console.log(`Window: ${new Date(start).toISOString()} to ${new Date(end).toISOString()} (assistant messages; nearest preceding trigger)`);
-console.log('Model\thuman\tmachine\theartbeat\tunknown\ttotal');
+console.log('Model\thuman\tmachine\theartbeat\tworker\tunknown\ttotal');
 let opus = { total: 0, machine: 0 };
 for (const [model, counts] of [...models].sort(([a], [b]) => a.localeCompare(b))) {
-  const total = counts.human + counts.machine + counts.heartbeat + counts.unknown;
-  console.log(`${model}\t${counts.human}\t${counts.machine}\t${counts.heartbeat}\t${counts.unknown}\t${total}`);
+  const total = counts.human + counts.machine + counts.heartbeat + counts.unknown + counts.worker;
+  console.log(`${model}\t${counts.human}\t${counts.machine}\t${counts.heartbeat}\t${counts.worker}\t${counts.unknown}\t${total}`);
   if (model.startsWith('claude-opus')) { opus.total += total; opus.machine += counts.machine; }
 }
 const share = ({ machine, total }) => `${machine}/${total} (${total ? (100 * machine / total).toFixed(1) + '%' : 'n/a'})`;

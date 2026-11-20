@@ -9,6 +9,7 @@ test('classifies user and custom messages, with heartbeat before machine type', 
   assert.equal(classifyTrigger({ type: 'custom_message', customType: 'optchat-report', content: '[OptChat heartbeat] hi' }), 'heartbeat');
   assert.equal(classifyTrigger({ type: 'custom_message', customType: 'gitwatch', content: 'hi' }), 'machine');
   assert.equal(classifyTrigger({ type: 'custom_message', customType: 'optchat-report', content: 'hi' }), 'machine');
+  assert.equal(classifyTrigger({ type: 'custom_message', customType: 'optchat-report', content: '[4aae9ebc] worker done' }), 'worker');
   assert.equal(classifyTrigger({ type: 'message', message: { role: 'user', content: '[Slack] hello' } }), 'human');
   assert.equal(classifyTrigger({ type: 'message', message: { role: 'system', content: 'setup' } }), 'unknown');
 });
@@ -27,8 +28,8 @@ test('tallies JSONL within the window by model, trigger and cut; tool results do
     { type: 'message', timestamp: '2026-01-01T04:00:00Z', message: { role: 'assistant', model: 'other' } },
   ];
   const result = tallySession(events.map(e => JSON.stringify(e)).join('\n'), Date.parse('2026-01-01T00:30:00Z'), Date.parse('2026-01-01T02:00:00Z'), Date.parse('2026-01-01T04:00:00Z'));
-  assert.deepEqual(result.models.get('claude-opus-5'), { human: 0, machine: 2, heartbeat: 0, unknown: 0 });
-  assert.deepEqual(result.models.get('other'), { human: 0, machine: 0, heartbeat: 1, unknown: 1 });
+  assert.deepEqual(result.models.get('claude-opus-5'), { human: 0, machine: 2, heartbeat: 0, unknown: 0, worker: 0 });
+  assert.deepEqual(result.models.get('other'), { human: 0, machine: 0, heartbeat: 1, unknown: 1, worker: 0 });
   assert.deepEqual(result.opusBefore, { total: 1, machine: 1 });
   assert.deepEqual(result.opusAfter, { total: 1, machine: 1 });
 });
