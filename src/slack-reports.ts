@@ -244,7 +244,7 @@ function opusShare(root: string, now: number): string | undefined {
         const { models } = tallySession(readFileSync(path, 'utf8'), now - 86_400_000, undefined, now);
         for (const [model, counts] of models) if (model.startsWith('claude-opus')) {
           machine += counts.machine;
-          total += counts.human + counts.machine + counts.heartbeat + counts.unknown;
+          total += counts.human + counts.machine + counts.heartbeat + counts.unknown + counts.worker;
         }
       }
     }
