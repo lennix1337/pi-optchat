@@ -8,7 +8,7 @@ import { browserConsentEffect } from './external-effects.ts';
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
 interface Pending { session: string; fingerprint: string; expires: number; approved: boolean; tool: string; kind?: string; summary: string; detail: string; created: number }
-/** What the operator sees for a call waiting on approval. */
+
 /** `summary` is one line for lists; `detail` is the whole invocation, which the operator reads before approving. */
 export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; detail: string; expires: number }
 /** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
@@ -31,7 +31,7 @@ function jsonDescriptors(value: object) {
   return descriptors;
 }
 
-// Do not invoke toJSON/getters or silently collapse undefined, NaN, functions or cycles.
+
 function jsonValue(value: unknown, seen = new Set<object>(), depth = 0): unknown {
   if (depth > 20) throw new Error('Arguments exceed the approval depth limit');
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -58,11 +58,11 @@ function diagnostic({ tool, input }: Invocation) {
   return tool === 'ripwire' && record(input) && typeof input.action === 'string' && navigation.has(input.action);
 }
 
-// Risk mode is a guardrail against accidental high-impact effects, not a shell sandbox:
-// obfuscated commands (eval, variables, encoded scripts) pass it. `all` mode is the boundary.
+
+
 const riskClasses: [string, RegExp][] = [
-  // `git stash push` saves local changes; it is not a remote push.
-  // `gh pr close --delete-branch` deletes the remote branch like `git push --delete` (03/11: it passed while the push waited).
+
+
   ['push', /\bgit\b(?:(?!\bstash\b)[^;&|\n])*\spush\b|\bgh\s+pr\s+close\b[^;&|\n]*\s(?:-d|--delete-branch)\b/],
   ['publish', /\b(?:npm|pnpm|yarn|cargo|vsce)\s+publish\b|\bgh\s+(?:release\s+create|pr\s+merge|repo\s+(?:create|delete))\b/],
   ['global install', /\b(?:npm|pnpm|yarn)\s+(?:i|install|add|link)\b[^;&|\n]*\s(?:-g|--global)\b|\b(?:cargo|winget|choco|scoop)\s+install\b/],
@@ -72,15 +72,15 @@ const riskClasses: [string, RegExp][] = [
 const paidTools = new Set(['subagent', 'spawn', 'tell']);
 /** Risk class of a call that touches the operator's autonomy contract; only the operator may approve it. */
 export const CONTRACT_CHANGE = 'autonomy contract change';
-/** Whether a call's arguments name autonomy.json, the operator's contract file. */
+
 const namesContract = (input: unknown) => JSON.stringify(input ?? null).toLowerCase().includes('autonomy.json');
-/** Whether a write target is the live contract: names the file and, when the profile folder is known, sits in it. */
+
 type Target = (path: unknown, baseDir?: string) => boolean;
 const comparable = (path: string) => (process.platform === 'win32' ? path.replace(/^\/([a-z])\//i, '$1:/').toLowerCase() : path).replaceAll('\\', '/');
-/**
- * A path that is clearly absolute and clearly elsewhere (a dotfiles mirror, a backup) is a copy of the contract, not the
- * contract. Anything relative (unless `baseDir` resolves it) or built from a variable could be the live file, so it stays one.
- */
+
+
+
+
 function liveTarget(dir: string | undefined): Target {
   if (!dir) return namesContract;
   const folder = comparable(resolve(dir));
@@ -97,30 +97,30 @@ function liveTarget(dir: string | undefined): Target {
     return comparable(resolve(dirname(candidate))) === folder;
   };
 }
-/**
- * Tools whose arguments are prose: naming a file there cannot change it. A delegated agent's task text is prose too:
- * the child runs this same gate and can never approve its own contract change.
- */
+
+
+
+
 const prose = new Set(['self_reload', 'operational_state', 'create_goal', 'contact_supervisor', 'subagent_supervisor', 'spawn', 'subagent', 'tell',
-  // Messages and records: a Slack report or a commitment that names the file only tells about it (false positive 2026-10-30).
-  // The crew store is written only by the crew tool, which cannot reach autonomy.json: its memory and mission text is prose (false positive 09/11, crew memory write).
+
+
   'slack_send', 'commitments', 'update_goal', 'crew']);
-// `find` reads unless it deletes, runs or writes (`-delete`, `-exec`, `-fprint`); `sed -n` without `-i` prints.
-// `git add/commit/push` record the working-tree file without writing it (03/11: the dotfiles mirror commit waited);
-// `ship.mjs` is that same commit/push/PR flow, and its `-m`/`--body` text only tells about the file (04/11: 3 refusals).
+
+
+
 const readOnlyCommand = /^(?:\[(?=\s)|(?:grep|rg|cat|head|tail|less|wc|ls|stat|file|diff|cmp|sha\d*sum|md5sum|jq|echo|printf|test|realpath|readlink|Get-Content|gc|Select-String|sls|Test-Path|Get-Item|Get-ChildItem|Get-FileHash|Resolve-Path|find(?![^;&|\n]*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)|sed\s+-n(?![^;&|\n]*\s-i)|git\s+(?:-C\s+\S+\s+)?(?:grep|log|diff|show|status|blame|ls-files|add|commit|push)|gh\s+(?:pr|issue)\s+(?:create|edit|comment|view|list|checks|status)|node\s+\S*scripts[\\/]ship\.mjs)\b)/i;
-/** Shell control words in front of a segment's command: `for f in a b` only lists words, `do`/`then` precede the real command. */
+
 const controlPrefix = /^(?:(?:do|then|else|elif|if|while|until)\s+)+/;
 const loopHeader = /^for\s+\w+\s+in\b/;
-/** `node -e|-p` whose inline script uses no file-writing API only reads. */
-// Loader flags may come first (`node --import tsx -e`, 03/11 false positive).
+
+
 const nodeInline = /^node\s+(?:(?:--import|--require|-r|--loader)\s+\S+\s+|--[\w-]+(?:=\S+)?\s+)*(?:-e|-p|--eval|--print)\s/;
 const fsWrite = /\b(?:writeFile|appendFile|rename|copyFile|cp|rm|unlink|truncate|createWriteStream|open|symlink|link)(?:Sync)?\s*\(/;
-/**
- * A codemode script can write the contract through `edit`/`write` naming it, or through a shell command that writes it.
- * Shell commands are judged like bash (a `cat` of the file only reads, 03/11 false positive); a script whose shell calls
- * cannot all be read as literal commands still counts as a writer.
- */
+
+
+
+
+
 function codemodeWritesContract(code: string, target: Target) {
   if (!namesContract(code)) return false;
   const editChunks = code.split(/\btools\.(?:edit|write)\s*\(/).slice(1);
@@ -134,24 +134,24 @@ function codemodeWritesContract(code: string, target: Target) {
   return commands.length < shells || commands.some(command => shellWritesContract(command, target));
 }
 
-/** Shell text without here-document bodies: a body is content for the file its command line names, like a write's content. */
+
 const withoutHeredocBodies = (command: string) =>
   command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, match => match.slice(0, match.indexOf('\n')));
 const redirect = /\d*>>?\s*("[^"]*"|'[^']*'|[^\s;&|]+)/g;
-/** `for f in ... autonomy.json ...` makes `$f` name the contract: the loop body is read with the file name in its place. */
+
 function loopVariablesResolved(text: string) {
   for (const [, name, words] of text.matchAll(/\bfor\s+(\w+)\s+in\s+([^;\n]*)/g)) {
     if (namesContract(words)) text = text.replace(new RegExp(`\\$\\{?${name}\\b\\}?`, 'g'), 'autonomy.json');
   }
   return text;
 }
-/** A flat `$(...)` or backtick substitution; a nested one is left in place and judged as a writer. */
+
 const substitution = /\$\(([^()`]*)\)|(?<!\\)`((?:\\.|[^`$()\\])*)`/g;
-/**
- * Substitutions judged as the commands they are (04/11: `f=$(ls .../autonomy.json | head -1)` refused a grep). A variable
- * assigned from one that names the contract carries the file name into later segments; the substitution itself becomes
- * an empty word. Returns undefined when an inner command can write the file.
- */
+
+
+
+
+
 function substitutionsResolved(text: string, target: Target) {
   const inner = [...text.matchAll(substitution)].map(match => match[1] ?? match[2]);
   if (inner.some(command => shellWritesContract(command, target))) return undefined;
@@ -160,13 +160,13 @@ function substitutionsResolved(text: string, target: Target) {
   }
   return text.replace(substitution, '""');
 }
-/** A copy writes only its last argument; its sources are read. */
+
 const copyCommand = /^(?:cp|Copy-Item|cpi)\s/i;
 
-/**
- * Whether shell text can write the contract file: a redirect into it, a copy onto it, or any other segment that names it
- * and is not a read-only command. Command substitution naming it counts, since its segments cannot be told apart.
- */
+
+
+
+
 function shellWritesContract(command: string, target: Target, cwd?: string) {
   const raw = loopVariablesResolved(withoutHeredocBodies(command).replace(/\d*>&\d/g, ''));
   if (!namesContract(raw)) return false;
@@ -197,7 +197,7 @@ export function touchesContract({ tool, input, cwd }: { tool: string; input: unk
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
 const tempPath = /^(?:[a-zA-Z]:[\\/](?:tmp|temp)[\\/]|\/tmp\/|\/c\/tmp\/|\$\{?(?:TMP|TEMP|TMPDIR)\b|%TEMP%)/i;
 
-/** A recursive delete (rm -r, Remove-Item -Recurse, rd /s) whose targets are not all inside a temp folder. */
+
 function recursiveDelete(command: string) {
   for (const segment of command.split(/[;&|\n]+/)) {
     const words = segment.trim().split(/\s+/).map(word => word.replace(/^['"]|['"]$/g, ''));
@@ -212,9 +212,9 @@ function recursiveDelete(command: string) {
   return false;
 }
 
-/** The high-impact class a call belongs to in risk mode, or undefined for ordinary work. */
+
 function riskClass({ tool, input }: Invocation, contractDir?: string) {
-  // The agent never widens its own contract: any call that can write autonomy.json waits for the operator.
+
   if (touchesContract({ tool, input }, contractDir)) return CONTRACT_CHANGE;
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
   if (tool === 'browser_harness') return browserConsentEffect(input) ? 'consent click' : undefined;
@@ -223,7 +223,7 @@ function riskClass({ tool, input }: Invocation, contractDir?: string) {
   return text === undefined ? undefined : shellRisk(text, tool === 'codemode');
 }
 
-/** The high-impact class of shell text (a codemode script is judged by the commands it hands to shell tools). */
+
 function shellRisk(text: string, script: boolean) {
   if (recursiveDelete(text)) return 'recursive delete';
   if (productionWriteHost(text)) return 'production write';
@@ -236,7 +236,7 @@ function shellRisk(text: string, script: boolean) {
   return riskClasses.find(([, pattern]) => pattern.test(text))?.[0];
 }
 
-/** One line the operator can recognise: the command for shell tools, otherwise the tool and its action. */
+
 function summarize({ tool, input, cwd }: Invocation) {
   const where = cwd ? ` (in ${cwd.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)})` : '';
   const text = record(input) && typeof input.command === 'string' ? input.command
@@ -256,13 +256,13 @@ export function describeInvocation({ tool, input, cwd }: Invocation) {
 
 const pushMain = /^git -C (\S+) push origin main$/;
 
-/** Lowercase forward-slash absolute path without dot segments, or undefined. */
+
 function pushRoot(path: string) {
   const root = path.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
   return /^[a-z]:(\/[a-z0-9_-][a-z0-9._-]*)+$/.test(root) && !root.split('/').some(part => part === '.' || part === '..') ? root : undefined;
 }
 
-/** Standing grant shape: exactly `git -C <listed root> push origin main`, optional numeric timeout, nothing else. */
+
 function standingPushRoot({ tool, input }: Invocation) {
   if (tool !== 'bash' || !record(input) || typeof input.command !== 'string') return;
   if (!Object.keys(input).every(key => key === 'command' || (key === 'timeout' && typeof input.timeout === 'number'))) return;
@@ -270,14 +270,14 @@ function standingPushRoot({ tool, input }: Invocation) {
   return match ? pushRoot(match[1]) : undefined;
 }
 
-/** Standing key a call needs: `push:<root>` for the exact push shape, `paid-subagents` for direct subagent launches. */
+
 function standingKey(call: Invocation) {
   if (call.tool === 'subagent') return 'paid-subagents';
   const root = standingPushRoot(call);
   return root && `push:${root}`;
 }
 
-/** Operator-typed `approve-standing push-main <root>...` (1–16 valid roots) or `approve-standing paid-subagents`, else undefined. */
+
 function standingKeys(text: string) {
   if (text === 'approve-standing paid-subagents') return ['paid-subagents'];
   const match = /^approve-standing push-main((?: \S+)+)$/.exec(text);
@@ -295,7 +295,7 @@ export class EffectApprovals {
   private readonly mode: ApprovalMode;
   private readonly onSettled: (token: string, outcome: Settled) => void;
   private readonly contractDir: () => string | undefined;
-  // Long enough for an operator who stepped away; the call stays visible on screen meanwhile.
+
   constructor({ now = Date.now, ttlMs = 30 * 60_000, maxPending = 32, mode = 'all', onSettled = () => {}, contractDir = () => undefined }: Options = {}) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 256) throw new Error('Invalid approval bounds');
     this.now = now; this.ttlMs = ttlMs; this.maxPending = maxPending; this.mode = mode; this.onSettled = onSettled; this.contractDir = contractDir;

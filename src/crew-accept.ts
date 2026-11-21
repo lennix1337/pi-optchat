@@ -38,7 +38,7 @@ const lines = (text: string) => text.split(/\r?\n/).filter(line => line.trim());
 export const APPENDIX_COMMITS = 10;
 export const APPENDIX_FILES = 15;
 
-/** The default branch to compare against: what origin's HEAD names, else origin/main; undefined when the remote ref is missing. */
+
 async function baseOf(cwd: string, git: GitRunner) {
   const head = await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
   const name = head.code === 0 ? head.out.trim() : 'origin/main';
@@ -62,7 +62,7 @@ export async function branchState(cwd: string, git: GitRunner = runGit): Promise
 }
 
 const sameRoot = (a: string, b: string) => { try { return realpathSync.native(a).toLowerCase() === realpathSync.native(b).toLowerCase(); } catch { return a.toLowerCase() === b.toLowerCase(); } };
-/** A shell command's `cd`, `pushd`, `Set-Location` and `git -C` targets: where the command goes to work. */
+
 const CD_TARGET = /(?:\b(?:cd(?:\s+\/d)?|pushd|Set-Location(?:\s+-(?:Literal)?Path)?)|\bgit\s+-C)\s+("[^"]+"|'[^']+'|[^\s;&|]+)/g;
 const SHELLS = new Set(['bash', 'powershell']);
 
@@ -98,7 +98,7 @@ export async function workCheckout(run: Pick<RunInfo, 'cwd' | 'worktrees'>, git:
       if (!theirs || !ours || !sameRoot(theirs, ours)) continue;
       const state = await branchState(dir, git);
       if (state && (state.ahead > 0 || state.dirty.length > 0)) return dir;
-    } catch { /* an unreadable candidate is not where the work is */ }
+    } catch {   }
   }
   return run.cwd;
 }
@@ -139,11 +139,11 @@ export interface AcceptDeps { crew: AcceptCrew; commitmentsDir: string; git?: Gi
 const FINISHED = new Set(['completed', 'failed', 'stopped']);
 const PR_URL = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/;
 
-/** The progress line a PR's state writes on the commitments linked to its run. */
+
 const progressOf = (number: string, status: string, reason: string | undefined) =>
   status === 'merged' ? `PR #${number} mesclado` : status === 'queued' ? `PR #${number} aberto, auto-merge` : `PR #${number} aberto, sem auto-merge${reason ? ` (${reason})` : ''}`;
 
-/** Links the PR to every open commitment whose links.runs holds the run; returns what it did, one note each. */
+
 function linkCommitments(dir: string, runId: string, ref: string | undefined, progress: string) {
   const touched: string[] = [], failed: string[] = [];
   for (const item of readCommitments(dir)) {

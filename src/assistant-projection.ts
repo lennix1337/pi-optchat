@@ -28,7 +28,7 @@ const scopeKey = (profileId: string, sessionId: string) => hash('sha256', JSON.s
 const runStates = new Set(['running', 'waiting', 'stopping', 'completed', 'failed', 'stopped', 'interrupted', 'paused']);
 const operationStates = new Set(['started', 'response_recorded', 'reconciled']);
 const approvalTools = new Set(['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'spawn', 'tell']);
-// JSON escaping preserves the exact ID while keeping terminal controls inert.
+
 export const displayJson = (value: unknown) => JSON.stringify(value).replace(/[\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 /** Pure metadata projection: approval tokens and source content never leave their owners. */

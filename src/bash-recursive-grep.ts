@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-// 04-05/11: 160 recursive greps in 34 h of bash calls; 11 took 10 s or more (376 s in all) and 7 of them hit the
-// timeout without a result, all searching trees such as `C:/projetos pi-* dotfiles` that hold node_modules and
-// worktrees. The same search with those directories excluded took 7.5 s instead of more than 120 s. A recursive grep
-// therefore skips them unless the call names one of them, and its result says so.
+
+
+
+
 
 export const SKIPPED_DIRS = ['node_modules', '.git', '.worktrees', 'worktrees'];
 const EXCLUDES = SKIPPED_DIRS.map(dir => `--exclude-dir=${dir}`).join(' ');
@@ -15,11 +15,11 @@ const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s|$)/g;
 
 interface Word { text: string; start: number }
 
-// Words that leave the next word in command position: `time grep`, `LC_ALL=C grep`, `timeout 30 grep`, `nice -n 10 grep`.
-// Numbers and flags count only after one of them, since command position starts false after any other word.
+
+
 const PREFIX_WORD = /^(?:time|command|nice|env|timeout|[A-Za-z_]\w*=\S*|-\w+|\d+[smhd]?)$/;
 
-/** Words of one simple command from `from`, up to the first unquoted separator; quotes stay in the text. */
+
 function commandWords(command: string, from: number): Word[] {
   const words: Word[] = [];
   let current: Word | undefined;
@@ -39,7 +39,7 @@ function commandWords(command: string, from: number): Word[] {
   return words;
 }
 
-/** Offsets of `grep` words in command position, outside quotes and heredoc bodies. */
+
 function grepCommands(command: string): number[] {
   const starts: number[] = [];
   let quote: string | undefined;
@@ -61,7 +61,7 @@ function grepCommands(command: string): number[] {
 
 /** The command with node_modules and worktrees excluded from each recursive grep that does not ask for them, or undefined. */
 export function narrowRecursiveGrep(command: string): string | undefined {
-  // Heredoc bodies are file content; blank them so offsets stay valid.
+
   const scan = command.replace(HEREDOC, match => match.replace(/[^\n]/g, ' '));
   const inserts: number[] = [];
   for (const start of grepCommands(scan)) {
@@ -99,6 +99,6 @@ export function registerRecursiveGrepNarrowing(pi: ExtensionAPI) {
     }
     return { content };
   });
-  // A call another guard blocks after this one never reaches tool_result.
+
   pi.on('tool_execution_end', event => { narrowed.delete(event.toolCallId); });
 }

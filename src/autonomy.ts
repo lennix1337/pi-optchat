@@ -26,7 +26,7 @@ const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T
 /** A validated contract, or an error naming the first problem. */
 export function parseContract(value: unknown): Contract {
   if (!record(value) || value.version !== 1) throw new Error('autonomy.json must be { "version": 1, "default": ..., "rules": [...] }');
-  // `advisor` (the retired approval advisor) reads as `report`: what has no rule runs and is logged.
+
   const fallback = value.default === undefined || value.default === 'advisor' ? 'report' : value.default;
   if (!oneOf(LEVELS, fallback)) throw new Error(`autonomy.json default must be ${LEVELS.join(', ')}`);
   if (!Array.isArray(value.rules)) throw new Error('autonomy.json rules must be a list');
@@ -60,23 +60,23 @@ export function decideEffect(contract: Contract, effect: Effect, now = Date.now(
   const rule = contract.rules.find(r => (r.action === '*' || r.action === effect.action) && (!r.until || Date.parse(r.until) > now)
     && r.scope.some(pattern => pattern === '*' || effect.targets.some(target => glob(pattern).test(target))));
   if (rule) return { level: rule.level, effect, rule };
-  // An irreversible effect the operator wrote no rule for waits for him, whatever the default says.
+
   return { level: askUnruled || IRREVERSIBLE.includes(effect.action) ? 'ask' : contract.default, effect };
 }
 
-/** A recursive delete removes each of its folders (more than one waits unless a rule frees each); other effects name one repository several ways (checkout, slug). */
+
 const separately = (effect: Effect): Effect[] => effect.action === 'recursive-delete' && effect.targets.length > 1
   ? effect.targets.map(target => ({ ...effect, targets: [target] })) : [effect];
 
 /** The strictest decision over every effect of a call; a call with no recognised effect is `report`. */
 export function decide(contract: Contract, effects: Effect[], now = Date.now()): Decision {
-  // The gate stopped the call for a reason the classifier cannot name: the contract has nothing to say, so it runs and is logged.
+
   if (!effects.length) return { level: 'report' };
   const decisions = effects.flatMap(effect => { const parts = separately(effect); return parts.map(part => decideEffect(contract, part, now, parts.length > 1)); });
   return decisions.reduce((worst, d) => strictness[d.level] > strictness[worst.level] ? d : worst);
 }
 
-/** A removed worktree or a file path still belongs to the checkout around it: use the nearest existing folder. */
+
 const existing = (path: string) => { let p = path; while (!existsSync(p) && dirname(p) !== p) p = dirname(p); return p; };
 /**
  * The classifier lowercases paths to compare them; a case-sensitive filesystem (Linux) then finds no folder there.
@@ -110,7 +110,7 @@ export const gitRepo = {
   merged: (path, branch) => branchMerged(onDisk(path), branch),
   worktree: path => worktreeState(onDisk(path)),
   script: path => {
-    // Git Bash `/tmp` is the user's temp folder, not `C:\tmp`.
+    // external: Git Bash maps /tmp to the user temp directory, not C:\tmp.
     const file = onDisk(/^\/tmp(?:\/|$)/.test(path) ? join(tmpdir(), path.slice(4)) : path);
     try { return statSync(file).size <= 512 * 1024 ? readFileSync(file, 'utf8') : undefined; } catch { return undefined; }
   },

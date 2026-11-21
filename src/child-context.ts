@@ -1,8 +1,8 @@
 const utf8 = (text: string) => Buffer.byteLength(text);
 const span = (line: string) => Number(/^\d+\+(\d+)\|/.exec(line)?.[1] ?? 1);
-/** Lines covering at least this many messages are the old, broad summaries a child needs to place its task in the chat. */
+
 const COARSE_SPAN = 512;
-/** Share of the budget the broad summaries may take; the newest lines fill the rest. */
+
 const COARSE_SHARE = 0.6;
 /** Retain whole lines and identifiers, never truncate an instruction or pretend omitted history was read.
  *  Keeps the oldest broad summaries (which name the standing rules and settled facts), then the newest lines;

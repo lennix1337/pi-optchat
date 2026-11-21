@@ -58,7 +58,7 @@ export function registerCorrections(pi: ExtensionAPI, owner: () => { dir: string
   });
   pi.on('tool_result', event => {
     if (!due) return;
-    due = false; // A profile closed meanwhile drops it: the correction was said to that profile's run.
+    due = false;
     if (!owner()) return;
     return { content: [...event.content, { type: 'text' as const, text: `\n${CORRECTION_NOTICE}` }] };
   });

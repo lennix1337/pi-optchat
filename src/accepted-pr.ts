@@ -1,9 +1,9 @@
-/**
- * The line of a `crew` accept answer that names the pull request it opened. crew-accept.ts writes it with `prLine`; what
- * a wake records as delivered (heartbeat-report.ts, wake-log.ts) reads it back with `acceptedPr`, so the two cannot drift.
- * It stands apart from both with no imports: crew-accept.ts imports crew.ts, which imports wake-log.ts, so a reader that
- * imported the writer would close a cycle.
- */
+
+
+
+
+
+
 const LABEL = 'PR: ';
 const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/([\w.-]+)\/pull\/(\d+)$/;
 

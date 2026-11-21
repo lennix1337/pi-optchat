@@ -52,9 +52,9 @@ export const SPECIALIST_VIEW_BYTES = 8192;
 /** One run's leaf: header, goal and report, capped. */
 export const DIGEST_BYTES = 6144;
 const GOAL_CHARS = 400;
-/** An empty tree starts from the project's finished runs of this many days, at most this many of them. */
+
 const BACKFILL_DAYS = 14, BACKFILL_RUNS = 60;
-/** The run states a run reports in; a resumed run reports again with a new start. */
+
 const FINISHED: ReadonlySet<string> = new Set(['completed', 'failed', 'stopped']);
 export const CREW_PAUSED = 'crew compaction paused: API-key provider';
 /** Why a memory is worth the manager's audit: not rewritten for a week, under THIN_BYTES, or absent. */
@@ -85,7 +85,7 @@ export function specialistOf(cwd: string): Specialist | undefined {
   return SLUG.test(slug) ? slug : undefined;
 }
 
-/** The four parts a worker contract names, each as a heading or a leading `Label:`; Portuguese labels count too. */
+
 const PARTS: [string, RegExp][] = [
   ['goal', /^\s*(?:#+\s*|[-*]\s*)?(?:\*\*)?(?:goal|objective|objetivo)\b/im],
   ['acceptance', /^\s*(?:#+\s*|[-*]\s*)?(?:\*\*)?(?:acceptance|aceite|crit[eé]rio)/im],
@@ -105,17 +105,17 @@ export const validRoutes = (value: unknown, choice: (item: unknown) => boolean) 
 
 const LONGEST_LINES = 3;
 const LINE_EXCERPT = 60;
-/** The longest lines of a text, one `line <number>: <bytes> B: <start>` each (numbered from 1, longest first): where a refused write is best cut. */
+
 function longestLines(text: string) {
   return text.split('\n').map((line, index) => ({ index, line, bytes: Buffer.byteLength(line) }))
     .sort((a, b) => b.bytes - a.bytes || a.index - b.index).slice(0, LONGEST_LINES)
     .map(({ index, line, bytes }) => `line ${index + 1}: ${bytes} B: ${line.slice(0, LINE_EXCERPT)}`);
 }
 
-/** The text of a capped file as `write` takes it back: without the newline the write adds. */
+
 const storedText = (path: string) => { try { return readFileSync(path, 'utf8').replace(/\n$/, ''); } catch { return ''; } };
 
-/** Writes a capped file whole; refused over its cap, naming the current and resulting bytes, the excess and the longest lines so one more call fixes it, and whatever loads it never needs cutting. */
+
 function writeCapped(path: string, label: string, cap: number, text: string, fix: string) {
   const size = Buffer.byteLength(text);
   if (size > cap) throw new Error(`${label} would be ${size} B (now ${Buffer.byteLength(storedText(path))} B): ${size - cap} B over its ${cap} B cap. ${fix}, then retry. Nothing was written.\nLongest lines:\n${longestLines(text).join('\n')}`);
@@ -164,7 +164,7 @@ export function repoRoot(directory: string) {
   }
 }
 
-/** What a new specialist's charter starts as: the project, where to read its rules, and what a worker may and may not do. */
+
 const charterFor = (specialist: Specialist, path: string) => `# ${specialist} specialist
 Project: ${specialist}, at ${path}.
 Read the repository's AGENTS.md (and README) first: its rules win over this charter.
@@ -176,7 +176,7 @@ Method: red test first for a fix, then green; run the project's own check before
 export interface Proposal { specialist: Specialist; runId: string; date: string; text: string }
 export const PROPOSAL_BYTES = 2048;
 const NONE = /^(?:none|nenhum[a-z]*|n\/a)\W*$/i;
-/** Where a report's "## Memory proposal" section starts, where its body starts and where it ends (the next heading of its level or above). */
+
 function proposalSpan(report: string) {
   const heading = /^(#{1,6})[ \t]*memory proposal[ \t]*:?[ \t]*$/im.exec(report);
   if (!heading) return undefined;
@@ -206,7 +206,7 @@ export function goalOf(task: string, chars = GOAL_CHARS) {
   const goal = at < 0 ? lines.find(line => line.trim()) ?? '' : lines[at].replace(label, '').trim() || (lines.slice(at + 1).find(line => line.trim()) ?? '');
   return clip(goal.trim(), chars - 1);
 }
-/** Cuts text to `cap` UTF-8 bytes, never inside a character, saying it was cut. */
+
 function capBytes(text: string, cap: number) {
   if (Buffer.byteLength(text) <= cap) return text;
   const marker = '\n[cut]';
@@ -219,7 +219,7 @@ export function digestOf(info: RunInfo) {
   return capBytes(scrubSecrets(`${head}\n${withoutProposal(info.report ?? '')}`.trimEnd()), DIGEST_BYTES);
 }
 const ago = (ms: number) => { const hours = Math.max(0, ms) / 3_600_000; return hours < 48 ? `${hours.toFixed(1)} h ago` : `${(hours / 24).toFixed(1)} d ago`; };
-/** The view a brief carries: whole under SPECIALIST_VIEW_BYTES (the view folds at that budget), else its newest lines that fit. */
+
 function boundedView(view: string) {
   if (Buffer.byteLength(view) < SPECIALIST_VIEW_BYTES) return view;
   const lines = view.split('\n'), head = lines[0], tail = lines.at(-1)!, note = '(older lines: specialist_memory)';
@@ -306,9 +306,9 @@ export class Crew {
   write(specialist: Specialist, part: 'charter' | 'memory', text: string) {
     const clean = part === 'memory' ? scrubSecrets(text) : text;
     const size = writeCapped(this.file(specialist, part), `${specialist} ${part}`, part === 'memory' ? MEMORY_BYTES : CHARTER_BYTES, clean, 'trim stale or duplicated lines');
-    // Writing the memory is the manager's answer to what the workers proposed.
+
     if (part === 'memory' && this.pending().some(p => p.specialist === specialist)) this.savePending(this.pending().filter(p => p.specialist !== specialist));
-    // A rewritten memory is a reviewed one.
+
     if (part === 'memory') this.markAudited(specialist);
     return size;
   }
@@ -419,7 +419,7 @@ export class Crew {
   brief(kind: WorkerKind, specialist: Specialist | undefined, peer?: string) {
     const charter = specialist ? this.read(specialist, 'charter').trim() : '', memory = specialist ? this.read(specialist, 'memory').trim() : '';
     let view = '';
-    // As it stands: a brief never waits for pending summaries.
+
     if (specialist) try { view = boundedView(this.memory(specialist).render()); } catch (error) { view = `(unavailable: ${error instanceof Error ? error.message : String(error)})`; }
     return [
       `[Worker brief] You are a worker of the manager (the main OptChat agent). You get a contract and your project's memory, not the manager's chat: everything you need is below or in the repository. Use zoom(id, 1) only for a chat id the contract cites; ask the manager with tell_parent when a decision is missing, and keep working on what you can. Stay inside the contract's authority.`,
@@ -436,7 +436,7 @@ export class Crew {
 /** Messages an author-reviewer pair may send each other, both directions together (tell_peer). */
 export const PEER_MESSAGES = 6;
 
-/** One simple command that only reads: cat/head/tail/sed -n/grep/rg/ls/wc, git status|log|diff|show, gh <noun> view|list|status, date, git rev-parse, git branch listing, find without -delete/-exec. */
+
 const READ_ONLY = [/^(?:cat|head|tail|grep|rg|ls|wc)(?:\s|$)/, /^sed\s+-n\s(?!(?:.*\s)?-[a-z]*i\b)/, /^git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show)(?:\s|$)/, /^gh\s+\S+\s+(?:view|list|status)(?:\s|$)/, /^date(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+rev-parse(?:\s|$)/, /^git(?:\s+-C\s+\S+)?\s+branch(?:\s+(?:-a|-r|-v|-vv|--list|--all|--remotes))*$/, /^find\s(?!.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b)/];
 /** Whether a shell command is made only of reading commands. Doubtful commands (redirections, substitutions, in-place or output flags,
  * anything not on the list) are not: a quoted separator can split a segment wrongly, which only ever counts a read as execution. */
@@ -472,7 +472,7 @@ const CREW_PARAMS = Type.Object({
   title: Type.Optional(Type.String()),
 }, { additionalProperties: false });
 
-/** "dentai (2), harness (1)" */
+
 function counts(list: readonly { specialist: string; count: number }[]) {
   const parts: string[] = [];
   for (const { specialist, count } of list) parts.push(`${specialist} (${count})`);
@@ -480,7 +480,7 @@ function counts(list: readonly { specialist: string; count: number }[]) {
 }
 type Pending = readonly { specialist: string; count: number; oldestDays?: number }[];
 const staleOf = (pending: Pending) => pending.filter(p => (p.oldestDays ?? 0) > STALE_PROPOSAL_DAYS).map(p => `${p.specialist} ${p.oldestDays} d`);
-/** `crew list`: each specialist's sizes, memory age and last audit, the missions size, the audit due with its reasons and the proposals pending. */
+
 function listCrew(c: Crew) {
   const rows = c.specialists().flatMap(s => {
     const age = c.age(s), last = c.lastAudit(s), tree = c.treeLine(s);
@@ -491,13 +491,13 @@ function listCrew(c: Crew) {
   return [...rows, `missions: ${Buffer.byteLength(c.missions())} B`, due.length ? `Audit due: ${due.map(e => `${e.specialist} (${e.reasons.join(', ')})`).join(', ')}` : 'No audit due.',
     pending.length ? `proposals pending: ${counts(pending)}` : '', stale.length ? `stale proposals (over ${STALE_PROPOSAL_DAYS} days): ${stale.join(', ')}` : ''].filter(Boolean).join('\n');
 }
-/** `crew read` of the proposals: the pending ones of a project, or of all. */
+
 function proposalsText(c: Crew, project: string | undefined) {
   const list = c.pending().filter(p => !project || p.specialist === project);
   return list.map(p => `[${p.specialist}] run ${p.runId}, ${p.date}\n${p.text}`).join('\n\n') || '(none pending)';
 }
 
-/** `crew view` and `crew zoom`: a specialist tree's view, or one of its lines opened as zoom opens the chat's. */
+
 function readCrewTree(c: Crew, args: { action: 'view' | 'zoom'; project?: Specialist; id?: number; n?: number; findText?: string }) {
   if (!args.project) throw new Error(`${args.action} needs project (a slug; existing: ${c.specialists().join(', ')}).`);
   const tree = c.memory(args.project);
@@ -541,7 +541,7 @@ export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew
   },
 });
 
-/** "thin: dentai 273 B; missing: lolidle; aged: harness": why each due specialist is due; every due entry has at least one reason. */
+
 function auditWhy(audit: readonly AuditEntry[]) {
   const groups: [AuditReason, (entry: AuditEntry) => string][] = [['thin', e => `${e.specialist} ${e.memoryBytes} B`], ['missing', e => e.specialist], ['aged', e => e.specialist]];
   return groups.map(([reason, show]) => ({ reason, items: audit.filter(e => e.reasons.includes(reason)).map(show) })).filter(g => g.items.length).map(g => `${g.reason}: ${g.items.join(', ')}`).join('; ');
@@ -559,7 +559,7 @@ export function missionProjects(missions: string): { project?: string; text: str
 /** The radar lines a signal wake note carries, all projects together. */
 export const SIGNAL_NOTE_CHARS = 1200;
 type Signalled = Signal & { lastRun?: string };
-/** The note of a wake that a project signal started: only the projects with a signal, each with its lines, its own missions, and who takes it. */
+
 function signalNote(missions: string, signals: readonly Signalled[]) {
   const named = new Set(signals.map(signal => signal.project));
   const own = missionProjects(missions).filter(mission => !mission.project || named.has(mission.project)).map(mission => `- ${mission.text}`).join('\n');

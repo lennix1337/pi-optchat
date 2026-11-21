@@ -3,7 +3,7 @@ import { record } from './cache.ts';
 export interface ObservedPR { url: string; state: string; head?: string; checks: 'passed' | 'failed' | 'pending' | 'unknown'; source: number; at: string }
 export interface ObservedCheck { name: string; root: string; status: string; source: number; at: string }
 
-/** Only JSON records on result lines, including Code Mode's shell-output envelope. Never parse prose, file contents or PR bodies. */
+
 function objects(text: string, depth = 0): Record<string, unknown>[] {
   if (depth > 3) return [];
   const found: Record<string, unknown>[] = [];
@@ -11,7 +11,7 @@ function objects(text: string, depth = 0): Record<string, unknown>[] {
     const raw = line.trim();
     if (!raw.startsWith('{') || !raw.endsWith('}')) continue;
     let value: unknown;
-    try { value = JSON.parse(raw); } catch { continue; } // Non-JSON diagnostic, not evidence.
+    try { value = JSON.parse(raw); } catch { continue; }
     if (!record(value)) continue;
     found.push(value);
     if (typeof value.output === 'string' && value.exit_code === 0) found.push(...objects(value.output, depth + 1));
