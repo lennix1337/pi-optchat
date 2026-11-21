@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
+import { runsSuite } from './suite-once-guard.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
 /** `guardedAt` (ISO) is when a live guard started refusing or retrying the behaviour: hits after it got past the guard. */
@@ -27,8 +28,6 @@ type Content = { type?: string; text?: string; id?: string; name?: string; argum
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
 type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; suites?: number; ripwired?: boolean; sent?: string[] };
 
-const FULL_SUITE = /(?:^|[;&|\n(])\s*(?:npm\s+(?:run\s+)?(?:test|verify)\b(?![:\w-])|node\b[^;&|\n]*\s--test\b[^;&|\n]*["']test\/\*)/u;
-const runsSuite = (call: Content): boolean => (call.name === 'bash' || call.name === 'shell_start') && FULL_SUITE.test(String(call.arguments?.command ?? ''));
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
 function toolCalls(event: Event): Content[] {

@@ -71,6 +71,7 @@ import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { registerRipwireFirst } from './ripwire-first-guard.ts';
 import { registerSelfBuildGuard } from './self-build-guard.ts';
+import { registerSuiteOnceGuard } from './suite-once-guard.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
@@ -212,6 +213,7 @@ export default function optchat(host: ExtensionAPI) {
   let approvalVia: string | undefined;
   registerRipwireFirst(pi, { perInput: true });
   registerSelfBuildGuard(pi, { perInput: true });
+  registerSuiteOnceGuard(pi);
   const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir,
 
   orderGrant: effect => {
