@@ -92,3 +92,12 @@ test('git log accepts a commit count, and a refusal names what is accepted', () 
   assert.throws(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv: ['git', 'log', '--format=%H'], expect: 'ok' } }, now), /accepted:.*--oneline.*--format=%H. is not in the read-only allowlist$/);
   assert.throws(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv: ['node', 'x.js'], expect: 'ok' } }, now), /accepted:.*git.*gh.*curl/);
 }));
+
+test('ps accepts a process measurement by pid or name and nothing else', () => fixture(async dir => {
+  for (const argv of [['ps', '-o', 'rss=', '-p', '540353'], ['ps', '-o', 'pid,rss,etime', '-p', '1,2'], ['ps', '-o', 'rss', '-C', 'node']]) {
+    assert.doesNotThrow(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv, expect: '\\d' } }, now), argv.join(' '));
+  }
+  for (const argv of [['ps', 'aux'], ['ps', '-o', 'args', '-p', '1'], ['ps', '-o', 'rss', '-p', '1;id'], ['ps', '-o', 'rss'], ['ps', '-eo', 'rss']]) {
+    assert.throws(() => addCommitment(dir, { text: 'verify', source: 'test', probe: { argv, expect: 'ok' } }, now), /probe/i, argv.join(' '));
+  }
+}));
