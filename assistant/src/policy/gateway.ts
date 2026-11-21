@@ -73,7 +73,7 @@ export class Gateway {
   dispatchReviewed<T>(request: EffectRequest, reviewId: string, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>): Promise<T> {
     return this.dispatchInternal(request, invoke, reviewId);
   }
-  // Adapters must use both callback arguments as the authoritative effect, not the caller's request.
+
   async dispatch<T>(request: EffectRequest, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>): Promise<T> {
     return this.dispatchInternal(request, invoke);
   }
@@ -102,7 +102,7 @@ export class Gateway {
     } catch { throw new Error('effect_uncertain'); }
   }
   status(operationId: string): 'uncertain' | 'response_recorded' | 'absent' {
-    // Reuse boundary validation and hashing without storing the operation identifier.
+
     const item = snapshot({ version: 1, operationId, profileId: this.options.profileId, sessionId: 'status', taskId: 'status', runId: 'status', adapter: 'status', action: 'status', account: 'status', destination: 'status', policyVersion: 'status', expiresAt: Number.MAX_SAFE_INTEGER, payload: new Uint8Array() }, this.options.profileId, this.now());
     const row = this.db.prepare('SELECT state FROM intents WHERE operation = ?').get(item.operation) as { state: 'uncertain' | 'response_recorded' } | undefined;
     return row?.state ?? 'absent';
