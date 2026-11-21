@@ -163,6 +163,22 @@ test('with every answer on, a run from anywhere but Slack or WhatsApp sends its 
   } finally { f.close(); }
 });
 
+test('with every answer on, a run woken only by a running worker\'s progress posts nothing to the DM', async () => {
+  const f = fixture([], { everyAnswer: () => true });
+  const sent = () => f.requests.filter(r => r.path === '/v1/slack/send').length;
+  try {
+    for (let i = 0; i < 3; i++) {
+      f.bridge.sawUserMessage('[3b809131] Message from subagent (still running): lote concluído');
+      await f.bridge.runEnded(replies('Nada novo para você.'));
+    }
+    assert.equal(sent(), 0);
+    f.bridge.sawUserMessage('[3b809131] Message from subagent (still running): lote');
+    f.bridge.sawUserMessage('[gitwatch] lennix1337/pi-optchat #56 MERGED');
+    await f.bridge.runEnded(replies('O #56 entrou.'));
+    assert.equal(sent(), 1, 'a run that also saw real news still answers');
+  } finally { f.close(); }
+});
+
 /** An assistant message with these tool calls, then the final answer. */
 const calling = (calls: [string, unknown][], answer: string) => [
   { role: 'assistant', content: calls.map(([name, args], i) => ({ type: 'toolCall', id: `c${i}`, name, arguments: args })) },
