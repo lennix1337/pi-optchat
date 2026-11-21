@@ -19,8 +19,23 @@ const GIT_FLAGS = ['--', '--short', '--oneline', '--stat', '--name-only', '--no-
 const GH_COMMANDS: Record<string, string[]> = { run: ['list', 'view'], pr: ['view', 'checks', 'list'], issue: ['view', 'list'], release: ['view', 'list'] };
 const GH_FLAGS = ['--json', '--jq', '--limit', '--repo'];
 const CURL_FLAGS = ['--silent', '--show-error', '--fail', '--head', '-I', '-s', '-S', '-f'];
+const PS_FIELDS = ['pid', 'rss', 'etime', 'etimes', 'pcpu', 'pmem', 'comm', 'vsz', 'nlwp'];
 const ACCEPTED = `git [-C dir] ${GIT_COMMANDS.join('|')} ${GIT_FLAGS.join(' ')} (log: -N, --max-count=N), git branch --list; `
-  + `gh ${Object.entries(GH_COMMANDS).map(([g, c]) => `${g} ${c.join('|')}`).join(', ')} ${GH_FLAGS.join(' ')}, gh api PATH (GET); curl URL ${CURL_FLAGS.join(' ')} (GET/HEAD)`;
+  + `gh ${Object.entries(GH_COMMANDS).map(([g, c]) => `${g} ${c.join('|')}`).join(', ')} ${GH_FLAGS.join(' ')}, gh api PATH (GET); curl URL ${CURL_FLAGS.join(' ')} (GET/HEAD), `
+  + `ps -o ${PS_FIELDS.join(',')} -p PID|-C NAME`;
+
+const PS_FLAGS = ['-o', '-p', '-C'];
+
+function psIsReadOnly(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i], value = args[++i] ?? '';
+    if (!PS_FLAGS.includes(flag)) return false;
+    if (flag === '-o' && !value.split(',').every(f => PS_FIELDS.includes(f.replace(/=$/, '')))) return false;
+    if (flag === '-p' && !/^\d+(,\d+)*$/.test(value)) return false;
+    if (flag === '-C' && !/^[\w.-]+$/.test(value)) return false;
+  }
+  return args.includes('-o') && (args.includes('-p') || args.includes('-C'));
+}
 
 const isCount = (command: string | undefined, a: string) => command === 'log' && /^(-\d+|--max-count=\d+)$/.test(a);
 
@@ -45,7 +60,7 @@ export function validateProbe(probe: Probe, cwd: string): void {
   } else if (exe === 'curl') {
 
     safe = args.length > 0 && readOptions(args, ['GET', 'HEAD'], CURL_FLAGS);
-  }
+  } else if (exe === 'ps') safe = psIsReadOnly(args);
 
   if (!safe) throw new Error(`probe: accepted: ${ACCEPTED}. \`${probe.argv.join(' ')}\` is not in the read-only allowlist`);
 
