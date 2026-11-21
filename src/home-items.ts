@@ -53,6 +53,12 @@ export function readHomeWork(dir: string, jobs: readonly string[], now: number, 
   return { prs: readPrItems(dir), commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs], agents: [...agents] };
 }
 
+/** A worker or job as the Home lists it: what it is doing and for how long ("agy Neon: 3 candidatos · há 12 min"). */
+export function runningItem(title: string, started: number, now: number): string {
+  const m = Math.max(0, Math.round((now - started) / 60_000));
+  return `${title} \u00b7 h\u00e1 ${m < 120 ? `${m} min` : `${Math.round(m / 60)} h`}`;
+}
+
 const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const clip = (s: string, max: number) => {
