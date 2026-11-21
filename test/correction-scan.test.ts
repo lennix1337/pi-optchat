@@ -226,6 +226,18 @@ test('self-build-in-wake counts a wake that edits source three times without han
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...build.slice(0, 2), call('shell_start', { command: 'node ~/.pi/agent/bin/agy-pc.mjs --repo C:\\projetos\\x --name y < b.md' }), ...build.slice(2)]), 0, 'agy-pc delegation resets it');
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, edit('a'), call('spawn', { tasks: [] }), edit('b'), edit('c')]), 0, 'spawn resets it');
 });
+// 20/11 "sou dev e nao dono da dentai, nao da pra sair metendo o louco la nao": wakes must not push, merge or deploy DentAI work on their own.
+test('dentai-in-wake flags a wake that writes to DentAI, not one that only reads it or the operator\'s own task', () => {
+ const push = call('bash', { command: 'cd ~/projetos/dentai-mono && git push origin fix/x' });
+ const pr = call('bash', { command: 'gh pr merge 195 --repo tecnologia-ai/dentai --auto --squash' });
+ assert.equal(ruleCount('dentai-in-wake', [wakePrompt, push]), 1);
+ assert.equal(ruleCount('dentai-in-wake', [wakePrompt, pr]), 1);
+ assert.equal(ruleCount('dentai-in-wake', [wakePrompt, call('bash', { command: 'node ~/.pi/agent/bin/dentai-ship.mjs 195' })]), 1);
+ assert.equal(ruleCount('dentai-in-wake', [wakePrompt, call('bash', { command: 'cd ~/projetos/dentai-mono && git log --oneline -3 && gh pr list --repo tecnologia-ai/dentai' })]), 0, 'reads are fine');
+ assert.equal(ruleCount('dentai-in-wake', [wakePrompt, call('bash', { command: 'git push origin main' })]), 0, 'other repos are fine');
+ assert.equal(ruleCount('dentai-in-wake', [push]), 0, 'outside a wake it is his order');
+ assert.equal(ruleCount('dentai-in-wake', [wakePrompt, operator, push]), 0, 'the operator spoke: his task now');
+});
 test('self-build-in-wake counts shell writes and survives other reports until the operator speaks', () => {
  const claimCheck = { ...wakePrompt, content: '[OptChat claim check] the reply admits it did not check' };
  const shellBuild = [call('bash', { command: "cat >> test/a.test.ts <<'X'\nx\nX" }), call('bash', { command: "python3 - <<'X'\nopen('src/a.ts','w').write('')\nX" }), call('bash', { command: 'git commit -am fix' })];
