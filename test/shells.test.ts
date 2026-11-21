@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { ShellJobs, adoptShells, alertReport, endNoticeWanted, handOffShells, readShell, registerShells, runningShells, shellReport, shellTitle, type ShellJob } from '../src/shells.ts';
 import { OutputAlerts, alertLabel, alertPattern, type ShellAlert } from '../src/shell-alerts.ts';
 import { Check } from 'typebox/value';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 test('foreground inventory streams bounded output, records failure and refuses individual stop', () => {
@@ -614,4 +617,17 @@ test('an exit 0 that a trailing reader produced is flagged unless the output ech
   assert.doesNotMatch(shellReport({ ...job, command: 'npm test' }), /not proven/, 'the work itself ends the line');
   assert.doesNotMatch(shellReport({ ...job, exitCode: 1 }), /not proven/, 'a failure needs no warning');
   assert.match(shellReport({ ...job, output: 'commit_rc=1' }), /Inner exit codes: commit_rc=1/, 'an echoed failure keeps its own line');
+});
+
+test('an exit 0 whose rc was appended to the work\'s log is read from that log', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-rc-')), log = join(dir, 'job.log');
+  const job: ShellJob = { id: 'sh-3', command: `node work.mjs > ${log} 2>&1; echo rc=$? >> ${log}`, cwd: '.', mode: 'background',
+    state: 'completed', started: Date.now() - 1_000, ended: Date.now(), output: '', exitCode: 0, notify: 'end' };
+  writeFileSync(log, 'Snapshotting\nrc=1\n');
+  assert.match(shellReport(job), /Inner exit codes: rc=1 \(read from .*job\.log; the shell itself exited 0\)/);
+  writeFileSync(log, 'done\nrc=0\n');
+  const ok = shellReport(job);
+  assert.match(ok, /rc=0 \(read from .*job\.log\)/);
+  assert.doesNotMatch(ok, /not proven/);
+  assert.doesNotMatch(shellReport({ ...job, command: 'node work.mjs > /nonexistent/x.log; echo rc=$? >> /nonexistent/x.log' }), /read from/, 'an unreadable log adds nothing');
 });
