@@ -64,7 +64,7 @@ export class ArtifactRegistry {
   }
   matchesProfile(profileId: string): boolean { return this.profileId === profileId; }
 
-
+  /** Registers a new artifact, or the next version of `artifactId` with the same type and owner. */
   register(input: RegisterInput): ArtifactRecord {
     const formats = artifactFormats.get(input?.type) ?? fail('artifact_type_unsupported');
     if (![input.ownerId, input.producerId, input.provenance].every(field) || (input.artifactId !== undefined && !text(input.artifactId))) fail('artifact_invalid');
@@ -87,13 +87,13 @@ export class ArtifactRegistry {
         .run(this.profileId, artifactId, artifactVersion, input.type, JSON.stringify(artifact), fileName, bytes.length, createdAt);
       const target = this.managedPath(artifact.location);
       mkdirSync(dirname(target), { recursive: true });
-
+      // Written last: a failed write rolls back the row, so no row points at missing bytes.
       writeFileSync(target, bytes, { flag: 'wx' });
       return { ...artifact, fileName, size: bytes.length, createdAt, reviewedBy: null, reviewedAt: null };
     });
   }
 
-
+  /** Latest version of each artifact, newest first, optionally of one type. */
   list(type?: string): ArtifactPage {
     if (type !== undefined && !artifactFormats.has(type)) fail('artifact_type_unsupported');
     const rows = this.db.prepare(`SELECT * FROM artifacts a WHERE profile = ? AND (? IS NULL OR type = ?)
@@ -108,7 +108,7 @@ export class ArtifactRegistry {
     const row = this.db.prepare('SELECT * FROM artifacts WHERE profile = ? AND artifact_id = ? AND version = ?').get(this.profileId, artifactId, version);
     return row ? this.record(row) : null;
   }
-
+  /** Bytes of one version, only from under the managed root and only while they still match the registered hash. */
   read(artifactId: string, version: number): { record: ArtifactRecord; bytes: Buffer } {
     const record = this.get(artifactId, version) ?? fail('artifact_not_found');
     const path = this.managedPath(record.location);
@@ -120,7 +120,7 @@ export class ArtifactRegistry {
     if (sha256(bytes) !== record.hash) fail('artifact_changed');
     return { record, bytes };
   }
-
+  /** One review result per version; a changed artifact is a new version with its own review. */
   review(artifactId: string, version: number, decision: ReviewDecision, reviewerId: string): ArtifactRecord {
     if (decision !== 'approved' && decision !== 'rejected') fail('artifact_invalid');
     if (!field(reviewerId)) fail('artifact_invalid');
@@ -145,13 +145,13 @@ export class ArtifactRegistry {
     const artifact = parseArtifact(JSON.parse(String(row.artifact)));
     return { ...artifact, fileName: String(row.file_name), size: Number(row.size), createdAt: String(row.created_at), reviewedBy: row.reviewed_by === null ? null : String(row.reviewed_by), reviewedAt: row.reviewed_at === null ? null : String(row.reviewed_at) };
   }
-
+  /** The only mapping from a stored location to disk: lexical and real paths must both stay under the managed root. */
   private managedPath(location: string): string {
     const path = resolve(this.root, location);
     if (!inside(this.root, path) || (existsSync(path) && !inside(this.root, realpathSync(path)))) fail('artifact_location_invalid');
     return path;
   }
-
+  /** Producer output is read once from a regular, single-link file under a configured source root. */
   private readSource(sourcePath: string): Buffer {
     if (typeof sourcePath !== 'string' || !isAbsolute(sourcePath)) fail('artifact_invalid');
     let real: string;
