@@ -17,8 +17,8 @@ function validCard(candidate: string): boolean {
   return sum % 10 === 0;
 }
 
-// Heuristics are neither semantic PII detection nor authorization: they can miss
-// sensitive content and flag benign content. The caller must enforce the result.
+
+
 export function inspectEgress(bytes: Uint8Array, knownSecrets: readonly string[]): { decision: 'allow' | 'review' | 'deny'; reasons: EgressReason[] } {
   const reasons: EgressReason[] = [];
   const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
