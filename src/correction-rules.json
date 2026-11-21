@@ -142,6 +142,7 @@
   },
   {
     "id": "ripwire-first",
+    "guardedAt": "2026-11-21T13:45:00Z",
     "quote": "ta com o ripwire instalado ai e adicionado como tool e orientando a usar? vc e os workers? se nao ja instala e faz a orientacao que é pra usar sempre",
     "date": "21/11",
     "scope": "edit/write or source-writing bash call of one run (since the last user message or wake)",

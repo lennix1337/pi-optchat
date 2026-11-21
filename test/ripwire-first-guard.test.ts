@@ -1,0 +1,34 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { registerRipwireFirst, ripwireFirstGuard } from '../src/ripwire-first-guard.ts';
+
+test('refuses the first source write once, then lets the retry through', () => {
+  const guard = ripwireFirstGuard();
+  assert.match(guard.check({ name: 'edit', arguments: { path: '/repo/src/a.ts' } }) ?? '', /^Não executado:.*ripwire/);
+  assert.equal(guard.check({ name: 'edit', arguments: { path: '/repo/src/a.ts' } }), undefined);
+});
+
+test('a ripwire call first lifts the refusal', () => {
+  const guard = ripwireFirstGuard();
+  assert.equal(guard.check({ name: 'ripwire', arguments: { action: 'search' } }), undefined);
+  assert.equal(guard.check({ name: 'write', arguments: { path: '/repo/src/a.ts' } }), undefined);
+  const cli = ripwireFirstGuard();
+  assert.equal(cli.check({ name: 'bash', arguments: { command: 'ripwire --impact foo' } }), undefined);
+  assert.equal(cli.check({ name: 'bash', arguments: { command: 'sed -i s/a/b/ x.ts' } }), undefined);
+});
+
+test('reads, notes and scratch files never trigger it', () => {
+  const guard = ripwireFirstGuard();
+  for (const call of [{ name: 'read', arguments: { path: '/repo/a.ts' } }, { name: 'write', arguments: { path: '/tmp/x.ts' } }, { name: 'edit', arguments: { path: '/repo/NOTES.md' } }, { name: 'bash', arguments: { command: 'git status' } }])
+    assert.equal(guard.check(call), undefined);
+});
+
+test('the tool_call hook refuses the first edit of a run and a new input starts a new run', async () => {
+  const hooks = new Map<string, (...args: any[]) => any>();
+  registerRipwireFirst({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } }, { perInput: true });
+  const edit = () => hooks.get('tool_call')!({ toolName: 'edit', input: { path: '/repo/src/a.ts' } }, { cwd: '/tmp' });
+  assert.equal((await edit()).block, true);
+  assert.equal(await edit(), undefined);
+  hooks.get('input')!({ text: 'next', source: 'interactive' }, {});
+  assert.equal((await edit()).block, true);
+});
