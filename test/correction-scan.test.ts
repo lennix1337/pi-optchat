@@ -9,6 +9,7 @@ import { composeScoreboard } from '../src/scoreboard.ts';
 const message = (content: object, stopReason: string) => ({ type: 'message', timestamp: '2026-11-14T00:00:00Z', message: { role: 'assistant', stopReason, content: [content] } });
 const text = (s: string) => message({ type: 'text', text: s }, 'stop');
 const call = (name: string, args: object) => message({ type: 'toolCall', name, arguments: args }, 'toolUse');
+const SENT = {type:'toolCall',name:'slack_send',arguments:{text:'Mesclei o #192; o deploy ainda não foi verificado.'}};
 const cases: [string, object, object][] = [
  ['free-action', text('Posso mergear?'), text('Merge concluído.')],
  ['ending-offer', text('Se quiser, é só dizer.'), text('Diga o resultado.')],
@@ -22,6 +23,7 @@ const cases: [string, object, object][] = [
  ['cause-claim', call('bash',{command:'gh issue comment 168 --body "Causa achada: o merge com GITHUB_TOKEN não dispara push."'}), call('bash',{command:'gh issue comment 168 --body "Hipótese, não verificada: o merge com GITHUB_TOKEN pode não disparar push."'})],
  ['premature-merge', call('bash',{command:'gh pr merge 193 --squash --delete-branch'}), call('bash',{command:'gh pr checks 193 && gh pr merge 193 --squash'})],
  ['live-claim', call('slack_send',{text:'No ar às 10:52: a correção do Seus Projetos.'}), call('slack_send',{text:'Mesclei o #192; o deploy ainda não foi verificado.'})],
+ ['repeated-reply', {type:'message',timestamp:'2026-11-14T00:00:00Z',message:{role:'assistant',stopReason:'toolUse',content:[SENT,SENT]}}, call('slack_send',{text:'Mesclei o #192; o deploy ainda não foi verificado.'})],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
@@ -279,4 +281,14 @@ test('ripwire-first flags the first source write of a run without ripwire before
  assert.equal(ruleCount('ripwire-first', [operator, viaCli, write]), 0);
  assert.equal(ruleCount('ripwire-first', [operator, write, operator, write]), 2, 'a new order starts a new run');
  assert.equal(ruleCount('ripwire-first', [operator, call('bash', { command: 'git status' })]), 0);
+});
+test('repeated-reply flags a final reply or send that repeats one already sent in the run, and resets on a new order', () => {
+ const send = call('slack_send', { text: 'Mesclei o #192; o deploy ainda não foi verificado.' });
+ const other = call('slack_send', { text: 'Outro assunto: o CI do #193 ficou verde nos seis jobs.' });
+ const final = text('Mesclei o #192;  o deploy ainda não foi verificado.');
+ assert.equal(ruleCount('repeated-reply', [operator, send, final]), 1);
+ assert.equal(ruleCount('repeated-reply', [operator, send, send]), 1);
+ assert.equal(ruleCount('repeated-reply', [operator, send, other, text('Feito.')]), 0);
+ assert.equal(ruleCount('repeated-reply', [operator, send, operator, send]), 0, 'a new order starts a new run');
+ assert.equal(ruleCount('repeated-reply', [operator, call('slack_send', { text: 'ok' }), call('slack_send', { text: 'ok' })]), 0, 'short texts are ignored');
 });

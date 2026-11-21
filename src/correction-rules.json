@@ -154,5 +154,13 @@
     "scope": "bash tool call",
     "detector": "destructive-git",
     "precision": "git reset --hard, git clean -f, git branch -D, git stash drop/clear and git worktree remove --force; detects calls, not operator authorization or a verified-merged branch, so candidates require review."
+  },
+  {
+    "id": "repeated-reply",
+    "quote": "pq vc repetiu a mesma coisa 3 vezes? corrige (21/11); respondendo varias vezes (18/11)",
+    "date": "21/11",
+    "scope": "slack_send/whatsapp_send call or final reply",
+    "detector": "repeated-reply",
+    "precision": "A message of 40+ characters sent twice in one run (same slack_send/whatsapp_send text again, or a final reply identical to one already sent); resets at each operator message or wake. Near-duplicates are not caught."
   }
 ]
