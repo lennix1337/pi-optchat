@@ -25,7 +25,7 @@ test('reads, notes and scratch files never trigger it', () => {
 
 test('the tool_call hook refuses the first edit of a run and a new input starts a new run', async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
-  registerRipwireFirst({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } });
+  registerRipwireFirst({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } }, { perInput: true });
   const edit = () => hooks.get('tool_call')!({ toolName: 'edit', input: { path: '/repo/src/a.ts' } }, { cwd: '/tmp' });
   assert.equal((await edit()).block, true);
   assert.equal(await edit(), undefined);

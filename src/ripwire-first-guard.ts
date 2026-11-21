@@ -30,10 +30,10 @@ export function ripwireFirstGuard() {
 
 type Hooks = { on(event: string, handler: (event: any, ctx: any) => unknown): unknown };
 
-export function registerRipwireFirst(pi: Hooks) {
+export function registerRipwireFirst(pi: Hooks, opts: { perInput?: boolean } = {}) {
   if (process.env.OPTCHAT_RIPWIRE_FIRST === 'off') return;
   const guard = ripwireFirstGuard();
-  pi.on('input', () => { guard.reset(); });
+  if (opts.perInput) pi.on('input', () => { guard.reset(); });
   pi.on('session_start', () => { guard.reset(); });
   pi.on('tool_call', (event: { toolName: string; input: Record<string, unknown> }) => {
     const reason = guard.check({ name: event.toolName, arguments: event.input });

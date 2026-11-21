@@ -209,7 +209,7 @@ export default function optchat(host: ExtensionAPI) {
   registerBrowserPages(pi);
 
   let approvalVia: string | undefined;
-  registerRipwireFirst(pi);
+  registerRipwireFirst(pi, { perInput: true });
   const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir,
 
   orderGrant: effect => {
