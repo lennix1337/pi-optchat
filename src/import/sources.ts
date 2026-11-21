@@ -24,13 +24,13 @@ const codexSubagent = (metadata: Record<string, unknown>) => metadata.source ===
 const missingSource = (error: unknown) => record(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
 const missingWarning = (file: string) => `${file}: source file is no longer available; conversation skipped. Rescan to retry if it returns.`;
 const zoneless = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
-// A time without a zone is UTC, not the machine's zone. A number above 1e11 is milliseconds (1e11 seconds is the year 5138).
+/** A time without a zone is UTC, not the machine's zone. A number above 1e11 is milliseconds (1e11 seconds is the year 5138). */
 export function timestamp(value: unknown, fallback: string): string {
   const time = typeof value === 'number' ? (value > 1e11 ? value : value * 1000) : typeof value === 'string' ? Date.parse(value.trim().replace(zoneless, '$1T$2Z')) : NaN;
   const date = new Date(time);
   return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
 }
-/** Header time: minutes are enough to place a message, and the rest of an ISO stamp costs summary bytes. */
+
 const minute = (date: string) => `${date.slice(0, 16).replace('T', ' ')}Z`;
 function text(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -44,10 +44,7 @@ function text(value: unknown): string {
   if (typeof value.content_type === 'string') return `[${value.content_type} attachment; binary content is not imported]`;
   return '';
 }
-/**
- * Claude Code logs slash commands, `!` shell commands, and their local output as user messages. Returns undefined
- * for anything else, '' for output to drop, or what the user typed (`/name args`, `/name`, `!command`).
- */
+// external: Claude Code logs slash and shell commands and local output as user messages.
 function claudeCommand(content: string): string | undefined {
   const s = content.trimStart();
   if (/^<(local-command|bash)-(stdout|stderr)>/.test(s)) return '';
@@ -57,23 +54,17 @@ function claudeCommand(content: string): string | undefined {
   const name = /<command-name>([^<]*)<\/command-name>/.exec(s)?.[1].trim(), args = /<command-args>([\s\S]*?)<\/command-args>/.exec(s)?.[1].trim();
   return name ? `${name} ${args ?? ''}`.trimEnd() : '';
 }
-/**
- * Context Codex injects as user messages, as codex-rs recognizes it (core/src/context/contextual_user_message.rs).
- * Codex matches marked fragments ignoring case, but the `<external_…>` context, the internal-context source and the warnings exactly.
- */
+// external: Codex recognizes injected contextual user-message markers with differing case sensitivity.
 const CODEX_MARKED = /^(?:# AGENTS\.md instructions[\s\S]*<\/INSTRUCTIONS>|<(environment_context|user_shell_command|turn_aborted|subagent_notification|skill|agent_message_board_notification|recommended_plugins|goal_context)>[\s\S]*<\/\1>|<hook_prompt hook_run_id="[^"]+">[\s\S]*<\/hook_prompt>)$/i;
 const CODEX_EXACT = /^(?:<external_([^>]+)>[\s\S]*<\/external_\1>|<codex_internal_context source="[a-z][a-z0-9_]*">[\s\S]*<\/codex_internal_context>|Warning: apply_patch was requested via [\s\S]*Use the apply_patch tool instead of exec_command\.|Warning: (?:Your account was flagged for potentially high-risk cyber activity|The maximum number of unified exec processes you can keep open is)[\s\S]*)$/;
-/** What the user typed in a Codex message: every part except the context Codex injected. */
+
 const codexTyped = (content: unknown) => (Array.isArray(content) ? content : [content]).map(text)
   .filter(piece => piece && !CODEX_MARKED.test(piece.trim()) && !CODEX_EXACT.test(piece.trim())).join('\n');
-/**
- * Pi and OMP write the same session format: an id/parentId tree in file order. OMP injects reminders and nudges as user
- * messages it attributes to the agent; the user typed everything else.
- */
+// external: Pi and OMP sessions use an id/parentId tree; OMP injects reminders as user messages.
 const piTyped = (m: Record<string, unknown>) => m.role === 'user' && m.attribution !== 'agent' && m.synthetic !== true;
-/** OptChat writes `optchat.*` entries into every session it runs; those messages are already in a profile's memory. */
+
 const optchatEntry = (v: Record<string, unknown>) => v.type === 'custom' && String(v.customType).startsWith('optchat.');
-/** Pi's sessions, then OMP's: its default profile in ~/.omp/agent/sessions, others in ~/.omp/profiles/<name>/agent/sessions. */
+// external: OMP stores its default profile under ~/.omp/agent/sessions and others under ~/.omp/profiles.
 async function piRoots(): Promise<string[]> {
   const profiles = join(homedir(), '.omp/profiles');
   const entries = await readdir(profiles, { withFileTypes: true }).catch(error => {
@@ -83,17 +74,17 @@ async function piRoots(): Promise<string[]> {
   const named = entries.filter(e => e.isDirectory()).map(e => join(profiles, e.name, 'agent/sessions')).sort();
   return [join(getAgentDir(), 'sessions'), join(homedir(), '.omp/agent/sessions'), ...named];
 }
-/** What the user typed for a Pi or OMP session message, or undefined for anything they did not type. */
+
 function piUserText(v: Record<string, unknown>): string | undefined {
-  // OMP records `/skill:name args` as its own message, holding the skill's body. Newer versions keep the whole typed prompt;
-  // older ones only the name and what followed it.
+  // external: OMP skill entries vary by version: newer ones keep the full prompt, older ones the skill name and arguments.
+
   if (v.type === 'custom_message' && v.customType === 'skill-prompt' && v.attribution === 'user' && record(v.details) && typeof v.details.name === 'string')
     return string(v.details.prompt)?.trim() || `/skill:${v.details.name} ${string(v.details.args) ?? ''}`.trimEnd();
   const m = v.type === 'message' ? v.message : undefined;
   if (!record(m)) return undefined;
-  // Pi expands `/skill:name args` into the skill's body followed by the args.
+  // external: Pi expands skill commands into the skill body followed by arguments.
   if (piTyped(m)) { const typed = text(m.content), skill = parseSkillBlock(typed); return skill ? `/skill:${skill.name} ${skill.userMessage ?? ''}`.trimEnd() : typed; }
-  // `!cmd` and `$code` the user ran: the command as typed, never its output. `!!` and `$$` kept them from the model, so they stay out.
+
   if (m.excludeFromContext === true) return undefined;
   if (m.role === 'bashExecution' && typeof m.command === 'string') return `!${m.command}`;
   if (m.role === 'pythonExecution' && typeof m.code === 'string') return `$${m.code}`;
@@ -112,12 +103,12 @@ export function copyKey(e: Pick<ImportedEntry, 'kind' | 'text' | 'origin'>): str
 }
 function imported(c: Conversation, id: string, kind: Kind, content: string, date: string, identity = content): ImportedEntry | undefined {
   if (!content.trim()) return undefined;
-  // Text provenance survives compression. Stable per-message receipts survive moved files and repeated exports.
+
   const origin: Origin = { source: c.source, conversation: c.id, message: id, title: c.title, project: c.project };
-  // The agent reads only text, so the id's first 13 characters stay in it: enough to find a Claude or Codex transcript by
-  // glob. Codex ids are UUIDv7, whose first 8 characters are a coarse timestamp shared by many sessions.
+  // external: Codex UUIDv7 session IDs share a coarse timestamp in their first eight characters.
+
   return { kind, date, origin, text: `[Historical ${c.source} · ${minute(date)} · ${c.id.slice(0, 13)} · ${c.title}]\n${content}`,
-    // A Pi or OMP fork copies the earlier entries, ids and dates included, into a new session, so the session id stays out.
+    // external: Pi and OMP forks copy earlier entries, IDs and dates into the new session.
     receipt: `import:${digest(JSON.stringify(c.source === 'pi' ? [c.source, id, kind, date, identity] : [c.source, c.id, id, kind, identity]))}` };
 }
 async function* jsonLines(file: string, warnings: string[], limit = Infinity, signal?: AbortSignal) {
@@ -152,24 +143,24 @@ export async function scanLocal(source: 'claude' | 'codex' | 'pi', roots?: strin
     : [join(homedir(), '.codex/sessions'), join(homedir(), '.codex/archived_sessions')]);
   const conversations: Conversation[] = [], warnings: string[] = [];
   let underOptChat = 0;
-  // Claude workflow journals contain orchestration events, not conversation messages.
+  // external: Claude workflow journals hold orchestration events rather than conversation messages.
   for (const folder of folders) for (const file of await filesUnder(folder, n => n.endsWith('.jsonl') && !(source === 'claude' && n === 'journal.jsonl'), signal)) {
     signal?.throwIfAborted();
-    // Import user conversations, not separate delegated runs (including Claude's older flat layout).
+
     if (source === 'claude' && (relative(folder, dirname(file)).split(/[\\/]/).includes('subagents') || basename(file).startsWith('agent-'))) continue;
-    // OMP keeps a session's subagent and advisor logs in a folder named after the session, below the project folder.
+    // external: OMP stores subagent and advisor logs below a folder named for the session.
     if (source === 'pi' && relative(folder, file).split(/[\\/]/).length > 2) continue;
     try {
       const info = await stat(file);
       let id = basename(file, '.jsonl'), project = dirname(file), date = info.mtime.toISOString(), title = '';
-      // OMP's own title: a first line it rewrites on rename, else the header's.
+      // external: OMP rewrites its first title line on rename.
       let named = '', renamed = '';
       let sidechain = false;
       for await (const { value: v, line } of jsonLines(file, warnings, source === 'codex' ? 60 : Infinity, signal)) {
-        // Sidechain and OptChat markers can appear late; picker metadata still comes from the first 60 lines.
+
         if (source === 'claude' && v.isSidechain === true) { sidechain = true; break; }
         if (source === 'pi' && optchatEntry(v)) { sidechain = true; underOptChat++; break; }
-        // Pi's `/name` can come at any point; the latest wins.
+        // external: Pi session names can change at any point; the latest wins.
         if (source === 'pi' && v.type === 'session_info') renamed = string(v.name)?.trim() || renamed;
         if (line > 60) continue;
         if (source === 'codex' && v.type === 'session_meta' && record(v.payload)) {
@@ -208,10 +199,7 @@ export async function scanLocal(source: 'claude' | 'codex' | 'pi', roots?: strin
   return { conversations: conversations.sort((a, b) => b.date.localeCompare(a.date)), warnings,
     note: underOptChat ? `${underOptChat} session${underOptChat === 1 ? '' : 's'} ran under OptChat and ${underOptChat === 1 ? 'is' : 'are'} already in a profile's memory; skipped.` : undefined };
 }
-/**
- * Lists a ZIP, or reads one member, with the system's own tool, which checks CRCs and handles ZIP64: `unzip` on macOS and
- * Linux, and on Windows the bsdtar in System32 since Windows 10 (by full path, because Git's GNU tar on PATH can't read ZIP).
- */
+// external: Windows 10 provides bsdtar in System32; Git GNU tar on PATH cannot read ZIP.
 async function unzip(zip: string, member?: string, signal?: AbortSignal) {
   const windows = process.platform === 'win32';
   const tool = windows ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'unzip';
@@ -219,7 +207,7 @@ async function unzip(zip: string, member?: string, signal?: AbortSignal) {
   try { return (await exec(tool, args, { signal, maxBuffer: member === undefined ? 10_000_000 : 1_000_000_000, windowsHide: true })).stdout; }
   catch (error) {
     if (signal?.aborted || !record(error)) throw error;
-    // unzip opens with a `[file]` line and wraps its message, so keep the first sentence after it.
+    // external: unzip prefixes errors with a [file] line and wraps the message.
     const said = string(error.stderr)?.split(/\r?\n/).filter(line => !line.trim().startsWith('[')).join(' ').replace(/\s+/g, ' ').trim();
     const reason = error.code === 'ENOENT' ? `${tool} was not found` : said?.match(/^.*?[.!](?=\s|$)/)?.[0] ?? (said?.slice(0, 200) || String(error.message));
     throw new Error(`Could not read ${member === undefined ? zip : `${member} in ${zip}`}: ${reason.replace(/[.!]$/, '')}. Extract the ZIP and select the folder instead.`);
@@ -280,7 +268,7 @@ export async function scanClaudeMemories(root = join(homedir(), '.claude/project
   }
   return { conversations: conversations.sort((a, b) => b.date.localeCompare(a.date)), warnings };
 }
-/** Claude names project folders after the launch directory with every other character replaced by '-'. Recover it from a transcript. */
+// external: Claude replaces launch-directory characters with hyphens in project folder names.
 async function claudeProject(folder: string, name: string, signal?: AbortSignal): Promise<string> {
   const transcripts = (await readdir(folder)).filter(f => f.endsWith('.jsonl')).sort();
   for (const transcript of transcripts) {
@@ -291,18 +279,18 @@ async function claudeProject(folder: string, name: string, signal?: AbortSignal)
       }
     } catch (error) { signal?.throwIfAborted(); if (!missingSource(error)) throw error; }
   }
-  return name; // Transcripts can be cleaned up while memory remains.
+  return name;
 }
 function frontmatter(content: string) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(content);
   const fields = new Map<string, string>();
   const lines = match ? match[1].split(/\r?\n/) : [];
   for (let i = 0; i < lines.length; i++) {
-    // Newer files nest type/modified under `metadata:`; the first occurrence of each key wins.
+    // external: Newer Claude memory files nest type and modified under metadata.
     const m = /^(\s*)([A-Za-z]+):\s*(.+?)\s*$/.exec(lines[i]);
     if (!m) continue;
     let value: string;
-    if (/^[>|][+-]?\d?$/.test(m[3])) { // A folded or literal block is the indented lines after the key.
+    if (/^[>|][+-]?\d?$/.test(m[3])) {
       let end = i + 1;
       while (end < lines.length && (!lines[end].trim() || lines[end].search(/\S/) > m[1].length)) end++;
       value = lines.slice(i + 1, end).map(line => line.trim()).join(m[3].startsWith('>') ? ' ' : '\n').trim();
@@ -313,7 +301,7 @@ function frontmatter(content: string) {
   return { fields, body: match ? content.slice(match[0].length) : content };
 }
 function unquote(value: string): string {
-  if (value.startsWith('"')) { try { const parsed: unknown = JSON.parse(value); if (typeof parsed === 'string') return parsed; } catch { /* plain text */ } }
+  if (value.startsWith('"')) { try { const parsed: unknown = JSON.parse(value); if (typeof parsed === 'string') return parsed; } catch {   } }
   if (/^'.*'$/.test(value)) return value.slice(1, -1).replaceAll("''", "'");
   return value;
 }
@@ -328,9 +316,9 @@ async function readMemory(c: Conversation, signal?: AbortSignal): Promise<{ entr
   if (!body.trim()) return { entries: [], warnings: [] };
   const one = (s: string) => s.replace(/\s+/g, ' ').trim();
   const name = one(fields.get('name') ?? c.title), type = fields.get('type'), description = fields.get('description');
-  // The whole file is the identity, so an edited memory arrives as a newer note and an unchanged one is skipped.
+
   const hash = digest(content);
-  // Date the note from this read, not the earlier scan, in case Claude edited the file meanwhile.
+
   const date = timestamp(fields.get('modified'), modified.toISOString());
   return { warnings: [], entries: [{ kind: 'note', date,
     origin: { source: c.source, conversation: c.id, message: hash.slice(0, 16), title: name, project: c.project },
@@ -338,7 +326,7 @@ async function readMemory(c: Conversation, signal?: AbortSignal): Promise<{ entr
     receipt: `import:${digest(JSON.stringify([c.source, c.id, hash]))}` }] };
 }
 
-/** Entries of a Pi or OMP session that are not on the path from its last entry back to the root: branches left by a rewind. */
+
 async function rewound(file: string, signal?: AbortSignal): Promise<Set<string>> {
   const parents = new Map<string, string | undefined>();
   let leaf: string | undefined;
@@ -347,7 +335,7 @@ async function rewound(file: string, signal?: AbortSignal): Promise<Set<string>>
     if (v.type === 'session' || !id) continue;
     parents.set(id, string(v.parentId)); leaf = id;
   }
-  // Older logs without parent links are one straight line.
+  // external: Older session logs can omit parent links.
   if (![...parents.values()].some(Boolean)) return new Set();
   const path = new Set<string>();
   for (let at = leaf; at && !path.has(at); at = parents.get(at)) path.add(at);
@@ -361,7 +349,7 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
   if (c.source === 'chatgpt') {
     const mapping = c.exported?.mapping;
     if (!record(mapping)) throw new Error('ChatGPT conversation has no message mapping.');
-    // Include every branch once. Parent-first traversal handles missing child timestamps.
+
     const nodes = Object.entries(mapping).filter((pair): pair is [string, Record<string, unknown>] => record(pair[1]));
     nodes.sort((a, b) => timestamp(record(a[1].message) ? a[1].message.create_time : undefined, c.date)
       .localeCompare(timestamp(record(b[1].message) ? b[1].message.create_time : undefined, c.date)));
@@ -386,8 +374,8 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
       selected.add(cursor); cursor = string(node.parent);
     }
     const dates = new Map<string, string>();
-    // For legacy exports without final/end_turn markers, exclude replies followed by
-    // more assistant/tool work before the next user message, on the same branch.
+
+
     const intermediate = new Set<string>();
     for (const [, node] of ordered) {
       if (!record(node.message) || !record(node.message.author) || !['assistant', 'tool'].includes(String(node.message.author.role))) continue;
@@ -433,13 +421,13 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
       const offPath = c.source === 'pi' ? await rewound(c.file, signal) : new Set<string>();
       for await (const { value: v, line } of jsonLines(c.file, warnings, Infinity, signal)) {
         const date = timestamp(v.timestamp, c.date);
-        // Context replay and compaction scaffolding are not new user requests.
+
         if (c.source === 'claude' && v.type === 'system' && v.subtype === 'compact_boundary') { pending = []; continue; }
         if (c.source === 'claude' && (v.isMeta === true || v.isCompactSummary === true)) continue;
         if (c.source === 'claude' && v.isSidechain === true) return { entries: [], warnings };
-        // A message typed while Claude works is logged as an attachment and sent with the next request. Only a prompt without
-        // isMeta from a human or no origin passes both of Claude Code's checks for a user's message (its display filter and X4t);
-        // the rest are task and agent notifications.
+        // external: Claude logs input typed during work as an attachment and marks agent notifications separately.
+
+
         const q = c.source === 'claude' && v.type === 'attachment' ? v.attachment : undefined;
         if (record(q) && q.type === 'queued_command' && q.commandMode === 'prompt' && q.isMeta !== true
           && (q.origin === undefined || record(q.origin) && q.origin.kind === 'human')) {
@@ -448,7 +436,7 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
         }
         if (c.source === 'claude' && ['user', 'assistant'].includes(String(v.type)) && record(v.message)) {
           const m = v.message, id = string(v.uuid) ?? `line:${line}`;
-          // Claude Code 2.1 writes the marker as a one-block text array, older versions as a string.
+          // external: Claude Code 2.1 writes the marker as a one-block text array; older versions use a string.
           if (m.role === 'user' && /^\[Request interrupted by user(?: for tool use)?\]$/.test(text(m.content))) { pending = []; queued = []; continue; }
           const blocks = Array.isArray(m.content) ? m.content : [];
           const toolActivity = blocks.some(b => record(b) && (['tool_use', 'server_tool_use', 'tool_result'].includes(String(b.type)) || String(b.type).endsWith('_tool_result')));
@@ -464,7 +452,7 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
               warnings.push(`${c.file}:${line}: unsupported Claude content block ${String(b.type)} skipped`);
             return [];
           });
-          // Receipts keep the raw text, so a command already imported is still recognized.
+
           if (m.role === 'user' && parts.length) { finish(); for (const part of parts) add(part.id, 'user', claudeCommand(part.content) ?? part.content, date, part.content); }
           else if (m.role === 'assistant') {
             const final = m.stop_reason === 'end_turn' || m.stop_reason === 'stop_sequence';
@@ -475,10 +463,10 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
         }
         if (c.source === 'pi') {
           const id = string(v.id) ?? `line:${line}`, typed = piUserText(v), m = v.type === 'message' ? v.message : undefined;
-          // Off the path to the session's last entry: rewound, so kept for its intent but marked as not the outcome.
+
           const mark = (content: string) => offPath.has(id) ? `[alternate branch]\n${content}` : content;
           if (typed !== undefined) add(id, 'user', mark(typed), date, typed);
-          // A turn's answer is a reply that ended on its own and calls no tool. Any other reply is work in progress.
+
           else if (record(m) && m.role === 'assistant' && (m.stopReason === 'stop' || m.stopReason === 'length') && Array.isArray(m.content)
             && !m.content.some(block => record(block) && block.type === 'toolCall')) m.content.forEach((block: unknown, index: number) => {
             if (record(block) && block.type === 'text') add(`${id}:${index}`, 'talk', mark(text(block)), date, text(block));
@@ -501,11 +489,11 @@ export async function readConversation(c: Conversation, signal?: AbortSignal): P
           else if (!['message', 'reasoning'].includes(String(m.type))) { pending = []; warnings.push(`${c.file}:${line}: unsupported response item ${String(m.type)} skipped`); }
         }
       }
-      finish(); // Older exports may omit explicit final markers; retain only the last text reply.
+      finish();
     } catch (error) {
       signal?.throwIfAborted();
       if (!missingSource(error)) throw error;
-      // Do not stage a partial conversation if the source becomes unavailable mid-read.
+
       return { entries: [], warnings: [...warnings, missingWarning(c.file)] };
     }
   }
