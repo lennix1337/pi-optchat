@@ -51,7 +51,7 @@ export function triage(message: MailMessage, rules: TriageRules): Triage {
   const result = (urgency: Urgency, reason: TriageReason, uncertainty: Uncertainty): Triage =>
     ({ sourceRef: message.ref, urgency, reason, uncertainty, private: isPrivate, suspectedInjection, signals: [...signals].sort() });
 
-
+  // Order matters: content cannot escalate itself past a safety signal or Gmail's own category.
   if (suspectedInjection) return result('normal', 'suspected_injection', 'high');
   if (signals.has('executable_attachment') && !trusted) return result('normal', 'executable_attachment', 'high');
   if (signals.has('promotional_label')) return result('low', 'promotional', 'low');

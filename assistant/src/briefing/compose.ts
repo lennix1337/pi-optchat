@@ -27,7 +27,7 @@ export type Briefing = {
 export type StartRequest = { requestId: string; sessionId: string; channelId: string; actorId: string; sourceKind: SourceKind };
 export type ComposerOptions = {
   databasePath: string; profileId: string; operatorAuthority: object; timeZone: string; store: TaskStore; google: GoogleConnections;
-
+  /** The connections to read, by name. There is no default: an unnamed account is never read. */
   connections: string[]; rules: TriageRules; retentionDays?: number; now?: () => number;
 };
 
@@ -62,13 +62,13 @@ export class BriefingComposer {
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';`);
   }
 
-
+  /** Today's briefing for this profile; when another client already made it, that one is returned without reading again. */
   async daily(): Promise<Briefing> {
     const localDate = localDateTime(this.now(), this.options.timeZone).date;
     const existing = this.dailyFor(localDate);
     if (existing) return existing;
     const briefing = await this.compose('daily', localDate);
-
+    // The first client to commit wins; a client that composed concurrently returns the stored one.
     this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'daily', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
     return this.dailyFor(localDate)!;
   }
@@ -79,19 +79,19 @@ export class BriefingComposer {
     return briefing;
   }
 
-
+  /** The newest stored briefing of either kind, or null when none is kept. */
   latest(): Briefing | null { return this.one('ORDER BY created DESC LIMIT 1'); }
 
   get(briefingId: string): Briefing | null { return this.one('AND briefing_id = ?', briefingId); }
 
-
+  /** Start turns one briefing item into a queued task in the store. Only the operator authority can call it; repeating it returns the same task. */
   start(briefingId: string, itemId: string, authority: object, request: StartRequest): Task {
     if (authority !== this.options.operatorAuthority) fail('unauthorized');
     const briefing = this.get(briefingId) ?? fail('briefing_unknown');
     const item = briefing.items.find(candidate => candidate.itemId === itemId) ?? fail('briefing_item_unknown');
     if (!item.startable) fail('briefing_item_not_startable');
     const store = this.options.store;
-
+    // Keyed by the source item, so the same mail or event started from two briefings or clients is one task.
     const taskId = `briefing-${sha256(item.sourceRef).slice(0, 32)}`;
     const existing = store.get(taskId);
     if (existing) return existing;
@@ -102,7 +102,7 @@ export class BriefingComposer {
       sequence: store.nextSequence(), correlationId: briefing.briefingId, evidence: { kind: 'observed', reference: `briefing:${briefing.briefingId}#${item.itemId}` },
     };
     try { return store.create(task, event); } catch (error) {
-
+      // Another client may have started the same item between the check and the insert.
       const raced = store.get(taskId);
       if (raced) return raced;
       throw error;
@@ -113,7 +113,7 @@ export class BriefingComposer {
 
   private dailyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'daily'", localDate); }
 
-
+  /** One of this profile's briefings; `rest` is a fixed SQL suffix with placeholders for `args`, never input text. */
   private one(rest: string, ...args: string[]): Briefing | null {
     const row = this.db.prepare(`SELECT body FROM briefings WHERE profile = ? ${rest}`).get(this.options.profileId, ...args) as { body: string } | undefined;
     return row ? JSON.parse(row.body) as Briefing : null;
@@ -129,8 +129,8 @@ export class BriefingComposer {
     const taskSequence = this.readTasks(since, sources, items);
     const agenda: (Omit<BriefingItem, 'itemId'> & { at: string })[] = [];
     const { from, to } = dayRange(localDate, this.options.timeZone);
-
-
+    // Each account's mail and agenda are independent reads, and so are the accounts: they run together. What each read
+    // found is merged back in the configured order, so the briefing is the same whatever order the answers came in.
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
       const found = { mail: [] as Omit<BriefingItem, 'itemId'>[], changes: [] as Omit<BriefingItem, 'itemId'>[], agenda: [] as (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: 0 };
       const [mail, calendar] = await Promise.all([
@@ -169,7 +169,7 @@ export class BriefingComposer {
     };
   }
 
-
+  /** Open tasks, and the last state of every task changed since the previous briefing. Returns the sequence read up to. */
   private readTasks(since: Briefing | null, sources: SourceState[], items: Omit<BriefingItem, 'itemId'>[]): number {
     const store = this.options.store;
     try {
@@ -205,7 +205,7 @@ export class BriefingComposer {
     }
   }
 
-
+  /** One source: a failure is recorded with its code and does not stop the others. */
   private async read(sourceId: string, work: () => Promise<boolean>): Promise<SourceState> {
     try {
       const truncated = await work();
@@ -222,7 +222,7 @@ function updatedSince(event: CalendarEvent, createdAt: string): boolean {
   return event.updated !== null && Date.parse(event.updated) > Date.parse(createdAt);
 }
 
-
+/** [local midnight, next local midnight) of a local date, as instants. */
 function dayRange(localDate: string, timeZone: string): { from: string; to: string } {
   const [year, month, day] = localDate.split('-').map(Number);
   const next = new Date(Date.UTC(year, month - 1, day + 1));

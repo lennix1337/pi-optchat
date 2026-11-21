@@ -11,10 +11,10 @@ import type { Briefing, BriefingComposer } from './compose.ts';
 export type BriefingServiceOptions = {
   local: Pick<GoogleLocal, 'withComposer'>;
   connections: string[]; timeZone: string;
-
+  /** Local HH:MM after which today's briefing is read. */
   dailyAt: string;
   now?: () => number;
-
+  /** Called with each daily briefing the service reads or finds stored; must not throw. */
   onReady?: (briefing: Briefing) => void;
 };
 
@@ -30,13 +30,13 @@ export class BriefingService {
     this.now = options.now ?? Date.now;
   }
 
-
+  /** Reads today's briefing when it is due and not yet read by this process; otherwise null. */
   readonly tick: () => Promise<Briefing | null> = singleFlight(() => this.due());
 
-
+  /** A briefing read now (on demand). */
   readonly refresh: () => Promise<Briefing> = singleFlight(() => this.compose(composer => composer.onDemand()));
 
-
+  /** The newest stored briefing; reads nothing from Google. */
   latest(): Promise<Briefing | null> { return this.compose(composer => composer.latest()); }
 
   start(intervalMs: number, onError: (error: unknown) => void): void {
