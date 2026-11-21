@@ -8,11 +8,7 @@ const STATE = '/tmp/optchat-takeover';
 
 const ENSURE_DISPLAY = `pgrep -x Xvfb >/dev/null 2>&1 || { Xvfb ${TAKEOVER_DISPLAY} -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 & i=0; while [ ! -S /tmp/.X11-unix/X${TAKEOVER_DISPLAY.slice(1)} ] && [ $i -lt 50 ]; do i=$((i+1)); sleep 0.1; done; }`;
 
-/**
- * A displayed Chromium keeps its shared memory (agent-browser always passes --disable-dev-shm-usage) and profile in the
- * temp directory. The 32 MiB /tmp tmpfs is exhausted within a login flow and navigations then fail with
- * ERR_INSUFFICIENT_RESOURCES, so a displayed browser uses the computer's larger /work tmpfs for its temp files.
- */
+// external: Chromium's shared memory and profile can exhaust the container's 32 MiB /tmp.
 const DISPLAYED_BROWSER_TMP = '/work/tmp';
 
 /**

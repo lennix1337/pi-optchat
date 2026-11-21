@@ -55,7 +55,7 @@ export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions):
   const revoke = () => { closing = true; for (const socket of clients) socket.destroy(); for (const child of children) child.kill(); };
   revocation.addEventListener('abort', revoke, { once: true });
   if (revocation.aborted) revoke();
-  // Each authenticated socket is forwarded through a separate docker exec, never a published port.
+
   server.removeAllListeners('request');
   server.on('request', (request, response) => {
     if (closing || request.headers.host !== `127.0.0.1:${port}` || (request.headers.origin !== undefined && request.headers.origin !== `http://127.0.0.1:${port}`) || !authorizeOwner(request) || request.method !== 'GET' || !['/', '/index.html', '/takeover-client.js'].includes(request.url ?? '')) {
@@ -82,7 +82,7 @@ export async function beginGraphicalTakeover(options: GraphicalTakeoverOptions):
   server.on('upgrade', (request, socket, head) => {
     const origin = `http://127.0.0.1:${port}`;
     if (closing || request.headers.host !== `127.0.0.1:${port}` || !authorizeOwner(request) || request.url !== '/websockify' || request.headers.origin !== origin || controller) { socket.destroy(); return; }
-    controller = socket; // one controller at a time; the viewer inside the computer refuses a second one as well
+    controller = socket;
     socket.once('close', () => { if (controller === socket) controller = undefined; });
     const child = environment.open({ action: 'docker_stream', container: target, program: 'socat-viewer' });
     children.add(child); child.stderr.resume(); child.once('close', () => { children.delete(child); socket.destroy(); });

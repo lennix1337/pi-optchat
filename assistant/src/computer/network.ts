@@ -19,24 +19,24 @@ function ipv4Internal(address: string): boolean {
   return blockedIpv4.some(([prefix, bits]) => (value >>> (32 - bits)) === (prefix >>> (32 - bits)));
 }
 
-// Admit only global unicast space, excluding special-purpose blocks within it.
+
 const blockedIpv6: readonly [bigint, number][] = [
-  [0x20010000000000000000000000000000n, 23], // IETF protocol assignments, including Teredo
-  [0x20010db8000000000000000000000000n, 32], // documentation
-  [0x20020000000000000000000000000000n, 16], // 6to4
-  [0x3fff0000000000000000000000000000n, 20], // documentation
+  [0x20010000000000000000000000000000n, 23], // external: IETF protocol assignments, including Teredo
+  [0x20010db8000000000000000000000000n, 32], // external: documentation prefix
+  [0x20020000000000000000000000000000n, 16], // external: 6to4 prefix
+  [0x3fff0000000000000000000000000000n, 20], // external: documentation prefix
 ];
 
 function ipv6Internal(address: string): boolean {
   if (address.includes('%')) return true;
-  // WHATWG serialization expands embedded IPv4 into hex and compresses equivalent spellings.
+  // external: WHATWG URL serialization expands embedded IPv4 and compresses IPv6.
   const normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1);
   const [left, right] = normalized.split('::');
   const head = left ? left.split(':') : [];
   const tail = right ? right.split(':') : [];
   const words = right === undefined ? head : [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail];
   const value = words.reduce((result, word) => (result << 16n) | BigInt(parseInt(word, 16)), 0n);
-  if ((value >> 125n) !== 1n) return true; // 2000::/3
+  if ((value >> 125n) !== 1n) return true; // external: IPv6 global unicast prefix 2000::/3
   return blockedIpv6.some(([prefix, bits]) => (value >> BigInt(128 - bits)) === (prefix >> BigInt(128 - bits)));
 }
 

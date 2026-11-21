@@ -25,11 +25,11 @@ function clip(text: string): { text: string; truncated: boolean } {
   return text.length > MAX_OUTPUT ? { text: text.slice(0, MAX_OUTPUT), truncated: true } : { text, truncated: false };
 }
 
-/**
- * Lifecycle tokens held by managers still open in this process. The owner's lifecycle reservations are only
- * abandoned by a manager that is closed or dead: a live reservation of another open manager (same process) must
- * not be adopted as an orphan, or a concurrent cleanup would remove a create that is still running.
- */
+
+
+
+
+
 const liveLifecycleTokens = new Set<string>();
 
 /**
@@ -256,8 +256,8 @@ export class ComputerManager {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     try { await this.ensureContainer(row); }
     catch (error) {
-      // Only failures that prove Docker created nothing (no image, a foreign container holds the name) give the row back;
-      // any other failure keeps it fenced because a container may still appear.
+
+
       if (error instanceof Error && ['computer_image_missing', 'computer_conflict'].includes(error.message)) this.abandonCreate(row.id, token, !existing);
       throw error;
     }
@@ -289,7 +289,7 @@ export class ComputerManager {
     if (!existing) {
       const run = await this.docker(this.runArgs(row), { timeoutMs: 60_000 });
       if (run.code === 0) return;
-      existing = await this.inspect(row.container); // another process may have won the name
+      existing = await this.inspect(row.container);
       if (!existing) fail(/No such image|not found|pull access/i.test(run.stderr) ? 'computer_image_missing' : 'computer_start_failed');
     }
     if (existing.owner !== this.options.owner) fail('computer_conflict');
@@ -341,7 +341,7 @@ export class ComputerManager {
     let completed = false;
     try {
       this.db.prepare('UPDATE computers SET expires = ? WHERE id = ?').run(this.now() + this.options.ttlMs, id);
-      // `timeout -s KILL` ends the process inside the container too; killing only the CLI would leave it running.
+      // external: killing the Docker CLI alone leaves the container process running.
       const result = await this.docker(['exec', '--user', '1000:1000', '--workdir', '/work', row.container, 'timeout', '-s', 'KILL', String(Math.ceil(timeoutMs / 1000)), ...argv], { timeoutMs: timeoutMs + 10_000 });
       const stdout = clip(result.stdout); const stderr = clip(result.stderr);
       completed = !result.uncertain;
@@ -435,7 +435,7 @@ export class ComputerManager {
     const inspected = await this.docker(['inspect', '--type', 'container', '--format', OWNER_ID_FORMAT, row.container]);
     const [target, owner] = inspected.stdout.trim().split('|');
     if (inspected.code !== 0 || inspected.uncertain || !/^[a-f0-9]{64}$/.test(target ?? '') || owner !== this.options.owner) {
-      // Only a read-only inspection ran; the container was never touched, so the agent can be given it back.
+
       this.db.exec('BEGIN IMMEDIATE');
       try {
         this.db.prepare('DELETE FROM computer_graphical WHERE id = ? AND generation = ?').run(id, generation);
@@ -471,9 +471,9 @@ export class ComputerManager {
       token = this.reserveLifecycle(id);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    // Without a recorded target the viewer was never started, so there is nothing to stop.
+
     if (entry.target && !(await this.stopViewer(entry.target))) {
-      this.releaseLifecycle(id, token); // stopping is idempotent: a later call may try again, and the agent stays fenced meanwhile
+      this.releaseLifecycle(id, token);
       fail('computer_graphical_cleanup_uncertain');
     }
     this.db.exec('BEGIN IMMEDIATE');
