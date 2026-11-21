@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Read-only diagnostics: ownership record, process, port and one authenticated loopback read. No model or paid calls.
+
 import { cli } from './cli.mjs';
 import { readdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';

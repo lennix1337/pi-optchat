@@ -49,7 +49,7 @@ cli(usage, {
   } finally { admin.close(); }
 });
 
-/** Only this profile's routines are managed here. */
+
 function owned(routines, id, config) {
   if (routines.get(id).profileId !== config.profileId) throw new Error('unknown_routine');
   return id;

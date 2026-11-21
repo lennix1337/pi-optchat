@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Drains and stops only the process start.mjs launched for this config (matching pid and OS start time).
+
 import { cli } from './cli.mjs';
 import { stopService } from '../src/ops/service.ts';
 
