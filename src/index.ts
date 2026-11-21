@@ -18,7 +18,7 @@ import { registerQuotaCommand } from './quota-command.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { getCurrentSystemMessage, getSupportedThinkingLevels, type Api, type Model } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -959,8 +959,13 @@ export default function optchat(host: ExtensionAPI) {
       items: () => {
         const a = active;
         if (!a || !inPhase('open', 'import-paused')) return NO_WORK;
-        const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running').map(r => runningItem(`subagente ${r.id} \u00b7 ${oneLine(r.task)}`, r.started, Date.now()));
-        return readHomeWork(a.dir, runningShells(shells).map(job => runningItem(job.label ?? `${job.id} \u00b7 ${job.command}`, job.started, Date.now())), Date.now(), agents);
+        const now = Date.now();
+        const runs = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running');
+        const jobs = runningShells(shells);
+        const agents = runs.map(r => runningItem(`subagente ${r.id} \u00b7 ${oneLine(r.task)}`, r.started, now));
+        const workers = runs.map(r => ({ id: r.id, kind: r.kind ?? 'subagente', model: r.model, label: oneLine(r.task), started: r.started, ...(r.cwd ? { target: { repo: basename(r.cwd) } } : {}) }));
+        workers.push(...jobs.map(job => ({ id: job.id, kind: 'shell', model: '', label: job.label ?? job.command, started: job.started })));
+        return { ...readHomeWork(a.dir, jobs.map(job => runningItem(job.label ?? `${job.id} \u00b7 ${job.command}`, job.started, now)), now, agents), workers };
       } });
 
   slack.setWaiting(() => {

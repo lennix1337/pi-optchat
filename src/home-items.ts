@@ -11,7 +11,7 @@ import { PRS, type PrSeen } from './slack-reports.ts';
 export type PrItem = { repo: string; number: number; title: string; url: string; checks: 'verdes' | 'vermelhos' | 'pendentes' | 'sem checks' };
 export type CommitmentItem = { text: string; status: string; url?: string };
 /** `jobs`: background shells running now; `agents`: subagents running now. Either one means the agent is not idle. */
-export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[] };
+export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[]; workers?: import('./dashboard-model.ts').DashboardWorker[] };
 export const NO_WORK: HomeWork = { prs: [], commitments: [], jobs: [], agents: [] };
 
 // external: Slack views impose section and view size limits.

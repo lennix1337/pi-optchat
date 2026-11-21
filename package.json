@@ -87,5 +87,8 @@
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
-  ]
+  ],
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "^12.2.0"
+  }
 }

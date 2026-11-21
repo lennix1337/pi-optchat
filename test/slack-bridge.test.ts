@@ -824,6 +824,18 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
   } finally { f.close(); }
 });
 
+test('App Home sends structured worker details and their explicit connections to the service', async () => {
+  const f = fixture([], { items: () => ({ prs: [], commitments: [], jobs: [], agents: [], workers: [{ id: 'w', kind: 'agy', model: 'account/Neon', label: 'GX18MCP', started: 640000, target: { repo: 'GX18MCP' } }] }) });
+  try {
+    f.bridge.sawUserMessage('oi');
+    await settle();
+    const body = f.requests.find(r => r.path === '/v1/slack/home')!.body as { team: string[]; mermaid: string };
+    assert.match(body.team[0]!, /agy · account\/Neon · GX18MCP · há 6 min/);
+    assert.match(body.mermaid, /w0 --> target0/);
+    assert.doesNotMatch(body.mermaid, /#\d/);
+  } finally { f.close(); }
+});
+
 test('App Home: a service from before the buttons refuses the new fields; the text alone still goes out', async () => {
 
   const calls: Record<string, unknown>[] = [], warnings: string[] = [];
