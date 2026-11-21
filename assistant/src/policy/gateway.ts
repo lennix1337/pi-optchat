@@ -34,7 +34,7 @@ export class Gateway {
     if (policy === 'deny' || inspection === 'deny') throw new Error('denied');
     return { ...item, review: policy === 'review' || inspection === 'review' };
   }
-
+  /** A review result carries owned copies of the exact bound metadata and bytes, so a reviewer sees what dispatch will send. */
   prepare(request: EffectRequest): { decision: 'allow'; reviewId?: undefined } | { decision: 'review'; reviewId: string; metadata: Readonly<EffectMetadata>; payload: Uint8Array } {
     const item = this.evaluate(request);
     if (!item.review) return { decision: 'allow' };
@@ -42,7 +42,7 @@ export class Gateway {
     this.db.prepare('INSERT INTO reviews VALUES (?, ?, ?, ?, ?)').run(id, item.binding, item.operation, item.metadata.expiresAt, 'pending');
     return { decision: 'review', reviewId: id, metadata: Object.freeze({ ...item.metadata }), payload: Buffer.from(item.payload) };
   }
-
+  /** Read-only reconstruction of one exact pending review; no decision or preparation occurs. */
   pendingReview(reviewId: string, request: EffectRequest): { metadata: Readonly<EffectMetadata>; payload: Uint8Array } | undefined {
     let item: ReturnType<typeof snapshot>;
     try { item = snapshot(request, this.options.profileId, this.now()); }
@@ -64,16 +64,16 @@ export class Gateway {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-
+  /** Checks the exact one-use review without consuming it; dispatch revalidates atomically. */
   reviewReady(request: EffectRequest, reviewId: string): boolean {
     const item = this.evaluate(request);
     return !!this.db.prepare('SELECT 1 FROM grants WHERE id = ? AND binding = ? AND operation = ? AND revoked = 0 AND remaining > 0 AND expires > ?').get(reviewId, item.binding, item.operation, this.now());
   }
-
+  /** Forces consumption of this exact operation-bound review even if policy now allows it. */
   dispatchReviewed<T>(request: EffectRequest, reviewId: string, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>): Promise<T> {
     return this.dispatchInternal(request, invoke, reviewId);
   }
-
+  // Adapters must use both callback arguments as the authoritative effect, not the caller's request.
   async dispatch<T>(request: EffectRequest, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>): Promise<T> {
     return this.dispatchInternal(request, invoke);
   }
@@ -102,7 +102,7 @@ export class Gateway {
     } catch { throw new Error('effect_uncertain'); }
   }
   status(operationId: string): 'uncertain' | 'response_recorded' | 'absent' {
-
+    // Reuse boundary validation and hashing without storing the operation identifier.
     const item = snapshot({ version: 1, operationId, profileId: this.options.profileId, sessionId: 'status', taskId: 'status', runId: 'status', adapter: 'status', action: 'status', account: 'status', destination: 'status', policyVersion: 'status', expiresAt: Number.MAX_SAFE_INTEGER, payload: new Uint8Array() }, this.options.profileId, this.now());
     const row = this.db.prepare('SELECT state FROM intents WHERE operation = ?').get(item.operation) as { state: 'uncertain' | 'response_recorded' } | undefined;
     return row?.state ?? 'absent';
