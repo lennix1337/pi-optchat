@@ -87,6 +87,7 @@ test('the crew keeps charters and memories under their caps, briefs workers from
     assert.match(brief, /<project-charter project="dentai">\nDentAI: Next\.js/);
     assert.match(brief, /Stripe webhooks need the raw body/);
     assert.match(brief, /## Memory proposal/);
+    assert.match(brief, /Use ripwire first, always/);
     assert.doesNotMatch(brief, /You are a scout/);
     assert.match(crew.brief('plan', undefined), /You are a scout: read and investigate, change nothing/);
     assert.doesNotMatch(crew.brief('mechanical', undefined), /project-memory|Memory proposal/);
