@@ -94,7 +94,7 @@ test('live zoom retains compacted evidence, its page offsets and the unsaved tai
       const text = step === 1 ? `EARLY_REPLY ${'x'.repeat(PAGE + 100)}` : step === 2 ? 'SECOND_REPLY' : 'FINAL_STREAMING';
       const message: AssistantMessage = { ...assistant([{ type: 'text', text }]) as AssistantMessage,
         api: model.api, provider: model.provider, model: model.id, stopReason: step < 3 ? 'toolUse' : 'stop' };
-      // Force one real SDK compaction after the second tool result, without a model call for its canned summary.
+
       message.usage.input = step === 2 ? 70000 : 100;
       message.usage.totalTokens = message.usage.input;
       void (async () => {

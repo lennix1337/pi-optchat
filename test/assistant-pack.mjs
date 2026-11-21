@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
-// npm is a .cmd shim on Windows; use its native shell explicitly, with fixed arguments.
+// external: npm is a .cmd shim on Windows and requires a shell.
 const output = process.platform === 'win32'
   ? execFileSync('cmd.exe', ['/d', '/s', '/c', 'npm pack --dry-run --json'], { encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024 })
   : execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024 });
 const result = JSON.parse(output);
-// npm versions emit either an array or a package-name-keyed manifest.
+// external: npm versions emit either an array or a package-name-keyed manifest.
 const manifest = Array.isArray(result) ? result[0] : result['pi-optchat'];
 assert.equal(manifest?.name, 'pi-optchat');
 assert.ok(Array.isArray(manifest.files), 'Missing package file manifest');

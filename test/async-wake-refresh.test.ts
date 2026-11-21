@@ -5,8 +5,8 @@ import { TURN_REFRESHED } from '../src/prompts.ts';
 import { buildContext, coldBudget, COLD_REFRESH_CHARS, lastStep, refreshedRun, refreshPoint, textContent, TURN_ENTRY_MS } from '../src/transcript.ts';
 import { customMessage, toolCallMessage, toolResultMessage, userMessage } from './messages.ts';
 
-// A background wake can start a run whose only input is a hidden custom message (no user message). The refresh helpers
-// must treat that message as the current task, or the run grows until the request overflows.
+
+
 
 const assistant = (id: string) => toolCallMessage(id, 'read');
 const result = (id: string, text: string) => toolResultMessage(id, 'read', text);

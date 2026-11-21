@@ -58,8 +58,8 @@ test('an edit of the profile autonomy.json runs by itself only when the result i
   assert.equal(judgeSelfEdit(dir, { tool: 'write', input: { path: join(dir, 'autonomy.json.md'), content: '{}' } }), undefined);
 });
 
-// 03/11 retro: mirroring the profile into dotfiles (payload/pi/.../autonomy.json) waited for the operator, though the
-// copy was byte-for-byte the live contract. A copy is judged against the live file: it may not loosen what is his.
+
+
 test('a copy of autonomy.json elsewhere runs by itself when its protected rules match the live contract', () => {
   const dir = mkdtempSync(join(tmpdir(), 'self-edit-'));
   writeFileSync(join(dir, 'autonomy.json'), JSON.stringify(contract, null, 2));

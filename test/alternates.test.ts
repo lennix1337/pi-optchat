@@ -24,16 +24,16 @@ test('a role uses its alternate while the main model is on that provider, and it
 });
 
 test('multi-account numbered accounts: the role follows the account the main model is on', () => {
-  // The alternate is configured on the base provider; the live account is a numbered slot.
+
   assert.deepEqual(modelFor(config, 'compactor', { provider: 'openai-codex-account-2', model: 'gpt-6.1-sol' }),
     { provider: 'openai-codex-account-2', model: 'gpt-6-luna', thinking: 'high' });
-  // The role's own provider: its own model on the live account.
+
   assert.deepEqual(modelFor(config, 'compactor', { provider: 'anthropic-account-3', model: 'claude-opus-5-5' }),
     { provider: 'anthropic-account-3', model: 'claude-haiku-5-5', thinking: 'high' });
-  // A pinned alternate account is left as configured while the main model is on the base.
+
   const pinned = { ...config, alternates: { compactor: [{ ...luna, provider: 'openai-codex-account-5' }] } };
   assert.deepEqual(modelFor(pinned, 'compactor', { provider: 'openai-codex', model: 'gpt-6.1-sol' }), { ...luna, provider: 'openai-codex-account-5' });
-  // No entry for the family: the main model itself, on the live account.
+
   assert.deepEqual(modelFor(config, 'compactor', { provider: 'google-account-2', model: 'gemini-3.8-flash' }),
     { provider: 'google-account-2', model: 'gemini-3.8-flash', thinking: 'off' });
 });
@@ -45,7 +45,7 @@ test('a numbered account that does not publish the fallback model runs it on the
     { provider: 'openai-codex', model: models.get('openai-codex/gpt-6-luna') });
   assert.equal(resolveModel(registry, { provider: 'openai-codex-account-2', model: 'gpt-6.1-sol', thinking: 'high' }), undefined);
   assert.equal(resolveModel(registry, { provider: 'google', model: 'gpt-6-luna', thinking: 'high' }), undefined);
-  // An account not published yet (multi-account between a reload and its session_start) never borrows the base account.
+
   assert.equal(resolveModel(registry, { provider: 'openai-codex-account-3', model: 'gpt-6-luna', thinking: 'high' }), undefined);
 });
 

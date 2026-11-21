@@ -41,7 +41,7 @@ test('every post names who spoke', () => {
 });
 
 test('the advisor run closes stdin, so a print run that reads it does not hang until the timeout', async () => {
-  // Like `pi -p`: waits for stdin EOF before answering. An open pipe would hang it.
+
   const fake = ['-e', "process.stdin.resume(); process.stdin.on('end', () => console.log('escolho o 2'))"];
   const answer = await askAdvisor(fake, { command: process.execPath, timeoutMs: 5_000 });
   assert.deepEqual(answer, { text: 'escolho o 2' });

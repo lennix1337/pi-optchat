@@ -1,4 +1,4 @@
-// Explicit opt-in real-provider benchmark. No production chat/profile or project files are used.
+
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -42,7 +42,7 @@ assert.ok(runtime.getModel(provider, model), `Model unavailable: ${provider}/${m
 const results: object[] = [];
 try {
   for (let trial = 0; trial < repeats; trial++) {
-    // Alternate order to reduce cache/order bias. Samples are not statistically conclusive.
+
     for (const thinking of (trial % 2 ? ['xhigh', 'medium'] : ['medium', 'xhigh']) as ('medium' | 'xhigh')[]) {
       const directory = join(process.cwd(), root, `${trial}-${thinking}`);
       mkdirSync(directory);
@@ -80,7 +80,7 @@ try {
             execFileSync(process.execPath, ['--test'], { cwd: directory, timeout: 10_000, stdio: 'pipe' });
             valid = record.state === 'completed';
           } else valid = record.state === 'completed' && JSON.stringify(JSON.parse(record.report ?? '')) === '[-3,0,7,8,19,42]';
-        } catch { /* Invalid output is a failed sample, not a discarded one. */ }
+        } catch {   }
         const row = { workload, trial, provider, model, requestedThinking: thinking, actualThinking: record.thinking, valid, state: record.state,
           totalMs, settleMs: events.find(e => e.phase === 'settle')?.durationMs,
           viewMs: events.find(e => e.phase === 'view')?.durationMs, openMs: event('open')?.durationMs,

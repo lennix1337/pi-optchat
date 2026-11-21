@@ -1,6 +1,6 @@
-// Risk-mode gate in the real installed SDK with the real bash tool: a disposable local push
-// is blocked, then authorized once by an interactive token; ordinary commands run ungated.
-// Scripted provider, network rejected, no external model requests.
+
+
+
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

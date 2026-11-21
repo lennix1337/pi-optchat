@@ -86,16 +86,16 @@ test('crewMetrics counts re-reads by later workers of the same project', () => {
   const dir = profile();
   try {
     addRun(dir, 'a', { kind: 'code', project: 'harness', started: T0 }, [assistant(10, 20, 30, [read('C:\\wt1\\src\\A.ts'), read('c:/wt1/test/b.test.ts')])]);
-    // Same files under another worktree root, twice in one run: each file counts once. src/new.ts is first read here.
+
     addRun(dir, 'b', { kind: 'code', project: 'harness', started: T0 + 2 * HOUR }, [
       assistant(10, 20, 30, [read('/wt2/src/a.ts'), read('/wt2/src/a.ts'), read('/wt2/src/new.ts'), read('/wt2/test/B.test.ts')]),
       assistant(1, 2, 3, [{ name: 'tell_parent', arguments: {} }, { name: 'tell_peer', arguments: {} }, { name: 'bash', arguments: {} }]),
     ]);
-    // Another project reading the same file is not a re-read.
+
     addRun(dir, 'c', { kind: 'code', project: 'dentai', started: T0 + 3 * HOUR }, [assistant(0, 0, 0, [read('/wt3/src/a.ts')])]);
-    // More than 24 h after the first reader and after b: b read src/a.ts 30 h earlier -> not a re-read.
+
     addRun(dir, 'd', { kind: 'mechanical', project: 'harness', started: T0 + 32 * HOUR }, [assistant(0, 0, 0, [read('/wt4/src/a.ts')])]);
-    // No kind: not a contract worker, never counted.
+
     addRun(dir, 'e', { project: 'harness', started: T0 + 4 * HOUR }, [assistant(0, 0, 0, [read('/wt5/src/a.ts')])]);
     const w = crewMetrics(dir, T0 - HOUR, T0 + 100 * HOUR).workers as WorkerMetrics;
     assert.equal(w.contractWorkers, 4);

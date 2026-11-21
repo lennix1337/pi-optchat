@@ -9,18 +9,18 @@ import { MIN_COMMIT_HOOK_TIMEOUT_SECONDS, activePreCommitHook, hookedCommit, reg
 import { normalPath, segments } from '../src/effect-classifier.ts';
 import { removeDir } from './support.ts';
 
-// Session 2026-10-30: husky's pre-commit in dentai-mono runs the full api and web suites (minutes). A foreground
-// `git add && git commit && git push && gh pr create` with timeout 180 outlived its bash call; the commit's outcome was
-// left uncertain and every later bash call was refused until reconciled by hand. The guard refuses that call before it runs.
 
-// Compared as the file itself: git spells the top level in long form, while Windows' temp folder may be an 8.3 short name (RUNNER~1).
+
+
+
+// external: Windows may report a directory using its 8.3 short name.
 const slash = (path: string) => path.replaceAll('\\', '/');
 const real = (path: string | undefined) => path === undefined ? path : realpathSync.native(path);
 
 function git(dir: string, ...args: string[]) {
   execFileSync('git', ['-C', dir, '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', ...args], { stdio: 'ignore' });
 }
-/** A repository with one commit made before any hook exists, so the setup commit runs none. */
+
 function repo(root: string, name: string) {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
@@ -76,7 +76,7 @@ test('a commit in a repo with a hook is found, wherever the directory comes from
 });
 
 test('the commit directory keeps its case, so the hook is found on a case-sensitive filesystem', () => {
-  // CI on Linux: mkdtemp names like /tmp/commit-hook-AbC123 stop existing once lowercased.
+  // external: Linux paths are case-sensitive.
   assert.deepEqual(segments('cd /Tmp/Repo-AbC && git commit -m x', '/Base/Dir', true).map(s => s.dir), ['/Tmp/Repo-AbC']);
   assert.deepEqual(segments('git commit -m x', '/Base/Dir', true).map(s => s.dir), ['/Base/Dir']);
   assert.equal(normalPath('Sub/Dir', '/Base', true), '/Base/Sub/Dir');
@@ -125,7 +125,7 @@ test('a timeout of at least 900 s, a repo without hooks, and other tools are not
     assert.equal(MIN_COMMIT_HOOK_TIMEOUT_SECONDS, 900);
     assert.equal(await call('git commit -m x', { timeout: 900, cwd: f.husky }), undefined);
     assert.equal(await call('git commit -m x', { timeout: 1800, cwd: f.husky }), undefined);
-    // Pi's bash tool has no default timeout: without one the call waits for the hook, however long it runs.
+    // external: Pi bash calls have no default timeout.
     assert.equal(await call('git commit -m x', { timeout: undefined, cwd: f.husky }), undefined, 'no timeout');
     assert.equal(await call('git commit -m x', { timeout: null, cwd: f.husky }), undefined, 'null timeout');
     assert.equal(await call('git commit -m x', { timeout: 180, cwd: f.plain }), undefined);

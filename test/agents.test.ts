@@ -16,10 +16,10 @@ import { runTranscript, textContent, withoutFullChat } from '../src/transcript.t
 import { memoryTools } from '../src/tools.ts';
 import { removeDir } from './support.ts';
 
-/** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
+
 const nested = () => ({ subagentLevels: 3, maxAgents: 8 });
 
-// Children load installed extensions from Pi's agent dir; keep tests away from the user's real one.
+
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
 
 async function until(condition: () => boolean) {
@@ -220,7 +220,7 @@ test('one spawn\'s reports arrive together once its last child finishes, also to
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: first ? `${task} done` : `${task} heard: ${textContent(last && 'content' in last ? last.content : '')}` }],
         api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
       void (async () => {
-        // Each first turn waits for the test to release it (or for a stop).
+
         if (first) await new Promise<void>(resolve => {
           releases.set(task, resolve); options?.signal?.addEventListener('abort', () => resolve(), { once: true });
           if (options?.signal?.aborted) resolve();
@@ -230,7 +230,7 @@ test('one spawn\'s reports arrive together once its last child finishes, also to
       return stream;
     },
   });
-  // The first spawn's sessions turn grouping off while they open.
+
   const settings: Partial<Settings> = { ...nested(), groupReports: true };
   let opening = () => { settings.groupReports = false; };
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
@@ -386,8 +386,8 @@ test('children can message their parent mid-run: the main agent, an idle parent,
       }
       void (async () => {
         stream.push({ type: 'start', partial: message });
-        // Hold each child's first turn; also hold asker-idle after its tell_parent call, so the test can
-        // prove the waiting parent hears the message while that child is still running.
+
+
         const gate = first ? task : last?.role === 'toolResult' && task === 'asker-idle' ? 'asker-idle-after-ask' : undefined;
         if (gate) await new Promise<void>(resolve => {
           releases.set(gate, resolve); options?.signal?.addEventListener('abort', () => resolve(), { once: true });
@@ -403,7 +403,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     async (text, options) => { reports.push(withoutFullChat(text)); if (options?.quiet) quiet.push(withoutFullChat(text)); }, text => warnings.push(text), dir, { settings: nested, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const heard = (id: string, from: string) => children.messages(id).some(m => m.role === 'assistant' && textContent(m.content).includes(`heard: [${from}] Message from subagent (still running): question from`));
   try {
-    // Top-level child: the message reaches the main agent before the final report.
+
     const [top] = await children.spawn([{ task: 'asker-top' }], dir);
     await until(() => releases.has('asker-top'));
     assert.ok(children.live(top)?.session.getActiveToolNames().includes('tell_parent'));
@@ -412,7 +412,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     assert.deepEqual(reports, [`[${top}] Message from subagent (still running): question from asker-top`, `[${top}] asked`]);
     assert.deepEqual(quiet, [`[${top}] Message from subagent (still running): question from asker-top`], 'the root worker progress is quiet; its final report still wakes the main agent');
 
-    // Idle parent (waiting on its child) is woken by the message.
+
     const [idle] = await children.spawn([{ task: 'boss-idle' }], dir);
     const [idleChild] = await children.spawn([{ task: 'asker-idle' }], dir, undefined, idle);
     await until(() => releases.has('boss-idle') && releases.has('asker-idle'));
@@ -427,7 +427,7 @@ test('children can message their parent mid-run: the main agent, an idle parent,
     assert.equal(reports.length, 3, 'nested messages stay with the parent, not the main agent');
     assert.equal(quiet.length, 1, 'a message to a parent worker is never quiet: it still wakes or steers that parent');
 
-    // Busy parent gets the message as steering at its next tool boundary.
+
     const [busy] = await children.spawn([{ task: 'boss-busy' }], dir);
     const [busyChild] = await children.spawn([{ task: 'asker-busy' }], dir, undefined, busy);
     await until(() => releases.has('boss-busy') && releases.has('asker-busy'));
@@ -458,7 +458,7 @@ test('a child that fails to clean up still reports, is disposed, and frees its s
         api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
       void (async () => {
         stream.push({ type: 'start', partial: message });
-        // Hold each first turn so the test can break the child's cleanup before it finishes.
+
         if (first) await new Promise<void>(resolve => {
           releases.set(task, resolve); options?.signal?.addEventListener('abort', () => resolve(), { once: true });
           if (options?.signal?.aborted) resolve();
@@ -476,7 +476,7 @@ test('a child that fails to clean up still reports, is disposed, and frees its s
     session.dispose = () => { dispose(); throw new Error('dispose failed'); };
   };
   try {
-    // A throwing session_shutdown hook must not skip dispose; a throwing dispose must not drop the report.
+
     const [hook, disposal] = await children.spawn([{ task: 'hook' }, { task: 'disposal' }], dir);
     await until(() => releases.has('hook') && releases.has('disposal'));
     const hookSession = children.live(hook)!.session, dispose = hookSession.dispose.bind(hookSession);
@@ -495,7 +495,7 @@ test('a child that fails to clean up still reports, is disposed, and frees its s
     for (const id of [hook, disposal]) assert.equal(children.history.records.get(id)?.state, 'completed');
     assert.equal(children.live(disposal), undefined, 'a failed dispose still frees the agent slot');
 
-    // A nested child whose dispose throws still reaches its waiting parent, which then finishes.
+
     const [boss] = await children.spawn([{ task: 'boss' }], dir);
     const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
     await until(() => releases.has('boss') && releases.has('worker'));
@@ -522,7 +522,7 @@ test('a batch that fails mid-launch rolls back every launched child even when th
     models: [{ id: 'child', name: 'Synthetic child', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
     streamSimple() { throw new Error('rolled-back children never run'); },
   });
-  // The first two sessions launch with a dispose that throws; the third cannot be created.
+
   let created = 0;
   const createSession: typeof createAgentSession = async options => {
     if (++created % 3 === 0) throw new Error('session store unavailable');
@@ -545,7 +545,7 @@ test('a batch that fails mid-launch rolls back every launched child even when th
     }
     assert.equal(children.active, false);
     assert.deepEqual(warnings, ['Subagent cleanup failed: Error: session 1 dispose failed', 'Subagent cleanup failed: Error: session 2 dispose failed']);
-    // All slots are free again: a full batch is refused for its own launch error, not the profile limit.
+
     created = 2;
     await assert.rejects(children.spawn(Array.from({ length: 8 }, (_, i) => ({ task: `again ${i}` })), dir), /session store unavailable/);
   } finally { await children.close(); await memory.close(); removeDir(dir); }
@@ -567,7 +567,7 @@ test('a child stopped before its first request ends stopped without running its 
     },
   });
   const memory = new Memory(join(dir, 'profile'), async input => input.source.slice(0, 100), () => {});
-  // The first child is stopped while its sibling is still being created, before either has been prompted.
+
   let children: Children | undefined, created = 0;
   children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async () => {}, () => {}, join(dir, 'profile'), { createSession: async options => {
@@ -584,7 +584,7 @@ test('a child stopped before its first request ends stopped without running its 
   } finally { await children.close(); await memory.close(); removeDir(dir); }
 });
 
-/** Children whose model works on its task until aborted, and answers any later message at once. */
+
 async function busyChildren(dir: string, reports: string[], options: { settings?: () => Partial<Settings>; onReport?: (text: string) => void } = {}) {
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   const asked: string[][] = [];
@@ -654,7 +654,7 @@ test('a message sent while an interrupt is still settling is not lost; a stop du
     assert.equal(await interrupting, 'paused');
     await until(() => children.history.records.get(late)?.state === 'completed');
     assert.equal(reports.at(-1), `[${late}] Now doing: Late.`, 'the late message resumed it');
-    // Ctrl+X lands while the interrupt is clearing Pi's queue.
+
     await children.tell(stopped, 'Use the cache.', 'user');
     const session = children.live(stopped)!.session, clear = session.clearQueue.bind(session);
     session.clearQueue = () => { void children.stop(stopped); return clear(); };
@@ -810,7 +810,7 @@ test('deleting a running agent stops it and the agents it started, delivers its 
     assert.equal(reports.length, 2, 'a finished run is deleted without another report');
     assert.deepEqual(deleted(), [`[${done}] deleted by the user`], 'so memory hears of it right away, without a turn');
 
-    // A tell that is still resuming a finished run when it is deleted makes it live again, so its own report says so.
+
     const [again] = await children.spawn([{ task: 'again' }], dir);
     await until(() => asked.length === 4);
     await children.stop(again);
@@ -831,7 +831,7 @@ test('deleting a parent while its child is still being deleted finishes both del
     const [boss] = await children.spawn([{ task: 'boss' }], dir);
     const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
     await until(() => asked.length === 2);
-    // The child's own delete stalls before its stop, so the parent's delete finishes first and deletes the child's files.
+
     const stop = children.stop.bind(children);
     let release = () => {}, stalled = false;
     children.stop = async id => { if (id === worker && !stalled) { stalled = true; await new Promise<void>(resolve => { release = resolve; }); } return stop(id); };
@@ -895,7 +895,7 @@ test('with grouped reports, a child the user pauses lets its siblings report tog
     await until(() => !children.active);
     assert.deepEqual(reports.slice(1), [`[${a}] Now doing: Carry on.`], 'resumed by the user, it reports on its own');
 
-    // Under a parent subagent, a pause that completes the batch wakes the waiting parent with it.
+
     const [boss] = await children.spawn([{ task: 'boss' }], dir);
     await until(() => asked.length === 5);
     const [x, y] = await children.spawn([{ task: 'x' }, { task: 'y' }], dir, undefined, boss);
@@ -963,7 +963,7 @@ test('router mode refuses an oversized dispatch and gives the main agent a bound
 
 test('close() does not wait for a spawn that is still waiting for memory to be summarized', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-close-settling-'));
-  // A summary that never lands: a failed one would no longer hold the spawn.
+
   const memory = new Memory(join(dir, 'profile'), (_, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('closed')))), () => {});
   const children = await quickChildren(dir, memory);
   try {
@@ -979,7 +979,7 @@ test('close() does not wait for a spawn that is still waiting for memory to be s
 
 test('a task cwd may start with ~ or be relative to the spawning agent; a missing one is refused', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-cwd-'));
-  // os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so the test must point both at its sandbox.
+  // external: Node os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
   const sandboxHome = join(dir, 'home'), saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   mkdirSync(join(sandboxHome, 'project'), { recursive: true });
   mkdirSync(join(dir, 'main', 'sub'), { recursive: true });
@@ -1058,9 +1058,9 @@ test('a tier that lies past the child budget leaves the child on the full histor
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
     models: [
-      // Haiku 5.5's shape: the 100,000-token tier binds inside its 348,000-token turn share at refreshAt 0.3.
+
       { id: 'haiku-like', name: 'Haiku-like', reasoning: false, input: ['text'], cost: { ...cost, tiers: [{ inputTokensAbove: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 5 }] }, contextWindow: 1_000_000, maxTokens: 128_000 },
-      // gpt-6-luna's shape: its tier starts at the window, past the 129,600-token turn share, so it never binds.
+
       { id: 'luna-like', name: 'Luna-like', reasoning: false, input: ['text'], cost: { ...cost, tiers: [{ inputTokensAbove: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 }] }, contextWindow: 272_000, maxTokens: 128_000 },
     ],
     streamSimple: (model, context) => {

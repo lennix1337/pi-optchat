@@ -15,7 +15,7 @@ test('fresh native loader discovers assistant commands and manual activation gui
   assert.match(skill.description, /inbox.*tasks.*input.*evidence/i);
   assert.match(skill.description, /start.*stop.*health.*back up.*restore/i);
   assert.equal(fileURLToPath(new URL('../skills/personal-assistant/SKILL.md', import.meta.url)), skill.filePath);
-  // A fresh session gets the exact operation commands and their limits from the skill alone.
+
   const body = readFileSync(skill.filePath, 'utf8');
   for (const name of ['start', 'stop', 'health', 'backup', 'restore', 'autostart']) {
     assert.match(body, new RegExp(`node assistant/scripts/${name}\\.mjs`), name);

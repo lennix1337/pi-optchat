@@ -15,7 +15,7 @@ function git(cwd: string, args: string[]) {
   assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
   return r.stdout.trim();
 }
-/** A clone of a bare origin on branch feat/x, with `commits` commits ahead of origin/main. */
+
 function repo(commits: number) {
   const { dir, close } = tempDir('accept-');
   const seed = join(dir, 'seed'), origin = join(dir, 'origin.git'), work = join(dir, 'work');
@@ -155,7 +155,7 @@ test('accept runs the real ship.mjs as a child process (no fakes) and reports wh
   assert.match(r.out, /--title/);
 });
 
-/** A main checkout on main, clean, and a worktree `.worktrees/job` of it on fix/job with `commits` commits ahead of origin/main. */
+
 function worktreeRepo(commits: number) {
   const { dir, close } = tempDir('accept-wt-');
   const seed = join(dir, 'seed'), origin = join(dir, 'origin.git'), main = join(dir, 'main');

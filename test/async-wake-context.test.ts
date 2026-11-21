@@ -52,8 +52,8 @@ test('a hidden completion keeps its provenance when the previous exchange holds 
 });
 
 test('a shown message arriving mid-run keeps the wake run\'s request prefix, so the prompt cache still holds', () => {
-  // Session 01a1878b, 2026-10-30 18:50: a goal continuation (hidden) ran tool calls, a shell report arrived, and the next
-  // request rewrote 173,795 cached tokens because the view moved from the wake to the report and the wake lost its label.
+
+
   const call: AgentMessage = { role: 'assistant', content: [{ type: 'toolCall', id: 'inspect', name: 'read', arguments: {} }],
     api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'toolUse', usage: emptyUsage(), timestamp: 3 };
   const result: AgentMessage = { role: 'toolResult', toolCallId: 'inspect', toolName: 'read',

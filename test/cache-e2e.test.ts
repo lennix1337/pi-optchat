@@ -15,8 +15,8 @@ import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 import type { ViewEntriesState } from '../src/cache.ts';
 
-// End to end: a real Pi session with OptChat, Pi's own Anthropic transport, and a local server that keeps Anthropic's prompt
-// cache rules (entries at marked blocks, a 20-block lookback, at most 4 marks, 1-hour marks before 5-minute ones).
+// external: Anthropic prompt caching uses a 20-block lookback, at most four marks, and longer-lived marks first.
+
 const root = mkdtempSync(join(tmpdir(), 'oc-cache-'));
 const oldHome = process.env.OPTCHAT_HOME;
 process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
@@ -29,7 +29,7 @@ after(() => {
 type Block = Record<string, unknown>;
 interface Usage { read: number; write: number; input: number; prefix: number; marks: number; tools: string; status: number; error?: string; body?: string }
 const tokens = (block: Block) => Math.ceil(JSON.stringify(block).length / 4);
-/** Anthropic's prompt cache as documented: tools, then system, then messages, block by block. */
+// external: Anthropic prompt cache order is tools, system, then messages.
 class SimulatedCache {
   private readonly entries = new Set<string>();
   readonly requests: Usage[] = [];
@@ -48,7 +48,7 @@ class SimulatedCache {
     const marks = blocks.flatMap((b, j) => b.mark ? [j] : []);
     const tools = createHash('sha256').update(JSON.stringify(body.tools ?? [])).digest('hex').slice(0, 8);
     const ttls = marks.map(j => blocks[j].mark!.ttl ?? '5m');
-    // A rejected request is kept too, so `status !== 200` checks see it and the log says why.
+
     const fail = (error: string) => {
       const usage = { read: 0, write: 0, input: 0, prefix, marks: marks.length, tools, status: 400, error };
       this.requests.push(usage);
@@ -72,8 +72,8 @@ class SimulatedCache {
   }
 }
 
-/** The scripted model behind the server: one call to `enable_web` when asked, `n` calls to `noop` for "busy n",
- * one `bash` call sleeping `n` seconds for "wait n", one `operational_state` record for "record state", else text. */
+
+
 function reply(body: { messages: { role: string; content: string | Block[] }[] }): { tool?: string; input?: Record<string, unknown>; text?: string } {
   const blocks = (m: { content: string | Block[] }) => typeof m.content === 'string' ? [{ type: 'text', text: m.content }] as Block[] : m.content;
   const asked = body.messages.findLastIndex(m => m.role === 'user' && blocks(m).some(b => b.type === 'text' && /(enable web|busy \d+|wait \d+|long \d+|record state|question)\s*$/.test(String(b.text))));
@@ -112,8 +112,8 @@ function sse(response: ServerResponse, usage: Usage, answer: ReturnType<typeof r
 async function simulatedAnthropic() {
   const cache = new SimulatedCache();
   let id = 0;
-  // Pi reports a failed provider call only as "Connection error." (twice on CI, a busy turn ended early). Record what the
-  // server side saw, so the next failure names who closed the connection.
+  // external: Pi can report a provider failure only as Connection error.
+
   const transport = { connections: 0, events: [] as string[] };
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const n = id + 1;
@@ -142,19 +142,19 @@ async function simulatedAnthropic() {
     socket.on('close', hadError => { if (hadError) transport.events.push(`socket ${n} closed with an error after ${Date.now() - opened} ms`); });
   });
   server.on('clientError', (error: NodeJS.ErrnoException) => transport.events.push(`clientError ${error.code ?? error.message}`));
-  // Idle connections close only from the client side; a server idle timer races clients whose timers lag (see the keep-alive test).
+
   server.keepAliveTimeout = 0;
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  // The SDK wraps a rejected fetch as "Connection error." and drops its cause: record the client side's reason too.
+  // external: The SDK wraps a rejected fetch as Connection error and can discard its cause.
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const started = Date.now();
     try {
       return await realFetch(input, init);
     } catch (error) {
-      // Any host counts: a call that reaches a provider other than the simulated one (the fixture compactor's invalid.local) is
-      // what a bare "Connection error." in the extension's notices would hide.
+
+
       const target = String(input instanceof Request ? input.url : input);
       const causes: string[] = [];
       for (let e: any = error; e && causes.length < 4; e = e.cause) causes.push(`${e.name ?? ''} ${e.code ?? ''} ${String(e.message ?? '').slice(0, 100)}`.trim());
@@ -166,7 +166,7 @@ async function simulatedAnthropic() {
     close: () => new Promise(resolve => { globalThis.fetch = realFetch; server.close(resolve); server.closeAllConnections(); }) };
 }
 
-/** `enable_web` turns on a tool that was registered inactive, as pi-web-access's web_enable does. */
+
 const webTools = (pi: ExtensionAPI) => {
   pi.registerTool({ name: 'web_x', label: 'web', description: 'Search the web. '.repeat(20), parameters: Type.Object({}), defaultActive: false,
     async execute() { return { content: [{ type: 'text', text: 'results' }], details: {} }; } });
@@ -176,7 +176,7 @@ const webTools = (pi: ExtensionAPI) => {
     async execute() { return { content: [{ type: 'text', text: 'done' }], details: {} }; } });
 };
 
-/** Pi with OptChat and `extra`, talking to `anthropic`; a fixture compactor keeps memory offline. */
+
 async function piSession(anthropic: { url: string }, name: string, extra: (pi: ExtensionAPI) => void) {
   createProfile(name);
   const choice = { provider: 'fixture', model: 'fixture', thinking: 'off' as const };
@@ -211,8 +211,8 @@ async function piSession(anthropic: { url: string }, name: string, extra: (pi: E
   return { session, errors };
 }
 
-// After an event loop blocked past Node's keep-alive timeout, the server's idle timer can fire before the client's: the
-// client then reuses a socket the server is closing and the SDK reports "Connection error." (ECONNRESET a few ms in).
+// external: Node keep-alive timeouts can race a stalled client and lead to ECONNRESET.
+
 test('the simulated server never closes an idle keep-alive connection itself, so a busy turn cannot reuse a socket it is closing', { timeout: 30_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const socket = connect(Number(new URL(anthropic.url).port), '127.0.0.1');
@@ -224,7 +224,7 @@ test('the simulated server never closes an idle keep-alive connection itself, so
     const body = JSON.stringify({ model: 'claude-sim', messages: [{ role: 'user', content: 'hi' }] });
     socket.write(`POST /v1/messages HTTP/1.1\r\nHost: sim\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
     await answered;
-    await new Promise(resolve => setTimeout(resolve, 7_000)); // past Node's default keepAliveTimeout: 5 s, plus a 1 s buffer on Node 24
+    await new Promise(resolve => setTimeout(resolve, 7_000)); // external: Node 24 defaults to a 5-second keepAliveTimeout.
     assert.equal(closedByServer, false, 'the server closed an idle keep-alive connection');
   } finally {
     socket.destroy();
@@ -235,7 +235,7 @@ test('the simulated server never closes an idle keep-alive connection itself, so
 test('real Pi + OptChat: /reload with a tool redefined reads the cached head and sends the change after the view', { timeout: 120_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   let version = 'v1';
-  // A tool whose definition changes across the reload, as an extension update or an edited AGENTS.md does.
+
   const docs = (pi: ExtensionAPI) => pi.registerTool({ name: 'docs', label: 'docs', description: `Project docs ${version}. `.repeat(40), parameters: Type.Object({}),
     async execute() { return { content: [{ type: 'text', text: 'docs' }], details: {} }; } });
   const { session, errors } = await piSession(anthropic, 'cache-reload', docs);
@@ -254,7 +254,7 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
     assert.ok(first.read > 0, `the first request after /reload read ${first.read} and wrote ${first.write}; the one before it read ${last.read} and wrote ${last.write}`);
     assert.deepEqual(requests.filter(r => r.status !== 200), []);
     assert.deepEqual(errors, [], `extension notices; the transport saw ${JSON.stringify(anthropic.transport)}`);
-    // Every request leaves one line saying how its view compares with the last one's, so a miss in usage.jsonl can be explained.
+
     const diagnostics = readFileSync(join(profilePath('cache-reload'), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.equal(diagnostics.length, requests.length);
     assert.ok(diagnostics.every(d => d.blocks > 0 && Array.isArray(d.marks) && d.model === 'claude-sim' && Number.isFinite(Date.parse(d.date))),
@@ -267,7 +267,7 @@ test('real Pi + OptChat: /reload with a tool redefined reads the cached head and
   }
 });
 
-/** A session whose first request writes a head, then `change` runs before /reload; the first request after it must read the head the cache holds. */
+
 async function headAcrossReload(name: string, change: (session: Awaited<ReturnType<typeof piSession>>['session'], headFile: string) => void) {
   const anthropic = await simulatedAnthropic();
   let version = 'v1';
@@ -302,7 +302,7 @@ test('real Pi + OptChat: the stable head is kept in head.json, not appended to t
     const saved = JSON.parse(readFileSync(headFile, 'utf8'));
     assert.equal(saved.sessionId, s.sessionManager.getSessionId());
     assert.ok(saved.head && typeof saved.head.model === 'string', JSON.stringify(saved));
-    // What each change used to add to the session file: the head as a custom entry line.
+
     bytesBefore = JSON.stringify({ type: 'custom', customType: 'optchat.head', data: saved.head, id: 'xxxxxxxx', parentId: 'xxxxxxxx', timestamp: new Date().toISOString() }).length + 1;
   });
   assert.deepEqual(errors, []);
@@ -315,7 +315,7 @@ test('real Pi + OptChat: the stable head is kept in head.json, not appended to t
 test('real Pi + OptChat: a session with only an old optchat.head entry and no head.json still restores its head', { timeout: 120_000 }, async () => {
   const name = 'head-legacy';
   const { first, last, errors } = await headAcrossReload(name, (s, headFile) => {
-    // The head as a session written before head.json holds it: a custom entry, and no file.
+
     const head = existsSync(headFile) ? JSON.parse(readFileSync(headFile, 'utf8')).head : (headEntries(s).at(-1) as unknown as { data: unknown }).data;
     s.sessionManager.appendCustomEntry('optchat.head', head);
     if (existsSync(headFile)) unlinkSync(headFile);
@@ -335,7 +335,7 @@ test('real Pi + OptChat: a head.json written for another session is not restored
   assert.notEqual(first.tools, last.tools, 'the head of another session was restored');
 });
 
-/** Lines in the profile's memory log (`main/`) and summary nodes (`tree/`): how much of the chat has a built line. */
+
 function memoryCounts(name: string) {
   const count = (sub: string) => { const dir = join(profilePath(name), sub); return existsSync(dir) ? readdirSync(dir).reduce((n, f) => n + readFileSync(join(dir, f), 'utf8').split(/\r?\n/).filter(Boolean).length, 0) : -1; };
   return { entries: count('main'), nodes: count('tree') };
@@ -347,15 +347,15 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
   const requests = anthropic.cache.requests;
   try {
     await session.prompt('first question');
-    // The first busy turn makes the view long; the second adds its 320 messages as about 80 blocks of lines, past the 20-block
-    // lookback of every default mark.
+
+
     const firstFrom = requests.length;
     await session.prompt('now get busy 160');
     const from = requests.length;
     await session.prompt('again get busy 160');
     const start = requests[from];
     const busyRequests = [from - firstFrom, requests.length - from];
-    // A provider call that fails ends a busy turn early without a simulated rejection: keep Pi's own reason for it.
+
     const turnErrors = session.messages.flatMap(m => m.role === 'assistant' && m.stopReason !== 'toolUse' && m.stopReason !== 'stop'
       ? [`${m.stopReason}: ${String(m.errorMessage ?? '').slice(0, 200)}`] : []);
     const entriesFile = join(profilePath('cache-reload-view'), 'cache-entries.json');
@@ -367,18 +367,18 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const afterReload = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
     const next = requests[after];
     const diagnostics = readFileSync(join(profilePath('cache-reload-view'), 'cache-diagnostics.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    // Side calls (compaction) leave no line: the last two are the busy turn's last call and the one after /reload.
+
     assert.equal(requests.length, after + 1);
     const [busyView, reloaded] = diagnostics.slice(-2);
-    // The view entries the busy turn's start left live for minutes. /reload used to forget them with the rest of OptChat's
-    // state, so the next call marked only its last 20 blocks, out of reach of those entries, read tools + system alone and wrote
-    // the whole view again (session 01a1704e, 2026-10-26 12:17: read 33022, wrote 78664, marks [91, 111] with the last at 69).
-    // Compaction can change the view between calls. Compare persisted digests, not an old mark's position: a lower index
-    // alone does not prove that the marked content is still the same. The controlled-view test below isolates restoration.
+
+
+
+
+
     const liveBefore = beforeReload.entries.filter(([, entry]) => entry.until > Date.parse(reloaded.date));
     const matchingAfter = liveBefore.filter(([digest, entry]) => afterReload.previous?.chain[entry.at] === digest);
-    // Each digest chain holds ~90 hashes and node clips a long assertion message, which hid the decisive figures when this failed
-    // once on CI (windows shard 2, 2026-11-04, green on rerun): keep the figures first and the chains out, down to the entries.
+
+
     const at = (state: ViewEntriesState, entries: ViewEntriesState['entries']) => entries.map(([digest, entry]) =>
       ({ at: entry.at, digest: digest.slice(0, 8), chainHere: state.previous?.chain[entry.at]?.slice(0, 8), until: entry.until, ttl: entry.ttl }));
     const before = beforeReload.previous?.chain ?? [], afterChain = afterReload.previous?.chain ?? [];
@@ -387,9 +387,9 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
     const evidence = JSON.stringify({ busyRequests, turnErrors, errors, transport: { connections: anthropic.transport.connections, events: anthropic.transport.events.slice(-12) }, memory: { before: memoryBefore, after: memoryCounts('cache-reload-view') }, start: { read: start.read, write: start.write }, next: { read: next.read, write: next.write }, busyView, reloaded, capturedAt,
       liveBefore: at(afterReload, liveBefore), matchingAfter: at(afterReload, matchingAfter), beforeEntries: at(beforeReload, beforeReload.entries),
       afterEntries: at(afterReload, afterReload.entries), chainLengths: [before.length, afterChain.length], commonPrefix });
-    // The scenario itself: the busy turn's ~320 messages must reach the post-reload view as ~80 more blocks. On that CI run they
-    // took 7 (busy call 82 blocks, persisted chain and post-reload view 89, same first blocks), the call read the entry at 80 and
-    // the read/write figures below missed by 17 tokens. Name that case instead of reporting it as a cache regression.
+
+
+
     assert.ok(reloaded.blocks >= busyView.blocks + 40, `the busy turn did not grow the view past the marks' lookback, so this run cannot test /reload: ${evidence}`);
     assert.ok(matchingAfter.length > 0, `a live persisted digest must match the post-reload view: ${evidence}`);
     assert.ok(reloaded.gapMs !== undefined, `the first call after /reload compares its view with the last one: ${evidence}`);
@@ -408,7 +408,7 @@ test('real Pi + OptChat: /reload keeps the view entries, so a turn that grew the
 for (const restore of [true, false]) test(`real Pi + OptChat: controlled view growth after reload ${restore ? 'requires the restored entries' : 'misses without the saved entries'}`, { timeout: 120_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   let lines = 400;
-  // Keep view growth independent of background summaries, but retain Pi's transport and OptChat's real payload/cache hooks.
+
   const fixedView = (pi: ExtensionAPI) => pi.on('context_with_system', event => {
     let replaced = 0;
     for (const message of event.messages) if (message.role === 'user' && Array.isArray(message.content))
@@ -427,7 +427,7 @@ for (const restore of [true, false]) test(`real Pi + OptChat: controlled view gr
     const entriesFile = join(profilePath(name), 'cache-entries.json');
     const saved = JSON.parse(readFileSync(entriesFile, 'utf8')) as ViewEntriesState;
     assert.ok(saved.entries.length > 0, 'the real request persisted cache entries');
-    // Negative control: lose only the saved cache state, not the provider cache, session or stable head.
+
     if (!restore) unlinkSync(entriesFile);
     lines = 1040;
     await session.reload();
@@ -467,7 +467,7 @@ test('real Pi + OptChat: an operational_state record mid-turn keeps the cached r
     const result = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'operational_state');
     assert.ok(result && result.role === 'toolResult' && !result.isError, JSON.stringify(result));
     assert.match(JSON.stringify(result.content), /Recorded mid-turn/, 'the tool result carries the new record into this turn');
-    // The record used to be rendered into the message that holds the view, so the turn's whole run after it was written again.
+
     assert.ok(turn[1].read >= turn[0].read + turn[0].write,
       `after the record the request read ${turn[1].read} of the ${turn[0].read + turn[0].write} tokens cached before it`);
     from = requests.length;
@@ -484,7 +484,7 @@ test('real Pi + OptChat: an operational_state record mid-turn keeps the cached r
   }
 });
 
-// 14 days of sessions: 159 of 166 moved commands ended within 30 s, and each then cost a "[shell ID]" message or polls.
+
 test('real Pi + OptChat: a long bash call that ends within the grace returns its output in the call, with no shell message after', { timeout: 60_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const { session, errors } = await piSession(anthropic, 'long-command', () => {});
@@ -504,7 +504,7 @@ test('real Pi + OptChat: a long bash call that ends within the grace returns its
   }
 });
 
-// The guard used to refuse these: 37 refusals and 29 retries of the same wait in one session (01a1704e).
+
 test('real Pi + OptChat: a foreground sleep in bash runs instead of being refused, and its output comes back within the grace', { timeout: 60_000 }, async () => {
   const anthropic = await simulatedAnthropic();
   const { session, errors } = await piSession(anthropic, 'foreground-wait', () => {});
@@ -536,21 +536,21 @@ test('real Pi + OptChat on Anthropic\'s wire: a tool enabled mid-turn and a turn
     assert.equal(enable[1].tools, enable[0].tools, 'the request\'s tool list stays as it was');
     assert.ok(enable[1].read >= enable[0].read + enable[0].write, `after enable_web the request read ${enable[1].read} of the ${enable[0].read + enable[0].write} tokens cached before it`);
     assert.ok(session.getActiveToolNames().includes('web_x'));
-    // Two busy turns of 160 tool calls each (plus the compaction-view calls OptChat makes on the side): the first makes the view
-    // long, the second adds its 320 messages to it as 80 blocks of lines, far past a mark's 20-block lookback.
+
+
     await session.prompt('now get busy 160');
     from = requests.length;
     await session.prompt('again get busy 160');
     const busy = requests.slice(from);
-    // A provider call that fails ends a busy turn early without a simulated rejection: keep Pi's own reason for it (CI run 42008145755 stopped short with errors []).
+
     const turnErrors = session.messages.flatMap(m => m.role === 'assistant' && m.stopReason !== 'toolUse' && m.stopReason !== 'stop'
       ? [`${m.stopReason}: ${String(m.errorMessage ?? '').slice(0, 200)}`] : []);
     assert.ok(busy.length >= 161, `160 tool calls and the answer, plus OptChat's side calls: ${busy.length}; errors ${JSON.stringify(errors)}; turnErrors ${JSON.stringify(turnErrors)}; non-200 ${JSON.stringify(requests.filter(r => r.status !== 200).map(r => r.status))}; transport ${JSON.stringify({ connections: anthropic.transport.connections, events: anthropic.transport.events.slice(-12) })}`);
     from = requests.length;
     await session.prompt('next question');
     const next = requests[from], start = busy[0];
-    // The busy turn's start cached tools, system prompt and the long view. Its 80 new blocks push every mark of the next turn past
-    // the 20-block lookback, so without a mark on the remembered entry the next turn reads only tools + system and rewrites the view.
+
+
     const cached = start.read + start.write;
     assert.ok(next.read > cached / 2 + start.read / 2, `the next turn read ${next.read} and wrote ${next.write} of the ${cached} the busy turn had cached at its start`);
     assert.deepEqual(requests.filter(r => r.status !== 200), [], 'every request was valid under Anthropic\'s mark rules');

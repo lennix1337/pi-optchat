@@ -1,4 +1,4 @@
-// Real installed SDK, disposable local effect, scripted provider. No external model requests.
+
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -52,7 +52,7 @@ const loader = new sdk.DefaultResourceLoader({ cwd: scratch, agentDir: agent, se
   noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
   disabledBuiltinExtensions: ['mcp', 'codemode'],
   extensionFactories: [pi => {
-    // Pin the mode: the operator's OPTCHAT_EFFECT_APPROVALS=risk would let this local probe through.
+
     registerEffectApprovals(pi, { enabled: true, grant: !delegated, mode: 'all' });
     pi.on('input', event => {
       if (delegated && event.source === 'interactive' && /^approve-effect /.test(event.text)) managerInputObserved = true;
@@ -82,7 +82,7 @@ try {
   assert.equal(requests, beforeReplay, 'replayed token is handled without another model request');
   await session.prompt('Try the identical action again.');
   assert.equal(executions, 1); assert.notEqual(pendingToken(), token);
-  // The short operator command reaches the input hook through the real SDK (no registered command).
+
   await session.prompt('/approve', { source: 'extension' });
   assert.equal(executions, 1, 'an extension-sent /approve grants nothing');
   await session.prompt('/approve', { source: 'interactive' });
@@ -100,7 +100,7 @@ try {
   await session.reload();
   await session.prompt('Attempt as a delegated session.');
   const childToken = pendingToken() || 'a'.repeat(24);
-  // This is the actual SDK call used by manager-to-child delivery, with its default input source.
+
   await session.steer(`approve-effect ${childToken}`);
   await session.prompt('Attempt again after manager guidance.');
   assert.equal(managerInputObserved, true, 'The real SDK defaults manager-style steer to interactive');

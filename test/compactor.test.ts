@@ -9,7 +9,7 @@ import { createCompressor } from '../src/compactor.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { textContent } from '../src/transcript.ts';
 
-/** A fake Anthropic model whose responses start (or fail) and finish only when the test says so. */
+
 async function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-compactor-'));
   const calls: { source: string; answer: () => void; finish: () => void; fail: (error?: string) => void }[] = [];
@@ -19,7 +19,7 @@ async function setup() {
     models: [{ id: 'compactor', name: 'Synthetic compactor', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 1000 }],
     streamSimple(model, context) {
       const stream = createAssistantMessageEventStream();
-      const source = textContent(context.messages.findLast(m => m.role === 'user')?.content).split('\n').at(-2) ?? ''; // the last input line, before </input>
+      const source = textContent(context.messages.findLast(m => m.role === 'user')?.content).split('\n').at(-2) ?? '';
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: `summary of ${source}` }], api: model.api, provider: model.provider,
         model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
       const step = <T>() => { let resolve = (_: T) => {}; return { promise: new Promise<T>(r => { resolve = r; }), resolve }; };
@@ -40,9 +40,9 @@ async function setup() {
     },
   });
   const compress = createCompressor(new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'compactor', thinking: 'off' }), undefined, undefined, [0, 0]);
-  // Long enough for a cache mark, so the first 50k characters are a shared, cacheable prefix.
+
   const view = `<chat>\n${'0+1|user: an old remembered line\n'.repeat(2000)}</chat>`;
-  // The compactor only sees sources over NODE bytes; the fake model reads just the last line.
+
   const run = (source: string, context = view, signal = new AbortController().signal) => compress({ context, source: `${'x'.repeat(600)}\n${source}`, part: { l: 0, i: 0 } }, signal);
   const settle = () => new Promise(resolve => setTimeout(resolve, 20));
   return { calls, run, settle, view };
