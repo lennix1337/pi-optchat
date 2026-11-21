@@ -1,6 +1,4 @@
-// PAID, live: one real heartbeat check against this machine's OptChat status file, printing the verdict and cost.
-// Run only with the operator's consent: node --import tsx test/heartbeat-live.mjs [profile] [provider/model]
-// Cost: one call of about 6K input and <60 output tokens.
+// external: this live provider call incurs charges; run only with the operator's consent.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +13,7 @@ const agent = join(homedir(), '.pi/agent');
 const registry = new sdk.ModelRegistry(await sdk.ModelRuntime.create({ authPath: join(agent, 'auth.json'), modelsPath: join(agent, 'models.json'), modelsStorePath: join(agent, 'models-store.json'), refreshOnCreate: false }));
 
 const dir = join(homedir(), '.optchat/profiles', profile);
-// The status file holds the chat's newest memory lines and its operational state, as the live check would see them.
+
 const snapshot = beatSnapshot({ view: readFileSync(join(homedir(), '.optchat/status.md'), 'utf8'), state: '', idleMinutes: 30, agents: [], shells: [],
   plan: heartbeatPlan(loadConfig(dir)) });
 const [provider, model] = name.split('/');

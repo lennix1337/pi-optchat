@@ -7,11 +7,11 @@ import { join } from 'node:path';
 import { classifyEffects, decide, parseContract, type Effect, type Repo } from '../src/autonomy.ts';
 import { branchMerged, type Runner } from '../src/merged-branch.ts';
 
-// 09/11: right after PR #26 of pi-gitwatch was squash-merged, deleting its branch and worktree waited for the operator.
+
 const COMMAND = 'cd C:/projetos/pi-gitwatch && git worktree remove worktrees/prunable-cleanup; git worktree prune; git branch -D fix/prunable-worktree-cleanup';
 const MERGED_BRANCH = 'fix/prunable-worktree-cleanup';
 
-/** The discard rules of the operator's autonomy.json (profile swlucas05) with a strict fallback behind them. */
+
 const CONTRACT = parseContract({
   version: 1, default: 'report', rules: [
     { action: 'discard', scope: ['worktree-cleanup'], level: 'free', note: 'merged worktrees may always go' },
@@ -70,7 +70,7 @@ test('the other discards are untouched by the merged lookup', () => {
     assert.equal(levelOf(command, repo).level, 'ask', command);
 });
 
-// branchMerged: the lookup behind Repo.merged, with the git/gh processes replaced by a script.
+
 const TIP = 'a'.repeat(40);
 const script = (answers: Record<string, string | Error>): Runner => (command, args) => {
   const answer = answers[`${command} ${args.join(' ')}`];

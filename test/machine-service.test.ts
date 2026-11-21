@@ -35,7 +35,7 @@ test('the shell inventory tells its observer when any job, foreground or backgro
   jobs.setLifecycleObserver({ began: job => { seen.push(`began ${job.mode} ${job.id}`); }, ended: job => { seen.push(`ended ${job.id} ${job.state}`); } });
   jobs.begin('tc-1', 'npm test', '.', 'foreground');
   jobs.end('tc-1', 'ok', false);
-  jobs.end('tc-1', 'again', false); // a second end is not a second notice
+  jobs.end('tc-1', 'again', false);
   const id = jobs.start('sleep 1', '.', async () => ({ output: 'done', failed: false }));
   await jobs.settle(id, 1000);
   assert.deepEqual(seen, ['began foreground tc-1', 'ended tc-1 completed', `began background ${id}`, `ended ${id} completed`]);

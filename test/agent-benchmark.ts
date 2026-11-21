@@ -1,4 +1,4 @@
-
+// external: live provider calls can incur charges; run only with the operator's consent.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';

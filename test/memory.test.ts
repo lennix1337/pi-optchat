@@ -225,7 +225,7 @@ test('a turn waits for pending summaries, goes on once they have all failed, and
     assert.equal(memory.lastError, 'model unavailable');
     for (const deadline = Date.now() + 2000; attempts < 2 && Date.now() < deadline;) await new Promise(r => setTimeout(r, 10));
     assert.equal(attempts, 2, 'retried after the delay');
-    // AbortSignal.timeout doesn't keep the event loop alive, and nothing else would while the retry hangs.
+    // external: Node AbortSignal.timeout does not keep the event loop alive.
     const stop = new AbortController(); const timer = setTimeout(() => stop.abort(), 20);
     await assert.rejects(memory.settle(stop.signal), /cancelled/, 'a retry in flight is waited for');
     clearTimeout(timer);
@@ -249,7 +249,7 @@ test('a turn waits for the view to be built, not for merges that bring it under 
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
   let release = () => {};
   const merging = new Promise<void>(resolve => { release = resolve; });
-  // Each 300-byte message is its own summary; merging two goes past 512 bytes, so it needs the compactor, which holds it.
+
   const memory = new Memory(dir, async input => { if (input.part.l) await merging; return 'merged'; }, () => {}, 500);
   try {
     memory.append('user', 'a'.repeat(300)); memory.append('user', 'b'.repeat(300));
@@ -266,7 +266,7 @@ test('progress counts summaries against the largest backlog since it was last em
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
   let release = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });
-  // Every 600-byte message needs the compactor, which holds all of them until released.
+
   const memory = new Memory(dir, async () => { await gate; return 'summary'; }, () => {});
   try {
     assert.deepEqual(memory.progress(), { done: 0, total: 0, retryIn: undefined });
@@ -440,15 +440,15 @@ test('with a prefix mark, the system prompt keeps its own entry, for an hour on 
   assert.equal(prefixRetention({ provider: 'anthropic' }), 'long');
   assert.equal(prefixRetention({ provider: 'anthropic', compat: { supportsLongCacheRetention: false } }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy' }), 'short', 'other endpoints speaking Anthropic\'s protocol keep 5 minutes');
-  // pi-multi-account registers each extra account as its own provider on Anthropic's API (2026-10-29: every main call on
-  // `anthropic-account-2` wrote no 1-hour entry, and turns after a 5-60 minute gap rewrote the whole ~90K-token prompt).
+  // external: pi-multi-account registers each extra account as its own provider.
+
   assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com' }), 'long');
   assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com/', compat: { supportsLongCacheRetention: false } }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy', baseUrl: 'https://proxy.example.com' }), 'short');
   assert.equal(prefixRetention({ provider: 'some-proxy', baseUrl: 'https://api.anthropic.com.example.com' }), 'short', 'the host itself, not a prefix of it');
-  // Since 2026-10-28 pi-multi-account serves each extra account through its loopback slot proxy, which forwards the body to
-  // api.anthropic.com unchanged: usage.jsonl then held no 1-hour write on `anthropic-account-2`, and 37 turn starts in two days
-  // 20-30 minutes after the last call read nothing and rewrote ~83K tokens each.
+  // external: pi-multi-account proxies extra accounts through loopback before Anthropic.
+
+
   assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://127.0.0.1:41977/anthropic-account-2' }), 'long');
   assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://localhost:41977/anthropic-account-2/' }), 'long');
   assert.equal(prefixRetention({ provider: 'anthropic-account-2', baseUrl: 'http://127.0.0.1:41977/anthropic-account-2', compat: { supportsLongCacheRetention: false } }), 'short');
@@ -464,9 +464,9 @@ test('under long retention both view marks take the 1-hour entry, after the syst
   type Output = { system: Marked[]; messages: { content: Marked[] }[] } & Marked;
   const request = (prefix: 'short' | 'long') => cachePayload({ system: 'system', tools: [{ name: 'zoom' }],
     messages: [{ role: 'user', content: [{ type: 'text', text: view }, { type: 'text', text: 'new question' }] }] }, { prefix }) as Output;
-  // Anthropic needs every 1-hour entry before a 5-minute one in request order: system prompt, older view mark, newer view mark, request end.
-  // The newer view mark lives an hour as well: a wake 15 minutes after the last call found only the older one and rewrote the
-  // 20 blocks between them (2026-11-08, 48 wakes: the first call wrote 34K tokens on average, 27% of the wakes' cost).
+  // external: Anthropic requires one-hour cache entries before five-minute entries in request order.
+
+
   const ttls = (output: Output) => [...output.system, ...output.messages[0].content, output].flatMap(item => item.cache_control ? [item.cache_control.ttl ?? '5m'] : []);
   assert.deepEqual(ttls(request('long')), ['1h', '1h', '1h', '5m']);
   assert.deepEqual(ttls(request('short')), ['5m', '5m', '5m', '5m']);
@@ -479,7 +479,7 @@ test('under long retention both view marks take the 1-hour entry, after the syst
   assert.equal(coldAfter({ provider: 'anthropic-account-2', baseUrl: 'https://api.anthropic.com' }), COLD_LONG_MS, 'another account on Anthropic\'s API too');
 });
 
-/** Whether some mark of the next call is at most 20 blocks after one of the last call's, so Anthropic finds that entry. */
+// external: Anthropic cache lookup searches at most 20 blocks back.
 const reaches = (next: number[], last: number[]) => next.some(n => last.some(l => n >= l && n - l <= 20));
 
 test('after a turn adds up to 60 blocks of lines, a mark of the next call still finds one of the last call\'s within 20 blocks', () => {
@@ -504,31 +504,31 @@ test('a view that jumps past the 20-block lookback still reads the last call\'s 
     return output.messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []);
   };
   const first = call(1000);
-  // The turn's tool calls are moved into memory: the view grows by 640 lines (160 blocks) at once.
+
   const second = call(1640);
   assert.ok(reaches(second, first), `marks ${second} reach none of ${first}`);
   assert.ok(second.includes(first.at(-1)!), 'the newest block the last call marked is marked again');
   assert.equal(second.at(-1), splitView('<chat>\n' + line.repeat(1640) + '</chat>').length - 2, 'the newest mark stays on the last whole block');
-  // A turn later, after 10 quiet minutes: the request's 5-minute entry is gone, the newest view mark's 1-hour entry still answers.
+
   clock += 10 * 60_000;
   const third = call(2400);
   assert.ok(third.includes(second.at(-1)!), 'the 1-hour entry of the newest mark is used after a 10-minute gap');
-  // Past the hour every entry is gone: the usual marks again.
+
   clock += 61 * 60_000;
   const late = splitView('<chat>\n' + line.repeat(2480) + '</chat>').length;
   assert.deepEqual(call(2480), [late - 22, late - 2], 'an expired entry is not chosen');
-  // Nothing to reuse: another model, or a view rewritten from its top, keeps the usual marks 0 and 20 blocks back.
+
   const usual = (lines: number) => { const n = splitView('<chat>\n' + line.repeat(lines) + '</chat>').length; return [n - 22, n - 2]; };
   assert.deepEqual(call(3200, { model: 'claude-fable-5-1' }), usual(3200));
   assert.deepEqual(call(4000, { top: '0+1024|merged summary\n' }), usual(4001));
-  // Without a memory of entries, the marks are as before.
+
   const plain = { messages: [{ role: 'user', content: [{ type: 'text', text: '<chat>\n' + line.repeat(1640) + '</chat>' }] }] };
   assert.deepEqual((cachePayload(plain, { prefix: 'long' }) as typeof plain).messages[0].content.flatMap((b, j) => 'cache_control' in b ? [j] : []), usual(1640));
 });
 
 test('a mark before the entry a call reads writes nothing, so the next turn goes back to the entry that exists, not to that mark', () => {
-  // Session 01a1704e, 2026-10-26: each turn start that found the view read exactly the 1-hour entry an earlier turn start
-  // had written (33022 + 61635, + 30008, + 64679 tokens); the turn starts after a turn that had re-marked read the system alone.
+
+
   const line = '0+1|summary of a decision\n';
   let clock = 0;
   const entries = new ViewEntries(() => clock);
@@ -539,17 +539,17 @@ test('a mark before the entry a call reads writes nothing, so the next turn goes
   };
   call(1000);
   clock += 30 * 60_000;
-  // 25 blocks later: past the lookback, so the older mark goes back on the last turn's 1-hour entry, which this call reads.
+
   const read = call(1100)[0];
-  // The turn's next call, same view: Anthropic reads the last request's entry past the view, and the mark 20 blocks back writes nothing.
+
   clock += 10_000;
   call(1100);
   clock += 30 * 60_000;
   const next = call(1120);
   const newest = splitView('<chat>\n' + line.repeat(1100) + '</chat>').length - 2;
   assert.ok(!next.includes(read) && reaches(next, [newest]), `marks ${next} reach the 1-hour entry the last turn wrote at its newest mark (${newest}), past the one it read (${read})`);
-  // A quick next turn whose view grew a little reads the last call's entry: the mark it puts 20 blocks back, before that entry, writes
-  // nothing, so the turn after a long gap must reach the quick turn's newest mark, the one entry it wrote.
+
+
   clock += 60_000;
   const quick = call(1140);
   clock += 30 * 60_000;
@@ -599,7 +599,7 @@ test('each call reports where its view first differs from the last call\'s, so a
 });
 
 test('the most due pair is the one that ended longest ago in its own line size, so the view merges as Taelin\'s rollback push', () => {
-  // Recipe §3.2: at T=10 the old rule, measured from a pair's first message, merged 0-7; push merges 8-9.
+
   assert.equal(mostDue([{ l: 2, i: 0 }, { l: 2, i: 1 }, { l: 0, i: 8 }, { l: 0, i: 9 }], 10, () => true), 2);
   assert.equal(mostDue([{ l: 2, i: 0 }, { l: 2, i: 1 }, { l: 0, i: 8 }, { l: 0, i: 9 }], 10, part => part.l !== 1), 0, 'a pair whose parent is unbuilt waits');
   type States = { keep: number, state: number, older: States } | null;
@@ -649,7 +649,7 @@ test('the view is saved and loaded as it was, and rebuilt only when the saved on
     memory = new Memory(dir, compress, () => {}, 3000);
     assert.deepEqual(parts(memory), live, 'the saved view plus a line per later message is the live view');
     await memory.close();
-    // A view the fold would not produce, but a valid tiling: loading keeps it rather than refolding.
+
     const saved = [[3, 0], [2, 2], [0, 12], [0, 13], [0, 14], [0, 15]];
     writeFileSync(join(dir, 'view.json'), JSON.stringify(saved));
     memory = new Memory(dir, compress, () => {}, 3000);
@@ -734,7 +734,7 @@ test('compactions get their own view, a quarter of the budget at most, that ends
         const [id, n] = line.split(/[+|]/).map(Number);
         assert.ok(view.some(p => start(p) === id && 2 ** p.l <= n), `${id}+${n} is the chat's view merged further`);
       }
-      // A batch that waits on a merge still being built can leave it a line or two over.
+
       const size = bytes(context);
       assert.ok(size <= 8000 + 600, `at most a quarter of the budget, not ${size}`);
       if (part.i > 100) total += size;
@@ -746,7 +746,7 @@ test('compactions get their own view, a quarter of the budget at most, that ends
     assert.ok(chatBatches >= 2, `${chatBatches} batches of the chat's view`);
     const mean = total / leaves.filter(c => c.part.i > 100).length;
     assert.ok(mean > 4000 && mean < 8000, `between an eighth and a quarter of the budget on average, not ${mean}`);
-    // About one batch per 4,000 bytes of new lines (13 messages here), plus one per batch of the chat's view.
+
     assert.ok(rewrites >= 20 && rewrites <= 45, `${rewrites} rewrites over ${leaves.length} compactions`);
   } finally { await memory.close(); removeDir(dir); }
 });
@@ -866,7 +866,7 @@ test('incremental view size and pending count match the rendered view across fai
 });
 
 test('a retry that falls due while the compactor is scheduling still runs', async () => {
-  // Each clock reading advances, so a retry can fall due between deciding to skip it and arming its timer.
+
   const now = Date.now;
   for (const step of [1, 2, 3]) {
     const dir = mkdtempSync(join(tmpdir(), 'oc-due-'));
@@ -875,7 +875,7 @@ test('a retry that falls due while the compactor is scheduling still runs', asyn
     try {
       Date.now = () => (clock += step);
       memory.append('user', 'x'.repeat(600));
-      // A ref'd timer keeps the process alive, so a hang fails here instead of draining the event loop.
+
       let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([memory.settle(undefined, 'tree').then(() => 'settled'),
         new Promise(resolve => { timer = setTimeout(resolve, 1000, 'hung'); })]);
@@ -885,9 +885,9 @@ test('a retry that falls due while the compactor is scheduling still runs', asyn
   }
 });
 
-// Work counters, not timings: the old code re-measured the whole view on every fit and rescanned every level from 0 on every pump.
+
 function longProfile(count: number) {
-  // Written directly: one fsync per append would make the fixture slow. Short entries are their own summaries.
+
   const dir = mkdtempSync(join(tmpdir(), 'optchat-scale-'));
   mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
   const date = new Date().toISOString(), lines: string[] = [], nodes: string[] = [];
@@ -915,11 +915,11 @@ test('loading a long profile does not re-measure the whole view for every messag
 
 test('a new message is summarized without rescanning every built node', async () => {
   const count = 2048, dir = longProfile(count);
-  // A small budget keeps the view short, as in a real profile, so the tree is far larger than the view.
+
   const memory = new Memory(dir, async () => 'unused', () => {}, 1000);
   try {
     assert.ok(memory.view.length < 100);
-    await memory.settle(AbortSignal.timeout(10000), 'tree'); // the first pump after load finds each level's frontier
+    await memory.settle(AbortSignal.timeout(10000), 'tree');
     const get = memory.tree.get;
     let lookups = 0;
     memory.tree.get = function (this: typeof memory.tree, key) { lookups++; return get.call(this, key); };
@@ -932,7 +932,7 @@ test('a new message is summarized without rescanning every built node', async ()
 
 test('merges that keep failing are queued and tried again at the next message, which never scans the tree for them', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-queue-'));
-  // Each 300-byte message is its own line, and merging two needs the compactor, which refuses. The budget keeps the view from merging.
+
   let refused = 0;
   const memory = new Memory(dir, async () => { refused++; throw new Error('refused'); }, () => {}, 10_000_000, 8, 60_000);
   const idle = async () => { while (memory.pending || memory.active) await new Promise(resolve => setTimeout(resolve, 5)); };
@@ -945,14 +945,14 @@ test('merges that keep failing are queued and tried again at the next message, w
     memory.append('user', `one more ${'.'.repeat(300)}`);
     await idle();
     assert.equal(refused, 100, 'each failed merge is tried once more, and nothing else');
-    // A retry reads its two halves and its own compaction view (up to 201 lines); it must not scan the whole tree per merge.
+
     assert.ok(lookups < 100 * 250, `${lookups} tree lookups for one new message, with all 100 merges failing`);
   } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a message whose node keeps failing is queued, so later messages never scan the leaves after it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-stuck-leaf-'));
-  // Message 0 needs the compactor, which refuses it; every later message is its own line and their merges succeed.
+
   const memory = new Memory(dir, async input => { if (input.part.l === 0) throw new Error('refused'); return 's'.repeat(100); }, () => {}, 10_000_000, 8, 60_000);
   const idle = async () => { while (memory.pending > 1 || memory.active) await new Promise(resolve => setTimeout(resolve, 5)); };
   try {
@@ -984,7 +984,7 @@ test('an expanded /skill: command claims the input it came from, and only that o
 });
 
 test('a parent whose source leaf is missing is ignored and rebuilt without inflating the view size', async () => {
-  // A damaged tree file can retain a parent after losing one of its source leaves; that parent is not a complete summary.
+
   const dir = mkdtempSync(join(tmpdir(), 'optchat-hidden-'));
   mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
   const date = new Date().toISOString();
@@ -993,7 +993,7 @@ test('a parent whose source leaf is missing is ignored and rebuilt without infla
   const nodes = [{ l: 0, i: 1 }, { l: 0, i: 2 }, { l: 0, i: 3 }, { l: 1, i: 0 }, { l: 1, i: 1 }];
   writeFileSync(join(dir, 'tree', `${localDay()}.jsonl`), nodes.map(n => JSON.stringify({ ...n, text: `summary ${n.l}:${n.i} padded to twenty` })).join('\n') + '\n{damaged\n');
   const measured = (memory: Memory) => bytes(memory.render());
-  // The irreducible root is 86 bytes including labels/framing; leave room for that rendered line.
+
   const memory = new Memory(dir, async () => 'top', () => {}, 100);
   try {
     assert.ok(memory.view.some(p => p.l === 0 && p.i === 0), 'the unbuilt leaf remains visible when its parent is incomplete');
@@ -1129,7 +1129,7 @@ test('labels and framing trigger a batch even when the line bodies fit the budge
       assert.equal(memory.size, bytes(memory.render()), 'built and merged lines');
       if (i < 3) assert.equal(memory.view.length, i + 1);
     }
-    // Four 246-byte bodies fit in 1,000 bytes; their full rendered lines take 1,018.
+
     assert.deepEqual(memory.view, [{ l: 2, i: 0 }]);
     assert.ok(memory.size <= memory.budget / 2);
   } finally { await memory.close(); removeDir(dir); }
@@ -1217,7 +1217,7 @@ test('old summarized messages keep their text on disk, not in RAM, and still zoo
     assert.equal(held(total - HOT_TEXTS - 1), false);
     assert.equal(held(total - HOT_TEXTS), true);
     assert.equal(memory.root[5].text, text(5));
-    // One shared getter, not an accessor and a closure per entry: those made every old entry a ~450-byte dictionary-mode object.
+
     assert.equal(Object.getOwnPropertyDescriptor(memory.root[5], 'text'), undefined);
     assert.equal(memory.zoom(5, 1), `5+1|user: ${text(5)}`);
     assert.deepEqual(memory.search('Original 17:').map(e => e.i), [17]);
@@ -1229,13 +1229,13 @@ test('old summarized messages keep their text on disk, not in RAM, and still zoo
 });
 
 test('opening a memory never holds every old text at once: summarized old messages come back from the store without text', async () => {
-  // A reload parsed the whole log (~280 MB) into strings before chilling it: RSS jumped to ~1.5 GB and the loop froze for seconds.
+
   const dir = mkdtempSync(join(tmpdir(), 'optchat-cold-load-'));
   const total = HOT_TEXTS + 40, text = (i: number) => `Original ${i}: memória ${'x'.repeat(i % 7)}`;
   const line = (value: object) => `${JSON.stringify(value)}\n`, date = '2026-10-09T12:00:00.000Z';
   mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
   writeFileSync(join(dir, 'main', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ i, kind: 'user', text: text(i), size: 0, date })).join(''));
-  // Message 3 has no summary yet: it must keep its text, since its summary still has to be built from it.
+
   writeFileSync(join(dir, 'tree', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => i === 3 ? '' : line({ l: 0, i, text: `user: ${text(i)}`, size: 0 })).join(''));
   try {
     const saved = new FileStore(dir).load(HOT_TEXTS);
@@ -1275,15 +1275,15 @@ test('old summaries stay on disk, not in RAM, and still read whole, revised ones
 });
 
 test('a zoom range that is not aligned names the aligned lines that read the same messages', () => {
-  // Real misses: id not a multiple of n (122912+64), n not a power of two (125177+6), a block past the end.
+
   assert.match(noLine(122912, 64, 123461).message, /To read messages 122912-122975 zoom: 122912\+32, 122944\+32\./);
   assert.match(noLine(125177, 6, 128426).message, /To read messages 125177-125182 zoom: 125177\+1, 125178\+2, 125180\+2, 125182\+1\./);
   assert.match(noLine(8, 8, 11).message, /To read messages 8-10 zoom: 8\+2, 10\+1\./);
-  // Nothing to suggest when the start is past the end, or the arguments are not whole numbers.
+
   assert.doesNotMatch(noLine(3, 1, 3).message, /To read/);
   assert.doesNotMatch(noLine(1.5, 2, 9).message, /To read/);
   assert.doesNotMatch(noLine(-1, 2, 9).message, /To read/);
-  // A very long range lists a bounded number of lines.
+
   assert.ok(noLine(1, 1000, 5000).message.length < 400);
 });
 
@@ -1298,7 +1298,7 @@ test('a turn waits for a slow summary of a recent message only for its grace, th
     assert.ok(performance.now() - began < 1000, 'the turn starts after the grace, not after the summary');
     assert.equal(memory.ready, false);
     assert.match(memory.render(), /0\+1\|large message .* …\(not summarized yet: zoom it\)/);
-    // A ref'd timer: AbortSignal.timeout is unref'd, and with only the pending summary the event loop would drain.
+    // external: Node AbortSignal.timeout is unrefed and does not keep the event loop alive.
     const wait = new AbortController(); const held = setTimeout(() => wait.abort(), 100);
     await assert.rejects(memory.settle(wait.signal), /cancelled/, 'without a grace the turn still waits for the summary');
     clearTimeout(held);
@@ -1361,12 +1361,12 @@ test('a turn settle with graceMs 0 resolves immediately and renders the bounded 
   try {
     const shortMsg = 'short\nline\r\nfits';
     const longMsg = 'HEAD_START ' + 'a'.repeat(600);
-    const utf8Msg = 'é'.repeat(300); // cut at 200 chars (400 bytes)
+    const utf8Msg = 'é'.repeat(300);
     memory.append('user', shortMsg);
     assert.match(memory.render(), /0\+1\|short line fits\n/);
     memory.append('user', longMsg);
     memory.append('user', utf8Msg);
-    // The summarizer stays blocked until `release`: settle returning means it did not wait for it. A wall-clock bound measured the runner, not this.
+
     await memory.settle(AbortSignal.timeout(2000), 'turn', 0);
     assert.equal(summarizerReleased, false, 'turn settle with graceMs 0 returns while the summaries are still pending');
     const rendered = memory.render();
@@ -1386,8 +1386,8 @@ test('accounted view size equals Buffer.byteLength(render()) with unbuilt lines 
   const memory = new Memory(dir, async () => { await gate[idx++]; return 'user: summarized line'; }, () => {}, 128_000, 1);
   try {
     memory.append('user', 'first\nmessage ' + 'x'.repeat(600));
-    memory.append('user', 'second\nshort ' + '😀'.repeat(150)); // cut on a 4-byte character boundary
-    memory.append('user', 'third ' + '中'.repeat(200)); // 606 bytes, cut on 3-byte char boundary
+    memory.append('user', 'second\nshort ' + '😀'.repeat(150));
+    memory.append('user', 'third ' + '中'.repeat(200));
     await memory.settle(AbortSignal.timeout(2000), 'turn', 0);
     assert.equal(memory.ready, false);
     assert.equal(memory.size, Buffer.byteLength(memory.render(), 'utf8'), 'size matches before any unbuilt line is built');

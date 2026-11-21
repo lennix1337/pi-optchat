@@ -31,13 +31,13 @@ test('extractGateAsks deduplicates by id and resolves approved, denied, and unan
 
     const sessionLines = [
       JSON.stringify({ type: 'session', version: 3, id: 's1', timestamp: '2026-11-10T10:00:00.000Z', cwd: 'C:/projetos/demo' }),
-      // Unrelated toolResult mentioning approve-effect (e.g. reading source code) should be ignored
+
       JSON.stringify({
         type: 'message',
         timestamp: '2026-11-10T10:00:01.000Z',
         message: { role: 'toolResult', toolCallId: 'c0', toolName: 'read', content: [{ type: 'text', text: `approve-effect ${id1}` }] },
       }),
-      // Ask 1: approved later
+
       JSON.stringify({
         type: 'message',
         timestamp: '2026-11-10T10:01:00.000Z',
@@ -61,7 +61,7 @@ test('extractGateAsks deduplicates by id and resolves approved, denied, and unan
         timestamp: '2026-11-10T10:01:10.000Z',
         message: { role: 'user', content: [{ type: 'text', text: `approve-effect ${id1}` }] },
       }),
-      // Ask 2: denied
+
       JSON.stringify({
         type: 'message',
         timestamp: '2026-11-10T10:02:00.000Z',
@@ -82,7 +82,7 @@ test('extractGateAsks deduplicates by id and resolves approved, denied, and unan
         timestamp: '2026-11-10T10:02:10.000Z',
         message: { role: 'user', content: [{ type: 'text', text: 'Denied by the operator, do not run or retry: gh pr merge 14 --admin' }] },
       }),
-      // Ask 3: unanswered
+
       JSON.stringify({
         type: 'message',
         timestamp: '2026-11-10T10:03:00.000Z',
@@ -101,7 +101,7 @@ test('extractGateAsks deduplicates by id and resolves approved, denied, and unan
     ];
 
     writeFileSync(join(dir, 'main.jsonl'), sessionLines.join('\n') + '\n');
-    // Duplicate copy in sub/run-0 without the approval line should not downgrade outcome
+
     writeFileSync(join(subDir, 'session.jsonl'), sessionLines.slice(0, 4).join('\n') + '\n');
 
     const asks = extractGateAsks(dir);
@@ -135,7 +135,7 @@ test('labelReplayItem and replayAsks distinguish needed, needless-still-asks, an
   assert.deepEqual(summary.byLabel, { needed: 1, 'needless-still-asks': 2, fixed: 1 });
   assert.equal(summary.topNeedless.length, 2);
 
-  // Explicit check of labelReplayItem for false-positive contract touch
+
   const falseContract = labelReplayItem(
     { tool: 'bash', input: { command: 'gh pr create --body "mentions autonomy.json"' }, command: 'gh pr create --body "mentions autonomy.json"' },
     { wouldAsk: true, touchesContract: true, effects: [] },

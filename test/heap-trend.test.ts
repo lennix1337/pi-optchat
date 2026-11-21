@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { heapGrowth, heapGrowthLine, recordHeapSample, rssLine, type HeapSample } from '../src/heap-trend.ts';
 
 const H = 3_600_000;
-/** One sample per `everyH` hours over `hours`, the heap starting at `start` MB and rising `rate` MB/h. */
+
 const series = (hours: number, rate: number, { start = 1470, everyH = 0.5, afterGc = false } = {}): HeapSample[] =>
   Array.from({ length: Math.floor(hours / everyH) + 1 }, (_, i) => ({ at: i * everyH * H, heapUsedMb: start + rate * i * everyH, afterGc }));
 

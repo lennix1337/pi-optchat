@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { defaultMonitors } from '../src/prod-health.ts';
 import { headTime, loadedCodeProbe, localPackages } from '../src/loaded-code-health.ts';
 
-const LOADED = Date.parse('2026-11-20T22:00:00Z'); // 19:00 Brasília
+const LOADED = Date.parse('2026-11-20T22:00:00Z');
 const sec = (iso: string) => Date.parse(iso) / 1000;
 
 test('a package committed after the session loaded its code is a problem naming it and both times', () => {

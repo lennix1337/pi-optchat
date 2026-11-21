@@ -10,7 +10,7 @@ import { memoryTools } from '../src/tools.ts';
 import { logMessage, textContent } from '../src/transcript.ts';
 import { removeDir } from './support.ts';
 
-/** An RGB PNG whose pixels come from `pixel`. */
+
 function png(width: number, height: number, pixel: (x: number, y: number) => [number, number, number]) {
   const raw = Buffer.alloc((width * 3 + 1) * height);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) raw.set(pixel(x, y), y * (width * 3 + 1) + 1 + x * 3);
@@ -47,7 +47,7 @@ test('an image is kept once, unchanged when small, and zoom(id, 1) returns it on
   assert.deepEqual(whole.content.slice(1), [small]);
   assert.equal((await zoom.execute('call', { id: 1, n: 1 })).content.length, 1, 'the first page ends before the reference');
   assert.deepEqual((await zoom.execute('call', { id: 1, n: 1, offset: PAGE })).content.slice(1), [small]);
-  // The zoom's echo names each image once, through its page, so memory never points at a copy.
+
   logMessage(memory, { role: 'toolResult', toolCallId: 'call', toolName: 'zoom', content: whole.content, isError: false, timestamp: 1 });
   assert.equal(memory.root[2].text.match(/\[image /g)?.length, 2);
 }));

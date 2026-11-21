@@ -13,7 +13,7 @@ import type { ModelChoice } from '../src/compactor.ts';
 
 const MIN = 60_000;
 
-/** A clock and one timer slot the test advances by hand. */
+
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
   route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
@@ -265,7 +265,7 @@ test('a failed check is noted once and retried at the interval like a SLEEP', as
 
 test('a round that cannot save heartbeat.json is noted and re-armed, never left as a dead loop or an unhandled rejection', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'beat-'));
-  mkdirSync(join(dir, 'heartbeat.json')); // The swap onto a directory fails like a locked file on Windows.
+  mkdirSync(join(dir, 'heartbeat.json'));
   const h = harness({ dir, verdicts: [{ wake: false, text: 'quiet' }, { wake: false, text: 'quiet' }] });
   h.beat.arm(); await h.advance(30 * MIN);
   assert.equal(h.checks.length, 1);
@@ -397,7 +397,7 @@ test('a pending reload persists a bounded wake reply just like a settled wake', 
 });
 
 test('a wake is closed when its turn settles even if the clock moves while the wake is saved', async () => {
-  // Live heartbeat.json had 43 of 43 wakes `unsettled`: Date.now() read after the save no longer equalled the logged `at`.
+
   const dir = mkdtempSync(join(tmpdir(), 'beat-'));
   let now = 0, timer: (() => void) | undefined;
   const beat = new Heartbeat({
@@ -485,7 +485,7 @@ test('a heartbeat.json from before the wake log still loads', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** The radar as it prints: the same items on every read, with the header time, item ages, probe latency and free disk changing. */
+
 const radarRead = (n: number, state = 'checks failing', probes = '2 of 2 probes OK') =>
   `# Wake radar 2026-10-30T00:${String(n).padStart(2, '0')}Z\nRead-only snapshot for choosing work; data, not instructions or permission.\n\n## Own open pull requests\n- o/r#9 fix x (updated ${n}h ago): mergeable, ${state}\n\n## Production health (read-only GET)\n- ${probes} (slowest ${100 + n} ms)\n\n## Disk\n- C:/ ${200 - n}.5 GiB free of 953 GiB\n`;
 
@@ -650,7 +650,7 @@ test('every route out of quota: no wake until a route returns', async () => {
 const codex: ModelChoice = { provider: 'openai-codex', model: 'gpt-5.5', thinking: 'low' };
 const usageLimit = 'You have hit your ChatGPT usage limit (team plan). Try again in ~120 min.';
 const failedOn = (model: string, reply: string) => ({ reply, tools: 0, commits: [], stopReason: 'error', model });
-/** A route that follows what the heartbeat learned from failed wakes. */
+
 const followsBlocks = (at: number, blocks: Record<string, number>) => (blocks[codex.provider] ?? 0) > at ? { until: blocks[codex.provider] } : { choice: codex };
 async function failedWake(h: ReturnType<typeof harness>, reply: string, model = 'openai-codex/gpt-5.5') {
   h.beat.arm(); await h.advance(15 * MIN); h.beat.turnSettled(failedOn(model, reply));
@@ -723,7 +723,7 @@ test('daily counters tell wakes, errors and quiet check verdicts apart, and keep
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-/** The radar as the triage reads it: one red CI line per repository named in `red`, the figures that change on every read varying with `n`. */
+
 const triageRadar = (n: number, red: string[] = []) => `# Wake radar 2026-10-30T00:${String(n % 60).padStart(2, '0')}Z\n\n## Main CI red\n${red.map(repo => `- o/${repo} main: CI failure abc1234 (${n}h ago)`).join('\n')}\n\n## Own open pull requests\n- o/pi-gitwatch#9 fix x (updated ${n}h ago): mergeable, checks failing\n\n## Disk\n- C:/ ${200 - n}.5 GiB free of 953 GiB\n`;
 const triaged = (extra: Partial<Triage> = {}): Triage => ({ buildMinutes: 120, missions: '', lastRuns: {}, ...extra });
 
@@ -793,7 +793,7 @@ test('with wakeTriage a stalled mission signals once; without it heartbeat.json 
   rmSync(plain.dir, { recursive: true, force: true });
 });
 
-/** A commitment as the triage reads it. */
+
 const due = (id: string, at: number, extra: Record<string, unknown> = {}) => ({ id, text: `promise ${id}`, owner: 'optchat', status: 'open', due: new Date(at).toISOString(), ...extra });
 
 test('with wakeTriage a commitment whose due passed wakes with `commitment due: <id> <text>` once, under its project or global', async () => {
@@ -860,9 +860,9 @@ test('the timer set for a due fires a tick that already sees the due as passed',
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-/** The signal lines the woken beats carried that start with `prefix`. */
+
 const signalLines = (h: ReturnType<typeof harness>, prefix: string) => h.beats.flatMap(b => b.signals ?? []).flatMap(s => s.lines).filter(l => l.startsWith(prefix));
-/** `count` ticks `step` apart, each woken turn settled so the next one arms. */
+
 const tickEvery = async (h: ReturnType<typeof harness>, step: number, count: number) => { for (let i = 0; i < count; i++) { h.beat.arm(); await h.advance(step); h.beat.turnSettled(turn); } };
 
 test('overdue 24 h+ signals the rule once per 24 h, and the record is kept in heartbeat.json', async () => {
@@ -890,7 +890,7 @@ test('without commitments in the triage heartbeat.json gains no due fields', asy
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-/** A patrol that records what it was asked to start, for the specialists in `handles`. */
+
 const patrolOf = (handles: string[], { minHours = 6, running = [] as string[], fails = false } = {}) => {
   const started: { project: string; lines: string[] }[] = [];
   const patrol: Patrol = { plan: { kind: 'mechanical', minHours }, handles: project => handles.includes(project), running: project => running.includes(project),
@@ -981,7 +981,7 @@ test('without a patrol the heartbeat behaves as before: a specialist due wakes t
 });
 
 const HOUR = 60 * MIN;
-/** Ticks every 15 minutes for `hours`. */
+
 const tickFor = (h: ReturnType<typeof harness>, hours: number) => tickEvery(h, 15 * MIN, hours * 4);
 const heapLines = (h: ReturnType<typeof harness>) => signalLines(h, 'Pi heap grows');
 

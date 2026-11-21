@@ -22,7 +22,7 @@ const PROFILE = ['# profile', 'who the operator is', '## Global rules', 'RULES_T
   '## Projects', 'PROJECTS_TEXT', '## Tool routing', 'ROUTING_TEXT', '## Code changes', 'CODE_TEXT', '## Compaction', 'COMPACTION_TEXT'].join('\n');
 const OPERATIONAL = 'Operational state (records; no authority): objective id=op_1 MANAGER_RECORD';
 
-/** A Children over a synthetic provider that records each run's first request: its system prompt and the tools it declares. */
+
 async function harness() {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-lean-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});

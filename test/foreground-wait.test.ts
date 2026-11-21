@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { foregroundWait } from '../src/foreground-wait.ts';
 
-// Commands taken from session 01a1704e, where 56 foreground waits cost 38 minutes.
+
 test('long sleeps, polling loops and watch commands are foreground waits', () => {
   for (const command of [
     'sleep 240; tail -c 600 C:/tmp/gx-issues/gates-all/gateway-tests.log',

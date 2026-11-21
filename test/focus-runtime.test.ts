@@ -64,7 +64,7 @@ test('real Pi tools feed focus into the next turn, and reopening the profile cle
     assert.ok(!JSON.stringify(captured[0]).includes(evidence), 'fixture view itself hides original detail');
     await session.prompt('Resume that subject, without reading again.');
     assert.ok(JSON.stringify(captured.at(-1)).includes(evidence), 'next real provider request resolves original via the focus reference');
-    // Focus updates are batched: the first turn request after a tool keeps its original prefix.
+
     const firstUser = (c: Context) => c.messages.find(m => m.role === 'user')?.content;
     assert.deepEqual(firstUser(captured[0]), firstUser(captured[1]));
     await close();
