@@ -5,7 +5,7 @@ import { ReportDispatcher } from '../src/report-dispatch.ts';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // external: Pi 1.5 can refuse a second send while an idle send is starting asynchronously.
-const fakePi = ({ startMs = 10, startsTurn = () => true }: { startMs?: number; startsTurn?: (text: string) => boolean } = {}) => {
+const fakePi = ({ startMs = 10, startWaitMs = 60, startsTurn = () => true }: { startMs?: number; startWaitMs?: number; startsTurn?: (text: string) => boolean } = {}) => {
   const pi = { running: false, starting: false, delivered: [] as string[], lost: [] as string[], sends: [] as string[],
     send(text: string, fromIdle: boolean) {
       pi.sends.push(text);
@@ -16,15 +16,17 @@ const fakePi = ({ startMs = 10, startsTurn = () => true }: { startMs?: number; s
     } };
   const failures: [string, number, boolean][] = [];
   const dispatcher: ReportDispatcher<string> = new ReportDispatcher<string>({ idle: () => !pi.running, send: pi.send, pollMs: 1,
-    startWaitMs: 60, failed: (text, attempt, giveUp) => { failures.push([text, attempt, giveUp]); } });
+    startWaitMs, failed: (text, attempt, giveUp) => { failures.push([text, attempt, giveUp]); } });
   return { pi, dispatcher, failures };
 };
 
 test('several reports pushed at once while idle all reach Pi: one starts the turn, the rest queue into it', async () => {
-  const { pi, dispatcher } = fakePi();
+  const { pi, dispatcher } = fakePi({ startWaitMs: 60_000 });
   const texts = Array.from({ length: 32 }, (_, i) => `report ${i}`);
   for (const text of texts) dispatcher.push(text);
-  await sleep(100);
+  for (const t0 = Date.now(); Date.now() - t0 < 90;);
+  const end = Date.now() + 5_000;
+  while (pi.delivered.length < texts.length && Date.now() < end) await sleep(5);
   assert.deepEqual(pi.lost, []);
   assert.deepEqual(pi.delivered, texts);
 });
