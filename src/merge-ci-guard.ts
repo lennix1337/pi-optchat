@@ -53,7 +53,7 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
   return undefined;
 }
 
-/** True when every non-passing check is an Actions job that ran no step. */
+
 async function neverStarted(view: Rollup, exec: Exec, cwd: string): Promise<boolean> {
   const open = (view.statusCheckRollup ?? []).filter(c => !(c.conclusion && PASSED.has(c.conclusion)));
   if (!open.length) return false;

@@ -7,7 +7,7 @@ export const HOUSEKEEPING_SLACK = 2;
 
 export interface Cut { firstKeptEntryId: string; dropped: number; kept: number }
 
-/** The entries that make Pi send a message to the model, or draw one in the chat. */
+
 const counts = (entry: SessionEntry) => entry.type === 'message' || entry.type === 'custom_message';
 const startsTurn = (entry: SessionEntry) => entry.type === 'custom_message' || entry.type === 'message' && entry.message.role === 'user';
 
@@ -18,14 +18,14 @@ const startsTurn = (entry: SessionEntry) => entry.type === 'custom_message' || e
  */
 export function housekeepingCut(context: readonly SessionEntry[], keep: number): Cut | undefined {
   if (keep <= 0) return;
-  // The first entry of a compacted context is the compaction itself: it stays and is not counted.
+
   const entries = context[0]?.type === 'compaction' ? context.slice(1) : context;
   const total = entries.filter(counts).length;
   if (total <= keep * HOUSEKEEPING_SLACK) return;
   let seen = 0, start = entries.length;
   while (start > 0 && seen < keep) if (counts(entries[--start])) seen++;
-  // Back to the turn start at or before the target, so at least `keep` messages stay; in one long turn, forward to the next
-  // turn start or, failing that, to an assistant message. A cut that leaves nothing to drop is no cut.
+
+
   let cut = entries.findLastIndex((entry, i) => i <= start && startsTurn(entry));
   if (cut <= 0) cut = entries.findIndex((entry, i) => i >= start && startsTurn(entry));
   if (cut < 0) cut = entries.findIndex((entry, i) => i >= start && entry.type === 'message' && entry.message.role === 'assistant');

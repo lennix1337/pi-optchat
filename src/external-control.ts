@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-/**
- * The control inbox a pi-subagents runner watches inside its run directory.
- * A request file is the runner's own cross-process channel, so whoever writes
- * it reaches the run without owning its session.
- */
+
+
+
+
+
 const MAX_STEER_MESSAGE_BYTES = 128 * 1024;
 
 export interface ControlRequestOptions {

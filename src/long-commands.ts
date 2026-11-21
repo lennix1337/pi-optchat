@@ -1,9 +1,9 @@
-/**
- * Bash calls expected to run long. The main agent blocks on a foreground bash call until it ends, so a build or a
- * test suite holds the operator's reply. Such a call is moved to a managed background shell instead (shells.ts), whose
- * end arrives as a message. Context: scripts/delegation-stats.mjs over the OptChat main sessions finds that, per operator
- * run with commands, their time is a median of 21 s and a p90 of 353 s; 120 s is the cut-off chosen for a call to count as long.
- */
+
+
+
+
+
+
 
 /** A foreground bash call longer than this (seconds) is moved to a background shell. */
 export const LONG_COMMAND_SECONDS = 120;
@@ -18,21 +18,21 @@ export const LONG_COMMAND_GRACE_SECONDS = 30;
 export const LONG_COMMAND_NOTE = `Commands expected to run long (test suites, builds, dev servers, a timeout above ${LONG_COMMAND_SECONDS} s) or to wait (a sleep of 15 s or more, a polling loop, gh run watch) run as a background shell: one that ends within ${LONG_COMMAND_GRACE_SECONDS} s returns its output here as usual; one still running returns its shell ID, and the outcome arrives later as a "[shell ID]" message.`;
 
 const MAX_SHELL_DEPTH = 3;
-/** Commands that run another command: their argument is classified in its turn. */
+
 const PREFIX_WRAPPERS = new Set(['time', 'nohup', 'exec', 'command', 'env', 'caffeinate', 'rtk']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'wsl', 'pwsh', 'powershell', 'cmd']);
-/** The flags that give a shell its command text. */
+
 const SHELL_COMMAND_FLAGS = new Set(['-c', '-lc', '-ic', '-e', '-command', '/c']);
-/** A question about the tool, not a run of it: `npm test --help` is short. */
+
 const PROBE_FLAGS = new Set(['--help', '-h', '--version', '-v', '-V', '--list']);
-/** Script files whose run is a build or a suite: `.\build.ps1`, `pwsh -File test.ps1`. */
+
 const BUILD_SCRIPT = /^(build|test|publish|release)\.(ps1|sh)$/i;
-/** Words of an npm script name (`test:unit`, `build-prod`) that mark it as a build, a suite or a server: it runs until done or stopped. */
+
 const PACKAGE_SCRIPT_WORDS = new Set(['test', 'tests', 'build', 'ci', 'e2e', 'verify', 'check', 'typecheck', 'lint', 'coverage', 'bench', 'compile', 'dist', 'package', 'release', 'dev', 'start', 'serve', 'watch', 'storybook']);
 const isPackageScript = (name: string) => name.split(/[:._-]+/).some(word => PACKAGE_SCRIPT_WORDS.has(word));
 
 const NPM_LIKE = new Set(['npm', 'pnpm', 'yarn', 'bun']);
-/** Tool -> subcommands that run long (a Map: a command name must not reach Object.prototype). */
+
 const RUNNER_SUB = new Map<string, Set<string>>([
   ['npm', new Set(['test', 't', 'ci', 'install', 'i', 'it', 'start'])],
   ['cargo', new Set(['build', 'b', 'test', 't', 'check', 'clippy', 'bench', 'run', 'nextest'])],
@@ -46,7 +46,7 @@ const NPX_RUNNER = new Set(['playwright', 'jest', 'vitest', 'mocha', 'cypress'])
 
 const baseName = (word: string) => (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.exe$/, '');
 
-/** Seconds from a `timeout`/`sleep` argument (`120`, `2m`, `1.5h`), or undefined when it is not one. */
+
 function seconds(token: string | undefined): number | undefined {
   const match = /^(\d+(?:\.\d+)?)([smhd]?)$/i.exec(token ?? '');
   if (!match) return undefined;
@@ -75,7 +75,7 @@ export function commandSegments(command: string): string[][] {
   return segments;
 }
 
-/** Why one simple command (its words) runs long, or undefined. */
+
 function segmentReason(input: string[], depth: number): string | undefined {
   let words = input;
   while (words.length && (/^\w+=/.test(words[0]) || PREFIX_WRAPPERS.has(baseName(words[0])))) words = words.slice(1);
@@ -91,7 +91,7 @@ function segmentReason(input: string[], depth: number): string | undefined {
   if (args.some(arg => PROBE_FLAGS.has(arg))) return undefined;
   if (BUILD_SCRIPT.test(head)) return head;
   if (SHELLS.has(head)) {
-    // `wsl -e bash -lc "cd x && npm test"`: the text after the flag is a command of its own.
+
     const at = args.findIndex(arg => SHELL_COMMAND_FLAGS.has(arg.toLowerCase()));
     if (at >= 0) return depth < MAX_SHELL_DEPTH ? longCommandReason(args.slice(at + 1).join(' '), undefined, depth + 1) : undefined;
     const script = args.find(arg => BUILD_SCRIPT.test(baseName(arg)));

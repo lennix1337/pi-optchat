@@ -93,7 +93,7 @@ export async function showProgress(ctx: { ui: Pick<ExtensionUIContext, 'select' 
     `${job.mode} import · ${p.messages}/${p.total} messages indexed · ${p.summaries} summary nodes`,
     p.error ? `Retrying: ${clean(p.error)} · you can pause` : 'The original memory stays intact until this finishes.',
   ]));
-  // Attach a rejection handler immediately; UI and model failures can happen independently.
+
   const outcome = task.then(() => ({ complete: true as const }), error => ({ complete: false as const, error })).finally(() => finished.abort());
   try {
     await ctx.ui.select('Import in progress', ['Pause import'], { signal: finished.signal });

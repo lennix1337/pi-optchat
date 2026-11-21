@@ -37,7 +37,7 @@ const count = (value: number | undefined, max = Number.MAX_SAFE_INTEGER) =>
 const money = (value: number | undefined) =>
   Math.round(Math.max(0, Math.min(1_000_000, Number.isFinite(value) ? value as number : 0)) * 1e6) / 1e6;
 
-/** Appends one validated line; false means it was not recorded, never that the caller should retry differently. */
+
 function append(directory: string, file: 'inbox.jsonl' | 'outcomes.jsonl', value: unknown): boolean {
   try {
     const path = join(resolve(directory), 'signals', file);

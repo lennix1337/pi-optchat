@@ -65,7 +65,7 @@ export class MachineLedger {
           try {
             const row = JSON.parse(line) as LedgerRow;
             if (typeof row.t === 'number' && typeof row.owner === 'string' && typeof row.cpuS === 'number') parsed.push(row);
-          } catch { /* a line cut short by a crash */ }
+          } catch {   }
         }
         if (this.fileCache.size >= 16) this.fileCache.delete(this.fileCache.keys().next().value!);
         this.fileCache.set(path, { stamp, rows: parsed });
@@ -81,7 +81,7 @@ export class MachineLedger {
     try { files = readdirSync(this.dir); } catch { return removed; }
     for (const file of files) {
       const day = FILE.exec(file)?.[1];
-      if (day && day < oldest) { try { rmSync(join(this.dir, file)); removed.push(file); } catch { /* in use: the next prune retries */ } }
+      if (day && day < oldest) { try { rmSync(join(this.dir, file)); removed.push(file); } catch {   } }
     }
     return removed;
   }

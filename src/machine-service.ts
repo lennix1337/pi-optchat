@@ -10,7 +10,7 @@ import { dataHome } from './profiles.ts';
 import type { Situation } from './situation.ts';
 
 const SAMPLE_MS = 5_000;
-/** One sampler per Pi process, shared by the shell tools that tell it who started what. A /reload re-evaluates the extension, so the handle lives on a global symbol. */
+
 const SERVICE = Symbol.for('pi-optchat.machine-service');
 const holder = globalThis as typeof globalThis & { [SERVICE]?: MachineService };
 
@@ -66,7 +66,7 @@ export class MachineService {
       setPriority: (pid, level) => setPriority(pid, level === 'idle' ? priority.PRIORITY_LOW : priority.PRIORITY_BELOW_NORMAL),
     });
     this.sampler = new HelperSampler({ dir: options.dir ?? machineDir(), rootPid: process.pid, intervalMs: SAMPLE_MS,
-      onSample: sample => { try { this.sense.ingest(sample); } catch { /* a bad sample must not stop the next one */ } },
+      onSample: sample => { try { this.sense.ingest(sample); } catch {   } },
       onStatus: status => { this.state = status; } });
   }
   get status() { return this.state; }
@@ -86,7 +86,7 @@ export class MachineService {
   insights(windowMs: number, now = Date.now()) { return machineInsights(this.sense.history(now - windowMs), now, windowMs); }
 }
 
-// ---- the read-only `machine` tool ----
+
 
 const pct = (n: number | null) => n === null ? '?' : `${Math.round(n)}%`;
 const gb = (mb: number) => (mb / 1024).toFixed(1);

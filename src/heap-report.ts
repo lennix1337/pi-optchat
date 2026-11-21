@@ -11,14 +11,14 @@ import { stallWatch } from './loop-stalls.ts';
 import { startStallProfiler } from './stall-profiler.ts';
 import type { Memory } from './memory.ts';
 
-/** A heap over this share of V8's limit is too big to snapshot in place: the snapshot needs about as much memory again. */
+// external: V8 heap snapshots need roughly as much memory as the heap.
 const SNAPSHOT_HEAP_SHARE = 0.25;
 const SUMMARY_TIMEOUT_MS = 180_000, SUMMARY_TOP = 30;
 const MB = 1024 * 1024;
 const round = (n: number, digits = 1) => Math.round(n * 10 ** digits) / 10 ** digits;
 const mb = (bytes: number) => round(bytes / MB);
 
-/** Event-loop delay and the reload count live on globalThis: Pi reuses the cached extension module across reloads, but a fresh evaluation must not stack a second monitor or lose the count. */
+// external: Pi can reuse extension module state across reloads.
 interface Shared { loop?: ReturnType<typeof monitorEventLoopDelay>; reloads: number }
 const SHARED = Symbol.for('pi-optchat.heap-report');
 const shared = (): Shared => ((globalThis as Record<symbol, Shared>)[SHARED] ??= { reloads: 0 });
@@ -27,9 +27,9 @@ function loop() {
   if (!state.loop) { state.loop = monitorEventLoopDelay({ resolution: 10 }); state.loop.enable(); }
   return state.loop;
 }
-stallWatch(); // the stall list starts with the process too
-startStallProfiler(); // CPU samples for stalls only with PI_STALL_PROFILER=1 (its rolls stall the loop)
-loop(); // measuring starts when the extension loads, so the first report already covers the session so far
+stallWatch();
+startStallProfiler();
+loop();
 /** Called when a reload tears a profile down. */
 export const noteReload = () => { shared().reloads++; };
 export const reloadCount = () => shared().reloads;
@@ -62,11 +62,11 @@ export interface HeapDeps {
 }
 
 function collect() {
-  // `gc` is only exposed to code that runs after the flag is set, and a fresh context gets it without restarting Node.
+  // external: Node exposes gc to contexts created after the flag is set.
   v8.setFlagsFromString('--expose-gc');
   (vm.runInNewContext('gc') as () => void)();
 }
-/** Streams the snapshot in a child `node`, so a snapshot too big for one JSON string parses and this process keeps its memory for the app. */
+
 function summarize(file: string): Promise<SnapshotSummary> {
   return new Promise((resolve, reject) => {
     const exe = /^node(\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : 'node';
@@ -85,7 +85,7 @@ function summarize(file: string): Promise<SnapshotSummary> {
 const realDeps: HeapDeps = { heapStats: () => v8.getHeapStatistics(), freeMemory: freemem, rssBytes: () => process.memoryUsage.rss(), collect, summarize,
   writeSnapshot: file => v8.writeHeapSnapshot(file) };
 
-/** Counts only: never entry text, prompts or tool output. */
+
 function piSide(session: SessionLike) {
   const attempt = <T>(read: () => T | undefined): T | null => { try { return read() ?? null; } catch { return null; } };
   const branch = attempt(() => session.getBranch?.());

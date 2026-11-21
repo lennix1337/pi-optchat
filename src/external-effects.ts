@@ -1,19 +1,19 @@
-/**
- * Effects that leave the operator's machine and cannot be taken back: a message reaching a third party (WhatsApp, SMS,
- * email), a write to a production HTTP API, and input on a consent, billing or account page in the browser. They are
- * read from the call's own words (curl/wget/Invoke-RestMethod arguments, mail commands, the browser tab's last known
- * page), never from the conversation. Not a sandbox: a script that hides its request passes; the classes are a
- * guardrail against the accidents the operator already lived through (a real WhatsApp sent, a consent clicked).
- */
+
+
+
+
+
+
+
 
 /** The operator's production web hosts: a write there changes live data. Subdomains count. The Stripe API is his
  * live billing account (05/11: a support e-mail saved there with his key). */
 export const PRODUCTION_HOSTS = ['dentai.com.br', 'usdentai.com', 'api.stripe.com'];
-/** Messaging and email APIs: any request that sends through them reaches a person. */
+
 const MESSAGE_HOSTS = ['graph.facebook.com', 'api.whatsapp.com', 'whatsapp.net', 'api.twilio.com', 'api.sendgrid.com', 'api.mailgun.net',
   'api.resend.com', 'api.postmarkapp.com', 'api.brevo.com', 'api.sendinblue.com', 'z-api.io', 'api.telegram.org', 'api.zenvia.com',
   'gmail.googleapis.com', 'graph.microsoft.com'];
-/** Pages where a click grants consent, changes an account or spends money. Host, optionally with a path prefix. */
+
 const SENSITIVE_PAGES = ['accounts.google.com', 'myaccount.google.com', 'pay.google.com', 'payments.google.com', 'console.cloud.google.com',
   'admin.google.com', 'login.microsoftonline.com', 'appleid.apple.com', 'github.com/login/oauth', 'github.com/settings', 'github.com/apps',
   'stripe.com', 'paypal.com', 'business.facebook.com', 'checkout.', 'billing.'];
@@ -43,7 +43,7 @@ const HTTP_CLIENTS = /^(?:curl|wget|invoke-restmethod|irm|invoke-webrequest|iwr|
 const MAIL_COMMANDS = /^(?:send-mailmessage|sendmail|swaks|msmtp|mutt|mailx)$/;
 const READ_METHODS = /^(?:get|head|options)$/i;
 
-/** Whether an HTTP client's arguments send data or use a writing method. */
+
 function writes(lower: string, args: string[]) {
   const method = (flag: RegExp) => {
     const at = args.findIndex(arg => flag.test(arg));
@@ -60,18 +60,18 @@ function writes(lower: string, args: string[]) {
     const verb = method(/^-Method$/i);
     return (verb !== undefined && !READ_METHODS.test(verb)) || args.some(arg => /^-Body$/i.test(arg));
   }
-  // httpie/xh: `http POST url`, or `key=value` / `key:=json` data items.
+  // external: httpie and xh data items such as key=value send a request body.
   return /^(?:post|put|patch|delete)$/i.test(args[0] ?? '') || args.some(arg => /^[\w.-]+:?=/.test(unquote(arg)));
 }
 
 const CREDENTIAL_FLAGS = /^(?:-u|--user|-b|--cookie|-E|--cert|--oauth2-bearer|-n|--netrc(?:-file)?|--http-user|--http-password|--password|--user|-a|--auth|-Credential|-WebSession|-Authentication|-Token|-Certificate)(?:=|$)/i;
 const CREDENTIAL_HEADER = /\b(?:authorization|cookie|token|api[-_]?key|secret|signature|session|auth)\b/i;
 
-/**
- * An empty, anonymous POST does only what any stranger on the internet can: probing that an
- * endpoint answers (a webhook rejecting an unsigned call, a form refusing empty input).
- * A body, a credential, or a verb other than POST makes it a real write.
- */
+
+
+
+
+
 function anonymousProbe(lower: string, args: string[]) {
   const words = args.map(unquote);
   const verb = words.find((_, i) => /^(?:-X|--request|-Method|--method)$/i.test(words[i - 1] ?? ''))
@@ -98,23 +98,23 @@ export function commandExternalEffects(w: string[]): ExternalEffect[] {
   const write = writes(lower, args) && !anonymousProbe(lower, args);
   for (const url of urls) {
     const host = url.hostname.toLowerCase();
-    // Telegram sends with a GET too: /bot<token>/sendMessage.
+    // external: Telegram sendMessage can send messages with GET.
     if (messageHost(host) && (write || /\/send\w*$/i.test(url.pathname))) effects.push({ action: 'message', targets: [host] });
     else if (write && productionHost(host)) effects.push({ action: 'production-write', targets: [`https:${host}`] });
   }
   return effects;
 }
 
-// ---- Page scripts: fetch, XMLHttpRequest and axios calls in a browser evaluate or a shell command that runs one. ----
-/** Input on a page: a click, a form submit, a dispatched event, a field set, or CDP mouse/key/text input. */
+
+
 const PAGE_INPUT = /\.(?:click|submit|requestSubmit)\s*\(|dispatchEvent|\.(?:value|checked)\s*=[^=]|\bInput\.(?:dispatch\w+|insertText)\b/;
 const WRITE_VERB = /^(?:post|put|patch|delete)$/i;
 const PAGE_CALLS = [
-  // fetch(url, { ...method: 'PUT'... })
+
   { re: /\bfetch\(\s*(['"`])([^'"`]+)\1\s*,\s*\{([^}]*)\}/g, url: 2, verb: (m: RegExpMatchArray) => /\bmethod\s*:\s*['"`](\w+)['"`]/.exec(m[3]!)?.[1] },
-  // xhr.open('POST', url)
+
   { re: /\.open\(\s*(['"`])(\w+)\1\s*,\s*(['"`])([^'"`]+)\3/g, url: 4, verb: (m: RegExpMatchArray) => m[2] },
-  // axios.put(url, ...)
+
   { re: /\baxios\.(post|put|patch|delete)\(\s*(['"`])([^'"`]+)\2/gi, url: 3, verb: (m: RegExpMatchArray) => m[1] },
 ];
 
@@ -133,10 +133,10 @@ export function pageScriptEffects(script: string, page?: string): ExternalEffect
   return effects;
 }
 
-// ---- The browser: which page each owned tab shows, as its results report it. ----
+
 const tabPages = new Map<string, string>();
 
-// An `exec` cell is Python that drives the owned tab through helpers; its text says what it will do to the page.
+// external: browser_harness exec runs Python cells against the owned tab.
 const EXEC_INPUT = /(?<![.\w])(?:click|press|upload)\s*\(|(?<![.\w])type\s*\(\s*[^,()]+,|(?<![.\w])dialog\s*\(\s*(?:accept\s*=\s*)?True\b/;
 const EXEC_GOTO = /(?<![.\w])goto\s*\(\s*(?:url\s*=\s*)?(['"])([^'"\\]+)\1/g;
 const execCode = (args: { action?: unknown; code?: unknown }) => args.action === 'exec' && typeof args.code === 'string' ? args.code : undefined;
@@ -169,7 +169,7 @@ export function observeBrowser(input: unknown, resultText: string | undefined) {
     url = /"url"\s*:\s*"([^"]+)"/.exec(resultText)?.[1];
   }
   if (args.action === 'exec' || args.action === 'state') {
-    // Their output is the page's and the cell's: only the JSON header on the first line says where the tab is.
+    // external: browser_harness identifies the tab page in the first-line JSON header.
     const header = resultHeader(resultText);
     tab = typeof args.tab === 'string' ? args.tab : header.tab;
     url = header.url;
@@ -188,7 +188,7 @@ export function observeBrowser(input: unknown, resultText: string | undefined) {
 export function browserConsentEffect(input: unknown): { action: 'consent'; targets: string[] } | undefined {
   const args = (input && typeof input === 'object' ? input : {}) as { action?: unknown; tab?: unknown; expression?: unknown; code?: unknown };
   const code = execCode(args);
-  // Looking at a page (open, navigate, inspect, state, screenshot, a reading script or cell) is not consenting.
+
   const acts = args.action === 'click' || args.action === 'type'
     || (args.action === 'evaluate' && typeof args.expression === 'string' && PAGE_INPUT.test(args.expression))
     || (code !== undefined && (EXEC_INPUT.test(code) || PAGE_INPUT.test(code)));
@@ -208,7 +208,7 @@ export function browserScriptEffects(input: unknown): ExternalEffect[] {
   return pageScriptEffects(args.expression, known);
 }
 
-/** The page of an owned tab named by its id or an id prefix of 8+ characters. */
+
 function tabPage(id: string) {
   const exact = tabPages.get(id);
   if (exact || id.length < 8) return exact;

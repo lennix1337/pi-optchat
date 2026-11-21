@@ -10,7 +10,7 @@ export const MCP_NOTICE_TYPE = 'optchat-mcp-config';
 
 type Config = Record<string, unknown>;
 const record = (value: unknown): value is Config => typeof value === 'object' && value !== null && !Array.isArray(value);
-/** Key order does not make a config different. */
+
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, v) => record(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : 1)) : v);
 
 /** The servers `file` defines, or undefined while it is missing, half written or not an `mcpServers` object. */
@@ -72,7 +72,7 @@ export function watchFile(file: string, onChange: () => void, debounceMs = 300):
     const watcher = watch(dirname(file), { persistent: false }, (_event, name) => {
       if (name && String(name).toLowerCase() !== base) return;
       clearTimeout(timer);
-      timer = setTimeout(() => { try { onChange(); } catch { /* the next change looks again */ } }, debounceMs);
+      timer = setTimeout(() => { try { onChange(); } catch {   } }, debounceMs);
       timer.unref();
     });
     watcher.on('error', () => {});
@@ -99,12 +99,12 @@ export function registerLiveResources(pi: ExtensionAPI, options: { agentDir?: st
       stop?.();
       const file = join(agentDir, 'mcp.json');
       const sync = new McpFileSync(file, { register: (name, config) => pi.registerMcpServer(name, config as never), unregister: name => pi.unregisterMcpServer(name) },
-        line => { pending.push(line); try { ctx.ui.notify(line, 'info'); } catch { /* the notice still reaches the agent */ } });
+        line => { pending.push(line); try { ctx.ui.notify(line, 'info'); } catch {   } });
       sync.baseline();
       stop = watchFile(file, () => sync.check(), options.debounceMs);
     });
     pi.on('session_shutdown', () => { stop?.(); stop = undefined; });
-    // The agent learns at its next turn which servers appeared or went away.
+
     pi.on('before_agent_start', () => pending.length ? { message: { customType: MCP_NOTICE_TYPE, content: pending.splice(0).join('\n'), display: false } } : undefined);
   }
   pi.registerTool({

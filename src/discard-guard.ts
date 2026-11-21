@@ -47,13 +47,13 @@ export async function discardRefusal(text: string, cwd: string): Promise<string 
     if (await git(repo, 'rev-parse', '--git-dir') === undefined) continue;
     const status = await git(repo, 'status', '--porcelain', '--untracked-files=no');
     if (status === undefined) return 'Não executado: não foi possível verificar alterações locais. Faça commit ou stash antes.';
-    // Only an immediately preceding, successful full stash or patch can preserve tracked changes.
+
     const previous = i > 0 ? gitCommand(parts[i - 1].command, parts[i - 1].dir) : undefined;
     const prefix = i > 0 ? text.indexOf(parts[i - 1].command) : -1;
     const between = prefix < 0 ? '' : text.slice(prefix + parts[i - 1].command.length, text.indexOf(parts[i].command, prefix + parts[i - 1].command.length));
     const patchPath = /^git\s+diff\s+HEAD\s*>\s*([\w./-]+)\s*$/.exec(parts[i - 1]?.command ?? '')?.[1];
     const patchFile = patchPath && resolve(repo, patchPath);
-    // Never overwrite an existing file (including a dangling symlink) with the patch.
+
     const exists = patchFile && (existsSync(patchFile) || (() => { try { lstatSync(patchFile); return true; } catch { return false; } })());
     const patch = patchPath && !exists && !clean && !stash && await git(repo, 'ls-files', '--', patchPath) === '';
     const saved = previous?.cwd === repo && /^\s*&&\s*$/.test(between) && (previous.words.join(' ') === 'stash' || previous.words.join(' ') === 'stash push' || patch);

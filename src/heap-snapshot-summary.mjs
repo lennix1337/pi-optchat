@@ -1,6 +1,6 @@
-// Summarizes a V8 .heapsnapshot by constructor, streaming the file so a snapshot larger than V8's string limit still parses.
-// Run as a child of the process that wrote the snapshot: `node heap-snapshot-summary.mjs <file> [top]`; prints one JSON object.
-// String contents are never printed: strings are only counted by type.
+
+
+
 import { createReadStream } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -8,7 +8,7 @@ const [file, topArg] = process.argv.slice(2);
 const TOP = Number(topArg) > 0 ? Number(topArg) : 30;
 const CONSTRUCTOR_TYPES = new Set(['object', 'array', 'closure', 'native', 'regexp']);
 const NODES = '"nodes":[', EDGES = '"edges":[', STRINGS = '"strings":[';
-// Only known schema keys are emitted; arbitrary property names may contain user data.
+
 const SAFE_PROPERTIES = new Set(['text', 'data', 'thinkingSignature', 'content', 'instructions', 'report', 'task', 'command', 'thinking', 'description', 'source', 'prompt']);
 
 let phase = 'head', head = '', carry = '';
@@ -38,7 +38,7 @@ function node(size) {
   const key = name * 16 + type, group = groups.get(key) ?? { type: typeName, name, count: 0, selfBytes: 0 };
   group.count++; group.selfBytes += size; groups.set(key, group);
 }
-/** Returns the text left after the nodes array, or undefined while it continues. */
+
 function readNodes(text) {
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
@@ -89,7 +89,7 @@ function readStrings(text) {
       else if (char === '\\') escaped = true;
       else if (char === '"') {
         inString = false;
-        if (wantedHere) found.set(index, JSON.parse(raw)); // raw keeps both quotes
+        if (wantedHere) found.set(index, JSON.parse(raw));
         index++;
       }
     } else if (char === '"') { inString = true; wantedHere = wanted.has(index); raw = wantedHere ? '"' : ''; }
@@ -123,7 +123,7 @@ for await (const chunk of createReadStream(file, { highWaterMark: 4 * 1024 * 102
     ranked = chosen(); phase = 'skip'; text = rest;
   }
   if (phase === 'skip') {
-    // Edges are numbers only, so the strings marker cannot occur inside them; it may straddle two chunks.
+
     const joined = carry + text, at = joined.indexOf(STRINGS);
     if (at < 0) { carry = joined.slice(-STRINGS.length); continue; }
     phase = 'strings'; text = joined.slice(at + STRINGS.length);
@@ -140,5 +140,5 @@ for (const g of retainerGroups.values()) {
 console.log(JSON.stringify({ nodes, selfBytes,
   byType: Object.fromEntries([...byType].sort(([, a], [, b]) => b.selfBytes - a.selfBytes)),
   topConstructors: ranked.map(g => ({ name: found.get(g.name) ?? `#${g.name}`, type: g.type, count: g.count, selfBytes: g.selfBytes })),
-  // Non-weak incoming references can share a target; this is not retained size and must not be summed as unique bytes.
+
   stringRetainers: [...safeRetainers.values()].sort((a, b) => b.referencedSelfBytes - a.referencedSelfBytes).slice(0, TOP) }));

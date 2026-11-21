@@ -90,7 +90,7 @@ export class HelperSampler {
     const child = spawn(exe, [String(this.options.rootPid), String(this.options.intervalMs)], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     this.child = child;
     child.stdin?.on('error', () => {}); child.stdout?.on('error', () => {});
-    if (child.pid) { try { setPriority(child.pid, osConstants.priority.PRIORITY_LOW); } catch { /* the sampler runs at normal priority rather than not at all */ } }
+    if (child.pid) { try { setPriority(child.pid, osConstants.priority.PRIORITY_LOW); } catch {   } }
     createInterface({ input: child.stdout! }).on('line', line => {
       const sample = parseSampleLine(line);
       if (!sample) return;
@@ -109,7 +109,7 @@ export class HelperSampler {
   stop() {
     this.stopped = true;
     const child = this.child; this.child = undefined;
-    if (child) { try { child.stdin?.end(); child.kill(); } catch { /* it already ended */ } }
+    if (child) { try { child.stdin?.end(); child.kill(); } catch {   } }
     this.set({ state: 'stopped' });
   }
 }
