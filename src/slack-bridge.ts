@@ -19,7 +19,7 @@ import { atomicWrite } from './store.ts';
 import { scrubSecrets } from './secret-scrub.ts';
 import { textContent } from './transcript.ts';
 import { transcribeAudio } from './transcribe.ts';
-import { budgetNote, fitPost, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
+import { budgetNote, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
 import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
@@ -754,15 +754,9 @@ export class SlackBridge {
     return (topic ? projectOfRepo(topic) : undefined) ?? projectOf(...this.touched) ?? null;
   }
 
-  /**
-   * A post the agent wants to make (a final answer, a wake report, slack_send): within its channel's word budget it is one
-   * post; over it, the short head goes first and the rest follows as a reply in the same thread (or under the head).
-   */
+  /** A post the agent wants to make (a final answer, a wake report, slack_send): always one whole message. */
   private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
-    const { head, rest } = fitPost(text, wordBudget(channel, this.options.wordBudgets));
-    const sent = await this.send(head, threadTs, channel, options);
-    if (rest) await this.send(rest, threadTs ?? sent.ts, channel);
-    return sent;
+    return this.send(text, threadTs, channel, options);
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
@@ -824,7 +818,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   pi.on('agent_end', event => { if (!options.deferEnd) return bridge.runEnded(event.messages); });
   pi.registerTool({
     name: 'slack_send', label: 'Message the operator on Slack',
-    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles), or `dm` for the DM. Omitted, it goes to the project of the topic, else of the repos this run touched, else the DM; during a run started by his DM it answers there. Pass `dm` for general matters, urgent blockers and decisions. A post under a known topic replies in its thread and also shows in the conversation. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default): a longer one posts a short head, and the rest follows in the thread.",
+    description: "Send a message to the operator on Slack; they read it on the phone. Use it to report finished work, progress on long tasks and blockers that need their decision, especially when they may be away; never post shell or subagent completions (commands, exit codes, test output), only what the work delivered. `channel` posts to a project channel: dentai (dentai-mono), genexus18mcp (Genexus18MCP), harness (pi-optchat, pi-subagents, pi-goal-x, pi-multi-account, pi-ripwire, dotfiles), or `dm` for the DM. Omitted, it goes to the project of the topic, else of the repos this run touched, else the DM; during a run started by his DM it answers there. Pass `dm` for general matters, urgent blockers and decisions. A post under a known topic replies in its thread and also shows in the conversation. A [Slack] or [Slack #channel] message that arrives while you are working: answer it here (same channel) and keep working, since a text-only reply ends the run. When the run started from a Slack message, its final answer goes back automatically: don't repeat it here. Keep each message within the channel's word budget (100 words by default); it always goes out whole, in one message.",
     parameters: Type.Object({
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #, or dm; omit to follow the work.' })),
