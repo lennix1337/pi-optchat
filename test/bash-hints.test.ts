@@ -292,6 +292,16 @@ test('gh run view --log on a run that never started points at the jobs API, not 
   assert.equal(bashHint('gh run list', false, 'log not found'), undefined);
 });
 
+test('an empty --log-failed of a rerun run points at the first attempt\'s job logs', () => {
+  // 20/11: four Windows flakes (runs 44796894593, 44806753272, 44808976889, 44817692365) passed on rerun; --log-failed then
+  // printed nothing, the failing test was never read and each ended "cause not found". attempts/1 still held all four.
+  assert.equal(bashHint('gh run view 44817692365 --log-failed 2>/dev/null | grep "not ok" | head', false, ''), 'ghattempt');
+  assert.equal(bashHint('gh run view 1 --log-failed', false, '\n'), 'ghattempt');
+  assert.equal(bashHint('gh run view 1 --log-failed | grep x', false, '(no output)\n\n[pipe status: stage 2 exited 1; ...]\n\nCommand exited with code 1'), 'ghattempt');
+  assert.equal(bashHint('gh run view 1 --log-failed', false, 'not ok 3 - x'), undefined);
+  assert.equal(bashHint('gh run list', false, ''), undefined);
+});
+
 test('a rejected git push points at fetch and rebase, never a force-push', () => {
   const rejected = ' ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs\nhint: Updates were rejected because the tip of your current branch is behind';
   assert.equal(bashHint('git push origin main', false, rejected), 'pushrejected');
