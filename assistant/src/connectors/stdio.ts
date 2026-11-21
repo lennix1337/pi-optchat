@@ -19,7 +19,7 @@ export class StdioMcpClient implements McpClient {
   constructor(server: StdioServer) {
     this.serverId = server.serverId;
     this.timeoutMs = server.timeoutMs ?? 15000;
-    // Only the variables the operator listed reach the server, plus what Windows needs to start a process.
+    // external: Windows processes need system environment variables to start.
     const base = Object.fromEntries(['PATH', 'SystemRoot', 'TEMP', 'TMP'].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []));
     this.child = spawn(server.command, [...server.args], { cwd: server.cwd, env: { ...base, ...server.env }, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true });
     this.child.stderr.resume();
