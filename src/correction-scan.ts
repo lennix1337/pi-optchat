@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
+import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
 /** `guardedAt` (ISO) is when a live guard started refusing or retrying the behaviour: hits after it got past the guard. */
@@ -77,19 +78,6 @@ const outboundText = (call: Content): string => String(call.arguments?.text ?? '
 function verifiesLive(call: Content): boolean {
   if (call.name === 'browser_harness') return true;
   return call.name === 'bash' && /\b(?:curl|gh\s+(?:run|pr|api)|git\s+log|dentai-ship|verify-release|release-verif\w*)\b|\/health\b/u.test(String(call.arguments?.command ?? ''));
-}
-
-
-function usesRipwire(call: Content): boolean {
-  return call.name === 'ripwire' || (call.name === 'bash' && /(?:^|[;&|\n(]\s*)(?:\S*[\\/])?ripwire(?:\.exe)?\s/u.test(String(call.arguments?.command ?? '')));
-}
-
-
-function writesSource(call: Content): boolean {
-  if (call.name === 'edit' || call.name === 'write') return !/^(?:\/tmp\/|.*[\\/]\.optchat[\\/])|\.(?:md|txt)$/u.test(String(call.arguments?.path ?? ''));
-  if (call.name !== 'bash') return false;
-  const command = String(call.arguments?.command ?? '');
-  return /(?:>>?\s*(?!\/tmp\/)[^\s&|;<>]+\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b|\bsed\s+-i\b|\bgit\s+(?:apply|commit)\b|\bship\.mjs\b[^\n]*\s-m\s|open\([^)]*,\s*['"]w)/u.test(command);
 }
 
 
