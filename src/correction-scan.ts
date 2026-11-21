@@ -24,10 +24,10 @@ function sessionFiles(dir: string, since: number): string[] {
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; suites?: number };
 
-
-
-type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean };
+const FULL_SUITE = /(?:^|[;&|\n(])\s*(?:npm\s+(?:run\s+)?(?:test|verify)\b(?![:\w-])|node\b[^;&|\n]*\s--test\b[^;&|\n]*["']test\/\*)/u;
+const runsSuite = (call: Content): boolean => (call.name === 'bash' || call.name === 'shell_start') && FULL_SUITE.test(String(call.arguments?.command ?? ''));
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
 function toolCalls(event: Event): Content[] {
@@ -43,8 +43,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
-    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false };
-  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false };
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, suites: heartbeat ? 0 : state.suites };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, suites: 0 };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -56,13 +56,15 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   }
   const calls = toolCalls(event);
   if (calls.some(verifiesLive)) state = { ...state, checked: true };
+  const suites = (state.suites ?? 0) + calls.filter(runsSuite).length;
+  if (suites) state = { ...state, suites };
   const delegated = calls.some(c => c.name === 'spawn' || c.name === 'tell' || (
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, suites: state.suites, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
   const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
-  return { wake: state.wake, wakeEdits, checked: state.checked, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  return { wake: state.wake, wakeEdits, checked: state.checked, suites: state.suites, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
 
@@ -118,6 +120,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'self-build-in-wake': return (pacing.wakeEdits ?? 0) < 3 && (nextPacing(pacing, event).wakeEdits ?? 0) >= 3;
+    case 'suite-repeat': return (pacing.suites ?? 0) >= 1 && calls.some(runsSuite);
     case 'dentai-in-wake': return !!pacing.wake && calls.some(c => {
       const command = withoutQuotedText(String(c.arguments?.command ?? ''));
       return c.name === 'bash' && /dentai-mono|tecnologia-ai\/dentai|dentai-ship|\bDENTA-\d+/u.test(command) &&
