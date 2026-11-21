@@ -37,7 +37,7 @@ test('Docker relay retains network-none, no mounts, denies direct TCP/DNS and re
     assert.equal(raw.code, 0, raw.stderr);
     assert.deepEqual(JSON.parse(raw.stdout), [true, true, true]);
     assert.equal(relay.failures(), 0, 'all probes are refused inside the relay before host DNS/HTTPS');
-    // The relay holds an operation lease: the operator cannot take a computer whose relay is still open.
+
     await assert.rejects(computers.takeover(c.id, authority), /computer_operations_active/);
     relay.assertActive();
     await relay.close();

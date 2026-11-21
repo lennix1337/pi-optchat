@@ -25,7 +25,7 @@ async function setup(prompt?: PromptSource) {
     const { csrf } = await res.json() as { csrf: string };
     return { cookie, csrf };
   };
-  /** A logged-in panel's mutation: same-origin, cookie and CSRF, in channel `Pessoal`. */
+
   const poster = (session: { cookie: string; csrf: string }) => (path: string, input: object) => request(path, { method: 'POST',
     headers: { origin: base, cookie: session.cookie, 'x-assistant-csrf': session.csrf, 'content-type': 'application/json' },
     body: JSON.stringify({ requestId: randomUUID(), channelId: 'Pessoal', ...input }) });
@@ -65,7 +65,7 @@ test('cookie plus same-origin CSRF, not bearer, gates browser mutations and logo
   assert.equal(f.store.get(task.taskId)?.title, 'Tarefa local');
   const listed = await (await f.request('/web/api/tasks', { headers: { cookie: session.cookie } })).json() as { tasks: { taskId: string }[]; channels: Record<string, string> };
   assert.deepEqual(listed.channels, { [task.taskId]: 'Pessoal' }, 'the page names the channel of each listed task');
-  // A web credential proves channel access, not a locally typed approval.
+
   assert.equal(f.store.events()[0].event.source.sourceKind, 'external');
   assert.equal((await f.request('/web/session/logout', { method: 'POST', headers: { ...headers, cookie: session.cookie, 'x-assistant-csrf': session.csrf } })).status, 200);
   assert.equal((await f.request('/web/api/tasks', { headers: { cookie: session.cookie } })).status, 401);

@@ -1,5 +1,5 @@
-// Disposable worker process for runtime tests: node runtime-child.ts <dir> <owner> [crashAt] [mode]
-// It is a separate process with no TUI. `crashAt` names a durable boundary where it dies abruptly.
+
+
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createGateway } from '../src/policy/gateway.ts';
@@ -13,7 +13,7 @@ const gateway = createGateway({
 const runtime = createRuntime({
   databasePath: join(dir, 'runtime.db'), owner, gateway, leaseMs: 1,
   handlers: {
-    // Idempotent local task: rewriting the same file with the same content is safe to repeat.
+
     write: input => { const { name, text } = input as { name: string; text: string }; writeFileSync(join(dir, name), text); return { bytes: text.length }; },
   },
   adapters: {

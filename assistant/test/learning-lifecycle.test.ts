@@ -7,7 +7,7 @@ import { withDir } from './runtime-support.ts';
 
 const BASE = '# Profile\n\n- Show finished tasks in the dashboard\n';
 const BETTER = '# Profile\n\n- Show the task in progress in the dashboard\n';
-/** The retained set: past operator requests the instructions should satisfy; score = how many the file satisfies. */
+
 const retained = ['task in progress', 'Profile'];
 const score: Evaluator = content => retained.filter(r => content.includes(r)).length;
 

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { connect, type Socket } from 'node:net';
 
-/** A pull-based byte reader over a stream of chunks. */
+
 class ByteQueue {
   private chunks: Buffer[] = [];
   private length = 0;
@@ -85,7 +85,7 @@ export async function connectOperator(port: number, headers: Record<string, stri
     socket.write(Buffer.concat([header, mask, masked]));
   };
   await handshake;
-  // RFB 3.8 handshake, security type None (the channel is loopback-only behind the takeover page's own authentication).
+  // external: RFB 3.8 supports security type None.
   const version = (await bytes.take(12)).toString('latin1');
   if (!/^RFB 003\.\d{3}\n$/.test(version)) throw new Error('operator_rfb_version');
   send(Buffer.from('RFB 003.008\n'));
@@ -97,10 +97,10 @@ export async function connectOperator(port: number, headers: Record<string, stri
   const init = await bytes.take(24);
   const width = init.readUInt16BE(0), height = init.readUInt16BE(2);
   const name = (await bytes.take(init.readUInt32BE(20))).toString('utf8');
-  // Ask for 32-bit true-colour so a Raw rectangle is width*height*4 bytes (B,G,R,x little-endian).
+  // external: RFB raw 32-bit true-colour rectangles use B,G,R,x little-endian bytes.
   send(Buffer.from([0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]));
   send(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0]));
-  // Like a real viewer: keep requesting incremental updates and apply every rectangle to one framebuffer.
+
   const pixels = Buffer.alloc(width * height * 4);
   const request = (incremental: number) => { const update = Buffer.alloc(10); update[0] = 3; update[1] = incremental; update.writeUInt16BE(width, 6); update.writeUInt16BE(height, 8); send(update); };
   void (async () => {
@@ -121,7 +121,7 @@ export async function connectOperator(port: number, headers: Record<string, stri
         else if (type === 3) await bytes.take((await bytes.take(7)).readUInt32BE(3));
         else throw new Error('operator_rfb_message');
       }
-    } catch { /* channel closed */ }
+    } catch {   }
   })();
   request(0);
   return {

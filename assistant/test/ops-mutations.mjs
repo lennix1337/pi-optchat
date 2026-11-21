@@ -1,5 +1,5 @@
-// Disposable-source negative controls for T13 operations: each guard is removed in a copy of the package and the
-// named test must then fail for the expected reason. The checkout itself is never modified.
+
+
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'assistant-artifact-mutants-'));
 const tests = ['artifact-flow.test.ts', 'preview-isolation.test.ts', 'voice-flow.test.ts', 'voice-lifecycle.test.mjs'];
-// [name, file, exact source, replacement, expected failure]
+
 const variants = [
   ['managed-root-traversal', 'src/artifacts/registry.ts', "if (!inside(this.root, path) || (existsSync(path) && !inside(this.root, realpathSync(path)))) fail('artifact_location_invalid');", '', /expected: \/artifact_location_invalid\//],
   ['source-root', 'src/artifacts/registry.ts', "if (!this.sourceRoots.some(root => inside(root, real))) fail('artifact_source_outside_roots');", '', /expected: \/artifact_source_outside_roots\//],

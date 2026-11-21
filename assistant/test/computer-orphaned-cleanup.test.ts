@@ -7,8 +7,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { ComputerManager } from '../src/computer/manager.ts';
 import type { DockerRunner } from '../src/computer/docker.ts';
 
-// Residue seen live (cmp_0b4d44f9): a service stopped mid owner-cleanup, after reserving and before any `docker rm`,
-// left an `active` owner fence and a `removing` row with no target. Every later start refused with computer_cleanup_active.
+
+
 test('an owner cleanup left by a dead process is taken over, so create works again', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'orphan-cleanup-'));
   const docker: DockerRunner = async args => (args[0] === 'inspect' ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' });

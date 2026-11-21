@@ -24,7 +24,7 @@ test('killed claimed dispatcher stays read-only unresolved without replay', asyn
   const pending = effects.prepare(request, 2); effects.close();
   const child = spawn(process.execPath, [assistantPath('test/tool-dispatch-child.mjs'), db, pending.id], { stdio: ['ignore', 'pipe', 'pipe'] });
   try {
-    // A child that dies before claiming must fail here, not leave the test waiting on stdout forever.
+
     const claimed = await Promise.race([
       once(child.stdout!, 'data').then(([chunk]) => String(chunk)),
       once(child, 'exit').then(([code]) => { throw new Error(`dispatch child exited before claiming: ${code}`); }),

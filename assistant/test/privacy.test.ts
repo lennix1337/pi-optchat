@@ -109,8 +109,8 @@ test('POSIX boundary rejects symlink config and unsafe database mode', { skip: p
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-// Service startup prepares about ten databases; one PowerShell per path (directory, file, -wal, -shm) made a cold start
-// take 9-15 s and miss start.mjs's 15 s readiness window (2026-10-29). Every path is still inspected, in one process.
+
+
 test('preparing a WAL database inspects its directory and every file in one ACL process', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'privacy-batch-'));
   const childProcess = (await import('node:child_process')).default;
@@ -158,8 +158,8 @@ test('Windows ACL batch rejects an unsafe later sidecar and detects skipping it'
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-// One ACL inspection took 0.3 s idle but 5.6-9.5 s with the CPU saturated by 48 busy processes (2026-10-29), and opening the
-// vault runs two to four of them in a row at service startup; the old 10 s kill failed a full unit run as an "untrusted grant".
+
+
 test('a slow ACL inspection on a busy machine gets time and, if it still times out, is not reported as an untrusted grant', async () => {
   const { ACL_INSPECTION_TIMEOUT_MS, AclInspectionTimeout, aclInspectionFailure } = await import('../src/store/privacy.ts');
   assert.ok(ACL_INSPECTION_TIMEOUT_MS >= 30_000, `a 9.5 s inspection needs headroom, got ${ACL_INSPECTION_TIMEOUT_MS} ms`);
@@ -170,9 +170,8 @@ test('a slow ACL inspection on a busy machine gets time and, if it still times o
   assert.equal(aclInspectionFailure({ status: 0, error: undefined }), null);
 });
 
-// PowerShell 7 ended the inspection script in ~0.1 s, yet under the parallel unit suite its process lingered 40-60 s before
-// exiting, failing vault tests by timeout (2026-10-30); the inspection now runs on the Windows PowerShell 5.1 Windows ships.
-// A PSModulePath inherited from a PowerShell 7 session makes 5.1 load 7's modules and fail Get-Acl, so it is dropped.
+// external: PowerShell 7 can linger after script completion under parallel load.
+// external: PowerShell 7's PSModulePath can break Get-Acl in PowerShell 5.1.
 test('the ACL inspection runs on Windows PowerShell and judges correctly from a PowerShell 7 environment', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'privacy-ps51-'));
   const childProcess = (await import('node:child_process')).default;

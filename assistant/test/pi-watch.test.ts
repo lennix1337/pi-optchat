@@ -9,7 +9,7 @@ const clock = (t: string) => Date.parse(at(t));
 const GRACE = 10 * 60_000;
 
 test('a Pi whose launcher ended with an error and was not reopened for the grace period is down', () => {
-  // 15/11: the Pi died at 08:48Z with "ctx is stale"; nobody noticed until 14:22Z.
+
   const log = [launch('03:00'), result('08:48', 1)];
   assert.deepEqual(piDown(log, clock('08:55'), GRACE), null, 'inside the grace the launcher may still reopen it');
   assert.deepEqual(piDown(log, clock('09:00'), GRACE), { since: Date.parse(at('08:48')), exitCode: 1, signal: null });

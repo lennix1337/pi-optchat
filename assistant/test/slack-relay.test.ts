@@ -146,7 +146,7 @@ test('when nobody polled recently, a new DM gets one automatic receipt', async (
   try {
     const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch });
     r.relay.attach(poster);
-    r.relay.after(0, 10); // a reader is present
+    r.relay.after(0, 10);
     now += 10_000;
     r.channel.accept(slackEnvelope('EvOnline', 'oi'));
     await r.relay.idle();
@@ -160,8 +160,8 @@ test('when nobody polled recently, a new DM gets one automatic receipt', async (
 });
 
 test('right after a service restart the reader gets the grace period before a DM is called offline', async () => {
-  // 2026-10-29: the service restarted at 13:29:55, a DM arrived 30 s later while the Pi session was open (its poll was
-  // backing off from the restart) and got "OptChat is not open"; the session read it 3 s later.
+
+
   let now = 1_793_000_000_000;
   const slack = fakeSlack();
   const r = relayFixture(() => now);
@@ -224,7 +224,7 @@ test('an approval button click from the operator becomes their aprovar/negar in 
   const r = relayFixture();
   try {
     r.relay.attach(new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: slack.fetch }));
-    r.relay.after(0, 0); // a reader is present: no offline receipt
+    r.relay.after(0, 0);
     assert.equal(r.channel.accept(click('optchat_approve', '1793000001.000300')).outcome, 'relayed');
     assert.equal(r.channel.accept(click('optchat_approve', '1793000001.000300')).outcome, 'duplicate', 'a redelivered click stays one');
     assert.equal(r.channel.accept(click('optchat_deny', '1793000002.000400')).outcome, 'relayed');
@@ -266,7 +266,7 @@ test('an approval post carries Aprovar/Negar buttons under its text', async () =
 });
 
 test('HTTP: send returns the DM id of the post, and update rewrites only a DM post, dropping its buttons', async () => {
-  // 2026-10-29: an approval decided at the terminal left its Slack post saying "Aprovação pendente" with live buttons.
+
   const slack = fakeSlack();
   const r = relayFixture();
   const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', channels: CHANNELS, fetch: slack.fetch });

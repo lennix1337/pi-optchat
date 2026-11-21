@@ -20,13 +20,13 @@ function withTempDir(fn: (dir: string) => Promise<void>) {
   };
 }
 
-/** A clock the test moves by hand, so due times are exact. */
+
 function clock(start = 1_793_000_000_000) {
   let t = start;
   return { now: () => t, advance(ms: number) { t += ms; } };
 }
 
-/** Fake Slack: `respond` decides each call; the request body is parsed like the real API would receive it. */
+
 function fakeSlack(respond: (call: number, body: Record<string, unknown>) => Promise<Response> | Response) {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
   const fetch = (async (url: string, init: RequestInit) => {
@@ -38,7 +38,7 @@ function fakeSlack(respond: (call: number, body: Record<string, unknown>) => Pro
 const posted = (ts = '1793000000.000200') => new Response(JSON.stringify({ ok: true, ts, channel: 'D0OWNER' }), { status: 200 });
 const refused = (error: string) => new Response(JSON.stringify({ ok: false, error }), { status: 200 });
 
-/** Polls until the condition holds; the dispatcher runs on timers and promises, never on a fixed sleep. */
+
 async function until(condition: () => boolean, label: string, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -49,7 +49,7 @@ async function until(condition: () => boolean, label: string, timeoutMs = 3000) 
 
 function openDb(dir: string) { return new DatabaseSync(join(dir, 'outbox.sqlite')); }
 
-// ---- The transactional outbox itself ------------------------------------------------------------
+
 
 test('an effect can only be staged inside the transaction of the state change that causes it', withTempDir(async dir => {
   const db = openDb(dir);
@@ -88,7 +88,7 @@ test('crash between the state change and the send: the committed effect survives
   const now = clock();
   const first = openDb(dir);
   immediate(first, () => new Outbox(first, PROFILE, { now: now.now }).stage({ id: 'receipt:1', channel: 'slack', kind: 'receipt', payload: { text: 'ok' } }));
-  first.close(); // the process dies before any dispatch
+  first.close();
 
   const db = openDb(dir);
   try {
@@ -223,7 +223,7 @@ test('reconcile and recover only touch the rows they name', withTempDir(async di
   } finally { db.close(); }
 }));
 
-// ---- The Slack relay and the loopback writes that use the outbox -----------------------------
+
 
 function relayFixture(dir: string, now: () => number, outbox?: ConstructorParameters<typeof SlackRelay>[0]['outbox']) {
   const f = channelFixture();
@@ -237,9 +237,9 @@ test('a message queued while nobody reads is answered with a receipt that surviv
   const now = clock();
   const first = relayFixture(dir, now.now);
   first.relay.attach(new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: fakeSlack(() => posted()).fetch }));
-  now.advance(10 * 60_000); // no reader for ten minutes: a message now gets a receipt
+  now.advance(10 * 60_000);
   assert.equal(first.channel.accept(slackEnvelope('EvCrash1', 'oi?')).outcome, 'relayed');
-  first.relay.close(); first.f.close(); // crash: the message and its receipt committed, nothing was sent
+  first.relay.close(); first.f.close();
 
   const second = relayFixture(dir, now.now);
   try {
@@ -262,7 +262,7 @@ test('an approval click retires its buttons in the same commit; a crash before t
   const click = { type: 'block_actions', team: { id: TEAM }, api_app_id: APP, user: { id: 'U0OWNER' }, channel: { id: 'D0OWNER' }, container: { message_ts: '1793000000.000300', channel_id: 'D0OWNER' }, message: { text: 'Aprovar a PR?' }, actions: [{ action_id: 'optchat_approve', action_ts: '1793000001.000001' }] };
   assert.equal(r.channel.accept(click).outcome, 'relayed');
   assert.equal(r.channel.accept(click).outcome, 'duplicate');
-  r.relay.close(); r.f.close(); // crash before the dispatcher ran
+  r.relay.close(); r.f.close();
 
   const again = relayFixture(dir, now.now);
   try {
@@ -278,7 +278,7 @@ test('a Slack write through the loopback API is recorded before the call and can
   const now = clock();
   const first = relayFixture(dir, now.now);
   const poster = new SlackPoster({ botToken: 'xoxb-disposable', operator: 'U0OWNER', fetch: (async () => { await new Promise(() => undefined); return posted(); }) as typeof fetch });
-  // The call never returns: the process dies while the write is in flight.
+
   void first.relay.record('send', { destination: 'dm', text: 'resposta' }, () => poster.send('resposta'));
   await until(() => first.relay.outbox.list('sending').length === 1, 'intent recorded');
   first.relay.close(); first.f.close();

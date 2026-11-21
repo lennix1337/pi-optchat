@@ -8,7 +8,7 @@ const ok = (stdout = '') => ({ code: 0, stdout, stderr: '' });
 const failure = { code: 1, stdout: '', stderr: 'secret docker diagnostic' };
 const OWNER_ID_FORMAT = '{{.Id}}|{{index .Config.Labels "optchat.computer.owner"}}';
 
-/** A Docker fake that can inspect by name and by immutable ID, report `removing`, and hold `rm` open. */
+
 function fixture() {
   const containers = new Map<string, Entry>();
   const failures = new Set<string>();
@@ -102,7 +102,7 @@ test('an overlapping destroy is refused while the first still holds its reservat
     const first = f.manager.destroy(a.id); await reached;
     entry.status = 'removing';
     await assert.rejects(f.manager.destroy(a.id), /computer_transition/);
-    // The earlier daemon operation settles: the container is gone, so a later destroy takes the stale reservation over.
+
     f.containers.delete(a.container); delete f.hold.rm;
     await f.manager.destroy(a.id);
     assert.deepEqual(f.manager.list(), []);

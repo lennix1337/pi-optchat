@@ -16,7 +16,7 @@ function refusal(fn: () => unknown): string {
   assert.fail('the request was allowed');
 }
 
-// ---- The allow-list ------------------------------------------------------------------------------
+
 
 test('only the named actions exist; unknown names, prototype keys and non-objects are refused before a process', () => {
   for (const action of ['shell', '__proto__', 'constructor', 'toString', '']) assert.equal(refusal(() => planRun({ action, args: ['ps'] })), 'unknown_action');
@@ -89,7 +89,7 @@ test('streams: only the two viewer programs, with the exact argv they always use
   assert.equal(refusal(() => planOpen({ action: 'docker_stream', container: 'c1' })), 'invalid_program');
 });
 
-// ---- The local adapter, observed through a fake process -----------------------------------------
+
 
 type FakeScript = { exit?: number | null; error?: Error; stdout?: string; stderr?: string; hang?: boolean };
 function fakeSpawn(script: FakeScript) {
@@ -181,7 +181,7 @@ test('a stream is a live child: the viewer and relay use the same allow-listed a
   assert.ok(localEnvironment && typeof localEnvironment.run === 'function', 'the shared adapter is exported');
 });
 
-// ---- The loopback daemon -----------------------------------------------------------------------
+
 
 function tempDir() { return mkdtempSync(join(tmpdir(), 'assistant-env-')); }
 

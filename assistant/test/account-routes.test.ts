@@ -27,12 +27,12 @@ test('each logged-in account uses its saved default; Pi\'s default account leads
   try {
     const routes = new AccountRoutes(dir, undefined, () => NOW);
     assert.deepEqual(routes.candidates(available), models(
-      'openai-codex/gpt-6.1-sol', // Pi's saved default account first
-      'anthropic/claude-opus-5-5', // the rotation's latest choice for the group, not the flagship guess or an older switch
-      'openai-codex-account-2/gpt-6.1-sol', // same group as Pi's saved default
-      'kimi-coding/k2', // explicit pin
+      'openai-codex/gpt-6.1-sol',
+      'anthropic/claude-opus-5-5',
+      'openai-codex-account-2/gpt-6.1-sol',
+      'kimi-coding/k2',
     ));
-    // anthropic-account-2 has no claude-opus-5-5 and google is outside the rotation: neither gets an invented model.
+
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

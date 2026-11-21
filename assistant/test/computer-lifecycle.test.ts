@@ -44,7 +44,7 @@ test('cleanup and destroy touch only this owner\'s computers, including ones a c
     const mine = await computers.create('p', 'agent-a');
     assert.throws(() => computers.get(foreign.id), /computer_unknown/, 'another owner\'s computer is invisible');
     await assert.rejects(computers.destroy(foreign.id), /computer_unknown/);
-    // A fresh process with an empty database still finds and removes its own stray container by label.
+
     const stray = open({ databasePath: join(dir, 'fresh-process.db') });
     try { assert.equal(await stray.cleanup(), 1); } finally { stray.close(); }
     assert.equal(await inspectContainer(mine.container), undefined);
@@ -57,7 +57,7 @@ test('cleanup lists only this owner\'s containers and still re-checks each label
   await withComputers(async ({ owner, computers, open }) => {
     await computers.create('p', 'agent-a');
     const listings: string[][] = [];
-    // A listing that also returns another owner's container, as a wrong filter or a reused name would.
+
     const docker: DockerRunner = async (args, options) => {
       const result = await dockerCli(args, options);
       if (args[0] !== 'ps') return result;

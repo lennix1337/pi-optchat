@@ -19,7 +19,7 @@ async function rig(fn: (r: { dir: string; fake: FakeGoogle; local: () => Promise
       opened.push(l);
       return l;
     };
-    // The browser: Google redirects to whatever loopback port the CLI chose, and the browser follows that redirect.
+
     const consent = async (url: string, account: AccountKey) => {
       fake.redirectUris.add(new URL(url).searchParams.get('redirect_uri')!);
       return fetch(fake.consent(url, account));
@@ -28,7 +28,7 @@ async function rig(fn: (r: { dir: string; fake: FakeGoogle; local: () => Promise
   });
 }
 
-// The fixture client id ends in .test; the parser accepts only Google's real suffix, so the fake is told the real one.
+
 const REAL_ID = CLIENT_ID.replace(/\.test$/, '.com');
 
 test('client JSON: only a Google installed-app client is accepted', () => {

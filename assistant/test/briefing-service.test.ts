@@ -12,10 +12,10 @@ import { memoryProtector, privateDir } from './vault-support.ts';
 const REAL_ID = CLIENT_ID.replace(/\.test$/, '.com');
 const TZ = 'America/Sao_Paulo';
 
-/** A connected 'personal' account on the fake Google, with a clock the test moves. */
+
 async function rig(fn: (r: { dir: string; fake: FakeGoogle; clock: { now: number }; local: () => Promise<GoogleLocal> }) => Promise<void>) {
   await privateDir('briefing-service-', async dir => {
-    const clock = { now: Date.parse('2026-10-28T09:00:00.000Z') }; // 06:00 in São Paulo
+    const clock = { now: Date.parse('2026-10-28T09:00:00.000Z') };
     const fake = new FakeGoogle(clock);
     fake.clientId = REAL_ID;
     await fake.start();
@@ -50,7 +50,7 @@ test('the service reads mail and agenda once a day at dailyAt, and a restart the
   assert.equal(gmailReads(fake), 0);
   assert.equal(await service.latest(), null);
 
-  clock.now = Date.parse('2026-10-28T10:30:00.000Z'); // 07:30
+  clock.now = Date.parse('2026-10-28T10:30:00.000Z');
   const daily = await service.tick();
   assert.equal(daily?.kind, 'daily');
   assert.ok(daily!.sources.some(s => s.sourceId === 'personal:mail' && s.state === 'ok'), JSON.stringify(daily!.sources));

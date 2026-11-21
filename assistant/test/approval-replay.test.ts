@@ -51,7 +51,7 @@ test('independent processes race one grant against a quiescent private database'
 test('disposable mutation of sink-error guard breaks the canary assertion', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gateway-mutant-'));
   try {
-    // The whole source tree, so a new shared module never turns the mutant into a module-not-found pass.
+
     cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(dir, 'src'), { recursive: true });
     const src = join(dir, 'src', 'policy'); const tests = join(dir, 'test'); mkdirSync(tests, { recursive: true });
     const gatewayPath = fileURLToPath(new URL('../src/policy/gateway.ts', import.meta.url));

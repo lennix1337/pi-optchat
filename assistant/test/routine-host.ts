@@ -1,6 +1,6 @@
-// Disposable assistant host for the routine journey: node routine-host.ts <dir> <runMs>
-// Real clock, its own process and SQLite connection. The "provider" is a script
-// file of canned replies; nothing leaves the machine.
+
+
+
 import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRuntime } from '../src/runtime/worker.ts';

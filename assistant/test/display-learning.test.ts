@@ -32,7 +32,7 @@ test('guards reject forged, stale, replayed and non-improving changes', () => ri
   const no = a.propose('dashboard only'); const nb = displayBinding(no); assert.equal(a.measure(nb).state, 'rejected'); assert.throws(() => a.decide(nb, 'approve', authority, 'x'), /proposal_not_decidable/);
   const p = a.propose(better), b = displayBinding(p); assert.throws(() => a.measure({ ...b, datasetHash: 'wrong' }), /stale_binding/); assert.throws(() => a.measure({ ...b, candidateHash: 'wrong' }), /stale_binding/);
   a.measure(b); assert.throws(() => a.measure(b), /proposal_not_measurable/); assert.throws(() => a.decide(b, 'approve', {}, 'x'), /unauthorized/); assert.throws(() => a.apply(b, authority), /proposal_not_approved/); assert.throws(() => a.decide(b, 'approve', authority, ''), /invalid_reason/);
-  const other = c.propose('dashboard status task in progress'); const ob = displayBinding(other); c.measure(ob); const otherAuthority = {}; // caller cannot manufacture c's authority
+  const other = c.propose('dashboard status task in progress'); const ob = displayBinding(other); c.measure(ob); const otherAuthority = {};
   assert.throws(() => c.decide(ob, 'approve', otherAuthority, 'x'), /unauthorized/);
   a.decide(b, 'approve', authority, 'ok'); assert.throws(() => a.decide(b, 'approve', authority, 'again'), /proposal_not_decidable/); a.apply(b, authority);
   assert.throws(() => c.decide(ob, 'approve', {}, 'x'), /unauthorized/);
@@ -44,7 +44,7 @@ test('concurrent reviewed proposals and rollback are fenced by current revision'
   a.measure(pb); b.measure(qb); a.decide(pb, 'approve', aa, 'ok'); b.decide(qb, 'approve', bb, 'ok'); a.apply(pb, aa);
   assert.throws(() => b.apply(qb, bb), /stale_baseline/);
   const later = b.propose('dashboard status task in progress completed tasks extra'), lb = displayBinding(later);
-  // Equal scoring candidates are not approved, so the earlier applied value remains authoritative.
+
   assert.equal(b.measure(lb).state, 'rejected'); assert.equal(a.revert(pb, aa, 'undo').state, 'reverted');
   assert.throws(() => b.apply(qb, bb), /stale_baseline/);
 }));

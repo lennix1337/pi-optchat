@@ -16,7 +16,7 @@ test('real service shows reviewed display state across restart; browser has no l
   const config = join(dir, 'config.json');
   writeFileSync(config, JSON.stringify({ version: 1, profileId, token, endpoint, databasePath: join(dir, 'tasks.sqlite'), learning: true }));
   const authority = {}, path = join(dir, 'learning-display.sqlite');
-  prepareDatabase(path); // as the trusted display-learning CLI does before opening it
+  prepareDatabase(path);
   let owner: DisplayLearning | undefined = new DisplayLearning({ databasePath: path, profileId, operatorAuthority: authority });
   const proposal = owner.propose('dashboard status: task in progress; completed tasks'), binding = displayBinding(proposal);
   owner.measure(binding); owner.decide(binding, 'approve', authority, 'fixture operator only'); owner.apply(binding, authority); owner.close(); owner = undefined;
