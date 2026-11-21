@@ -30,6 +30,11 @@ const cases: [string, object, object][] = [
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
  const rule = rules.find(r => r.id === id)!; assert.ok(rule); assert.equal(detect(rule, yes), true); assert.equal(detect(rule, no), false);
 });
+test('his-call ignores scratch cleanup under /tmp and kill -0 liveness probes, still flags other rm -r and kill', () => {
+ const rule = rules.find(r => r.id === 'his-call')!;
+ for (const command of ['rm -rf /tmp/bdg && mkdir /tmp/bdg', 'cd /tmp && rm -rf /tmp/a /tmp/b; ls', 'rm -r ~/.cache/stt-venv; echo rc=$?', 'kill -0 3027132 2>/dev/null && echo running']) assert.equal(detect(rule, call('bash', { command })), false, command);
+ for (const command of ['rm -rf /tmp/a ~/projetos/x', 'rm -rf /tmp/a; kill 1234', 'rm -rf ~/projetos/old', 'kill -9 1234']) assert.equal(detect(rule, call('bash', { command })), true, command);
+});
 test('abandoned-cause scopes unresolved-cause statements to assistant final reports', () => {
  const rule = rules.find(r => r.id === 'abandoned-cause')!;
  for (const s of ['A causa não foi encontrada.', 'Continuam sem causa encontrada: a queda e as travadas.', 'Causas não encontradas: o RSS e o wake.', 'The cause is still not found.']) assert.equal(detect(rule, text(s)), true, s);
