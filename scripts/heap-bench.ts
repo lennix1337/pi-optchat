@@ -1,13 +1,13 @@
-// Disposable heap and stall bench for the whole OptChat extension.
-//
-//   node --experimental-transform-types --expose-gc --max-old-space-size=4096 scripts/heap-bench.ts \
-//     --source <profile dir, read only> [--profile swlucas05] [--workers 20] [--turns 500] [--json out.json]
-//
-// Isolation (scripts/bench-sandbox.ts): the bench builds its OWN OPTCHAT_HOME under the temp dir from an allowlist of the
-// source profile's data (memory, runs, usage), with a fresh config on an offline fixture model; assistant.json and every
-// other live-service file stay behind, the sandbox guard refuses to start when one is present or the home is the real one,
-// and global fetch is blocked, so nothing can reach the assistant service, Slack, ai-memory or the network.
-// Every phase forces two collections, then prints heap, RSS and the longest event-loop gap since the previous phase.
+
+
+
+
+
+
+
+
+
+
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +23,7 @@ if (typeof globalThis.gc !== 'function') throw new Error('run with --expose-gc')
 const scratch = mkdtempSync(join(tmpdir(), 'heap-bench-'));
 const home = join(scratch, 'home');
 process.env.OPTCHAT_HOME = home;
-// The bench's own session runs a fixture model (no paid call), so the approval gate that would hold its spawn tool calls is off here, and only here.
+
 process.env.OPTCHAT_EFFECT_APPROVALS = '0';
 process.env.PI_CODING_AGENT_DIR = join(scratch, 'agent');
 process.env.AI_MEMORY_SERVER_URL = 'http://127.0.0.1:9'; process.env.AI_MEMORY_DATA_DIR = join(scratch, 'ai-memory');
@@ -36,7 +36,7 @@ const { createProfile, loadConfig, profilePath, saveConfig } = await import('../
 const { textContent } = await import('../src/transcript.ts');
 const { emptyUsage } = await import('../src/usage.ts');
 
-// A fresh profile (default settings, nothing that talks to a service) on an offline fixture model, then the source's data on top.
+
 createProfile(profile);
 const fixture = { provider: 'fixture', model: 'fixture', thinking: 'off' } as const;
 saveConfig(profilePath(profile), { ...loadConfig(profilePath(profile)), compactor: fixture, subagent: fixture, heartbeatMinutes: 0, syncStatus: false, syncAiMemory: false, syncOptMem: false });
@@ -103,11 +103,11 @@ sample('after open');
 const ask = (text: string) => session.prompt(text);
 const runsDir = join(profilePath(profile), 'runs');
 const start = Date.now();
-/** Runs of this bench that ended: files touched since the start (stat only, so polling stays cheap next to 400 MB of old runs). */
+
 const finished = () => readdirSync(runsDir).filter(f => f.endsWith('.optchat.json') && statSync(join(runsDir, f)).mtimeMs >= start).flatMap(f => {
   try { const run = JSON.parse(readFileSync(join(runsDir, f), 'utf8')) as { state: string; started: number }; return run.started >= start ? [run] : []; } catch { return []; }
 });
-/** The collection counts OptChat's own heap_report tool gives (the same numbers the live process reports). */
+
 async function collections(input: { snapshot?: boolean } = {}) {
   const tool = session.extensionRunner!.getToolDefinition('heap_report');
   if (!tool) return undefined;
@@ -115,7 +115,7 @@ async function collections(input: { snapshot?: boolean } = {}) {
   return (JSON.parse((result.content[0] as { text: string }).text) as { optchat?: { collections?: unknown } }).optchat?.collections;
 }
 
-// Phase A: chat turns that read a file and answer, so memory appends and compacts, as in a day of use.
+
 const per = Math.max(1, Math.floor(turns / 5));
 let n = 0;
 for (let round = 1; round <= 5; round++) {
@@ -124,7 +124,7 @@ for (let round = 1; round <= 5; round++) {
   sample(`after ${n} chat turns`);
 }
 
-// Phase B: workers, each reading a file a few times, then reporting to the parent.
+
 const done = () => finished().filter(r => !['running', 'waiting', 'stopping'].includes(r.state)).length;
 for (let w = 1; w <= workers; w += 1) {
   const before = done();
@@ -135,7 +135,7 @@ for (let w = 1; w <= workers; w += 1) {
   sample(`after ${w} workers`); if (w % 5 === 0 || w === workers) console.log('collections', JSON.stringify(await collections()));
 }
 sample('final'); console.log('collections final', JSON.stringify(await collections()));
-// Snapshots exist only in this disposable process: what holds the heap after the workload, by constructor.
+
 if (process.argv.includes('--snapshot')) { const tool = session.extensionRunner!.getToolDefinition('heap_report')!; const out = await tool.execute('bench', { gc: true, snapshot: true }, undefined, undefined, { sessionManager: session.sessionManager } as never); console.log('snapshot', (out.content[0] as { text: string }).text); }
 if (errors.length) console.log('errors', errors.slice(0, 5));
 const out = arg('json');

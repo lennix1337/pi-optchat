@@ -58,12 +58,12 @@ const realCorpus = buildRealCorpus();
 const scrubbedReal = scrubSecrets(realCorpus);
 const fpMatches = scrubbedReal.match(/\[segredo:[^\]]+\]/g) ?? [];
 
-// Measure throughput over >= 10 MB of real corpus.
+
 const targetBytes = 10 * 1024 * 1024;
 const repeats = Math.max(1, Math.ceil(targetBytes / Buffer.byteLength(realCorpus, 'utf8')));
 const totalMb = (repeats * Buffer.byteLength(realCorpus, 'utf8')) / (1024 * 1024);
 
-// Warmup
+
 scrubSecrets(realCorpus.slice(0, 65536));
 
 const t0 = performance.now();

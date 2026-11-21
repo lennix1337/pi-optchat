@@ -45,7 +45,7 @@ async function runTwoTurnScenario() {
     ],
   };
 
-  // Synthetic Turn 2: mutates tool `bash` in tools[1], breaking the KV-cache prefix.
+
   const turn2 = {
     model: 'claude-sonnet-4-5',
     tools: [

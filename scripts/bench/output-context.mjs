@@ -1,5 +1,5 @@
-// Deterministic offline benchmark for OutputContext format-aware compression and 2 KB gate.
-// Run: node --experimental-transform-types scripts/bench/output-context.mjs
+
+
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

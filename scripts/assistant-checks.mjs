@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Runs the assistant's hermetic checks from .pi/checks.json in sequence, so CI covers the assistant
-// (its own Node 24 boundary, tests and typecheck) with the exact commands used locally.
-// Usage: node scripts/assistant-checks.mjs [--mutations]
+
+
+
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-/** Checks CI cannot run, with the reason; everything else named assistant-* runs. */
+
 const NEEDS_MACHINE = {
   'assistant-computer': 'Docker engine and a prebuilt node image',
   'assistant-browser-egress-docker': 'Docker engine and the prebuilt egress image',

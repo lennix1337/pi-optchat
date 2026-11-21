@@ -1,4 +1,4 @@
-// Offline output-preview benchmark across log, diff, and search fixtures.
+
 import { performance } from 'node:perf_hooks';
 import { previewOutput } from '../../src/output-preview.ts';
 

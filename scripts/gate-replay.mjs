@@ -1,8 +1,8 @@
-// Replays historical `approve-effect` gate asks from Pi session transcripts through the current
-// `classifyEffects` + `autonomy.json` gate, labels them (`needed`, `needless-still-asks`, `fixed`),
-// and prints a summary (or JSON with `--json`). Read-only against sessions and profile files.
-//
-// usage: node --import tsx scripts/gate-replay.mjs [--sessions DIR] [--autonomy FILE] [--json] [--out FILE]
+
+
+
+
+
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -17,7 +17,7 @@ const DEFAULT_AUTONOMY = join(homedir(), '.optchat', 'profiles', 'swlucas05', 'a
 
 const OUTCOME_RANK = { unanswered: 0, denied: 1, approved: 2 };
 
-/** Recursively lists `.jsonl` files under `dir`. */
+
 function walkJsonl(dir) {
   if (!existsSync(dir)) return [];
   const out = [];
@@ -95,7 +95,7 @@ export function extractGateAsks(sessionsDir) {
     const lines = raw.split(/\r?\n/).filter(Boolean);
     const entries = [];
     for (const line of lines) {
-      try { entries.push(JSON.parse(line)); } catch { /* skip malformed JSONL line */ }
+      try { entries.push(JSON.parse(line)); } catch {   }
     }
 
     let cwd = '';
@@ -151,7 +151,7 @@ export function extractGateAsks(sessionsDir) {
       }
     }
 
-    // Resolve outcomes by scanning subsequent user messages in the same transcript.
+
     for (const ask of fileAsks) {
       for (let j = ask.index + 1; j < entries.length; j++) {
         const next = entries[j];
@@ -199,7 +199,7 @@ const NEEDED_ACTIONS = new Set([
 
 const TEMP_OR_BUILD_TARGET = /(?:^|\/)(?:node_modules|dist|target|\.next|__pycache__|\.repro|\.scratch|tmp|temp|worktrees\/_tmp)(?:\/|$)|^\/tmp(?:\/|$)|^[a-z]:\/tmp(?:\/|$)/i;
 
-/** Heuristic for whether a `touchesContract` call actually writes the live `autonomy.json` vs merely mentions/reads/mirrors it. */
+
 function isRealContractWrite(item) {
   if (item.tool === 'edit' || item.tool === 'write') {
     const p = String(item.input?.path ?? '').replaceAll('\\', '/').toLowerCase();
@@ -209,13 +209,13 @@ function isRealContractWrite(item) {
   if (/\btools\.(?:edit|write)\s*\(/.test(cmd)) {
     return /path\s*:\s*['"][^'"]*autonomy\.json['"]/i.test(cmd);
   }
-  // Shell: gh pr create/edit/comment or git commit/add/push only mention autonomy.json in prose/metadata.
+
   if (/^\s*(?:cd\s+[^;&|\n]+&&\s*)?(?:git\s+(?:add|commit|push)|gh\s+(?:pr|issue)\s+)/i.test(cmd) && !/>+\s*\S*autonomy\.json/i.test(cmd)) {
     return false;
   }
-  // Copying TO a mirror (payload/...) is not writing the live contract.
+
   if (/\bcp\s+[^\n]*autonomy\.json\s+[^\n]*payload\//i.test(cmd)) return false;
-  // Read-only node -e without fs write calls.
+
   if (/\bnode\s+-e\b/.test(cmd) && !/\b(?:writeFile|appendFile|copyFile|rename|unlink|rm)(?:Sync)?\s*\(/i.test(cmd)) return false;
   return true;
 }
@@ -235,12 +235,12 @@ export function labelReplayItem(item, replay) {
   const actions = replay.effects.map(e => e.action);
   if (actions.some(a => NEEDED_ACTIONS.has(a))) return 'needed';
 
-  // Account/credential change patterns in shell commands
+
   if (/\b(?:gh\s+auth\s+(?:login|logout|switch|token)|npm\s+(?:login|adduser|token)|aws\s+configure|passwd|chpasswd|ssh-keygen)\b/i.test(item.command)) {
     return 'needed';
   }
 
-  // Delete of non-regenerable data (recursive-delete or discard not on merged/temp/build targets)
+
   for (const eff of replay.effects) {
     if (eff.action === 'recursive-delete') {
       const allRegenerable = eff.targets.length > 0 && eff.targets.every(t => TEMP_OR_BUILD_TARGET.test(t));
@@ -264,7 +264,7 @@ export function redactSecrets(text) {
     .replace(/([?&](?:token|key|secret|password|auth)=)[^&\s'"]+/gi, '$1[REDACTED]');
 }
 
-/** ISO week key `YYYY-Www` from an ISO timestamp. */
+
 function isoWeek(ts) {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return 'unknown';

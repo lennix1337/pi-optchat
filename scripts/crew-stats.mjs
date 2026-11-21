@@ -1,12 +1,12 @@
-// Measures the manager-mode targets of a profile over a window, read-only, printing one JSON object:
-//   - usage.jsonl: calls, cost and context per call by role and model (crewStats);
-//   - heartbeat.json wakeLog/daily (plus an optional extra wake file): empty and quota-error wakes;
-//   - runs/*.optchat.json and their Pi sessions: contract workers, tool calls, re-reads of files an earlier
-//     worker of the same project already read, context per call, tell_parent/tell_peer;
-//   - main/YYYY-MM-DD.jsonl memory logs: manager tells, spawns and mid-run worker messages.
-// A source that is missing prints "unavailable", never 0.
-//
-// usage: node scripts/crew-stats.mjs <profileDir> [sinceISO] [untilISO] [--metrics] [--wakes <file>] [--compare <baseline.json>]
+
+
+
+
+
+
+
+
+
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -98,7 +98,7 @@ function median(values) {
 
 const round = (value, digits = 0) => Math.round(value * 10 ** digits) / 10 ** digits;
 
-// One Pi session: tool-call counts, files read and the context each assistant call carried.
+
 function readSession(sessionFile) {
   const lines = readLines(sessionFile);
   if (!lines) return undefined;
@@ -221,7 +221,7 @@ export function crewMetrics(profileDir, sinceMs = 0, untilMs = Infinity, options
   };
 }
 
-// Numeric leaves (and "unavailable") of a metrics object, keyed by dotted path; usage rows are keyed by role and model.
+
 function flatten(value, prefix = '', out = {}) {
   if (typeof value === 'number' || value === UNAVAILABLE) out[prefix] = value;
   else if (Array.isArray(value)) {
