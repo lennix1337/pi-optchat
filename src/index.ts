@@ -5,7 +5,7 @@ import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { finalText, registerSlackBridge } from './slack-bridge.ts';
 import { CLAIM_CHECK_PREFIX, branchEvidenceMessages, claimRetryText, evidenceText, abandonedCauses, uncheckedAdmissions, utcTimes, unbackedClaims, unbackedNote } from './claim-check.ts';
-import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts';
+import { NO_WORK, readHomeWork, readWatch, runningItem, stillWaiting } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
 import { registerToolInventory } from './tool-inventory.ts';
@@ -959,8 +959,8 @@ export default function optchat(host: ExtensionAPI) {
       items: () => {
         const a = active;
         if (!a || !inPhase('open', 'import-paused')) return NO_WORK;
-        const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running').map(r => `subagente ${r.id} \u00b7 ${oneLine(r.task)}`);
-        return readHomeWork(a.dir, runningShells(shells).map(job => job.label ?? `${job.id} \u00b7 ${job.command}`), Date.now(), agents);
+        const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running').map(r => runningItem(`subagente ${r.id} \u00b7 ${oneLine(r.task)}`, r.started, Date.now()));
+        return readHomeWork(a.dir, runningShells(shells).map(job => runningItem(job.label ?? `${job.id} \u00b7 ${job.command}`, job.started, Date.now())), Date.now(), agents);
       } });
 
   slack.setWaiting(() => {

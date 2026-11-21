@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Commitment } from '../src/commitments.ts';
-import { backgroundSummary, commitmentItems, headline, idleLine, pendingCi, readPrItems, readWatch, renderWork, renderWorkParts, stillWaiting, watchReadBytes, type HomeWork } from '../src/home-items.ts';
+import { backgroundSummary, commitmentItems, headline, idleLine, pendingCi, readPrItems, readWatch, renderWork, renderWorkParts, runningItem, stillWaiting, watchReadBytes, type HomeWork } from '../src/home-items.ts';
 import { PRS } from '../src/slack-reports.ts';
 
 const NOW = Date.parse('2026-11-02T15:00:00Z');
@@ -160,4 +160,10 @@ test('readWatch and readPrItems cache by stat and do not re-read unchanged slack
     rmSync(file);
     assert.deepEqual(readWatch(dir), {});
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('runningItem: a worker shows what it does and for how long', () => {
+  const t0 = Date.parse('2026-11-21T23:00:00Z');
+  assert.equal(runningItem('agy Neon: 3 candidatos', t0, t0 + 12 * 60_000), 'agy Neon: 3 candidatos \u00b7 h\u00e1 12 min');
+  assert.equal(runningItem('build', t0, t0 + 3 * 3_600_000), 'build \u00b7 h\u00e1 3 h');
 });
