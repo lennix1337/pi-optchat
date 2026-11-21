@@ -118,6 +118,11 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'self-build-in-wake': return (pacing.wakeEdits ?? 0) < 3 && (nextPacing(pacing, event).wakeEdits ?? 0) >= 3;
+    case 'dentai-in-wake': return !!pacing.wake && calls.some(c => {
+      const command = withoutQuotedText(String(c.arguments?.command ?? ''));
+      return c.name === 'bash' && /dentai-mono|tecnologia-ai\/dentai|dentai-ship|\bDENTA-\d+/u.test(command) &&
+        /\bgit\s+(?:push|commit)\b|\bgh\s+(?:pr\s+(?:create|merge|comment|close)|issue\s+(?:comment|close))\b|\bship\.mjs\b|\bdentai-ship\b|\bdeploy\b/u.test(command);
+    });
     case 'live-claim': return !pacing.checked && !calls.some(verifiesLive) && calls.some(c =>
       (c.name === 'slack_send' || c.name === 'whatsapp_send') &&
       /^\W*(?:j[áa]\s+(?:est[áa]|est[ãa]o)\s+no\s+ar|no\s+ar\b|(?:est[áa]|est[ãa]o)\s+no\s+ar|ao\s+vivo\b)/iu.test(String(c.arguments?.text ?? '')) &&

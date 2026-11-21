@@ -122,5 +122,13 @@
     "scope": "slack_send or whatsapp_send tool call",
     "detector": "live-claim",
     "precision": "Report opening with \"No ar\"/\"Já está no ar\"/\"ao vivo\" and no hedge, when no curl, gh run/pr/api, git log, release verifier or browser call ran since the last user or wake message; candidates require review (a check made by another tool is not seen)."
+  },
+  {
+    "id": "dentai-in-wake",
+    "quote": "sou dev e nao dono da dentai, nao da pra sair metendo o louco la nao",
+    "date": "20/11",
+    "scope": "bash tool call of a run started by an OptChat heartbeat prompt",
+    "detector": "dentai-in-wake",
+    "precision": "Wake-run bash call that mentions dentai-mono, tecnologia-ai/dentai, dentai-ship or a DENTA-n card and also pushes, commits, creates or merges a PR, comments or deploys; reads are ignored; candidates require review (an order given before the wake is not visible here)."
   }
 ]
