@@ -2,8 +2,7 @@ import { closeSync, lstatSync, openSync, type Stats } from 'node:fs';
 import { dirname, join, parse, resolve } from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 
-// This checks a quiescent, user-controlled directory, not concurrent path replacement.
-// Paths arrive newline-separated (a Windows path cannot contain one); any failing path fails the whole inspection.
+// external: Windows paths cannot contain newlines.
 const windowsAclCheck = `$ErrorActionPreference='Stop'
 $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $trusted=@($current,'S-1-5-18','S-1-5-32-544')
@@ -34,8 +33,7 @@ function rejectLinkedComponents(path: string): void {
   }
 }
 
-// One inspection takes ~0.3 s idle but up to 9.5 s with the CPU saturated, and a vault open runs two to four of them at
-// service startup, so a stuck PowerShell is cut off only well past a busy logon.
+// external: ACL inspections can take 9.5 seconds under CPU load.
 export const ACL_INSPECTION_TIMEOUT_MS = 60_000;
 
 /** The ACL was never judged: the machine was too busy, so retrying is the remedy, not changing permissions. */
@@ -48,8 +46,7 @@ export function aclInspectionFailure(result: Pick<SpawnSyncReturns<string>, 'sta
   return result.error || result.status !== 0 ? new Error('Privacy ACL inspection failed or found an untrusted grant') : null;
 }
 
-// Windows PowerShell 5.1 ships with Windows. PowerShell 7 finished this script in ~0.1 s but under a parallel load its
-// process sometimes stayed alive for 40 s or more after the script ended, so spawnSync blocked until the timeout.
+// external: PowerShell 7 can keep the process alive after the script ends under load.
 const windowsPowerShell = () => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 /** The environment without PSModulePath: one inherited from PowerShell 7 makes 5.1 load 7's modules and fail Get-Acl. */
@@ -58,7 +55,7 @@ export function aclInspectionEnv(paths: string[], base: NodeJS.ProcessEnv = proc
   return { ...env, ASSISTANT_PRIVACY_PATHS: paths.join('\n') };
 }
 
-/** One PowerShell for all `paths`: each costs ~0.3 s idle (seconds when busy), and startup prepares about ten databases. */
+// external: PowerShell startup can take seconds under load.
 function checkAcl(paths: string[]): void {
   const result = spawnSync(windowsPowerShell(), ['-NoProfile', '-NonInteractive', '-Command', windowsAclCheck], {
     env: aclInspectionEnv(paths), encoding: 'utf8', timeout: ACL_INSPECTION_TIMEOUT_MS, maxBuffer: 16384, windowsHide: true,
@@ -67,7 +64,6 @@ function checkAcl(paths: string[]): void {
   if (failure) throw failure;
 }
 
-/** Owner-only checks: on Windows the ACLs of all `paths` in one inspection, elsewhere uid and mode per path. */
 type Entry = { path: string; stat: Stats; directory: boolean; privateMode: boolean };
 function checkOwnerOnly(entries: Entry[]): void {
   if (process.platform === 'win32') checkAcl(entries.map(entry => entry.path));
@@ -102,7 +98,6 @@ export function prepareDatabase(path: string): void {
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       if (candidate === path) {
-        // The directory is judged before anything is created in it.
         checkOwnerOnly(entries);
         closeSync(openSync(path, 'wx', 0o600));
         entries.splice(0, entries.length, fileEntry(path, true));
