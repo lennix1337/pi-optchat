@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Explicit opt-in Windows autostart through a launcher in the current user's Startup folder. Dry run unless --yes.
+
 import { cli } from './cli.mjs';
 import { installAutostart, uninstallAutostart } from '../src/ops/autostart.ts';
 

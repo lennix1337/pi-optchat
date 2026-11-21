@@ -8,7 +8,7 @@ try {
   cpSync('assistant/test/takeover-transition.test.ts', join(root, 'assistant/test/takeover-transition.test.ts'));
   const path = join(root, 'assistant/src/computer/manager.ts');
   const original = readFileSync(path, 'utf8');
-  // The row-state guard and the lifecycle reservation are redundant refusals; the mutant removes both.
+
   const anchors = [
     ["if (row.state === 'transition' || row.state === 'removing') fail('computer_transition');\n      const active =", "if (false) fail('computer_transition');\n      const active ="],
     ["if (Number(result.changes) !== 1) fail('computer_transition');\n    this.hold(token);\n    return token;", 'this.hold(token);\n    return token;'],

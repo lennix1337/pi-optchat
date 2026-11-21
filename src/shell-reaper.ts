@@ -51,7 +51,7 @@ async function windowsParents(): Promise<Map<number, number>> {
   return parents;
 }
 
-/** MSYS's `ps` beside the shell: Git's `bin\bash.exe` wrapper keeps it in `usr\bin`. */
+// external: Git Bash locates MSYS ps in usr/bin alongside its bin/bash wrapper.
 function msysPs(shell: string): string | undefined {
   return [join(dirname(shell), 'ps.exe'), join(dirname(shell), '..', 'usr', 'bin', 'ps.exe')].find(existsSync);
 }
@@ -59,7 +59,7 @@ function msysPs(shell: string): string | undefined {
 async function msysProcesses(shell: string): Promise<MsysProcess[]> {
   const ps = msysPs(shell);
   if (!ps) return [];
-  // Columns: [status] PID PPID PGID WINPID ...
+
   return [...(await run(ps, [])).matchAll(/^\s*[A-Z]?\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s/gm)]
     .map(m => ({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), winpid: Number(m[4]) }));
 }
@@ -74,7 +74,7 @@ export async function reapShellTree(root: number, shell: string): Promise<void> 
 }
 
 const EXIT_STDIO_GRACE_MS = 100;
-/** Resolves with the exit code once the shell exits and its pipes fall quiet, as Pi does, so a descendant holding stdout cannot hang the call. */
+// external: Pi resolves shell execution after exit and quiet pipes.
 function exited(child: ChildProcess): Promise<number | null> {
   return new Promise((resolve, reject) => {
     let code: number | null = null, done = false, gone = false, grace: NodeJS.Timeout | undefined;
@@ -93,7 +93,7 @@ function exited(child: ChildProcess): Promise<number | null> {
   });
 }
 
-/** Pi's own timeout rules for its bash tool: seconds, finite, positive, within a Node timer. */
+// external: Pi bash timeouts are positive finite seconds bounded by a Node timer.
 function timeoutMs(timeout: number | undefined): number | undefined {
   if (timeout === undefined) return undefined;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('Invalid timeout: must be a finite number of seconds');
@@ -101,17 +101,17 @@ function timeoutMs(timeout: number | undefined): number | undefined {
   return timeout * 1000;
 }
 
-/**
- * Shells still running when Pi exits get what Pi gives its own: a detached `taskkill /T`, since nothing async runs at exit.
- * A /reload evaluates this module again in the same process, so the set of live shells and the exit hook belong to the
- * process: every copy shares them, and the hook is registered once instead of once per reload.
- */
+
+
+
+
+
 const SHARED = Symbol.for('pi-optchat.shell-reaper.v1');
 const live = ((globalThis as Record<symbol, Set<number> | undefined>)[SHARED] ??= (() => {
   const pids = new Set<number>();
   process.once('exit', () => {
     for (const pid of pids) {
-      try { spawn(taskkill(), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true }).once('error', () => {}); } catch { /* best effort */ }
+      try { spawn(taskkill(), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true }).once('error', () => {}); } catch {   }
     }
   });
   return pids;
@@ -159,7 +159,7 @@ export function reapingBashOperations(shellPath?: string): BashOperations {
   };
 }
 
-/** The `shellCommandPrefix` and `shellPath` Pi gives its own bash tool, read per call so a settings change applies. */
+
 function shellSettings(cwd: string) {
   const settings = SettingsManager.create(cwd, getAgentDir());
   return { commandPrefix: settings.getShellCommandPrefix(), shellPath: settings.getShellPath() };

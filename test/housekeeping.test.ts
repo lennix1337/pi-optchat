@@ -28,13 +28,13 @@ const assistant = (stopReason: 'stop' | 'toolUse' = 'stop'): SessionEntry => ({ 
   message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }], api: 'openai-completions', provider: 'p', model: 'm', usage: emptyUsage(), stopReason, timestamp: ids } });
 const result = (): SessionEntry => ({ type: 'message', id: `e${++ids}`, parentId: null, timestamp: stamp(), message: { role: 'toolResult', toolCallId: 'c', toolName: 't', content: [{ type: 'text', text: 'out' }], isError: false, timestamp: ids } });
 const compaction = (): SessionEntry => ({ type: 'compaction', id: `e${++ids}`, parentId: null, timestamp: stamp(), summary: 's', firstKeptEntryId: 'x', tokensBefore: 1 });
-/** n turns of a user message, a tool call, its result and an answer: four messages each. */
+
 const turns = (n: number) => Array.from({ length: n }, () => [user(), assistant('toolUse'), result(), assistant()]).flat();
 
 test('housekeepingCut keeps about `keep` messages from the start of a turn, and only once the context passes twice that', () => {
   assert.equal(housekeepingCut(turns(5), 10), undefined, '20 messages are not over 2 x 10');
   assert.equal(housekeepingCut(turns(6), 0), undefined, 'keep 0 is off');
-  const entries = turns(8); // 32 messages
+  const entries = turns(8);
   const cut = housekeepingCut(entries, 10)!;
   const first = entries.findIndex(e => e.id === cut.firstKeptEntryId);
   assert.equal(entries[first].type === 'message' && entries[first].message.role, 'user', 'a turn starts the kept part');
@@ -49,7 +49,7 @@ test('housekeepingCut never starts at a tool result, skips an earlier compaction
   const first = entries.find(e => e.id === cut.firstKeptEntryId)!;
   assert.equal(first.type === 'message' && first.message.role, 'user');
   assert.equal(cut.dropped + cut.kept, 32, 'the compaction entry is not a message');
-  // One long turn: no user message after the target, so an assistant message starts the kept part, never a tool result.
+
   const long = [user(), ...Array.from({ length: 30 }, () => [assistant('toolUse'), result()]).flat()];
   const cutLong = housekeepingCut(long, 10)!;
   const firstLong = long.find(e => e.id === cutLong.firstKeptEntryId)!;
@@ -86,7 +86,7 @@ test('transcriptKeep defaults to 400, accepts 0 and refuses a negative or fracti
   assert.throws(() => readSettings({ transcriptKeep: 1.5 }), /whole number/);
 });
 
-/** A headless Pi with an OptChat profile; every request the fixture model gets is recorded, with the compaction window marked. */
+
 async function session(name: string, keep: number) {
   createProfile(name);
   saveConfig(profilePath(name), { ...loadConfig(profilePath(name)), transcriptKeep: keep, compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
@@ -131,7 +131,7 @@ const jsonl = (file: string) => readFileSync(file, 'utf8').split('\n').filter(Bo
 test('after 3 x keep messages the context and chat hold about keep, the file and the entries keep all, and the compaction costs no model call', async () => {
   const pi = await session('hk-bounded', 10);
   try {
-    for (let i = 0; i < 15; i++) await pi.session.prompt(`question ${i}`); // 30 messages
+    for (let i = 0; i < 15; i++) await pi.session.prompt(`question ${i}`);
     assert.deepEqual(pi.errors, []);
     assert.deepEqual(pi.events, ['boundary compaction'], 'one compaction, written at a run boundary, not by the compactor');
     const lines = jsonl(pi.file);
@@ -145,7 +145,7 @@ test('after 3 x keep messages the context and chat hold about keep, the file and
     assert.ok(held < 30 && held <= 2 * 10, `Pi holds ${held} of 30 messages, at most twice transcriptKeep`);
     assert.ok(pi.session.state.messages.length <= held + 2, `Pi's list holds ${pi.session.state.messages.length} messages`);
     assert.equal(pi.calls(), 15, 'one model call per prompt: the compaction made none');
-    // A new run of Pi on the same file gets the bounded context.
+
     const reopened = SessionManager.open(pi.file);
     assert.equal(reopened.buildContextEntries().length, context.length);
     assert.equal(reopened.getEntries().filter(e => e.type === 'message' && e.message.role !== 'system').length, 30);
@@ -162,7 +162,7 @@ test('housekeeping off (transcriptKeep 0) never compacts', async () => {
   } finally { await pi.close(); }
 });
 
-/** What the model got, without the clock: summary lines and run markers carry timestamps and receipts that differ between two sessions. */
+
 const normal = (request: string) => request.replace(/\d{4}-\d\d-\d\d[T ]\d\d:\d\d(:\d\d(\.\d+)?)?Z?/g, 'T').replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, 'ID')
   .replace(/"timestamp":\d+/g, '"timestamp":0').replace(/\d{2}:\d{2}(:\d{2})?/g, 'HH:MM');
 

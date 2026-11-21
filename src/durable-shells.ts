@@ -25,7 +25,7 @@ export function launchDurable(root: string, job: Omit<DurableRecord, 'pid'>): Du
   mkdirSync(paths.dir, { recursive: true });
   const config = getShellConfig();
   writeFileSync(paths.log, '');
-  // The shell redirects its own output: a detached Windows process loses handles inherited through stdio.
+  // external: Detached Windows processes lose inherited stdio handles.
   const child = spawn(config.shell, ['-c', 'bash -c "$OPTCHAT_DURABLE_COMMAND" >> "$OPTCHAT_DURABLE_LOG" 2>&1 < /dev/null; printf %s $? > "$OPTCHAT_DURABLE_EXIT"'], {
     cwd: job.cwd, detached: true, windowsHide: true, stdio: 'ignore',
     env: { ...process.env, OPTCHAT_DURABLE_COMMAND: job.command, OPTCHAT_DURABLE_LOG: paths.log, OPTCHAT_DURABLE_EXIT: paths.exit },
@@ -38,15 +38,15 @@ export function launchDurable(root: string, job: Omit<DurableRecord, 'pid'>): Du
   return record;
 }
 
-/** A detached shell leads its own process group outside Windows, so one signal reaches the whole tree. */
+// external: A detached POSIX shell leads its own process group.
 const killTree = async (pid: number) => {
   if (process.platform === 'win32') return reapShellTree(pid, getShellConfig().shell).catch(() => {});
-  try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
+  try { process.kill(-pid, 'SIGKILL'); } catch {   }
 };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; } };
 const readExit = (file: string) => { try { const text = readFileSync(file, 'utf8').trim(); return text === '' ? undefined : Number(text); } catch { return undefined; } };
 
-/** The log from `offset` on, and the new offset. */
+
 function readFrom(file: string, offset: number): { chunk: Buffer; offset: number } {
   let size = 0;
   try { size = statSync(file).size; } catch { return { chunk: Buffer.alloc(0), offset }; }
@@ -93,7 +93,7 @@ export function pendingDurable(root: string, now = Date.now()): DurableRecord[] 
     try {
       if (existsSync(paths.reported)) { if (now - statSync(paths.reported).mtimeMs > KEEP_MS) rmSync(paths.dir, { recursive: true, force: true }); continue; }
       pending.push(JSON.parse(readFileSync(paths.record, 'utf8')) as DurableRecord);
-    } catch { /* a half-written record: its launch failed before the shell started */ }
+    } catch {   }
   }
   return pending.sort((a, b) => a.started - b.started);
 }

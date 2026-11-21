@@ -11,7 +11,7 @@ export const SLACK_METRICS = 'slack-metrics.jsonl';
 const KEEP_MS = 35 * 86_400_000;
 type Entry = { at: number; kind: 'in' | 'out'; channel: string | null; nudge?: true };
 
-/** A short message that only asks where things stand: "e aí", "cadê", "como tá", "alguma novidade?", "status?". */
+
 const NUDGE = /^(?:e\s+a[ií]|cad[eê]|como\s+(?:t[aá]|est[aá]|anda|ficou)|(?:alguma\s+)?novidades?|status|e\s+ent[aã]o)(?![\p{L}\p{N}])/iu;
 export const isNudge = (text: string) => { const t = text.trim(); return t.length <= 60 && NUDGE.test(t); };
 

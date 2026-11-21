@@ -13,11 +13,11 @@ import { removeDir } from './support.ts';
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
 const temp = () => mkdtempSync(join(tmpdir(), 'commitment-links-'));
-const T0 = Date.parse('2026-11-10T18:00:00Z'); // 15:00 in Brasília
+const T0 = Date.parse('2026-11-10T18:00:00Z');
 const mergedNotice = (repo: string, pr: number, text = 'merged abc1234') => ({ role: 'custom', customType: 'gitwatch', content: `[gitwatch] ${repo} ${pr}`, display: true,
   details: { repo, events: [{ pr, kind: 'merged', text, wake: true }] } });
 
-/** The extension's hooks on a fake Pi, with the clock under the test's control. */
+
 function hooks(dir: string, clock: { now: number }) {
   const handlers = new Map<string, (event: Record<string, unknown>) => unknown>();
   const sent: { message: { customType: string; content: string }; options: { triggerTurn?: boolean } }[] = [];

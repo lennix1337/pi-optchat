@@ -43,7 +43,7 @@ export async function checkSetup(components: readonly SetupComponent[], options:
         ? { status: 'not_verified', detail: `Sem resposta em ${Math.round(timeoutMs / 1000)} s; o estado \é desconhecido.` }
         : classify(observation, now(), options.maxAgeMs ?? DAY);
     } catch {
-      // Probe errors can carry paths or credentials; only the fact of failure is shown.
+
       result = { status: 'needs_setup', detail: 'A verifica\ç\ão falhou.' };
     } finally { clearTimeout(timer); }
     return { id: component.id, label: component.label, fix: component.fix, checkedAt: new Date(now()).toISOString(), ...result };

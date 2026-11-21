@@ -5,9 +5,9 @@ import { createNotificationCenter, type DeliveredNotification } from '../src/not
 import { withDir } from './runtime-support.ts';
 
 const operator = {};
-// 2026-10-28T12:00:00Z is 09:00 in São Paulo (UTC-3, no DST in 2026).
+
 const NOON_UTC = Date.UTC(2026, 9, 28, 12, 0);
-const LATE_UTC = Date.UTC(2026, 9, 29, 2, 0); // 23:00 local
+const LATE_UTC = Date.UTC(2026, 9, 29, 2, 0);
 
 function center(dir: string, now: () => number = () => NOON_UTC, boundary?: (name: string, id: string) => void) {
   return createNotificationCenter({ databasePath: join(dir, 'notifications.sqlite'), operatorAuthority: operator, now, boundary });
@@ -51,9 +51,9 @@ test('quiet hours defer delivery across midnight in the configured time zone, th
     const { sent, transport } = collector();
     assert.deepEqual(await c.deliver('web', transport), { accepted: 0, deferred: 1, suppressed: 0, failed: 0 });
     assert.equal(c.list()[0].state, 'pending');
-    now = Date.UTC(2026, 9, 29, 9, 59); // 06:59 local, still quiet
+    now = Date.UTC(2026, 9, 29, 9, 59);
     assert.equal((await c.deliver('web', transport)).deferred, 1);
-    now = Date.UTC(2026, 9, 29, 10, 0); // 07:00 local
+    now = Date.UTC(2026, 9, 29, 10, 0);
     assert.equal((await c.deliver('web', transport)).accepted, 1);
     assert.equal((await c.deliver('web', transport)).accepted, 0, 'accepted notifications are not pushed again');
     assert.equal(sent.length, 1);

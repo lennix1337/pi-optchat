@@ -38,7 +38,7 @@ function sanitizeTempScopeSegment(value: string): string {
   return sanitized || 'unknown';
 }
 
-/** A file-name-safe segment of an id, used for the artifacts a row points at. */
+
 function fileSafe(value: string): string {
   return value.replace(/[^A-Za-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'run';
 }
@@ -56,14 +56,14 @@ export function resolveTempScopeId(options: TempScopeOptions = {}): string {
   try {
     const username = info?.()?.username;
     if (username) return `user-${sanitizeTempScopeSegment(username)}`;
-  } catch { /* fall through to the home directory */ }
+  } catch {   }
   const home = env.USERPROFILE ?? env.HOME;
   if (home) return `home-${sanitizeTempScopeSegment(home)}`;
   const resolveHomedir = Object.hasOwn(options, 'homedir') ? options.homedir : homedir;
   try {
     const fallback = resolveHomedir?.();
     if (fallback) return `home-${sanitizeTempScopeSegment(fallback)}`;
-  } catch { /* fall through */ }
+  } catch {   }
   return 'shared';
 }
 
@@ -150,8 +150,8 @@ export function asyncStatusToRuns(value: unknown, fallbackId = 'run', asyncDir?:
     const single = row(step, undefined, state);
     return single ? [single] : [];
   }
-  // A multi-step run shows one row per step: the panel lists agents, and every
-  // step is an agent with its own model and thinking level.
+
+
   return steps.map((step, position) => row(step, position, asyncStates[String(step.status)] ?? runState)).filter((run): run is RunInfo => run !== undefined);
 }
 
@@ -240,7 +240,7 @@ export function parseSessionHeader(text: string): { model?: string; thinking?: s
   return { ...(model ? { model } : {}), ...(thinking ? { thinking } : {}) };
 }
 
-/** Only the first bytes of a session file are needed, so a large transcript is never read whole. */
+
 function readHead(file: string, bytes = 8192): string {
   let fd: number | undefined;
   try {
@@ -248,7 +248,7 @@ function readHead(file: string, bytes = 8192): string {
     const buffer = Buffer.allocUnsafe(bytes), read = readSync(fd, buffer, 0, bytes, 0);
     return buffer.toString('utf8', 0, read);
   } catch { return ''; }
-  finally { if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ } }
+  finally { if (fd !== undefined) try { closeSync(fd); } catch {   } }
 }
 
 /** What a panel can do with a pi-subagents row: stop an async run, pause a foreground child, or hide it. */
@@ -292,9 +292,9 @@ export interface ExternalRunsOptions {
   processAlive?: (pid: number) => boolean | undefined;
 }
 
-/** A fresh status gets this long before a missing runner counts, so a runner exiting right after its last write is not misread. */
+
 const LOST_RUNNER_GRACE_MS = 30_000;
-/** The runner enforces its timeout and writes a result; this long past the deadline it is gone even if its PID was recycled. */
+
 const DEADLINE_GRACE_MS = 10 * 60_000;
 
 function probeProcess(pid: number): boolean | undefined {
@@ -302,7 +302,7 @@ function probeProcess(pid: number): boolean | undefined {
   catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : undefined; }
 }
 
-/** What tells whether an async run's runner still exists. */
+
 interface RunnerEvidence { pid?: number; lastUpdate?: number; deadlineAt?: number }
 
 function runnerEvidence(value: unknown): RunnerEvidence {
@@ -397,12 +397,12 @@ export class ExternalRuns {
     this.readForeground();
     this.readLiveForeground();
     const next = new Map<string, RunInfo>();
-    // A live foreground child is shown while it works; the saved history replaces it
-    // when the run ends, and keeps the start time the live record knew.
+
+
     for (const run of this.liveRecords.values()) if (!this.hidden.has(run.id)) next.set(run.id, run);
     for (const run of this.foregroundRecords.values()) {
       if (this.hidden.has(run.id)) continue;
-      // The live record is gone by now, but the start time it knew is kept: the saved history has none.
+
       const live = next.get(run.id) ?? (this.liveStarts.has(run.id) ? { started: this.liveStarts.get(run.id)! } : undefined);
       next.set(run.id, run.durationUnknown && live ? { ...run, started: live.started, durationUnknown: false } : run);
     }
@@ -430,7 +430,7 @@ export class ExternalRuns {
       this.warnOnce(`Could not read pi-subagents async runs: ${String(error)}`);
       return;
     }
-    // Only trust the directory mtime once it has aged past coarse OS timestamp ticks (e.g. Windows NTFS).
+    // external: Some filesystems have coarse mtime granularity.
     this.asyncDirStamp = Date.now() - dir.mtimeMs > 100 ? dir.stamp : undefined;
     const seen = new Set<string>(), next = new Map<string, RunInfo>();
     for (const entry of entries) {
@@ -527,9 +527,9 @@ export class ExternalRuns {
         this.liveCache.set(file, { stamp, run, updatedAt });
       }
       if (!run) continue;
-      // A record whose heartbeat stopped belongs to a run that died without cleaning up.
+
       if (updatedAt !== undefined && now - updatedAt > this.liveTtlMs) continue;
-      // Remember the start: the saved history has none, and the live record is gone by then.
+
       this.liveStarts.set(run.id, run.started);
       if (this.liveStarts.size > 500) this.liveStarts.delete(this.liveStarts.keys().next().value as string);
       next.set(run.id, run);

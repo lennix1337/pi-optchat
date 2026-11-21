@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyCacheMisses, SMALL_WRITE_TOKENS, type UsageRecord, type MissClass } from '../src/cache-misses.ts';
 
-// Seeded generator: a failing case reproduces from its seed.
+
 const rng = (seed: number) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 const CASES = 200;
-// Summing dollars in another order differs in the last bit; compare to the micro-dollar.
+
 const rounded = (value: unknown) => JSON.parse(JSON.stringify(value), (_k, v) => typeof v === 'number' ? Math.round(v * 1e9) / 1e9 : v);
 const CLASSES: MissClass[] = ['small', 'first', 'cold', 'headChange', 'growth'];
 
@@ -49,7 +49,7 @@ test('small writes are small; byDay and the model switch only subdivide head cha
 test('sessions are independent: interleaving or reordering them across sessions changes nothing', () => {
   for (let seed = 1; seed <= CASES; seed++) {
     const rs = records(seed), next = rng(seed + 9999);
-    // Stable shuffle across sessions: pick the next record from a random session, keeping each session's own order.
+
     const queues = new Map<string, UsageRecord[]>();
     for (const r of rs) (queues.get(r.session!) ?? queues.set(r.session!, []).get(r.session!)!).push(r);
     const shuffled: UsageRecord[] = [];

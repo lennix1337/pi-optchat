@@ -85,7 +85,7 @@ test('alternate loopback origins cannot serve a panel, authenticate or independe
 }));
 
 test('wrong hosts, login floods and session storage are bounded', async () => clockFixture(async f => {
-  // Native fetch replaces Host with the URL authority; exercise the raw HTTP boundary instead.
+  // external: native fetch replaces Host with the URL authority.
   const status = await new Promise<number | undefined>((resolve, reject) => {
     const req = request(f.base, { headers: { host: 'attacker.test' } }, res => { res.resume(); res.once('end', () => resolve(res.statusCode)); });
     req.once('error', reject); req.end();

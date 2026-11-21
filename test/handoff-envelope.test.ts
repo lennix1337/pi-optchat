@@ -23,7 +23,7 @@ test('whatever the summary holds, the envelope never exceeds the cap and keeps c
   const random = (n: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
   for (let round = 0; round < 300; round++) {
     const summary = Array.from({ length: random(400) }, () => pieces[random(pieces.length)]).join('');
-    // Large enough for the frame: at most 12 pointers of 200 bytes plus the header and the notes.
+
     const cap = 3000 + random(2000);
     const envelope = handoffEnvelope({ id: 'run-1', from: 'worker', to: 'router', summary,
       pointers: Array.from({ length: random(16) }, (_, index) => ({ kind: 'file' as const, ref: `C:/${index}/${'p'.repeat(random(300))}` })) }, cap);

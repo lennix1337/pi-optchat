@@ -34,12 +34,12 @@ test('findText finds literal text in any case, with the exact original offset, U
   assert.match(unicode, /^1 match of "ÜNÏCÖDÉ" in message 0, newest message first/);
   assert.deepEqual(hitsOf(unicode).map(({ id, at, kind }) => [id, at, kind]), [[0, 4, 'user']]);
   assert.match(unicode, /\n  The Ünïcödé plan is ready$/);
-  // U+0130 lowers to two code units, yet the offset is the original one.
+
   const dotted = hitsOf(textOf(await zoom({ id: 1, n: 1, findText: 'mark' })))[0];
   assert.equal(dotted.at, 'İİİ tail '.length);
   assert.equal(memory.root[1].text.slice(dotted.at, dotted.at + 4), 'MARK');
   assert.equal(hitsOf(textOf(await zoom({ id: 1, n: 1, findText: 'İİ' })))[0].at, 0);
-  // Greek final sigma lowers the same way in text and needle.
+
   assert.equal(hitsOf(textOf(await zoom({ id: 2, n: 1, findText: 'οδοσ' })))[0].at, memory.root[2].text.indexOf('ΟΔΟΣ'));
   assert.equal(hitsOf(textOf(await zoom({ id: 2, n: 1, findText: '😀' })))[0].at, 'astral '.length);
   const absent = textOf(await zoom({ id: 0, n: 4, findText: '😁' }));
@@ -83,7 +83,7 @@ test('an excerpt never splits a surrogate pair and the callback gets its exact s
   const [read] = reads;
   assert.deepEqual([read.id, read.n], [0, 1]);
   assert.equal(`…${memory.root[0].text.slice(read.offset, read.offset! + read.limit!)}…`, excerpt);
-  // The suggested call is itself valid.
+
   assert.match(hit.next, /^zoom\(id: 0, n: 1\)$/);
 }));
 
@@ -98,7 +98,7 @@ test('bad or conflicting findText parameters fail explicitly and report no read'
   await bad({ id: 0, n: 1, findText: 'alpha', offset: 10 }, /Message 0 has 10 characters; offset must be 0 to 9/);
   await bad({ agent: 'run', findText: 'alpha' }, /not an agent transcript/);
   await bad({ id: 0, agent: 'run', findText: 'alpha' }, /either id or agent/);
-  // Same range admission as a plain zoom, message for message.
+
   for (const [id, n] of [[1, 2], [0, 3], [0, 8], [4, 1], [0, 0], [-1, 1]]) {
     const expected = (() => { try { memory.zoom(id, n); } catch (error) { return (error as Error).message; } })();
     assert.ok(expected, `${id}+${n} is invalid for zoom`);
@@ -133,7 +133,7 @@ test('many hits are truncated to the newest, and the named calls recover every o
   assert.equal(found.length, all.size, 'no hit is reported twice');
   assert.deepEqual([...all].sort((a, b) => a - b), Array.from({ length: 32 }, (_, i) => i).filter(i => i % 4 !== 3));
   assert.ok(rounds < 20);
-  // What was left: the rest of message 20, then the aligned blocks below it, newest first.
+
   assert.deepEqual(callsOf(first).map(({ id, n, offset }) => [id, n, offset]), [[20, 1, 'message 20 mentions '.length], [16, 4, undefined], [0, 16, undefined]]);
 }));
 
@@ -161,7 +161,7 @@ test('a newer correction is listed before the older decision with its own proven
   assert.match(text, /1 logged zoom\/search copies skipped/);
   assert.match(text, /\n  …?Correction: not postgres after all/);
   assert.deepEqual(callsOf(text), []);
-  // An explicit single-message selection still reads the copy.
+
   assert.equal(hitsOf(textOf(await zoom({ id: 3, n: 1, findText: 'postgres' })))[0].kind, 'echo');
 }));
 
@@ -197,7 +197,7 @@ test('searching from an offset inside one message skips what lies before it', ()
 
 test('the message count of one call is bounded too', () => withZoom(async (memory, zoom) => {
   const count = 2 * FIND.scanMessages;
-  // Appending 8,192 messages one by one takes seconds of tree bookkeeping the find never reads, so the originals go in directly.
+
   for (let i = 0; i < count; i++) memory.root.push({ i, kind: 'user', text: i === 0 ? 'rare word' : 'x', size: 16, date: '2026-01-01T00:00:00.000Z' });
   const first = textOf(await zoom({ id: 0, n: count, findText: 'rare' }));
   assert.match(first, new RegExp(`${FIND.scanMessages.toLocaleString('en-US')} messages searched`));
@@ -258,7 +258,7 @@ test('a find read reports its excerpts only, and an absent or failed find report
     assert.equal(read.n, 1);
     assert.ok(read.limit! <= 2 * FIND.context + 'marker'.length + 2, 'an excerpt, not the range');
     assert.ok(memory.root[read.id].text.slice(read.offset, read.offset! + read.limit!).includes('marker'));
-    // The follow-up zoom reads at the excerpt, in the original message.
+
     assert.equal(hits[i].next, `zoom(id: ${read.id}, n: 1, offset: ${read.offset}, limit: ${FIND.nextLimit})`);
     assert.match(textOf(await zoom({ id: read.id, n: 1, offset: read.offset, limit: FIND.nextLimit })), /marker/);
   }

@@ -131,7 +131,7 @@ test('a wake that resumes a finished worker with tell waits for that worker\'s r
         const child = model.id === 'child', compression = isCompaction(context), lastMessage = context.messages.at(-1);
         const last = withoutFullChat(textContent(lastMessage?.content)).split('</chat>').at(-1)!.trim();
         let content: AssistantMessage['content'] = [{ type: 'text', text: 'ok' }], hold = false;
-        if (compression) { /* ok */ }
+        if (compression) {   }
         else if (child) { hold = last.includes('Do more.'); content = [{ type: 'text', text: hold ? 'Child resumed.' : 'Child finished.' }]; }
         else if (lastMessage?.role === 'toolResult') content = [{ type: 'text', text: 'waiting' }];
         else if (last.includes('Initialize.')) { spawns++; content = [{ type: 'toolCall', id: 'spawn-one', name: 'spawn', arguments: { tasks: [{ task: 'SYNTHETIC CHILD TASK' }] } }]; }
@@ -202,10 +202,10 @@ test('a wake waits for the author its reviewer resumed with tell_peer, and the m
         const child = model.id === 'child', compression = isCompaction(context), lastMessage = context.messages.at(-1);
         const last = withoutFullChat(textContent(lastMessage?.content)).split('</chat>').at(-1)!.trim();
         const task = textContent(context.messages.find(m => m.role === 'user')?.content).split('Your task:\n').at(-1) ?? '';
-        // What arrived since the main agent last spoke: a report can come with a status note after it.
+
         const since = context.messages.slice(context.messages.findLastIndex(m => m.role === 'assistant') + 1).map(m => withoutFullChat(textContent(m.content)).split('</chat>').at(-1)!).join('\n');
         let content: AssistantMessage['content'] = [{ type: 'text', text: 'ok' }], hold = false;
-        if (compression) { /* ok */ }
+        if (compression) {   }
         else if (child && task.includes('REVIEWER')) {
           if (lastMessage?.role === 'toolResult') content = [{ type: 'text', text: 'Review done.' }];
           else { peerCalls++; content = [{ type: 'toolCall', id: 'peer-one', name: 'tell_peer', arguments: { message: 'PEER_NOTE null check missing; push now / merge.' } }]; }

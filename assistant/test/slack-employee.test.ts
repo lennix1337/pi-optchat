@@ -33,9 +33,9 @@ test('a file the operator sends in the DM reaches the chat with its attachment, 
     const [m] = r.relay.after(0, 10);
     assert.equal(m!.text, 'olha isso');
     assert.deepEqual(m!.files, [{ id: 'F0IMG', name: 'tela.png', mimetype: 'image/png', url: FILE.url_private_download }]);
-    // A file without text is still a message.
+
     assert.equal(r.channel.accept(slackEnvelope('EvF2', '', { subtype: 'file_share', files: [FILE] })).outcome, 'relayed');
-    // Files from outside Slack's file host are not trusted as downloads.
+
     assert.equal(r.channel.accept(slackEnvelope('EvF3', 'x', { subtype: 'file_share', files: [{ ...FILE, url_private_download: 'https://evil.example/x' }] })).outcome, 'relayed');
     assert.equal(r.relay.after(2, 10)[0]!.files, undefined);
   } finally { r.close(); }

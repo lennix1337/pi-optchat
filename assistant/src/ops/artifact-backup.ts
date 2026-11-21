@@ -16,7 +16,7 @@ export function artifactName(name: string): boolean {
     !/[. ]$/.test(name) && !/\/(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name);
 }
 
-/** Read only registered versions from the immutable registry snapshot, never arbitrary files in the directory. */
+
 function references(image: Buffer, profileId: string): Map<string, { hash: string; size: number }> {
   const db = new DatabaseSync(':memory:');
   try {
@@ -42,7 +42,7 @@ function references(image: Buffer, profileId: string): Map<string, { hash: strin
   } finally { db.close(); }
 }
 
-/** Every ancestor is literal, not a symlink/junction; the opened regular file also has only one hard link. */
+
 function literalFile(root: string, name: string): string {
   let path = root;
   const parts = name.split('/');

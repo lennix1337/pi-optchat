@@ -9,16 +9,16 @@ import { local } from '../routines/schedule.ts';
 import { immediate } from '../store/transaction.ts';
 import { allRows } from '../store/rows.ts';
 
-/**
- * Google mail and calendar, read-only. Each connection is an operator-named account (for example `personal` and
- * `dentai`) bound at consent to the identity Google verified; nothing picks a connection by default. Tokens live
- * only in the vault and are injected into one request at a time. Sending is a reviewed preview dispatched through
- * the gateway to a caller-supplied sink: this module requests no write scope and calls no Google mutation endpoint.
- */
+
+
+
+
+
+
 const MAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
 export const GOOGLE_READ_SCOPES: readonly string[] = ['openid', 'email', MAIL_SCOPE, CALENDAR_SCOPE];
-/** Google reports `email` under its long name; anything outside this table is broader than consented and refused. */
+// external: Google may report the email scope as a full URI.
 const GRANTED_SCOPE_NAMES = new Map([['openid', 'openid'], ['email', 'email'], ['https://www.googleapis.com/auth/userinfo.email', 'email'], [MAIL_SCOPE, MAIL_SCOPE], [CALENDAR_SCOPE, CALENDAR_SCOPE]]);
 const ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 
@@ -59,14 +59,14 @@ type Reply = { status: number; body: unknown };
 const PENDING_MS = 10 * 60_000;
 const MAX_PENDING = 32;
 const REFRESH_MARGIN_MS = 60_000;
-/** Message bodies read at once within a page: a page of 50 takes about nine rounds of reads instead of 50. */
+
 const READS_AT_ONCE = 6;
 const DAY_MS = 86_400_000;
 const CONNECTION_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const EMAIL = /^[^\s@<>",;]{1,64}@[^\s@<>",;]+\.[^\s@<>",;]+$/;
 const RFC3339 = /^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d{1,9})?)?(?:Z|[+-]\d\d:\d\d)$/;
 const DATE = /^\d{4}-\d\d-\d\d$/;
-/** Attachments are never downloaded; these are flagged so no consumer offers to open or run them. */
+
 const EXECUTABLE_EXTENSIONS = new Set(['exe', 'com', 'scr', 'pif', 'msi', 'msp', 'msix', 'appx', 'bat', 'cmd', 'ps1', 'psm1', 'vbs', 'vbe', 'js', 'jse', 'mjs', 'wsf', 'wsh', 'hta', 'jar', 'lnk', 'url', 'reg', 'dll', 'cpl', 'iso', 'img', 'vhd', 'docm', 'xlsm', 'pptm', 'sh', 'app', 'apk', 'dmg', 'pkg']);
 const EXECUTABLE_TYPES = new Set(['application/x-msdownload', 'application/x-msdos-program', 'application/x-msi', 'application/x-ms-installer', 'application/vnd.microsoft.portable-executable', 'application/x-executable', 'application/x-sh', 'application/java-archive', 'application/hta', 'application/x-bat']);
 
@@ -84,7 +84,7 @@ function endpoint(value: unknown): string {
   return url.href;
 }
 
-/** RFC 8252: a loopback IP literal with an explicit port and nothing a browser could rewrite. */
+// external: RFC 8252 specifies loopback IP literals for native app redirects.
 function loopbackRedirect(value: unknown): string {
   let url: URL;
   try { url = new URL(String(value)); } catch { return fail('invalid_options'); }
@@ -157,7 +157,7 @@ export class GoogleConnections {
     if (reply.status !== 200) fail('google_token_exchange_failed');
     const tokens = tokenResponse(reply.body, true);
     const identity = this.identity(tokens.id_token!, pending.nonce);
-    // Tokens of a refused identity are only dropped: revoking at Google would end that account's whole grant to this client.
+    // external: Google token revocation can end the account's entire grant to this client.
     if (identity.email !== pending.expectedEmail) fail('google_account_mismatch');
     return this.bind(pending.connectionId, identity, grantedScopes(tokens.scope!), tokens);
   }
@@ -176,7 +176,7 @@ export class GoogleConnections {
       const reply = await this.withSecret(row.refresh_ref, 'google.refresh', this.endpoints.token, token => this.request(this.endpoints.revocation, { method: 'POST', form: { token } }));
       if (reply.status === 200) remote = 'revoked';
     } catch (error) {
-      // An unreachable Google or an unusable stored token leaves the remote grant unconfirmed, which is reported.
+
       if (!(error instanceof VaultError) && (error as Error).message !== 'google_unavailable') throw error;
     } finally {
       for (const ref of [row.access_ref, row.refresh_ref]) this.options.vault.revoke(ref, this.options.profileId);
@@ -315,8 +315,8 @@ export class GoogleConnections {
       const entries = body?.[key] ?? [];
       const next = body?.nextPageToken;
       if (!Array.isArray(entries) || (next !== undefined && !singleLine(next, 2048))) fail('google_response_invalid');
-      // The entries of a page are independent reads: a few go out together, then their results are taken in order, so the
-      // items, the bound and the first failure are the ones reading them one by one would give.
+
+
       const list = entries as unknown[];
       for (let start = 0; start < list.length; start += READS_AT_ONCE) {
         const outcomes = await Promise.allSettled(list.slice(start, start + READS_AT_ONCE).map(entry => take(entry)));
@@ -380,7 +380,7 @@ export class GoogleConnections {
     } catch { return fail('google_unavailable'); }
     let body: unknown = null;
     try { body = await response.json(); } catch (error) {
-      // A non-JSON body leaves only the status to judge; a broken connection is unavailability.
+
       if (!(error instanceof SyntaxError)) fail('google_unavailable');
     }
     return { status: response.status, body };
@@ -437,7 +437,7 @@ function calendarEvent(row: Row, value: unknown, timeZone: string): CalendarEven
   const ref: SourceRef = { connectionId: row.connection_id, account: row.email, kind: 'calendar.event', id: e.id };
   const base = { ref, title: headerText(e.summary) || '(no title)', recurring: singleLine(e.recurringEventId, 1024), updated: typeof e.updated === 'string' && Number.isFinite(Date.parse(e.updated)) ? new Date(Date.parse(e.updated)).toISOString() : null };
   if (typeof e.start?.date === 'string' && DATE.test(e.start.date)) {
-    // An all-day event is a calendar date, not an instant: it is never shifted by a time zone.
+    // external: Google Calendar all-day events use dates, not instants.
     return { ...base, allDay: true, start: e.start.date, end: typeof e.end?.date === 'string' && DATE.test(e.end.date) ? e.end.date : e.start.date, localDate: e.start.date, localStart: null };
   }
   const start = typeof e.start?.dateTime === 'string' && RFC3339.test(e.start.dateTime) ? Date.parse(e.start.dateTime) : NaN;
@@ -476,7 +476,7 @@ function instant(value: unknown): string {
   return new Date(Date.parse(value)).toISOString();
 }
 
-/** Each field is read once into an owned value with sorted keys, so the preview, review and dispatch see the same bytes. */
+
 function draftContent(draft: Draft): { action: DraftPreview['action']; destination: string; body: Record<string, unknown> } {
   if (!draft || typeof draft !== 'object') return fail('invalid_draft');
   if (draft.kind === 'message') {
@@ -488,7 +488,7 @@ function draftContent(draft: Draft): { action: DraftPreview['action']; destinati
     const calendarId = draft.calendarId, summary = draft.summary, attendees = addresses(draft.attendees, 0);
     const start = instant(draft.start), end = instant(draft.end);
     if (!singleLine(calendarId, 256) || !/^[A-Za-z0-9@._-]+$/.test(calendarId) || !singleLine(summary, 500) || Date.parse(end) <= Date.parse(start)) fail('invalid_draft');
-    // Attendees receive invitations, so they are part of the destination the grant names.
+    // external: Google Calendar attendees receive invitations.
     return { action: 'calendar.insert', destination: [`calendar:${calendarId}`, ...attendees].join(','), body: { attendees, calendarId, end, start, summary } };
   }
   return fail('invalid_draft');

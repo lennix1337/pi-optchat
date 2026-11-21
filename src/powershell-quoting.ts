@@ -1,26 +1,26 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-// 03/11: `powershell -Command "... | Where-Object { $_.CommandLine ... }"` ran from bash twice in one hour. Bash expands
-// `$_` (its last argument) and `$p.Id` (an unset variable plus ".Id") inside double quotes before PowerShell starts, so
-// the filter failed eight times per call with CommandNotFoundException and the probe returned nothing. The fix every
-// time was a .ps1 file run with -File; the guard says so before the call runs instead of after it fails.
+// external: Bash expands dollar variables in double quotes before PowerShell receives them.
 
-// A heredoc's body is file content being written (a .ps1 included), not a command line.
+
+
+
+
 const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\s|$)/g;
 const INVOCATION = /(?:^|[\s;&|(])(?:powershell|pwsh)(?:\.exe)?(?=\s)/gi;
-/** PowerShell-only forms: `$_`, `$env:X`, `$PSItem`, `$true/$false/$null`, `$(...)`, `$x.Prop`, `$x[0]`, `$script:x`. */
+
 const POWERSHELL_DOLLAR = /(?<!\\)\$(?:_(?!\w)|env:|PSItem\b|true\b|false\b|null\b|\(|[A-Za-z_]\w*[.[:])/i;
 
-/** `-File <path> [args]`: the script comes from the file; `$(...)` in the quoted path or arguments is bash's, as intended. */
+
 const FILE_FLAG = /^-f(?:ile)?(?=\s|$)/i;
 
-/** Double-quoted strings bash sees in one PowerShell invocation, up to the first unquoted separator. */
+
 function doubleQuoted(command: string, from: number): string[] {
   const strings: string[] = [];
   for (let at = from; at < command.length; at++) {
     const char = command[at];
     if (char === '\n' || char === ';' || char === '|' || char === '&') break;
-    // 12/11: `-File "$(cygpath -w probe.ps1)"` was refused three times, so the .ps1 the guard asks for never ran.
+
     if (char === '-' && /\s/.test(command[at - 1]) && FILE_FLAG.test(command.slice(at))) return [];
     if (char === "'") { const end = command.indexOf("'", at + 1); if (end < 0) break; at = end; continue; }
     if (char !== '"') continue;
@@ -32,7 +32,7 @@ function doubleQuoted(command: string, from: number): string[] {
   return strings;
 }
 
-/** Whether `index` falls inside a quoted string, where `powershell` is text (a grep pattern) rather than a call. */
+
 function insideQuotes(command: string, index: number): boolean {
   let quote: string | undefined;
   for (let at = 0; at < index; at++) {

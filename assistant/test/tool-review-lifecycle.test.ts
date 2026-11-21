@@ -15,7 +15,7 @@ import { queuedTask } from './task-fixtures.ts';
 
 const profile = 'review-life', computer = { id: 'cmp_fake', profileId: profile, agentId: 'executor', container: 'fake-container', state: 'ready' as const, expiresAt: Date.now() + 3_600_000 };
 
-/** A preview review nobody approves: the operator denies or revokes it, or its window closes. The task must end, the pass must not wedge. */
+
 async function rig(windowMs: number, act: (reviewId: string, gateway: ReturnType<typeof createGateway>, authority: object) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), 'tool-review-life-')), authority = {}, path = join(dir, 'tasks.sqlite');
   const store = new TaskStore(path, profile); let dispatched = 0;

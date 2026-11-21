@@ -102,7 +102,7 @@ export class WebChannel {
   owns(pathname: string): boolean { return Object.hasOwn(assets, pathname) || pathname === '/web' || pathname.startsWith('/web/') || pathname.startsWith('/app/'); }
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    // Microphone permission is confined to this panel; it never changes effect approval authority.
+
     if (this.voice) res.setHeader('permissions-policy', 'camera=(), microphone=(self), geolocation=()');
     const host = this.allowedHost(req);
     if (!host) { send(res, 403, { error: 'Forbidden' }, securityHeaders); return; }
@@ -154,7 +154,7 @@ export class WebChannel {
   private allowedHost(req: IncomingMessage): string | null {
     const port = req.socket.localPort;
     const host = req.headers.host ?? '';
-    // Web Locks and pending-write storage share only this canonical browser origin, plus configured HTTPS ones.
+
     return host === `127.0.0.1:${port}` || this.origins.has(host) ? host : null;
   }
   private originOf(host: string): string { return this.origins.get(host) ?? `http://${host}`; }
@@ -206,7 +206,7 @@ export class WebChannel {
       query(url, ['cursor', 'limit']); const cursor = url.searchParams.get('cursor');
       if (cursor !== null && !text(cursor)) throw new BadRequest();
       const page = this.store.list(cursor, numberParam(url, 'limit', 100, 1, 100));
-      // The subject of each listed task, so the panel does not depend on how much of the event stream it has paged.
+
       send(res, 200, { ...page, channels: this.store.creationChannels(page.tasks.map(task => task.taskId)) }, securityHeaders); return;
     }
     if (req.method === 'GET' && url.pathname === '/web/api/events') {
@@ -236,7 +236,7 @@ export class WebChannel {
       const current = this.store.get(id);
       if (!current) { send(res, 404, { error: 'Not found' }, securityHeaders); return; }
       if (!operatorTransitions[current.status].includes(input.nextStatus)) {
-        // A stale card is a conflict; a request the operator may never make is malformed.
+
         if (current.revision !== input.expectedRevision) { send(res, 409, { error: 'Conflict', task: current }, securityHeaders); return; }
         throw new BadRequest();
       }

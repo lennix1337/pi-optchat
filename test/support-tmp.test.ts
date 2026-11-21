@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// Git Bash mounts /tmp on TMP (before TEMP) in the first process that starts it, and shells alive at the same time share that mount.
-// A test file's shell must therefore never see a TMP that goes away with the file: it would leave /tmp dangling for the files that run next to it.
+// external: Git Bash shares the /tmp mount chosen by the first running shell.
+
 test('a test process keeps tmpdir() on its own root and TMP on the outermost root, which outlives it', () => {
   const code = `console.log(JSON.stringify({ temp: process.env.TEMP, tmp: process.env.TMP, tmpdir: require('node:os').tmpdir() }))`;
   const child = spawnSync(process.execPath, ['--experimental-transform-types', '--no-warnings', '--import', pathToFileURL(join(import.meta.dirname, 'support.ts')).href, '-e', code], { encoding: 'utf8' });

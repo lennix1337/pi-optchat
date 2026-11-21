@@ -1,9 +1,9 @@
 import { Type } from 'typebox';
 import { createReadToolDefinition } from '@earendil-works/pi-coding-agent';
 
-// One call reads several files at once: the model asks for them in a single
-// reply and Pi's read runs on each in parallel, so independent reads stop
-// costing one model round trip each (scripts/tool-batching-stats.mjs).
+
+
+
 export const READ_MANY_MAX = 10;
 
 type Part = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };

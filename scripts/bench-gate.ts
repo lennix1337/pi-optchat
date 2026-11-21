@@ -43,7 +43,7 @@ export interface CompareResult {
 
 export const DEFAULT_TOLERANCE_PCT = 5;
 
-/** Units whose values depend on the machine (CPU, Node, GC); their baseline lives per machine. */
+
 const MACHINE_UNITS = new Set(['ms', 'MB', 'ms/MB']);
 
 export function isMachineMetric(entry: { unit: string }): boolean {
@@ -222,7 +222,7 @@ function parseJsonStdout(stdout: string, label: string): unknown {
       try {
         return JSON.parse(lines[i]!);
       } catch {
-        // continue scanning backwards for the JSON payload line
+
       }
     }
     throw new Error(`${label}: could not parse JSON from stdout:\n${trimmed.slice(-500)}`);

@@ -4,7 +4,7 @@ import { classifyEffects, runsDeploy } from '../src/effect-classifier.ts';
 
 const noRepo = { slug: () => undefined, branch: () => undefined };
 
-// The shape of a real call: the deploy script was written to the PC beforehand and started by a scheduled task over ssh.
+
 const scheduled = `printf '%s' "$TOKEN" | ssh -o ConnectTimeout=10 pc "powershell -NoProfile -Command \\"[IO.File]::WriteAllText('x', 'y')\\"" && ssh pc "schtasks /create /f /tn PiDeploy-45c38dad /sc once /st 23:59 /it /rl LIMITED /tr \\"conhost.exe --headless cmd /c %TEMP%\\\\deploy-45c.cmd\\" && schtasks /run /tn PiDeploy-45c38dad" 2>&1 | tail -2; echo rc=\${PIPESTATUS[0]}`;
 
 test('a deploy relayed through ssh, a scheduled task, conhost or cmd /c is still a deploy', () => {

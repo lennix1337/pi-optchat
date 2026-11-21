@@ -61,7 +61,7 @@ export class MemoryView {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 32) fail('invalid_page');
     const source = this.sources.get(sourceId) ?? fail('memory_not_found');
     const original = validOriginal(source.get(ref), ref) ?? fail('memory_not_found');
-    // Binds corrections to what was said, by whom and as what; not to when, so touching an unrelated line of a file does not stale them.
+
     const originalHash = sha256(JSON.stringify([original.ref, original.text, original.author, original.kind]));
     const key = [this.profileId, sourceId, ref] as const;
     const counts = this.db.prepare('SELECT COUNT(*) AS total, COUNT(CASE WHEN original_hash = ? THEN 1 END) AS matching FROM memory_corrections WHERE profile = ? AND source = ? AND ref = ?').get(originalHash, ...key) as { total: number; matching: number };

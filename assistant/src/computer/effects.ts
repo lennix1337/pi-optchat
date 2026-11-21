@@ -26,7 +26,7 @@ function parseArgv(bytes: Uint8Array): string[] {
  * A refusal raised by the sink after admission (a takeover that raced in) surfaces as `effect_uncertain`.
  */
 export async function runShell(gateway: Gateway, computers: ComputerManager, request: EffectRequest, timeoutMs?: number): Promise<ExecResult> {
-  // Refuse a held, paused or mismatched computer before the gateway records an intent; the sink checks again.
+
   computers.admit(request.account, request.destination);
   return gateway.dispatch(request, (bytes, metadata) => {
     if (metadata.adapter !== 'computer' || metadata.action !== 'shell') throw new Error('invalid_request');
@@ -73,7 +73,7 @@ export async function openBrowserText(gateway: Gateway, computers: ComputerManag
     if (bytes.length > 1000 || !Buffer.from(text).equals(Buffer.from(bytes))) throw new Error('invalid_request');
     const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     const html = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; sandbox"><pre>${escaped}</pre>`;
-    // The page declares no charset, so without this the browser reads the UTF-8 bytes as Latin-1 and garbles accents.
+    // external: browsers can decode data URLs without a charset as Latin-1.
     const url = `data:text/html;charset=utf-8;base64,${Buffer.from(html).toString('base64')}`;
     const session = `artifact-${crypto.randomUUID()}`;
     const run = (args: string[]) => computers.exec(metadata.account, ['agent-browser', '--session', session, ...args], { destination: metadata.destination, timeoutMs: 60_000 });

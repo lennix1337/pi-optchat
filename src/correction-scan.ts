@@ -11,7 +11,7 @@ export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', 
 /** The sessions root: the PC keeps one project folder in it, the VM several, so the scan reads every subdirectory. */
 export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions');
 
-/** The `.jsonl` sessions directly in `dir` or in its subdirectories (paths relative to `dir`). */
+
 function sessionFiles(dir: string, since: number): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -24,9 +24,6 @@ function sessionFiles(dir: string, since: number): string[] {
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
-/** `wake`: the run in progress started with an OptChat heartbeat prompt, so its final text is a wake report. */
-/** `wakeEdits`: source writes since the heartbeat or the last hand-off to a worker; undefined outside a wake. Other reports (claim checks,
- * worker messages) keep it, since the wake goes on until the operator speaks. */
 type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; suites?: number };
 
 const FULL_SUITE = /(?:^|[;&|\n(])\s*(?:npm\s+(?:run\s+)?(?:test|verify)\b(?![:\w-])|node\b[^;&|\n]*\s--test\b[^;&|\n]*["']test\/\*)/u;
@@ -70,13 +67,13 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   return { wake: state.wake, wakeEdits, checked: state.checked, suites: state.suites, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
-/** A call that looks at the live system: an HTTP probe, GitHub run/PR state, git history, the release verifier or a browser. */
+
 function verifiesLive(call: Content): boolean {
   if (call.name === 'browser_harness') return true;
   return call.name === 'bash' && /\b(?:curl|gh\s+(?:run|pr|api)|git\s+log|dentai-ship|verify-release|release-verif\w*)\b|\/health\b/u.test(String(call.arguments?.command ?? ''));
 }
 
-/** An edit/write call, or a shell command that writes a file outside /tmp (redirect into a source file, sed -i, git apply/commit, ship -m). */
+
 function writesSource(call: Content): boolean {
   if (call.name === 'edit' || call.name === 'write') return true;
   if (call.name !== 'bash') return false;
@@ -84,7 +81,7 @@ function writesSource(call: Content): boolean {
   return /(?:>>?\s*(?!\/tmp\/)[^\s&|;<>]+\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b|\bsed\s+-i\b|\bgit\s+(?:apply|commit)\b|\bship\.mjs\b[^\n]*\s-m\s|open\([^)]*,\s*['"]w)/u.test(command);
 }
 
-/** Shell text with heredoc bodies and quoted strings blanked, so code that only mentions a command is not read as running it. */
+
 function withoutQuotedText(command: string): string {
   return command
     .replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/gu, '')
@@ -156,11 +153,11 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
   for (const file of sessionFiles(dir, since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     let pacing = noPacing();
-    const calls = new Map<string, { result: number; at: number; example?: { file: string; line: number } }[]>(); // tool-call hits by call id: a call a guard refused ("Not run:") never happened, so its hit is withdrawn
+    const calls = new Map<string, { result: number; at: number; example?: { file: string; line: number } }[]>();
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
       let event: Event;
-      try { event = JSON.parse(lines[i]) as Event; } catch { continue; } // a live session's last line may be half-written
+      try { event = JSON.parse(lines[i]) as Event; } catch { continue; }
       const at = Date.parse(event.timestamp ?? '');
       if (!Number.isFinite(at) || at >= until) continue;
       rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) {

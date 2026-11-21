@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 
-/** What a request carries for one tool: its description and its parameter schema, as the provider receives them. */
+
 const sent = (tool: Pick<ToolDefinition, 'description' | 'parameters'>) => Buffer.byteLength(tool.description) + Buffer.byteLength(JSON.stringify(tool.parameters));
 
 function registeredTools() {
@@ -13,7 +13,7 @@ function registeredTools() {
   return tools;
 }
 
-/** Measured before the trim: commitments 1762 B, crew 1713 B, tell 329 B (description plus parameter schema). */
+
 const BEFORE = 1760 + 1711 + 329;
 const BOOKKEEPING = ['commitments', 'crew', 'tell'] as const;
 

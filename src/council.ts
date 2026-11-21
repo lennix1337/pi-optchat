@@ -1,6 +1,6 @@
-// A wake's council: before it picks the delivery, the wake posts its candidates to Slack and the least used
-// Codex account and agy debate it in the same thread, each under its own name (critique, disagreement, rebuttal);
-// the wake decides and says whether the debate changed its leaning. Claude (the wake itself) never advises itself, and an exhausted account never advises.
+
+
+
 import { execFile } from 'node:child_process';
 import { accounts } from './quota-health.ts';
 
@@ -71,7 +71,7 @@ export function decisionChanged(decision: string): boolean | undefined {
 /** Whether a provider in Pi's models.json lists the advisor model; a missing or unreadable file offers none. */
 export function offersModel(modelsJson: string | undefined, model = ADVISOR_MODEL): (account: string) => boolean {
   let providers: Record<string, { models?: { id?: string }[] }> = {};
-  try { providers = JSON.parse(modelsJson ?? '{}').providers ?? {}; } catch { /* none */ }
+  try { providers = JSON.parse(modelsJson ?? '{}').providers ?? {}; } catch {   }
   return account => !!providers[account]?.models?.some(m => m.id === model);
 }
 

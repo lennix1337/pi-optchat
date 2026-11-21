@@ -1,4 +1,4 @@
-// Disposable-source negative controls: removing each honesty guard in setup.ts must fail a setup test.
+
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

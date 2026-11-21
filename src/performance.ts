@@ -6,19 +6,19 @@ import { estimatedContextTokens } from './run-context.ts';
 import { stallWatch } from './loop-stalls.ts';
 
 export type Stage = 'context' | 'projection' | 'tool' | 'provider_headers' | 'first_content' | 'response' | 'persistence' | 'settle' | 'child_open' | 'compaction'
-  // Pi's own time around a request, outside OptChat's hooks: from turn start (or the last tool's end) to the context hook, and from the last message to turn end.
+
   | 'pi_pre_request' | 'pi_boundary'
-  // Turn start and settle, in the hooks' own order: input, before_agent_start, the context hook's parts, the provider hook; then the settle work.
+
   | 'input' | 'start' | 'memory' | 'operational' | 'budget' | 'assemble' | 'telemetry' | 'provider_hook' | 'settled' | 'checkpoint' | 'status' | 'usage';
 interface Timing { count: number; totalMs: number; maxMs: number; lastMs: number; samples: number[] }
-/** Recent durations kept per stage for its percentiles; the totals stay exact. */
+
 const STAGE_SAMPLES = 256;
-/** Tool names kept apart; later ones are counted together. Recent durations kept per tool for its percentiles. */
+
 const TOOL_NAMES = 64, TOOL_SAMPLES = 256, OTHER_TOOLS = '(other)';
 const round = (ms: number) => Math.round(ms * 10) / 10;
-/** Nearest-rank percentile of sorted durations. */
+
 const rank = (sorted: readonly number[], p: number) => sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)];
-/** Each tool's own execution time by name, slowest total first. */
+
 class ToolTimings {
   private readonly tools = new Map<string, { count: number; errors: number; totalMs: number; maxMs: number; samples: number[] }>();
   record(name: string, duration: number, isError: boolean) {
@@ -70,11 +70,11 @@ export class PerformanceMetrics {
     for (const [index, message] of messages.entries()) if (message.role === 'system') {
       const text = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
       const sections = message.sections ?? {};
-      // The cached prefix is the leading system message; later ones are changes sent after it.
+
       if (index === 0) prefix.push(JSON.stringify([text, sections, message.toolsAdded, message.toolsRemoved]));
       systemBytes += Buffer.byteLength(text) + Buffer.byteLength(JSON.stringify(sections));
       if (message.toolsAdded?.length) toolSchemaBytes += Buffer.byteLength(JSON.stringify(message.toolsAdded));
-      // Main OptChat flattens Pi's sections; account for tagged instructions/catalogues there too.
+
       for (const match of text.matchAll(/<(instructions|project_context|skills|available_skills)\b[^>]*>([\s\S]*?)<\/\1>/g)) {
         if (match[1].includes('skill')) skillCatalogueBytes += Buffer.byteLength(match[2]);
         else instructionBytes += Buffer.byteLength(match[2]);
@@ -102,7 +102,7 @@ export function registerPerformance(pi: ExtensionAPI, metrics: () => Performance
   onLatency?: (messageTimestamp: number, latency: { firstMs?: number; responseMs: number }) => void) {
   const tools = new Map<string, { name: string; start: number; end: () => void }>();
   let request: number | undefined, first = false, firstMs: number | undefined;
-  // Pi builds the request's messages (projection, structuredClone) between these two marks, and persists and previews the turn between the other two.
+
   let beforeRequest: number | undefined, lastMessage: number | undefined;
   pi.on('turn_start', () => { beforeRequest = performance.now(); });
   pi.on('context_with_system', () => {

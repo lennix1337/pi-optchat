@@ -14,10 +14,10 @@ const MERGED = /\b(?:mesclad[oa]s?|merged|mergead[oa]s?|entrou na main)\b/iu;
 const LIVE = /\b(?:no ar|est[aá] live|deployed|deployad[oa])\b/iu;
 const LIVE_EVIDENCE = /\b(?:200|healthy|rollouts? done|RESUMO)\b/u;
 
-/** A test runner's own lines back "a/b": a passed next to b in total (or nothing failed, when a is b). */
+
 function runnerShows(evidence: string, a: number, b: number): boolean {
   for (const m of evidence.matchAll(new RegExp(`\\bpass(?:ed)?\\s*[:=]?\\s*${a}\\b|\\b${a}\\s+pass(?:ed|ing)?\\b`, 'giu'))) {
-    // The match's line and the two after it: a runner prints its pass and fail counts together (vitest one line, node:test two).
+
     const near = evidence.slice(evidence.lastIndexOf('\n', m.index) + 1).split('\n').slice(0, 3).join('\n');
     if (a === b ? !/\bfail(?:ed|ures?)?\s*[:=]?\s*[1-9]|\b[1-9]\d*\s+fail(?:ed|ing|ures?)?\b/iu.test(near) : new RegExp(`\\b(?:tests?|total)\\s*[:=]?\\s*${b}\\b|\\(${b}\\)`, 'iu').test(near)) return true;
   }
@@ -58,7 +58,7 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
       if (/\d/u.test(sha) && /[a-f]/u.test(sha) && !(lowercaseEvidence ??= evidence.toLowerCase()).includes(sha.slice(0, 7))) out.add(sha);
     }
     for (const w of s.matchAll(new RegExp(MERGED.source, 'giu'))) {
-      // "ainda não foi mesclado", "não vai ser mergeado": a denial is not a claim.
+
       if (/\b(?:n[aã]o|not|nem)\b[^.#]{0,25}$/iu.test(s.slice(0, w.index))) continue;
       const near = s.slice(Math.max(0, w.index - 40), w.index + w[0].length + 40);
       for (const m of near.matchAll(/#(\d{1,6})\b/gu)) {

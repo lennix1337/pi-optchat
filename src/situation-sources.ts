@@ -5,16 +5,16 @@ import { delimiter, join } from 'node:path';
 import type { MachineNow } from './machine-sense.ts';
 import type { Facts, Load, QuotaAccount, Reboot, Sources } from './situation.ts';
 
-/**
- * The readers behind the situation digest: each one cheap, read-only and local (the Windows event log, `docker info`, two
- * registry keys, the quota file pi-multi-account keeps, the state pi-gitwatch keeps, the machine sampler's last sample). Parsers
- * are pure so tests feed them text; the process and file access is injected.
- */
+
+
+
+
+
 
 const MIN = 60_000;
 const DAY = 24 * 3_600_000;
 
-// ---- Windows reboots ----
+
 
 interface RawEvent { t: number; id: number; m?: string }
 
@@ -56,7 +56,7 @@ const EVENT_SCRIPT = [
 ].join(' ');
 const encoded = (script: string) => Buffer.from(script, 'utf16le').toString('base64');
 
-// ---- quota ----
+
 
 const windowLabel = (seconds: unknown) => typeof seconds !== 'number' || !(seconds > 0) ? '?' : seconds % 86_400 === 0 ? `${seconds / 86_400}d` : `${Math.round(seconds / 3_600)}h`;
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -76,7 +76,7 @@ export function parseQuota(state: unknown, now: number): QuotaAccount[] {
   });
 }
 
-// ---- gitwatch ----
+
 
 /** pi-gitwatch's own failure counter: GitHub is out when at least half of the watched repos failed its notice threshold in a row. */
 export const GITWATCH_FAILURES = 3;
@@ -89,7 +89,7 @@ export function parseGitwatch(state: unknown): NonNullable<Facts['github']> | un
   return { down: failing.length > 0 && failing.length * 2 >= repos.length, ...polls.length ? { since: Math.max(...polls) } : {}, failing: failing.length, repos: repos.length, ...error ? { error } : {} };
 }
 
-// ---- machine load ----
+
 
 export function loadFrom(now: MachineNow | undefined): Load | undefined {
   if (!now) return undefined;
@@ -97,7 +97,7 @@ export function loadFrom(now: MachineNow | undefined): Load | undefined {
     owners: now.owners.slice(0, 2).map(o => ({ name: `${o.group}${o.detail ? ` ${o.detail}` : ''}`.slice(0, 40), cpuPct: o.cpuPct, rssMb: o.rssMb })) };
 }
 
-// ---- the real sources ----
+
 
 export interface Ran { code: number | null; stdout: string }
 export interface SourceDeps {

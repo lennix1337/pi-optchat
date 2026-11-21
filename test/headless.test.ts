@@ -12,7 +12,7 @@ import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
-// Short paths: the profile lock socket has a ~103-byte limit on macOS. Windows uses a hashed named pipe, so any directory fits.
+// external: macOS Unix socket paths have a short length limit; Windows uses named pipes.
 const root = mkdtempSync(process.platform === 'win32' ? join(tmpdir(), 'oc-headless-') : '/tmp/oc-headless-');
 const oldHome = process.env.OPTCHAT_HOME;
 process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
@@ -26,11 +26,11 @@ for (const name of ['work', 'personal']) {
   saveConfig(profilePath(name), { ...loadConfig(profilePath(name)), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
 }
 rememberProfile('personal');
-// A profile whose shells report only failures: the default for a shell_start without notify.
+
 createProfile('failures');
 saveConfig(profilePath('failures'), { ...loadConfig(profilePath('failures')), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' }, shellNotify: 'failure' });
 
-/** A scripted tool call the fixture model makes instead of answering (see `script`). */
+
 type ScriptedCall = { name: string; arguments: Record<string, string | number | boolean> };
 let scriptedCalls = 0;
 function fixtureContent(text: string, refused: boolean, writeProbe: boolean, call?: ScriptedCall): AssistantMessage['content'] {
@@ -54,9 +54,9 @@ function fixtureStream(model: Model<Api>, text: string, refused = false, hold: P
   return stream;
 }
 
-/** A headless Pi (print or RPC) with short synthetic compaction summaries and recorded model-turn requests. */
+
 async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: boolean; realTools?: boolean; flag?: string; bound?: string; connect?: string; agent?: string; hold?: Promise<void>; later?: ExtensionFactory; refuseSummaries?: () => boolean;
-  /** Makes the fixture call a tool instead of answering, from the context it is given; undefined answers with text. */
+
   script?: (messages: Context['messages']) => ScriptedCall | undefined } = {}) {
   const dir = mkdtempSync(join(root, 's-'));
   const sent: string[] = [], turns: string[] = [], errors: string[] = [], declarations: string[][] = [];
@@ -68,7 +68,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
     streamSimple(model, context) {
       const request = JSON.stringify(context.messages);
       sent.push(request);
-      // Pi declares the tools in system messages (toolsAdded/toolsRemoved): replay them to get what this request declares.
+      // external: Pi emits tool declarations in system messages.
       const declared = new Set<string>();
       for (const message of context.messages as Array<{ role: string; toolsAdded?: { name: string }[]; toolsRemoved?: string[] }>) {
         for (const tool of message.toolsAdded ?? []) declared.add(tool.name);
@@ -83,7 +83,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
       const refused = compacting && options.refuseSummaries?.();
       const writeProbe = probePending;
       probePending = false;
-      // Scripts only match the probe prompts and their own results, so compaction requests pass through as text.
+
       const call = options.script?.(context.messages);
       return fixtureStream(model, text, refused, prompt.includes('slow') ? options.hold : undefined, writeProbe, call);
     },
@@ -98,7 +98,7 @@ async function headless(mode: 'print' | 'rpc' | 'tui', options: { writeProbe?: b
   if (options.flag) session.extensionRunner.setFlagValue('optchat-profile', options.flag);
   if (options.agent !== undefined) session.extensionRunner.setFlagValue('optchat-agent', options.agent);
   if (options.connect) session.extensionRunner.setFlagValue('optchat-connect', options.connect);
-  // RPC hosts have a real UI, but a dialog there can hang the host (pi-acp), so any select fails the test.
+  // external: A dialog in Pi ACP can hang the host.
   const notes: string[] = [];
   const uiContext: ExtensionUIContext = { ...session.extensionRunner.getUIContext(), notify: message => { notes.push(message); },
     select: async () => { throw new Error('a headless session must not ask for a profile'); } };
@@ -156,7 +156,7 @@ test('lazy tools stay active and callable but are left out of the request declar
   const later: ExtensionFactory = api => {
     for (const tool of [stub('codemode', { code: { type: 'string' } }, ['code']), stub('web_search', { query: { type: 'string' }, limit: { type: 'number' } }, ['query']), stub('lsp', { action: { type: 'string' } }, ['action'])])
       api.registerTool(tool);
-    // On the default lazy list like the two above, but model-only: Pi lets no script call it.
+    // external: Pi does not permit scripts to invoke model-only tools.
     api.registerTool({ ...stub('source_check', { path: { type: 'string' } }, ['path']), exposure: 'model-only' });
     api.on('session_start', () => api.setActiveTools([...api.getActiveTools(), 'codemode', 'web_search', 'lsp', 'source_check']));
   };
@@ -248,7 +248,7 @@ test('OPTCHAT_PROFILE opens that profile in the TUI without the picker, and head
 });
 
 test('in an RPC host (Pi Web), /optchat profile <name> as the first message binds that session in place', async () => {
-  // No commandContextActions are bound, so ctx.newSession() throws, as Pi Web's does.
+  // external: Pi Web does not bind commandContextActions and ctx.newSession() throws.
   const pi = await headless('rpc');
   try {
     await pi.ask('/optchat profile work');
@@ -291,7 +291,7 @@ test('the model gets the system prompt Pi has now, with sections extensions load
 test('a requested profile that cannot open fails visibly and does not run without memory', async () => {
   const unlock = await lockProfile(profilePath('work'), 'work · PID 1 · elsewhere');
   try {
-    // `auto` would join the busy owner; this one has no windows socket, so the join fails too, with a failing exit code.
+
     for (const [why, options] of [['typo', { flag: 'wrok' }], ['busy', { bound: 'work', connect: 'off' }], ['busy, nothing to join', { bound: 'work' }],
       ['deleted', { bound: 'gone' }], ['join without a session', { flag: 'personal', connect: 'join' }], ['join with an invalid name', { flag: 'Work', connect: 'join' }]] as const) {
       process.exitCode = undefined;
@@ -315,7 +315,7 @@ test('a second pi -p on a profile a headless run owns fails up front, instead of
   try {
     const second = await headless('print', { flag: 'work' });
     try {
-      // The joined task would run in the owner and wait there, so the owner exits mid-task, as `pi -p` does once its own prompt is answered.
+      // external: Pi print mode exits after its own prompt is answered.
       const answer = second.ask('slow joined task');
       let answered = false; void answer.finally(() => { answered = true; });
       while (!answered && !owner.sent.some(s => s.includes('slow joined task'))) await new Promise(resolve => setTimeout(resolve, 10));
@@ -389,7 +389,7 @@ test('the real retry-summary command retries a frozen node without resending the
   } finally { await pi.close(); }
 });
 
-/** Drives one background shell through the real shell_start/shell_stop/bash tools; `ids` collects the shell IDs the tools return. */
+
 function shellScript(kind: 'idle' | 'mid' | 'stop', ids: string[]) {
   const quick = `node -e "setTimeout(() => console.log('${kind}-done'), 500)"`;
   return (messages: Context['messages']): ScriptedCall | undefined => {
@@ -410,7 +410,7 @@ async function until(done: () => boolean, ms = 15_000) {
   for (const deadline = Date.now() + ms; !done() && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
 }
 
-/** What a missing shell report leaves behind, so a CI flake says where the report stopped instead of only "0 !== 1". */
+
 function reportDiagnostic(pi: { turns: string[]; notes: unknown[]; errors: unknown[] }, marker: string): string {
   const pendingPath = join(profilePath('work'), 'pending-reports.json');
   const pending = existsSync(pendingPath) ? readFileSync(pendingPath, 'utf8').slice(0, 1000) : 'missing';
@@ -435,7 +435,7 @@ test('an ended background shell reaches the model once as its own message: betwe
   try {
     await mid.ask('shell probe mid');
     const marker = `[shell ${midIds[0]}] `;
-    // shell_start, then a foreground bash call that outlasts the shell: the report must join the same turn, before the reply.
+
     assert.equal(mid.turns.length, 3, `no extra model turn: the report was steered between the tool calls${mid.turns.length === 3 ? '' : reportDiagnostic(mid, marker)}`);
     assert.equal(mid.turns[2].split(marker).length - 1, 1, 'once, in the request after the bash result');
     assert.match(mid.turns[2], /mid-done/);
@@ -469,7 +469,7 @@ test('a shell stopped with shell_stop reports the stop once, not as a failure', 
   } finally { await pi.close(); }
 });
 
-/** Runs a probe prompt's scripted calls: the first starts a shell, each later one is made once the previous result is back, with the shell's ID. */
+
 function probeSteps(probe: string, start: ScriptedCall, steps: ((id: string) => ScriptedCall)[], ids: string[]) {
   let results = 0;
   return (messages: Context['messages']): ScriptedCall | undefined => {

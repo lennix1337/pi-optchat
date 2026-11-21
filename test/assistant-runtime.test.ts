@@ -19,7 +19,7 @@ const sdk: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 
 test('native Pi command -> HTTP -> SQLite -> visible response and original survive reload and reopen', { timeout: 25000 }, async t => {
-  // A Windows CI run timed out here (04/11, a5bb407) with no clue where; each step is reported with the test's result, a timeout included.
+
   const started = Date.now();
   const step = (name: string) => t.diagnostic(`step ${name} at ${Date.now() - started} ms`);
   const dir = mkdtempSync(join(tmpdir(), 'assistant-native-'));
@@ -30,7 +30,7 @@ test('native Pi command -> HTTP -> SQLite -> visible response and original survi
   const original = `Original source, not a fresh instruction.\n${'source detail '.repeat(650)}\nEND-ORIGINAL`;
   const memory = await Memory.open(profile, async () => 'Historical original source.');
   memory.append('user', original);
-  await memory.settle(); // Persist the offline fixture summary before the real extension opens this memory.
+  await memory.settle();
   await memory.close();
   const dbPath = join(dir, 'tasks.sqlite');
   let store = new TaskStore(dbPath, profileId);

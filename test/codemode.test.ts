@@ -16,7 +16,7 @@ import { emptyUsage } from '../src/usage.ts';
 import { saveImages } from '../src/images.ts';
 import { textContent } from '../src/transcript.ts';
 
-// Exercise the real runtime converter and QuickJS executor, with an isolated synthetic tool host.
+
 const runtime = process.env.PI_CODEMODE_RUNTIME ?? resolve(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), '..');
 const { executeCodemode } = await import(pathToFileURL(join(runtime, 'dist/extensions/codemode/execute.js')).href) as { executeCodemode: typeof ExecuteCodemode };
 const version = JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version;
@@ -126,7 +126,7 @@ test('real Code Mode: truncation discloses a recoverable file containing every r
   } finally { rmSync(file, { force: true }); }
 }));
 
-// Nested calls run through Pi's own validated tool pipeline (agent-core runToolCall), as AgentSession does for ctx.executeTool.
+
 test('real Code Mode: nested retrieval calls reject unknown keys and keep valid partial successes', () => withHost(async (_h, memory, dir) => {
   for (const text of ['alpha first', 'beta second']) memory.append('user', text);
   const outputs = new OutputStore(dir, 'session');

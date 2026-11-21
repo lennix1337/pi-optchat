@@ -86,7 +86,7 @@ test('a scheduler that dies between claim and enqueue is completed by the next t
     assert.throws(() => crashing.tick(), /crash/u);
     assert.deepEqual(r.runtime.jobs(), [], 'claimed, not yet enqueued');
     crashing.close();
-    // Restart: a new scheduler on the same database.
+
     const restarted = createRoutines({ databasePath: join(dir, 'assistant.db'), runtime: r.runtime, now: () => r.clock.now });
     try {
       assert.deepEqual(restarted.tick(), { claimed: [], enqueued: ['routine:a:2026-10-01T09:00'] });

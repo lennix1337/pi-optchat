@@ -46,7 +46,7 @@ test('a background shell started before /reload keeps running and reports its en
     await session.prompt('Start the slow job in the background.');
     const started = text(contexts.at(-1)!).match(/Background shell ([0-9a-f-]{36}) started/)?.[1];
     assert.ok(started, 'shell_start returned an id before the reload');
-    await session.reload(); // Pi re-runs the extension and emits session_start (reason reload) to the bound session itself.
+    await session.reload(); // external: Pi reload reruns extensions and emits session_start with reason reload.
     const deadline = Date.now() + 20_000;
     while (!contexts.some(context => text(context).includes(`[shell ${started}]`)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
     const report = contexts.map(text).find(t => t.includes(`[shell ${started}]`));

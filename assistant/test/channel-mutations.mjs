@@ -1,4 +1,4 @@
-// Disposable-source negative controls: removing each Slack/Teams boundary guard must fail a channel test.
+
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -27,7 +27,7 @@ const variants = [
   ['teams-tenant', 'channels/teams.ts', "if (activity.channelData?.tenant?.id !== o.tenantId || (activity.conversation?.tenantId !== undefined && activity.conversation.tenantId !== o.tenantId)) return { outcome: 'foreign_workspace' };", ''],
   ['teams-bot', 'channels/teams.ts', "human: activity.from?.role !== 'bot' && Boolean(sender)", 'human: Boolean(sender)'],
   ['sender-authorization', 'channels/inbound.ts', "if (!ledger.authorized(message.platform, message.account, message.sender)) return { outcome: 'unauthorized_sender' };", ''],
-  // Without the guard the store's unique source constraint still refuses the second task (defense in depth), as an error.
+
   ['replay', 'channels/inbound.ts', "if (store.get(taskId)) return { outcome: 'duplicate', taskId };", '', /UNIQUE constraint failed: events\.profile, events\.source_id/],
   ['stale-input', 'channels/inbound.ts', ' || current.revision !== binding.revision) return', ') return'],
   ['revocation', 'channels/inbound.ts', ' AND revoked = 0', ''],

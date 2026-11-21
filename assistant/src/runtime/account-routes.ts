@@ -31,9 +31,9 @@ function readJson(path: string): Json {
   } catch { return {}; }
 }
 const record = (value: unknown): Json => value && typeof value === 'object' && !Array.isArray(value) ? value as Json : {};
-/** A well-formed list of distinct nonempty strings, or none: a malformed rotation setting is ignored, not partly applied. */
+
 const strings = (value: unknown): string[] => stringList(value) ? value as string[] : [];
-/** A positive number at `map[key]` (a cooldown end or duration), else 0. */
+
 const positiveAt = (map: unknown, key: string): number => { const value = record(map)[key]; return typeof value === 'number' && value > 0 ? value : 0; };
 
 /** `anthropic-account-2` and `anthropic` belong to the same account group. */

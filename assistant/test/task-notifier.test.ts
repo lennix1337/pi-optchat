@@ -45,8 +45,8 @@ test('a new suggested task and a task needing input each push one fixed-text not
   } finally { h.close(); }
 }));
 
-// Seen live 2026-11-05: 336 toasts in one day, 236 of them "An assistant task finished" for background shells. The work tracker
-// mirrors every shell, subagent, wake and Slack run as a task; only the end of a turn in the terminal is a thing to interrupt for.
+
+
 test('only the end of an OptChat turn toasts; shells, subagents, wakes and Slack runs mirrored as tasks stay silent', () => withDir('notifier-quiet-', async dir => {
   const h = open(dir);
   try {

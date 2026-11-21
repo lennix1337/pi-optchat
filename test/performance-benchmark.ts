@@ -1,4 +1,4 @@
-// Offline, synthetic performance measurements. Never loads user profiles or invokes a model/provider.
+
 import assert from 'node:assert/strict';
 import { cpus, availableParallelism } from 'node:os';
 import { performance } from 'node:perf_hooks';
@@ -75,7 +75,7 @@ function assistantText(text: string): AgentMessage {
 /** Assemble a Pi-shaped request from OptChat's real prompt, tool schemas and transcript builder. */
 export function assembleOfflineContext(memory: Memory, includeDiagnostics = false) {
   const metrics = new PerformanceMetrics();
-  const outputContext = undefined as unknown as OutputContext; // Tool schemas are measured; no tool is executed.
+  const outputContext = undefined as unknown as OutputContext;
   const baseTools = [
     ...memoryTools(() => memory),
     searchTool(() => memory),

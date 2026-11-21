@@ -140,7 +140,7 @@ test('a create that a dead process left in transition is recovered by the next p
   const crashed = new ComputerManager({ databasePath, owner: 'owner', image: 'image', operatorAuthority: {}, docker });
   try {
     await assert.rejects(crashed.create('p', 'executor'), { message: 'computer_start_failed' });
-    crashed.close(); // the process dies here; its reservation stays in the database
+    crashed.close();
     dockerUp = true;
     const next = new ComputerManager({ databasePath, owner: 'owner', image: 'image', operatorAuthority: {}, docker });
     try {

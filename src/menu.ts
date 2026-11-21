@@ -24,7 +24,7 @@ export interface MenuStatus { profile: string; messages: number; pending: number
 /** The status block as label and value; the plain menu outside the TUI shows the same rows. */
 export const statusRows = (s: MenuStatus) => [
   ['Memory', `${count(s.messages)} messages · ${count(s.pending)} pending`],
-  // config.json only checks these are strings, so one with a newline or escape code must not break the block.
+
   ['Compactor', oneLine(s.compactorLabel ?? showModel(s.compactor))],
   ['Agents', oneLine(s.agentsLabel ?? showModel(s.agents))],
 ] as const;
@@ -46,7 +46,7 @@ export function optchatMenu(theme: Theme, title: string, status: MenuStatus | un
   const page = frame(theme, title, status?.profile, [new Spacer(1), ...facts, new Spacer(1), actions, new Spacer(1),
     new Text(theme.fg('dim', '↑↓ select · Enter open · Esc close'), 1, 0)]);
   return Object.assign(page, { handleInput: (data: string) => {
-    // j and k move too, as in Pi's own select dialog that this menu replaces.
+
     const step = data === 'j' ? 1 : data === 'k' ? -1 : 0, at = ACTIONS.findIndex(a => a === list.getSelectedItem()?.value);
     if (step) list.setSelectedIndex(Math.max(0, Math.min(ACTIONS.length - 1, at + step)));
     else list.handleInput(data);

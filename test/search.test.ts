@@ -9,7 +9,7 @@ import { removeDir } from './support.ts';
 
 test('search finds original messages newest first, pages backwards, and never returns summaries or copies of memory', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-search-'));
-  // Every summary the compactor writes mentions a trip no message talks about.
+
   const memory = new Memory(dir, async () => 'user: planned the Lisbon trip', () => {});
   try {
     memory.append('user', `${'filler '.repeat(100)}then the Banner moved, then the\nfinal line`);
@@ -75,10 +75,10 @@ test('query-hit cache bounds both retained queries and total message indexes', a
 
 test('a search hit names the view line that holds it, so the agent can zoom from there; a hit that is its own line does not', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-search-line-'));
-  // Allow for labels and framing while keeping the four oldest messages folded into one line.
+
   const memory = new Memory(dir, async input => input.part.l ? 's'.repeat(300) : `user: ${'s'.repeat(294)}`, () => {}, 1900);
   try {
-    // Each message is summarized before the next, as each turn waits for summaries, so the batch finds its parents built.
+
     for (let i = 0; i < 8; i++) { memory.append('user', `${i} banner ${'.'.repeat(600)}`); await memory.settle(undefined, 'tree'); }
     assert.match(memory.render(), /^0\+4\|/m);
     const ids = searchPage(memory, 'banner').split('\n').slice(1).map(line => line.split(' · ')[0]);

@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OpsError, startWithRetry } from '../src/ops/service.ts';
 
-// At logon the PC is busy: the ACL and process inspections time out and the launcher's console closes, so one
-// failed attempt used to leave the assistant down until someone started it by hand (05/11, reboot at 11:47).
+
+
 const clock = () => {
   let now = 0;
   return { now: () => now, sleep: async (ms: number) => { now += ms; } };

@@ -2,7 +2,7 @@ import { closed, type Commitment } from './commitments.ts';
 import { brasiliaTime } from './heartbeat.ts';
 import type { HealthState } from './prod-health.ts';
 
-/** What the 07:00 summary knows about an open PR: its CI state, since when, and how often CI changed its mind. */
+
 /** `updated`: GitHub's last activity (comments, reviews, pushes), so a discussed PR is not called stalled. */
 export interface PrOutlook { title: string; url: string; ci: string; since: number; flips: number; updated?: number }
 

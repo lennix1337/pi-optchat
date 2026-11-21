@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Encrypted backup of the config's data directory (all SQLite databases except the vault).
+
 import { cli } from './cli.mjs';
 import { loadConfig } from '../src/ops/service.ts';
 import { createBackup } from '../src/ops/backup.ts';

@@ -69,7 +69,7 @@ const temp = () => mkdtempSync(join(tmpdir(), 'due-'));
 const toolOf = (dir: string) => commitmentsTool(() => ({ dir, sourceExists: () => true }));
 const run = (dir: string, args: Record<string, unknown>) => toolOf(dir).execute('t', args as never);
 
-/** A commitment whose due passed `hours` ago. */
+
 function overdueItem(dir: string, hours: number, extra: Record<string, unknown> = {}) {
   const real = Date.now;
   const c = addCommitment(dir, { text: 'stuck thing', source: '1', next: 'wait', dueInMinutes: 1, ...extra }, real() - hours * HOUR - 120_000);

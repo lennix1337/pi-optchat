@@ -39,7 +39,7 @@ function readLessons(file: string) {
 interface RunRecord { day?: string; outcome?: string; simulate?: boolean; activated?: boolean; from?: number; to?: number;
   citations?: { bullets?: number; uncited?: unknown[]; invalid?: unknown[] } }
 
-/** Bullets under a `## <title>` heading of DREAM.md. */
+
 const sectionCount = (markdown: string, title: string) => {
   const match = new RegExp(`^## ${title}\\s*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm').exec(markdown);
   return match ? match[1].split('\n').filter(line => /^\s*(?:[-*]|\d+\.)\s/.test(line) && !/\bNone\b/.test(line)).length : 0;
@@ -54,7 +54,7 @@ export function morningSummary(now = Date.now(), { dir = dreamsDir(), morningHou
   const day = localDay(now), runFile = join(dir, day, 'run.json'), briefed = join(dir, 'briefed.json');
   if (!existsSync(runFile)) return undefined;
   let shown: { day?: string } = {};
-  try { shown = JSON.parse(readFileSync(briefed, 'utf8')) as { day?: string }; } catch { /* first briefing */ }
+  try { shown = JSON.parse(readFileSync(briefed, 'utf8')) as { day?: string }; } catch {   }
   if (shown.day === day) return undefined;
   const run = JSON.parse(readFileSync(runFile, 'utf8')) as RunRecord;
   const dreamFile = join(dir, day, 'DREAM.md');

@@ -127,8 +127,8 @@ test('Windows DPAPI protects the data key for the current user across reopen', {
   key.fill(0);
 }));
 
-// A loaded Windows runner took 7-8 s for one DPAPI call and over 15 s in 3 of 7 failed CI runs (assistant-secret.test.ts, 2026-10-29),
-// where the old 15 s kill turned a slow PowerShell start into vault_unavailable; the service opens the vault at startup.
+
+
 test('a DPAPI call slower than 15 s, as on a loaded machine at logon, still completes', { skip: process.platform !== 'win32' }, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const protector = osKeyProtector();

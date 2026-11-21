@@ -8,7 +8,7 @@ import { QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 
 const [api, web, us] = DEFAULT_PROBES as [typeof DEFAULT_PROBES[0], typeof DEFAULT_PROBES[0], typeof DEFAULT_PROBES[0]];
-// Bodies as production served them on 2026-10-30 (trimmed).
+
 const API_OK = '{"status":"ok","timestamp":"2026-10-30T22:11:04.388Z","latency":288,"details":{"db":{"status":"ok"},"ai":{"status":"ok"},"redis":{"status":"ok"}}}';
 const WEB_OK = '<!DOCTYPE html><html data-dpl-id="9781524fc90c09a4acfe8f92dc28a6862d548360" class="x" lang="pt-BR"><head>';
 const US_OK = '<!doctype html> <html lang="en-US"> <head> <title>Dentai | AI Smile Simulations for Dentists</title>';

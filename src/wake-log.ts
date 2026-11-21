@@ -1,11 +1,11 @@
 import { acceptedPr } from './accepted-pr.ts';
 import { commandWords, segments } from './effect-classifier.ts';
 
-/**
- * The #wakes channel: one post per heartbeat wake, idle ones included, so the operator can follow what the agent did on
- * its own. The list of effects comes from the run's tool calls and their results, not from the model's report: edits,
- * commits, pushes, PRs, merges, comments and Slack posts, each with its repo and whether the call failed.
- */
+
+
+
+
+
 
 /** The Slack channel name (in the service's `slack.channels`) that receives the wake log. */
 export const WAKE_LOG_CHANNEL = 'wakes';
@@ -19,7 +19,7 @@ export const clip = (text: string, max: number) => text.length > max ? `${text.s
 const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const repoIn = (text: string) => /projetos[\\/]+([\w.-]+)/i.exec(text)?.[1];
 
-/** What one executable segment attempted, with ship.mjs and git receipts when present. */
+
 function shellEffects(segment: string, output: string): string[] {
   const words = commandWords(segment), command = words.join(' '), found: string[] = [];
   if (words[0] === 'node' && /(?:^|[/\\])ship\.mjs["']?$/.test(words[1] ?? '')) {
@@ -91,7 +91,7 @@ export function wakeEffects(messages: readonly Message[]): string[] {
       else if (call.name === 'commitments' && args.action === 'update' && args.status === 'done') lines.push(`compromisso ${String(args.id ?? '')} fechado${failed}`);
       else if (call.name === 'self_reload') lines.push(`pediu reload do Pi${failed}`);
       else if (call.name === 'crew' && args.action === 'accept') {
-        // An accept ships a worker's branch itself, with no shell call: the PR it opened is the effect. A refused or uncertain one opened none it can name.
+
         const pr = result && !result.error ? acceptedPr(result.text) : undefined;
         if (pr) lines.push(`${pr.repo}: abriu <${pr.url}|PR #${pr.number}> (crew accept)`);
       }

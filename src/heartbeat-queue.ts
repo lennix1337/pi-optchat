@@ -11,7 +11,7 @@ Items the heartbeat works through while the chat is idle, first open one first.
 \`- [ ]\` open, \`- [x]\` done, \`- [!]\` blocked (add why). Edit freely.
 `;
 const itemLine = /^\s*[-*]\s+\[([ xX!])\]\s+(.*\S)\s*$/;
-// An agent told to mark a blocked item may annotate the text instead; either way it is not taken.
+
 const annotatedBlocked = /\bblocked\s*:|\(blocked\b|\[blocked\]/i;
 
 export function parseQueue(markdown: string): QueueItem[] {

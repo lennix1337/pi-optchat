@@ -18,7 +18,7 @@ const tool = (name: string, exposure: ToolInfo['exposure'] = 'direct') =>
 test('the default list holds rarely used tools only, never the ones a turn depends on', () => {
   for (const hot of ['bash', 'read', 'edit', 'write', 'codemode', 'zoom', 'date', 'commitments', 'spawn', 'tell', 'subagent', 'crew', 'shell_start',
     'shell_status', 'shell_stop', 'project_checks', 'read_many', 'ripwire', 'browser_harness', 'operational_state', 'operation_state', 'self_reload', 'output_read', 'slack_send', 'gitwatch',
-    // pi-subagents registers these two as model-only: no script can call them, so only their declarations reach them.
+    // external: pi-subagents registers these tools as model-only, unavailable to scripts.
     'subagent_supervisor', 'contact_supervisor'])
     assert.equal(LAZY_TOOLS.includes(hot), false, `${hot} stays declared`);
   assert.ok(LAZY_TOOLS.includes('web_search') && LAZY_TOOLS.includes('lsp'));
@@ -44,13 +44,13 @@ test('without codemode nothing is hidden: a hidden tool would have no way to be 
 });
 
 test('a listed tool that scripts cannot call keeps its declaration: hidden, nothing could reach it', () => {
-  // Pi leaves model-only tools out of what `ctx.executeTool()` can call, so `tools.<name>()` in a script does not exist for them.
+  // external: Pi excludes model-only tools from ctx.executeTool().
   const named = (names: string[]) => names.map(name => ({ name }));
   const declared = named(['bash', 'codemode', 'web_search', 'subagent_supervisor']);
   const callable = named(['bash', 'codemode', 'web_search', 'context_metrics']);
   const lazy = () => new Set(['web_search', 'subagent_supervisor', 'context_metrics']);
   assert.deepEqual(lazyLoadout(lazy)({ declared, callable } as never)?.hiddenDeclarations, ['web_search']);
-  // Nothing left to hide once the only listed tool is one no script can call.
+
   assert.equal(lazyLoadout(() => new Set(['subagent_supervisor']))({ declared, callable } as never), undefined);
 });
 

@@ -19,7 +19,7 @@ const profileId = 'entry-profile';
 const context = (sourceEventId: string) => ({ sessionId: 'session', channelId: 'channel', runId: 'run', sourceEventId, evidenceReference: 'reference' });
 const task = { version: 1, profileId, taskId: 'task-id', title: 'task', status: 'queued', verification: 'not_verified', revision: 1, inputRevision: 1, sourceEventId: 'source-1' };
 
-/** Kept local: the mutation test copies this file alone into a disposable tree. */
+
 async function port(): Promise<number> {
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const number = (server.address() as { port: number }).port;
@@ -32,8 +32,7 @@ function child(config: string, web = false) {
   return { process, exited, output: () => output };
 }
 function processExec() { return process.execPath; }
-/** On Windows a just-exited child can keep a fixture handle briefly, so the first rmdir fails EPERM/EBUSY even though the
- * owner has FullControl and no process remains (observed 2026-10-28; same cause as the root suite's removeDir). Bounded: 5.5 s. */
+// external: Windows can briefly retain handles after a child exits, making rmdir fail with EPERM/EBUSY.
 function removeFixture(path: string) {
   for (let attempt = 1; ; attempt++) {
     try { return rmSync(path, { recursive: true, force: true }); } catch (error) {
@@ -83,13 +82,13 @@ test('help is side-effect free; invalid configs cannot open a database', async (
       .map(value => JSON.stringify({ ...base, webOrigins: value })));
     invalid.push(...[null, {}, { piVoicePath: 'relative', settingsPath: '/local/settings' },
       { piVoicePath: '/local/voice', settingsPath: '/local/settings', download: true }].map(value => JSON.stringify({ ...base, voice: value })));
-    // Exercise every shape through the production parser; mutants must fail an assertion, not hang in a listening process.
+
     for (const data of invalid) {
       writeFileSync(config, data);
       assert.throws(() => readConfig(config));
       assert.equal(existsSync(db), false);
     }
-    // One real process proves parser refusal is propagated before opening storage, without repeating native ACL checks per shape.
+
     writeFileSync(config, invalid[1]);
     const result = spawnSync(process.execPath, [main, '--config', config], { cwd: dir, encoding: 'utf8', timeout: 2 * ACL_INSPECTION_TIMEOUT_MS + 5000 });
     assert.equal(result.status, 1, JSON.stringify({ error: result.error?.message, signal: result.signal, stderr: result.stderr }));

@@ -1,4 +1,4 @@
-// Explicit opt-in live verification. Uses canned data in a disposable profile and real model calls.
+// external: live model calls can incur charges; run only with the operator's consent.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

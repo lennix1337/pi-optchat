@@ -77,7 +77,7 @@ function isLinks(value: unknown): value is Links {
   return (l.prs === undefined || isTexts(l.prs)) && (l.runs === undefined || isTexts(l.runs)) && (l.seen === undefined || isTexts(l.seen))
     && (l.reload === undefined || typeof l.reload === 'boolean') && (l.next === undefined || isText(l.next));
 }
-/** A stored item whose status is not one of STATUSES would read as open forever (`closed` is false for anything else), and one without notes or times breaks every list. */
+
 function isCommitment(value: unknown): value is Commitment {
   if (typeof value !== 'object' || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -123,20 +123,20 @@ function dueAt(input: { due?: string; dueInMinutes?: number }, now: number): str
     return iso(now + input.dueInMinutes * 60_000);
   }
   if (input.due === undefined) return undefined;
-  // Date.parse reads loose text such as "12/11 08:00" as 11 Dec 2001: only a full ISO date is a due date.
+  // external: Date.parse accepts ambiguous non-ISO date strings.
   const at = /^\d{4}-\d{2}-\d{2}T/.test(input.due) ? Date.parse(input.due) : NaN;
   if (!Number.isFinite(at)) throw new Error('due must be an ISO timestamp (e.g. 2026-10-30T22:00:00-03:00)');
   return iso(at);
 }
 
-/** A project is a crew slug (a known specialist or a new one); '' clears it on update. */
+
 function projectOf(project: string | undefined): string | undefined {
   if (project === undefined || project === '') return undefined;
   if (!SLUG.test(project)) throw new Error(`"${project}" is not a valid project: use a crew slug (lowercase letters, digits and hyphens, at most 41 characters), e.g. dentai.`);
   return project;
 }
 
-/** Short distinct answers, at most MAX_CHOICES; an empty list clears them. */
+
 function choicesOf(choices: readonly string[] | undefined): string[] | undefined {
   if (choices === undefined) return undefined;
   const kept = [...new Set(choices.map(c => clean(c, CHOICE_MAX)).filter(Boolean))];
@@ -144,7 +144,7 @@ function choicesOf(choices: readonly string[] | undefined): string[] | undefined
   return kept;
 }
 
-/** The links after `given` is applied over `old`: a list replaces its list, `reload: false` or an empty list clears it; nothing left means no links. Rejects what no event can match. */
+
 function linksOf(given: LinksInput | undefined, old?: Links): Links | undefined {
   if (given === undefined) return old;
   const merged: Links = { ...old, ...given.prs !== undefined ? { prs: given.prs } : {}, ...given.runs !== undefined ? { runs: given.runs } : {} };
@@ -239,11 +239,11 @@ export type LinkEvent =
   | { type: 'pr'; repo: string; pr: number; kind: string; text: string }
   | { type: 'run'; id: string; state: string }
   | { type: 'reload'; id: string };
-/** Gitwatch kinds worth a progress line (a pending-checks update is not); `merged` and `closed` end the PR. */
+
 const PR_KINDS = new Set(['merged', 'closed', 'reopened', 'checks', 'mergeState', 'review', 'stall']);
 const PR_ENDS = new Set(['merged', 'closed']);
 
-/** The note an event writes, the key that makes a repeat of it a no-op, whether the commitment's `next` applies, and whether the item is linked to it. */
+
 function linkNote(event: LinkEvent): { key: string; text: string; ends: boolean; linked: (l: Links) => boolean } | undefined {
   if (event.type === 'pr') {
     if (event.pr <= 0 || !PR_KINDS.has(event.kind) || /^checks running/.test(event.text)) return undefined;
@@ -351,7 +351,7 @@ export function boardWaiting(items: readonly Commitment[], now: number): BoardWa
     .map(c => ({ id: c.id, text: c.text, since: Date.parse(c.updatedAt) || now, ...(c.next ? { ask: c.next } : {}), ...(c.choices?.length ? { choices: c.choices } : {}) }));
 }
 
-// ---- Presence: a long turn tells the operator where it is, and a stuck one changes course. ----
+
 export const PRESENCE_REPORT_MS = 10 * 60_000;
 export const PRESENCE_STALL_MS = 30 * 60_000;
 export class Presence {
@@ -378,7 +378,7 @@ export class Presence {
   }
 }
 
-// ---- The tool and the hooks. ----
+
 const params = Type.Object({
   action: stringEnum(['list', 'add', 'update']),
   id: Type.Optional(Type.String()),
@@ -425,7 +425,7 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
       if (args.action === 'list') return result(listText(dir, args.all === true, now));
       if (args.action === 'add') {
         if (!args.text?.trim()) throw new Error('add needs text');
-        // The request that started this turn is not in the view yet, so "latest" stands for it.
+
         const latest = latestSource?.();
         if (args.source === 'latest' && !latest) throw new Error('add source "latest": no operator message yet in this profile');
         const source = args.source === 'latest' ? latest! : args.source;
@@ -464,7 +464,7 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
       const changed = recordLinkEvent(dir, event, now());
       if (!changed.length) return;
       presence.progressed(now());
-      // A planned next step must start a turn: a quiet notice (an auto-merge gitwatch settled) starts none by itself.
+
       const note = linkNote(event);
       for (const c of note?.ends ? changed.filter(c => c.links?.next) : [])
         pi.sendMessage({ customType: 'commitment-next', display: true, content: `[commitment ${c.id}] ${note!.text}. Planned next step: ${c.links!.next}\nMachine notice, not the operator's words: take the step already authorized for this commitment.` }, { triggerTurn: true, deliverAs: 'followUp' });
@@ -481,7 +481,7 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
   pi.on('agent_start', () => presence.start(now()));
   pi.on('tool_result', event => {
     if (!owner()) return;
-    // Only a delivered post told the operator anything; a refused or failed send keeps the reminder due.
+
     if (event.toolName === 'slack_send' && !event.isError) presence.reported(now());
     const notice = presence.check(now());
     if (!notice) return;

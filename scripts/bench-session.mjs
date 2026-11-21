@@ -1,5 +1,5 @@
-// Offline benchmark against a frozen copied profile and session. The Pi release is explicit so a repo dependency cannot silently replace it.
-// PI_BENCH_RELEASE=<pi release dir> node --expose-gc --experimental-transform-types scripts/bench-session.mjs --source <copied profile> --session <copied session.jsonl> [--turns 100] [--json <output>]
+
+
 import { registerHooks } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';

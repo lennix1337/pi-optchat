@@ -214,7 +214,7 @@ function ruleCount(id: string, events: object[]): number {
   return scanCorrections(dir, Date.parse('2026-11-14'), Date.parse('2026-11-15')).find(r => r.id === id)!.count;
  } finally { rmSync(dir, { recursive: true, force: true }); }
 }
-// 19/11: every wake built its own pi-optchat PRs by hand (#433-#445) while agy and Codex sat with quota left.
+
 test('self-build-in-wake counts a wake that edits source three times without handing it to a worker', () => {
  const edit = (path: string) => call('edit', { path, edits: [] });
  const build = [edit('src/a.ts'), call('bash', { command: 'npm test' }), edit('test/a.test.ts'), call('write', { path: 'src/b.ts', content: '' })];
@@ -226,7 +226,7 @@ test('self-build-in-wake counts a wake that edits source three times without han
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, ...build.slice(0, 2), call('shell_start', { command: 'node ~/.pi/agent/bin/agy-pc.mjs --repo C:\\projetos\\x --name y < b.md' }), ...build.slice(2)]), 0, 'agy-pc delegation resets it');
  assert.equal(ruleCount('self-build-in-wake', [wakePrompt, edit('a'), call('spawn', { tasks: [] }), edit('b'), edit('c')]), 0, 'spawn resets it');
 });
-// 20/11 "sou dev e nao dono da dentai, nao da pra sair metendo o louco la nao": wakes must not push, merge or deploy DentAI work on their own.
+
 test('dentai-in-wake flags a wake that writes to DentAI, not one that only reads it or the operator\'s own task', () => {
  const push = call('bash', { command: 'cd ~/projetos/dentai-mono && git push origin fix/x' });
  const pr = call('bash', { command: 'gh pr merge 195 --repo tecnologia-ai/dentai --auto --squash' });
@@ -260,7 +260,6 @@ test('live-claim is cleared by a live check since the last user message, and res
   assert.equal(scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r=>r.id==='live-claim')!.count, 1);
  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
-// 20/11 "era pra ser padrao tbm rodar a suite de testes apenas no final, sem perder tempo testando a cada mudança".
 test('suite-repeat flags a second full suite in one run, not focused tests or a new run', () => {
  const suite = call('bash', { command: 'cd ~/projetos/pi-optchat && npm test 2>&1 | tail -5' });
  const verify = call('bash', { command: 'npm run verify > /tmp/v.log 2>&1; echo rc=$?' });

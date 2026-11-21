@@ -29,8 +29,8 @@ async function fixture() {
   return { registry: new ModelRegistry(runtime), provider, sent, clean: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-// Reported 04/11: at a reload multi-account drops its numbered accounts and publishes them again in its own session_start,
-// after OptChat had resumed two summaries, which then went to the base `anthropic` account (a key with no credit: 400).
+// external: pi-multi-account republishes numbered accounts during its session_start after reload.
+
 test('a summary for a numbered account not published yet waits for it instead of running on the base account', async () => {
   const f = await fixture();
   try {

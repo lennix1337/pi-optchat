@@ -55,7 +55,7 @@ test('labeled evaluation: precision, recall and false negatives on the synthetic
     return [label, { support: tp + falseNegatives.length, precision: ratio(tp, tp + fp), recall: ratio(tp, tp + falseNegatives.length), falseNegatives, falsePositives }];
   }));
   t.diagnostic(`fixture only (${evalSet.messages.length} synthetic messages; not a real inbox): ${JSON.stringify(report)}`);
-  // Recorded from this rule set; a change to triage must update these numbers deliberately, misses included.
+
   assert.deepEqual(report, {
     urgent: { support: 8, precision: 0.857, recall: 0.75, falseNegatives: ['u5', 'u6'], falsePositives: ['d4'] },
     injection: { support: 8, precision: 0.857, recall: 0.75, falseNegatives: ['i5', 'i8'], falsePositives: ['n5'] },

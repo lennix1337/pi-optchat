@@ -14,7 +14,7 @@ const PASTE = (s: string) => `\u001b[200~${s}\u001b[201~`;
 function harness(vault: Vault) {
   let handler!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
   const other: string[] = [];
-  // Any API other than registerCommand (sendMessage, appendEntry, ...) would put text in the session or model context.
+
   const pi = new Proxy({ registerCommand: (_: string, o: { handler: typeof handler }) => { handler = o.handler; } }, {
     get: (target, key) => key in target ? (target as Record<string | symbol, unknown>)[key] : (...args: unknown[]) => { other.push(`${String(key)} ${JSON.stringify(args)}`); },
   }) as unknown as ExtensionAPI;

@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-// Measured over 22 real sessions: native `edit` failed 6.5% of the time, bash scripts that patch
-// files 15.3% (13.6% Python tracebacks), and text-mode Python on Windows turned LF files into CRLF.
-// A bash result for such a command gets one short hint line; it never changes isError or the exit code.
+// external: Python text mode on Windows can convert LF to CRLF.
+
+
 
 type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du' | 'winpath' | 'ffonly' | 'stashclash' | 'ghlog' | 'ghattempt' | 'pushrejected';
 const HINTS: Record<HintKind, string> = {
@@ -25,18 +25,18 @@ const HINTS: Record<HintKind, string> = {
 export const HINT_INTERVAL = 10;
 
 const SOURCE_PATH = /(?<![\w.-])[\w./\\:~@-]*\.(?:ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|kt|cs|c|h|cpp|hpp|rb|php|swift|css|scss|html|vue|svelte|sh)(?![\w-])/gi;
-// Build output is regenerated, so patching it with a script is not the habit being discouraged.
+
 const GENERATED = /(?:^|[\\/])(?:dist|build|out|node_modules|coverage|target|\.next|generated)[\\/]/i;
 const sourcePaths = (command: string) => (command.match(SOURCE_PATH) ?? []).filter(path => !GENERATED.test(path));
 
 const SCRIPT_RUNNER = /(?:^|[\s;&|(])(?:python[\d.]*|py|node)(?:\.exe)?\s/i;
 const FILE_WRITE = /\.write_text\(|\.write\(|\bopen\([^)]*,\s*['"][wa]b?\+?['"]|\bmode\s*=\s*['"][wa]|writeFileSync\(|writeFile\(|appendFile(?:Sync)?\(/;
 function patchesSourceWithScript(command: string): boolean {
-  // Printing through a stream is output, not a file write.
+
   const writes = FILE_WRITE.test(command.replace(/std(?:out|err)\.write\(/g, ''));
   return SCRIPT_RUNNER.test(command) && /<<|\s-c\s|\s-e\s/.test(command) && writes && sourcePaths(command).length > 0;
 }
-// `sed -i`, `sed -ni`, `sed --in-place=.bak`, `perl -pi -e`, `perl -i.bak`.
+
 const IN_PLACE = /(?:^|[\s;&|(])(?:sed|perl)\s(?:[^|;&\n]*\s)?(?:-[A-Za-z]*i[^\s]*|--in-place[^\s]*)(?=\s)/;
 const editsInPlace = (command: string) => IN_PLACE.test(command) && sourcePaths(command).length > 0;
 
@@ -46,32 +46,32 @@ const PLAIN_READ = [
   new RegExp(`^cat\\s+${FILE}$`),
   new RegExp(`^head\\s+(?:-n\\s*\\d+|-\\d+)\\s+${FILE}$`),
 ];
-// An optional leading `cd dir &&` is how most inspections start.
+
 const readsOneFile = (command: string) => {
   const rest = command.trim().replace(/^cd\s+\S+\s*&&\s*/, '');
   return PLAIN_READ.some(pattern => pattern.test(rest));
 };
 
-// An inline script whose own source failed to parse: shell quoting mangled it, so a retry with other escapes repeats the error.
+
 const INLINE_SCRIPT = /(?:^|[\s;&|(])(?:python[\d.]*|py|node)(?:\.exe)?\s+-[ce]\s/i;
 const PARSE_FAILURE = /SyntaxError|ERR_(?:UNSUPPORTED|INVALID)_TYPESCRIPT_SYNTAX|unexpected EOF while parsing|IndentationError/;
 
-// Git Bash maps /tmp to %TEMP%, but a Windows program resolves "/tmp/x" against the drive root: node reports C:\tmp\x,
-// python echoes the quoted '/tmp/x'. Bash's own "cat: /tmp/x: No such file" is a file that is really missing.
+// external: Git Bash maps /tmp to TEMP, but Windows programs resolve it against the drive root.
+
 const WINDOWS_TMP_MISS = /ENOENT[^\n]*[A-Za-z]:\\tmp\\|(?:FileNotFoundError|No such file or directory)[^\n]*['"]\/tmp\//;
 
-// A sleep of 15 s or more followed by a remote status check is a poll: gitwatch already delivers CI and PR results.
+
 const SLEEP_POLL = /(?:^|[;&|(]\s*)sleep\s+(?:1[5-9]|[2-9]\d|\d{3,})\b[^\n]*?\b(?:gh\s+(?:run|pr|api)|git\s+fetch|curl)\b/;
 
-// `gh auth status` validates tokens over the network; the active account is a local config value.
+// external: gh auth status validates tokens over the network.
 const GH_AUTH_STATUS = /(?:^|[;&|(]\s*)gh\s+auth\s+status\b/;
 const GH_AUTH_SWITCH = /(?:^|[;&|(]\s*)gh\s+auth\s+(?:switch|login|refresh)\b/;
 
-// `du -s` over a Windows worktree with node_modules ran into the bash timeout (90 s, no output).
+
 const DU_SUMMARY = /(?:^|[;&|(]\s*)du\s+-[A-Za-z]*s/;
 const TIMED_OUT = /timed out after \d+ seconds/;
 
-// Profile text names Windows paths (C:/projetos/...); on the Linux VM they resolve to nothing.
+
 const WINDOWS_PROJECT_PATH = /\bC:[\\/]projetos[\\/]/i;
 const PATH_MISS = /MODULE_NOT_FOUND|Cannot find module|No such file or directory|ENOENT|not found/i;
 
@@ -82,7 +82,7 @@ const STASH_CLASH = /local changes[^\n]*would be overwritten/;
 
 const GH_RUN_LOG = /\bgh\s+run\s+view\b[^\n]*--log(?:-failed)?\b/;
 const GH_FAILED_LOG = /\bgh\s+run\s+view\b[^\n]*--log-failed\b/;
-// Pi's own annotations on an otherwise empty result.
+// external: Pi annotates otherwise empty tool results.
 const TOOL_NOTES = /^(?:\(no output\)|\[pipe status:.*|Command exited with code \d+|Note: .*|Hint: .*)$/gm;
 const GH_LOG_MISSING = /log not found|no logs? (?:available|found)/i;
 
@@ -110,7 +110,7 @@ export function bashHint(command: string, ripwireTool: boolean, output = ''): Hi
   return undefined;
 }
 
-// Keep Pi's trailing "Command exited with code N" as the last line of the result.
+
 function withHint(text: string, hint: string): string {
   const exit = /\n*(Command exited with code \d+)\s*$/.exec(text);
   return exit ? `${text.slice(0, exit.index)}\n${hint}\n\n${exit[1]}` : `${text.replace(/\s+$/, '')}\n${hint}`;
@@ -133,7 +133,7 @@ export function registerBashHints(pi: ExtensionAPI) {
     state.previous = kind;
     if (!kind) return;
     const last = state.shown.get(kind);
-    // A patch script retried straight after another one is the loop the hint exists for: repeat it.
+
     const retryLoop = kind === previous && (kind === 'edit' || kind === 'script');
     if (!retryLoop && last !== undefined && call - last < HINT_INTERVAL) return;
     state.shown.set(kind, call);

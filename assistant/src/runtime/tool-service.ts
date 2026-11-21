@@ -16,7 +16,7 @@ import type { ExecutorOptions } from './task-executor.ts';
 /** The one adapter the executor's opt-in tools reach: inert text in an offline, network-less browser container. */
 export const TOOL_IMAGE = 'optchat-computer-browser:1';
 const POLICY_VERSION = 'executor-tools-1';
-/** How long an unanswered preview review stays decidable; afterwards the task fails instead of waiting. */
+
 const REVIEW_WINDOW_MS = 60 * 60_000;
 
 export const toolGatewayPath = (config: Pick<Config, 'databasePath'>) => join(dirname(config.databasePath), 'tool-gateway.sqlite');
@@ -32,15 +32,15 @@ export function openToolGateway(config: Pick<Config, 'profileId' | 'databasePath
     policy: metadata => metadata.adapter === 'computer' && metadata.action === 'browser_text' ? 'review' : 'deny', inspect: () => ({ decision: 'allow', reasons: [] }) });
 }
 
-/**
- * Host side of the executor's tools: one gateway, one offline computer, one effect table. Model text only ever becomes
- * a preview request; no decision API is reachable from here, so a review waits for the operator's `executor.mjs`.
- * Starting it checks Docker and the local image once (never pulls); failure refuses to start the executor.
- */
-/**
- * A shutdown cleanup that failed (Docker down) leaves a fence that refuses every create. `cleanup()` takes over only a
- * cleanup marked failed and refuses an overlapping live one, so resuming it once here is safe; a second refusal stands.
- */
+
+
+
+
+
+
+
+
+
 async function createResumingCleanup(computers: ReturnType<typeof createComputers>, profileId: string) {
   try { return await computers.create(profileId, 'executor'); }
   catch (error) {
@@ -61,7 +61,7 @@ export async function openToolService(config: Config, store: TaskStore, docker?:
   try {
     const computer = await createResumingCleanup(computers, config.profileId);
     const port = browserTextPort(gateway, computers);
-    // A computer idle past its lifetime refuses work; creating it again is idempotent and renews it, so do it right before each dispatch.
+
     effects = new ToolEffects(config.databasePath, { ...port, dispatch: async (request, reviewId) => { await computers.create(config.profileId, 'executor'); return port.dispatch(request, reviewId); } },
       (id, revision) => { const task = store.get(id); return task?.status === 'working' && task.revision === revision; });
     const task = new ToolTask(store, effects, config.profileId, settings.channels[0]);

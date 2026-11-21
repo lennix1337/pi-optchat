@@ -45,7 +45,7 @@ export function createAssistantPolicy(options: AssistantPolicyOptions) {
       return decision?.level === 'free' || decision?.level === 'report' ? 'allow' : 'review';
     },
   });
-  // Exact bytes awaiting a human live only in this process: a reload drops them and the producer must prepare again.
+
   const reviews = new Map<string, AssistantReview>();
   const live = () => { const now = (options.now ?? Date.now)(); for (const [id, r] of reviews) if (r.metadata.expiresAt <= now) reviews.delete(id); return reviews; };
   return {

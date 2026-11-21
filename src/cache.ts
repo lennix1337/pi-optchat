@@ -19,17 +19,11 @@ export function splitView(text: string) {
   return pieces;
 }
 
-/** How many blocks before the view's last whole one each mark sits. Anthropic looks back only 20 blocks from a mark for an
- * earlier entry, so the marks 20 and 40 blocks back still find the last call's entry after a turn of tool calls adds up to
- * 60 blocks (240 lines). With the end of the request, that is Anthropic's limit of 4 marks. */
+// external: Anthropic cache lookup searches at most 20 blocks and allows at most four cache marks.
 const MARKS = [0, 20, 40];
-/** With a prefix mark, the view keeps two: a turn can then add up to 40 blocks (160 lines) and still find the last call's entry. */
+
 const PREFIX_MARKS = [0, 20];
-/** With `long`, both view marks take the 1-hour entry. The older one (20 blocks back) changes only when a batch merge rewrites the
- * view from near its top. The newer one changes only when the view grows, between turns: within a turn its entry is read, not
- * written, so the 1-hour premium (2x input against 1.25x for 5 minutes) is paid on the blocks a turn adds. A turn that starts after
- * a 5-minute gap (a wake 15 minutes after the last) then reads the view to its newest mark instead of rewriting its last 20 blocks.
- * The request's end stays at 5 minutes: it moves with every call. */
+// external: Anthropic one-hour and five-minute cache entries have different write premiums.
 /** `prefix` also marks the system prompt, and with it the tools before it, at the cost of the view's oldest mark. They change
  * only with the session's setup, while the view's batch merges rewrite it from near its top every ~150 messages: replayed
  * over the profile's log, a quarter of turn starts found no view entry, and with no mark before the view each rewrote the
@@ -37,10 +31,10 @@ const PREFIX_MARKS = [0, 20];
  * write premium paid only when the prefix changes. Leave it off where the system prompt is too short to cache (the compactor). */
 export interface CacheOptions { prefix?: 'short' | 'long'; entries?: ViewEntries }
 
-/** Anthropic's lookback from a mark, in blocks. */
+// external: Anthropic cache lookup searches at most 20 blocks.
 const LOOKBACK = 20;
 const TTL_MS = { '5m': 300_000, '1h': 3_600_000 } as const;
-/** Forget an entry a little before Anthropic does, so a mark is never put on one already gone. */
+
 const TTL_MARGIN_MS = 15_000;
 const ENTRIES = 64;
 /** A call's view against the last call's, so a cache miss in usage.jsonl can be told apart: the view rewritten from `changedAt`
@@ -48,7 +42,7 @@ const ENTRIES = 64;
 export interface ViewReport { date: string; model?: string; gapMs?: number; blocks: number; changedAt?: number | null; headChanged?: boolean;
   /** With a changed head, which of its parts changed (HEAD_PARTS), so a rewrite of the whole request can be traced to its cause. */
   headParts?: string[]; marks: number[] }
-/** The parts of a request before the view, in Anthropic's order. `earlier`: messages before the view's own; `lead`: blocks before it in its message. */
+
 const HEAD_PARTS = ['model', 'thinking', 'output', 'tools', 'system', 'earlier', 'lead'] as const;
 /** The view blocks earlier calls marked, by a digest of the whole request up to and including the block. When a view grows by
  * more than its marks can look back (a turn moved into memory, a long turn folded in at the next one), the next call puts one
@@ -127,14 +121,14 @@ export class ViewEntries {
     while (this.entries.size > ENTRIES) this.entries.delete(this.entries.keys().next().value!);
   }
 }
-/** The last call's view read back from a snapshot; none if it is not one. Snapshots from before `parts` existed restore without them. */
+
 function restoredView(value: unknown): ViewEntriesState['previous'] {
   if (!record(value) || typeof value.base !== 'string' || typeof value.time !== 'number') return undefined;
   const chain = isStrings(value.chain) ? value.chain : undefined, parts = isStrings(value.parts) ? value.parts : undefined;
   return chain && { base: value.base, chain, time: value.time, ...(parts ? { parts } : {}) };
 }
-/** Digest of everything Anthropic caches before the view's first block (model, thinking, tools, system, earlier messages and
- * blocks), then one per block, each over the one before: equal digests mean an equal request prefix. `parts`: one per HEAD_PARTS. */
+
+
 function viewChain(payload: Record<string, unknown>, messages: unknown[], index: number, at: number, pieces: readonly string[]) {
   const message = messages[index] as { content: unknown[] };
   const head = [payload.model, payload.thinking, payload.output_config, payload.tools, payload.system, messages.slice(0, index), message.content.slice(0, at)];
@@ -146,8 +140,7 @@ function viewChain(payload: Record<string, unknown>, messages: unknown[], index:
   return { base, chain, parts };
 }
 type CacheModel = { provider?: string; baseUrl?: string; compat?: unknown };
-/** Anthropic's API itself, or pi-multi-account's slot proxy for an Anthropic account: a loopback route named after its
- * provider (`http://127.0.0.1:<port>/anthropic-account-2`), which forwards the request body to api.anthropic.com unchanged. */
+// external: pi-multi-account forwards Anthropic account requests through a loopback proxy unchanged.
 const onAnthropicApi = (provider?: string, baseUrl?: string) => {
   try {
     const url = new URL(baseUrl ?? '');
@@ -178,9 +171,9 @@ function lastBlock(message: Record<string, unknown>) {
 const viewMark = (options: CacheOptions): { type: 'ephemeral'; ttl?: '1h' } =>
   ({ type: 'ephemeral', ...(options.prefix === 'long' ? { ttl: '1h' as const } : {}) });
 
-/** Where the view's marks go: block -> how far back from the last whole block the mark was meant to be, which sets its TTL.
- * With `chain`, a live entry an earlier call wrote that no usual mark reaches takes the oldest mark's place (keeping its TTL),
- * or a free one on a view too short for all of them. */
+
+
+
 function viewMarks(pieces: readonly string[], offsets: readonly number[], entries?: ViewEntries, chain?: readonly string[]) {
   const last = pieces.length - 2;
   const marks = new Map(offsets.filter(back => last - back >= 0).map(back => [last - back, back]));
@@ -220,7 +213,7 @@ export function cachePayload(payload: unknown, options: CacheOptions = {}): unkn
     break;
   }
   if (!view.size) return payload;
-  // These marks only: Pi's own system, tool and recent-message marks are dropped.
+
   for (const section of [payload.system, payload.tools]) {
     if (Array.isArray(section)) for (const item of section) if (record(item)) delete item.cache_control;
   }
@@ -234,8 +227,8 @@ export function cachePayload(payload: unknown, options: CacheOptions = {}): unkn
     const last: unknown = Array.isArray(payload.system) && payload.system.length ? payload.system.at(-1) : Array.isArray(payload.tools) ? payload.tools.at(-1) : undefined;
     if (record(last)) last.cache_control = { type: 'ephemeral', ...(options.prefix === 'long' ? { ttl: '1h' } : {}) };
   }
-  // The status line changes between calls, so the turn's mark goes on the block before it rather than at the end of the request.
-  // Pi may end the request with an empty system message carrying settings (effort); it holds nothing to cache.
+
+  // external: Pi may end a request with an empty system message carrying settings.
   const [before, last] = messages.filter(message => !record(message) || message.role !== 'system').slice(-2);
   const turn = isAtWork(last) && record(before) && before.role === 'user' ? lastBlock(before) : undefined;
   if (turn) turn.cache_control = { type: 'ephemeral' };

@@ -4,7 +4,7 @@ import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import { ROLE_KEYS, type AccountEconomy, type Economy, type RoleKey, type Spend, type WindowEconomy } from './quota-economy.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
 
-/** Quota as the operator reads it: per account, `5h X% usado, renova HH:MM · 7d Y% usado, renova dd/mm HH:MM`, in Brasília time. */
+
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const BRASILIA_MS = 3 * 3_600_000;
 const dayOf = (at: number) => new Date(at - BRASILIA_MS).toISOString().slice(0, 10);

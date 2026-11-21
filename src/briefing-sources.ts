@@ -15,7 +15,7 @@ export type Activity = {
   failed: string[];
 };
 
-/** Notification reasons worth his attention; CI runs, state changes and his own activity are already elsewhere. */
+
 const REASONS = new Set(['mention', 'team_mention', 'review_requested', 'assign', 'comment']);
 const SEARCH = `query($q:String!){search(query:$q,type:ISSUE,first:40){nodes{__typename ... on PullRequest{number title url state repository{nameWithOwner}
  comments(last:10){nodes{author{login} createdAt}} reviews(last:10){nodes{author{login} createdAt}}}
@@ -54,8 +54,8 @@ export async function githubActivity(gh: Gh, now: number, me: string): Promise<A
         out.mentions.push({ repo: n.repository.full_name, title: n.subject.title, reason: n.reason });
     }),
   ]);
-  // A PR already listed as commented, awaiting review or closed is not repeated as a notification.
-  // A thread already closed is reported once, under what closed.
+
+
   const seen = new Set([...out.comments, ...out.reviews, ...out.closed].map(p => `${p.repo}:${p.title}`));
   out.mentions = out.mentions.filter(m => !seen.has(`${m.repo}:${m.title}`));
   return out;
@@ -95,7 +95,7 @@ export function harnessCost(dir: string, now: number, file = 'usage.jsonl'): str
       if (!(at >= since) || !usd) continue;
       const m = (e.model ?? '?').replace(/^claude-/, '');
       by.set(m, (by.get(m) ?? 0) + usd); total += usd;
-    } catch { /* a torn line */ }
+    } catch {   }
   }
   if (!total) return undefined;
   const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([m, v]) => `${m} US$${v.toFixed(2)}`).join(', ');

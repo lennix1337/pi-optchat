@@ -48,7 +48,7 @@ test('a memory of N rows reports root=N and keeps at most the hot texts in RAM',
   writeFileSync(join(dir, 'tree', '2026-10-09.jsonl'), Array.from({ length: total }, (_, i) => line({ l: 0, i, text: `user: Original ${i}`, size: 0 })).join(''));
   const memory = new Memory(dir, async input => input.source.slice(0, 60), () => {}, 4000);
   try {
-    const stats = memory.stats(), treeNodes = memory.tree.size; // summaries keep merging in the background
+    const stats = memory.stats(), treeNodes = memory.tree.size;
     let held = 0, cold = 0;
     for (const node of memory.tree.values()) { if (Object.getOwnPropertyDescriptor(node, 'text')) held += Buffer.byteLength(node.text); else cold++; }
     const report = await heapReport({}, { optchat: { memory: stats, run: 7, reloads: 3, collections: {} } }, injected());
@@ -87,9 +87,9 @@ test('the report carries process, V8, event-loop and listener numbers, and a lis
 
 test('the event-loop delay is measured from load and reset after each report', async () => {
   await heapReport({}, {}, injected());
-  await new Promise(resolve => setImmediate(resolve)); // a block inside a timer callback is under-reported by libuv; real stalls are not
+  await new Promise(resolve => setImmediate(resolve)); // external: libuv can under-report a block inside a timer callback.
   const end = Date.now() + 120;
-  while (Date.now() < end) { /* block the loop so the monitor sees a delay */ }
+  while (Date.now() < end) {   }
   await new Promise(resolve => setTimeout(resolve, 30));
   const first = (await heapReport({}, {}, injected())).eventLoop as { maxMs: number; samples: number };
   assert.ok(first.maxMs >= 80, `blocked loop shows in the max (${first.maxMs} ms)`);
@@ -135,7 +135,7 @@ test('gc:true forces a collection and reports the heap before and after with the
   assert.equal(collected, 1);
   const gc = report.gc as { pauseMs: number; heapUsedBefore: number; heapUsedAfter: number };
   assert.ok(gc.pauseMs >= 0); assert.equal(typeof gc.heapUsedBefore, 'number'); assert.equal(typeof gc.heapUsedAfter, 'number');
-  const real = await heapReport({ gc: true }, {}); // the real collector, through V8 flags and a fresh vm context
+  const real = await heapReport({ gc: true }, {});
   assert.ok((real.gc as { pauseMs: number }).pauseMs > 0);
 });
 
@@ -205,7 +205,7 @@ test('a real Pi turn records pi_pre_request and pi_boundary, and heap_report rea
     assert.ok(report.pi.sessionFileBytes > 0);
     assert.ok(report.optchat.memory.root >= 2); assert.ok(report.optchat.run >= 1);
     assert.equal(report.optchat.reloads, 0);
-    // Counts of the collections that live as long as the process, so a growing one can be named without a snapshot.
+
     const sizes = report.optchat.collections;
     for (const name of ['childrenRunning', 'childrenRunMessages', 'runHistory', 'shellJobs', 'shellOutputChars', 'receipts', 'bundles', 'runMessages', 'heldWakeMessages', 'peerCopies'])
       assert.equal(typeof sizes[name], 'number', `${name} in ${JSON.stringify(sizes)}`);

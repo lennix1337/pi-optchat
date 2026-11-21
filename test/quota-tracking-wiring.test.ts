@@ -14,7 +14,7 @@ import { DailySummary, localDate } from '../src/slack-reports.ts';
 
 const run = promisify(execFile);
 const HOUR = 3_600_000, DAY = 24 * HOUR;
-const NOW = Date.UTC(2026, 10, 11, 12, 0); // 11/11 09:00 in Brasília
+const NOW = Date.UTC(2026, 10, 11, 12, 0);
 const tmp = (t: { after(fn: () => void): void }) => { const dir = mkdtempSync(join(tmpdir(), 'quota-wiring-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const cache = (fetchedAt: number, used7d: number) => ({
   usageByProvider: {
@@ -70,7 +70,7 @@ test('the health round samples the quota once per round, and a failing sampler d
 
 test('the terminal /cota prints the same table the Slack command does', async t => {
   const { dir, cacheFile } = profile(t);
-  // The fixture's windows end hours after NOW; the command reads the clock, so it is pinned there rather than to the day the suite runs.
+
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'no-prices.json') });
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();

@@ -13,7 +13,7 @@ import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profi
 import { RELOAD_ENTRY } from '../src/self-reload.ts';
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
-import { isCompaction, removeDir } from './support.ts';
+import { isCompaction, loopLag, removeDir } from './support.ts';
 
 const pi: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
@@ -49,9 +49,10 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
   const events: { type: string; text: string }[] = [], errors: string[] = [];
   let done!: () => void, reloadAttempted!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
-  // A timeout kills the test before any assertion or finally block prints, so dump the state just before the limit to show which step stuck.
+
   const started = Date.now(), marks: Record<string, number> = {}, mark = (name: string) => { marks[name] = Date.now() - started; };
-  const hangDump = originalTimer(() => console.log(`# wake-reload ${mode} still running at 12 s ${JSON.stringify({ marks, calls, reloads, effects, shutdown, observedContinuation, wakeAt, fired: !!fire, recoveryTimers: recoveryTimers.size, errors })}`), 12000);
+  const lag = loopLag();
+  const hangDump = originalTimer(() => console.log(`# wake-reload ${mode} still running at 12 s ${JSON.stringify({ maxLoopLagMs: lag.max(), marks, calls, reloads, effects, shutdown, observedContinuation, wakeAt, fired: !!fire, recoveryTimers: recoveryTimers.size, errors })}`), 12000);
   const reloadAttempt = new Promise<void>(resolve => { reloadAttempted = resolve; });
   try {
     createProfile('fixture'); const profile = profilePath('fixture');
@@ -163,7 +164,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
     assert.equal(saved.wakeLog[0].continuation, mode === 'success' ? 'started' : 'not-verified');
     if (mode === 'lost') { await session.agent.waitForIdle(); await reopen(); }
   } finally {
-    originalClear(hangDump);
+    originalClear(hangDump); lag.stop();
     if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (previous === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = previous;
     removeDir(dir);

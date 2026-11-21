@@ -17,7 +17,7 @@ test('real loopback HTTP response fixture proves bounded body, no redirect follo
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   const policy = { origins: ['https://example.com'], admit() { if (held) throw new Error('revoked'); }, resolve: async () => ['1.1.1.1'] };
-  // Only the test replaces transport with loopback. The production broker always uses verified HTTPS.
+
   const transport = ((options: any, callback: any) => {
     assert.equal(options.rejectUnauthorized, true);
     assert.equal(options.hostname, 'example.com');

@@ -22,11 +22,11 @@ test('full_output, no rewrite, a missing rtk or an unknown exit run the command 
 });
 
 test('rewrites that drop paths or file names are refused', async () => {
-  // Measured 14/11: `rtk find src -name "*.ts"` prints `a.ts` for `src/a.ts`; `rtk wc -l f` prints the count without `f`.
+  // external: rtk find and wc can omit the input path from their output.
   assert.equal(await compactCommand('find src -name "*.ts"', false, runner(0, 'rtk find src -name "*.ts"')), 'find src -name "*.ts"');
   assert.equal(await compactCommand('wc -l a.ts', false, runner(0, 'rtk wc -l a.ts')), 'wc -l a.ts');
   assert.equal(await compactCommand('cd x && find . | head', false, runner(0, 'cd x && rtk find . | head')), 'cd x && find . | head');
-  // Measured 14/11: `rtk git show HEAD:src/index.ts` printed 115 of 1,512 lines; reading a file at a revision needs it whole.
+  // external: rtk git show can truncate file content.
   assert.equal(await compactCommand('git show HEAD:src/a.ts', false, runner(0, 'rtk git show HEAD:src/a.ts')), 'git show HEAD:src/a.ts');
   assert.equal(await compactCommand('git show main~2:a.ts', false, runner(0, 'rtk git show main~2:a.ts')), 'git show main~2:a.ts');
   assert.equal(await compactCommand('git show HEAD --stat', false, runner(0, 'rtk git show HEAD --stat')), 'rtk git show HEAD --stat');

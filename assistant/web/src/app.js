@@ -17,7 +17,7 @@ let draining = false;
 let archive;
 let declined;
 const queue = new ResponseQueue();
-/** `taskId:revision` -> the executor's question for that card (null when none); a newer revision asks the service again. */
+
 const prompts = new Map();
 const uncertain = () => Boolean(lifecycle?.marker);
 let renderedKey;
@@ -63,7 +63,7 @@ async function start(session) {
   selectedTask = undefined; renderedKey = undefined;
   $('#create-form button').disabled = uncertain();
   startArtifacts(request); startBriefing(request); startInspection(request);
-  // Voice text enters only through the same create path; a busy or uncertain panel refuses it.
+
   void startVoice(request, async ({ text }) => {
     if (uncertain() || mutationPending) throw new Error('panel busy');
     await mutate('/web/api/tasks', { title: text, channelId: 'Voz' });
@@ -129,7 +129,7 @@ function render() {
   renderedKey = key;
   channelOptions();
   const tasks = [...state.tasks.values()];
-  // Each task's latest event: when it last moved and, for work OptChat mirrors, what it reported.
+
   const latest = new Map();
   for (const entry of state.events) latest.set(entry.event.taskId, entry.event);
   const updated = task => latest.get(task.taskId)?.sequence ?? 0;
@@ -180,7 +180,7 @@ function card(task, last) {
   const heading = el('h3'); const link = el('a', task.title); link.href = taskLink(task.taskId); heading.append(link);
   article.tabIndex = -1;
   article.append(meta, heading);
-  // Notes OptChat (src/work-tracker.ts) or the draft executor report on their own work: what they say, not verification.
+
   if (['assistant-client', 'draft-executor'].includes(last?.source.actorId) && last.evidence.reference !== '-') article.append(el('p', last.evidence.reference, 'task-note'));
   const verification = { verified: 'Verificado', not_verified: 'Resultado não verificado', blocked: 'Verificação bloqueada' };
   article.append(el('p', verification[task.verification], 'task-verification'));
@@ -197,7 +197,7 @@ function card(task, last) {
   evidence.addEventListener('click', () => { selectedTask = task.taskId; renderEvidence(); $('#evidence-heading').scrollIntoView({ block: 'nearest', behavior: 'auto' }); });
   controls.append(evidence); article.append(controls); return article;
 }
-/** One button per option the current question offers; a click answers this revision and request only, like the typed answer. */
+
 function quickReplies(task) {
   const key = `${task.taskId}:${task.revision}`;
   if (!prompts.has(key)) { prompts.set(key, null); void loadPrompt(task, key); return []; }
@@ -215,7 +215,7 @@ function quickReplies(task) {
 async function loadPrompt(task, key) {
   try {
     const value = await request(`/web/api/tasks/${encodeURIComponent(task.taskId)}/prompt`);
-    // An answer for another revision belongs to a newer card; this one keeps only the typed answer.
+
     prompts.set(key, value.revision === task.revision && value.inputRevision === task.inputRevision ? value.prompt : null);
     renderedKey = undefined; render();
   } catch { prompts.delete(key); }

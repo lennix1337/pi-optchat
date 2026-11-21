@@ -11,7 +11,7 @@ const job = (id: string, command: string, cwd: string) => ({ id, command, cwd, s
 test('a durable shell outlives the process that launched it and is followed again, once, by the next one', { timeout: 60_000 }, async () => {
   const temp = tempDir('durable-'), root = join(temp.dir, 'shells');
   try {
-    // A separate Node process launches the shell and exits at once: the Pi crash or quit case.
+
     const launcher = `import { launchDurable } from ${JSON.stringify(new URL('../src/durable-shells.ts', import.meta.url).href)};
 launchDurable(${JSON.stringify(root)}, { id: 'crash', command: 'sleep 2; echo fim; exit 3', cwd: ${JSON.stringify(temp.dir)}, started: Date.now(), notify: 'end' });`;
     execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', launcher], { stdio: 'ignore' });

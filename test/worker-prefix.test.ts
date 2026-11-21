@@ -39,7 +39,7 @@ test('briefs of one project share everything up to its specialist view whatever 
     assert.match(hard.slice(end), /You are a hard worker[\s\S]*paired with worker ab12cd34/);
     assert.match(plan.slice(end), /You are a plan worker[\s\S]*You are a scout/);
     assert.doesNotMatch(code.slice(0, end), /You are a (code|hard|plan|mechanical) worker|paired with worker|You are a scout/, 'no kind or peer text before the mark');
-    // Another project shares the constant opening (intro and report rules) and diverges at its own charter.
+
     const dentai = crew.brief('code', 'dentai');
     assert.ok(common(code, dentai) >= code.indexOf('<project-charter'), `projects share the constant opening (differ at ${common(code, dentai)})`);
     assert.match(code, /^\[Worker brief\] You are a worker of the manager/);
@@ -86,7 +86,7 @@ test('markBriefPrefix leaves a request without a brief, without marks or with a 
   assert.equal(markBriefPrefix('x'), 'x');
 });
 
-/** A Children over a synthetic provider that records each run's system sections and first user message. */
+
 async function harness() {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-prefix-run-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});

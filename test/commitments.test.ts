@@ -8,7 +8,7 @@ import { composeSummary } from '../src/slack-reports.ts';
 import { plainToolResult } from './support.ts';
 
 const temp = () => mkdtempSync(join(tmpdir(), 'commitments-'));
-const T0 = Date.parse('2026-10-30T21:00:00Z'); // 18:00 in Brasília
+const T0 = Date.parse('2026-10-30T21:00:00Z');
 
 test('a commitment is added, shown in the turn block with age and deadline in UTC-3, and closed only with evidence', () => {
   const dir = temp();

@@ -14,10 +14,7 @@ export type CommitmentItem = { text: string; status: string; url?: string };
 export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[] };
 export const NO_WORK: HomeWork = { prs: [], commitments: [], jobs: [], agents: [] };
 
-/**
- * Items per section and characters per section: the rest is counted, not listed, so the Home keeps room for its waiting
- * list, the day and its commands within Slack's section limit (three sections at most, each with its own budget).
- */
+// external: Slack views impose section and view size limits.
 const LIMIT = 4;
 const SECTION_CHARS = 280;
 const URL_IN = /https:\/\/[^\s<>|)]+/;
@@ -27,7 +24,7 @@ const FAILING_FIRST: Record<PrItem['checks'], number> = { vermelhos: 0, pendente
 
 const checksOf = (ci: string): PrItem['checks'] => ci === 'SUCCESS' ? 'verdes' : RED.has(ci) ? 'vermelhos' : ci === 'NONE' || !ci ? 'sem checks' : 'pendentes';
 
-/** One open PR of the watch; anything else (merged, closed, no key, no link) is not an item. */
+
 function openPr(key: string, seen: PrSeen): PrItem | undefined {
   const match = /^(.+)#(\d+)$/.exec(key);
   if (!seen || typeof seen.sig !== 'string' || !seen.sig.startsWith('OPEN:') || !match || typeof seen.url !== 'string') return undefined;
@@ -57,7 +54,7 @@ export function readHomeWork(dir: string, jobs: readonly string[], now: number, 
 }
 
 const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-/** One line, at most `max` characters; whitespace that would break the bullet is folded first. */
+
 const clip = (s: string, max: number) => {
   const flat = s.replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
@@ -72,20 +69,20 @@ export function headline(text: string, words = 8): string {
   const aside = /\s\(|:\s|\s[\u2014\u2013-]\s/.exec(flat);
   const head = aside && flat.slice(0, aside.index).split(' ').length >= 3 ? flat.slice(0, aside.index) : flat;
   const list = head.split(' ');
-  // Words are the measure, characters the bound: a run-on token (a URL, a path) must not take the section's budget.
+
   return clip(list.length > words ? `${list.slice(0, words).join(' ').replace(/[,.;:]$/, '')}\u2026` : head.replace(/[,.;:]$/, ''), 80);
 }
 
-/** A dot the eye finds before the words: red needs him or me, yellow is running, green is done. */
+
 const CHECK_DOT: Record<PrItem['checks'], string> = { vermelhos: '\ud83d\udd34', pendentes: '\ud83d\udfe1', verdes: '\ud83d\udfe2', 'sem checks': '\u26aa' };
 const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').pop()}#${p.number} ${headline(p.title)}`)}> \u00b7 ${CHECK_DOT[p.checks]} checks ${p.checks}`;
 const commitLine = (c: CommitmentItem) => `\u2022 ${c.url ? `<${c.url}|${escape(headline(c.text))}>` : escape(headline(c.text))} \u00b7 ${c.status}`;
 const jobLine = (j: string) => `\u2022 ${escape(clip(j, 120))}`;
 
-/** Expanded (the Home's Ver tudo): every item, still within Slack's view size. */
+
 const EXPANDED = { limit: 30, chars: 3_000 };
 
-/** The title, then whole lines while they fit in the budget (at most `limit`); the rest is counted in one `… mais` line. */
+
 function section(title: string, lines: readonly string[], expanded: boolean): { text: string; hidden: number } {
   const kept: string[] = [];
   const { limit, chars } = expanded ? EXPANDED : { limit: LIMIT, chars: SECTION_CHARS };
@@ -103,7 +100,7 @@ function section(title: string, lines: readonly string[], expanded: boolean): { 
 export function renderWorkParts(work: HomeWork, expanded = false): { text: string; hidden: number } {
   const running = [...work.agents ?? [], ...work.jobs];
   const parts = [
-    // What is happening now comes first: 17/11 a stuck watcher sat at the bottom, under the PRs, and the Home read as idle.
+
     ...running.length ? [section(`\u2699\ufe0f *Rodando agora* (${running.length})`, running.map(jobLine), expanded)] : [],
     ...work.prs.length ? [section(`\ud83d\udd00 *PRs abertas* (${work.prs.length})`, work.prs.map(prLine), expanded)] : [],
     ...work.commitments.length ? [section(`\ud83d\udccc *Compromissos abertos* (${work.commitments.length})`, work.commitments.map(commitLine), expanded)] : [],
@@ -132,12 +129,12 @@ export function pendingCi(work: HomeWork): string {
  */
 export function idleLine(work: HomeWork): string {
   const running = backgroundSummary(work), ci = pendingCi(work);
-  // One state, not two: "Esperando CI" next to "chat livre" read as a contradiction (03/11).
+
   if (running) return `\u23f3 *Em segundo plano* (${running} rodando${ci ? `; esperando ${ci}` : ''})`;
   return ci ? `\u23f3 *Parado, esperando ${escape(ci)}*` : '';
 }
 
-/** The PRs a text names (`Genexus18MCP#843`, `pi-optchat #92`), as watch keys' repo name and number. */
+
 const PR_REF = /([A-Za-z][\w.-]*)\s?#(\d+)/g;
 
 /**

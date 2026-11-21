@@ -1,9 +1,9 @@
-// Measures how often the model asks for one tool per reply when the next reply
-// is also a lone read-only call (a missed batch), and the round-trip it costs.
+
+
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-// Usage: node tool-batching-stats.mjs [sessionsDir] [sinceISO]; the dir defaults to ~/.pi/agent/sessions.
+
 if (process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
   console.log('usage: tool-batching-stats.mjs [sessionsDir] [sinceISO]  (dir defaults to ~/.pi/agent/sessions)');
   process.exit(0);

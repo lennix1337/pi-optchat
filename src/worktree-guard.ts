@@ -33,7 +33,7 @@ export function worktreeRemovalTargets(text: string, cwd: string): Target[] {
 
 const exec = promisify(execFile);
 
-/** Asynchronous: these calls (git, and gh over the network) run inside a tool_call hook, which must not freeze Pi while they wait. */
+
 async function run(command: string, args: string[], cwd: string, timeout = 2000): Promise<string | undefined> {
   try { return (await exec(command, args, { cwd, timeout, encoding: 'utf8', windowsHide: true })).stdout.trim(); }
   catch { return undefined; }
@@ -41,7 +41,7 @@ async function run(command: string, args: string[], cwd: string, timeout = 2000)
 
 type MergedPr = (branch: string | undefined, repo: string, head: string | undefined) => boolean | Promise<boolean>;
 
-/** A merged PR whose head branch has this name, or whose head commit is this tip (a PR fetched as `pull/N/head:pr-N` keeps only the commit). */
+
 async function mergedPr(branch: string | undefined, repo: string, head: string | undefined) {
   const found = async (args: string[], match: (pr: { headRefOid?: string }) => boolean) => {
     const output = await run('gh', ['pr', 'list', '--state', 'merged', ...args, '--json', 'number,headRefOid'], repo, 3000);
@@ -50,11 +50,11 @@ async function mergedPr(branch: string | undefined, repo: string, head: string |
   return Boolean(branch && await found(['--head', branch], () => true)) || Boolean(head && await found(['--search', head], pr => pr.headRefOid === head));
 }
 
-// realpath expands Windows 8.3 short names (RUNNER~1) that Git lists in long form.
+// external: Windows realpath expands 8.3 short names.
 const key = (path: string) => { try { return realpathSync.native(path).toLowerCase(); } catch { return resolve(path).toLowerCase(); } };
 const within = (path: string, dir: string) => key(path) === key(dir) || key(path).startsWith(key(dir).replace(/[\\/]$/, '') + sep);
 
-/** Nothing to lose: no uncommitted or untracked change, and its HEAD is already on some remote-tracking ref. */
+
 async function cleanAndPushed(path: string, head: string | undefined) {
   if (!head || await run('git', ['status', '--porcelain'], path) !== '') return false;
   return Boolean(await run('git', ['for-each-ref', '--count=1', '--contains', head, '--format=%(refname)', 'refs/remotes'], path));
@@ -65,11 +65,11 @@ export async function worktreeRemovalRefusal(text: string, cwd: string, hasMerge
   for (const target of worktreeRemovalTargets(text, cwd)) {
     const list = await run('git', ['worktree', 'list', '--porcelain'], target.repo);
     if (!list) {
-      // A linked worktree keeps a `.git` file; when Git cannot list it, its merge state is unknown, so refuse.
+
       if (existsSync(join(target.path, '.git'))) return `Blocked removal of ${target.path}: Git could not list its worktrees, so its merge state is unknown.`;
       continue;
     }
-    // The first entry is the main checkout; `rm -rf .worktrees` removes every linked worktree below the target.
+
     for (const entry of list.split(/\r?\n\r?\n/).slice(1)) {
       const path = /^worktree (.+)$/m.exec(entry)?.[1]?.trim();
       if (!path || !within(path, target.path)) continue;

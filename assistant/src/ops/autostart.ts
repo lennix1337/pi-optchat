@@ -11,11 +11,11 @@ import { OpsError, loadConfig, servicePaths } from './service.ts';
  */
 export type AutostartResult = { result: 'dry_run' | 'installed' | 'upgraded' | 'already_installed' | 'uninstalled' | 'not_installed'; launcher: string; plan: string };
 
-// Logon is the busiest moment of the machine: the start retries transient failures this long.
+// external: machine load at logon can delay service startup.
 const LOGON_WAIT_SECONDS = 300;
 
 const scriptsDir = fileURLToPath(new URL('../../scripts/', import.meta.url));
-// cmd.exe expands or splits on these even inside quotes, so such paths are refused rather than escaped.
+// external: cmd.exe expands or splits these characters even inside quotes.
 const CMD_UNSAFE = /["%!^&|<>\r\n]/;
 
 function startupDirectory(): string {
@@ -40,7 +40,7 @@ export function autostartPlan(configPath: string): { launcher: string; content: 
     `${command} --wait-seconds ${LOGON_WAIT_SECONDS} >> "${autostartLog}" 2>&1`,
     '',
   ].join('\r\n');
-  // The launcher earlier versions wrote: still ours, so install upgrades it and uninstall removes it.
+
   const legacy = [...head, command, ''].join('\r\n');
   const plan = [
     'OptChat assistant autostart (Windows, current user, explicit opt-in)',

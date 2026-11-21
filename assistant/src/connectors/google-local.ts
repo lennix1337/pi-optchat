@@ -89,7 +89,7 @@ export class GoogleLocal {
    * returns. Only the exact callback path with the pending state is completed; anything else gets 404.
    */
   async connect(input: { name: string; email: string; onUrl: (url: string) => void; timeoutMs?: number }): Promise<GoogleConnection> {
-    // Checked before listening, so a missing client never leaves a port open.
+
     if (!this.client()) fail('google_client_missing');
     const server = createServer();
     server.listen(0, '127.0.0.1');

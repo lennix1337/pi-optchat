@@ -24,7 +24,7 @@ async function until(condition: () => boolean) {
   const deadline = Date.now() + 10000;
   while (!condition()) { if (Date.now() > deadline) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
-/** A provider whose first reply to a `hold …` task waits until the test releases it or the agent stops. */
+
 async function fixture(dir: string, reply: (context: Context) => string = () => 'done') {
   const releases = new Map<string, () => void>();
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -201,7 +201,7 @@ test('the settings page saves a valid number and explains an invalid one', () =>
     const type = (...keys: string[]) => { for (const key of keys) page.handleInput(key); };
     assert.match(page.render(100).join('\n'), /Subagent levels\s+1  default\n/);
     assert.match(page.render(100).join('\n'), /claude-haiku-4-5 · low  default claude-haiku-5-5 · xhigh/, 'a changed model shows its default too');
-    type('\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\r'); // down past the fallback rows to Subagent levels, open it
+    type('\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\r');
     type('0', '\r');
     assert.match(page.render(100).join('\n'), /must be a whole number of 1 or more/);
     type('\x7f', 'x', '\r');
@@ -245,7 +245,7 @@ test('turning Previous exchange off also reaches a turn that a subagent report s
     const manager = SessionManager.inMemory(dir);
     manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
     session = (await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom'] })).session;
-    // The settings page, driven by keys: down past Group subagent reports to Previous exchange, toggle it, close.
+
     const custom = (async (factory: (tui: unknown, theme: Theme, keys: unknown, done: (result: undefined) => void) => Component) => {
       let closed = false;
       const page = factory({ requestRender: () => {} }, plain, {}, () => { closed = true; });
@@ -290,20 +290,20 @@ test('Memory search turned on and off in /optchat settings adds and removes the 
     const manager = SessionManager.inMemory(dir);
     manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
     session = (await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom', 'search'] })).session;
-    // The settings page, driven by keys: down to Memory search, toggle it, close.
+
     const custom = (async (factory: (tui: unknown, theme: Theme, keys: unknown, done: (result: undefined) => void) => Component) => {
       const page = factory({ requestRender: () => {} }, plain, {}, () => {});
       for (const key of ['\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', ' ', '\x1b']) page.handleInput?.(key);
     }) as unknown as ExtensionUIContext['custom'];
     await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), custom }, mode: 'tui' });
-    // Pi declares the tools on the leading system message, next to the prompt.
+    // external: Pi supplies tools on the leading system message.
     const search = ({ messages: [system] }: Context) => system.role === 'system'
       ? [!!system.toolsAdded?.some(t => t.name === 'search'), JSON.stringify(system.content).includes('search(text)'), JSON.stringify(system.content).includes('zoom and search are')] : [];
     await session.prompt('Hello.');
     assert.deepEqual(search(turns.at(-1)!), [false, false, false], 'off by default');
     await session.prompt('/optchat settings');
     assert.equal(loadConfig(profilePath('fixture')).memorySearch, true);
-    // A report turn started while idle skips before_agent_start, and still gets the change.
+    // external: Pi reports started while idle skip before_agent_start.
     await session.sendCustomMessage({ customType: REPORT_TYPE, content: '[8964a512] Done.', display: true }, { triggerTurn: true, deliverAs: 'steer' });
     await session.agent.waitForIdle();
     assert.deepEqual(search(turns.at(-1)!), [true, true, true]);
@@ -325,14 +325,14 @@ test('the fallbacks step adds a provider model and removes it again, saving the 
       models: [{ name: 'anthropic/claude-haiku-5-5', thinking: ['low', 'high'] }, { name: 'openai-codex/gpt-6-luna', thinking: ['low', 'high'] }] }, () => {});
     const type = (...keys: string[]) => { for (const key of keys) page.handleInput(key); };
     assert.match(page.render(100).join('\n'), /Compactor fallbacks\s+none/, 'no fallbacks yet');
-    type('\x1b[B', '\r'); // Compactor fallbacks, open it
-    type('\r'); // + Add a provider model
-    type('luna', '\r', '\r'); // filter to the Codex model, then its first thinking level
+    type('\x1b[B', '\r');
+    type('\r');
+    type('luna', '\r', '\r');
     assert.deepEqual(config.alternates, { compactor: [{ provider: 'openai-codex', model: 'gpt-6-luna', thinking: 'low' }] });
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).alternates, config.alternates);
-    type('\x1b'); // close the step, refreshing its row
+    type('\x1b');
     assert.match(page.render(100).join('\n'), /Compactor fallbacks\s+openai-codex\/gpt-6-luna · low/);
-    type('\r', '\x1b[B', '\r', '\r'); // reopen, choose "Remove a provider model", and remove the entry
+    type('\r', '\x1b[B', '\r', '\r');
     assert.equal(config.alternates, undefined);
     assert.equal(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).alternates, undefined);
     type('\x1b');
@@ -346,12 +346,12 @@ test('the thinking step offers only levels the model takes, so Sonnet 5.5 has no
     const config: ProfileConfig = { ...defaults, compactor: { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'medium' } };
     const page = settingsPage(plain, { profile: 'demo', config, save: next => saveConfig(dir, next),
       models: [{ name: 'anthropic/claude-sonnet-5-5', thinking: ['low', 'medium', 'high'] }] }, () => {});
-    page.handleInput('\r'); // open Compactor model
-    page.handleInput('\r'); // pick the only model
+    page.handleInput('\r');
+    page.handleInput('\r');
     const step = page.render(100).join('\n');
     assert.match(step, /Thinking level[\s\S]*low[\s\S]*high/);
     assert.doesNotMatch(step, /^\W*(off|minimal)\s*$/m);
-    page.handleInput('\x1b[A'); page.handleInput('\r'); // up from the current "medium" to "low"
+    page.handleInput('\x1b[A'); page.handleInput('\r');
     assert.deepEqual(config.compactor, { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'low' });
   } finally { removeDir(dir); }
 });
@@ -382,7 +382,7 @@ test('/optchat model and /optchat agents model pick from a searchable list that 
       screens.push(picker.render(100).join('\n'));
       for (const key of ['2', '9']) picker.handleInput?.(key);
       screens.push(picker.render(100).join('\n'));
-      for (const key of ['\r', '\r']) picker.handleInput?.(key); // the model, then its only thinking level
+      for (const key of ['\r', '\r']) picker.handleInput?.(key);
       return result;
     }) as unknown as ExtensionUIContext['custom'];
     await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), custom }, mode: 'tui' });
@@ -424,7 +424,7 @@ test('the settings page cycles shell notices through every end, failures only an
     const page = settingsPage(plain, { profile: 'demo', config, models: [{ name: 'anthropic/claude-sonnet-5-5', thinking: ['low', 'medium'] }], save: next => saveConfig(dir, next) }, () => {});
     const screen = () => page.render(120).join('\n');
     assert.match(screen(), /Shell notices\s+every end\s+default/);
-    for (let i = 0; i < 21; i++) page.handleInput('\x1b[B'); // down past the model rows and the settings above Shell notices
+    for (let i = 0; i < 21; i++) page.handleInput('\x1b[B');
     page.handleInput('\r');
     assert.equal(config.shellNotify, 'failure');
     assert.match(screen(), /Saved shell notices failures only/);

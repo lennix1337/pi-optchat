@@ -56,7 +56,7 @@ export class SlackSocket {
       if (!body.ok || typeof body.url !== 'string' || !body.url.startsWith('wss://')) {
         const error = typeof body.error === 'string' ? body.error.replace(/[^\w.-]/g, '').slice(0, 60) : `http_${response.status}`;
         this.options.log(`Slack Socket Mode connection refused: ${error}.`);
-        // A revoked or wrong token does not fix itself by hammering the API.
+
         if (error === 'invalid_auth' || error === 'not_allowed_token_type' || error === 'token_revoked') { this.stopped = true; return; }
         return this.retry();
       }
@@ -70,7 +70,7 @@ export class SlackSocket {
     this.socket = socket;
     socket.addEventListener('message', event => this.onMessage(socket, event.data));
     socket.addEventListener('close', () => { if (this.socket === socket) { this.socket = null; this.retry(); } });
-    socket.addEventListener('error', () => { /* close follows */ });
+    socket.addEventListener('error', () => {   });
   }
 
   private retry(): void {
@@ -94,7 +94,7 @@ export class SlackSocket {
     let result: Received;
     try { result = this.options.accept(message.payload); }
     catch {
-      // Not acknowledged: Slack redelivers, and the delivery-derived task ID keeps it single.
+      // external: Slack redelivers unacknowledged Socket Mode events.
       this.options.log('Slack event not admitted: internal error; left for redelivery.');
       return;
     }

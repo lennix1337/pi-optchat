@@ -34,12 +34,12 @@ test('service executor: panel task -> question -> persisted answer -> draft, kep
     await api.until(stuck.taskId, 'working', 10000);
     const deadline = Date.now() + 10000;
     while (provider.requests.length < 3) { if (Date.now() > deadline) throw new Error('stuck generation never reached the provider'); await new Promise(r => setTimeout(r, 100)); }
-    // SIGTERM on Windows ends the process without a drain: the executor never releases its lease.
+    // external: SIGTERM on Windows terminates a process without draining.
     await running.stop();
 
     running = launchWeb(config); await running.ready;
     api = await session(endpoint, token);
-    // The crashed owner's 45 s lease must expire before recovery; the interrupted generation is failed, not resent.
+
     await api.until(stuck.taskId, 'failed', 70000);
     assert.match((await api.notes(stuck.taskId)).at(-1)!, /não houve repetição automática/);
     assert.equal((await api.task(created.taskId)).status, 'ready_for_review');

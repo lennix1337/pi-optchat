@@ -67,7 +67,7 @@ function localMinutes(instant: number, timeZone: string): number {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).formatToParts(instant);
   return Number(parts.find(p => p.type === 'hour')!.value) * 60 + Number(parts.find(p => p.type === 'minute')!.value);
 }
-/** Quiet hours are [start, end) local time; an end before the start wraps across midnight. */
+
 function inQuietHours(quiet: QuietHours, instant: number): boolean {
   const now = localMinutes(instant, quiet.timeZone), start = minutes(quiet.start), end = minutes(quiet.end);
   return start < end ? now >= start && now < end : now >= start || now < end;

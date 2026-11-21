@@ -1,4 +1,4 @@
-// Opt-in Pi subscription benchmark runner. Preflight never streams a model request.
+// external: Live provider calls can incur charges; run only with the operator consent.
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -14,10 +14,10 @@ export const BENCHMARK_MODEL = { provider: 'openai-codex-account-2', id: 'gpt-6-
 export const REQUESTED_THINKING = 'high' as const;
 const TASK_WORKDIR = '/testbed';
 const CPU_LIMIT = 4;
-const MEMORY_LIMIT_BYTES = 4 * 1024 ** 3; // User-approved sequential low-memory variant, not the published 8 GiB protocol.
+const MEMORY_LIMIT_BYTES = 4 * 1024 ** 3;
 const PID_LIMIT = 4096;
 const TOOL_OUTPUT_LIMIT = 16_000;
-export const SWE_TASK_TIMEOUT_MS = 20 * 60 * 1000; // OpenHuman RUNBOOK.md: TASK_TIMEOUT_S=1200.
+export const SWE_TASK_TIMEOUT_MS = 20 * 60 * 1000; // external: OpenHuman RUNBOOK.md specifies TASK_TIMEOUT_S=1200.
 const DOCKER_TIMEOUT_MS = SWE_TASK_TIMEOUT_MS;
 const MAX_TASK_PROMPT_CHARS = 100_000;
 
@@ -562,8 +562,8 @@ export async function runOpenHumanTask(task: OpenHumanTask, runtime: ModelRuntim
 export async function createRuntime(): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
   await runtime.refresh({ allowNetwork: false });
-  // The bare SDK does not load multi-account extensions. Register only the
-  // explicitly selected slot, reusing native Codex auth without copying credentials.
+  // external: The bare Pi SDK does not load multi-account extensions.
+
   const base = runtime.getProvider('openai-codex');
   const model = runtime.getModel('openai-codex', BENCHMARK_MODEL.id);
   const oauth = base?.auth.oauth;

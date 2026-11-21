@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Starts the manual assistant server for one private config, once. Refuses a port it does not own; waits for an
-// authenticated loopback health read. Activation remains an operator decision: nothing here installs a service.
+
+
 import { cli } from './cli.mjs';
 import { startService, startWithRetry } from '../src/ops/service.ts';
 

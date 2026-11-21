@@ -1,6 +1,6 @@
-// Isolation for disposable benches that load the real extension: they build their own OPTCHAT_HOME from an allowlist of
-// the profile's data files, so no live-service config (assistant.json: endpoint + token of the operator's assistant
-// service, which turns every turn into a real task and desktop toast) is ever copied, and they refuse to start otherwise.
+
+
+
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -8,7 +8,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 /** Data the memory, runs and usage code read; everything else in a profile (assistant.json, Slack/WhatsApp state, approvals, sync) stays behind. */
 export const COPIED = ['main', 'tree', 'view.json', 'head.json', 'runs', 'usage.jsonl', 'usage.db', 'crew', 'outputs'] as const;
 
-/** Files and keys that point at a live service or hold its credential. */
+
 const LIVE_FILES = /^(assistant\.json|assistant-health\.json|slack-.*\.json|ai-memory-sync\.json|optmem-sync\.json|autonomy\.json)$/;
 const LIVE_KEYS = /^(endpoint|token|apiKey|webhook|webhookUrl|secret|password)$/i;
 

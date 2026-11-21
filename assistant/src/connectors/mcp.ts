@@ -143,7 +143,7 @@ export class ConnectorRegistry {
     const grants = this.db.prepare('SELECT id, schema_hash, identity, resources FROM connector_grants WHERE profile = ? AND agent = ? AND account = ? AND tool_id = ? AND revoked = 0 AND expires > ?')
       .all(this.options.profileId, request.agentId, request.accountId, tool.tool_id, this.now()) as GrantRow[];
     if (!grants.length) fail('connector_not_granted');
-    // The schema hash covers the annotations the effect is derived from, so it also pins the effect the operator consented to.
+
     const current = grants.filter(grant => grant.schema_hash === tool.schema_hash && grant.identity === tool.identity);
     if (!current.length) fail('connector_revalidation_required');
     if (!current.some(grant => inScope(grant.resources, request.args))) fail('connector_out_of_scope');
@@ -174,7 +174,7 @@ export class ConnectorRegistry {
   private transaction(work: () => void): void { immediate(this.db, work); }
 }
 
-/** One owned, plain copy of the call: scope checks, review and dispatch all see the same values (no getters, no later mutation). */
+
 function ownedCall(input: ToolCall): ToolCall {
   try {
     const args: unknown = JSON.parse(JSON.stringify(input.args));

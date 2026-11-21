@@ -35,14 +35,14 @@ test('filtering keeps selections and bulk shortcuts apply only to matching rows'
   const picker = new MultiSelect({ title: 'Projects', labels: ['work-api', 'personal', 'work-ui'], rows: () => 24,
     redraw: () => {}, done: value => completed.push(value), color: (_tone, text) => text });
   try {
-    picker.handleInput('\x1b[B'); picker.handleInput(' '); // personal
-    picker.handleInput('work'); picker.handleInput('\x01'); // Ctrl+A selects matching work rows
+    picker.handleInput('\x1b[B'); picker.handleInput(' ');
+    picker.handleInput('work'); picker.handleInput('\x01');
     assert.match(picker.render(80)[0], /3 selected/);
-    picker.handleInput('\x04'); // Ctrl+D clears only matches
+    picker.handleInput('\x04');
     assert.match(picker.render(80)[0], /1 selected/);
-    picker.handleInput('\x15'); // Ctrl+U clears filter
+    picker.handleInput('\x15');
     assert.ok(picker.render(80).some(line => line.includes('[x] 2. personal')));
-    picker.handleInput('\x1b[6~'); // Page down reaches final row
+    picker.handleInput('\x1b[6~');
     assert.match(picker.render(80).find(line => line.startsWith('→')) ?? '', /3\. work-ui/);
     picker.handleInput('\r'); assert.deepEqual(completed, [[1]]);
   } finally { picker.dispose(); }

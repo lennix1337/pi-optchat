@@ -219,7 +219,7 @@ test('a crash during generation is failed on recovery, never generated again', a
   first.tick().catch(() => {});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 1);
-  // The first process is gone without releasing its lease; nobody else runs jobs until it expires.
+
   const early = new TaskExecutor({ store: f.store, profileId: PROFILE, databasePath: join(f.dir, 'executor.sqlite'), channels: [CHANNEL], run: async () => { calls++; return { kind: 'draft', text: 'cedo' }; } });
   try { assert.equal(await early.acquire(), false); await early.tick(); } finally { await early.close(); }
   assert.equal(f.store.get('crash')!.status, 'working');

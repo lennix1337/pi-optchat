@@ -7,14 +7,14 @@ import { join } from 'node:path';
 import { assistantProbe, ASSISTANT_HEALTH_FILE, ASSISTANT_PROBE } from '../src/assistant-health.ts';
 import { defaultMonitors, FAILURES_BEFORE_ALERT, healthLines, ProdHealth, readHealth, registerProdHealth, tellTransitions, type Monitor, type Transition } from '../src/prod-health.ts';
 
-const T0 = Date.parse('2026-11-11T11:20:00Z'); // 08:20 in Brasília, the morning the service stayed down
+const T0 = Date.parse('2026-11-11T11:20:00Z');
 
 const listen = (server: Server) => new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port)));
 const close = (server: Server) => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
 const writeAssistantConfig = (dir: string, port: number) => writeFileSync(join(dir, 'assistant.json'),
   JSON.stringify({ version: 1, profileId: 'work', endpoint: `http://127.0.0.1:${port}`, token: 'health-test-token' }));
 
-/** A stand-in for the assistant service on a disposable port; the real one is never contacted. */
+
 async function withService<T>(run: (dir: string, port: number) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), 'assistant-health-'));
   const server = createServer((req, res) => {
@@ -25,7 +25,7 @@ async function withService<T>(run: (dir: string, port: number) => Promise<T>): P
   writeAssistantConfig(dir, port);
   try { return await run(dir, port); } finally { await close(server).catch(() => undefined); rmSync(dir, { recursive: true, force: true }); }
 }
-/** A loopback port nothing listens on: what a service that failed to bind (EACCES) looks like from outside. */
+
 async function deadPort(): Promise<number> {
   const server = createServer(); const port = await listen(server); await close(server); return port;
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Restores a backup into an empty private directory, with integrity, schema and profile checks and no-replay fences.
+
 import { cli } from './cli.mjs';
 import { restoreBackup } from '../src/ops/backup.ts';
 import { osKeyProtector } from '../src/secrets/protector.ts';

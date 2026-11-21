@@ -29,7 +29,7 @@ test('a backslash before an ordinary character in double quotes is literal, as i
   for (const command of [String.raw`grep -n "cleaner\|const DIRS" a.ts b.ts`, String.raw`grep -n "a\.b" file`, String.raw`cd C:/x && grep -c "C:\Users" file`]) {
     assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
   }
-  // \$, \`, \" and \\ keep their escaping meaning, so they stay refused with the other expansions.
+  // external: Shell double quotes retain escaping for dollar, backtick, quote and backslash.
   for (const command of [String.raw`cat "\$HOME"`, String.raw`cat "a\"b"`, String.raw`cat "a\\b"`, String.raw`cat "\`touch x\`"`, String.raw`cat "a\|$(touch x)"`]) {
     assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
   }
@@ -165,8 +165,8 @@ test('near-miss commands that write, execute or hide a mutation are not read-onl
   for (const command of rejected) assert.equal(isReadOnlyDiagnostic('bash', { command }), false, command);
 });
 
-// 03/11: after one browser timeout the barrier refused 25 inspections in a day, among them the `browser_harness status`
-// that the timed-out result itself names as the next step, shell_status, netstat and loopback curl.
+
+
 test('observing actions and loopback inspections pass the barrier; effects of the same tools do not', () => {
   const observing: [string, unknown][] = [
     ['browser_harness', { action: 'status' }], ['browser_harness', {}], ['browser_harness', { action: 'screenshot', tab: 'T' }],
@@ -195,7 +195,7 @@ test('observing actions and loopback inspections pass the barrier; effects of th
     ['bash', { command: 'curl -H "X-HTTP-Method-Override: DELETE" http://127.0.0.1:1/x' }], ['bash', { command: 'curl -sd x http://127.0.0.1:1/x' }],
     ['bash', { command: 'curl http://127.0.0.1:1/a http://127.0.0.1:1/b' }], ['bash', { command: 'curl http://127.0.0.1.evil.com/' }],
     ['bash', { command: 'curl http://localhost@evil.com/' }], ['bash', { command: 'curl file:///etc/passwd' }], ['bash', { command: 'curl -m' }], ['bash', { command: 'curl' }],
-    // Unquoted brackets are a glob that could expand to an option.
+    // external: Unquoted shell brackets can expand as a glob.
     ['bash', { command: 'curl -I http://[::1]:8080/' }],
   ];
   for (const [tool, input] of effects) assert.equal(isReadOnlyDiagnostic(tool, input), false, JSON.stringify([tool, input]));
@@ -241,7 +241,7 @@ test('everyday inspections seen refused behind an uncertain barrier are read-onl
   ]) assert.equal(isReadOnlyDiagnostic('bash', { command }), true, command);
 });
 
-// A CI log is read through `sed 's/^.*Z //'` to drop the timestamps; that one-substitution stream filter touches no file.
+
 test('a single s/// stream filter behind a pipe is read-only; sed that can write, run or edit in place is not', () => {
   for (const command of [
     "gh run view 1 --repo a/b --log-failed 2>&1 | sed 's/^.*Z //' | grep -E '^not ok' | cut -c1-140",

@@ -211,7 +211,7 @@ export function extractUsageMetrics(rawResponseText, contentType = '') {
         if (isRecord(evt.usage)) applyUsage(evt.usage);
         if (isRecord(evt.message) && isRecord(evt.message.usage)) applyUsage(evt.message.usage);
       } catch {
-        // Ignore non-JSON SSE data frames.
+
       }
     }
   } else {
@@ -508,7 +508,7 @@ export function analyzeCaptureDir(captureDir) {
     const turnNum = Number(file.slice(5, 9));
     const raw = readFileSync(join(dir, file), 'utf8');
     let payload = null;
-    try { payload = JSON.parse(raw); } catch { /* leave null */ }
+    try { payload = JSON.parse(raw); } catch {   }
     const meta = metaByTurn.get(turnNum) ?? { turn: turnNum };
     turns.push({ ...meta, payload });
   }
@@ -614,7 +614,7 @@ export async function startCaptureProxy({
 
       let payload = null;
       if (rawReqText.trim().startsWith('{')) {
-        try { payload = JSON.parse(rawReqText); } catch { /* non-JSON body */ }
+        try { payload = JSON.parse(rawReqText); } catch {   }
       }
 
       const fileTag = String(turn).padStart(4, '0');

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { tempDir } from './support.ts';
 
-// scripts/worktree.mjs --done and --update on throwaway repos: a bare origin, the main checkout, a second clone that plays "the rest of the team", and a gh stub.
+
 const SCRIPT = fileURLToPath(new URL('../scripts/worktree.mjs', import.meta.url));
 const ID = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.invalid' };
 const GH_STUB = `import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ appendFileSync(process.env.STUB_GH_LOG, process.argv.slice(2).join(' ') + '\\n')
 process.stdout.write(existsSync(process.env.STUB_GH_JSON) ? readFileSync(process.env.STUB_GH_JSON, 'utf8') : '[]');
 `;
 
-// Git joins conflicts closer than a few lines into one hunk; the spacer keeps the import hunk and the code hunk apart.
+// external: Git joins sufficiently close conflict regions into one hunk.
 const SPACER = ['one', 'two', 'three', 'four', 'five', 'six'].map((w) => `// ${w}\n`).join('');
 
 function git(cwd: string, args: string[]) {
@@ -47,13 +47,13 @@ function fixture() {
   const env = { ...process.env, ...ID, WORKTREE_GH: JSON.stringify([process.execPath, join(dir, 'gh-stub.mjs')]), STUB_GH_JSON: ghJson, STUB_GH_LOG: ghLog };
   const run = (args: string[], cwd = work) => { const r = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8', env }); return { code: r.status, out: r.stdout }; };
   const wtPath = (name: string) => join(work, '.worktrees', name);
-  /** A commit by someone else lands on origin/main. */
+
   const advanceMain = (file: string, text: string, message = `main: ${file}`) => { git(other, ['pull', '-q', '--ff-only', 'origin', 'main']); const sha = commit(other, file, text, message); git(other, ['push', '-q', 'origin', 'HEAD:main']); return sha; };
-  /** The squash merge GitHub does: one commit with the branch's net change. */
+
   const squashMerge = (branch: string, message: string) => { git(other, ['pull', '-q', '--ff-only', 'origin', 'main']); git(other, ['fetch', '-q', 'origin']); git(other, ['merge', '--squash', `origin/${branch}`]); git(other, ['commit', '-m', message]); git(other, ['push', '-q', 'origin', 'HEAD:main']); return git(other, ['rev-parse', 'HEAD']); };
   const setPrs = (prs: unknown) => writeFileSync(ghJson, JSON.stringify(prs));
   const ghCalls = () => (existsSync(ghLog) ? readFileSync(ghLog, 'utf8').trim().split('\n') : []);
-  /** A worktree on branch `branch` with `commits` commits, each adding its own file (two or more keep a squash from being patch-identical to one of them, so only the PR proves the merge). */
+
   const task = (name: string, branch: string, commits = 1) => {
     assert.equal(run([name, '--branch', branch]).code, 0);
     let tip = '';
@@ -63,7 +63,7 @@ function fixture() {
   return { dir, work, other, run, wtPath, advanceMain, squashMerge, setPrs, ghCalls, task, close };
 }
 
-// ---------------------------------------------------------------- --done
+
 
 test('--done after a SQUASH merge: worktree gone, branch deleted on the proof of the merged PR, main fast-forwarded, one block', () => {
   const f = fixture(); try {
@@ -174,7 +174,7 @@ test('--done leaves the main checkout alone when its fast-forward is impossible,
   assert.match(r.out, /^main: skipped: /m, r.out);
 } finally { f.close(); } });
 
-// ---------------------------------------------------------------- --update
+
 
 test('--update rebases a branch that was never pushed and reports head, ahead/behind, diffstat and that there is nothing to push', () => {
   const f = fixture(); try {
@@ -215,7 +215,7 @@ test('--update resolves a conflict where both sides only added import lines (uni
     commit(path, 'a.ts', "import fs from 'node:fs';\nimport os from 'node:os';\nimport url from 'node:url';\n\nexport const x = 1;\n", `${name}: branch imports`);
     if (pushed) git(path, ['push', '-q', 'origin', branch]);
     f.advanceMain('a.ts', "import fs from 'node:fs';\nimport path from 'node:path';\nimport url from 'node:url';\n\nexport const x = 1;\n", `${name}: main imports`);
-    // "ours first" as git means it: origin/main in a rebase, the branch in a merge.
+    // external: Git rebase treats the upstream as ours and the branch as theirs.
     const mainLine = "import path from 'node:path';"; const branchLine = "import os from 'node:os';";
     const ours = pushed ? `${branchLine}\n${mainLine}` : `${mainLine}\n${branchLine}`;
     const r = f.run(['--update', name]);
@@ -311,13 +311,13 @@ test('a whole PR lifecycle takes two calls: --update before the push, --done aft
   const f = fixture(); try {
   const { path, tip } = f.task('life', 'feat/life', 2);
   f.advanceMain('b.txt', 'b\n');
-  assert.equal(f.run(['--update', 'life']).code, 0);                      // call 1: was fetch + rebase + (resolver) + tsc + continue
+  assert.equal(f.run(['--update', 'life']).code, 0);
   const pushedTip = git(path, ['rev-parse', 'HEAD']);
   assert.notEqual(pushedTip, tip);
   git(path, ['push', '-q', 'origin', 'feat/life']);
   const merge = f.squashMerge('feat/life', 'feat: life (#10)');
   f.setPrs([{ number: 10, headRefOid: pushedTip, mergeCommit: { oid: merge } }]);
-  const done = f.run(['--done', 'life']);                                  // call 2: was worktree remove + branch -D + pull --ff-only
+  const done = f.run(['--done', 'life']);
   assert.equal(done.code, 0, done.out);
   assert.equal(git(f.work, ['branch', '--list', 'feat/life']), '');
   assert.equal(git(f.work, ['rev-parse', 'HEAD']), merge);

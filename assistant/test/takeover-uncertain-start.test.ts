@@ -15,7 +15,7 @@ test('an unverifiable identity at takeover start restores the agent and never cr
   let runs = 0, unverifiable = false;
   const docker: DockerRunner = async args => {
     if (args[0] === 'run') { runs++; return { code: 0, stdout: target, stderr: '' }; }
-    if (args[0] === 'inspect' && args.includes(OWNER_ID_FORMAT) && unverifiable) return { code: 0, stdout: `${target}|owner`, stderr: '', uncertain: true }; // looks valid, but the read never settled
+    if (args[0] === 'inspect' && args.includes(OWNER_ID_FORMAT) && unverifiable) return { code: 0, stdout: `${target}|owner`, stderr: '', uncertain: true };
     if (args[0] === 'inspect' && args.includes(OWNER_ID_FORMAT)) return { code: 0, stdout: `${target}|owner`, stderr: '' };
     if (args[0] === 'inspect') return { code: 1, stdout: '', stderr: '' };
     return { code: 0, stdout: '', stderr: '' };

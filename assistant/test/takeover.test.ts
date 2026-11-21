@@ -6,7 +6,7 @@ import { base, withComputers } from './computer-support.ts';
 
 const OTP = '482913';
 
-/** Plays the operator's terminal: the takeover argv without a TTY, fed typed lines on stdin. */
+
 function operatorTypes(argv: string[], lines: string): string {
   const [command, ...args] = argv.filter(arg => arg !== '--tty');
   const result = spawnSync(command, args, { input: lines, encoding: 'utf8', timeout: 30_000, windowsHide: true });
@@ -20,7 +20,7 @@ test('takeover blocks the agent in every process, the operator signs in, and han
   const { argv } = await computers.takeover(a.id, authority);
   assert.ok(argv.includes('HISTFILE=/dev/null') && argv.includes(a.container));
 
-  const otherProcess = open(); // its own SQLite connection, as a separate agent process would have
+  const otherProcess = open();
   try {
     await assert.rejects(otherProcess.exec(a.id, ['cat', '/work/session']), /computer_human_control/);
     await assert.rejects(otherProcess.capture(a.id), /computer_human_control/);

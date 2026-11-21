@@ -12,7 +12,7 @@ test('large previews avoid full-size mapped index arrays while retaining edge di
   const text = lines.join('\n');
   let mappedLines = 0;
   const map = Array.prototype.map, flatMap = Array.prototype.flatMap;
-  // Synchronous instrumentation; restore the built-ins before assertions or another test can run.
+
   Array.prototype.map = function (this: unknown[], ...args) {
     if (this.length >= lines.length) mappedLines += this.length;
     return Reflect.apply(map, this, args);

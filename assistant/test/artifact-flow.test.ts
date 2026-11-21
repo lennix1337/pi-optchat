@@ -15,7 +15,7 @@ test('each supported sample registers, lists by type, opens and downloads byte-e
   const { registry } = f.current();
   for (const sample of samples) {
     const bytes = readFileSync(join(f.paths.sources, sample.file));
-    // Samples must be self-contained: no external fetchable URL, font or stylesheet import.
+
     assert.doesNotMatch(bytes.toString('utf8').replaceAll('xmlns="http://www.w3.org/2000/svg"', ''), /https?:\/\/|@import|@font-face/, sample.file);
     const record = registry.register({ sourcePath: join(f.paths.sources, sample.file), type: sample.type, ownerId: 'operator', producerId: sample.producerId, provenance: `optchat://task/${sample.type}/run/1` });
     assert.deepEqual([record.profileId, record.type, record.artifactVersion, record.hash, record.review, record.fileName], [profileId, sample.type, 1, sha256(bytes), 'not_reviewed', sample.file]);
@@ -131,7 +131,7 @@ test('a changed managed file is refused instead of served', async () => artifact
 
 test('a stored location that escapes the managed root is refused even when the bytes match', async () => artifactFixture(async f => {
   const record = register(f.current().registry, f.paths.sources, 'pagina-inicial.html', 'page');
-  // Same bytes outside the root: only the location guard, not the hash, can refuse this read.
+
   copyFileSync(join(f.paths.sources, 'pagina-inicial.html'), join(f.paths.dir, 'outside.html'));
   const db = new DatabaseSync(f.paths.database);
   try {

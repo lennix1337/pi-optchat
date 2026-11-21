@@ -57,7 +57,7 @@ export function processInfo(pid: number): { startTime: string; workingSetBytes: 
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   if (process.platform === 'win32') {
     const script = "$p=Get-Process -Id ([int]$env:OPS_PID) -ErrorAction SilentlyContinue; if($p){[Console]::Out.Write(\"$($p.StartTime.ToUniversalTime().Ticks) $($p.WorkingSet64)\")}; exit 0";
-    // Without `exit 0`, pwsh exits 1 after the silenced Get-Process error, so a gone pid looked like a broken inspector.
+    // external: pwsh exits 1 after a silenced Get-Process error unless explicitly reset.
     const r = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, OPS_PID: String(pid) }, encoding: 'utf8', timeout: 30_000, windowsHide: true });
     if (r.error || r.status !== 0) throw new OpsError('process_inspection_failed');
     const match = /^(\d+) (\d+)$/.exec(r.stdout.trim());
@@ -115,11 +115,11 @@ function readRecord(path: string): OwnershipRecord | null {
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as OwnershipRecord;
     if (Number.isSafeInteger(value.pid) && typeof value.processStartTime === 'string') return value;
-  } catch { /* An unreadable record proves no ownership: it is treated as stale below. */ }
+  } catch {   }
   return { version: 1, pid: 0, processStartTime: '', endpoint: '', configPath: '', startedAt: '' };
 }
 
-/** Serializes start and stop for one config. A lock left by a dead script is broken; a live holder means busy. */
+
 async function withLock<T>(paths: ServicePaths, fn: () => Promise<T>): Promise<T> {
   const self = processInfo(process.pid);
   for (let attempt = 0; ; attempt++) {
@@ -130,7 +130,7 @@ async function withLock<T>(paths: ServicePaths, fn: () => Promise<T>): Promise<T
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt > 0) throw new OpsError('service_busy', 'another start or stop for this config is in progress');
       let holder: { pid: number; processStartTime: string };
-      // An empty or partial lock is a holder still writing it: busy, not stale.
+
       try { holder = JSON.parse(readFileSync(paths.lock, 'utf8')); }
       catch { throw new OpsError('service_busy', `another start or stop is writing ${paths.lock}; if none is running, remove that file`); }
       if (alive(holder.pid) && owns(holder)) throw new OpsError('service_busy', 'another start or stop for this config is in progress');
@@ -207,7 +207,7 @@ export async function startService(options: { configPath: string; web?: boolean;
   });
 }
 
-/** Failures a busy machine causes (ACL or process inspection timing out, a concurrent start, a slow first health read). */
+
 const TRANSIENT_START_CODES = new Set(['privacy_check_timed_out', 'process_inspection_failed', 'service_busy', 'start_unhealthy']);
 
 /**
@@ -243,7 +243,7 @@ export async function stopService(options: { configPath: string; graceMs?: numbe
     try {
       let mode: 'graceful' | 'forced' = 'graceful';
       if (!await waitForExit(record.pid, options.graceMs ?? 10_000)) {
-        // Re-check right before signalling: the pid must still be the process the start script launched.
+
         if (owns(record)) process.kill(record.pid);
         mode = 'forced';
         if (!await waitForExit(record.pid, 5000)) throw new OpsError('stop_failed', 'the service did not exit');

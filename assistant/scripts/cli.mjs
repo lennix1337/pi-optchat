@@ -1,5 +1,5 @@
-// Shared CLI shell for the assistant ops scripts: strict arguments, one JSON result line on stdout, fixed exit codes.
-// Exit 0 = the requested state holds, 1 = refused or unhealthy, 2 = usage. Errors print codes and diagnostics, never tokens.
+
+
 import { parseArgs } from 'node:util';
 import { isAbsolute } from 'node:path';
 
@@ -17,7 +17,7 @@ export function cli(usage, options, run) {
     console.log(JSON.stringify(result));
     process.exitCode = exitCode;
   }, error => {
-    // Library failures are fixed codes; anything else is reported as unexpected with its message on stderr only.
+
     const message = error instanceof Error ? error.message : String(error);
     const code = /^[a-z][a-z_]*$/.test(message) ? message : 'unexpected';
     console.log(JSON.stringify({ result: 'error', code, ...(Number.isInteger(error?.port) ? { port: error.port } : {}) }));

@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { aiMemoryDataDir, aiMemoryToken } from '../src/ai-memory.ts';
 
-// Restore the environment even when an assertion fails; never read the operator's token.
+
 test('ai-memory authentication uses native paths and honors explicit overrides', () => {
   const keys = ['AI_MEMORY_DATA_DIR', 'AI_MEMORY_AUTH_TOKEN', 'LOCALAPPDATA'] as const;
   const saved = keys.map(key => process.env[key]);

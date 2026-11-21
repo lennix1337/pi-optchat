@@ -49,9 +49,9 @@ export function registerCatchup(pi: ExtensionAPI, source: () => Source | undefin
   const display = (s: Source, span: CatchupSpan) => `${renderCatchup(projection(s, span))}\n\n${attention(s)}`;
 
   pi.on('input', (event, ctx) => {
-    // SDK defaults do not prove human authorship; only this profile's actual TUI input is an operator boundary.
+
     if (event.source !== 'interactive' || ctx.mode !== 'tui' || event.text.trimStart().startsWith('/')) return;
-    // Only records the boundary: the receipt reaches the operator through Slack and /catchup, not a pinned widget.
+
     try {
       const s = current();
       s.windows.arrive(s.entries.length, new Date().toISOString());

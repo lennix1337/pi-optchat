@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { effect, lines, producer, runWorker, withDir } from './runtime-support.ts';
 
-// Boundary → state committed at the crash → state after a fresh worker reopens.
+
 const cases = [
   ['claimed', 'running', 'done'],
   ['before_dispatch', 'dispatching', 'done'],
@@ -66,7 +66,7 @@ test('disposable mutant that bypasses the gateway repeats the effect and fails t
   const anchor = 'await gateway!.dispatch(this.effectRequest(input), async (bytes, metadata) => {';
   assert.equal(source.split(anchor).length, 2);
   writeFileSync(worker, source.replace(anchor, 'await (async (sink: (b: Uint8Array, m: any) => unknown) => sink(this.effectRequest(input).payload, input))(async (bytes, metadata) => {'));
-  // Without NODE_TEST_CONTEXT the nested runner reports normally instead of deferring to this one.
+
   const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
   const run = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-name-pattern=in_sink', join(dir, 'test', 'recovery.test.ts')], { encoding: 'utf8', env, timeout: 60_000, windowsHide: true });
   assert.notEqual(run.status, 0, 'the mutant must fail');

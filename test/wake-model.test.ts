@@ -77,7 +77,7 @@ test('a failed switch back keeps the record so the next settle retries', async (
   assert.match(stuck.state.notes[0]!, /Could not switch back/);
 });
 
-// pi-multi-account fails over to another provider when an account runs out of quota, possibly in the middle of a wake.
+// external: pi-multi-account can fail over to another provider during a wake.
 test('a failover to another provider during the wake stands: no switch back to the exhausted one, and the record goes', async () => {
   const sol: M = { provider: 'openai-codex', id: 'gpt-6.1-sol' };
   const d = dir(), { h, state } = host([opus, sonnet, sol]);

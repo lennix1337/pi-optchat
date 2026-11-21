@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Read-only Google connection for the local assistant: client setup, consent, list, revoke, briefing and Start.
+
 import { readFileSync } from 'node:fs';
 import { cli } from './cli.mjs';
 import { loadConfig } from '../src/ops/service.ts';

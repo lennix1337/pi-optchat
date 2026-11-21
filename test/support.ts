@@ -2,17 +2,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-// Every temp dir made through os.tmpdir() lands in this root, removed at exit. It also takes what a test's own cleanup misses: Pi rewrites auth.json after a test removed its dir, and a worker thread loads this file again but is terminated before 'exit'.
-// macOS's default tmpdir is ~49 chars, and the extra level would push profile lock-socket paths past the 103-byte limit, so the outermost root goes under /tmp there. A child process or worker thread nests inside its parent's root, so it goes away with it even if it never reaches 'exit'.
+// external: Pi can rewrite auth.json after test cleanup, and terminated worker threads do not emit exit.
+// external: macOS Unix socket paths have a short length limit.
 const nested = basename(tmpdir()).startsWith('optchat-test-');
 const root = mkdtempSync(join(process.platform === 'darwin' && !nested ? '/tmp' : tmpdir(), 'optchat-test-'));
 for (const name of ['TMPDIR', 'TEMP']) process.env[name] = root;
-// Git Bash mounts /tmp on the first process that starts it (GetTempPath: TMP before TEMP) and every Git Bash process alive at the same time shares that mount. Test files run side by side as child processes, so a /tmp on the root of the file that happened to start first is gone when that file ends, and the others' shells print "bash.exe: warning: could not find /tmp, please create!" into their output. node's tmpdir() reads TEMP, so TMP stays on the outermost root, which lives until the runner exits.
+// external: Git Bash shares the /tmp mount chosen by the first running shell; Node tmpdir reads TEMP.
 process.env.TMP = nested && process.env.TMP ? process.env.TMP : root;
-// os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so both are sandboxed: no test may touch the user's real ~/.optchat or ~/.pi.
+// external: Node os.homedir reads HOME on POSIX and USERPROFILE on Windows.
 for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR']) process.env[name] = mkdtempSync(join(root, `optchat-${name.toLowerCase()}-`));
-// The operator's own settings must not change test behavior; OPTCHAT_EFFECT_APPROVALS=risk would gate fixture subagent calls.
-// Fixtures name C:/projetos repos on every platform; the Linux-only C:/projetos refusal would block them before the gate under test.
+
+
 process.env.OPTCHAT_WINPATH_GUARD = 'off';
 for (const name of ['OPTCHAT_PROFILE', 'OPTCHAT_REFRESH_AT', 'OPTCHAT_EFFECT_APPROVALS']) delete process.env[name];
 
@@ -57,4 +57,11 @@ export const plainToolResult = (fire: (name: string, event: Record<string, unkno
 export const isCompaction = (context: { messages: readonly { role: string; content?: unknown }[] }) =>
   context.messages.some(message => message.role === 'user' && /Compaction: (?:compress message|merge lines)/.test(JSON.stringify(message.content)));
 
-process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }); } catch { /* EBUSY on Windows: leave it */ } });
+process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }); } catch {    } });
+
+/** Event-loop stall meter for a hang dump: the largest gap (ms) between 50 ms ticks tells a starved runner from a real deadlock. */
+export function loopLag() {
+  let last = Date.now(), max = 0;
+  const timer = setInterval(() => { const now = Date.now(); max = Math.max(max, now - last - 50); last = now; }, 50); timer.unref();
+  return { max: () => max, stop: () => clearInterval(timer) };
+}

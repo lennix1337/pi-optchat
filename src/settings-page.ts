@@ -11,7 +11,7 @@ const ROLES: Record<Role, { label: string; description: string; applies: string 
 };
 const modelName = (choice: ModelChoice) => `${choice.provider}/${choice.model}`;
 export const showModel = (choice: ModelChoice) => `${modelName(choice)} · ${choice.thinking}`;
-/** The value column: the model, then whether it is the default (shown short, without its provider). */
+
 const sameModel = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
 const modelValue = (theme: Theme, role: Role, choice: ModelChoice, effective = choice) => {
   const active = sameModel(choice, effective) ? showModel(choice) : `${showModel(effective)} active · configured ${showModel(choice)}`;
@@ -28,15 +28,15 @@ const show = (key: SettingKey, value: number | boolean | string): string => {
 
 interface Options {
   profile: string; config: ProfileConfig;
-  /** Each model with the thinking levels Pi can send it (Sonnet 5.5 has no "off"). */
+  // external: Sonnet 5.5 does not support disabling thinking.
   models: { name: string; thinking: readonly ThinkingLevel[] }[];
-  /** Saves the whole profile config; throws if it can't be written. */
+
   save: (config: ProfileConfig) => void;
-  /** The main model the roles follow right now, so the page can show which model each one really uses. */
+
   main?: MainModel;
 }
 
-/** A titled step inside the page: what it changes, the control, and its keys. */
+
 function step(theme: Theme, title: string, description: string, control: Component, hint: string, extra: Component[] = []) {
   const box = new Container();
   for (const child of [new Text(theme.bold(theme.fg('accent', title)), 0, 0), new Spacer(1), new Text(theme.fg('muted', description), 0, 0),
@@ -47,7 +47,7 @@ const listTheme = (theme: Theme) => ({ selectedPrefix: (t: string) => theme.fg('
   description: (t: string) => theme.fg('muted', t), scrollInfo: (t: string) => theme.fg('muted', t),
   noMatch: () => theme.fg('muted', '  No matching models. Pi lists the models you are logged in to.') });
 
-/** Whole numbers only: typing replaces the value, Enter saves it, a bad value stays on screen with the reason. */
+
 /** "30", "30%" and "0.3" all mean 30%: a number from 1 up, or with a percent sign, is a percentage. */
 export function parsePercent(text: string) {
   const match = /^\s*(\d+(?:\.\d+)?)\s*(%?)\s*$/.exec(text);
@@ -61,7 +61,7 @@ class NumberStep extends Container {
   constructor(theme: Theme, key: NumberKey, current: number, submit: (value: number) => string | undefined, cancel: () => void) {
     super();
     const spec = SETTINGS[key];
-    // Empty with the current value as placeholder: typing starts a new value, Enter alone keeps the old one.
+
     this.input = new Input({ placeholder: spec.kind === 'percent' ? percent(current) : String(current), placeholderStyle: text => theme.fg('dim', text) }); this.input.focused = true;
     this.input.onEscape = cancel;
     this.input.onSubmit = text => {
@@ -76,7 +76,7 @@ class NumberStep extends Container {
   handleInput(data: string) { this.input.handleInput(data); }
 }
 
-/** Model first (type to filter), then thinking level; Esc goes back a step. */
+
 class ModelStep extends Container {
   private active: { handleInput(data: string): void } = { handleInput: () => {} };
   constructor(private readonly theme: Theme, private readonly role: Role, private readonly models: Options['models'], private readonly current: ModelChoice,
@@ -121,7 +121,7 @@ class ModelStep extends Container {
   handleInput(data: string) { this.active.handleInput(data); }
 }
 
-/** One entry per provider family: the role's model on the account the main model is on. Add, change and remove stay inside the step; Esc closes it and refreshes the row. */
+
 class FallbackStep extends Container {
   private active: { handleInput(data: string): void } = { handleInput: () => {} };
   private readonly error = new Text('', 0, 0);
@@ -171,7 +171,7 @@ class FallbackStep extends Container {
   handleInput(data: string) { this.active.handleInput(data); }
 }
 
-/** Saves a change to the profile config and applies it in memory; returns the reason if it couldn't be written. */
+
 function update(o: Options, patch: Partial<ProfileConfig>) {
   try { o.save({ ...o.config, ...patch }); }
   catch (error) { return `Could not save: ${error instanceof Error ? error.message : String(error)}`; }
@@ -186,7 +186,7 @@ export function frame(theme: Theme, title: string, profile: string | undefined, 
   return page;
 }
 
-/** What a switch or choice row cycles through: its option keys, or on and off. */
+
 const choices = (key: SettingKey): (boolean | string)[] => {
   const spec = SETTINGS[key];
   return spec.kind === 'choice' ? Object.keys(spec.options) : [true, false];
@@ -238,7 +238,7 @@ export function settingsPage(theme: Theme, o: Options, close: () => void, redraw
     value: (text, selected) => selected ? theme.fg('accent', text) : theme.fg('muted', text),
     description: text => theme.fg('dim', text), cursor: theme.fg('accent', '→ '), hint: text => theme.fg('dim', text),
   }, (id, next) => {
-    // Only the on/off and choice rows change here; the others save from their own step.
+
     const key = SETTING_KEYS.find(k => k === id);
     if (!key || isNumberKey(key)) return;
     const picked = choices(key).find(option => value(key, option) === next);

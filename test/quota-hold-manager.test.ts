@@ -30,7 +30,7 @@ for (const recovery of ['its quota returns at the time it was told', 'the operat
     if (!(typeof target === 'string' && !/^\d+$/.test(target) || target && typeof target === 'object' && typeof target.path === 'string' && target.port === undefined && target.host === undefined)) throw new Error('network socket forbidden');
     return (connect as Function).apply(this, args);
   });
-  // The outage timer is the only one with a delay near 13 minutes: the test holds it and fires it by hand.
+
   const timer = setTimeout; let fire: (() => void) | undefined;
   t.mock.method(globalThis, 'setTimeout', ((fn: (...args: any[]) => void, delay?: number, ...args: any[]) => {
     if (delay !== undefined && delay >= 770_000 && delay <= 800_000 && !fire) { fire = () => fn(...args); const h = timer(() => {}, 60_000); h.unref(); return h; }
@@ -82,7 +82,7 @@ for (const recovery of ['its quota returns at the time it was told', 'the operat
     await until(() => finishers.size === 3 && session!.isIdle, 'three workers started');
     const quiet = { turns, mainCalls };
 
-    // Every model of the main agent's account is out of quota for 13 minutes; the workers finish meanwhile.
+
     setQuota({ exhaustedUntilByProvider: { fixture: Date.now() + 777_000 } });
     for (const finish of finishers.values()) finish();
     await until(() => !!fire, 'the held reports armed the outage timer');
@@ -94,7 +94,7 @@ for (const recovery of ['its quota returns at the time it was told', 'the operat
     assert.equal(outageNotices.length, 1, `one notice: ${JSON.stringify(notices)}`);
     assert.match(outageNotices[0], /^cota esgotada em todas as contas; volto às (\d\d\/\d\d )?\d\d:\d\d \(Brasília\)$/);
 
-    // The failover tried another account meanwhile and got a 16-hour limit: it says nothing about the main agent's account.
+
     const failed: AssistantMessage = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'You have hit your ChatGPT usage limit (team plan). Try again in ~998 min.',
       api: 'openai-completions', provider: 'other-account', model: 'main', timestamp: Date.now(), usage: emptyUsage() };
     await session.extensionRunner!.emit({ type: 'message_end', message: failed } as never);
@@ -109,7 +109,7 @@ for (const recovery of ['its quota returns at the time it was told', 'the operat
     assert.equal(notices.filter(text => /cota esgotada/.test(text)).length, 1, 'still one notice');
     assert.deepEqual(errors, []);
   } finally {
-    for (const finish of finishers.values()) { try { finish(); } catch { /* already finished */ } }
+    for (const finish of finishers.values()) { try { finish(); } catch {   } }
     if (session) { await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); }
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
     removeDir(dir);

@@ -33,11 +33,11 @@ test('journey: disposable install -> task -> restart -> notification -> backup -
   const sink = join(root, 'external-sink.log'), toasts: DeliveredNotification[] = [];
   const backup = join(root, 'journey.backup');
   try {
-    // Install and start.
+
     assert.equal(runScript('start', ['--config', svc.config]).json.result, 'started');
     assert.equal(runScript('health', ['--config', svc.config]).json.state, 'healthy');
 
-    // A task, and one external effect done by the worker.
+
     assert.equal((await api(svc.endpoint, '/v1/tasks', createTaskBody('task-1', `journey ${CANARY}`))).status, 200);
     enqueue(svc.data, 'send-a', 'mail A');
     runWorker(svc.data, sink);
@@ -45,12 +45,12 @@ test('journey: disposable install -> task -> restart -> notification -> backup -
     assert.equal((await api(svc.endpoint, '/v1/tasks/task-1/transition', { expectedRevision: 1, nextStatus: 'working', context: context('s-2') })).status, 200);
     assert.equal((await api(svc.endpoint, '/v1/tasks/task-1/transition', { expectedRevision: 2, nextStatus: 'succeeded', context: context('s-3') })).status, 200);
 
-    // Restart.
+
     assert.equal(runScript('stop', ['--config', svc.config]).json.mode, 'graceful');
     assert.equal(runScript('start', ['--config', svc.config]).json.result, 'started');
     assert.equal((await (await api(svc.endpoint, '/v1/tasks/task-1')).json() as { status: string }).status, 'succeeded');
 
-    // Notification: consented, minimized, accepted by the transport, then read by the human.
+
     const notes = createNotificationCenter({ databasePath: join(svc.data, 'notifications.sqlite'), operatorAuthority: operator });
     try {
       notes.setConsent('local', true, operator);
@@ -61,7 +61,7 @@ test('journey: disposable install -> task -> restart -> notification -> backup -
     } finally { notes.close(); }
     assert.deepEqual(toasts, [{ id: 'task-1:succeeded', text: 'An assistant task finished.', ref: 'task-1' }]);
 
-    // Backup while a second effect is still queued; it is sent afterwards.
+
     enqueue(svc.data, 'send-b', 'mail B');
     const saved = runScript('backup', ['--config', svc.config, '--out', backup]);
     assert.equal(saved.status, 0, saved.stdout + saved.stderr);
@@ -69,7 +69,7 @@ test('journey: disposable install -> task -> restart -> notification -> backup -
     runWorker(svc.data, sink);
     assert.deepEqual(sent(sink), ['mail A', 'mail B']);
 
-    // Restore into a disposable directory, start it on its own port and query.
+
     const restored = runScript('restore', ['--backup', backup, '--into', restoredDir, '--profile', PROFILE]);
     assert.equal(restored.status, 0, restored.stdout + restored.stderr);
     writeConfig(restoredHome.config, join(restoredDir, 'tasks.sqlite'), restoredHome.endpoint);
@@ -77,7 +77,7 @@ test('journey: disposable install -> task -> restart -> notification -> backup -
     const task = await (await api(restoredHome.endpoint, '/v1/tasks/task-1')).json() as { status: string; title: string };
     assert.deepEqual([task.status, task.title], ['succeeded', `journey ${CANARY}`]);
 
-    // Running the worker on the restored state repeats nothing; the uncertain effect stays visible.
+
     runWorker(restoredDir, sink);
     assert.deepEqual(sent(sink), ['mail A', 'mail B'], 'zero external effect repetition');
     const view = createRuntime({ databasePath: join(restoredDir, 'runtime.sqlite'), owner: 'view' });

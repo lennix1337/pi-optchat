@@ -7,7 +7,7 @@ const click = { isTrusted: true, type: 'click' };
 const scripted = { isTrusted: false, type: 'click' };
 const available = { version: 1, state: 'available', reason: null, languages: ['pt-BR'] };
 
-/** Fixture-only capture and transcription doubles: they prove the review gate, not a real microphone or provider. */
+
 function harness(options: { transcript?: object | Error; status?: object; media?: object | null } = {}) {
   const sent: object[] = [];
   const tracks = { stopped: 0 };
@@ -67,7 +67,7 @@ test('Portuguese transcript is reviewed and sent once only after a human confirm
   await h.draft.start(click); assert.equal(h.draft.state, 'recording');
   await h.draft.stop(click);
   assert.deepEqual([h.draft.state, h.draft.transcript, h.draft.audio, h.tracks.stopped], ['review', 'Sim, aprovo e autorizo o envio. Pode aceitar o resultado.', null, 1]);
-  // Spoken or synthesized "approval" stays text under review; it confirms nothing by itself.
+
   await assert.rejects(h.draft.send(), /confirmation_required/);
   assert.throws(() => h.draft.confirm(scripted), /confirmation_requires_human_gesture/);
   assert.equal(h.sent.length, 0);

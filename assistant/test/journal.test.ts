@@ -92,7 +92,7 @@ test('signals are stored once by dedupe key and a replay completes a missing dec
     assert.equal(replay.signal.sequence, first.signal.sequence);
     assert.equal(replay.decision?.ruleId, 'attention.ci.failed');
 
-    // Same signalId with a different external event is a producer bug, not a second observation.
+
     assert.throws(() => service.ingest(signal({ signalId: first.signal.signalId })), TypeError);
     assert.equal(store.signals().signals.length, 1);
     assert.equal(service.metrics().duplicates, 1);
@@ -195,13 +195,13 @@ test('spool rotation consumes invalid lines, replays leftovers and puts unread l
     writeFileSync(path, `${JSON.stringify(valid)}\n`);
     assert.deepEqual(poller.poll(), { ingested: 0, duplicates: 1, invalid: 0 });
 
-    // A crash after the rotation leaves a `.processing` file; the next pass replays it instead of losing it.
+
     const leftover = `${path}.00000000-0000-4000-8000-000000000000.processing`;
     writeFileSync(leftover, `${JSON.stringify({ ...valid, signalId: 'spool-3', dedupeKey: 'spool-d3' })}\n`);
     assert.deepEqual(poller.poll(), { ingested: 1, duplicates: 0, invalid: 0 });
     assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.processing')), []);
 
-    // Storage failure requeues the unread line and removes the rotation instead of dropping it.
+
     const failing = new SpoolPoller({ path, service: { ingest: () => { throw new Error('storage offline'); } } });
     writeFileSync(path, `${JSON.stringify({ ...valid, signalId: 'spool-4', dedupeKey: 'spool-d4' })}\n`);
     assert.throws(() => failing.poll(), /storage offline/);

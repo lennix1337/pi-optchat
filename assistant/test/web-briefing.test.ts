@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { TaskStore } from '../src/store/db.ts';
 import { createAssistantServer } from '../src/http/server.ts';
 
-// Only a stored fixture is exposed: the panel must not refresh Google implicitly.
+
 test('stored briefing is profile-bound, read-only and withheld after session revocation', async () => {
   const store = new TaskStore(':memory:', 'briefing-panel');
   let reads = 0, refreshes = 0;

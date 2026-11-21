@@ -28,15 +28,15 @@ const SQLITE_MAGIC = Buffer.from('SQLite format 3\0', 'latin1');
 const SIDECAR = /-(?:wal|shm|journal)$/;
 const SUPPORTED_TASKS_VERSION = 1;
 
-/**
- * What a restored snapshot must not do again: it may be older than the external world. Unfinished jobs may have run
- * after the backup, so they are not requeued (effects become `effect_uncertain`, others `blocked`); approvals and
- * connector grants may have been spent or revoked since; active routines may have claimed later slots.
- * Finished and already-uncertain jobs, gateway intents and delivered notifications stay exactly as backed up.
- */
+
+
+
+
+
+
 const restoreFences: readonly { key: keyof RestoreFences; table: string; sql: string }[] = [
   { key: 'jobs', table: 'jobs', sql: "UPDATE jobs SET state = CASE kind WHEN 'effect' THEN 'effect_uncertain' ELSE 'blocked' END, error = 'restored_unreconciled' WHERE state IN ('queued', 'running', 'dispatching')" },
-  // A completed preview plan may have dispatched after the snapshot, before its effect row existed in the archive.
+
   { key: 'jobs', table: 'jobs', sql: "UPDATE jobs SET state = 'blocked', error = 'restored_unreconciled' WHERE kind = 'draft' AND state = 'done' AND CASE WHEN json_valid(result) THEN json_extract(result, '$.kind') = 'browser_text' ELSE 0 END" },
   { key: 'leases', table: 'lease', sql: 'UPDATE lease SET expires = 0 WHERE expires != 0' },
   { key: 'grants', table: 'grants', sql: 'UPDATE grants SET revoked = 1 WHERE revoked = 0' },
@@ -65,7 +65,7 @@ export function snapshotDatabase(path: string, budget = MAX_ARCHIVE): { image: B
       const pages = Number(db.prepare('PRAGMA page_count').get()!.page_count);
       const pageSize = Number(db.prepare('PRAGMA page_size').get()!.page_size);
       const logicalBytes = pages * pageSize;
-      // File stat misses committed WAL pages. Inspect this same read transaction before allocating a snapshot.
+      // external: SQLite WAL pages are not reflected in the database file size.
       if (!Number.isSafeInteger(logicalBytes) || logicalBytes > budget) fail('backup_too_large');
       const tables = tablesOf(db);
       const image = Buffer.from(db.serialize());
@@ -89,7 +89,7 @@ function collectDatabases(dataDir: string, out: string): { files: BackupImage[];
     if (!isSqlite(path)) { excluded.push({ name, reason: 'not_sqlite' }); continue; }
     if (!safeDatabaseName(name)) fail('backup_path_invalid');
     const { image, tables } = snapshotDatabase(path, MAX_ARCHIVE - bytes);
-    // Vault secrets stay bound to their own store and key; they are re-entered, never carried in a backup.
+
     if (tables.includes('vault_key')) { image.fill(0); excluded.push({ name, reason: 'vault' }); continue; }
     bytes += image.length;
     if (bytes > MAX_ARCHIVE) { image.fill(0); fail('backup_too_large'); }
@@ -156,7 +156,7 @@ export function validateBackupEntries(entries: readonly BackupEntry[]): void {
   }
 }
 
-/** Opens the archive; any format, key or authentication problem is the single code `backup_unreadable`. */
+
 async function open(path: string, protector: KeyProtector): Promise<{ manifest: BackupManifest; images: Map<string, Buffer>; kinds: Map<string, string> }> {
   if (!isAbsolute(path)) fail('invalid_options');
   if (statSync(path).size > MAX_ARCHIVE + 64 * 1024) fail('backup_unreadable');
@@ -196,7 +196,7 @@ async function open(path: string, protector: KeyProtector): Promise<{ manifest: 
   } catch { plain.fill(0); fail('backup_unreadable'); }
 }
 
-/** Integrity, schema version and profile checks plus restore fences, on an in-memory copy. Returns the image to write. */
+
 function checkAndFence(image: Buffer, isTasks: boolean, profileId: string, fenced: RestoreFences): Buffer {
   const db = new DatabaseSync(':memory:');
   try {
@@ -208,8 +208,8 @@ function checkAndFence(image: Buffer, isTasks: boolean, profileId: string, fence
       if (version > SUPPORTED_TASKS_VERSION || !['events', 'responses', 'tasks'].every(t => tables.includes(t))) fail('backup_schema_unsupported');
       const foreign = db.prepare('SELECT 1 FROM tasks WHERE profile != ? UNION ALL SELECT 1 FROM events WHERE profile != ? LIMIT 1').get(profileId, profileId);
       if (foreign) fail('backup_profile_mismatch');
-      // A snapshot may predate a job the original enqueued later (or the attempt after a completed account wait), so an
-      // absent job proves nothing: held revisions never get generation or tool work until the operator reconciles them.
+
+
       db.exec(RESTORE_HOLDS_TABLE);
       fenced.tasks += Number(db.prepare(RESTORE_HOLDS_FENCE).run().changes);
     }
@@ -220,7 +220,7 @@ function checkAndFence(image: Buffer, isTasks: boolean, profileId: string, fence
   } finally { db.close(); }
 }
 
-/** Target is empty and owner-controlled; this is not a concurrent path-replacement boundary. */
+
 function writeRestored(into: string, checked: Map<string, Buffer>, tasksDatabase: string, profileId: string): void {
   const written: string[] = [], directories: string[] = [];
   try {
@@ -235,7 +235,7 @@ function writeRestored(into: string, checked: Map<string, Buffer>, tasksDatabase
       prepareDatabase(path);
       writeFileSync(path, image);
     }
-    // Run the real store's migrations before reporting recovery.
+
     new TaskStore(join(into, tasksDatabase), profileId).close();
   } catch (error) {
     for (const path of written) for (const suffix of ['', '-journal', '-wal', '-shm']) rmSync(path + suffix, { force: true });

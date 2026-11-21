@@ -1,14 +1,14 @@
-// Stages (--stage): "standing" (default) samples leaves and merges where the standing-constraint boilerplate really is (index >= 43500) and
-// applies the decision rule recorded in PREREGISTERED before any request; "pairs" samples tool call + result pairs across the two days.
-// The first "pairs" run also measured V2 (call and result in one line, result line a stub); V2 was rejected (it lost 30 points of the call's
-// facts) and removed from src, so only its recorded results remain (summary-ab-<date>-pairs.json).
-// Explicit opt-in A/B of OptChat's summary prompts with REAL compactor requests (not part of `npm test`).
-// Set OPTCHAT_AB_PROFILE to an explicitly selected profile; use --dry first. Live execution also requires --allow-provider-calls.
-// It samples messages and summary lines from a real profile (read-only), builds each compactor request through the variant's own
-// createCompressor, and scores bytes, latency and fact recall. `--dry` prints the sample and the planned requests and sends nothing.
-//   V0  prompts at the baseline commit (extracted with `git archive` into scratchpad/benchmarks/baseline-<commit>)
-//   V1  the working tree's prompts (or --v1-dir <dir containing src>): leaf delta, merge once, a call names its action only (call and result keep separate lines)
-//   V2  (recorded only, no longer runnable) V1 plus pairing: a call right before its long result summarized both, the result's line a stub
+// external: Live compactor requests can incur charges; run only with the operator consent.
+
+
+
+
+
+
+
+
+
+
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -58,7 +58,7 @@ function pick<T>(items: T[], count: number, seed: number) {
   return chosen;
 }
 
-/** The bounded <chat> every variant sees: the real tree's coarse lines for the 512 messages before the item, then its last 12 leaves. */
+
 function viewBefore(boundary: number, detail?: Node[]) {
   const lines: { text: string; leaf: boolean }[] = [];
   const line = (l: number, i: number, text: string, leaf: boolean) => lines.push({ text: `${start({ l, i })}+${2 ** l}|${flat(text)}`, leaf });
@@ -76,7 +76,7 @@ function viewBefore(boundary: number, detail?: Node[]) {
   return { view: `<chat>\n${lines.map(l => l.text).join('\n')}\n</chat>`, standing };
 }
 
-// ---- Facts ----
+
 type Category = 'num' | 'exit' | 'test' | 'path' | 'err' | 'id';
 const CATEGORIES: Category[] = ['num', 'exit', 'test', 'path', 'err', 'id'];
 interface Fact { category: Category; value: string }
@@ -100,7 +100,7 @@ function extractFacts(text: string): Fact[] {
   for (const m of text.matchAll(/\b(?=[a-z0-9-]*\d)[a-z0-9]{6,10}-[a-z0-9]{5,8}\b/g)) add('id', m[0]);
   return facts;
 }
-/** A fact survives when the output still carries it (numbers need a nearby word of their kind, so "3" in a path is not a test count). */
+
 function survives(fact: Fact, output: string) {
   const out = norm(output);
   switch (fact.category) {
@@ -112,7 +112,7 @@ function survives(fact: Fact, output: string) {
 }
 const words = (s: string) => s.toLowerCase().match(/[a-z0-9_.\\/*`-]+/g) ?? [];
 const grams = (s: string) => { const w = words(s), set = new Set<string>(); for (let i = 0; i + 4 <= w.length; i++) set.add(w.slice(i, i + 4).join(' ')); return set; };
-/** Share of the output's words covered by a 4-word phrase that most of the preceding lines already repeat (standing context restated). */
+
 function standingShare(output: string, standing: string[]) {
   if (standing.length < 6) return undefined;
   const counts = new Map<string, number>();
@@ -130,7 +130,7 @@ function mergeRepeats(a: string, b: string, output: string) {
   return { shared: shared.length, kept, repeated };
 }
 
-/** Written into the standing-stage result file before the first request. */
+
 const PREREGISTERED = {
   question: 'Does V1 (LEAF_DELTA, MERGE_ONCE, CALL_ACTION_ONLY) reduce restated standing constraints and bytes against V0 (main f860bc1) without losing facts?',
   sample: `Haiku, high thinking, V0 and V1 only. Items from index >= ${STANDING_FROM} (where the boilerplate lives in the real tree). Leaves: messages over 512 bytes whose 12 preceding leaf lines share at least one standing 4-word phrase (a phrase in at least half of them), requests built as in production (a tool leaf carries its result, an echo leaf its call). Merges: adjacent line pairs (l=1, l=2) over 512 bytes whose two children share a 4-word phrase. Request cap 60 for the whole stage.`,
@@ -148,7 +148,7 @@ const PREREGISTERED = {
   otherwise: 'revert src/prompts.ts, src/compactor.ts and test/compactor-size.test.ts to f860bc1; keep the benchmark script and results',
 };
 
-/** The standing constraints the live lines repeat (index 43500 and up), counted by plain substring: in both children, how often in the merge. */
+
 const CURATED = ['uncommitted', 'unpublished', 'no publish', 'keep edits', 'build.ps1', 'teste', 'kb_version', 'sdk fallback', 'unverified'];
 function curatedRepeats(a: string, b: string, output: string) {
   const la = a.toLowerCase(), lb = b.toLowerCase(), lo = output.toLowerCase();
@@ -163,7 +163,7 @@ function curatedRepeats(a: string, b: string, output: string) {
   return { curatedBoth: both, curatedRepeated: repeated, curatedLost: lost };
 }
 
-// ---- Sample ----
+
 type ItemKind = 'pair' | 'talk' | 'merge' | 'leaf';
 interface Item { id: string; kind: ItemKind; stratum?: 'random' | 'fact-rich'; callId?: number; echoId?: number; messageId?: number; part?: { l: number; i: number } }
 function sample(): Item[] {
@@ -172,7 +172,7 @@ function sample(): Item[] {
     return call?.kind === 'tool' && echo?.kind === 'echo' && byIndex.get(i - 1)?.kind !== 'tool' && echo.text.startsWith(`${call.text.split(' ', 1)[0]}:`)
       && bytes(`echo: ${echo.text}`) > NODE && i >= MIN_INDEX && !!node(0, i) && !!node(0, i + 1);
   };
-  // Most real results only name files, so 10 of the pairs are drawn from those carrying at least 3 non-path facts (counts, exit codes, ids, errors).
+
   const candidates = entries.filter(e => isPair(e.i)).map(e => e.i);
   const rich = candidates.filter(i => extractFacts(`tool: ${byIndex.get(i)!.text}
 echo: ${byIndex.get(i + 1)!.text}`).filter(f => f.category !== 'path').length >= 3);
@@ -188,7 +188,7 @@ echo: ${byIndex.get(i + 1)!.text}`).filter(f => f.category !== 'path').length >=
   return [...pairs, ...talkOf('user', COUNTS.user), ...talkOf('talk', COUNTS.talk), ...mergeOf(1, COUNTS.merges1), ...mergeOf(2, COUNTS.merges2)];
 }
 
-// ---- Variants ----
+
 type VariantName = 'V0' | 'V1' | 'V2';
 const VARIANTS: VariantName[] = ['V0', 'V1'];
 interface Line { text: string; model: boolean; requests: number; ms: number; source: 'model' | 'verbatim' | 'stub' }
@@ -221,7 +221,7 @@ function standingSample(): Item[] {
     .sort((a, b) => a - b).map<Item>(i => ({ id: `merge:${l}+${i}`, kind: 'merge', part: { l, i } }));
   const leafItems = pick(leaves, COUNTS.leaves, SEED + 30).sort((a, b) => a - b).map<Item>(i => ({ id: `leaf:${i}`, kind: 'leaf', messageId: i }));
   const merges = [...mergeOf(1, COUNTS.standingMerges1), ...mergeOf(2, COUNTS.standingMerges2)];
-  // Alternate merges and leaves so a stop for budget never leaves one kind unmeasured.
+
   const mixed: Item[] = [];
   for (let k = 0; k < Math.max(leafItems.length, merges.length); k++) { if (merges[k]) mixed.push(merges[k]); if (leafItems[k]) mixed.push(leafItems[k]); }
   return mixed;
@@ -229,7 +229,7 @@ function standingSample(): Item[] {
 
 async function main() {
   mkdirSync(OUT, { recursive: true });
-  // The live log keeps growing, so a resumed run reuses the sample its result file recorded instead of drawing again.
+
   const items: Item[] = existsSync(RESULT_FILE) ? (JSON.parse(readFileSync(RESULT_FILE, 'utf8')) as { sample: Item[] }).sample : sample();
   const needsModel = (item: Item) => item.kind === 'pair' ? (bytes(`tool: ${byIndex.get(item.callId!)!.text}`) > NODE ? 1 : 0) + 1 : 1;
   if (DRY) {
@@ -247,7 +247,7 @@ echo: ${byIndex.get(item.echoId!)!.text}` : item.messageId !== undefined ? byInd
   const choice = (JSON.parse(readFileSync(join(PROFILE, 'config.json'), 'utf8')) as { compactor: { provider: string; model: string; thinking: 'high' } }).compactor;
   const runtime = await ModelRuntime.create();
   const real = new ModelRegistry(runtime);
-  // Counts and caps every provider request; the compressor sees this in place of the registry.
+
   const counted = {
     find: (provider: string, model: string) => real.find(provider, model),
     streamSimple: (...args: Parameters<ModelRegistry['streamSimple']>) => {
@@ -257,7 +257,7 @@ echo: ${byIndex.get(item.echoId!)!.text}` : item.messageId !== undefined ? byInd
     },
   } as unknown as ModelRegistry;
   const baseline = await import(pathToFileURL(join(loadBaseline(), 'src', 'compactor.ts')).href) as { createCompressor: typeof createCurrent };
-  // V1 is the working tree's src unless --v1-dir names a directory holding another src (the measured V1 is kept in scratchpad/benchmarks/variant-v1).
+
   const v1Dir = arg('--v1-dir');
   const v1 = v1Dir ? await import(pathToFileURL(join(resolve(v1Dir), 'src', 'compactor.ts')).href) as { createCompressor: typeof createCurrent } : { createCompressor: createCurrent };
   const compressors: Partial<Record<VariantName, Compressor>> = {
@@ -269,7 +269,7 @@ echo: ${byIndex.get(item.echoId!)!.text}` : item.messageId !== undefined ? byInd
   budget.requests = prior;
   const save = () => writeFileSync(RESULT_FILE, JSON.stringify({ date: DATE, stage: STAGE, baseline: BASELINE, profile: basename(PROFILE), choice, requests: budget.requests, maxRequests: MAX_REQUESTS,
     ...(STAGE === 'standing' ? { preregistered: PREREGISTERED } : {}), sample: items, results: Object.values(done) }, null, 1));
-  save(); // the sample and, for the standing stage, the rule are on disk before the first request
+  save();
 
   const run = async (variant: VariantName, input: Compression, source: string, kind?: Kind): Promise<Line> => {
     const before = budget.requests, t0 = performance.now();
@@ -294,7 +294,7 @@ echo: ${byIndex.get(item.echoId!)!.text}` : item.messageId !== undefined ? byInd
       return [await run(variant, { context: viewBefore(e.i).view, source, part: { l: 0, i: e.i } }, source, e.kind)];
     }
     if (item.kind === 'leaf') {
-      // As Memory.build does: a call carries the result that directly follows it, a result the call it answers.
+
       const e = byIndex.get(item.messageId!)!, source = e.kind === 'echo' ? cap(`echo: ${e.text}`) : `${e.kind}: ${e.text}`;
       const next = byIndex.get(e.i + 1), before = byIndex.get(e.i - 1);
       const result = e.kind === 'tool' && next?.kind === 'echo' && byIndex.get(e.i - 1)?.kind !== 'tool' && next.text.startsWith(`${e.text.split(' ', 1)[0]}:`) ? cap(next.text, 12_000) : undefined;
@@ -308,7 +308,7 @@ echo: ${byIndex.get(item.echoId!)!.text}` : item.messageId !== undefined ? byInd
     return { merge, childA: a.text, childB: b.text };
   }
 
-  // Non-pairs first: if the request budget runs out, it is the last pairs that go unmeasured, never the merges.
+
   for (const item of [...items.filter(i => i.kind !== 'pair'), ...items.filter(i => i.kind === 'pair')]) for (const variant of VARIANTS) {
     const key = `${variant}|${item.id}`;
     if (done[key]?.ok) continue;
@@ -360,7 +360,7 @@ echo: ${byIndex.get(item.echoId!)!.text}` : item.messageId !== undefined ? byInd
   console.log(`requests used: ${budget.requests}/${MAX_REQUESTS}`);
 }
 
-// ---- Report ----
+
 const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN;
 const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? (s[Math.floor((s.length - 1) / 2)] + s[Math.ceil((s.length - 1) / 2)]) / 2 : NaN; };
 const fixed = (n: number, d = 1) => Number.isNaN(n) ? 'n/a' : n.toFixed(d);
@@ -462,7 +462,7 @@ function reportStanding(file: StandingFile) {
     ['...lost (absent from the merge)', String(mergeSum(rs, m => m.curatedLost))],
     ['child lines bytes (mean)', fixed(mean(rs.map(r => r.merge?.childBytes ?? NaN)))],
   ]);
-  // Decision rule from PREREGISTERED.
+
   const gate = (ids: Set<string>) => CATEGORIES.map(c => {
     const [h0, t0] = sum(of('V0', ids), c), [h1, t1] = sum(of('V1', ids), c);
     const dropFacts = h0 - h1, dropPoints = t0 && t1 ? 100 * (h0 / t0 - h1 / t1) : 0;

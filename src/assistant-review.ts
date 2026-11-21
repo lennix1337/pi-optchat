@@ -8,12 +8,12 @@ export interface AssistantReviewPolicy {
   decide(reviewId: string, decision: 'approve' | 'deny', authority: object): void;
 }
 
-/** Largest content a terminal reviewer can read whole; anything bigger can only be denied here. */
+
 const MAX_REVIEW_CHARS = 4000;
 const escape = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const field = (value: string) => escape(JSON.stringify(value));
 
-/** The whole content as escaped text, or undefined when it cannot be shown entirely (binary, malformed or too long). */
+
 function readable(bytes: Uint8Array): string | undefined {
   let text: string;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return undefined; }

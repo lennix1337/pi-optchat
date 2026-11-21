@@ -23,7 +23,7 @@ test('the older English status is translated once, and any other goal text is pr
   assert.equal(metaText('goal: ship the footer'), 'meta: ship the footer');
 });
 
-/** A Pi event bus and the footer data and TUI it hands the factory, enough to draw the footer once. */
+
 function drawFooter(status: string | undefined, bus: { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): () => void }) {
   let factory: ((tui: unknown, theme: unknown, data: unknown) => { render(width: number): string[]; dispose(): void }) | undefined;
   const ctx = { hasUI: true, getContextUsage: () => undefined, model: undefined, ui: { setFooter: (next: typeof factory) => { factory = next; } } } as unknown as ExtensionContext;
@@ -57,7 +57,7 @@ test('the footer shows the goal status once whether it comes from the status slo
   assert.equal(bus.count(GOAL_STATUS_EVENT), 0, 'unmounting stops listening');
 });
 
-// The producer itself: pi-goal-x's own payloads, when the sibling checkout is there, go through the event and the status slot untouched.
+
 const GOAL_X = new URL('file:///C:/projetos/pi-goal-x/extensions/goal-status-line.ts');
 const producer = await import(GOAL_X.href).catch(() => undefined) as undefined | { GOAL_STATUS_EVENT: string; goalStatusPayload(args: { goal: unknown; openCount: number }): { text: string } };
 

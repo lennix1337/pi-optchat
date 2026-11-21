@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// Runs a repository's own verification on its clean HEAD and, only when it passes, writes a receipt for that commit.
-// The merge guard accepts a PR whose CI never started (GitHub billing) only when such a receipt exists for the PR head.
-// Usage: node scripts/local-verify.mjs [repo-dir]
+
+
+
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-/** Same folder the merge guard reads (localVerifyDir in src/merge-ci-guard.ts). */
+
 const localVerifyDir = () => process.env.PI_LOCAL_VERIFY_DIR ?? join(homedir(), '.pi', 'agent', 'local-verify');
-/** The repository's own verification command: its `verify`, else `verify:fast`, else `test` script. */
+
 function verifyRecipe(pkg, pnpm) {
   const scripts = pkg?.scripts ?? {};
   const name = ['verify', 'verify:fast', 'test'].find(script => typeof scripts[script] === 'string');

@@ -3,7 +3,7 @@ import type { AssistantMessage, ToolResultMessage, UserMessage } from '@earendil
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
 
-// Kept apart from support.ts: support.ts is the `--import` preload that sandboxes the environment, and must not evaluate product modules before it does.
+
 
 /** A user message; the default timestamp is the one every fixture request carries. */
 export const userMessage = (content: UserMessage['content'], timestamp = 1): UserMessage => ({ role: 'user', content, timestamp });

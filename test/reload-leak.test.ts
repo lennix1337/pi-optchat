@@ -13,7 +13,7 @@ import { createProfile } from '../src/profiles.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { isCompaction } from './support.ts';
 
-// Timers made from src/ that are still pending, found by wrapping the globals before the extension loads.
+
 const pending = new Map<unknown, string>();
 const real = { setInterval: globalThis.setInterval, setTimeout: globalThis.setTimeout, clearInterval: globalThis.clearInterval, clearTimeout: globalThis.clearTimeout };
 const origin = () => (new Error().stack ?? '').split('\n').slice(2).find(line => /[\\/]src[\\/]/.test(line) && !/[\\/]node_modules[\\/]|core[\\/]extensions/.test(line))?.trim().replace(/^at /, '').replace(/.*[\\/]src[\\/]/, 'src/');
@@ -37,7 +37,7 @@ const gc = runInNewContext('gc') as () => void;
 const settle = async () => { for (let i = 0; i < 4; i++) { await new Promise(resolve => setTimeout(resolve, 20)); gc(); } };
 const extension = fileURLToPath(new URL('../src/index.ts', import.meta.url));
 
-/** Arrays shaped like the memory index (`{ i, kind, text, date, size }` entries), found by V8's own heap walk. */
+
 async function memoryIndexes(): Promise<number> {
   const session = new Session(); session.connect();
   try {
@@ -52,7 +52,7 @@ async function memoryIndexes(): Promise<number> {
 const HANDOFF = Symbol.for('pi-optchat.shell-handoff');
 type Handoff = { jobs: { endObserver?: unknown } } | undefined;
 
-// Pi loads an extension through jiti without a module cache, so every reload evaluates a fresh copy of src/ in the same process.
+// external: Pi reloads extensions through jiti without a module cache.
 test('after /reload, the previous OptChat instance holds no memory index, timer, exit hook or shell observer', { timeout: 120_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-reload-leak-'));
   const name = 'reload-leak'; createProfile(name);
@@ -82,7 +82,7 @@ test('after /reload, the previous OptChat instance holds no memory index, timer,
     for (let reload = 0; reload < 4; reload++) {
       await session.reload();
       await settle();
-      // Teardown work still in flight on a busy machine holds the old instance for a moment; a real leak outlasts every retry.
+
       let count = await memoryIndexes();
       for (let retry = 0; count > 1 && retry < 25; retry++) { await settle(); count = await memoryIndexes(); }
       indexes.push(count);

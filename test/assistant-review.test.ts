@@ -7,7 +7,7 @@ import { registerAssistantReview } from '../src/assistant-review.ts';
 import type { EffectRequest } from '../assistant/src/policy/gateway.ts';
 import { withTempDir } from './support.ts';
 
-// Expiry is part of the exact binding, so every request in a run shares one deadline.
+
 const expiresAt = Date.now() + 10 * 60000;
 const request = (operationId: string, text: string, destination = 'friend@example.test'): EffectRequest => ({ version: 1, operationId, profileId: 'p', sessionId: 's', taskId: 't', runId: 'r',
   adapter: 'mail-fixture', action: 'send', account: 'me@example.test', destination, policyVersion: 'v1', expiresAt, payload: Buffer.from(text) });

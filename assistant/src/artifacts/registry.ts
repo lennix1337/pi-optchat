@@ -87,7 +87,7 @@ export class ArtifactRegistry {
         .run(this.profileId, artifactId, artifactVersion, input.type, JSON.stringify(artifact), fileName, bytes.length, createdAt);
       const target = this.managedPath(artifact.location);
       mkdirSync(dirname(target), { recursive: true });
-      // Written last: a failed write rolls back the row, so no row points at missing bytes.
+
       writeFileSync(target, bytes, { flag: 'wx' });
       return { ...artifact, fileName, size: bytes.length, createdAt, reviewedBy: null, reviewedAt: null };
     });

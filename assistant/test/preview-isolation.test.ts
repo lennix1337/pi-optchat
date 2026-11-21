@@ -32,9 +32,9 @@ test('untrusted HTML preview is an opaque-origin, script-less document framed on
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(response.headers.get('set-cookie'), null);
-  // Bytes are preserved for integrity; isolation comes from the policy, not from rewriting content.
+
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(join(f.paths.sources, 'pagina-hostil.html')));
-  // The preview URL is a random capability, not derived from the artifact identity.
+
   assert.match(url, /^\/web\/preview\/[A-Za-z0-9_-]{43}$/);
   assert.doesNotMatch(url, new RegExp(`${record.artifactId}|${record.hash.slice(0, 12)}`));
   const again = await web.post(`${web.version(record.artifactId, 1)}/preview`);

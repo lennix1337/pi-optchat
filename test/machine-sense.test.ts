@@ -11,7 +11,7 @@ import { tempDir } from './support.ts';
 const HOST = 100, HELPER = 101, THREADS = 16, T0 = Date.parse('2026-11-10T21:00:00Z');
 const NORMAL = 0x20, IDLE = 0x40;
 
-/** A fake machine: a process table whose clock the test moves. `burn` gives a process CPU for the next tick. */
+
 class Sim {
   t = T0;
   procs = new Map<number, ProcRow>();
@@ -28,7 +28,7 @@ class Sim {
   }
   exit(pid: number) { this.procs.delete(pid); }
   burn(pid: number, cpuSeconds: number) { this.procs.get(pid)!.cpuMs += cpuSeconds * 1000; }
-  /** One sample, `seconds` later. The machine's CPU is what the burns add up to, unless `cpu` is set. */
+
   sample(seconds = 5, burned = 0): Sample {
     this.t += seconds * 1000;
     return { t: this.t, cpu: this.cpu ?? Math.min(100, burned / (seconds * THREADS) * 100), memUsedMb: this.memUsedMb, memTotalMb: 32_000, idleS: this.idleS, helperPid: HELPER, procs: [...this.procs.values()].map(p => ({ ...p })) };
@@ -65,7 +65,7 @@ test('a descendant whose parent already exited keeps the owner it was seen with'
     sim.spawn(200, HOST, 'bash.exe', 100);
     sim.spawn(300, 200, 'node.exe', 500);
     sense.attributor.attribute(sim.sample(5));
-    sim.exit(200); // Git Bash's launcher is gone; the test runner lives on
+    sim.exit(200);
     sim.spawn(500, 300, 'node.exe', 0);
     const got = sense.attributor.attribute(sim.sample(5));
     assert.equal(got.get(300)?.group, 'shell sh1');
@@ -84,10 +84,10 @@ test('a restart or /reload keeps the owners of the processes it left running; a 
     first.ingest(sim.sample(5));
     first.ingest(sim.sample(5));
     first.flush();
-    // The old Pi exits with its shell; the headless browsers it launched live on under a new Pi.
+
     sim.exit(HOST); sim.exit(200); sim.exit(400);
     sim.spawn(150, 1, 'node.exe', 0);
-    sim.spawn(400, 1, 'msedge.exe', 0); // Windows handed pid 400 to an unrelated browser
+    sim.spawn(400, 1, 'msedge.exe', 0);
     sim.t += 30_000;
     const second = newSense(dir, { hostPid: 150 }).sense;
     const got = second.attributor.attribute(sim.sample(5));
@@ -107,12 +107,12 @@ test('a reused pid is never taken for the process that had it before', () => {
     assert.equal(sense.attributor.attribute(sim.sample(5)).get(300)?.group, 'bash');
     sim.exit(300);
     sense.attributor.attribute(sim.sample(5));
-    // Windows hands pid 300 to an unrelated program, whose parent is not ours.
+
     sim.spawn(4242, 1, 'explorer.exe', -3_600_000);
     sim.spawn(300, 4242, 'chrome.exe', 0);
     const got = sense.attributor.attribute(sim.sample(5));
     assert.deepEqual([got.get(300)?.kind, got.get(300)?.group], ['external', 'external chrome.exe']);
-    // Even when its parent is a process of ours that started earlier: the memo is keyed by start time, and a stranger under a stranger stays one.
+
     sim.exit(300); sim.spawn(300, 4242, 'chrome.exe', 0);
     assert.equal(sense.attributor.attribute(sim.sample(5)).get(300)?.kind, 'external');
   } finally { close(); }
@@ -151,9 +151,9 @@ test('the head of a command keeps no secret and no leading cd', () => {
   assert.equal([...commandHead('x'.repeat(200))].length, 50);
 });
 
-// ---- thresholds, dedupe, recovery ----
 
-/** Runs `n` samples 5 s apart with `workers` busy processes under one worker's shell, each taking `share` of a thread. */
+
+
 function saturate(sense: MachineSense, sim: Sim, pids: number[], n: number, share = 1, cpu?: number) {
   for (let i = 0; i < n; i++) {
     for (const pid of pids) sim.burn(pid, 5 * share);
@@ -166,7 +166,7 @@ function stressSetup(sense: MachineSense, sim: Sim, burners = 20) {
   sim.spawn(200, HOST, 'bash.exe', 100);
   const pids = Array.from({ length: burners }, (_, i) => 1000 + i);
   for (const pid of pids) sim.spawn(pid, 200, 'node.exe', 300);
-  sense.ingest(sim.sample(5)); // the first sample has no interval
+  sense.ingest(sim.sample(5));
   return pids;
 }
 
@@ -176,12 +176,12 @@ test('CPU at 90% for a minute alerts once, names the heaviest owner with procs, 
     const { sense, notes } = newSense(dir), sim = new Sim();
     sim.idleS = 600;
     const pids = stressSetup(sense, sim);
-    saturate(sense, sim, pids, 11, 0.8, 97); // 55 s: not yet a minute
+    saturate(sense, sim, pids, 11, 0.8, 97);
     assert.deepEqual(notes, []);
     saturate(sense, sim, pids, 2, 0.8, 97);
     assert.equal(notes.length, 1);
     assert.match(notes[0], /^\[machine\] CPU 97% for 60 s on 16 threads\. Top: worker ed055130 bash stress\.sh: 21 procs, 100% CPU, 60 s\.$/);
-    saturate(sense, sim, pids, 60, 0.8, 97); // five more minutes
+    saturate(sense, sim, pids, 60, 0.8, 97);
     assert.equal(notes.length, 1, 'one alert per culprit per 15 minutes');
   } finally { close(); }
 });
@@ -222,11 +222,11 @@ test('the same culprit after a recovery waits out its 15 minutes; a different on
     const { sense, notes } = newSense(dir), sim = new Sim();
     const pids = stressSetup(sense, sim);
     saturate(sense, sim, pids, 13, 0.8, 97);
-    saturate(sense, sim, pids, 1, 0, 10); saturate(sense, sim, pids, 7, 0, 10); // recovers
+    saturate(sense, sim, pids, 1, 0, 10); saturate(sense, sim, pids, 7, 0, 10);
     assert.equal(notes.filter(n => n.includes('back to normal')).length, 1);
-    saturate(sense, sim, pids, 14, 0.8, 97); // the same worker again, 2 minutes later
+    saturate(sense, sim, pids, 14, 0.8, 97);
     assert.equal(notes.filter(n => n.includes('for 60 s on')).length, 1, 'deduped');
-    // an outside program becomes the culprit
+
     for (const pid of pids) sim.exit(pid);
     sim.spawn(4242, 1, 'explorer.exe', -3_600_000);
     sim.spawn(900, 4242, 'ffmpeg.exe', 0);
@@ -249,7 +249,7 @@ test('memory at 85% for 30 s names the largest owners; one owner above half the 
 
     const owner = newSense(dir), busy = new Sim();
     const pids = stressSetup(owner.sense, busy, 10);
-    saturate(owner.sense, busy, pids, 23, 1, 60); // 10 of 16 threads = 62% of the machine
+    saturate(owner.sense, busy, pids, 23, 1, 60);
     assert.deepEqual(owner.notes, []);
     saturate(owner.sense, busy, pids, 2, 1, 60);
     assert.equal(owner.notes.length, 1);
@@ -257,7 +257,7 @@ test('memory at 85% for 30 s names the largest owners; one owner above half the 
   } finally { close(); }
 });
 
-// ---- priority ----
+
 
 test('the operator at the keyboard and the CPU saturated: our heavy trees go to Idle, and the alert says so', () => {
   const { dir, close } = tempDir('optchat-machine-');
@@ -283,7 +283,7 @@ test('nothing is lowered when the operator is away, the setting is off, or the p
     const b = newSense(off.dir, { lowerOwn: () => false }), simB = new Sim();
     saturate(b.sense, simB, stressSetup(b.sense, simB, 6), 14, 1, 97);
     assert.deepEqual(b.priorities, []);
-    // an outside program saturating the machine is never touched
+
     const c = newSense(away.dir), simC = new Sim();
     simC.spawn(900, 1, 'ffmpeg.exe');
     c.sense.ingest(simC.sample(5)); saturate(c.sense, simC, [900], 14, 16, 99);
@@ -323,7 +323,7 @@ test('our own shells start below normal when the setting is on, and never the ho
   } finally { close(); }
 });
 
-// ---- the ledger ----
+
 
 test('each minute writes one row per owner with CPU seconds, peak memory, process count and wall time; idle outsiders stay out', () => {
   const { dir, close } = tempDir('optchat-machine-');
@@ -333,7 +333,7 @@ test('each minute writes one row per owner with CPU seconds, peak memory, proces
     sim.spawn(700, 1, 'idle-tool.exe');
     const pids = stressSetup(sense, sim, 4);
     const start = sim.t;
-    saturate(sense, sim, pids, 24, 1, 25); // two minutes at 4 burners
+    saturate(sense, sim, pids, 24, 1, 25);
     sense.flush();
     const rows = new MachineLedger(dir).read(0);
     const minute = Math.floor((start + 5000) / 60_000) * 60_000;
@@ -390,7 +390,7 @@ test('a row never holds more than a command head: no arguments past the cap, no 
   } finally { close(); }
 });
 
-// ---- insights and the tool's reads ----
+
 
 test('cost centres rank by CPU and the insights state what each cost, marking outsiders', () => {
   const day = 24 * 3_600_000, rows: LedgerRow[] = [];
@@ -425,10 +425,10 @@ test('history reads the minute still in progress as well as the written ones', (
   } finally { close(); }
 });
 
-// ---- orphans: a parent that died before the sampler saw it ----
+
 
 const NPM_CALL = 'cd C:/projetos/pi-optchat/.worktrees/waiting-board && npm test > /tmp/waiting-board-test.log 2>&1';
-/** The 11/11 incident: the worker's bash (33380) is a child of the host; Git Bash's intermediate (17308) exited within ms, so `npm test` (6300) has a parent that never appears in any sample. */
+
 function incident(sense: MachineSense, sim: Sim) {
   sense.began({ id: 'tc-68131e9d', command: NPM_CALL, mode: 'foreground', agent: 'agent 68131e9d-aaaa' }, sim.t);
   sim.spawn(33380, HOST, 'bash.exe', 400, NORMAL, `C:\Program Files\Git\bin\bash.exe -c "${NPM_CALL}"`);
@@ -478,7 +478,7 @@ test('an orphan no open call explains is unattributed, in the alert and the ledg
     sense.ingest(sim.sample(5));
     sim.spawn(7000, 17308, 'node.exe', 100, NORMAL, 'node C:/tools/unrelated-job.js --watch');
     sim.spawn(7001, 7000, 'node.exe', 300);
-    sim.spawn(7002, 17309, 'node.exe', 300); // no command line known at all
+    sim.spawn(7002, 17309, 'node.exe', 300);
     const got = sense.attributor.attribute(sim.sample(5));
     for (const pid of [7000, 7001, 7002]) assert.deepEqual([pid, got.get(pid)?.kind, got.get(pid)?.group], [pid, 'unattributed', 'unattributed (parent gone) node.exe']);
     saturate(sense, sim, [7000, 7001, 7002], 13, 1, 97);
@@ -495,11 +495,11 @@ test('a long-running process whose parent is long gone, and a fresh one with a l
   try {
     const { sense } = newSense(dir), sim = new Sim();
     sense.began({ id: 'tc-1', command: 'npm test', mode: 'foreground' }, sim.t);
-    sim.spawn(500, 1, 'explorer.exe', -3_600_000); // parent long gone, started before the sampler looked
+    sim.spawn(500, 1, 'explorer.exe', -3_600_000);
     sim.spawn(4242, 1, 'explorer.exe', -3_600_000);
     sense.ingest(sim.sample(5));
-    sim.spawn(501, 4242, 'node.exe', 100, NORMAL, '"/c/Program Files/nodejs/npm" test'); // fresh, same command as the open call, but its parent chain is alive outside the host tree
-    sim.spawn(502, 17308, 'node.exe', -3_600_000, NORMAL, 'npm test'); // old orphan
+    sim.spawn(501, 4242, 'node.exe', 100, NORMAL, '"/c/Program Files/nodejs/npm" test');
+    sim.spawn(502, 17308, 'node.exe', -3_600_000, NORMAL, 'npm test');
     const got = sense.attributor.attribute(sim.sample(5));
     assert.deepEqual([500, 501, 502].map(pid => got.get(pid)?.kind), ['external', 'external', 'external']);
   } finally { close(); }

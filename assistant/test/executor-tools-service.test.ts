@@ -17,7 +17,7 @@ import { queuedTask } from './task-fixtures.ts';
 import { assistantPath } from './assistant-paths.ts';
 
 const profileId = 'tools-service';
-/** Docker stand-in: records every call; the "browser" answers with a snapshot of the text it was handed. */
+
 function fakeDocker() {
   const calls: string[][] = []; let owner: string | undefined;
   const docker: DockerRunner = async args => {
@@ -87,7 +87,7 @@ test('executor.mjs lists reviews and held revisions but refuses every decision o
   }
   assert.equal(cli('approve', randomUUID()).stderr.trim(), 'review_not_pending');
   const stillPending = new ExecutorDesk(config); try { assert.equal(stillPending.reviews().length, 1, 'no decision was recorded'); } finally { stillPending.close(); }
-  // A restore holds queued revisions; the script lists them read-only and will not reconcile without a terminal.
+
   start('h');
   const db = new DatabaseSync(config.databasePath); try { db.prepare(RESTORE_HOLDS_FENCE).run(); } finally { db.close(); }
   const held = JSON.parse(cli('restored').stdout) as { restored: { taskId: string; revision: number }[] };

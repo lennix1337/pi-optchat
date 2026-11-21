@@ -20,7 +20,7 @@ export async function saveImages(store: Store, content: unknown) {
   for (const image of content.filter(isImage)) {
     const name = hash(image);
     if (await store.image(name)) continue;
-    // Pi's own resizer (Photon, WASM), as its read tool uses: it returns small images untouched, and null if it can't decode.
+    // external: Pi uses Photon WASM to resize images; it returns null when decoding fails.
     const kept = await resizeImage(Buffer.from(image.data, 'base64'), image.mimeType, IMAGE_LIMITS) ?? image;
     if (isMime(kept.mimeType)) await store.putImage(name, kept.mimeType, Buffer.from(kept.data, 'base64'));
   }

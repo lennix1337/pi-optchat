@@ -214,7 +214,7 @@ test('Codex discovery and parsing exclude delegated sessions while keeping user 
   } finally { removeDir(dir); }
 });
 
-/** Pi and OMP session entries: one id/parentId tree, written in file order. */
+// external: Pi and OMP session entries form an id/parentId tree in file order.
 const piSession = (file: string, header: Record<string, unknown>, entries: Record<string, unknown>[]) => {
   let parentId: string | null = null;
   lines(file, [{ type: 'session', version: 3, timestamp: date, cwd: '/project', ...header },
@@ -241,7 +241,7 @@ test('Pi / OMP imports what the user typed and the replies that ended a turn, an
     piMessage('b1', { role: 'bashExecution', command: 'git status', output: 'SHELL OUTPUT', exitCode: 0 }),
     piMessage('b2', { role: 'bashExecution', command: 'cat .env', output: 'PRIVATE OUTPUT', exitCode: 0, excludeFromContext: true }),
     piMessage('p1', { role: 'pythonExecution', code: 'print(1)', output: 'PYTHON OUTPUT', exitCode: 0 }),
-    // OMP records a skill as its own message; Pi expands it into the user message.
+    // external: OMP records skills as separate messages; Pi expands them into user messages.
     { type: 'custom_message', id: 'k1', customType: 'skill-prompt', attribution: 'user', display: true, content: 'SKILL BODY',
       details: { name: 'grill-me', path: '/skills/grill-me/SKILL.md', args: 'one question at a time', lineCount: 3 } },
     { type: 'custom_message', id: 'k3', customType: 'skill-prompt', attribution: 'user', display: true, content: 'SKILL BODY',
@@ -249,12 +249,12 @@ test('Pi / OMP imports what the user typed and the replies that ended a turn, an
     piUser('k2', '<skill name="review" location="/skills/review/SKILL.md">\nSKILL BODY\n</skill>\n\ncheck the PR'),
     piUser('u2', 'why are you adding redis? I just wanted the refactor'),
     piReply('a4', 'aborted', [{ type: 'text', text: 'ABORTED REPLY' }]),
-    // The user rewound to a3 and typed again; the branch above stays in the file.
+
     piUser('u3', 'do only the refactor'), piReply('a5', 'error', [{ type: 'text', text: 'FAILED REPLY' }]),
     piReply('a6', 'length', [{ type: 'text', text: 'long answer, cut off' }]),
     { type: 'compaction', id: 'x', summary: 'COMPACTION SUMMARY' },
   ]);
-  // Rewire u3 onto a3, as a rewind writes it.
+
   const rows = readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   rows.find(r => r.id === 'u3').parentId = 'a3';
   lines(file, rows);
@@ -297,7 +297,7 @@ test('Pi / OMP discovery skips sessions that ran under OptChat and the subagent 
   piSession(join(project, 'delta.jsonl'), { id: 'delta', cwd: '/work/delta' }, [typed('typed request'), ...Array.from({ length: 70 }, (_, i) => typed(`message ${i}`)),
     { type: 'session_info', id: 'n1', name: 'First name' }, { type: 'session_info', id: 'n2', name: 'Named in Pi' }]);
   piSession(join(project, stem, 'Scout.jsonl'), { id: 'child' }, [typed('delegated task')]);
-  // OptChat binds its profile when the session starts, or later in a session that began without it.
+
   piSession(join(project, 'optchat.jsonl'), { id: 'optchat' }, [...Array.from({ length: 80 }, (_, i) => typed(`message ${i}`)),
     { type: 'custom', id: 'o', customType: 'optchat.profile', data: { profile: 'work' } }]);
   try {
@@ -368,7 +368,7 @@ test('a resumed Claude session adds only its new messages, also over entries an 
   const user = (uuid: string, session: string, content: string, s: number) => ({ type: 'user', uuid, sessionId: session, timestamp: at(s), message: { role: 'user', content } });
   const reply = (uuid: string, session: string, text: string, s: number) => ({ type: 'assistant', uuid, sessionId: session, timestamp: at(s),
     message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: 'hm' }, { type: 'text', text }] } });
-  // Claude Code copies the earlier messages into the resumed file, under the new session id.
+  // external: Claude Code copies earlier messages into the resumed session file.
   const copied = (session: string) => [user('u1', session, model, 1), user('u2', session, 'q2', 2), reply('a2', session, 'r2', 3)];
   lines(join(dir, 'aaaa.jsonl'), copied('aaaa'));
   lines(join(dir, 'bbbb.jsonl'), [...copied('bbbb'), user('u3', 'bbbb', 'q3', 4), reply('a3', 'bbbb', 'r3', 5), user('u2', 'bbbb', 'q2 edited', 6)]);
@@ -377,7 +377,7 @@ test('a resumed Claude session adds only its new messages, also over entries an 
   try {
     const [a, b] = [await read('aaaa'), await read('bbbb')];
     assert.deepEqual(deduplicate([], [...a, ...b]).added.map(body), ['/model opus', 'q2', 'r2', 'q3', 'r3', 'q2 edited']);
-    // An older import stored the original with a longer header and the command as Claude Code logged it.
+
     const stored = a.map((e, i) => ({ ...e, i, size: 0, text: `[Historical claude · ${e.date} · conversation aaaa · Fixture]\n${body(e) === '/model opus' ? model : body(e)}` }));
     assert.deepEqual(deduplicate(stored, b).added.map(body), ['q3', 'r3', 'q2 edited'], 'a uuid with other text is another message');
   } finally { removeDir(dir); }
@@ -397,7 +397,7 @@ test('Claude discovery checks late sidechain markers without extending metadata 
     assert.deepEqual(scan.warnings, []);
     assert.equal((await readConversation(conversation('claude', child))).entries.length, 0);
 
-    // Invalid JSON after line 60 would warn if Codex discovery read beyond its metadata budget.
+
     writeFileSync(parent, [JSON.stringify({ type: 'session_meta', payload: { id: 'codex-parent', cwd: '/project', source: 'cli', timestamp: date } }),
       ...metadata.slice(1).map(value => JSON.stringify(value)), 'not JSON'].join('\n') + '\n');
     rmSync(child);
@@ -445,7 +445,7 @@ test('a selected transcript disappearing warns without importing it; cancellatio
   } finally { removeDir(dir); }
 });
 
-/** The ZIP fixture, built as bytes (local headers, data, central directory, EOCD), so no `zip` binary is needed. `crc` overrides the real CRC-32 to fake corruption. */
+
 const zipArchive = (members: { name: string; data: Buffer; stored?: boolean; crc?: number }[]) => {
   const parts: Buffer[] = [], central: Buffer[] = [];
   let offset = 0;
@@ -494,7 +494,7 @@ test('a ChatGPT ZIP reads stored and deflated members, and refuses a corrupt mem
     assert.deepEqual(scan.conversations.map(c => [c.id, c.file]).sort(), [[`deflated-chat`, `${zip}:export/conversations_2.json`], ['stored-chat', `${zip}:conversations_1.json`]]);
     for (const c of scan.conversations) assert.deepEqual(c.exported, JSON.parse(String(c.id === 'stored-chat' ? stored : deflated))[0]);
     await assert.rejects(scanChatGPT(corrupt), /Could not read conversations\.json in .*Extract the ZIP and select the folder instead\./);
-    // The tool's own reason, not just the file name unzip prints first.
+
     await assert.rejects(scanChatGPT(fake), /Could not read .*fake\.zip: (?!\[)\S.*\. Extract the ZIP and select the folder instead\./);
   } finally { removeDir(dir); }
 });
@@ -549,7 +549,7 @@ test('append activates only after complete indexing, retains original summaries,
     assert.match(activated.zoom(1, 1), /Imported one/);
     assert.deepEqual(deduplicate(activated.root, [entry('one')]), { added: [], skipped: 1 });
     assert.ok(existsSync(join(dir, 'main')));
-    // A second import starts from the generation the first one made, which the journal names as a portable path.
+
     await activated.close();
     prepareImport(dir, activated, [entry('two')], 'append');
     await runImport(dir, short, AbortSignal.timeout(5000));
@@ -589,7 +589,7 @@ test('discard leaves original memory active and a completed pointer swap can fin
     await runImport(dir, short, AbortSignal.timeout(5000));
     const staged = join(dir, job.target, 'staged.jsonl');
     assert.ok(!existsSync(staged), 'an activated import keeps no second copy of its log');
-    // Simulate a crash right after the durable pointer write, before the staged plan and the journal were removed.
+
     writeFileSync(staged, '');
     writeFileSync(join(dir, 'imports', 'pending.json'), JSON.stringify(job));
     await runImport(dir, short, AbortSignal.timeout(5000));
@@ -601,7 +601,7 @@ test('discard leaves original memory active and a completed pointer swap can fin
 });
 
 for (const jobs of [undefined, 3, 16]) test(`an import summarizes ${jobs ?? '8 (default)'} messages at once, and its merges keep the compactions' view in budget`, async () => {
-  // 120 summaries of 500 bytes overflow the compactions' 32 KB view, so it must merge while messages are still being logged.
+
   const dir = temp(), old = new Memory(dir, short);
   const imported = Array.from({ length: 120 }, (_, i) => entry(`m${i}`, date, `${i} ${'imported detail '.repeat(40)}`));
   let leaves = 0, peak = 0, widest = 0;
@@ -615,8 +615,8 @@ for (const jobs of [undefined, 3, 16]) test(`an import summarizes ${jobs ?? '8 (
   try {
     await old.close();
     assert.ok(prepareImport(dir, old, imported, 'append'));
-    // Hang guard only: the test checks concurrency and view width, not speed. Under the full suite a 2-core Windows
-    // runner took 20.8 s for this import (0.8 s alone), so the guard leaves room for a loaded machine.
+
+
     await runImport(dir, compress, AbortSignal.timeout(90000), jobs);
     assert.equal(peak, jobs ?? 8);
     assert.ok(widest < 40_000, `compaction view reached ${widest} bytes`);

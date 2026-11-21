@@ -1,4 +1,4 @@
-// Loaded by bench-session.mjs only, after it pins Pi's module resolution.
+
 import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -15,7 +15,7 @@ const source = arg('source'), sessionFile = arg('session'), out = arg('json'), s
 const turns = Number(arg('turns') ?? 100);
 if (!source || !sessionFile || !Number.isSafeInteger(turns) || turns < 1) throw new Error('--source, --session and a positive --turns are required');
 if (!globalThis.gc) throw new Error('run with --expose-gc');
-// Never follow a copied link back into live data. Reject the real homes even when supplied through a junction.
+
 const inside = (parent: string, child: string) => { const p = relative(parent, child); return p === '' || (!p.startsWith('..') && !isAbsolute(p)); };
 const realHome = realpathSync(join(process.env.USERPROFILE ?? homedir(), '.optchat'));
 const agentHome = realpathSync(join(process.env.USERPROFILE ?? homedir(), '.pi', 'agent'));
@@ -42,7 +42,7 @@ fingerprint(sessionFile, 'session');
 const inputSha256 = hash.digest('hex');
 
 const scratch = mkdtempSync(join(tmpdir(), 'optchat-session-bench-')), home = join(scratch, 'home');
-process.on('exit', () => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* disposable scratch may be left for manual cleanup */ } });
+process.on('exit', () => { try { rmSync(scratch, { recursive: true, force: true }); } catch {   } });
 process.env.OPTCHAT_HOME = home; process.env.OPTCHAT_EFFECT_APPROVALS = '0';
 process.env.PI_CODING_AGENT_DIR = join(scratch, 'agent'); process.env.AI_MEMORY_SERVER_URL = 'http://127.0.0.1:9';
 process.env.AI_MEMORY_DATA_DIR = join(scratch, 'ai-memory'); process.env.PI_GITWATCH_DIR = join(scratch, 'gitwatch'); process.env.MEMORY_DIR = join(scratch, 'optmem');
@@ -69,8 +69,8 @@ writeFileSync(big, Array.from({ length: 1500 }, (_, i) => `line ${i} ${'lorem ip
 let calls = 0;
 function stream(model: Model<Api>, context: Context) {
   const last = context.messages.at(-1);
-  // OptChat can append a status user message after the actual prompt. Match the task's own text block, not the final message
-  // or a word in the memory view; compactor requests also use this fixture model.
+
+
   const task = context.messages.findLast(message => message.role === 'user' && (typeof message.content === 'string'
     ? /^\s*BENCH_TASK_/.test(message.content)
     : message.content.some(block => block.type === 'text' && /^\s*BENCH_TASK_/.test(block.text))));
@@ -107,7 +107,7 @@ session.extensionRunner.setFlagValue('optchat-profile', profile); session.extens
 const errors: string[] = [];
 const notices: string[] = [];
 const ui: ExtensionUIContext = { ...session.extensionRunner.getUIContext(), notify: text => { notices.push(text); }, select: async () => { throw new Error('no picker in benchmark'); } };
-// Print mode intentionally excludes live machine/process sampling and service integrations.
+
 await session.bindExtensions({ uiContext: ui, mode: 'print', onError: error => { errors.push(error.error); } });
 await session.waitForIdle(); const openMs = performance.now() - start;
 await delay(15); const openMaxIntervalMs = histogram.max / 1e6, openP99IntervalMs = histogram.percentile(99) / 1e6;

@@ -57,7 +57,7 @@ test('loadAsync streams files past one chunk and returns cold summaries when hot
   try {
     mkdirSync(join(dir, 'main')); mkdirSync(join(dir, 'tree'));
     const pad = 'x'.repeat(500);
-    const total = 700; // > 350 KB total, crossing the 256 KB scanJsonl chunk boundary
+    const total = 700;
     const date = '2026-01-01T00:00:00.000Z';
     writeFileSync(join(dir, 'main', '2026-01-01.jsonl'), Array.from({ length: total }, (_, i) => line({ i, kind: 'user', text: `msg ${i} ${pad}`, date })).join(''));
     writeFileSync(join(dir, 'main', '2026-01-02.jsonl'), line({ i: total, kind: 'user', text: 'latest', date: '2026-01-02T00:00:00.000Z' }));
@@ -76,7 +76,7 @@ test('loadAsync streams files past one chunk and returns cold summaries when hot
       assert.equal(memory.root.length, total + 1);
       assert.equal(memory.tree.get(0)?.text, `sum 0 ${pad}`);
       assert.ok(memory.stats().treeColdNodes > 0 && memory.stats().treeColdNodes <= total);
-      // ColdTreeMap supports set/has/delete/values across cold and warm entries without inflating coldSize.
+
       const beforeSize = memory.tree.size;
       assert.equal(memory.tree.has(0), true);
       memory.tree.set(0, { l: 0, i: 0, text: 'revised 0', size: 9 });

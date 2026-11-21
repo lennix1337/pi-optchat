@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Creates a task worktree in one command: fetch, `.worktrees/<name>` on a new branch from origin/<base>, and a
-// node_modules junction to the main checkout, so the first test run needs no manual setup.
-// Usage: node scripts/worktree.mjs <name> [--branch NOME] [--base BRANCH]
-//        node scripts/worktree.mjs --remove <name>   (drops the junction first, refuses a dirty worktree, deletes the branch only if merged)
-//        node scripts/worktree.mjs --list   (one row per worktree: name | branch | dirty | unique commits vs origin/<base> | removable or keep: reason)
-//        node scripts/worktree.mjs --done <name|branch> [--base BRANCH]   (after the PR merged: removes the worktree, deletes the local branch also when GitHub SQUASH-merged it,
-//            proved by a merged PR whose head is the local tip or has its tree; otherwise keeps the branch and says why; then fast-forwards the main checkout's base branch)
-//        node scripts/worktree.mjs --update <name|branch> [--check "<cmd>"] [--base BRANCH]   (brings the branch up to origin/<base>: rebase when not pushed, merge when pushed, never a force-push;
-//            only conflict hunks where both sides are solely import/require lines are resolved (union); the rest stays mid-operation and is listed; rerun the same command after resolving to continue;
-//            --check runs <cmd> in the worktree after a clean result and reports its rc; a pushed branch ends with `push: needed`, the push itself is yours)
-// Test seam: WORKTREE_GH = JSON array with the gh command (default ["gh"]).
-// Output is a flat key: value block ending in `rc:`; exit 0 ok, 2 refused, 3 failed (also an unresolved conflict or a failing --check).
+
+
+
+
+
+
+
+
+
+
+
+
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -25,7 +25,7 @@ const git = (cwd, args) => {
   const r = spawnSync('git', ['-c', 'merge.conflictStyle=merge', ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' } });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr || r.stdout || r.error?.message || '').trim() };
 };
-// Raw `key: value` lines for the git-flow verbs: paths and commands stay readable (no JSON escaping), and `rows` follow the fields.
+
 const emit = (status, fields, code, rows = []) => {
   const lines = Object.entries({ status, ...fields }).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => `${k}: ${String(v).replace(/\s*\r?\n\s*/g, ' ')}`);
   process.stdout.write(`${[...lines, ...rows].join('\n')}\nrc: ${code}\n`);
@@ -35,7 +35,7 @@ const fwd = (p) => p.split('\\').join('/');
 const short = (sha) => sha.slice(0, 7);
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** The folder name, under .worktrees/, of the one worktree checked out on `branch`; undefined when none or more than one matches. */
+
 function folderOfBranch(main, branch) {
   const real = (p) => { try { return realpathSync.native(p); } catch { return resolve(p); } };
   const root = real(join(main, '.worktrees'));
@@ -49,7 +49,7 @@ function folderOfBranch(main, branch) {
   return found.length === 1 ? found[0] : undefined;
 }
 
-/** A worktree argument is its folder name, or the branch checked out in that folder (`feat/x` is no folder name). */
+
 function worktreeName(arg, cwd) {
   if (NAME.test(arg)) return arg;
   const main = mainOf(cwd);
@@ -61,7 +61,7 @@ function mainOf(cwd) {
   return common.ok ? resolve(cwd, common.out, '..') : '';
 }
 
-/** Takes a worktree away, its node_modules junction first (the link itself, never the main node_modules behind it); a refusal (dirty) restores the junction. */
+
 function dropWorktree(main, path) {
   const link = join(path, 'node_modules');
   const linked = existsSync(link) && lstatSync(link).isSymbolicLink();
@@ -111,7 +111,7 @@ function listWorktrees(cwd, all = false) {
   return 0;
 }
 
-// --- git flow: --done and --update ---------------------------------------------------------------------------------------------------
+
 const lines = (text) => text.split(/\r?\n/).filter(Boolean);
 const baseOf = (main, explicit) => explicit || git(main, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).out.replace(/^origin\//, '') || 'main';
 
@@ -123,7 +123,7 @@ function ghMergedPrs(main, branch) {
   try { return { prs: JSON.parse(r.stdout || '[]') }; } catch { return { error: 'gh devolveu JSON inválido' }; }
 }
 
-/** Is the work of `tip` already in origin/<base>? Plain git first (ancestor, then every patch present), then GitHub for a squash merge: a merged PR whose head is the tip or has the tip's tree. */
+
 function mergedProof(main, branch, tip, base) {
   const ref = `origin/${base}`;
   if (git(main, ['merge-base', '--is-ancestor', tip, ref]).ok) return { merged: true, how: `ancestral de ${ref}` };
@@ -140,7 +140,7 @@ function mergedProof(main, branch, tip, base) {
   return { merged: false, reason: last ? `a ponta local ${short(tip)} difere da PR #${last.number} mesclada (head ${short(last.headRefOid)}): há trabalho depois do merge` : `nenhuma PR mesclada para ${branch}` };
 }
 
-/** Fast-forwards the local <base> from origin/<base>: with --ff-only in the main checkout when it sits on <base>, by moving the ref when it sits elsewhere and no worktree has <base> open. */
+
 function fastForwardBase(main, base) {
   const ref = `origin/${base}`;
   const before = git(main, ['rev-parse', '--verify', '--quiet', `refs/heads/${base}`]).out;
@@ -186,7 +186,7 @@ function doneWorktree(arg, cwd, baseOpt) {
   return emit('done', fields, 0);
 }
 
-// Conflict hunks git cannot merge but that are no judgment call: both sides are only whole import/require lines.
+
 const IMPORT_LINES = [
   /^\s*import\s+(?:type\s+)?[\w$*{}\s,]+?\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/,
   /^\s*import\s+['"]([^'"]+)['"]\s*;?\s*$/,
@@ -195,7 +195,7 @@ const IMPORT_LINES = [
 const importModule = (line) => { for (const re of IMPORT_LINES) { const m = re.exec(line); if (m) return m[1]; } return undefined; };
 const bare = (line) => line.replace(/\r?\n$/, '');
 
-/** The union of two import-only sides (ours first, then what only theirs has), or undefined when the hunk is not safely that: an empty side (a deletion), a non-import line, or each side holding a different line from the same module (both edited one import). */
+
 function unionImports(ours, theirs) {
   if (!ours.length || !theirs.length) return undefined;
   const mods = new Map();
@@ -209,7 +209,7 @@ function unionImports(ours, theirs) {
   return [...ours, ...theirs].filter((l) => !seen.has(bare(l).trim()) && seen.add(bare(l).trim())).map((l) => `${bare(l)}${eol}`);
 }
 
-/** Resolves the import-only hunks of a conflicted file's text; what remains is listed with its line in the new text. Undefined when the markers are not well formed. */
+
 function resolveImportHunks(text) {
   const src = text.split(/(?<=\n)/);
   const kept = [];
@@ -251,7 +251,7 @@ function operationOf(path) {
 }
 const readText = (file) => { try { return readFileSync(file, 'utf8'); } catch { return undefined; } };
 
-/** Walks an operation stopped on conflicts to its end: resolves the import-only hunks, stages a file the operator finished by hand, continues. Returns the conflicts it cannot settle (none when the operation completed). */
+
 function settle(path, resolvedFiles) {
   for (let round = 0; round < 500; round++) {
     const mode = operationOf(path);

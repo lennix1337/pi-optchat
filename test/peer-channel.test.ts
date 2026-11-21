@@ -23,8 +23,8 @@ async function until(condition: () => boolean, label = 'condition') {
   while (!condition()) { if (Date.now() > deadline) throw new Error(`Timed out: ${label}`); await new Promise(r => setTimeout(r, 10)); }
 }
 
-/** Workers over a synthetic provider. A worker whose task holds `HOLD:<name>` keeps its first turn open until `release(name)`; every
- * reply is `<last line of the task> heard: <last message>`, so a report shows what the worker last read. */
+
+
 async function peerHarness() {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-peer-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
@@ -62,7 +62,7 @@ async function peerHarness() {
       createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
   const release = (name: string) => { released.add(name); gates.get(name)?.(); };
   const done = async (...ids: string[]) => { for (const id of ids) await children.live(id)?.completion; };
-  /** Sends as worker `from` with its own tell_peer, the way its model would call it. */
+
   const tellPeer = async (from: string, message: string) => {
     const tool = children.live(from)?.session.getToolDefinition('tell_peer');
     if (!tool) throw new Error(`${from} has no tell_peer`);
@@ -153,7 +153,7 @@ test('a spawn with a peer of another project, a plain subagent, an unknown or al
     await assert.rejects(h.children.spawn([{ task: 'plain', peer: author }], h.dir), /needs a kind.*Nothing was started\./);
     await assert.rejects(h.children.spawn([...reviewer(author), ...reviewer(author)], h.dir), /already has a peer.*Nothing was started\./, 'two tasks cannot share one peer');
     assert.equal(h.children.history.records.size, size, 'nothing was started');
-    // Itself: a new run's id does not exist while its spawn is checked, so naming it is an unknown run; once started, tell_peer has no recipient argument.
+
     assert.equal(peerRefusal(h.children.history.records, { task: CONTRACT, kind: 'plan', peer: author }, 'harness'), undefined, 'the unpaired author of the same project may be paired');
     const [paired] = await h.children.spawn(reviewer(author), h.dir);
     await h.done(paired);

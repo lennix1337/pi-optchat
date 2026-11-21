@@ -23,12 +23,12 @@ export interface Triage {
 export interface Signal { project: string; lines: string[]; lastRun?: string }
 
 export const GLOBAL = 'global';
-/** The digest key of the last turn's error: its own, so recovering from it is not a change of the radar's global lines. */
+
 const STOP_KEY = 'global:stop';
 const DEFAULT_STALL_HOURS = 24;
 const HOUR = 3_600_000;
 
-/** What the radar prints on every read without new information: item ages, probe latency and rounds, free disk, quiet minutes. */
+
 const RADAR_VOLATILE: [RegExp, string][] = [
   [/updated \d[\d.]*\s*[a-z]+ ago/gi, 'updated'],
   [/\(\d[\d.]*\s*[a-z]+ ago\)/gi, '(ago)'],
@@ -46,19 +46,19 @@ export const steadyLine = (line: string) => RADAR_VOLATILE.reduce((text, [patter
 
 const UNAVAILABLE = 'Wake radar unavailable';
 const TRUNCATED = /^\[radar (?:truncated|output cut) at \d+ chars\]$/;
-/** `owner/repo` at the start of a bullet, as in `lennix1337/Genexus18MCP#959 title`. */
+
 const OWNER_REPO = /^([A-Za-z0-9][\w.-]*)\/([A-Za-z0-9][\w.-]*)(?=[#\s:@]|$)/;
-/** A bare repository name before ` @ branch` or a colon, as in `pi-optchat @ main:` and `dentai-mono: worktrees/...`. */
+
 const BARE_REPO = /^([A-Za-z][\w.-]*)(?: @ |:\s)/;
 
-/** The project a radar bullet is about: the repo it names, through `specialistOf`; `global` when it names none. */
+
 function projectOfBullet(text: string): string {
   const repo = OWNER_REPO.exec(text)?.[2] ?? BARE_REPO.exec(text)?.[1];
   return (repo && specialistOf(`C:/projetos/${repo}`)) || GLOBAL;
 }
 
-/** The radar's lines by project, in order of first appearance. The section holding the truncation marker is dropped (it is incomplete,
- * and the part the radar cut off changes what it shows without anything having happened); so are the title and the lines before the first section. */
+
+
 function radarLines(radar: string | undefined): Map<string, string[]> {
   const by = new Map<string, string[]>();
   if (!radar || radar.startsWith(UNAVAILABLE)) return by;
@@ -72,7 +72,7 @@ function radarLines(radar: string | undefined): Map<string, string[]> {
     let project = GLOBAL;
     for (const line of section) {
       if (!line.trim() || /^-\s+nothing notable$/.test(line.trim())) continue;
-      // A bullet picks its project; its indented detail lines follow it; a line that is not a bullet is global.
+
       if (/^-\s/.test(line)) project = projectOfBullet(line.replace(/^-\s+/, ''));
       else if (!/^\s/.test(line)) project = GLOBAL;
       by.set(project, [...by.get(project) ?? [], line.trim()]);
@@ -81,7 +81,7 @@ function radarLines(radar: string | undefined): Map<string, string[]> {
   return by;
 }
 
-/** A non-quota error the last turn ended on; a quota error is the quota gate's business. */
+
 const stopLine = (lastStop: string | undefined) => lastStop && /^error\b/i.test(lastStop) && errorCategory(lastStop) !== 'rate_or_usage_limit'
   ? `last turn ended on ${lastStop}` : undefined;
 
@@ -106,7 +106,7 @@ export function stalledMissions({ missions, lastRuns, now, stallHours = DEFAULT_
  * has stalled since `stalled` was taken, and the last turn's error. Projects that disappeared signal nothing. */
 export function signals({ radar, previous, missions, lastRuns, now, stallHours = DEFAULT_STALL_HOURS, stalled = [], lastStop }: {
   radar: string | undefined; previous: Record<string, string>; missions: string; lastRuns: Record<string, number>; now: number;
-  stallHours?: number; /** The stalled missions of the last tick (see `stalledMissions`). */ stalled?: readonly string[]; lastStop?: string }): Signal[] {
+  stallHours?: number;   stalled?: readonly string[]; lastStop?: string }): Signal[] {
   const found = new Map<string, string[]>();
   const add = (project: string, lines: string[]) => found.set(project, [...found.get(project) ?? [], ...lines]);
   for (const [project, lines] of radarLines(radar)) if (previous[project] !== sha(lines)) add(project, lines);

@@ -8,7 +8,7 @@ type Executor = (probe: Probe) => Promise<Execution>;
 let running = false;
 export const executeProbe = (probe: Probe, timeout = 60_000): Promise<Execution> => new Promise(resolve => {
   const [file, ...args] = probe.argv;
-  // -q must be first: curl otherwise reads ~/.curlrc, which may write files or change the request.
+  // external: curl -q must be first to suppress the default curlrc.
   if (file === 'curl') args.unshift('-q');
   if (file === 'git') {
     const index = args[0] === '-C' ? 2 : 0, command = args[index];

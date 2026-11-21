@@ -34,14 +34,14 @@ export async function applyRemedies(transitions: Transition[], remedies: Readonl
   return out;
 }
 
-/** Closes the open fix of a recovered probe; returns the note for its message. */
+
 function recovered(open: Fix | undefined, now: number): string | undefined {
   if (!open) return undefined;
   Object.assign(open, { outcome: 'resolved', resolvedAt: now });
   return `resolvido sozinho (${open.label})`;
 }
 
-/** Runs the remedy of a probe that went down, unless it ran recently without effect; returns the note for the alert. */
+
 async function remedied(probe: string, remedy: Remedy | undefined, open: Fix | undefined, fixes: Fix[], now: number): Promise<string | undefined> {
   if (!remedy) return undefined;
   if (open && now - open.at < RETRY_AFTER_MS) return `já rodei ${open.label} às ${brasiliaTime(open.at)} e não resolveu: preciso de você`;

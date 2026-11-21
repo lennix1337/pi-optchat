@@ -72,7 +72,7 @@ test('Memory scrubs echo leaves before persisting to FileStore and before compac
     await memory.settle(undefined, 'tree');
     await memory.close();
 
-    // 1. Persisted log on disk must not contain the raw secrets, but must keep commit hash.
+
     const mainDir = join(dir, 'main');
     const logFiles = readdirSync(mainDir).filter(f => f.endsWith('.jsonl'));
     assert.equal(logFiles.length, 1);
@@ -83,7 +83,7 @@ test('Memory scrubs echo leaves before persisting to FileStore and before compac
     assert.match(diskLog, /\[segredo:bearer\]/);
     assert.match(diskLog, new RegExp(commit));
 
-    // 2. Compactor inputs (both echo source and tool result) must never see raw secrets.
+
     assert.ok(seenByCompactor.length >= 2);
     for (const call of seenByCompactor) {
       assert.doesNotMatch(call.source, new RegExp(secret));

@@ -38,7 +38,7 @@ test('unmerged forced worktree removal is blocked, ancestor and squash merge are
     assert.match((await worktreeRemovalRefusal(cmd, f.repo, () => false))!, /feature.*explicit order/i);
     assert.match((await worktreeRemovalRefusal(`rm -rf "${f.tree}"`, f.repo, () => false))!, /feature/);
     assert.equal(await worktreeRemovalRefusal(cmd, f.repo, () => true), undefined);
-    // A PR fetched as `git fetch origin pull/N/head:pr-N` has a local branch name GitHub does not know: its merged PR is found by head commit.
+
     const head = f.git('rev-parse', 'feature');
     assert.equal(await worktreeRemovalRefusal(cmd, f.repo, (_branch, _repo, sha) => sha === head), undefined, 'merged PR found by head commit');
     f.git('update-ref', 'refs/remotes/origin/main', 'feature');
@@ -62,7 +62,7 @@ test('a clean worktree whose HEAD is on a remote-tracking ref may go; a dirty on
     writeFileSync(join(f.tree, 'file'), 'feature');
     assert.equal(await worktreeRemovalRefusal(remove(f.tree), f.repo, () => false), undefined, 'clean and pushed');
     assert.equal(await worktreeRemovalRefusal(`rm -rf "${f.tree}"`, f.repo, () => false), undefined, 'rm -rf of the same clean pushed worktree');
-    // A detached gate worktree at a pushed PR head.
+
     const gate = join(f.root, 'gate');
     f.git('worktree', 'add', '--detach', gate, 'feature');
     assert.equal(await worktreeRemovalRefusal(remove(gate), f.repo, () => false), undefined, 'detached at a pushed head');

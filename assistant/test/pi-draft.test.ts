@@ -11,7 +11,7 @@ import { validExecutorConfig } from '../src/runtime/executor-config.ts';
 import { registerFixtureModel } from '../../test/fixture-model.ts';
 
 type Reply = string | Error;
-/** Offline accounts `acct` and `acct-account-2`, both saved with default model `fixture`, rotated as pi-multi-account would. */
+
 async function fixture(replies: Record<string, Reply>, fn: (engine: DraftEngine, calls: { provider: string; context: Context }[]) => Promise<void>, pinned = false, tools = false) {
   const dir = mkdtempSync(join(tmpdir(), 'oc-pi-draft-'));
   const calls: { provider: string; context: Context }[] = [];
@@ -31,7 +31,7 @@ const run = (engine: DraftEngine, controller = new AbortController()) => engine.
 test('the Pi runner sends one tool-free request with the task as data and returns the parsed draft', async () => fixture({ acct: '{"kind":"draft","text":"Olá equipe"}' }, async (engine, calls) => {
   assert.deepEqual(await run(engine), { kind: 'draft', text: 'Olá equipe' });
   assert.equal(calls.length, 1, 'no automatic retry or extra turn');
-  // Providers receive the normalized transcript: the prompt and tool declarations live in its system messages.
+
   const system = calls[0].context.messages.filter(message => (message.role as string) === 'system') as unknown as { content: unknown; toolsAdded?: unknown[] }[];
   assert.ok(system.length > 0);
   assert.ok(system.every(message => !message.toolsAdded?.length), 'no tools are offered to the model');

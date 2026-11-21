@@ -18,7 +18,7 @@ const MIMES = new Map<string, Mime>((Object.keys(EXTENSIONS) as Mime[]).map(mime
 export interface Saved { entries: unknown[]; tree: unknown[]; view?: string }
 /** A safe, append-only scheduler state: only the refusal code and summary coordinates are persisted, never error text. */
 export interface TerminalRecord { type: 'terminal' | 'retry'; l: number; i: number; code: 'OPTCHAT_POLICY_REFUSAL' }
-/** A write is done when it returns: a store that writes behind returns a promise instead, which Memory awaits in order. */
+
 type Write = Promise<void> | undefined;
 type Maybe<T> = T | Promise<T>;
 
@@ -95,14 +95,13 @@ export const appendRecent = <T extends { at: number }>(file: string, value: T, m
 
 const WINDOWS_LOCKS = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const RENAME_RETRY_MS = 2_000;
-/** Windows refuses a rename for a moment while another process (Defender, the indexer) holds the destination without delete
- * sharing. Retry that refusal for up to RENAME_RETRY_MS, as graceful-fs does; a lasting one is thrown and the temporary removed. */
+// external: Windows file sharing can transiently block rename with Defender or an indexer.
 function renameRetryingWindowsLocks(temporary: string, file: string) {
   const started = Date.now();
   for (let wait = 10; ; wait = Math.min(wait * 2, 200)) {
     try { renameSync(temporary, file); return; } catch (error) {
       if (!WINDOWS_LOCKS.has((error as NodeJS.ErrnoException).code ?? '') || Date.now() - started >= RENAME_RETRY_MS) {
-        try { rmSync(temporary, { force: true }); } catch { /* the rename error is the one to report */ }
+        try { rmSync(temporary, { force: true }); } catch {   }
         throw error;
       }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
@@ -112,7 +111,7 @@ function renameRetryingWindowsLocks(temporary: string, file: string) {
 export function atomicWrite(file: string, text: string | Uint8Array) {
   mkdirSync(resolve(file, '..'), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
-  // One read-write handle: Windows refuses fsync on a read-only one, and it cannot open a directory at all, so there the file flush is the whole guarantee.
+  // external: Windows cannot fsync read-only handles or open a directory for fsync.
   const fd = openSync(temporary, 'w+', 0o600);
   try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
   if (process.platform !== 'win32') renameSync(temporary, file);
@@ -121,8 +120,8 @@ export function atomicWrite(file: string, text: string | Uint8Array) {
   try { fsyncSync(parent); } finally { closeSync(parent); }
 }
 const otherWriter = (file: string) => new Error(`Another process wrote ${file}. Close every other Pi on this profile and restart Pi; nothing was written.`);
-/** With `size`, refuses to append unless the file still has that size. A last line left without its newline is ended first. A write
- * cut short is truncated away before the error is thrown. Returns the new size. */
+
+
 function completeLength(fd: number, length: number) {
   const block = Buffer.alloc(4096);
   for (let end = length; end > 0;) {
@@ -144,24 +143,24 @@ export function appendJson(file: string, value: unknown, size?: number) {
       const last = Buffer.alloc(1);
       if (readSync(fd, last, 0, 1, length - 1) === 1 && last[0] !== 0x0a) {
         length = completeLength(fd, length);
-        // Windows refuses to truncate through an append handle, so truncate by path.
+        // external: Windows cannot truncate through an append handle.
         truncateSync(file, length);
       }
     }
     const data = Buffer.from(JSON.stringify(value) + '\n');
-    // A cut-short write is undone, so the file keeps the size the caller checks against. If the undo fails too, the write's own
-    // error is still the one thrown.
+
+
     try { if (writeSync(fd, data) !== data.length) throw new Error(`Incomplete write: ${file}`); }
     catch (error) { try { truncateSync(file, length); } catch {} throw error; }
     fsyncSync(fd);
     return fstatSync(fd).size;
   } finally { closeSync(fd); }
 }
-/** Where a record's line lies in its file: bytes `offset` to `offset + length`, newline excluded. */
+
 type Located = (value: unknown, file: string, offset: number, length: number) => void;
-/** A past day's line: where it lies, and its record; with 1 last, the record without its text, `size` in its place. */
+
 type DayRow = [offset: number, length: number, value: unknown, textless: 0 | 1];
-/** A message record without its text and with the `size` Memory gives it (the bytes of `kind: text`), or undefined if not one. */
+
 function textless(value: unknown) {
   const record = value as { i?: unknown; kind?: unknown; text?: unknown } | null;
   if (!record || typeof record.kind !== 'string' || typeof record.text !== 'string' || !Number.isSafeInteger(record.i)) return undefined;
@@ -226,7 +225,7 @@ async function scanJsonl(file: string, warn: (s: string) => void, located: Locat
 }
 function* parseRecords(data: Buffer, file: string, warn: (s: string) => void, located: Located): Generator<void, void> {
   let from = 0, index = 0;
-  // Newline is the append commit marker. Even a parseable unterminated tail may be a write interrupted before commit.
+
   for (let newline = data.indexOf(0x0a); newline >= 0; from = newline + 1, newline = data.indexOf(0x0a, from)) {
     index++;
     const line = data.toString('utf8', from, newline);
@@ -240,7 +239,7 @@ function* parseRecords(data: Buffer, file: string, warn: (s: string) => void, lo
   }
   if (data.toString('utf8', from).trim()) warn(`Skipped damaged JSON at ${file}:${index + 1}`);
 }
-/** The text of message `i` in the line at `offset`, refusing a line that no longer holds it. */
+
 function lineText(data: Buffer, offset: number, length: number, i: number, file: string) {
   const moved = () => new Error(`Message ${i} is no longer where it was in ${file}; restart Pi to reload the memory.`);
   let record: { i?: unknown; text?: unknown } | null;
@@ -248,7 +247,7 @@ function lineText(data: Buffer, offset: number, length: number, i: number, file:
   if (record?.i !== i || typeof record.text !== 'string') throw moved();
   return record.text;
 }
-/** How long a log file read for an old message stays in RAM: a scan over a range reads each file once. */
+
 const READ_CACHE_MS = 1000;
 
 const MAX_PACKED_INDEX = 10_000_000;
@@ -332,7 +331,7 @@ export class FileStore implements Store {
   load(hot = Infinity): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
     this.clearIndex();
-    // The tree loads first, so the log knows which messages are summarized while it parses.
+
     const tree: unknown[] = [];
     records(join(this.directory, 'tree'), this.warn, (value, file, offset, length) => {
       const { l, i, text } = (value ?? {}) as { l?: unknown; i?: unknown; text?: unknown };
@@ -340,8 +339,8 @@ export class FileStore implements Store {
       tree.push(hot < Infinity ? (coldSummary(value) ?? value) : value);
     });
     const main = join(this.directory, 'main'), entries: unknown[] = [], names = logNames(main);
-    // Past days are no longer written to: each is parsed once into an index of its records without their texts, and later opens
-    // read that (~5% of the bytes) instead. Texts a summary does not cover yet, and the newest `hot`, come from the log.
+
+
     const slim = new Set<number>();
     for (const file of names.slice(0, -1).map(name => join(main, name))) for (const [offset, length, value, textlessRow] of this.dayIndex(file)) {
       const i = (value as { i?: unknown } | null)?.i;
@@ -362,7 +361,7 @@ export class FileStore implements Store {
     this.drop();
     for (const name of readdirSync(main).filter(n => n.endsWith('.jsonl'))) this.lastSeenBytes.set(join(main, name), statSync(join(main, name)).size);
     const view = join(this.directory, 'view.json');
-    // An unreadable view is rebuilt, as a damaged one is.
+
     let saved: string | undefined;
     if (existsSync(view)) try { saved = readFileSync(view, 'utf8'); } catch { saved = ''; }
     return { entries, tree, view: saved };
@@ -419,7 +418,7 @@ export class FileStore implements Store {
     const view = join(this.directory, 'view.json');
     let saved: string | undefined;
     if (existsSync(view)) try { saved = await readFile(view, 'utf8'); } catch { saved = ''; }
-    // A writer during an async slice must not be mistaken for the state we loaded.
+
     for (const [dir, names] of [[treeDir, treeNames], [main, mainNames]] as const) {
       const now = logNames(dir);
       if (now.length !== names.length || now.some((name, i) => name !== names[i])) throw otherWriter(dir);

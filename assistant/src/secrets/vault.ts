@@ -21,7 +21,7 @@ function binding(input: SecretBinding): SecretBinding {
   let parsed: URL;
   try { parsed = new URL(origin); } catch { throw new VaultError('invalid_binding'); }
   const local = parsed.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-  // Only an exact, already-normalized origin binds: no path, credentials or plain-http remote host.
+
   if ((parsed.protocol !== 'https:' && !local) || parsed.origin !== origin) throw new VaultError('invalid_binding');
   return { profileId, origin, action };
 }
@@ -48,7 +48,7 @@ export class Vault {
     prepareDatabase(options.databasePath);
     const db = new DatabaseSync(options.databasePath);
     try {
-      // secure_delete zeroes freed pages, so rotated or revoked ciphertext does not linger in the file.
+      // external: SQLite secure_delete zeroes freed pages.
       db.exec(`PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;
         CREATE TABLE IF NOT EXISTS vault_key (id INTEGER PRIMARY KEY CHECK (id = 1), kind TEXT NOT NULL, blob BLOB NOT NULL);
         CREATE TABLE IF NOT EXISTS secrets (ref TEXT PRIMARY KEY, profile TEXT NOT NULL, origin TEXT NOT NULL, action TEXT NOT NULL,
@@ -67,7 +67,7 @@ export class Vault {
     if (!row) {
       const fresh = randomBytes(32);
       const blob = await protector.protect(fresh);
-      // A second opener may have written its key first; the first committed key wins and this one is discarded.
+
       db.prepare('INSERT OR IGNORE INTO vault_key (id, kind, blob) VALUES (1, ?, ?)').run(protector.kind, blob);
       fresh.fill(0);
       row = stored()!;

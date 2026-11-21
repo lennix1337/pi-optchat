@@ -13,7 +13,7 @@ import { updateOperationalState } from '../src/operational-state.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
-// The swlucas05 profile's list, as shipped in its closed-conflicts.json.
+
 const GIT = [
   { id: 'git-free-87165', match: 'no[- ]?Git|(?<!\\d)(90167|16384)(?!\\d)[^;]{0,40}(Git|push)', say: 'User 87165 replaced the "no Git" rule: Git is free; only release/deploy need permission.' },
   { id: 'git-ok-87165', match: '\\b(w/o|without|no)\\s+(specific\\s+)?OK\\b', with: 'merg|push|commit|\\bPR\\b|squash', say: 'Git actions need no OK since 87165.' },
@@ -43,7 +43,7 @@ test('gitwatch closed authority claims are flagged without suppressing real gate
   for (const line of positives) assert.equal(cited(line, gitwatch).length, 1, line);
   for (const line of negatives) assert.equal(cited(line, gitwatch).length, 0, line);
 });
-// Real lines from the 31/10 view.
+
 const LINE = 'OptChat 97144-51: gh pr merge 46 --squash returned rc=0 after a gitwatch CLEAN notice, with no specific OK; 90167 no-Git vs pushes UNRESOLVED. ILSpy: KBObject.cs:1134 stub; cap UNVERIFIED (96451). KB-write auth 88064 vs user 95899 UNVERIFIED.';
 
 test('a line citing the closed Git conflict is flagged; open conflicts are not', () => {
@@ -158,7 +158,7 @@ test('shown lines citing a closed conflict are rewritten once, and the rewrite s
   } finally { removeDir(dir); }
 });
 
-// Real leaf 104353 (03/11): a shell result line that carried three approvals and two message ids from other lines.
+
 const SHELL = 'work: [shell 13b6174f] completed · exit 0 · App Home tests pass 13, fail 0; without src 2 fail; tsc rc=0.';
 const CARRIED = 'work: shell 13b6174f: App Home tests 13/0 with fix, 2 fail without src; tsc rc=0. Home "livre" cause (103394, 104291) UNVERIFIED. Approvals 38f9c222, 44d5f68c, 8266855f still open.';
 
@@ -188,7 +188,7 @@ test('a merge of two lines may name what its lines name', async () => {
 });
 
 test('a line that credits a tool call to the user is refused, his own messages pass', () => {
-  // 10/11: "user 142336: merges need tests, review, green CI" named a read_many call; the false rule spread for days.
+
   const kinds: Record<number, string> = { 142336: 'tool', 145488: 'tool', 150487: 'user', 162493: 'work' };
   const credited = misattributed(i => kinds[i]);
   const hits = cited('#348 merged pre-CI (breaks user 142336 tests, review, green CI); user 150487 nao mascarar', [credited]);

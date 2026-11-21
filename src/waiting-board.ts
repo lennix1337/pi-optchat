@@ -3,12 +3,12 @@ import type { RunInfo } from './runs.ts';
 import { isRunning } from './runs.ts';
 import { plainText, type ShellJob } from './shells.ts';
 
-/**
- * The waiting board: everything OptChat is waiting on and how far along each item is, in three sections: what waits on the operator,
- * what is being worked on, and what finished in the last minutes. The TUI widget (src/navigation.ts) and the status note the model
- * reads each turn (src/transcript.ts `atWork`) both render `boardView`'s result: the operator sees the line, the model the same
- * line plus the ids it can act on. Times are Brasília's, the zone the operator reads.
- */
+
+
+
+
+
+
 
 /** How long a failure stays on the board; the focused board keeps every finished item this long. */
 export const KEEP_MS = 10 * 60_000;
@@ -24,9 +24,9 @@ export const STALL_MS = 10 * 60_000;
 export const BOARD_LINES = 8;
 /** The model's note stays under this many characters; what does not fit becomes "+N mais". */
 export const NOTE_CHARS = 600;
-/** A gitwatch snapshot older than this is shown with its age: it may no longer be true. */
+
 const STALE_MS = 5 * 60_000;
-/** Longest goal and question a compact row keeps; the focused board shows them whole. */
+
 const GOAL_CHARS = 44, QUESTION_CHARS = 60;
 
 export type Tone = 'active' | 'wait' | 'ok' | 'bad' | 'info';
@@ -73,11 +73,11 @@ export interface BoardInput {
 const obj = (value: unknown): Record<string, unknown> | undefined => typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
 const str = (value: unknown) => typeof value === 'string' && value.trim() ? value : undefined;
 const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-/** A time as epoch milliseconds, whether given as a number or an ISO string. */
+
 const time = (value: unknown) => num(value) ?? (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined);
 /** One line of at most `n` characters, cut with an ellipsis. */
 export function cut(text: string, n: number) {
-  // Only the head can show: a whole worker brief or shell output was cleaned on every board render (~300 ms per 10 s live).
+
   const limit = n * 8 + 256, flat = plainText(text.slice(0, limit)).replace(/\s+/g, ' ').trim(), chars = [...flat];
   return chars.length <= n && text.length <= limit ? flat : `${chars.slice(0, n - 1).join('').trimEnd()}…`;
 }
@@ -114,17 +114,17 @@ export function phaseOf(name: string, args: unknown): string {
 }
 /** The last non-empty line of a shell's output. */
 export const lastLine = (output: string) => plainText(output).split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean).at(-1) ?? '';
-/** `anthropic-account-2/claude-sonnet-5-5` → `sonnet`. */
+
 const modelName = shortModel;
 const repoName = (repo: string) => repo.split('/').pop() ?? repo;
 
-/** A finished item: its mark, what it was, how it ended and when. */
+
 const finished = (ok: boolean, what: string, result: string, at: number, tone: Tone = ok ? 'ok' : 'bad', keep = ok ? OK_KEEP_MS : KEEP_MS): BoardLine =>
   ({ text: `${ok ? '✓' : '✗'} ${what} ${result} · ${hhmm(at)}`, tone, at, finished: true, section: 'done', keep });
-/** An item in progress; `ids` are what the model's note adds to the line. */
+
 const working = (text: string, tone: Tone, at: number, ids?: string, parts?: BoardLine['parts']): BoardLine => ({ text, tone, at, finished: false, section: 'working', ...ids ? { note: `${text} [${ids}]` } : {}, ...parts ? { parts } : {} });
 
-/** The question as the operator reads it: what is asked, the answers he can tap and how long it has waited. */
+
 function waitLine(item: WaitItem, now: number, expand: boolean): BoardLine {
   let question = plainText(item.ask ? `${item.text}: ${item.ask}` : item.text).replace(/\s+/g, ' ').trim();
   if (item.choices?.length && !question.endsWith('?')) question += '?';
@@ -134,7 +134,7 @@ function waitLine(item: WaitItem, now: number, expand: boolean): BoardLine {
 
 const projectName = (run: BoardRun) => run.project ?? projectOf(run.cwd ?? '');
 const ENDED = new Set<string>(['completed', 'failed', 'stopped']);
-/** Project · goal · phase in words · elapsed · short model; a finished worker says how it ended instead. `pad` aligns the project column. */
+
 function runLine(run: BoardRun, now: number, pad: number): BoardLine | undefined {
   const project = projectName(run), goal = cut(taskLine(run.task) || run.task, GOAL_CHARS);
   const lead = project ? `${project.padEnd(pad)} · ` : '', head = lead + goal;
@@ -157,17 +157,17 @@ function runLine(run: BoardRun, now: number, pad: number): BoardLine | undefined
   const tail = [...doing ? [doing] : [], age, model].join(' · ');
   return working(`${head} · ${tail}`, stalled ? 'wait' : 'active', at, run.id, { head: lead, goal, tail: ` · ${tail}` });
 }
-/** A leading `cd <dir> &&` (or `;`) says where the command ran, not what it is: the directory's name moves in front of the rest. */
+
 function splitCd(command: string): { dir?: string; rest: string } {
   const flat = command.trim(), m = /^cd\s+(?:\/d\s+)?("[^"]*"|'[^']*'|[^\s&;]+)\s*(?:&&|;)\s*(.+)$/s.exec(flat);
   if (!m) return { rest: flat };
   const dir = m[1].replace(/^["']|["']$/g, '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
   return dir ? { dir, rest: m[2].trim() } : { rest: flat };
 }
-/**
- * One line: what kind of job it is, where it ran and what, then how it ended and when, or how long it has run and its last output.
- * Expanded (the focused board) keeps the whole command and adds the last line of its output on a second line.
- */
+
+
+
+
 function shellLine(shell: BoardShell, now: number, expand = false): BoardLine | undefined {
   const { dir, rest } = splitCd(shell.command), what = `shell ${dir ? `${dir}: ` : ''}${expand ? plainText(rest).replace(/\s+/g, ' ') : cut(rest, 40)}`;
   const out = shell.last ? `\nsaída: ${expand ? shell.last : cut(shell.last, 50)}` : '';
@@ -181,14 +181,14 @@ function shellLine(shell: BoardShell, now: number, expand = false): BoardLine | 
 }
 
 const MERGE_STATE: Record<string, string> = { DIRTY: 'conflito', BEHIND: 'atrás da base', BLOCKED: 'bloqueado', UNSTABLE: 'CI instável', DRAFT: 'rascunho' };
-/** `CI 2/5`, with failures marked; undefined when the checks are unknown. */
+
 function ci(checks: unknown) {
   const c = obj(checks);
   if (!c) return undefined;
   const pass = num(c.pass) ?? 0, fail = num(c.fail) ?? 0, pending = num(c.pending) ?? 0, total = pass + fail + pending;
   return { text: total ? `CI ${pass}/${total}${fail ? ` ✗${fail}` : ''}` : 'sem CI', pending, fail };
 }
-/** The PR lines and the branches whose CI is not green; the model's note names each PR as `owner/repo#N` with its CI state. */
+
 function gitwatchLines(state: GitwatchState, now: number): BoardLine[] {
   const polled = time(state.polledAt), stale = polled !== undefined && now - polled > STALE_MS ? `dados de ${span(now - polled)} atrás` : undefined;
   const lines: BoardLine[] = [];
@@ -211,7 +211,7 @@ function gitwatchLines(state: GitwatchState, now: number): BoardLine[] {
   return lines;
 }
 
-/** What a gitwatch event means to the operator, strongest first. */
+
 const EVENT_RANK = ['merged', 'closed', 'stall', 'checks', 'mergeState', 'review'];
 function noticeLine(notice: GitwatchNotice, now: number): BoardLine | undefined {
   const at = time(notice.at), repo = str(notice.repo);
@@ -266,14 +266,14 @@ export function boardNote(view: BoardView, chars = NOTE_CHARS): string | undefin
   let used = head.length;
   for (const line of pending) {
     const text = line.note ?? line.text;
-    if (used + text.length + 3 > chars - 12 && out.length) break; // room for the "+N mais" line
+    if (used + text.length + 3 > chars - 12 && out.length) break;
     out.push(text); used += text.length + 3;
   }
   const more = view.pending - out.length;
   return `${head}\n${out.map(l => `- ${l}`).join('\n')}${more ? `\n${overflowText(more)}` : ''}`;
 }
 
-// ---- Gathering the board's input from the live session ----
+
 
 interface Sources {
   runs: () => readonly RunInfo[];
@@ -303,7 +303,7 @@ export class WaitingBoard {
     );
   }
   /** Asks pi-gitwatch for its current state; it answers on `gitwatch:state:v1`. Nothing happens without pi-gitwatch. */
-  requestState() { try { this.events?.emit('gitwatch:state:request:v1', {}); } catch { /* a listener's failure must not break opening */ } }
+  requestState() { try { this.events?.emit('gitwatch:state:request:v1', {}); } catch {   } }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   close() { for (const stop of this.stops.splice(0)) stop(); this.listeners.clear(); }
   private changed() { for (const listener of this.listeners) listener(); }

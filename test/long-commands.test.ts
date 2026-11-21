@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LONG_COMMAND_SECONDS, commandSegments, longCommandReason } from '../src/long-commands.ts';
 
-// Long families seen in the OptChat main session's bash calls (scripts/delegation-stats.mjs and the duration table
-// behind it: npm run, npm test, dotnet test, cargo build/test, wsl/pwsh wrappers, timeout N).
+
+
 test('package scripts, suites, builds and runners are long', () => {
   for (const command of [
     'cd C:/projetos/Genexus18MCP && npm test',

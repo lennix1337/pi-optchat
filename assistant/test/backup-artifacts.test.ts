@@ -83,7 +83,7 @@ test('backup refuses missing/changed bytes, foreign registry profiles and linked
     if (name === 'reserved-artifact') {
       const db = new DatabaseSync(f.registryPath);
       const invalid = { ...f.record, location: `${f.record.artifactId}/v1/CON.md` };
-      // Represents an existing entry from a platform that permits this filename. No Windows device is opened.
+
       const { fileName, size, createdAt, reviewedBy, reviewedAt, ...artifact } = invalid;
       db.prepare('UPDATE artifacts SET artifact = ?, file_name = ? WHERE version = 1').run(JSON.stringify(artifact), 'CON.md'); db.close();
     }
@@ -162,7 +162,7 @@ test('creation refuses an existing SQLite filename that restoration cannot safel
   assert.equal(readdirSync(root).includes('backup'), false);
 }));
 
-/** Re-seal an authenticated test archive to probe post-decryption validation, not only the GCM layer. */
+
 function mutatedArchive(bytes: Buffer, key: Buffer, mutate: (manifest: any) => void): Buffer {
   const headerStart = Buffer.byteLength('OPTCHAT-ASSISTANT-BACKUP\n') + 4;
   const headerEnd = headerStart + bytes.readUInt32BE(headerStart - 4), aad = bytes.subarray(0, headerEnd);

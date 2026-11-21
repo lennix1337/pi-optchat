@@ -1,7 +1,7 @@
-// Feeds MachineSense hours of synthetic 5-second samples (a busy machine: 330 processes, 10% of them replaced every sample, a shell
-// claim every minute, now and then a heavy worker) into a temp ledger directory, and prints heap after two collections and the
-// collection sizes every simulated hour. Offline: no sampler helper, no network, nothing outside os.tmpdir().
-//   node --experimental-transform-types --expose-gc scripts/machine-bench.ts [--hours 24]
+
+
+
+
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

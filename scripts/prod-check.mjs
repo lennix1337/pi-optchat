@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// One read-only look at a DentAI production host: a single ssh session runs a fixed script and prints a ~30 line summary
-// (uptime/load, memory, disk, containers with image tag and health, top docker stats, nginx status classes and TLS
-// versions for the last N minutes, origin TTFB to /health, Prometheus blackbox probes) and a problems list.
-// Usage: node scripts/prod-check.mjs [--host ALIAS[,ALIAS...]|all] [--since MIN] [--json]
-// Hosts are ~/.ssh/config aliases: hetzner-dentai (5.161.116.218) is the production host (nginx, app containers, the
-// observability stack with Prometheus on 127.0.0.1:9090); producao-dentai (149.36.0.149) is the other known alias.
-// Output is a flat `key: value` block per host ending in `rc:`; exit 0 healthy, 1 problems found, 3 could not check
-// (ssh failed or the answer was incomplete). Problems win over an unreachable host when both occur.
-// The remote script reads only: no sudo, no writes, no docker lifecycle verbs, and nginx logs are only counted.
+
+
+
+
+
+
+
+
+
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 

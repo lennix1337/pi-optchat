@@ -27,11 +27,11 @@ const model = { id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', 
 const options = (epoch: number, more: Partial<Parameters<StableHead['apply']>[1]> = {}) =>
   ({ model: 'anthropic/claude-opus-5-5', native: true, cold: false, epoch, sections: { instructions: OLD }, ...more });
 
-/** Pi's own Anthropic request for these messages, cached the way OptChat does it; nothing leaves the process. */
+
 async function wire(messages: AgentMessage[]) {
   let params: Record<string, unknown> | undefined;
   const events = stream(model, { messages } as never, { apiKey: 'sk-ant-offline', onPayload: (payload: unknown) => { params = structuredClone(payload) as Record<string, unknown>; throw new Error('offline'); } });
-  for await (const _event of events) { /* drain until Pi reports the offline error */ }
+  for await (const _event of events) {   }
   assert.ok(params, 'Pi built a request');
   const strip = (value: unknown) => JSON.parse(JSON.stringify(value, (key, item) => key === 'cache_control' ? undefined : item));
   return { tools: strip(params.tools), system: strip(params.system), messages: strip(params.messages) as { role: string; content: unknown }[],
@@ -51,12 +51,12 @@ test('a tool enabled mid-turn leaves the request\'s tools and system prompt as t
   assert.deepEqual(after.system, before.system);
   assert.deepEqual(after.messages.slice(0, before.messages.length), before.messages, 'every message sent before is sent again unchanged');
   assert.match(JSON.stringify(after.messages), /"tool_addition".*"web_search"/);
-  // The next step of the same turn: the addition keeps its place, so the last request is a prefix of this one.
+
   const third = head.apply(built(WEB, [...call('a', 2), ...call('b', 4)]), options(1));
   assert.deepEqual(third.slice(0, 5), second, 'the addition stays where it was first sent');
   const next = await wire(third);
   assert.deepEqual(next.messages.slice(0, after.messages.length), after.messages);
-  // A new turn: the view grows anyway, so the change moves right after it and the head still holds.
+
   const turn = head.apply(built(WEB, [{ role: 'user', content: 'next question', timestamp: 10 }]), options(2));
   assert.deepEqual(turn[0], built(BASE, [])[0]);
   assert.deepEqual(turn[2], { role: 'system', content: '', toolsAdded: [tool('web_search')], timestamp: 1 }, 'after the message that holds the view');
@@ -86,7 +86,7 @@ test('an edited instructions section is sent as Pi\'s section update; an edit no
 test('a reload keeps the head its entry was written with: the saved base comes back and Pi\'s changes since go after the view', async () => {
   const before = new StableHead();
   const sent = before.apply(built(BASE, call('a', 2)), options(3));
-  // What the session keeps across /reload is JSON.
+
   const saved = JSON.parse(JSON.stringify(before.saved()));
   const after = new StableHead();
   after.restore(saved);
@@ -96,7 +96,7 @@ test('a reload keeps the head its entry was written with: the saved base comes b
   const [old, now] = [await wire(sent), await wire(reloaded)];
   assert.deepEqual(now.tools, old.tools);
   assert.deepEqual(now.system, old.system);
-  // Nothing saved (a session from before this, or a malformed entry): the first request rewrites the head as before.
+
   for (const nothing of [undefined, { prompt: 1 }]) {
     const fresh = new StableHead();
     fresh.restore(saved);
@@ -115,18 +115,18 @@ test('the head is rewritten when its entry cannot be read anyway: cold cache, an
   }
 });
 
-/** The failover model as Pi's catalog ships it: later developer messages and anchored tool additions, but no Anthropic tool blocks. */
+
 const codexModel = (() => {
   const catalog = JSON.parse(readFileSync(new URL('../node_modules/@earendil-works/pi-ai/dist/providers/data/openai-codex.json', import.meta.url), 'utf8')) as
     Record<string, Record<string, Model<'openai-codex-responses'>>>;
   return catalog['openai-codex-responses']['chat:gpt-6.1-sol'];
 })();
-/** A token shaped like a ChatGPT login (the account id is all Pi reads from it); nothing leaves the process. */
+
 const codexToken = ['e30', Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'offline' } })).toString('base64url'), 'x'].join('.');
 async function codexWire(messages: AgentMessage[]) {
   let body: { instructions: string; tools?: { name: string }[]; input: Record<string, unknown>[] } | undefined;
   const events = codexStream(codexModel, { messages } as never, { apiKey: codexToken, onPayload: (payload: unknown) => { body = structuredClone(payload) as typeof body; throw new Error('offline'); } });
-  for await (const _event of events) { /* drain until Pi reports the offline error */ }
+  for await (const _event of events) {   }
   assert.ok(body, 'Pi built a request');
   return body;
 }
@@ -140,7 +140,7 @@ test('on the Codex failover model an AGENTS.md edit and an enabled tool keep the
   const next = await codexWire(head.apply(built(WEB, call('b', 5), PROMPT(NEW)), at(2, { instructions: NEW })));
   assert.equal(next.instructions, first.instructions, 'the instructions the cache entry was written with');
   assert.deepEqual(next.tools?.map(t => t.name), first.tools?.map(t => t.name), 'the tool list the cache entry was written with');
-  // A new turn sends a new run after the view; the view itself is the cached prefix.
+
   assert.deepEqual(next.input[0], first.input[0], 'the view stays first');
   const added = next.input.find(item => item.type === 'additional_tools') as { tools: { name: string }[] } | undefined;
   assert.deepEqual(added?.tools.map(t => t.name), ['web_search'], 'the new tool arrives as an anchored addition');

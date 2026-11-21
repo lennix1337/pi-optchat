@@ -2,14 +2,14 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path';
 import { brasiliaDayTime, DISK_MIN_GB, MEMORY_MIN_FRACTION } from './pc-health.ts';
 
-/**
- * The situation digest: what changed on this PC and in the harness since the main agent last heard, as one short block at
- * the start of a turn, and nothing at all while everything is as it was. The facts are gathered by a collector that never
- * waits (each source has its own cache and refreshes in the background); the digest is a pure function of those facts and of
- * what an earlier digest already said.
- */
 
-// ---- facts ----
+
+
+
+
+
+
+
 
 export interface Reboot { up: number; down?: number; cause?: string; unexpected: boolean }
 export interface QuotaWindow { label: string; used: number; resetAt?: number }
@@ -33,17 +33,17 @@ export interface Facts {
 }
 export type FactKey = keyof Facts;
 
-// ---- collector ----
+
 
 export interface SourceSpec<T> { ttlMs: number; timeoutMs: number; read: () => T | Promise<T> }
 export type Sources = { [K in FactKey]?: SourceSpec<Facts[K]> };
 interface Entry { value?: unknown; loaded?: number; tried?: number; error?: string; inflight?: Promise<void> }
 
-/**
- * Each fact has a source, a time to live and a cache. `snapshot()` answers at once from the cache, starts a background refresh
- * of what is stale and never waits for one; a fact that was never read, or whose read keeps failing, is the last good value or
- * simply absent. `refresh()` is for the on-demand view and the first read of a session, and is bounded too.
- */
+
+
+
+
+
 const afterTurns = (turns: number, fn: () => void) => {
   if (turns <= 0) { fn(); return; }
   setImmediate(() => afterTurns(turns - 1, fn));
@@ -70,7 +70,7 @@ export class Collector {
     const read = turn > 0
       ? new Promise<unknown>((resolve, reject) => afterTurns(turn, () => { run().then(resolve, reject); }))
       : run();
-    // A read that outlives its limit may still land later; its value is kept, it just did not block anyone.
+
     read.then(value => { entry.value = value; entry.loaded = this.now(); entry.error = undefined; }, () => undefined);
     entry.inflight = Promise.race([read, limit]).then(() => undefined, error => { entry.error = error instanceof Error ? error.message : String(error); })
       .finally(() => { if (timer) clearTimeout(timer); entry.inflight = undefined; });
@@ -108,7 +108,7 @@ export class Collector {
   }
 }
 
-// ---- items ----
+
 
 /** `state`: stays until it ends, and its end is said once; `event`: said once, never again; `pressure`: load that comes and goes, said once per cooldown, its end is not news. */
 export type ItemKind = 'state' | 'event' | 'pressure';
@@ -172,7 +172,7 @@ export function situationItems(facts: Facts, now: number): Item[] {
   return items;
 }
 
-// ---- delta ----
+
 
 export interface SeenRecord { token: string; sev: number; at: number; kind: ItemKind; recover?: string }
 export interface Seen { items: Record<string, SeenRecord> }
@@ -226,7 +226,7 @@ export function judge(items: readonly Item[], seen: Seen, now: number, cap = DIG
   return { text, next, told: [...fresh.map(i => i.key), ...recoveries.map(r => `ok:${r}`)] };
 }
 
-// ---- the digest of one session ----
+
 
 export interface SituationOptions {
   collector: Collector;
@@ -279,12 +279,12 @@ export class Situation {
 
   private save() {
     if (!this.options.stateFile) return;
-    try { writeFileSync(this.options.stateFile, JSON.stringify(this.seen)); } catch { /* a convenience: a torn or unwritable file only costs a repeat; a rename-retrying write could hold the turn for seconds */ }
+    try { writeFileSync(this.options.stateFile, JSON.stringify(this.seen)); } catch {   }
   }
 
   private log(now: number, text: string, told: string[]) {
     if (!this.options.logFile) return;
-    try { mkdirSync(dirname(this.options.logFile), { recursive: true }); appendFileSync(this.options.logFile, `${JSON.stringify({ t: now, bytes: Buffer.byteLength(text), chars: text.length, told })}\n`); } catch { /* measurement only */ }
+    try { mkdirSync(dirname(this.options.logFile), { recursive: true }); appendFileSync(this.options.logFile, `${JSON.stringify({ t: now, bytes: Buffer.byteLength(text), chars: text.length, told })}\n`); } catch {   }
   }
 
   /** The full current picture, for the on-demand view: every fact that is known, normal or not. */
@@ -295,7 +295,7 @@ export class Situation {
   }
 }
 
-// ---- the on-demand snapshot ----
+
 
 const gb = (n: number) => `${(n / GB).toFixed(n < 10 * GB ? 1 : 0)} GB`;
 

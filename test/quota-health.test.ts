@@ -7,7 +7,7 @@ import { accounts, providerLogProbe, quotaProbe, quotaReadBytes, quotaRisks, rea
 import { defaultMonitors, ProdHealth, readHealth, registerProdHealth } from '../src/prod-health.ts';
 import { DailySummary, localDate } from '../src/slack-reports.ts';
 
-const NOW = Date.parse('2026-10-30T23:00:00Z'); // 20:00 Brasília
+const NOW = Date.parse('2026-10-30T23:00:00Z');
 const HOUR = 3_600_000;
 const window = (usedPercent: number, hours = 1) => ({ usedPercent, resetAt: NOW + hours * HOUR });
 const fixture = { usageByProvider: { healthy: { primary: window(10) }, near: { primary: window(20), secondary: window(94, 2) }, spent: { primary: window(100, 3) }, unknown: {} } };

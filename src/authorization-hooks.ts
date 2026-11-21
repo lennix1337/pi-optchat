@@ -15,7 +15,7 @@ type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
 /** Where the operator's autonomy.json lives (the open profile), or undefined when no profile is open. */
 export type ContractDir = () => string | undefined;
 
-// BEL makes Windows Terminal flash the taskbar (or beep) when the operator is in another window.
+// external: BEL flashes the taskbar or beeps in Windows Terminal.
 const terminalBell = () => { if (process.stdout.isTTY) process.stdout.write('\x07'); };
 
 const label = ({ kind, tool }: PendingApproval) => kind ?? tool;
@@ -28,7 +28,7 @@ function widgetLines([latest, ...older]: PendingApproval[]) {
   ];
 }
 
-/** Keeps the pending calls above the editor until they are approved, denied or expire. */
+
 function pendingDisplay(gate: EffectApprovals) {
   let expiry: ReturnType<typeof setTimeout> | undefined;
   const show = (ctx: UiContext) => {
@@ -43,7 +43,7 @@ function pendingDisplay(gate: EffectApprovals) {
   return { show, hide };
 }
 
-/** Operator-typed `/approve` or `/deny`, read with its input source; undefined for any other text. */
+
 function operatorCommand(gate: EffectApprovals, text: string, source: string, ctx: UiContext): InputEventResult | undefined | 'pass' {
   const command = text.trim().toLowerCase();
   if (command !== '/approve' && command !== '/deny') return 'pass';
@@ -53,7 +53,7 @@ function operatorCommand(gate: EffectApprovals, text: string, source: string, ct
     const approved = gate.approveLatest(session, source);
     if (!approved) { ctx.ui.notify('Nothing is pending approval.', 'info'); return { action: 'handled' }; }
     ctx.ui.notify(`Approved once: ${approved.summary}`, 'info');
-    // The model sees the same exact-token approval it was told to wait for.
+
     return { action: 'transform', text: `approve-effect ${approved.token}` };
   }
   const dropped = gate.deny(session, source);
@@ -69,12 +69,12 @@ const NOTICES = {
   approved: ['Exact invocation approved once. Nested calls and retries still require their own approval.', 'info'],
 } as const;
 const RESULTS = { embedded: undefined, invalid: { action: 'handled' }, standing: { action: 'handled' },
-  // Keep the exact interactive token as input; do not manufacture a broader user request.
+
   approved: { action: 'continue' } } as const satisfies Record<keyof typeof NOTICES, InputEventResult | undefined>;
 
 /** The operator's typed order covering an effect (a line for the log), or undefined; see `orderGrantFor`. */
 export type OrderGrant = (effect: Effect) => string | undefined;
-/** Where the contract lives, how its targets are read, and which typed orders can lift its `ask` rules. */
+
 interface ContractSource { dir: ContractDir; repo?: AsyncRepo; orderGrant?: OrderGrant }
 
 function reportEffect(dir: string, decision: Decision, pending: PendingApproval, ctx: ExtensionContext) {
@@ -84,10 +84,10 @@ function reportEffect(dir: string, decision: Decision, pending: PendingApproval,
   ctx.ui.notify(`Ran under autonomy.json (report) \u2014 ${describeDecision(decision)}: ${pending.summary}`, 'info');
 }
 
-/**
- * What the operator's typed order names runs and is logged; the rest of the call is judged as if alone. `run` when the
- * order covers every effect, the rest's decision when it no longer asks, else undefined (nothing lifted, nothing logged).
- */
+
+
+
+
 function liftOrdered(dir: string, effects: Effect[], orderGrant: OrderGrant, pending: PendingApproval, ctx: ExtensionContext): 'run' | Decision | undefined {
   const orders = effects.map(effect => [effect, orderGrant(effect)] as const);
   const rest = orders.filter(([, line]) => !line).map(([effect]) => effect);
@@ -104,7 +104,7 @@ export function orderHint(action: string | undefined) {
   return `If his message already orders this ${action}, do not ask him to approve the call: record it with operational_state {kind:"authorization", sourceMessageId:"<his message id or latest>", text:"<his exact words>", grant:{action:"${action}", scope:"<repo root, e.g. C:/projetos/dentai-mono>", allow:true, until:"done"}} and rerun the call; the order then covers its retries for 12 h. `;
 }
 
-/** The contract's word on a refused call: `run`, a refusal note, or undefined when no profile is open (the operator decides). */
+
 async function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): Promise<'run' | { note: string } | undefined> {
   if (touchesContract(call, contractDir())) {
     const self = judgeSelfEdit(contractDir(), call);
@@ -127,15 +127,15 @@ async function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractS
   if (!decision) return undefined;
   if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
     : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ${orderHint(decision.effect?.action)}` };
-  // A call with no recognised effect is logged only when the gate named a risk class for it: in `all` mode that is every tool call.
+
   if (decision.level === 'report' && dir && (decision.effect || pending.kind)) reportEffect(dir, decision, pending, ctx);
   return 'run';
 }
 
-/** Gate admission where a refused call is decided by the operator's autonomy.json, once per pending call; `note` explains a refusal it did not lift. */
+
 function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
   const notes = new Map<string, string>();
-  /** The refusal note for a pending call, or undefined once the contract approved it. */
+
   const decide = async (pending: PendingApproval, call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
     const verdict = await contractVerdict(contract, pending, call, ctx);
     if (verdict === 'run') { gate.approveByContract(call.session, pending.token); return undefined; }
@@ -147,7 +147,7 @@ function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
       const pending = refusal?.token ? gate.pendingFor(call.session).find(p => p.token === refusal.token) : undefined;
       if (!pending || notes.has(pending.token)) return { refusal, note: (pending && notes.get(pending.token)) ?? '' };
       const note = await decide(pending, call, ctx);
-      // Approved: admitting the same call again consumes the one-shot approval.
+
       if (note === undefined) return { refusal: gate.admit(call), note: '' };
       if (note) notes.set(pending.token, note);
       return { refusal, note };
@@ -156,10 +156,10 @@ function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
   };
 }
 
-/**
- * Holds each new pending call until the run ends (or `holdMs` passes), then passes on the ones still waiting: one the
- * operator already decided in the meantime is never announced.
- */
+
+
+
+
 function heldUntilRunEnds(gate: EffectApprovals, announce: (pending: PendingApproval, session: string) => void, holdMs: number) {
   const held = new Map<string, { session: string; timer: ReturnType<typeof setTimeout> }>();
   const release = (token: string) => {
@@ -207,7 +207,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const alerted = new Set<string>();
   const admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant });
   const phone = heldUntilRunEnds(gate, (pending, session) => onPending?.(pending, session, gate), holdMs);
-  // Child SDK prompt/steer calls default to interactive even when manager-authored.
+  // external: Pi child SDK prompt and steer calls default to interactive.
   if (grant) pi.on('input', (event, ctx) => {
     const command = operatorCommand(gate, event.text, event.source, ctx);
     if (command !== 'pass') { display.show(ctx); return command; }
@@ -236,8 +236,8 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     }
     return { block: true, reason: note + refusal.reason };
   });
-  // The phone hears only of calls still waiting once the run ends: one the operator already decided meanwhile
-  // never reaches it. Later calls of the agent do not retire a pending call: only a decision, a newer approval or expiry does.
+
+
   pi.on('agent_end', () => phone.flush());
   const reset = (ctx: UiContext) => { gate.clear(); alerted.clear(); admission.clear(); phone.clear(); if (grant) display.hide(ctx); };
   pi.on('session_start', (_event, ctx) => reset(ctx));

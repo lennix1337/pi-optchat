@@ -29,7 +29,7 @@ export class BarNavigation {
     }
     if (matchesKey(data, 'return')) { const page = this.selected; this.selected = undefined; open(page); return true; }
     if (matchesKey(data, 'down')) return true;
-    this.selected = undefined; return false; // Typing naturally resumes editing.
+    this.selected = undefined; return false;
   }
 }
 
@@ -60,7 +60,7 @@ export class BoardNavigation {
     if (matchesKey(data, 'up')) { this.cursor = Math.max(0, this.cursor - 1); return true; }
     if (matchesKey(data, 'down')) { if (this.cursor >= count - 1) this.focused = false; else this.cursor++; return true; }
     this.focused = false; this.cursor = 0;
-    return matchesKey(data, 'escape'); // Typing naturally resumes editing.
+    return matchesKey(data, 'escape');
   }
 }
 
@@ -79,14 +79,14 @@ export function mountNavigation(ctx: ExtensionContext, children: Children, memor
     }
     return new OptChatEditor(tui, theme, keys);
   };
-  // An existing custom editor owns its input rules; the shortcut remains available.
+
   if (!previous) ctx.ui.setEditorComponent(factory);
   ctx.ui.setWidget('optchat-agents', (tui, theme) => {
     redraw = () => tui.requestRender();
     return {
       invalidate() {},
       render(width: number) {
-        // The open panel replaces the editor and this bar; with `quiet` the footer carries the status and the bar only appears while a page is selected.
+
         if (inspectorShowing() || quiet && !navigation.selected) return [];
         const list = children.runs(), running = list.filter(isRunning).length, paused = list.filter(r => r.state === 'paused').length;
         const label = (page: InspectorPage, text: string) => navigation.selected === page ? theme.fg('accent', `› ${text}`) : theme.fg('muted', text);
@@ -105,7 +105,7 @@ export function mountNavigation(ctx: ExtensionContext, children: Children, memor
     };
   }, { placement: 'belowEditor' });
   const unsubscribe = [children.subscribe(() => redraw()), memory.onChange(() => redraw()), ...(shells ? [shells.subscribe(() => redraw())] : [])];
-  // pi-subagents rows live in files, not in this session: a slow tick keeps their counts and states current.
+  // external: pi-subagents persists rows in files outside this session.
   const timer = setInterval(() => redraw(), 2000); timer.unref();
   return () => {
     clearInterval(timer);
@@ -118,19 +118,19 @@ const TONES = { active: 'accent', wait: 'warning', ok: 'success', bad: 'error', 
 type Color = (tone: string, text: string) => string;
 const HEADERS = { waiting: 'Esperando você', working: 'Trabalhando', done: 'Acabou agora' } as const;
 const SECTIONS = ['waiting', 'working', 'done'] as const;
-/** A header, with `right` (a hint) at the right edge when there is room. */
+
 function headerRow(text: string, right: string, width: number, color: Color) {
   const gap = width - visibleWidth(text) - visibleWidth(right);
   return truncateToWidth(right && gap >= 3 ? `${color('muted', text)}${' '.repeat(gap)}${color('dim', right)}` : color('muted', text), width);
 }
-/** A line's text for `room` columns: a worker's goal gives way (down to a dozen characters) so the phase, time and model stay. */
+
 function fitted(line: BoardLine, room: number) {
   const { parts } = line;
   if (!parts || visibleWidth(line.text) <= room) return line.text;
   const space = room - visibleWidth(parts.head) - visibleWidth(parts.tail);
   return space >= 12 ? `${parts.head}${cut(parts.goal, space)}${parts.tail}` : line.text;
 }
-/** The three sections the lines belong to, in order, each with its header and the count of what is waiting or working, shown or not; `index` is the line's place in `lines`. */
+
 function sections(lines: readonly BoardLine[], waiting: number, working = lines.filter(line => line.section === 'working').length) {
   return SECTIONS.flatMap(section => {
     const rows = lines.map((line, index) => ({ line, index })).filter(row => row.line.section === section);
@@ -181,7 +181,7 @@ export function mountWaitingBoard(ctx: ExtensionContext, board: WaitingBoard, sh
     } };
   });
   const unsubscribe = board.subscribe(() => redraw());
-  // Idle sessions repaint nothing: the tick only runs the screen while the board has something to say.
+
   const timer = setInterval(() => { if (shown || board.view().lines.length) redraw(); }, 1000); timer.unref();
   return () => { clearInterval(timer); unsubscribe(); ctx.ui.setWidget('optchat-waiting', undefined); };
 }

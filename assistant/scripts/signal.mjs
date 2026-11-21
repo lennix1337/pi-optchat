@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Publishes one observation to the OptChat signal spool, without the service and without a model.
-//
-//   node assistant/scripts/signal.mjs --profile swlucas05 --source ci --kind ci.failed \
-//     --subject owner/repo#42 --summary "CI failed on the PR head" --dedupe ci:owner/repo:42:abc123
-//
-// A signal is data: the service stores it once and a fixed rule may enqueue a fixed-text notice. It never
-// dispatches work, tools or messages on its own. The spool is drained by a service started with "signals":true.
+
+
+
+
+
+
+
 import { appendFileSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { parseSignal, signalKinds, signalSources } from '../src/contracts/signals.ts';

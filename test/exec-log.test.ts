@@ -51,7 +51,7 @@ test('bash output with many blank lines stays within the 200 ms event-loop budge
   const elapsed = performance.now() - started;
   const cpu = process.cpuUsage(cpu0);
   assert.equal(lines(dir)[0].class, 'ok');
-  // CPU time next to wall time tells a slow runner (wall high, cpu low) from slow code (both high).
+
   assert.ok(elapsed < 200, `bash completion blocked the event loop for ${elapsed.toFixed(1)} ms (cpu user ${(cpu.user / 1000).toFixed(1)} ms, system ${(cpu.system / 1000).toFixed(1)} ms)`);
 });
 
@@ -108,10 +108,10 @@ test('grep or rg that finds nothing is an answer, not a failed call; any other e
   assert.equal(isNoMatch('grep foo missing.txt', 'grep: missing.txt: No such file or directory\n\nCommand exited with code 2'), false);
   assert.equal(isNoMatch('node test.mjs', '(no output)\n\nCommand exited with code 1'), false);
   assert.equal(isNoMatch('grep -c x f; echo $?', 'Command exited with code 1'), false);
-  // After `;` or a pipe the exit code is the last command's, so output printed earlier does not hide a grep miss.
+  // external: A shell sequence or pipeline returns the final command status.
   assert.equal(isNoMatch('git status -sb | head; grep -n foo src/a.ts', '## main...origin/main\n\nCommand exited with code 1'), true);
   assert.equal(isNoMatch('ls src | grep -i pipe', 'Command exited with code 1'), true);
-  // After `&&` or `||` the exit code may come from the earlier command, so only an empty output proves a miss.
+  // external: A shell && or || list may return an earlier command status.
   assert.equal(isNoMatch('make test && grep -n foo log', 'tests failed\n\nCommand exited with code 1'), false);
   assert.equal(isNoMatch('make test || grep -n foo log', 'tests failed\n\nCommand exited with code 1'), false);
   const dir = mkdtempSync(join(tmpdir(), 'execlog-'));

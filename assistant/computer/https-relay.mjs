@@ -1,4 +1,4 @@
-// Runs only inside the network-none browser. STDIO is the sole external transport.
+
 import http from 'node:http';
 import tls from 'node:tls';
 import { createHash } from 'node:crypto';
@@ -29,7 +29,7 @@ function certificates(origins) {
   const contexts = new Map();
   for (let i = 0; i < origins.length; i++) {
     const host = new URL(origins[i]).hostname;
-    // Fixed DNS names only. IP origins are deliberately unsupported by this browser seam.
+
     if (!/^[a-z0-9.-]+$/.test(host) || /^[0-9.]+$/.test(host)) throw new Error('relay_invalid_origin');
     const file = `${dir}/${i}`;
     writeFileSync(`${file}.ext`, `subjectAltName=DNS:${host}\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n`, { mode: 0o600 });

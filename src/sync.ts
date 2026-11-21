@@ -7,9 +7,9 @@ import { readOperationalState, renderOperationalContext } from './operational-st
 import { atomicWrite, envDir } from './store.ts';
 import { aiMemoryWriter, writeFinishedBlocks, type PageWriter } from './ai-memory.ts';
 
-/** Sync lets agents outside OptChat see this chat. It runs as code from memory the chat already has, and calls no model:
- * a status file rewritten as the chat changes, and one OptMem note per finished block of messages. A quota cutoff, a provider
- * switch or a crash loses at most the last debounce window. */
+
+
+
 
 /** The status file is read by other agents at startup, so it stays small: its oldest (most merged) lines and its newest ones. */
 export const STATUS_BYTES = 16_000;
@@ -22,7 +22,7 @@ const DEBOUNCE_MS = 2_000;
 const RETRY_MS = 60_000;
 const MEMO_TIMEOUT_MS = 45_000;
 const CLOSE_WAIT_MS = 5_000;
-/** The tail of OptMem's log checked for a note sent before a crash kept the cursor from moving. */
+
 const LOG_TAIL_BYTES = 64 * 1024;
 
 export interface StatusInput { profile: string; model?: string; memory: Memory; operationalFile?: string; now?: Date }
@@ -52,7 +52,7 @@ export function renderStatus({ profile, model, memory, operationalFile, now = ne
   const lines = memory.view.map(part => viewLine(memory, part));
   const recent = lines.slice(-RECENT_LINES), older = lines.slice(0, -RECENT_LINES);
   let room = limit - bytes(head) - recent.reduce((sum, line) => sum + bytes(line) + 1, 0);
-  // The oldest lines summarize the most messages, so they fill the room first; what doesn't fit is named, never silently dropped.
+
   const kept: string[] = [];
   for (const line of older) { if (bytes(line) + 1 > room - 120) break; kept.push(line); room -= bytes(line) + 1; }
   if (kept.length < older.length) {
@@ -65,7 +65,7 @@ export function renderStatus({ profile, model, memory, operationalFile, now = ne
 /** One summary line as OptMem notes of at most `limit` bytes each, cut at word boundaries and never inside a character. */
 export function noteParts(first: number, last: number, text: string, limit = NOTE_BYTES) {
   const body = flat(text).replace(/\s+/g, ' ').trim();
-  // Up to 9 parts the header keeps one width, so every part gets the same room.
+
   const room = limit - bytes(`[optchat ${first}-${last} 9/9] `);
   if (room < 16) throw new Error('OptMem note limit too small for a block header.');
   const chunks: string[] = [];
@@ -133,7 +133,7 @@ export interface SyncOptions {
   retryMs?: number;
 }
 
-/** One drain at a time per destination, which picks up blocks finished meanwhile; after a failure, none until its retry time. */
+
 class Lane {
   running?: Promise<void>;
   retryAfter = 0;
@@ -195,13 +195,13 @@ export class Sync {
   writeStatus() {
     try {
       const text = this.renderStatus();
-      // The timestamp alone changing is no news: skip the write, so idle changes cost no disk.
+
       const body = text.replace(/^Updated \S+/m, '');
       if (body === this.lastBody) return;
       atomicWrite(this.statusFile, text);
       this.lastBody = body; this.warned.delete('status');
     } catch (error) {
-      // On Windows a reader holding the file open makes the swap fail for a moment: try again even if the chat goes quiet.
+      // external: Windows readers can transiently prevent file replacement.
       const timer = setTimeout(() => this.schedule(), this.options.retryMs ?? RETRY_MS); timer.unref?.();
       this.warnOnce('status', `OptChat could not write ${this.statusFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -219,7 +219,7 @@ export class Sync {
     try {
       let cursor = readCursor(this.cursorFile);
       if (!cursor) {
-        // A new sync starts at the newest finished block: OptChat's older history stays in OptChat, and the status file covers it.
+
         cursor = { block: Math.max(0, Math.floor(memory.root.length / size) - 1), part: 0 };
         atomicWrite(this.cursorFile, JSON.stringify(cursor));
       }

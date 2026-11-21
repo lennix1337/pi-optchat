@@ -32,7 +32,7 @@ test('zoom, search and output_read reject unknown keys, nested query keys includ
       assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'json', filter: { field: 'status', equals: 'ok', extra: 1 } } }), /extra/);
       assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'grep', pattern: 'err', badKey: true } }), /badKey/);
       assert.throws(() => validate(outputRead, { ref: REF, query: { kind: 'outline', badKey: true } }), /badKey/);
-      // Documented inputs still pass unchanged.
+
       assert.deepEqual(validate(zoom, { id: 0, n: 1, findText: 'alpha', offset: 2 }), { id: 0, n: 1, findText: 'alpha', offset: 2 });
       assert.deepEqual(validate(date, { id: 0 }), { id: 0 });
       assert.deepEqual(validate(search, { text: 'alpha', before: 3 }), { text: 'alpha', before: 3 });
@@ -73,7 +73,7 @@ test('output_read overflow errors give the valid scope and a continuation', () =
   const store = new OutputStore(mkdtempSync(join(tmpdir(), 'optchat-retrieval-output-')), 'session');
   try {
     const lines = store.put(Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n'));
-    // Oversize and past-the-end ranges are clamped, and the header names the range actually returned.
+
     const wideRange = store.query(lines, { kind: 'lines', startLine: 1, endLine: 201 });
     assert.ok(wideRange.includes('[Lines 1-200 of 300; 1-based inclusive]'));
     assert.ok(wideRange.includes('\n1: line 1\n2: line 2'));

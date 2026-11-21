@@ -15,8 +15,8 @@ import { wakeEffects } from '../src/wake-log.ts';
 import { claimRetryText, unbackedNote } from '../src/claim-check.ts';
 import { ACCEPT_CALL, acceptResult, FAILED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
-/** `channels`: the service's configured Slack channels besides the projects; without `wakes` a wake falls back to its repo channel. */
-/** Lets the Home publication chain (one request at a time, the newest view last) run to its end. */
+
+
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 
 function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null; channel?: string }[] = [], extra: Record<string, unknown> = {}, channels: string[] = []) {
@@ -30,7 +30,7 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
   const bridge = new SlackBridge({ sendUserMessage: ((text: string, options: unknown) => { sent.push({ text, options }); }) as never }, () => owner, {
     now: () => now,
     request: async (_owner, path, body) => {
-      // A refused post (an unconfigured channel) never reached Slack: it is not recorded.
+
       if (path === '/v1/slack/send' && (body as { channel?: string }).channel === 'wakes' && !channels.includes('wakes')) throw new HttpError(400);
       requests.push({ path, body });
       if (fail) throw fail;
@@ -45,7 +45,7 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
   });
   return { dir, owner, bridge, timers, sent, requests, inbox, advance: (ms: number) => { now += ms; }, fail: (error?: Error) => { fail = error; }, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
-/** A run's messages: one assistant message per reply text. */
+
 const replies = (...texts: string[]) => texts.map(text => ({ role: 'assistant', content: [{ type: 'text', text }] }) as unknown as AgentMessage);
 
 test('operator DMs become [Slack] user messages in order, once, across restarts', async () => {
@@ -163,12 +163,27 @@ test('with every answer on, a run from anywhere but Slack or WhatsApp sends its 
   } finally { f.close(); }
 });
 
-/** An assistant message with these tool calls, then the final answer. */
+test('with every answer on, a run woken only by a running worker\'s progress posts nothing to the DM', async () => {
+  const f = fixture([], { everyAnswer: () => true });
+  const sent = () => f.requests.filter(r => r.path === '/v1/slack/send').length;
+  try {
+    for (let i = 0; i < 3; i++) {
+      f.bridge.sawUserMessage('[3b809131] Message from subagent (still running): lote concluído');
+      await f.bridge.runEnded(replies('Nada novo para você.'));
+    }
+    assert.equal(sent(), 0);
+    f.bridge.sawUserMessage('[3b809131] Message from subagent (still running): lote');
+    f.bridge.sawUserMessage('[gitwatch] lennix1337/pi-optchat #56 MERGED');
+    await f.bridge.runEnded(replies('O #56 entrou.'));
+    assert.equal(sent(), 1, 'a run that also saw real news still answers');
+  } finally { f.close(); }
+});
+
 const calling = (calls: [string, unknown][], answer: string) => [
   { role: 'assistant', content: calls.map(([name, args], i) => ({ type: 'toolCall', id: `c${i}`, name, arguments: args })) },
   ...replies(answer),
 ] as unknown as AgentMessage[];
-/** The prompt a wake really starts with, as heartbeat.ts builds it: an intro line comes before the suggestion. */
+
 const WAKE = wakeText('fix the flaky test', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar');
 const SCHEDULED = wakeText('', 'haiku', 30, DEFAULT_HEARTBEAT, { path: '/p/q.md', item: '- [ ] x' });
 
@@ -203,7 +218,7 @@ test('a wake delivered the way OptChat really sends it, as a report custom messa
     if (path === '/v1/slack/send' && (body as { channel?: string }).channel === 'wakes') throw new HttpError(400);
     if (path === '/v1/slack/send') bodies.push(body); return { parts: 1, ts: '1.0' }; } });
   try {
-    // index.ts sendReport: once the OptChat prompt is ready, a report (the wake prompt too) is a custom message, not a user one.
+
     fire('message_end', { message: { role: 'custom', customType: REPORT_TYPE, content: WAKE, display: true } });
     fire('agent_start');
     await fire('agent_end', { messages: calling([['bash', { command: 'cd C:/projetos/pi-optchat && git commit -qm x && git push' }]], 'Corrigi.') });
@@ -304,7 +319,7 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
 test('a worker\'s branch shipped with crew accept is an effect of the wake: #wakes names its PR instead of "sem entrega"; a failed or uncertain accept is none', async () => {
   const accept = (id: string) => ({ role: 'assistant', content: [{ type: 'toolCall', id, name: 'crew', arguments: ACCEPT_CALL }] });
   const logged = (toolCallId: string, answer: { text: string; isError: boolean }) => ({ role: 'toolResult', toolCallId, isError: answer.isError, content: [{ type: 'text', text: answer.text }] });
-  // The answer quotes the worker's memory proposal, here with a line shaped like the PR line: accept did not open that one.
+
   const accepted = await acceptResult(SHIPPED, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
   const failed = await acceptResult(FAILED), uncertain = await acceptResult(UNCERTAIN);
   assert.deepEqual([accepted.isError, failed.isError, uncertain.isError], [false, true, false]);
@@ -355,7 +370,7 @@ test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake 
 });
 
 test('wakeChannel: an issue comment delivers to its repo, and an evidence draft in local-validation belongs to no project', () => {
-  // The 2026-10-29 wake: it drafted the reply under local-validation, then posted it on a Genexus18MCP issue.
+
   const draft: [string, unknown] = ['write', { path: 'C:/projetos/local-validation/runs/gx-746/comment.md', content: 'x' }];
   const comment: [string, unknown] = ['bash', { command: 'cd C:/projetos/Genexus18MCP && gh issue comment 746 --body-file C:/projetos/local-validation/runs/gx-746/comment.md' }];
   assert.equal(wakeChannel(calling([draft, comment], 'x')), 'genexus18mcp');
@@ -389,7 +404,7 @@ test('an approval post is decided only by aprovar/negar in its own DM thread, on
     const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; threadTs: null; approval?: boolean };
     assert.match(post.text, /Aprovação pendente.*push: git push origin main/s);
     assert.equal(post.approval, true, 'the post carries the Aprovar/Negar buttons');
-    // The ts the fixture returns for every send is 1.1: replies in that thread decide; elsewhere they are plain messages.
+
     f.inbox.push({ seq: 1, ts: '2.0', thread: null, text: 'aprovar' }, { seq: 2, ts: '3.0', thread: '9.9', text: 'aprovar' });
     assert.equal(await f.bridge.poll(), 2);
     assert.deepEqual(decisions, [], 'a bare "aprovar" outside the approval thread approves nothing');
@@ -455,7 +470,7 @@ test('negar drops the call, and an expired approval decides nothing', async () =
 });
 
 test('an approval decided at the terminal rewrites its Slack post without buttons, and its thread no longer decides', async () => {
-  // 2026-10-29: approved with /approve at the terminal, the DM post kept saying "Aprova\u00e7\u00e3o pendente".
+
   const f = fixture();
   try {
     const decisions: boolean[] = [];
@@ -475,7 +490,7 @@ test('an approval decided at the terminal rewrites its Slack post without button
     await f.bridge.askApproval({ token: 'c'.repeat(24), summary: 'rm x', label: 'delete', expires: 1_000_000 + 600_000, decide: () => true });
     await f.bridge.settled('c'.repeat(24), 'superseded');
     assert.match((f.requests.at(-1)!.body as { text: string }).text, /Substitu\u00edda/);
-    // Decided on WhatsApp: the Slack post names where, not "no terminal".
+
     await f.bridge.askApproval({ token: 'd'.repeat(24), summary: 'deploy', label: 'deploy', expires: 1_000_000 + 600_000, decide: () => true });
     await f.bridge.settled('d'.repeat(24), 'approved', 'WhatsApp');
     assert.match((f.requests.at(-1)!.body as { text: string }).text, /^\u2705 \*Aprovado no WhatsApp\* \u00b7 deploy: deploy$/u);
@@ -541,8 +556,8 @@ test('posts with a topic open a message once, then reply in its thread; the sent
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// 03/11: the operator never saw two retro DMs nor the link he asked for again: later slack_send posts of a topic
-// went only into the thread of its first post, and DentAI reports went to the DM instead of #dentai.
+
+
 test('slack_send replies in a topic thread also show in the conversation; automatic topic posts stay in the thread', async () => {
   const f = fixture();
   try {
@@ -750,7 +765,7 @@ test('App Home: a run typed in the terminal shows working too, with the live ste
   } finally { f.close(); }
 });
 
-/** The bodies the bridge posted to one service path, in order: `bodiesFor<T>(path)(f)`. */
+
 await settle();
 const bodiesFor = <T,>(path: string) => (f: ReturnType<typeof fixture>) => f.requests.filter(r => r.path === path).map(r => r.body as T);
 const homeBodies = bodiesFor<{ text: string; working?: boolean; approval?: string }>('/v1/slack/home');
@@ -788,7 +803,7 @@ test('parar from the DM or the Home stops the run in progress; idle says there w
 });
 
 test('App Home "Hoje": finished runs survive in home-day.json with totals, an hour bar and the next wake check', async () => {
-  const base = Date.parse('2026-11-02T12:00:00Z'); // 09:00 in Brasilia
+  const base = Date.parse('2026-11-02T12:00:00Z');
   let now = base;
   const f = fixture([], { now: () => now, nextWake: () => now + 45 * 60_000 });
   try {
@@ -810,7 +825,7 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
 });
 
 test('App Home: a service from before the buttons refuses the new fields; the text alone still goes out', async () => {
-  // The refusal as the real client reports it: HttpError, whose message never says "HTTP 400" (03/11: the Home froze for hours).
+
   const calls: Record<string, unknown>[] = [], warnings: string[] = [];
   const f = fixture([], { warn: (m: string) => warnings.push(m), request: async (_o: unknown, path: string, body: Record<string, unknown>) => {
     if (path !== '/v1/slack/home') return { parts: 1, ts: '1.1', channel: 'D1' };
@@ -884,7 +899,7 @@ test('App Home: a profile without the assistant publishes nothing and warns noth
   } finally { f.close(); }
 });
 
-/** A request fake whose enrichment calls take `ms` each and record how many were in flight at once. */
+
 function slowEnrichment(ms: number) {
   let inFlight = 0, peak = 0;
   const request = async (_o: unknown, path: string, body: any) => {
@@ -1008,7 +1023,7 @@ test('App Home: a work reader that throws leaves the Home to go out without the 
 const sendsOf = bodiesFor<{ text: string; threadTs: string | null; channel?: string }>('/v1/slack/send');
 const paragraphs = (n: number) => Array.from({ length: n }, (_, i) => `Parágrafo ${i + 1}: ${Array.from({ length: 30 }, () => 'palavra').join(' ')}.`).join('\n\n');
 
-test('a final answer over the DM budget goes out as a short head, then the rest of it in a thread reply', async () => {
+test('a final answer over the DM budget still goes out whole, in one message', async () => {
   const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'resume o dia' }]);
   try {
     await f.bridge.poll();
@@ -1016,13 +1031,9 @@ test('a final answer over the DM budget goes out as a short head, then the rest 
     const long = paragraphs(6);
     await f.bridge.runEnded(replies(long));
     const sends = sendsOf(f);
-    assert.equal(sends.length, 2, 'a head, then the rest');
-    assert.ok(words(sends[0]!.text) <= 100, `head has ${words(sends[0]!.text)} words`);
-    assert.match(sends[0]!.text, /continua na thread/);
-    assert.equal(sends[0]!.threadTs, null, 'the head is the answer, in the DM as before');
-    assert.ok(!sends[1]!.text.includes('Parágrafo 1:'), 'the thread does not repeat the head');
-    assert.equal(words(sends[0]!.text.split('\n\n_')[0]!) + words(sends[1]!.text), words(long), 'head and rest together are the whole answer');
-    assert.equal(sends[1]!.threadTs, '1.1', "the rest replies in the head's thread");
+    assert.equal(sends.length, 1, 'one message, no thread reply');
+    assert.equal(sends[0]!.text, long);
+    assert.doesNotMatch(sends[0]!.text, /continua na thread/);
   } finally { f.close(); }
 });
 
@@ -1036,55 +1047,23 @@ test('a final answer within the budget is one post, as before', async () => {
   } finally { f.close(); }
 });
 
-test('slack_send over the channel budget posts a head in the channel and the full text in its thread', async () => {
-  const f = fixture();
+test('slack_send, topic posts and wake reports over the budget go out whole, in one message', async () => {
+  const f = fixture([], { wordBudgets: { dentai: 60 } });
   try {
     const long = Array.from({ length: 150 }, (_, i) => `item${i}`).join(' ');
     await f.bridge.post(long, 'dentai');
-    const sends = sendsOf(f);
-    assert.deepEqual(sends.map(s => s.channel), ['dentai', 'dentai']);
-    assert.ok(words(sends[0]!.text) <= 100);
-    assert.ok(long.endsWith(sends[1]!.text) && !sends[1]!.text.startsWith('item0 '), 'the thread gets what the head left out');
-    assert.equal(sends[1]!.threadTs, '1.1');
-  } finally { f.close(); }
-});
-
-test('a topic post over the budget keeps its topic thread, and the full text goes in that thread too', async () => {
-  const f = fixture();
-  try {
-    const long = Array.from({ length: 150 }, (_, i) => `t${i}`).join(' ');
+    assert.deepEqual(sendsOf(f).map(s => [s.channel, s.text]), [['dentai', long]]);
+    f.requests.length = 0;
     await f.bridge.post('primeiro post', 'harness', 'denta-1');
     f.requests.length = 0;
     await f.bridge.post(long, 'harness', 'denta-1');
-    const sends = sendsOf(f);
-    assert.equal(sends.length, 2);
-    assert.equal(sends[0]!.threadTs, '1.1', 'the topic reply goes in the topic thread');
-    assert.equal(sends[1]!.threadTs, '1.1', 'and so does the rest');
-    assert.ok(long.endsWith(sends[1]!.text) && !sends[1]!.text.startsWith('t0 '));
-  } finally { f.close(); }
-});
-
-test('the word budget is per channel: a project channel can set its own, the DM keeps the default', async () => {
-  const f = fixture([], { wordBudgets: { dentai: 60 } });
-  try {
-    const eighty = Array.from({ length: 80 }, (_, i) => `p${i}`).join(' ');
-    await f.bridge.post(eighty, 'dentai');
-    assert.equal(sendsOf(f).length, 2, 'over the dentai budget of 60: split');
+    assert.deepEqual(sendsOf(f).map(s => [s.threadTs, s.text]), [['1.1', long]], 'a topic post stays in its topic thread, whole');
     f.requests.length = 0;
-    await f.bridge.post(eighty, null);
-    assert.deepEqual(sendsOf(f), [{ text: eighty, threadTs: null }], 'within the DM budget of 100: whole');
-  } finally { f.close(); }
-});
-
-test('a wake report over the budget is split the same way, in the repo channel', async () => {
-  const f = fixture();
-  try {
     f.bridge.sawUserMessage(WAKE);
     await f.bridge.runEnded(calling([['bash', { command: 'cd C:/projetos/Genexus18MCP && git commit -m fix && git push' }]], paragraphs(5)));
-    const sends = sendsOf(f);
-    assert.equal(sends.length, 2, JSON.stringify(sends.map(s => s.text.slice(0, 40))));
-    assert.ok(words(sends[0]!.text) <= 100);
-    assert.ok(`*Wake* · ${paragraphs(5)}`.endsWith(sends[1]!.text) && !sends[1]!.text.includes('Parágrafo 1:'), 'the thread carries what the head left out');
+    const wake = sendsOf(f);
+    assert.equal(wake.length, 1, JSON.stringify(wake.map(s => s.text.slice(0, 40))));
+    assert.ok(wake[0]!.text.includes('Parágrafo 5:'));
   } finally { f.close(); }
 });
 

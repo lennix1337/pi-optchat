@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-// Each restore-hold guard is removed in a disposable source copy; the restore regression must fail by assertion.
+
 const mutants = [
   ['executor ignores restore holds', 'assistant/src/runtime/task-executor.ts', 'if (this.options.store.restoreHeld(task.taskId, task.revision)) return null;', 'void 0;'],
   ['restore records no holds', 'assistant/src/ops/backup.ts', 'fenced.tasks += Number(db.prepare(RESTORE_HOLDS_FENCE).run().changes);', 'void RESTORE_HOLDS_FENCE;'],

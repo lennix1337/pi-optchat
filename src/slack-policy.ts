@@ -1,86 +1,23 @@
 /**
  * Per-channel rules for what OptChat posts on Slack. The DM and each project channel have a word budget (100 by
- * default: the IM cap the DeepSeek Harness article verified). A post over its budget goes out as a short head with a
- * pointer, and the rest follows as a thread reply, so nothing is cut silently.
+ * default: the IM cap the DeepSeek Harness article verified). The budget is guidance for the model only: every post goes out
+ * whole, in one message, never split into a head and a thread reply.
  */
 export const DEFAULT_WORD_BUDGET = 100;
 /** Budgets of project channels by name; a channel without one uses the default. The DM is never overridden. */
 export type WordBudgets = Readonly<Record<string, number>>;
-/** Channels whose posts are logs, not conversation: a wake's list of effects reads better whole than split into a thread. */
+
 const BUILT_IN: WordBudgets = { wakes: 300 };
 export const wordBudget = (channel: string | null, budgets: WordBudgets = {}): number =>
   channel === null ? DEFAULT_WORD_BUDGET : budgets[channel] ?? BUILT_IN[channel] ?? DEFAULT_WORD_BUDGET;
 
 /** The instruction the model reads with each Slack message: the budget of the channel it answers in. */
-export const budgetNote = (budget: number): string => `(Responda em até ${budget} palavras; o que passar disso vai para a thread.)`;
+export const budgetNote = (budget: number): string => `(Responda em até ${budget} palavras, numa mensagem só.)`;
 /** The paragraph `budgetNote` ends a Slack message with, matched to take it off again (a message's title). */
-export const BUDGET_NOTE = /\n\n\(Responda em até \d+ palavras; o que passar disso vai para a thread\.\)/;
+export const BUDGET_NOTE = /\n\n\(Responda em até \d+ palavras(?:, numa mensagem só|; o que passar disso vai para a thread)\.\)/;
 /** The paragraph a Slack message gets when it arrives while a run is working. */
 export const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 /** His message without the notes the bridge appended to it: what he actually wrote. */
 export const withoutBridgeNotes = (text: string): string => text.replace(MID_RUN, '').replace(BUDGET_NOTE, '');
 
-const POINTER = '_… continua na thread._';
 export const words = (text: string): number => text.match(/\S+/g)?.length ?? 0;
-
-/** What goes out in the channel (`head`) and, when the post was over budget, what the head left out, for the thread reply. */
-export type FittedPost = { head: string; rest?: string };
-
-/**
- * The head is the leading part of the post that fits in the budget with the pointer; the thread reply carries the rest,
- * never the whole text again, so head and reply read as one message and nothing shows twice.
- */
-export function fitPost(text: string, budget: number): FittedPost {
-  if (words(text) <= budget) return { head: text };
-  const room = Math.max(0, budget - words(POINTER));
-  const lead = leadingWords(text, room);
-  return { head: lead ? `${lead}\n\n${POINTER}` : POINTER, rest: text.slice(endOf(lead, text)).trim() };
-}
-
-/** Where the head's words end in the original text: each word is found in order, so formatting in between does not matter. */
-function endOf(lead: string, text: string): number {
-  let at = 0;
-  for (const word of lead.match(/\S+/g) ?? []) {
-    const found = text.indexOf(word, at);
-    if (found < 0) break;
-    at = found + word.length;
-  }
-  return at;
-}
-
-/**
- * Whole paragraphs while they fit; the first one that does not is cut at a sentence. A word cut is the last resort, only
- * when no paragraph fits at all: a head that already has paragraphs ends at a paragraph boundary.
- */
-function leadingWords(text: string, room: number): string {
-  const kept: string[] = [];
-  let left = room;
-  for (const paragraph of text.split(/\n\s*\n/)) {
-    const size = words(paragraph);
-    if (size <= left) { kept.push(paragraph); left -= size; continue; }
-    const cut = leadingSentences(paragraph, left) || (kept.length ? '' : leadingTokens(paragraph, left));
-    if (cut) kept.push(cut);
-    break;
-  }
-  return withoutOpenFence(kept.join('\n\n').trim());
-}
-
-function leadingSentences(paragraph: string, room: number): string {
-  const sentences = paragraph.match(/[^.!?]+[.!?]+\s*|[^.!?]+$/g) ?? [paragraph];
-  let cut = '';
-  for (const sentence of sentences) {
-    if (words(cut + sentence) > room) break;
-    cut += sentence;
-  }
-  return cut.trim();
-}
-
-function leadingTokens(paragraph: string, room: number): string {
-  return paragraph.split(/\s+/).filter(Boolean).slice(0, room).join(' ');
-}
-
-/** A cut inside a code block would leave the head with an open fence: the block is dropped from the head instead. */
-function withoutOpenFence(head: string): string {
-  if ((head.match(/```/g) ?? []).length % 2 === 0) return head;
-  return head.slice(0, head.lastIndexOf('```')).trim();
-}

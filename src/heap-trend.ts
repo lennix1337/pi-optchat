@@ -1,4 +1,4 @@
-// Heap growth watch: the heartbeat samples the Pi heap each tick, and a steady rise over hours is a leak worth a radar line.
+
 
 export interface HeapSample { at: number; heapUsedMb: number; afterGc: boolean; rssMb?: number }
 export interface HeapGrowth { mbPerHour: number; spanH: number; fromMb: number; toMb: number }

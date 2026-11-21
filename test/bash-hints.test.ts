@@ -46,7 +46,7 @@ EOF`, 'edit'],
 
 test('near misses are not hinted', () => {
   const none = [
-    // generated output and non-source targets
+
     raw`python -c "open('dist/bundle.js','w').write('x')"`,
     raw`python - <<'EOF'
 open('build/out.js', 'w').write('x')
@@ -54,7 +54,7 @@ EOF`,
     'sed -i s/a/b/ dist/app.js',
     'sed -i s/a/b/ notes.txt',
     raw`python -c "open('result.json','w').write('{}')"`,
-    // scripts that only print or read
+
     raw`python -c "print(open('src/a.py').read().replace('a','b'))"`,
     raw`python - <<'EOF'
 import sys
@@ -62,10 +62,10 @@ sys.stdout.write(open('src/a.py').read())
 EOF`,
     raw`python analyze.py src/a.py`,
     'node scripts/report.js src/a.ts',
-    // not a script runner
+
     'echo x > src/a.ts',
     'tee src/a.ts',
-    // not a single-file plain read
+
     'cat src/a.ts src/b.ts',
     'cat src/*.ts',
     'cat src/a.ts | head',
@@ -79,7 +79,7 @@ EOF`,
     'grep -n foo src/a.ts src/b.ts',
     'grep -rn foo src',
     'rg foo src',
-    // ripwire without a map flag
+
     'ripwire .',
     'ripwire . --json',
     'echo ripwire --for x',
@@ -104,7 +104,7 @@ SyntaxError: missing ) after argument list`;
   assert.equal(bashHint(raw`node -e "console.log(1"`, false, syntax), 'script');
   assert.equal(bashHint(raw`python3 -c "print("`, false, 'SyntaxError: unexpected EOF while parsing'), 'script');
   assert.equal(bashHint(raw`cd x && node -e 'a b'`, false, 'ERR_INVALID_TYPESCRIPT_SYNTAX'), 'script');
-  // Only a parse failure of an inline script: a clean run, a runtime error or a file script gets nothing.
+
   assert.equal(bashHint(raw`node -e "console.log(1)"`, false, '1'), undefined);
   assert.equal(bashHint(raw`node -e "null.x"`, false, 'TypeError: Cannot read properties of null'), undefined);
   assert.equal(bashHint('node build.mjs', false, syntax), undefined);
@@ -112,13 +112,13 @@ SyntaxError: missing ) after argument list`;
 });
 
 test('a Windows program that missed a Git Bash /tmp file suggests cygpath', () => {
-  // 05-07/11: five runs wrote /tmp/x from bash, then node or python looked for C:\tmp\x and failed with ENOENT.
+
   const node = raw`node:fs:573
 Error: ENOENT: no such file or directory, open 'C:\tmp\v.json'`;
   assert.equal(bashHint('pnpm exec vitest run --outputFile=/tmp/v.json; node -e "require(\'/tmp/v.json\')"', false, node), 'tmp');
   assert.equal(bashHint('gh pr diff 894 > /tmp/pr894.diff; python3 - <<EOF', false,
     "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/pr894.diff'"), 'tmp');
-  // A file that is really missing for bash itself, or a /tmp run that worked, gets nothing.
+
   assert.equal(bashHint('wc -l /tmp/x.log', false, 'wc: /tmp/x.log: No such file or directory'), undefined);
   assert.equal(bashHint('node a.mjs /tmp/x', false, 'ok'), undefined);
   assert.equal(bashHint('node a.mjs', false, raw`ENOENT: no such file or directory, open 'C:\tmp\v.json'`), undefined);
@@ -132,33 +132,33 @@ test('the tmp hint reaches the result through the tool_result hook', () => {
 });
 
 test('a long sleep before a gh/git/curl status check points at gitwatch instead of polling', () => {
-  // 05-07/11: 13 calls (242 s) chained `sleep 20-40` with gh run view / gh pr view / git fetch to wait for CI.
+
   assert.equal(bashHint('sleep 40; gh run view 42356367236 --json status', false), 'poll');
   assert.equal(bashHint('sleep 25 && gh pr view 3 --json state', false), 'poll');
   assert.equal(bashHint('cd /c/p/x && sleep 120 && curl -s https://x.test/health', false), 'poll');
-  // Short settle sleeps, sleeps without a remote check, and a check without a sleep get nothing.
+
   assert.equal(bashHint('sleep 5; gh pr view 3', false), undefined);
   assert.equal(bashHint('sleep 30; ls build', false), undefined);
   assert.equal(bashHint('gh run view 1 --json status', false), undefined);
 });
 
 test('gh auth status used to read the active account points at the local config read', () => {
-  // 07-08/11: 68 calls, p50 2.4 s, p90 11.8 s, 410 s in total; `gh config get -h github.com user` answers in ~50 ms without the network.
+
   assert.equal(bashHint('cd /c/p/x && gh auth status --hostname github.com 2>&1 | grep -B1 "Active account: true"', false), 'ghauth');
   assert.equal(bashHint('gh auth status', false), 'ghauth');
-  // Switching accounts, other gh calls and the config read itself get nothing.
+
   assert.equal(bashHint('gh auth switch --hostname github.com --user x; gh auth status', false), undefined);
   assert.equal(bashHint('gh config get -h github.com user', false), undefined);
   assert.equal(bashHint('gh pr view 3', false), undefined);
 });
 
 test('a du that timed out on a Windows tree points at counting with find or git instead', () => {
-  // 08/11: `du -sh` over a worktree with node_modules ran into the 90 s bash timeout and returned nothing.
+
   const timedOut = 'Command timed out after 90 seconds';
   assert.equal(bashHint('cd C:/projetos/x/worktrees/w && ls -A | wc -l; du -sh . 2>/dev/null | tail -1', false, timedOut), 'du');
   assert.equal(bashHint('du -sh node_modules', false, timedOut), 'du');
   assert.equal(bashHint('du -s .', false, 'timed out after 120 seconds'), 'du');
-  // A du that finished, other commands that timed out and a plain `du -h` summary of a small file get nothing.
+
   assert.equal(bashHint('du -sh .', false, '4.0K	.'), undefined);
   assert.equal(bashHint('find . -name x', false, timedOut), undefined);
 });
@@ -209,7 +209,7 @@ test('the same hint is shown at most once per interval of bash calls, per sessio
   for (let call = 2; call <= HINT_INTERVAL; call++) assert.equal(result('s', 'cat a.ts'), undefined, `call ${call}`);
   assert.ok(result('s', 'cat a.ts'), 'again after the interval');
   assert.equal(result('s', 'cat a.ts'), undefined);
-  // Other sessions have their own counters, and a different hint kind is limited independently.
+
   assert.ok(result('other', 'cat a.ts'));
   assert.ok(result('s', 'sed -i s/a/b/ src/a.ts'));
   assert.equal(result('s', 'echo hi'), undefined);
@@ -247,28 +247,28 @@ test('a scripted source patch retried right after another one repeats the edit h
   assert.ok(result('loop', patch('src/a.ts')), 'first patch');
   assert.ok(result('loop', patch('src/a.ts'), 'SyntaxError', true), 'immediate retry of the same habit');
   assert.ok(result('loop', patch('src/a.ts')), 'and again');
-  // A different call in between ends the streak, so the interval applies again.
+
   assert.equal(result('loop', 'echo hi'), undefined);
   assert.equal(result('loop', patch('src/a.ts')), undefined);
-  // Reads are not a retry loop: they stay throttled.
+
   assert.ok(result('r', 'cat a.ts'));
   assert.equal(result('r', 'cat a.ts'), undefined);
 });
 
 test('a C:/projetos path that does not exist on Linux suggests the ~/projetos home', () => {
-  // 20/11: `node C:/projetos/pi-optchat/scripts/ship.mjs` from the VM died with MODULE_NOT_FOUND; the repo is ~/projetos/pi-optchat.
+
   const missing = "Error: Cannot find module '/home/ubuntu/projetos/Genexus18MCP/worktrees/x/C:/projetos/pi-optchat/scripts/ship.mjs'\ncode: 'MODULE_NOT_FOUND'";
   assert.equal(bashHint('cd w && node C:/projetos/pi-optchat/scripts/ship.mjs --help', false, missing), 'winpath');
   assert.equal(bashHint('cat C:/projetos/app/x.md', false, 'cat: C:/projetos/app/x.md: No such file or directory'), 'winpath');
-  // `| head` can cut the code line off; the first line alone still names the miss.
+
   assert.equal(bashHint('node C:/projetos/x/a.mjs | head -5', false, "Error: Cannot find module '/home/ubuntu/C:/projetos/x/a.mjs'"), 'winpath');
-  // A Windows run that works, or a missing file elsewhere, gets nothing.
+
   assert.equal(bashHint('node C:/projetos/pi-optchat/scripts/ship.mjs --help', false, 'usage: ship'), undefined);
   assert.equal(bashHint('node scripts/a.mjs', false, "Cannot find module 'x' MODULE_NOT_FOUND"), undefined);
 });
 
 test('a failed git merge --ff-only points at the checked-out branch', () => {
-  // 20/11: the GX18MCP checkout was left on a merged fix branch, so `git merge --ff-only origin/main` aborted.
+
   const refused = 'fatal: Not possible to fast-forward, aborting.';
   assert.equal(bashHint('cd r && git fetch -q origin && git merge -q --ff-only origin/main', false, refused), 'ffonly');
   assert.equal(bashHint('git merge --ff-only origin/main', false, 'Already up to date.'), undefined);
@@ -276,7 +276,7 @@ test('a failed git merge --ff-only points at the checked-out branch', () => {
 });
 
 test('a git stash pop/apply refused over local changes points at the diff, not a drop', () => {
-  // 20/11: restoring stash@{0} was refused ("local changes would be overwritten") and the edit was redone by hand.
+
   const refused = 'error: Your local changes to the following files would be overwritten by merge:\n\tsrc/bash-hints.ts\nPlease commit your changes or stash them before you merge.';
   assert.equal(bashHint('git stash pop', false, refused), 'stashclash');
   assert.equal(bashHint('cd r && git stash apply stash@{0}', false, refused), 'stashclash');
@@ -285,7 +285,7 @@ test('a git stash pop/apply refused over local changes points at the diff, not a
 });
 
 test('gh run view --log on a run that never started points at the jobs API, not code', () => {
-  // 20/11: pi-wacli run 44440242498 answered "log not found"; its job had 0 steps (billing suspected, unproven).
+
   assert.equal(bashHint('gh run view 44440242498 --repo o/r --log-failed | tail -25', false, 'log not found: 135278984654'), 'ghlog');
   assert.equal(bashHint('gh run view 1 --log', false, 'log not found'), 'ghlog');
   assert.equal(bashHint('gh run view 1 --log-failed', false, 'not ok 3 - something'), undefined);
@@ -293,8 +293,8 @@ test('gh run view --log on a run that never started points at the jobs API, not 
 });
 
 test('an empty --log-failed of a rerun run points at the first attempt\'s job logs', () => {
-  // 20/11: four Windows flakes (runs 44796894593, 44806753272, 44808976889, 44817692365) passed on rerun; --log-failed then
-  // printed nothing, the failing test was never read and each ended "cause not found". attempts/1 still held all four.
+
+
   assert.equal(bashHint('gh run view 44817692365 --log-failed 2>/dev/null | grep "not ok" | head', false, ''), 'ghattempt');
   assert.equal(bashHint('gh run view 1 --log-failed', false, '\n'), 'ghattempt');
   assert.equal(bashHint('gh run view 1 --log-failed | grep x', false, '(no output)\n\n[pipe status: stage 2 exited 1; ...]\n\nCommand exited with code 1'), 'ghattempt');

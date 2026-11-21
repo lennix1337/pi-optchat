@@ -30,7 +30,7 @@ export type Logged = { method: string; path: string; account?: AccountKey; param
 
 const b64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
 
-/** Resource shape Gmail returns for `messages.get?format=full`. Attachments carry only an attachmentId, never bytes. */
+// external: Gmail messages.get format=full returns attachment IDs, not attachment bytes.
 function gmailResource(m: FixtureMessage) {
   const headers = [{ name: 'From', value: m.from }, { name: 'To', value: m.to ?? 'me@example.test' }, { name: 'Subject', value: m.subject }];
   const parts: unknown[] = [{ partId: '0', mimeType: 'text/plain', filename: '', body: { size: m.body.length, data: b64url(m.body) } }];
@@ -154,7 +154,7 @@ export class FakeGoogle {
       const token = params.token ?? '';
       const known = this.refresh.get(token) ?? this.access.get(token);
       if (!known) { send(400, { error: 'invalid_token' }); return; }
-      // Revoking a refresh token also invalidates every access token of that grant, as Google does.
+      // external: Google refresh-token revocation invalidates access tokens of that grant.
       for (const [key, value] of [...this.refresh, ...this.access]) if (value.account === known.account) { this.refresh.delete(key); this.access.delete(key); }
       send(200, {});
       return;

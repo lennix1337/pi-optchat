@@ -13,7 +13,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 test('local journey: a separate host process delivers one scripted briefing, and a pause from another process takes effect', { timeout: 60_000 }, () => withDir('routine-journey-', async dir => {
   writeFileSync(join(dir, 'provider.json'), JSON.stringify({ morning: 'Bom dia: 2 e-mails, 1 reuniao as 10h.', evening: 'must never be delivered' }));
-  // A front end (TUI/HTTP) on the host's database: it edits routines and reads state, never takes the lease.
+
   const databasePath = join(dir, 'assistant.db');
   const front = createRuntime({ databasePath, owner: 'front', handlers: { brief: () => undefined } });
   const routines = createRoutines({ databasePath, runtime: front });
@@ -30,7 +30,7 @@ test('local journey: a separate host process delivers one scripted briefing, and
     let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
     const exited = new Promise<number | null>(resolve => child.on('exit', resolve));
 
-    // Wait for the first delivery, then pause the other routine before its slot, from this process.
+
     for (let i = 0; i < 80 && !lines(dir, 'tui.log').length; i++) await sleep(100);
     assert.equal(lines(dir, 'tui.log').length, 1, `morning delivered within 8s: ${stderr}`);
     assert.ok(Date.now() < now + 7_000, 'the pause happens before the evening slot');

@@ -58,7 +58,7 @@ test('runs OptChat session start and shutdown through Pi 1.2 with an isolated no
       get(target, property, receiver) {
         if (property === 'on') return (event, handler) => target.on(event, ['session_start', 'session_shutdown'].includes(event)
           ? async (...args) => {
-            // Pi dispatches one event to multiple handlers (including native-hint cleanup).
+            // external: Pi dispatches each event to multiple handlers.
             if (!lifecycleEvents.has(args[0])) { lifecycleEvents.add(args[0]); lifecycle.push(event); }
             return handler(...args);
           }

@@ -60,8 +60,8 @@ test('a browser close failure is reported, and a takeover cannot race into a run
     });
     assert.equal(gateway.status(failed.operationId), 'uncertain');
     mode = 'takeover';
-    // The operator asks for the computer while the agent's browser session is open: the takeover is refused
-    // and the session still closes, so the operator never gets a computer with the agent's browser in it.
+
+
     assert.match(await openBrowserText(gateway, computers, browserTextRequest(base(), a, mode)), /takeover/);
     await assert.rejects(raced!, /computer_operations_active/);
     assert.equal(closeCalls, 2, 'the raced session still ran its close');

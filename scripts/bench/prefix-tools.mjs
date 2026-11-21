@@ -1,4 +1,4 @@
-// Offline prefix, tool-declaration bytes, and synthetic context assembly benchmark.
+
 import '../../test/support.ts';
 import optchat from '../../src/index.ts';
 import { runPerformanceBenchmark } from '../../test/performance-benchmark.ts';

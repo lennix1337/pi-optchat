@@ -80,7 +80,7 @@ test('an atomic-write failure propagates without changing the prior state', () =
   const before = updateOperationalState(file, objective);
   const original = readFileSync(file, 'utf8');
   const temporary = `${file}.${process.pid}.tmp`;
-  mkdirSync(temporary); // atomicWrite cannot open a directory as its temporary file.
+  mkdirSync(temporary);
   assert.throws(() => updateOperationalState(file, { kind: 'decision', text: 'Do not lose the earlier state.', sourceMessageId: 'message-40' }));
   assert.equal(readFileSync(file, 'utf8'), original);
   assert.deepEqual(readOperationalState(file), before);
@@ -136,7 +136,7 @@ test('a grant keeps the spelling of its scope, so a Linux checkout can still be 
 
 test('a grant scope must be a path, never prose', () => withDirectory(directory => {
   const file = join(directory, 'operational-state.json');
-  // A prose scope never covers a path, so it would never match anything.
+
   assert.throws(() => updateOperationalState(file, scopedGrant('sim', '2', { action: 'delete', scope: 'git worktrees whose branch is merged, any project in c:/projetos', allow: true, until: 'done' })), /grant\.scope/);
   assert.throws(() => updateOperationalState(file, scopedGrant('sim', '3', { action: 'push', scope: 'c:/a; c:/b', allow: true, until: 'done' })), /grant\.scope/);
 }));
@@ -175,7 +175,7 @@ test("the operator's typed order lifts an ask rule only for the action it names,
     ({ kind: 'authorization', text, sourceMessageId: source, grant: { action, scope, allow: true, until: 'done' } });
   const dentai = ['c:/projetos/dentai-mono', 'tecnologia-ai/dentai'];
   const lift = (action: string, targets = dentai, at = Date.now()) => orderGrantFor(readOperationalState(file), { action, targets }, id => said[id], at);
-  // 2026-10-29: this one sentence took four approval prompts (two merges, a deploy, and its rerun after a failed gate).
+
   updateOperationalState(file, order(said['86455'], '86455', 'merge'));
   updateOperationalState(file, order(said['86455'], '86455', 'deploy'));
   assert.match(lift('merge')!, /86455/);
@@ -183,12 +183,12 @@ test("the operator's typed order lifts an ask rule only for the action it names,
   assert.equal(lift('deploy', ['c:/projetos/pi-optchat', 'lennix1337/pi-optchat']), undefined, 'another repository is not covered');
   assert.equal(lift('force-push'), undefined, 'actions an order cannot lift stay with the operator');
   assert.equal(lift('deploy', dentai, Date.now() + 13 * 3600_000), undefined, 'an old order does not keep deploying');
-  // A quote that does not name the action, or negates it, lifts nothing.
+
   updateOperationalState(file, order(said['2'], '2', 'deploy'));
   assert.equal(lift('deploy'), undefined, '"não o deploy" is a refusal');
   updateOperationalState(file, order(said['3'], '3', 'deploy'));
   assert.equal(lift('deploy'), undefined, 'a bare "sim" names no deploy');
-  // The record must still match what the operator typed, and the scope must name one place.
+
   updateOperationalState(file, order('pode fazer o deploy', '9', 'deploy'));
   assert.equal(lift('deploy'), undefined, 'source 9 is not an operator message with that text');
   updateOperationalState(file, order(said['4'], '4', 'deploy', 'C:/projetos'));
@@ -214,7 +214,7 @@ test('one typed order that names both the merge and the deploy lifts both; a lat
   const slugs = (folder: string) => folder === 'c:/projetos/dentai-mono' ? 'tecnologia-ai/dentai' : undefined;
   const lift = (action: string, targets: string[] = checkout, at = Date.now()) =>
     orderGrantFor(readOperationalState(file), { action, targets }, id => said[id], at, slugs);
-  // Recorded as the 2026-10-30 order was: one merge grant, quoting the message that also names the deploy.
+
   updateOperationalState(file, { kind: 'authorization', text: said['86853'], sourceMessageId: '86853', grant: { action: 'merge', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
   assert.match(lift('merge')!, /86853/);
   assert.match(lift('deploy')!, /86853/, 'the deploy that same sentence names');

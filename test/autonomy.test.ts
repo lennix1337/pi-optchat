@@ -8,7 +8,7 @@ import { classifyEffects, decide, parseContract, type Repo } from '../src/autono
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { touchesContract } from '../src/authorization.ts';
 
-/** Checkouts by path, without git: slug and current branch. */
+
 const repos: Record<string, [string, string]> = {
   'c:/projetos/pi-optchat': ['lennix1337/pi-optchat', 'feat/x'],
   'c:/projetos/dotfiles': ['lennix1337/dotfiles', 'main'],
@@ -50,7 +50,7 @@ test('merges, publishing and deploys name the repository they touch', () => {
 });
 
 test('the production SQL reset that sent a real WhatsApp message is a production write; a container listing over ssh is not', () => {
-  // Shape of the 2026-10-18 incident: a heredoc with an UPDATE piped into psql on the production host.
+
   const reset = `cat > /tmp/q10.sql <<'EOF'\nupdate retention_simulation_deliveries set status='PENDING' where id='x' and status='FAILED' returning id;\nEOF\nssh -q hetzner-dentai "docker exec -i dentai-postgresdb sh -c 'psql -At'" < /tmp/q10.sql`;
   assert.deepEqual(effects(reset), ['production-write ssh:hetzner-dentai']);
   assert.deepEqual(effects('ssh hetzner-dentai "docker compose -f /srv/app.yml up -d api"'), ['production-write ssh:hetzner-dentai']);
@@ -58,39 +58,39 @@ test('the production SQL reset that sent a real WhatsApp message is a production
 });
 
 test('ssh named only inside quoted text or a heredoc body is not an ssh call', () => {
-  // A commit message and a test file that mention ssh and docker rm run neither.
+
   assert.deepEqual(effects(`node scripts/ship.mjs -m "Diagnóstico: docker de inspeção e ssh com comando de leitura; docker exec/run/rm seguem bloqueados" src/a.ts`), []);
   const testFile = `cat >> test/x.test.ts <<'EOF'\nassert.ok(readOnly('x ssh hetzner-dentai docker ps'));\nassert.ok(!readOnly('a ssh to a host: docker rm api'));\nEOF\nnode --test test/x.test.ts`;
   assert.deepEqual(effects(testFile), []);
-  // The heredoc opener may be followed by a pipe on the same line.
+
   assert.deepEqual(effects(`cat <<'EOF' | wc -l
 ssh hetzner-dentai docker restart api
 EOF`), []);
-  // A real ssh call still counts, also inside a command substitution.
+
   assert.deepEqual(effects('out=$(ssh hetzner-dentai "docker restart api")'), ['production-write ssh:hetzner-dentai']);
 });
 
 test('a database client over ssh is a production write unless the command visibly forces read-only', () => {
-  // 2026-10-30: the UPDATE was written to /tmp/fix.sql by an earlier call, so this call showed no SQL at all.
+
   const fromFile = String.raw`ssh -o BatchMode=yes hetzner-dentai 'docker exec -i dentai-postgresdb sh -c "psql -v ON_ERROR_STOP=1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -At -F \"|\""' < /tmp/fix.sql 2>&1`;
   assert.deepEqual(effects(fromFile), ['production-write ssh:hetzner-dentai']);
-  // A SELECT piped from a file is held too: the file is not visible, so nothing proves it read-only.
+
   const read = `cat > /tmp/q7.sql <<'EOF'\nselect id from projects where id='x';\nEOF\nssh -q hetzner-dentai "docker exec -i dentai-postgresdb psql -At" < /tmp/q7.sql`;
   assert.deepEqual(effects(read), ['production-write ssh:hetzner-dentai']);
-  // The alias form (`update subscriptions s set`) was missed by the sqlWrite pattern.
+
   assert.deepEqual(effects("ssh hetzner-dentai \"cat\" <<'EOF'\nupdate subscriptions s\n   set amount = 9990 where id = 'x';\nEOF"), ['production-write ssh:hetzner-dentai']);
   assert.deepEqual(effects("ssh hetzner-dentai \"sqlite3 /srv/app.db 'select 1'\""), ['production-write ssh:hetzner-dentai']);
   assert.deepEqual(effects('ssh hetzner-dentai "mongosh --eval \'db.users.find()\'"'), ['production-write ssh:hetzner-dentai']);
   assert.deepEqual(effects('ssh hetzner-dentai "redis-cli get session:1"'), ['production-write ssh:hetzner-dentai']);
-  // A read-only probe passes: default_transaction_read_only through PGOPTIONS, or a read-only transaction in the SQL.
+
   const probe = String.raw`ssh -q hetzner-dentai "docker exec dentai-postgresdb sh -c 'PGOPTIONS=\"-c default_transaction_read_only=on\" psql -At -c \"select count(*) from plans\"'"`;
   assert.deepEqual(effects(probe), []);
   assert.deepEqual(effects("ssh hetzner-dentai \"docker exec dentai-postgresdb psql -At -c 'begin read only; select count(*) from plans; commit;'\""), []);
   assert.deepEqual(effects("ssh hetzner-dentai \"docker exec dentai-postgresdb psql -At -c 'set transaction read only; select 1'\""), []);
-  // Turning the probe back off, or asking for read-write, is not a probe.
+
   assert.deepEqual(effects("ssh hetzner-dentai \"PGOPTIONS='-c default_transaction_read_only=on' psql -c 'set default_transaction_read_only = off; select 1'\""), ['production-write ssh:hetzner-dentai']);
   assert.deepEqual(effects("ssh hetzner-dentai \"docker exec dentai-postgresdb psql -c 'begin read write; select 1'\""), ['production-write ssh:hetzner-dentai']);
-  // Non-database reads over ssh stay free, and a path that names a client is not a client.
+
   assert.deepEqual(effects('ssh hetzner-dentai "docker logs --tail 50 dentai-back"'), []);
   assert.deepEqual(effects('ssh hetzner-dentai "cat /etc/hostname"'), []);
   assert.deepEqual(effects('ssh hetzner-dentai "ls /srv/psql-backups"'), []);
@@ -99,7 +99,7 @@ test('a database client over ssh is a production write unless the command visibl
 test('paid model calls, discards, deletes and global installs are recognised; inspection is not', () => {
   assert.deepEqual(effects('cd C:/projetos/dotfiles/payload/tools/bench && node bench.mjs run --label ab --model anthropic/claude-opus-5-5:high'), ['paid model-run']);
   assert.deepEqual(effects('pi -p "summarize"'), ['paid model-run']);
-  // The 2026-10-24 paid A/B ran as a plain script; its source is what shows it calls a model.
+
   assert.deepEqual(effects('cd C:/projetos/pi-optchat && npx tsx scratchpad/quality-ab/ab.ts > C:/tmp/ab.log 2>&1'), ['paid model-run']);
   assert.deepEqual(effects('node scripts/report.mjs', 'C:/projetos/pi-optchat'), []);
   assert.deepEqual(effects('node --import tsx --test scratchpad/quality-ab/ab.ts', 'C:/projetos/pi-optchat'), [], 'a test run is not a model run');
@@ -109,7 +109,7 @@ test('paid model calls, discards, deletes and global installs are recognised; in
   assert.deepEqual(effects('pwsh -Command "& ./Invoke-PcMaintenance.ps1 -Steps Worktrees -Apply"'), ['discard pc-maintenance']);
   assert.deepEqual(effects('rm -rf C:/projetos/old-thing'), ['recursive-delete c:/projetos/old-thing']);
   assert.deepEqual(effects('rm -rf /tmp/radmut'), []);
-  // 13/11: a PowerShell cleanup of two temp scratch folders waited for the operator.
+
   assert.deepEqual(effects(String.raw`powershell -NoProfile -Command "Remove-Item -Recurse -Force \$env:TEMP\rt,\$env:TEMP\rt2 -ErrorAction SilentlyContinue"`), []);
   assert.deepEqual(effects(String.raw`pwsh -c "Remove-Item -Recurse -Force $env:TEMP\rt -ErrorAction Stop"`), []);
   assert.deepEqual(effects(String.raw`pwsh -c "Remove-Item -Recurse -Force $env:TEMP\rt,C:\projetos\x"`), ['recursive-delete $env:temp/rt,c:/projetos/x']);
@@ -119,7 +119,7 @@ test('paid model calls, discards, deletes and global installs are recognised; in
 });
 
 test('text that only mentions a command is not that command: greps, reads, help and heredoc bodies', () => {
-  // Each of these was flagged by the first replay of the real history.
+
   assert.deepEqual(effects('cd C:/projetos/Genexus18MCP && grep -nE "git push|push origin|gh release create|npm publish|gh pr merge" release.ps1'), []);
   assert.deepEqual(effects("cd C:/projetos/dentai-mono && sed -n '1,175p' scripts/release/deploy-changed.ps1"), []);
   assert.deepEqual(effects('wrangler deploy --help | head -65'), []);
@@ -177,8 +177,8 @@ test('the first live rule that matches the action and a target decides; otherwis
   assert.equal(verdict('git status'), 'report', 'no effect: nothing to decide here; the gate already let it through');
 });
 
-// Retro 03/11: widening the free build-folder rule to `*/.next/*` would have freed `rm -rf web/.next/types web/src`,
-// because a rule matched when any one of the deleted folders did.
+
+
 test('a delete of several folders is as strict as its strictest folder', () => {
   const deletes = parseContract({ version: 1, default: 'report', rules: [
     { action: 'recursive-delete', scope: ['*/.next', '*/.next/*'], level: 'free' },
@@ -191,12 +191,12 @@ test('a delete of several folders is as strict as its strictest folder', () => {
   assert.equal(level('rm -rf .next/types src'), 'ask');
   assert.equal(level('rm -rf src .next'), 'ask');
   assert.equal(level('rm -rf .next C:/projetos/dentai-mono/worktrees/denta-81'), 'report');
-  // Pushes and merges name one repository twice (checkout and slug): any name still matches.
+
   assert.equal(verdict('git -C C:/projetos/dotfiles push origin main'), 'report');
 });
 
 test('a call with no recognised effect runs and is logged even when the default asks', () => {
-  // A strict default must not turn ordinary work into a question: the contract has nothing to say about it.
+
   const strict = parseContract({ version: 1, default: 'ask', rules: [{ action: 'push', scope: ['lennix1337/*'], level: 'free' }] });
   const level = (command: string, cwd = 'C:/Users/swluc') => decide(strict, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo)).level;
   assert.equal(level('git status'), 'report', 'nothing for the contract to decide');
@@ -218,7 +218,7 @@ test('an invalid contract names its problem', () => {
   assert.throws(() => parseContract({ version: 1, default: 'yes', rules: [] }), /default/);
 });
 
-/** The registered gate in risk mode with a profile folder holding `contract`. */
+
 function gate(contractText: string | undefined) {
   const dir = mkdtempSync(join(tmpdir(), 'autonomy-'));
   if (contractText !== undefined) writeFileSync(join(dir, 'autonomy.json'), contractText);
@@ -334,7 +334,7 @@ test('the agent cannot widen its own contract: touching autonomy.json waits for 
   g.done();
 });
 
-// Built, not written out: a literal file name in this edit would trip the very gate this test pins down.
+
 const contractFile = ['autonomy', 'json'].join('.');
 
 test('the gate lets the live contract be copied into a mirror and still stops a write onto it', async () => {
@@ -374,9 +374,9 @@ test('only a call that can change the contract file is a contract change; search
   g.done();
 });
 
-// Session 2026-10-30: four of seven operator approvals that day were reads or prose naming the contract file: a spawn whose
-// task text mentioned it (87018), a `for ... do cmp` mirror check (87188), a `node -e` that only parsed it (87222) and a
-// codemode script that only searched memory for the name. Only a call that can write the file needs the operator.
+
+
+
 test('reads and prose that name the contract file never wait for the operator', () => {
   const f = contractFile;
   const bash = (command: string) => touchesContract({ tool: 'bash', input: { command } });
@@ -395,7 +395,7 @@ test('reads and prose that name the contract file never wait for the operator', 
   assert.equal(touchesContract({ tool: 'commitments', input: { action: 'add', text: `propor mudança no ${f}`, source: '1' } }), false);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `const s = await tools.zoom({ id: 87018, n: 1, findText: '${f}' }); text(s);` } }), false);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.edit({ path: '~/.optchat/${f}', edits: [] })` } }), true);
-  // Operator 03/11: a `cat` of the file through codemode was gated as a contract change; a nested read is a read.
+
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cat ~/.optchat/${f}' })` } }), false, 'a nested shell read is a read');
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({ command: 'cp x ~/.optchat/${f}' })` } }), true, 'a nested shell write stays gated');
   assert.equal(touchesContract({ tool: 'some_mcp_tool', input: { path: `~/.optchat/${f}` } }), true, 'an unknown tool naming it still asks');
@@ -447,8 +447,8 @@ test("an ask rule runs when the operator's typed order covers it, and says so; w
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// 03/11: asked only "what are these python processes, why so much CPU" and "can Beatriz's dev server be optimized",
-// the agent killed both with taskkill. No gate saw it: a kill was not an effect, so nothing weighed it.
+
+
 test('the 03/11 kills are process-kill effects with the processes they stop', () => {
   assert.deepEqual(effects('for p in 6584 33888; do taskkill //PID $p //F >/dev/null 2>&1; echo "$p rc=$?"; done'), ['process-kill pid:$p']);
   assert.deepEqual(effects('taskkill //PID 33856 //T //F 2>&1 | tail -5; echo rc=$?'), ['process-kill pid:33856']);
@@ -474,7 +474,7 @@ test('a dry run writes nothing, so it needs no approval, as the release scripts 
   assert.deepEqual(effects('npm publish --dry-run', 'C:/projetos/pi-optchat'), []);
   assert.deepEqual(effects('pnpm publish --dry-run --access public', 'C:/projetos/pi-optchat'), []);
   assert.deepEqual(effects('cargo publish --dry-run', 'C:/projetos/pi-optchat'), []);
-  // The real thing still waits.
+
   assert.deepEqual(effects('git push origin main', 'C:/projetos/pi-optchat'), ['push-main c:/projetos/pi-optchat,lennix1337/pi-optchat']);
   assert.deepEqual(effects('npm publish --access public', 'C:/projetos/pi-optchat'), ['publish c:/projetos/pi-optchat,lennix1337/pi-optchat']);
   assert.deepEqual(effects('git push --force origin feat/x -- --dry-run', 'C:/projetos/pi-optchat').length, 1, 'a flag after -- is a ref, not a dry run');
@@ -500,7 +500,7 @@ test('copying autonomy.json to a relative mirror path outside the profile folder
     cwd: 'C:/projetos/dotfiles',
     input: { command: `cd C:/projetos/dotfiles && test -f payload/${f} && cp ~/.optchat/profiles/dev/${f} payload/${f}` },
   }, profileDir), false);
-  // Copying INTO the live profile folder (relative from profileDir or absolute) still counts.
+
   assert.equal(touchesContract({
     tool: 'bash',
     cwd: profileDir,
@@ -514,7 +514,7 @@ test('codemode editing another file whose text mentions autonomy.json is not a c
     tool: 'codemode',
     input: { code: `await tools.edit({ path: 'C:/projetos/pi-optchat/skills/assistant/SKILL.md', edits: [{ oldText: 'a', newText: 'See ${f}' }] })` },
   }), false);
-  // Dynamic or contract-targeting edit/write still counts.
+
   assert.equal(touchesContract({
     tool: 'codemode',
     input: { code: `await tools.edit({ path: '~/.optchat/${f}', edits: [] })` },

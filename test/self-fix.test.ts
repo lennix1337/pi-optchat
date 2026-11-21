@@ -12,7 +12,7 @@ const H = 3_600_000;
 const down = (probe: string): Transition => ({ probe, kind: 'down', text: `🔴 ${probe} com problema` });
 const up = (probe: string): Transition => ({ probe, kind: 'recovered', text: `✅ ${probe} voltou` });
 const counting = (fail?: string) => { const r = { label: 'a manutenção do PC', runs: 0, run: async () => { r.runs++; if (fail) throw new Error(fail); } }; return r; };
-/** A scratch directory removed when the test ends. */
+
 const scratch = (t: TestContext) => { const dir = mkdtempSync(join(tmpdir(), 'selffix-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 
 test('an outage with a remedy is fixed alone: it runs once, the alert says so, the recovery says solved alone', async t => { const dir = scratch(t);

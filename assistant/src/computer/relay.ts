@@ -37,7 +37,7 @@ export async function startBrowserRelay(computers: ComputerManager, id: string, 
   child.stdin.on('error', () => stop('egress_transport_failed'));
   child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(0, 4096); });
   const deadline = setTimeout(() => stop('egress_expired'), Math.min(120_000, expiresAt - Date.now()));
-  // Revocation terminates ongoing sockets as well as refusing the next request.
+
   const revocation = setInterval(() => { try { admit(); } catch { stop('egress_revoked'); } }, 100);
   const send = (value: unknown) => { if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.write(JSON.stringify(value) + '\n'); };
   let readyResolve: (value: { port: number; fingerprint: string }) => void;

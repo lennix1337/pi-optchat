@@ -1,4 +1,4 @@
-// Offline turn-start latency and prompt-cache prefix stability benchmark.
+
 import { runTurnStartBenchmark } from '../turn-start-benchmark.ts';
 
 const result = await runTurnStartBenchmark({ messages: 20_000, turns: 25, warmup: 5, gapMs: 0 });

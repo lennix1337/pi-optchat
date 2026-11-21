@@ -39,10 +39,10 @@ export const elapsed = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(m
 export function fit(text: string, width: number) {
   if (visibleWidth(text) <= width) return text;
   if (width < 2) return sliceByColumn(text, 0, width, true);
-  const cut = sliceByColumn(text, 0, width - 1, true), space = cut.lastIndexOf(' '); // Unlike truncateToWidth, adds no style reset.
+  const cut = sliceByColumn(text, 0, width - 1, true), space = cut.lastIndexOf(' ');
   return `${(space > cut.length * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
-/** Left text and right text on one line, the right side flush with the edge when both fit. */
+
 const spread = (left: string, right: string, width: number) => {
   const gap = width - visibleWidth(left) - visibleWidth(right);
   return gap >= 2 ? `${left}${' '.repeat(gap)}${right}` : left;
@@ -63,12 +63,12 @@ interface Options {
   context: () => number | null | undefined;
   refreshUsage?: () => void;
   signal?: AbortSignal;
-  /** The clock the panel reads; tests set it. */
+
   now?: () => number;
 }
 
-/** UI projection only: inspecting never injects child transcripts into parent memory. */
-/** One panel row: what the run is (tag and own goal), what it is doing now or when it ended, its model when unusual, and its duration. */
+
+
 function panelRow(run: RunInfo, children: Children, now: number, modelOf: (run: RunInfo) => string) {
   const external = run.source === 'pi-subagents';
   const live = children.live(run.id), tools = live ? [...live.tools.values()].map((t, i) => i ? t.name : toolBrief(t.name, t.args)).join(' · ') : '';
@@ -77,7 +77,7 @@ function panelRow(run: RunInfo, children: Children, now: number, modelOf: (run: 
   const activity = external ? (run.state === 'running' ? 'running via pi-subagents' : run.state)
     : run.state === 'stopping' ? 'stopping' : run.state === 'waiting' ? 'waiting for children' : run.state === 'paused' ? 'interrupted · waiting for you' : tools || (live?.streaming ? 'responding' : 'working');
   const active = isActiveRun(run);
-  // A live run says what it does right after its label; a finished one says when it ended, in the right-hand column.
+
   const tail = `${guidance ? ` · ${guidance}` : ''}${live ? ` · ${ago(now - live.updated)} ago` : ''}`;
   const doing = external ? activity : live ? activity : run.state;
   const duration = run.durationUnknown ? '—' : compact((run.ended ?? now) - run.started);
@@ -88,7 +88,7 @@ function panelRow(run: RunInfo, children: Children, now: number, modelOf: (run: 
     tag: runTag(run),
     prefix: `${'  '.repeat(run.depth - 1)}${external ? 'π ' : run.parentId ? '↳ ' : ''}`,
     label: oneLine(taskLabel(run.task)),
-    // A finished run keeps only what still needs the operator: messages that never arrived.
+
     doing: active ? doing : guidance, doingTail: active ? tail : '',
     model: modelOf(run),
     time: active ? duration : [`${outcome}${endedAgo}`.trim(), duration].filter(Boolean).join(' · '),
@@ -275,7 +275,7 @@ export class Inspector implements Component, Focusable {
   private usageLines(width: number) {
     const { usage, session, context, color } = this.options;
     const { total, failures, groups, latency, calls } = usage.summary(this.range, session);
-    // No-break spaces keep a label like "Last 7 days" on one line when the tabs wrap.
+
     const tabs = ranges.map(r => r.replaceAll(' ', '\u00a0')).map((r, i) => ranges[i] === this.range ? color('accent', `[${r}]`) : color('dim', r)).join('  ');
     const lines = [...wrapTextWithAnsi(tabs, width), ''];
     if (!calls) lines.push(color('muted', 'No usage in this period.'));
@@ -286,7 +286,7 @@ export class Inspector implements Component, Focusable {
       const rows = usageRows(groups, total);
       const header = ['', 'model', 'cost', 'share', 'calls', '$/call', 'out', 'cached', 'first', 'reply'];
       const widths = header.map((h, c) => Math.max(h.length, ...rows.map(r => r[c].length)));
-      // The model column goes first when the screen is too narrow for every column.
+
       const all = header.map((_, c) => c);
       const columns = widths.reduce((sum, w) => sum + w + 2, 0) - 2 <= width ? all : all.filter(c => c !== 1);
       const line = (cells: string[]) => columns.map(c => c < 2 ? cells[c].padEnd(widths[c]) : cells[c].padStart(widths[c])).join('  ').trimEnd();
@@ -334,14 +334,14 @@ export class Inspector implements Component, Focusable {
       if (cursor >= this.top + this.height) this.top = cursor - this.height + 1;
       const modelOf = modelColumn(list);
       const rows = list.slice(this.top, this.top + this.height).map(run => panelRow(run, children, now, modelOf));
-      // [tag] goal, what it is doing, then the right-hand column: model when unusual, outcome and duration. Metadata goes before the goal does.
+
       const timeWidth = Math.max(0, ...rows.map(r => visibleWidth(r.time)));
       const modelWidth = inner >= 64 ? Math.min(24, Math.max(0, ...rows.map(r => visibleWidth(r.model)))) : 0;
       const rightWidth = (modelWidth ? modelWidth + 2 : 0) + timeWidth;
       const leftWidth = Math.max(1, inner - 2 - rightWidth - 2);
       body = rows.map(({ run, prefix, tag, label, doing, doingTail, model, time, failed }) => {
         const tagText = inner >= 64 && tag ? `${fit(tag, 24)} ` : '', room = Math.max(1, leftWidth - visibleWidth(prefix) - visibleWidth(tagText));
-        // The goal keeps what it needs up to 65% of the room; what the agent does now takes the rest, its tail (queued messages, last update) kept whole.
+
         const doingFull = visibleWidth(doing) + visibleWidth(doingTail);
         const labelWidth = Math.min(visibleWidth(label), Math.max(Math.ceil(room * 0.65), room - doingFull - 2));
         const doingRoom = room - labelWidth - 2, showDoing = doingFull > 0 && doingRoom >= 14;
@@ -378,7 +378,7 @@ export class Inspector implements Component, Focusable {
     const footer = wrapTextWithAnsi(hint, inner).map(line => color(tone, line));
     this.hintLines = footer.length;
     const rule = color('border', '─'.repeat(Math.max(1, width)));
-    // Same layout as Pi's own selectors: rules above and below, content indented by one column.
+
     const content = [spread(color('accent', title), color('dim', info), inner), '', ...body, '', ...footer].map(line => ` ${truncateToWidth(line, inner, '…')}`);
     return [rule, ...content, rule].map(line => truncateToWidth(line, width));
   }

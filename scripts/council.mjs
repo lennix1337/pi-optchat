@@ -1,10 +1,10 @@
-// Wake council in Slack: posts the wake's candidates and leaning (stdin) to #wakes under the wake's name, then a
-// debate in that thread, each under its own name: the least used Codex account criticizes, agy (Gemini, through
-// agy-pc.mjs --ask on the PC) disagrees with what was said, the Codex advisor answers it (no tools, no session).
-// Prints {channel, ts, answers} as JSON. `--reply TS` posts the wake's decision (stdin, the 5th message, with
-// "Mudou: sim|não") in that thread and appends {at, ts, changed} to the profile's council.jsonl. Writes only those.
-//
-// usage: node --experimental-transform-types --no-warnings scripts/council.mjs --me "<model · account>" [--reply TS] [--channel wakes] [--profile DIR] < text
+
+
+
+
+
+
+
 import { execFile } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

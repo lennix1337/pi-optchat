@@ -25,12 +25,12 @@ test('restore holds queued, started-before-enqueue and completed-wait revisions:
   const store = new TaskStore(join(data, 'tasks.sqlite'), PROFILE);
   let original = 0, replayed = 0;
   try {
-    // A wait job is done but its next attempt was not created yet.
+
     create(store, 'waited');
     const waiting = open(store, data, async () => WAIT);
     try { await waiting.tick(); } finally { await waiting.close(); }
     assert.equal(store.get('waited')!.status, 'working');
-    // Queued before its first job, and working after the transition but before the enqueue.
+
     create(store, 'queued'); create(store, 'started');
     store.transition('started', 1, 'working', event(store, 'started'));
     await createBackup({ databasePath: join(data, 'tasks.sqlite'), profileId: PROFILE, out, protector });

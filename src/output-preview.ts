@@ -24,7 +24,7 @@ const SEARCH_LINE = /^(?:[A-Za-z]:)?[^:\r\n]+:\d+(?::\d+)?:/;
 const SEARCH_HIT = /^((?:[A-Za-z]:)?[^:\r\n]+):(\d+(?::\d+)?):(.*)$/;
 const DIFF_MARKER = /^(?:diff --git |Index: |\*\*\* (?:Begin|End) Patch|@@\s)/;
 const LOCKFILE_PATH = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum|flake\.lock|packages\.lock\.json|[^/]+\.lock)$/i;
-// Only existence matters: matching the final digit avoids quadratic backtracking on long numeric lines.
+
 const SEARCH_SUMMARY = /(?:\d matches?|search completed)/i;
 const JSON_KEY = /error|exception|fail|warn|stderr|stdout|exit.?code|status|diagnostic|test|message|\bcode\b/i;
 const TABLE_PRIORITY_KEY = /^(?:id|number|name|title|status|state|conclusion|error|message|exitCode|code|type|level|kind)$/i;
@@ -99,7 +99,7 @@ function selectedLines(lines: readonly string[], format: OutputPreviewFormat) {
   }
   const all = [...chosen].sort((a, b) => a - b);
   if (all.length <= MAX_PREVIEW_LINES) return all;
-  // Keep the source order and both ends when format-specific rules produce an unusually dense selection.
+
   const keep = new Set<number>();
   addSome(keep, diagnostics, 12); addSome(keep, diagnostics, 12, true);
   addSome(keep, all, MAX_PREVIEW_LINES - keep.size);
@@ -152,7 +152,7 @@ function tabulateJsonArray(path: string, items: unknown[]): { lines: string[]; o
   const cols = allKeys.slice(0, MAX_TABLE_COLS);
   const extraCols = allKeys.length - cols.length;
 
-  // Compute mode values for low-cardinality columns to detect non-majority outliers deterministically.
+
   const colModes = new Map<string, string>();
   for (const col of cols) {
     const freq = new Map<string, number>();

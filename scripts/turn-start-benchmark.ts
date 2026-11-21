@@ -1,13 +1,13 @@
-// Offline turn-start benchmark. It runs the real OptChat extension in a headless Pi session on a synthetic profile
-// (a temp OPTCHAT_HOME, never ~/.optchat) with a fixture model that makes no provider call, then reports p50/p95 per
-// stage: the wall time from prompt to the provider request, the whole turn, and each context stage from context_metrics.
-// Sizes follow the operator's profile (memory view near its 128 KB budget, ~100 KB operational state, open commitments,
-// 14 KB AGENTS.md); message count is the one knob that stands in for a long-running chat.
-//
-// Usage: node --experimental-transform-types --no-warnings scripts/turn-start-benchmark.ts [--messages=20000] [--turns=40] [--warmup=5] [--gap=0] [--cpu-profile=<file>]
-// --gap=<ms> waits between turns (untimed) like a person typing; 0 runs turns back to back, the worst case for background work.
-// The local checkpoint (git) runs inside each settle, so providerToSettled includes it; its stage is `checkpoint`. Stages are read
-// through /optchat-perf, which reports p50/p95 per stage. Compare two trees interleaved: the machine's load moves absolute numbers.
+
+
+
+
+
+
+
+
+
+
 import '../test/support.ts';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,7 +31,7 @@ const SIZES: Record<Kind, [number, number]> = { user: [60, 260], talk: [150, 140
 const SHARE: Record<Kind, number> = { user: 0.12, talk: 0.3, tool: 0.22, echo: 0.22, note: 0.06, work: 0.08 };
 const NODE_BYTES = 512;
 
-/** Deterministic pseudo-random numbers: two runs build the same fixture. */
+
 function random(seed: number) {
   let state = seed >>> 0;
   return () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 2 ** 32; };
@@ -50,7 +50,7 @@ function kindAt(next: () => number): Kind {
 const bytesOf = (text: string) => Buffer.byteLength(text, 'utf8');
 const dayOf = (i: number) => `2026-10-${String(8 + Math.floor(i / 2000)).padStart(2, '0')}`;
 
-/** A store the Memory opens as-is: every message has its own line and a built tree, so no compactor is ever called. */
+
 function writeStore(directory: string, messages: number) {
   const next = random(20261102), main = join(directory, 'main'), tree = join(directory, 'tree');
   mkdirSync(main, { recursive: true }); mkdirSync(tree, { recursive: true });
@@ -65,7 +65,7 @@ function writeStore(directory: string, messages: number) {
     lines.set(key, [...lines.get(key) ?? [], line]);
   };
   for (const entry of entries) append(dayOf(entry.i), 'main', JSON.stringify(entry));
-  // Level 0 is the message itself (short enough to be its own line); higher levels summarize their halves.
+
   for (let level = 0; 2 ** level <= messages; level++) {
     for (let i = 0; i < Math.floor(messages / 2 ** level); i++) {
       const first = i * 2 ** level;
@@ -78,12 +78,12 @@ function writeStore(directory: string, messages: number) {
   for (const [key, rows] of lines) writeFileSync(join(directory, key.split('/')[0], key.split('/')[1]), rows.join('\n') + '\n');
 }
 
-/** A profile as the operator's: 14 KB instructions, ~100 KB operational state and open commitments, a built memory. */
+
 async function createFixtureProfile(messages: number) {
   createProfile(PROFILE);
   const dir = profilePath(PROFILE);
   const config = loadConfig(dir);
-  // Status file on, ai-memory off: a benchmark must never write pages into the operator's memory service.
+
   saveConfig(dir, { ...config, compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' }, subagent: { provider: 'fixture', model: 'fixture', thinking: 'off' },
     syncStatus: true, syncAiMemory: false, syncOptMem: false, heartbeatMinutes: 0, heartbeatWakes: 1, memorySearch: false, previousExchange: false, refreshTokensK: 64 });
   const agents = Array.from({ length: 220 }, (_, n) => `- Standing instruction ${n}: preserve operator decisions, cite evidence, never repeat an uncertain external effect.`).join('\n');
@@ -99,7 +99,7 @@ async function createFixtureProfile(messages: number) {
 }
 
 interface Fixture { model: Model<Api>; sawRequest(): number | undefined; startRequest(): void }
-/** A headless Pi with the fixture provider; `firstRequest` is when the first provider call of the current turn arrived. */
+
 async function openSession(root: string, notes: string[]): Promise<{ session: Awaited<ReturnType<typeof createAgentSession>>['session']; fixture: Fixture; close(): Promise<void> }> {
   const dir = join(root, 'pi');
   mkdirSync(dir, { recursive: true });
@@ -110,7 +110,7 @@ async function openSession(root: string, notes: string[]): Promise<{ session: Aw
     models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: CONTEXT_WINDOW, maxTokens: 16_000 }],
     streamSimple(model, context) {
       const last = context.messages.at(-1);
-      // Summaries built in the background are provider calls too; only a turn's own request marks the turn's provider time.
+
       if (!JSON.stringify(last && 'content' in last ? last.content : '').includes('Compaction: ')) requested ??= performance.now();
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: `OK: ${textContent(last && 'content' in last ? last.content : '').slice(0, 40)}` }],
         api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
@@ -156,7 +156,7 @@ async function readMetrics(session: Awaited<ReturnType<typeof openSession>>['ses
 }
 
 export async function runTurnStartBenchmark(options: { messages: number; turns: number; warmup: number; gapMs?: number; cpuProfile?: string }) {
-  // support.ts sandboxes OPTCHAT_HOME and PI_CODING_AGENT_DIR into a temp root that is removed at exit.
+
   const root = mkdtempSync(join(tmpdir(), 'turn-start-'));
   process.env.OPTCHAT_HOME = join(root, 'optchat');
   mkdirSync(process.env.OPTCHAT_HOME, { recursive: true });
@@ -188,7 +188,7 @@ export async function runTurnStartBenchmark(options: { messages: number; turns: 
   } finally { await close(); }
 }
 
-/** A CPU profile of the measured turns only, so the fixture's own writes stay out of it. */
+
 interface Profiler { stop(file: string): Promise<void> }
 async function startProfiler(): Promise<Profiler> {
   const session = new InspectorSession();

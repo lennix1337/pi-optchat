@@ -238,8 +238,7 @@ test('auth and provenance guards resist disposable mutations', { skip: process.e
 });
 
 test('an idle keep-alive connection outlives a client whose event loop stalled for 6 s', () => {
-  // Node's default 5 s idle timer closes the socket server-side; a client that was busy past it (a CI runner under load)
-  // then writes into a closed socket and fails with ECONNRESET (windows CI, run 42436413218: 6 s between two requests).
+  // external: Node closes idle sockets after 5 s by default, risking ECONNRESET for stalled clients.
   const store = new TaskStore(join(mkdtempSync(join(tmpdir(), 'assistant-keepalive-')), 'store.db'), 'profile');
   const server = createAssistantServer({ store, token, profileId: 'profile' });
   assert.ok(server.keepAliveTimeout >= 10_000, `keepAliveTimeout ${server.keepAliveTimeout} ms closes idle sockets inside a 6 s stall`);
