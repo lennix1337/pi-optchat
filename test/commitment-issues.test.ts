@@ -63,3 +63,12 @@ test('every project the operator tracks resolves to its real GitHub repo, not on
   for (const [text, repo] of cases) assert.deepEqual(issueReferences(text), [{ repo, number: Number(text.match(/\d+/)![0]) }], text);
   assert.equal(issueReferences('pi-gitwatch and dotfiles #5'), undefined);
 });
+
+test('a commitment waiting on a future due date is not told to close because its cited PR merged', () => {
+  const now = Date.parse('2026-11-21T12:00:00Z');
+  const base: Commitment = { id: 'c_wait', text: 'dotfiles #185 RSS', source: '1', owner: 'optchat', status: 'open', createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), progressAt: new Date(now).toISOString(), notes: [] };
+  const hint = () => 'all cited issues closed';
+  assert.doesNotMatch(commitmentsContext([{ ...base, due: new Date(now + 3600_000).toISOString() }], now, hint), /all cited issues closed/);
+  assert.match(commitmentsContext([{ ...base, due: new Date(now - 3600_000).toISOString() }], now, hint), /all cited issues closed/);
+  assert.match(commitmentsContext([base], now, hint), /all cited issues closed/);
+});

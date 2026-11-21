@@ -316,7 +316,7 @@ export function commitmentsContext(items: readonly Commitment[], now = Date.now(
   if (!open.length) return '';
   const lines = [`Open commitments (${open.length}; ages now, times UTC-3; keep them current with the commitments tool: progress, next step, close with evidence):`];
   for (const [index, c] of open.entries()) {
-    const hint = issueHint(c);
+    const hint = c.due && Date.parse(c.due) > now ? undefined : issueHint(c);
     const line = `- ${describe(c, now)}${hint ? ` · ${hint}` : ''}${overdueDay(c, now) ? ` · overdue 24h+: ${ESCALATION_RULE}` : ''}`;
     if ([...lines, line].join('\n').length > CONTEXT_MAX) { lines.push(`- … ${open.length - index} more: commitments {action:"list"}`); break; }
     lines.push(line);
