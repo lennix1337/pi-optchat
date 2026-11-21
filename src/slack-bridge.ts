@@ -170,7 +170,6 @@ function failure(messages: readonly AgentMessage[]): string {
   return last && (last.stopReason === 'error' || last.stopReason === 'aborted') ? `⚠️ A execução parou sem resposta (${last.stopReason}): ${last.errorMessage ?? 'sem detalhes'}` : '';
 }
 
-/** A still-running worker's progress note, as agents.ts relays it. */
 const WORKER_PROGRESS = /^\[[\w-]+\] Message from subagent \(still running\)/;
 
 export class SlackBridge {
