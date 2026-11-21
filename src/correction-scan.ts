@@ -81,6 +81,11 @@ function verifiesLive(call: Content): boolean {
 }
 
 
+const SCRATCH_RM = /\brm\s+(?:-\S+\s+)+(?:(?:\/tmp\/|~\/\.cache\/|\$HOME\/\.cache\/)[^\s;&|]*\s*)+(?=[;&|\n]|$)/gu;
+function withoutScratchCleanup(command: string): string {
+  return command.replace(SCRATCH_RM, '').replace(/\bkill\s+-0\b/gu, '');
+}
+
 function withoutQuotedText(command: string): string {
   return command
     .replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/gu, '')
@@ -139,7 +144,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b(?:[^;\n|&]|&(?!&))*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'destructive-git': return calls.some(c => c.name === 'bash' && /\bgit\s+(?:-C\s+\S+\s+)?(?:reset\b[^\n;|&]*\s--hard\b|clean\b[^\n;|&]*\s-[a-z]*f|branch\b[^\n;|&]*\s-D\b|stash\s+(?:drop|clear)\b|worktree\s+remove\b[^\n;|&]*\s(?:--force|-f)\b)/u.test(String(c.arguments?.command ?? '')));
-    case 'his-call': return calls.some(c => c.name === 'bash' && /(?:^|[;&|\n(]\s*|\s)(?:(?:sudo\s+)?(?:kill|pkill|killall|taskkill)\s+-?\S|rm\s+-[a-z]*[rR]|(?:deploy-(?:web|changed|prod)\.ps1|wrangler\s+(?:pages\s+)?deploy)\b|dentai-ship\b[^\n]*--deploy)/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
+    case 'his-call': return calls.some(c => c.name === 'bash' && /(?:^|[;&|\n(]\s*|\s)(?:(?:sudo\s+)?(?:kill|pkill|killall|taskkill)\s+-?\S|rm\s+-[a-z]*[rR]|(?:deploy-(?:web|changed|prod)\.ps1|wrangler\s+(?:pages\s+)?deploy)\b|dentai-ship\b[^\n]*--deploy)/u.test(withoutScratchCleanup(withoutQuotedText(String(c.arguments?.command ?? '')))));
     case 'weaken-test': return calls.some(c => {
       if (c.name !== 'edit' || !/(?:^|[\\/])(?:test|tests|__tests__)(?:[\\/])|\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(String(c.arguments?.path ?? ''))) return false;
       const edits = Array.isArray(c.arguments?.edits) ? c.arguments.edits : [c.arguments];
