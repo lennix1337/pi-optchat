@@ -118,13 +118,13 @@ import { Collector, Situation } from './situation.ts';
 import { realSources } from './situation-sources.ts';
 
 const binding = 'optchat.profile';
-/** The request head the prompt cache holds (StableHead) is kept in `HEAD_FILE` of the profile, keyed by session, so /reload sends it again.
- * Sessions written before that hold it as custom entries of this type: the last one is read when the file is not the session's. */
+
+
 const HEAD_ENTRY = 'optchat.head';
 const HEAD_FILE = 'head.json';
 const VIEW_ENTRIES_FILE = 'cache-entries.json';
 const CONNECT_MODES = ['auto', 'join', 'off'] as const;
-/** Print mode routes `process.stdout` to stderr so only the answer reaches stdout; the joined reply goes to fd 1 itself. */
+// external: Pi print mode redirects process.stdout to stderr.
 async function printReply(text: string) {
   const bytes = Buffer.from(`${text}\n`);
   for (let at = 0; at < bytes.length;) {
@@ -143,7 +143,7 @@ function writeHeadFile(dir: string, sessionId: string, head: SavedHead) {
   catch { console.error(`OptChat could not write ${HEAD_FILE}; after /reload the request head is built again.`); }
 }
 const toggle = (prompt: string, line: string, on: boolean, after: string) => on === prompt.includes(line) ? prompt : on ? prompt.replace(after, after + line) : prompt.replace(line, '');
-/** A report run while idle reuses the last built prompt, so Previous exchange and Memory search changes since then are applied here. */
+
 const promptFor = (prompt: string, { previousExchange, memorySearch }: ProfileConfig) =>
   allowSearch(toggle(toggle(prompt, CONTINUITY, previousExchange, PROMPT), SEARCH_DOC, memorySearch, previousExchange ? PROMPT + CONTINUITY : PROMPT), memorySearch);
 interface Active { name: string; dir: string; config: ProfileConfig; memory: Memory; focus: Focus; inbox: Inbox; children: Children; crew: Crew; usage: UsageLedger; operations: OperationJournal; sessionId: string; sync: Sync; outputs: OutputContext; metrics: PerformanceMetrics; unlock: () => Promise<void> }
@@ -162,18 +162,18 @@ export default function optchat(host: ExtensionAPI) {
   registerStallPhases(pi);
   quietGhTelemetry();
   basicPythonRepl();
-  // Shells a /reload handed over keep running under the same IDs; another profile opening first stops them.
+
   const adopted = adoptShells();
   const shells = adopted?.jobs ?? new ShellJobs();
   let adoptedProfile = adopted?.profile;
-  // A bash call expected to run long starts as a background shell instead of holding the turn (long-commands.ts).
+
   const canStartShell = () => { required(); if (stopping) throw new Error('Profile is closing'); };
   const shellSettings = { notifyDefault: () => active?.config.shellNotify ?? 'end', durableDir: () => active && join(active.dir, 'shells') };
   registerReapingBash(pi, longCommandMover(shells, shellSettings, () => active !== undefined && !stopping));
   registerShells(pi, shells, canStartShell, shellSettings);
   let active: Active | undefined;
-  // A background shell's end becomes an outcome even when its notify mode hides it from the model: exit code, latency and
-  // zero model calls, never the command's text in a notification. Foreground bash is Pi's own result, not a managed job.
+
+
   shells.setEndObserver(job => { const current = active; if (!current || stopping) return; recordShellOutcome(current.dir, current.sessionId, job); });
   registerExecLog(pi, () => active?.dir);
   mountToolGroups(pi);
@@ -190,26 +190,26 @@ export default function optchat(host: ExtensionAPI) {
     catch { console.error('OptChat could not persist recovery diagnostics; incident metadata may be incomplete. Recovery decisions are unchanged.'); }
   };
   const unsubscribeRecovery = pi.events.on('optchat:recovery', recoveryEvent);
-  // Red CI of a PR shipped by `crew accept` goes back to the worker that wrote it (pi-gitwatch routes by run id).
+
   const unsubscribeCiBack = pi.events.on(SUBSCRIBER_NOTICE_CHANNEL, ciBackToWorker({
     info: id => active?.children.info(id), notice: (id, text) => active ? active.children.shellNotice(id, text) : Promise.resolve(false),
     toManager: text => deliverReport(text, { once: true }) }) as (claim: unknown) => void);
-  // First: a PowerShell script bash would rewrite (`$_` inside double quotes) is refused before it runs, so it needs no
-  // approval and leaves no operation to journal. A foreground wait is not refused: the bash mover runs it as a shell (shells.ts).
+
+
   registerPowerShellQuotingGuard(pi);
   registerBashTimezoneGuard(pi);
   registerRecursiveGrepNarrowing(pi);
-  // Likewise a commit whose pre-commit hook would outlive a short bash timeout: refused before it runs, no approval needed.
+
   registerCommitHookGuard(pi);
-  // And a direct `gh pr merge` over failing, pending or unreadable CI (src/merge-ci-guard.ts); checks GitHub never
-  // started do not count.
+
+
   registerMergeCiGuard(pi);
-  // Each owned browser tab's last page, so input on a consent, account or billing page waits for the operator.
+
   registerBrowserPages(pi);
-  // The profile's autonomy.json decides a gated call; what it has no rule for runs and is logged.
-  let approvalVia: string | undefined; // set while a WhatsApp vote decides, so the Slack post says where
+
+  let approvalVia: string | undefined;
   const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir,
-  // "pode fazer o merge e o deploy", recorded as grants quoting it, covers the calls it names instead of one prompt each.
+
   orderGrant: effect => {
     const profile = active;
     if (!profile) return undefined;
@@ -218,11 +218,11 @@ export default function optchat(host: ExtensionAPI) {
       return source?.kind === 'user' && !source.origin ? source.text : undefined;
     };
     try { return orderGrantFor(readOperationalState(join(profile.dir, 'operational-state.json')), effect, said); }
-    catch { return undefined; /* an unreadable state file lifts nothing: the call waits for the operator */ }
+    catch { return undefined;   }
   },
-  // A call that waits for the operator is also posted to their Slack DM, where its buttons or `aprovar`/`negar` in its
-  // thread decide it; decided anywhere else, the post is rewritten to say so. The same call goes out on the
-  // `optchat:approval` bus event, so pi-wacli can ask on his WhatsApp (a poll with Aprovar/Negar) and decide it there.
+
+
+
   onPending: (pending, session, gate) => {
     const request = { token: pending.token, summary: pending.summary, detail: pending.detail, label: pending.kind ?? pending.tool, expires: pending.expires };
     void slack.askApproval({ ...request, decide: approve => gate.decideFromPhone(session, pending.token, approve) });
@@ -233,12 +233,12 @@ export default function optchat(host: ExtensionAPI) {
   },
   onSettled: (token, outcome) => { void slack.settled(token, outcome, approvalVia); pi.events.emit('optchat:approval', { type: 'settled', token, outcome }); } });
   registerOperationSafety(pi, () => active?.operations, sessionId => recoveryIncidents.get(sessionId));
-  registerBashHints(pi); // After the safety hooks: they must classify the unmodified result.
-  // A production deploy in flight (src/deploy.ts): launches are refused, running workers hold heavy work.
+  registerBashHints(pi);
+
   const deploy = new DeployWatch({ shells: () => runningShells(shells), extra: () => active?.config.deployCommands ?? [] }, workerHooks(() => active?.children));
   registerDeployGuard(pi, deploy, listener => shells.subscribe(listener));
-  registerReadChainHint(pi); // Lone read after lone read: batch the independent ones (src/read-chain.ts). Workers load no extension, so only this session gets it.
-  let main: MainModel | undefined; // The main model each role's model follows, see modelFor.
+  registerReadChainHint(pi);
+  let main: MainModel | undefined;
   let remote: Awaited<ReturnType<typeof openConnectedWindow>> | undefined;
   /** `pi -p` on a profile another Pi owns: the prompt goes to a subagent in that Pi (--optchat-connect). */
   let joined: Awaited<ReturnType<typeof joinHeadless>> | undefined;
@@ -250,7 +250,7 @@ export default function optchat(host: ExtensionAPI) {
   /** After a mid-turn refresh (#146), the run is sent from here on, after its task; 0 sends it whole. */
   let keep = 0;
   let view: string | undefined;
-  // Like the chronological view, focus is frozen between turn/refresh boundaries for cache stability.
+
   let focusView: string | undefined;
   /** When this profile last sent the main model a request: a turn starting long after it may merge the view (DEFER). */
   let lastRequestAt: number | undefined;
@@ -305,7 +305,7 @@ export default function optchat(host: ExtensionAPI) {
   /** Whether the profile is in one of `allowed` phases (src/profile-phase.ts): the one test every feature uses to ask if it may act on the open profile. */
   const inPhase = (...allowed: ProfilePhase[]) => allowed.includes(profilePhase({ active: active !== undefined, remote: remote !== undefined || joined !== undefined,
     stopping, importing, importPending: () => {
-      // A journal that cannot be read is an import nobody finished: it keeps the profile paused instead of throwing into a poll or a tool.
+
       try { return active !== undefined && pendingImport(active.dir) !== undefined; } catch { return true; }
     } }));
   let importController: AbortController | undefined;
@@ -386,13 +386,13 @@ export default function optchat(host: ExtensionAPI) {
   const status = (ctx: ExtensionContext) => {
     const a = active;
     if (!a) { ctx.ui.setStatus('optchat', 'OptChat: choose profile'); return; }
-    // A display only: a broken import journal is refused where it matters, never here.
+
     let note = '';
     try { note = importing ? ' · importing' : pendingImport(a.dir) ? ' · import paused: /optchat import' : ''; }
     catch { note = ' · import journal invalid'; }
     ctx.ui.setStatus('optchat', `OptChat: ${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
   };
-  // `steered` describes this process's Pi queue, so it is not journaled.
+
   const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => ['steered', 'sentAt', 'observed', 'responded'].includes(key) ? undefined : value)); };
   /** A report already journaled when the model first saw it: its replay is processed, not logged twice. */
   const isReplayedReport = (message: AgentMessage, receipt: string | undefined) => !!receipt?.startsWith(REPORT_RECEIPT) && message.role === 'user'
@@ -425,8 +425,8 @@ export default function optchat(host: ExtensionAPI) {
       }
     }
   };
-  // Shown as a dark background box, not as the user's own message. Before this profile has run once there is no
-  // built system prompt to reuse, so that rare case still goes through Pi's normal prompt path as a user message.
+
+
   const sendReport = (report: Report) => sendReports([report]);
   /** Reports that wait together go out together: what the quota hold keeps comes back as one delivery, so does a startup replay. */
   const sendReports = (items: Report[]) => dispatchReports(items.filter(report => !outage?.offer(report)));
@@ -450,9 +450,9 @@ export default function optchat(host: ExtensionAPI) {
   };
   const deliverReport = async (text: string, { once = false, count, runIds, workerRecovery, quiet = false }: { once?: boolean; count?: number; runIds?: string[]; workerRecovery?: boolean; quiet?: boolean } = {}) => {
     if (once && (active?.memory.root.some(e => e.receipt === reportReceipt(text)) || reports.some(r => r.text === text))) return;
-    // Progress from a worker never wakes an idle main agent: it joins the session now, and memory, which builds the next turn's
-    // view, keeps it as work: no run is open to log it.
-    // A running agent still gets it steered in, through the normal path below.
+
+
+
     if (quiet && !stopping && active && idle()) {
       logMessage(active.memory, { role: 'user', content: text, timestamp: Date.now() }, reportReceipt(text));
       pi.sendMessage<ReportDetails>({ customType: REPORT_TYPE, content: text, display: true }, { triggerTurn: false });
@@ -501,7 +501,7 @@ export default function optchat(host: ExtensionAPI) {
       minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       queued: () => nextQueueItem(profile.dir) !== undefined,
-      // The radar's last snapshot stays in radar.md so a person can see what the wake saw.
+
       radar: async () => {
         const argv = own()?.config.heartbeatRadar;
         if (!argv) return undefined;
@@ -533,7 +533,7 @@ export default function optchat(host: ExtensionAPI) {
         }
         return det;
       },
-      // Cached quota only (pi-multi-account keeps the file): a wake never starts on a provider known to be out, and never probes one.
+
       route: blocks => {
         const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
         const config = own()?.config;
@@ -542,14 +542,14 @@ export default function optchat(host: ExtensionAPI) {
         return pickWakeRoute(wakeRoutes(config, model, knownProviders(state, blocks), pi.getThinkingLevel()), state, blocks, Date.now(),
           choice => !!ctx.modelRegistry.find(choice.provider, choice.model));
       },
-      // Event-driven wakes (config wakeTriage): the radar and the crew's runs say which projects moved; no model is asked.
+
       triage: () => {
         const triage = own()?.config.wakeTriage;
         if (!triage) return undefined;
         const lastRuns = Object.fromEntries(Object.entries(lastRunsOf(profile.children.runs(), Date.now())).map(([project, run]) => [project, run.at]));
         return { buildMinutes: triage.buildMinutes, ...triage.stallHours ? { stallHours: triage.stallHours } : {}, missions: profile.crew.missions(), lastRuns, lastStop: lastStopOf(ctx), commitments: readCommitments(profile.dir) };
       },
-      // Specialist patrol (config specialistPatrol): a specialist's deadline findings go to a read-only worker of that specialist, not to the manager.
+
       patrol: () => {
         const plan = own()?.config.specialistPatrol;
         if (!plan) return undefined;
@@ -573,7 +573,7 @@ export default function optchat(host: ExtensionAPI) {
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) }, reloadTicket);
     if (reloadTicket && heartbeat.waking) watchWakeReload(reloadTicket, ctx, profile);
     settledAt = Date.now(); heartbeat.arm();
-    // The daily retro (operator 03/11): once a day after the configured time, on an idle chat.
+
     if (retroTimer) clearInterval(retroTimer);
     retroTimer = setInterval(() => {
       const at = own()?.config.dailyRetro;
@@ -640,7 +640,7 @@ export default function optchat(host: ExtensionAPI) {
   };
   const CONNECT = 'Start a connected subagent conversation here', BACK = 'Back';
   const chooseProfile = async (ctx: ExtensionContext): Promise<string | undefined> => {
-    // Outside the TUI (print, json, RPC hosts) never pick or create a profile: a dialog would hang the host, and a guess could write into the wrong memory.
+
     if (ctx.mode !== 'tui') return undefined;
     const names = listProfiles(), last = lastProfile();
     if (last) names.sort((a, b) => Number(b === last) - Number(a === last));
@@ -659,7 +659,7 @@ export default function optchat(host: ExtensionAPI) {
       const config = loadConfig(dir);
       main = ctx.model && { provider: ctx.model.provider, model: ctx.model.id };
       const sessionId = ctx.sessionManager.getSessionId();
-      // Each opening step is a named stall span (open:<step>), so a stall at startup or reload says which step held the loop.
+
       const usage = spanned('open:usage', () => new UsageLedger(dir, { warm: true }));
       const operations = new OperationJournal(dir);
       const metrics = new PerformanceMetrics();
@@ -692,7 +692,7 @@ export default function optchat(host: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : spanned('open:inbox', () => inbox.recover(memory));
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      // The specialists' trees get their own compressor, on the compactor's model, billed as "crew"; it pauses on a per-token provider.
+
       const crewCompress = createCompressor(ctx.modelRegistry, () => modelFor(config, 'compactor', main), (message, attribution) => {
         usage.compression(message, 'crew', sessionId, attribution);
       }, () => config.summaryAcceptBytes, () => undefined);
@@ -707,7 +707,7 @@ export default function optchat(host: ExtensionAPI) {
           escalated: (project, id) => { const item = readCommitments(dir).find(found => found.id === id); if (item) heartbeat?.escalate(project, escalationNote(item, project)); },
           quotaBlock: (provider, model) => routeBlock(readQuotaState(), provider, model, Date.now()),
           onPark: ids => wakeWorkers.release(ids),
-          // A copy, not a report: it starts no manager turn. Held while a manager run is logging its own messages, then appended after them.
+
           peerCopy: text => { if (active?.memory === memory && !idle()) peerCopies.push(text); else memory.append('work', text); },
           peerResumed: (resumed, partner) => {
             if (!heartbeat?.waking) return;
@@ -717,7 +717,7 @@ export default function optchat(host: ExtensionAPI) {
       outage?.close();
       reportDispatch?.close();
       reportDispatch = new ReportDispatcher<Report>({ idle: () => ctx.isIdle(), send: sendToPi,
-        // Pi reports a refused send nowhere the extension can read; a send that started no turn is the sign.
+        // external: Pi does not expose refused sends to extensions.
         pack: packWaiting, gatherMs: REPORT_GATHER_MS,
         failed: (report, attempt, giveUp) => {
           for (const carried of report.members ?? [report]) carried.sentAt = undefined;
@@ -725,8 +725,8 @@ export default function optchat(host: ExtensionAPI) {
             : 'A report did not start a turn; sending it again.', 'warning');
         } });
       outage = new QuotaOutage<Report>({ now: () => Date.now(),
-        // Cached quota only, across the accounts of the main model's family: undefined when one of them is usable or nothing is known.
-        // The hints learned from failed turns count per provider, like the failed-wake blocks of a wake.
+
+
         until: learned => {
           const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id }), own = active?.config;
           if (!model || !own) return undefined;
@@ -766,17 +766,17 @@ export default function optchat(host: ExtensionAPI) {
       board.requestState();
       if (ctx.mode === 'tui') {
         const boardNav = new BoardNavigation(board), customEditor = Boolean(ctx.ui.getEditorComponent());
-        // The footer is the status line; the bar below the editor then only shows while an inspector page is selected.
+
         unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav, ctx.hasUI);
         unmountBoard = mountWaitingBoard(ctx, board, shortcut, boardNav);
         unmountFooter = mountFooter(ctx, { spend: () => active ? active.usage.summary('Today', active.sessionId).total.cost.total : undefined, quotaState: () => readQuotaState(), hint: `${customEditor ? '' : '↓ painéis · '}${shortcut}`, events: pi.events, thinking: () => pi.getThinkingLevel() });
       }
-      // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
+      // external: Pi print and JSON runs exit after their prompt.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await spanned('open:windows', () => serveWindows(dir, children, () => inPhase('open'), deliverReport));
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
       ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${roleModel(config, 'compactor', main)}`, 'info');
-      // A background shell's end (shellReporter) and its pattern alerts reach the main agent as messages. Closing the profile stops shells silently; a /reload hands them to the reloaded profile, which hears the ends it missed.
+
       if (adoptedProfile !== undefined && adoptedProfile !== name) {
         ctx.ui.notify(`Stopped ${runningShells(shells).length} background shells that ${adoptedProfile} left running across the reload.`, 'warning');
         await shells.close(); shells.clear();
@@ -794,11 +794,11 @@ export default function optchat(host: ExtensionAPI) {
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
-        // Only an interactive Pi picks cut-off subagents up: a one-shot headless run would stop them again as it exits.
+
         recovery = Promise.all([recover(children.recoverHandoffs(), 'Handoff recovery'), recover(children.reportExplicitRecovery(), 'Reporting workers requiring explicit recovery'), ...ctx.mode === 'tui' ? [recover(children.resumeCutOff(), 'Resuming subagents'), recover(Promise.resolve().then(() => children.resumeParked()), 'Re-arming workers parked for quota')] : []]).then(() => {});
       }
       setImmediate(() => { if (active?.memory === memory && !pendingImport(dir)) sendReports(queuedReports); });
-      // A reload or crash in the middle of a wake left the wake model on: put the main one back.
+
       await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
       if (ctx.mode === 'tui') startHeartbeat(ctx, active);
     } catch (error) {
@@ -818,12 +818,12 @@ export default function optchat(host: ExtensionAPI) {
     const entries = ctx.sessionManager.getEntries();
     const saved = entries.findLast(e => e.type === 'custom' && e.customType === binding);
     const boundName = saved?.type === 'custom' && record(saved.data) && typeof saved.data.name === 'string' ? saved.data.name : undefined;
-    // A session with conversation in it belongs to its profile. One that is only bound (a fresh `/optchat profile` session) may still pick another.
+
     const settled = boundName !== undefined && entries.some(e => e.type === 'message' || e.type === 'custom_message');
     const flag = pi.getFlag('optchat-profile');
     try {
       if (boundName && typeof flag === 'string' && flag !== boundName) throw new Error(`Session belongs to ${boundName}; cannot resume it as ${flag}.`);
-      // OPTCHAT_PROFILE skips the picker in the TUI only: headless runs must not enter a personal memory unasked.
+
       const preset = ctx.mode === 'tui' ? process.env.OPTCHAT_PROFILE?.trim() || undefined : undefined;
       const agentId = pi.getFlag('optchat-agent');
       if (agentId !== undefined) {
@@ -838,7 +838,7 @@ export default function optchat(host: ExtensionAPI) {
         return;
       }
       let name = boundName ?? (typeof flag === 'string' ? flag : preset ?? await chooseProfile(ctx));
-      // Only plain `pi -p` joins: JSON and RPC output carry Pi's own events, which a joined reply would bypass.
+      // external: Pi JSON and RPC modes stream their own events.
       const connect = ctx.mode === 'print' ? connectMode() : 'off';
       if (connect === 'join' && !name) { process.exitCode = 1; throw new Error('--optchat-connect join needs a profile: pass --optchat-profile'); }
       for (;;) {
@@ -850,8 +850,8 @@ export default function optchat(host: ExtensionAPI) {
         } catch (error) {
           if (error instanceof ProfileBusyError && connect === 'auto') { joined = await joinProfile(name); break; }
           if (!(error instanceof ProfileBusyError) || ctx.mode !== 'tui') throw error;
-          // A resumed conversation already belongs to this profile, so another profile needs a new session (/optchat profile).
-          // Older owners have no listing protocol. Keep their existing Connect/Back menu rather than failing startup.
+
+
           const listed = settled ? undefined : await listAttachableAgents(profilePath(name)).catch(() => undefined);
           const agents = listed ?? [];
           const hint = listed?.length === 0 ? '\nNo background agents are running. Ask the main agent to start one.' : '';
@@ -863,12 +863,12 @@ export default function optchat(host: ExtensionAPI) {
             try {
               remote = await openConnectedWindow(pi, ctx, name, text => title.show(t => ctx.ui.setTitle(t), text), agentId, true);
               fault = undefined;
-              // An attached terminal saves no profile binding: its Pi session never persists, so there is nothing to resume.
+
               for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
               return;
             } catch (error) {
               ctx.ui.notify(errorText(error), 'error');
-              continue; // It may have finished while the menu was open: refresh, never spawn a replacement.
+              continue;
             }
           }
           if (choice === CONNECT) { remote = await openConnectedWindow(pi, ctx, name, text => title.show(t => ctx.ui.setTitle(t), text)); fault = undefined; break; }
@@ -878,13 +878,13 @@ export default function optchat(host: ExtensionAPI) {
       }
       if (name !== boundName) pi.appendEntry(binding, { name });
       if (active) {
-        // After /reload the prompt cache is still warm: keep the head it holds and the time of the last request.
+
         const branch = ctx.sessionManager.getBranch();
         const entry = branch.findLast(e => e.type === 'custom' && e.customType === HEAD_ENTRY);
         stableHead.restore(readHeadFile(active.dir, active.sessionId) ?? (entry?.type === 'custom' ? entry.data : undefined));
         savedHead = stableHead.saved();
-        // And the view entries it holds: without them the first call marks only its last blocks, and a view that grew by more
-        // than their lookback since is written again whole.
+
+
         const entriesFile = join(active.dir, VIEW_ENTRIES_FILE);
         if (existsSync(entriesFile)) {
           try { viewEntries.restore(JSON.parse(readFileSync(entriesFile, 'utf8'))); }
@@ -896,22 +896,22 @@ export default function optchat(host: ExtensionAPI) {
     } catch (error) {
       if (active) await stop().catch(() => {});
       fault = errorText(error);
-      // Pi reports a throwing handler on stderr (print) or as an extension_error event (RPC); notify there is a no-op or easy to miss.
+      // external: Pi reports handler exceptions on stderr in print mode and as extension_error in RPC.
       if (ctx.mode !== 'tui') throw error;
       ctx.ui.notify(fault, 'error');
     }
-    // Pi sets its own title once every session_start handler has finished, so put ours back afterwards.
+    // external: Pi sets its title after session_start handlers finish.
     for (const ms of [0, 250, 1000]) setTimeout(() => title.reapply(), ms).unref();
   });
   pi.on('model_select', event => { main = { provider: event.model.provider, model: event.model.id }; outage?.recheck(); active?.sync.schedule(); });
-  pi.on('session_info_changed', () => title.reapply()); // Pi retitles the tab on session renames, just before this.
+  pi.on('session_info_changed', () => title.reapply()); // external: Pi retitles the tab on session rename.
   pi.on('session_shutdown', async event => {
     if (event.reason === 'reload') noteReload();
     try { await stop(event.reason); }
-    // The shells outlive a /reload in this process: they must not keep this instance's closure alive, nor report into it.
+
     finally { unsubscribeRecovery(); unsubscribeCiBack(); recoveryIncidents.clear(); shells.setEndObserver(undefined); }
   });
-  // Pi shows nothing when a switch is cancelled, so say why and what lets it through.
+
   const blockSwitch = (command: string, ctx: ExtensionContext) => {
     const children = active?.children, runs = children?.active ? children.ids.flatMap(id => children.live(id)?.info ?? []) : [];
     const label = (run: RunInfo) => !isActiveRun(run) ? 'finishing' : run.connected ? 'connected window'
@@ -944,37 +944,37 @@ export default function optchat(host: ExtensionAPI) {
       : undefined;
   });
   const slackOwner = () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name } : undefined;
-  // A paused import still takes the reports out, but a DM is delivered only to a profile that can run it: the input hook drops
-  // messages while an import is paused, and the bridge has already moved its cursor past a message it handed over.
-  const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch { /* the day log only feeds the morning summary */ } },
+
+
+  const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch {   } },
     { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
       everyAnswer: () => active?.config.slackEveryAnswer === true,
-      // The App Home's work items: read-only, from this profile's files and the shells running now (src/home-items.ts).
+
       items: () => {
         const a = active;
         if (!a || !inPhase('open', 'import-paused')) return NO_WORK;
         const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).filter(r => r.state === 'running').map(r => `subagente ${r.id} \u00b7 ${oneLine(r.task)}`);
         return readHomeWork(a.dir, runningShells(shells).map(job => job.label ?? `${job.id} \u00b7 ${job.command}`), Date.now(), agents);
       } });
-  // The App Home lists what waits on him: approvals pending in this chat and commitments blocked on him.
+
   slack.setWaiting(() => {
     if (!active) return [];
     const approvals$ = approvals?.pendingFor(active.sessionId) ?? [];
     return [...approvals$.map(p => `Aprovação pendente: ${p.summary}`), ...stillWaiting(waitingItems(readCommitments(active.dir), Date.now()), readWatch(active.dir))];
   });
-  // The operator's WhatsApp through wacli, when ~/.pi/agent/optchat-whatsapp.json exists (src/whatsapp-bridge.ts).
+
   registerWhatsAppBridge(pi, () => active && inPhase('open') ? active.dir : undefined, () => slack.commandState(), () => inPhase('open'));
-  // PRs changing state and a 07:00 summary in the DM (src/slack-reports.ts).
+
   registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
-  // Production health probes every 5 min, read-only: an outage posts to #dentai and wakes the agent once (src/prod-health.ts).
+
   registerQuotaCommand(pi, () => slackOwner()?.dir);
   registerProdHealth(pi, slackOwner, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
-  // The operator's panel mirrors runs, wakes, background shells and subagents (src/work-tracker.ts).
+
   const work = registerWorkTracker(pi, () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
   const unwatchWork: (() => void)[] = [];
   const catchup = registerCatchup(pi, () => active && inPhase('open', 'closing')
     ? catchupSource(active, flush, approvals, shells) : undefined);
-  // What OptChat promised and what waits on the operator, in every turn, plus the 10/30-min presence nudges (src/commitments.ts).
+
   const commitments = registerCommitments(pi, () => {
     const a = active;
     return a && inPhase('open', 'closing', 'import-paused') ? {
@@ -983,7 +983,7 @@ export default function optchat(host: ExtensionAPI) {
       latestSource: () => { flush(); const latest = latestOperatorMessage(a.memory.root); return latest ? String(latest.i) : undefined; },
     } : undefined;
   });
-  // An operator correction gets one reminder to become a test or rule, and counts on the weekly scoreboard (src/corrections.ts).
+
   registerCorrections(pi, () => active && inPhase('open', 'closing', 'import-paused') ? { dir: active.dir } : undefined);
   pi.on('input', async (event, ctx) => {
     if (joined) {
@@ -1001,7 +1001,7 @@ export default function optchat(host: ExtensionAPI) {
       return { action: 'handled' };
     }
     if (!active) {
-      // Without a profile or flag, a headless run is plain Pi. A requested profile that failed to open refuses instead of running without memory.
+
       if (ctx.mode !== 'tui' && !fault) return { action: 'continue' };
       ctx.ui.notify(fault ?? 'Select a profile with /optchat profile before chatting.', 'error'); return { action: 'handled' };
     }
@@ -1028,7 +1028,7 @@ export default function optchat(host: ExtensionAPI) {
     if (active && !runStarted) startRun(ctx);
   });
   pi.on('before_agent_start', async (event, ctx) => {
-    if (!active) return; // Plain Pi run: leave Pi's own prompt untouched.
+    if (!active) return;
     await machineWakeOn(active.dir, active.config, event, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'));
     if (event.messageType === 'custom' && event.message.customType === RELOAD_RESUME) {
       const id = (event.message.details as { id?: unknown } | undefined)?.id;
@@ -1041,7 +1041,7 @@ export default function optchat(host: ExtensionAPI) {
     startRun(ctx);
     const a = required();
     a.focus.advance();
-    // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
+
     syncSearch(a.config);
     syncRouterTools(pi, a.config.routerMode);
     const router = `${a.config.routerMode ? `\n\n${ROUTER_DOC}` : ''}${a.config.managerMode ? `\n\n${MANAGER_DOC}` : ''}`;
@@ -1062,7 +1062,7 @@ export default function optchat(host: ExtensionAPI) {
     if (heartbeat?.waking) {
       const original = event.message;
       if (original.role === 'assistant') {
-        // A tell that resumes a finished worker launches it again, as a spawn does: the wake waits for its report too.
+
         for (const block of original.content) if (block.type === 'toolCall' && (block.name === 'spawn' || block.name === 'tell' || block.name === 'retarget')) wakeWorkers.called(block.id);
         if (original.stopReason === 'stop') wakeWorkers.replied();
       } else if (original.role === 'toolResult' && (original.toolName === 'spawn' || original.toolName === 'tell' || original.toolName === 'retarget')) {
@@ -1081,12 +1081,12 @@ export default function optchat(host: ExtensionAPI) {
     if (event.message.role === 'assistant' && event.message.stopReason === 'stop')
       for (const report of reports) if (report.awaitingProcessing && report.observed) report.responded = true;
     if (!active || !runStarted) return;
-    // Shell evidence stays exact in the session; only the provider projection is reduced.
+
     const shell = event.message.role === 'toolResult' && ['bash', 'powershell'].includes(event.message.toolName);
     const bounded = active.config.recoverableOutput && (shell || active.outputs.preserveOriginal(event.message)) ? event.message : boundedMessage(event.message);
     const message = asUser(bounded);
     if (event.message.role === 'toolResult') fullToolResults.set(message, event.message);
-    // Before the message is logged, so the image its text names is already there for zoom; zoom's own images are kept already.
+
     if (message.role === 'user' || message.role === 'toolResult' && message.toolName !== 'zoom') {
       try { await saveImages(active.memory.store, message.content); }
       catch (error) { ctx.ui.notify(`OptChat could not keep an image: ${errorText(error)}`, 'warning'); }
@@ -1095,13 +1095,13 @@ export default function optchat(host: ExtensionAPI) {
     if (message.role === 'user') {
       try {
         const text = textContent(message.content);
-        // A report is shown as our custom message, or sent as plain text before the first run has a prompt to reuse.
+
         if (bounded.role === 'custom' && bounded.customType === REPORT_TYPE || bundles.has(text) || reports.some(r => !r.batch && r.text === text)) {
-          // A report sent again after a lost steer can still arrive twice (Pi kept the old steer after an abort): drop the extra copy.
-          // Copies are counted, so a later report that happens to repeat an earlier text still arrives.
+          // external: Pi may retain a steer after abort, allowing a report to arrive twice.
+
           const receipt = reportReceipt(text), copies = run.slice(logged).filter(m => receipts.get(m) === receipt).length;
           const carried = bundles.get(text), pending = reports.find(r => !r.batch && r.text === text);
-          // A bundle is a copy once every report it carries is logged, or when its message is already in this run.
+
           if (carried && (copies > 0 || !carried.some(r => reports.includes(r))))
             return { message: bounded.role === 'custom' ? { ...bounded, content: DUPLICATE_REPORT, display: false } : { ...message, content: DUPLICATE_REPORT } };
           if (carried) bundled.set(message, carried);
@@ -1111,7 +1111,7 @@ export default function optchat(host: ExtensionAPI) {
           if (!carried && pending?.awaitingProcessing) pending.observed = true;
           receipts.set(message, receipt);
         } else {
-          // The inbox journaled the typed input: match without image references or Pi's image notes.
+
           const typed = typedText(message.content), skill = parseSkillBlock(typed.bare);
           let receipt = active.inbox.claim(typed.text) ?? active.inbox.claim(typed.bare)
             ?? (skill ? active.inbox.claimSkill(skill.name, skill.userMessage) : undefined);
@@ -1143,19 +1143,19 @@ export default function optchat(host: ExtensionAPI) {
   pi.on('context_with_system', async (event, ctx) => {
     const contextStarted = performance.now();
     try {
-      if (!active) return; // Plain Pi run: pass context through unmodified.
+      if (!active) return;
       const a = required();
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
       if (view === undefined) {
         const memoryStarted = performance.now();
         if (lastRequestAt === undefined || Date.now() - lastRequestAt >= coldAfter(ctx.model)) a.memory.cool();
-        view = await memoryView(ctx); // Capture old history before logging the new input.
+        view = await memoryView(ctx);
         focusView = a.focus.render(a.memory);
         flush();
         a.metrics.record('memory', performance.now() - memoryStarted);
       }
-      // Later extensions (including MCP) may add system-prompt sections; keep Pi's current prompt when our preamble is present.
+
       const current = ctx.getSystemPrompt();
       if (current.startsWith(PROMPT.slice(0, 40))) prompt = current;
       const system = stateless(promptFor(prompt, a.config));
@@ -1173,7 +1173,7 @@ export default function optchat(host: ExtensionAPI) {
       const projectionStarted = performance.now();
       const projectedRun = a.config.recoverableOutput ? a.outputs.project(run) : run;
       a.metrics.record('projection', performance.now() - projectionStarted);
-      // After a pause that expired the turn's cache entry, moving the turn into memory costs nothing extra.
+
       const refresh = refreshPoint(projectedRun, keep, coldBudget(refreshBudget(window, refreshFraction(a.config.refreshAt), refreshTokens(a.config.refreshTokensK)),
         lastRequestAt === undefined ? undefined : Date.now() - lastRequestAt));
       const budgetStarted = performance.now();
@@ -1201,7 +1201,7 @@ export default function optchat(host: ExtensionAPI) {
           cold: lastRequestAt === undefined || Date.now() - lastRequestAt >= coldAfter(ctx.model), epoch: viewEpoch,
           sections: getCurrentSystemMessage(event.messages)?.sections ?? {} });
       const head = stableHead.saved();
-      // Written when the head is rewritten with other content; a cold rewrite of the same head adds nothing.
+
       if (head && head !== savedHead) {
         if (!savedHead || JSON.stringify(head) !== JSON.stringify(savedHead)) writeHeadFile(a.dir, a.sessionId, head);
         savedHead = head;
@@ -1213,7 +1213,7 @@ export default function optchat(host: ExtensionAPI) {
       a.metrics.record('telemetry', performance.now() - telemetryStarted);
       return { messages };
     } catch (error) {
-      // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
+      // external: Pi catches extension errors and can fall back to old context.
       ctx.abort();
       try { flush(); } catch (persistenceError) { fault = errorText(persistenceError); }
       ctx.ui.notify(errorText(error), 'error');
@@ -1229,12 +1229,12 @@ export default function optchat(host: ExtensionAPI) {
   });
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
   pi.on('session_before_compact', async (event, ctx) => {
-    if (!active) return; // Unbound Pi keeps its own compaction policy.
+    if (!active) return;
     try {
       flush();
       const summary = await memoryView(ctx, event.signal);
       if (!active.memory.ready) throw new Error('OptChat summaries are missing; refusing to replace unsummarized history. See compactor-diagnostics.jsonl.');
-      // Pi needs a real boundary to clear stale usage/overflow recovery. Store the existing tree view, never a second lossy summary.
+      // external: Pi needs a real compaction boundary to clear stale usage and overflow recovery.
       return { compaction: { summary, firstKeptEntryId: event.preparation.firstKeptEntryId,
         tokensBefore: event.preparation.tokensBefore, details: { optchat: true } } };
     } catch (error) {
@@ -1249,7 +1249,7 @@ export default function optchat(host: ExtensionAPI) {
     finally { active?.metrics.record('usage', performance.now() - started); }
   };
   pi.on('turn_end', (_event, ctx) => collectUsage(ctx));
-  // Bounds Pi's own list and chat (transcriptKeep); the file and OptChat memory keep everything and the model's request is unchanged.
+
   pi.on('agent_before_settle', (event, ctx) => {
     if (!active || stopping) return;
     const boundary = housekeepingBoundary(event, ctx.sessionManager.buildContextEntries(), active.config.transcriptKeep);
@@ -1267,7 +1267,7 @@ export default function optchat(host: ExtensionAPI) {
       if (!expired) { watchWakeWorkers(ctx); return; }
       ctx.ui.notify(WORKER_UNVERIFIED, 'warning');
       wakeRetried = { memory: true, empty: true };
-      // The worker transcript retains the original. Unknown transport is not permission to replay it.
+
       if (expired === 'recover') {
         void deliverReport(WORKER_RECOVERY, { workerRecovery: true }).catch(error => ctx.ui.notify(`Worker recovery dispatch failed: ${errorText(error)}`, 'error'));
         watchWakeWorkers(ctx);
@@ -1301,7 +1301,7 @@ export default function optchat(host: ExtensionAPI) {
     }
     wakeWorkers.settled(_event.aborted);
     if (_event.aborted) for (const r of reports) { r.observed = false; r.responded = false; }
-    // A lost steer or an aborted processing turn may redeliver the report, never the worker's effects.
+
     if (active && !fault && !stopping) sendReports(retryReports.filter(r => reports.includes(r)));
     if (wakeWorkers.notVerified && !wakeWorkers.holding) {
       reports = reports.filter(r => !r.workerRecovery); saveReports();
@@ -1312,14 +1312,14 @@ export default function optchat(host: ExtensionAPI) {
     const messages = [...heldWakeMessages, ...turn];
     const wake = heartbeat?.waking ? heartbeat.combine(summarizeTurn(messages)) : undefined;
     if (wake && wakeWorkers.notVerified) wake.reply = `${WORKER_UNVERIFIED} ${wake.reply}`;
-    // A wake that did not work (a memory-line reply, or no commit, push, PR or merge) is sent back once; the wake stays open
-    // (same model, same record) for the run that delivers.
+
+
     const reload = wake && active && !fault && !stopping ? selfReload.ready(ctx, _event.aborted) : undefined;
     if (reload && active) { heartbeat?.holdReload(reload, Date.now() + HOLD_MAX_MS, wake); watchWakeReload(reload, ctx, active); }
     const waitingReload = wake && !fault && !stopping && !_event.aborted && wake.stopReason !== 'error' && heartbeat?.awaitingReload;
     const settled = !waitingReload && !waitingWorkers && !fault && !stopping;
     const settledCleanly = settled && !_event.aborted;
-    // What earlier runs of the session showed backs a claim too (a merge seen an hour ago); the agent's own words never do.
+
     const recent = () => branchEvidenceMessages(ctx.sessionManager.getBranch().slice(-CLAIM_HISTORY) as Parameters<typeof branchEvidenceMessages>[0]);
     const claims = settledCleanly && finalText(messages) ? unbackedClaims(finalText(messages), evidenceText([...recent(), ...messages])) : [];
     const admissions = settledCleanly && finalText(messages) ? uncheckedAdmissions(finalText(messages)) : [];
@@ -1327,7 +1327,7 @@ export default function optchat(host: ExtensionAPI) {
     const retry = (wake && settled ? wakeRetry(wake, wakeRetried) : undefined) ??
       ((claims.length || admissions.length || causes.length) && !claimRetried && settledCleanly ? claimRetryText(claims, admissions, causes) : undefined);
     if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
-    else if (waitingReload) { /* The ticket owns the next turn; a request is not a delivery. */ }
+    else if (waitingReload) {   }
     else if (retry?.startsWith(CLAIM_CHECK_PREFIX)) { claimRetried = true; void deliverReport(retry); }
     else if (retry) { wakeRetried = { ...wakeRetried, [retry === MEMORY_REPLY_RETRY ? 'memory' : 'empty']: true }; void deliverReport(retry); }
     else {
@@ -1367,7 +1367,7 @@ export default function optchat(host: ExtensionAPI) {
   registerConnectedRenderer(pi);
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id), ref => required().focus.observe(ref));
-  // Always active, so its loadout hook runs on every tool change: it leaves the lazy tools' declarations out of requests.
+
   const lazy = () => lazySet(active?.config.lazyTools);
   pi.registerTool(zoom); pi.registerTool({ ...date, prepareLoadout: lazyLoadout(lazy) });
   pi.registerTool(outputReadTool(() => required().outputs));
@@ -1391,13 +1391,13 @@ export default function optchat(host: ExtensionAPI) {
   pi.registerTool(operationalStateTool(required, flush));
   pi.registerTool(predictionsTool(required));
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
-  // The tool and its prompt line change together, once per toggle, so the cached prefix is otherwise stable.
-  // Synced on save too: a report turn started while idle reuses the tool set without before_agent_start.
+
+
   const syncSearch = ({ memorySearch, managerMode }: ProfileConfig) => {
     let tools = pi.getActiveTools();
     const toggle = (name: string, on: boolean) => { if (tools.includes(name) !== on) tools = on ? [...tools, name] : tools.filter(t => t !== name); };
     const before = tools;
-    toggle('search', memorySearch); toggle('crew', managerMode); // The crew tool is declared only in manager mode.
+    toggle('search', memorySearch); toggle('crew', managerMode);
     if (tools !== before) pi.setActiveTools(tools);
   };
   pi.registerTool({ ...crewTool(() => required().crew, () => ({ commitmentsDir: required().dir })), defaultActive: false });
@@ -1418,7 +1418,7 @@ export default function optchat(host: ExtensionAPI) {
     async execute(_id, args) {
       const children = required().children, before = children.live(args.id) ? undefined : children.info(args.id)?.started;
       const text = await children.tell(args.id, args.message), after = children.info(args.id);
-      // Resumed: it was finished and now runs, or already ran again (a new start), so its report is owed to this turn.
+
       const resumed = before !== undefined && after !== undefined && (children.live(args.id) !== undefined || after.started !== before);
       if (resumed && heartbeat?.waking) wakeWorkers.launched(_id, [args.id]);
       return { ...result(text), details: resumed ? { runIds: [args.id] } : {} };
@@ -1519,10 +1519,10 @@ export default function optchat(host: ExtensionAPI) {
     }
     const named = /^profile\s+(\S+)$/.exec(action)?.[1];
     if (ctx.mode !== 'tui' && (named || action === 'profile')) {
-      // RPC and SDK hosts (Pi Web) have no picker and may not support ctx.newSession(), so a still-empty session binds in place.
+      // external: Pi RPC and SDK hosts have no picker and may not support ctx.newSession().
       const first = `Run /optchat profile ${named ?? '<name>'} as the first message of a new session, or start Pi with --optchat-profile <name>.`;
       if (!named || active || remote || joined || ctx.sessionManager.getEntries().some(e => e.type === 'message' || e.type === 'custom_message')) throw new Error(first);
-      // As with a requested profile: one that fails to open blocks prompts instead of running without memory.
+
       try { await openProfile(named, ctx); } catch (error) { fault = errorText(error); throw error; }
       pi.appendEntry(binding, { name: named });
       return;
@@ -1552,7 +1552,7 @@ export default function optchat(host: ExtensionAPI) {
     }
     if (action === 'browse') {
       const a = required(), file = exportBrowser(a.memory, a.name, a.dir);
-      // explorer.exe exits 1 even when it opened the file, so only its launch failing counts there.
+      // external: explorer.exe can exit 1 even after opening a file.
       if (ctx.hasUI) execFile(isWindows ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open', [file], error => { if (error && (!isWindows || error.code === 'ENOENT')) ctx.ui.notify(`Open ${file}`, 'info'); });
       ctx.ui.notify(file, 'info'); return;
     }
