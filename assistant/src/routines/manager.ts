@@ -197,7 +197,7 @@ export class RoutineManager {
       const row = this.db.prepare("SELECT * FROM routines WHERE id = ? AND state = 'active'").get(id) as Row | undefined;
       if (!row || row.next_run === null) return null;
       if (now < row.last_tick) {
-        // Clock went backwards: fire nothing, keep the schedule, report it once per anchor slot.
+
         this.record({ routineId: row.id, slot: `skew@${row.last_tick}`, at: now, status: 'clock_skew', detail: `rewound ${row.last_tick - now}ms` });
         return null;
       }
@@ -207,7 +207,7 @@ export class RoutineManager {
       const due = dueOccurrences(schedule, row.next_run - 1, now);
       const latest = due.latest!;
       const missed = due.count - 1;
-      // Every outcome below consumes the due slots: the schedule always moves past now.
+
       this.db.prepare('UPDATE routines SET next_run = ? WHERE id = ?').run(nextOccurrence(schedule, now).at, id);
       const base = { routineId: row.id, slot: latest.slot, at: now, detail: due.capped ? 'count_is_floor' : null };
       if (row.missed === 'skip' && now - latest.at > row.grace_ms) {
@@ -221,7 +221,7 @@ export class RoutineManager {
       const jobId = `routine:${row.id}:${latest.slot}`;
       const input = encode({ routineId: row.id, profileId: row.profile_id, slot: latest.slot, scheduledAt: latest.at, missed, capabilities: JSON.parse(row.capabilities),
         authorization: row.authorization, input: JSON.parse(row.input) });
-      // A slot key already recorded (e.g. a time-zone edit mapped to a local slot that ran) never runs twice.
+
       if (!this.record({ ...base, status: 'claimed', jobId, missed, input })) return null;
       this.db.prepare('UPDATE routines SET current_job = ? WHERE id = ?').run(jobId, id);
       return jobId;
@@ -238,7 +238,7 @@ export class RoutineManager {
     try { this.runtime.enqueue(run.job_id!, routine.kind, JSON.parse(run.input!)); }
     catch (error) {
       const code = error instanceof Error ? error.message : '';
-      // A full queue keeps the claim: the next tick retries the same job id.
+
       if (code === 'queue_full') { this.setStatus(run, 'claimed', 'queue_full'); return false; }
       this.setStatus(run, 'failed', code === 'unknown_kind' || code === 'job_conflict' || code === 'invalid_id' ? code : 'enqueue_error');
       this.fail(run.routine_id);

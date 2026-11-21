@@ -49,7 +49,7 @@ function encode(value: unknown): string {
 }
 
 const knownDispatchErrors = ['effect_uncertain', 'operation_already_dispatched', 'approval_required', 'denied', 'invalid_request', 'policy_error'];
-/** A second dispatch of the same operation means an earlier attempt may have sent it: that is ambiguous, never failed. */
+
 function classifyDispatchError(failure: unknown): { state: JobState; error: string } {
   const code = failure instanceof Error ? failure.message : '';
   const state: JobState = code === 'effect_uncertain' || code === 'operation_already_dispatched' ? 'effect_uncertain' : code === 'approval_required' ? 'blocked' : 'failed';
@@ -124,7 +124,7 @@ export class WorkerRuntime {
     const rows = this.db.prepare("SELECT * FROM jobs WHERE state IN ('running', 'dispatching') ORDER BY seq").all() as Row[];
     for (const row of rows) {
       if (row.state === 'running') {
-        // Internal jobs are idempotent; an effect job that never reached dispatch has no intent yet.
+
         const next: JobState = row.cancel_requested ? 'cancelled' : row.attempts >= this.maxAttempts ? 'failed' : 'queued';
         this.fenced(() => this.db.prepare("UPDATE jobs SET state = ?, error = ? WHERE id = ? AND state = 'running'").run(next, next === 'failed' ? 'attempts_exhausted' : null, row.id));
         continue;
@@ -145,7 +145,7 @@ export class WorkerRuntime {
       if (adapter?.reconcile) {
         const { payloadBase64: _payload, ...metadata } = input;
         try { if (await adapter.reconcile(Object.freeze({ ...metadata })) === 'done') { next = 'done'; result = '{"reconciled":true}'; error = null; } }
-        catch { /* the effect stays uncertain and visible */ }
+        catch {   }
       }
     }
     this.fenced(() => this.db.prepare("UPDATE jobs SET state = ?, result = ?, error = ? WHERE id = ? AND state = 'dispatching'").run(next, result, error, row.id));
@@ -319,7 +319,7 @@ export class WorkerRuntime {
     this.stopped = true;
     for (const controller of this.active.values()) controller.abort();
     await Promise.allSettled([...this.inflight]);
-    try { this.fenced(() => this.db.prepare("UPDATE lease SET expires = 0 WHERE name = 'worker'").run()); } catch { /* lease already taken over */ }
+    try { this.fenced(() => this.db.prepare("UPDATE lease SET expires = 0 WHERE name = 'worker'").run()); } catch {   }
     this.token = 0;
   }
   close(): void { this.db.close(); }

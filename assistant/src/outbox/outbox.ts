@@ -216,10 +216,10 @@ function checkInput(input: StageInput): void {
   if (JSON.stringify(input.payload) === undefined) throw new TypeError('Invalid outbox payload');
 }
 
-/**
- * A definite refusal is retried only by the dispatcher (a synchronous caller owns its own retry); anything else may
- * have reached the provider, so it stays uncertain.
- */
+
+
+
+
 function refusalOrUncertain(error: unknown, byDispatcher: boolean): Settlement {
   if (error instanceof OutboxRefused) {
     if (error.retryable && byDispatcher) return { kind: 'retry', code: error.message };

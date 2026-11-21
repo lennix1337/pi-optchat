@@ -63,8 +63,8 @@ export class TaskExecutor {
     this.options = options;
     if (!options.store.matchesProfile(options.profileId) || !options.channels.length || options.channels.some(channel => !channel.trim())) throw new Error('executor_profile_or_channel');
     if (options.tools && (!options.store.matchesDatabase(options.databasePath) || options.tools.task.store !== options.store)) throw new Error('tool_database_mismatch');
-    // One attempt: a generation interrupted by a crash may already have used the provider, so recovery fails it visibly.
-    // The lease outlives one generation (30 s timeout); a crashed owner's lease expires and the next one recovers.
+
+
     this.runtime = new WorkerRuntime({ databasePath: options.databasePath, owner: randomUUID(), leaseMs: LEASE_MS, maxAttempts: 1, maxConcurrent: 1, ...(options.now ? { now: options.now } : {}),
       handlers: { draft: async (input, context) => {
         const result = await options.run(input as DraftInput, context.signal);
@@ -76,7 +76,7 @@ export class TaskExecutor {
   async acquire(): Promise<boolean> {
     if (this.owned) return true;
     if (!await this.runtime.acquire()) return false;
-    // A clean stop requeues the generation it aborted; it may already have used the provider, so it is never resent.
+
     for (const job of this.runtime.jobs()) if (job.state === 'queued' && job.attempts > 0) this.runtime.cancel(job.id);
     return this.owned = true;
   }
@@ -110,10 +110,10 @@ export class TaskExecutor {
     const page = this.options.store.list(this.cursor, 100); this.cursor = page.nextCursor;
     const pending: { task: Task; id: string }[] = [];
     let readiness: Promise<boolean> | undefined;
-    // Account readiness concerns every task, so its failure fails the pass rather than this task.
+
     const ready = () => readiness ??= (this.options.ready?.() ?? Promise.resolve(true)).catch((cause: unknown) => { throw new PassFailure(cause); });
     for (const task of page.tasks) {
-      // Status first: most tasks are finished, and only an active one needs the lookup of its origin.
+
       if (!['queued', 'working'].includes(task.status) || !this.admitted(task)) continue;
       try {
         const prepared = await this.prepare(task, ready);
@@ -145,7 +145,7 @@ export class TaskExecutor {
     let task = listed;
     let { attempt, job } = task.status === 'working' ? this.current(task) : { attempt: 0, job: undefined };
     if (!job) {
-      // Restored from a backup: the original may already have generated this revision, so nothing is rebuilt for it.
+
       if (this.options.store.restoreHeld(task.taskId, task.revision)) return null;
       if (attempt >= MAX_ROUTE_ATTEMPTS) { this.stale(() => this.transition(task, 'failed', `Nenhuma conta conseguiu gerar após ${attempt} tentativas (limite, autenticação ou falha temporária). Tente novamente quando uma conta estiver disponível.`)); return null; }
       if (!await ready()) return null;
@@ -223,7 +223,7 @@ export class TaskExecutor {
     if (this.stopped) return;
     this.stopped = true; clearInterval(this.timer);
     await this.runtime.stop();
-    // A failed pass already rejected to whoever ran it; closing only waits for it to settle.
+
     await Promise.allSettled([this.ticking]);
     this.runtime.close();
   }

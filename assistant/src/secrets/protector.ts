@@ -8,7 +8,7 @@ export interface KeyProtector {
   unprotect(blob: Buffer): Promise<Buffer>;
 }
 
-/** DPAPI through the environment port (the `dpapi` action): the script and its timeout are the port's, data travels on stdin. */
+
 async function dpapi(environment: Environment, op: 'protect' | 'unprotect', data: Buffer): Promise<Buffer> {
   let result: { code: number; stdout: string };
   try { result = await environment.run({ action: 'dpapi', op, data: data.toString('base64') }); }

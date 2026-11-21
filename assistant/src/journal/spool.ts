@@ -85,7 +85,7 @@ export class SpoolPoller {
           if (ingested.duplicate) result.duplicates++; else result.ingested++;
         } catch (error) {
           if (error instanceof TypeError) { result.invalid++; continue; }
-          // Do not lose observations when storage is temporarily unavailable: put unread lines back in order.
+
           const rest = lines.slice(index).join('\n');
           if (rest.trim()) appendFileSync(this.path, `${rest}\n`, { mode: 0o600 });
           throw error;

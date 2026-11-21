@@ -99,7 +99,7 @@ export function nextOccurrence(schedule: Schedule, after: number): Occurrence {
   }
   const { hour, minute } = parseAt(schedule.at);
   const start = local(after, schedule.timeZone);
-  // Walk local calendar days; noon UTC of each date avoids crossing dates at DST edges.
+  // external: daylight-saving transitions can change the length of a local day.
   for (let i = 0; i <= 8; i++) {
     const date = new Date(Date.UTC(start.year, start.month - 1, start.day + i, 12));
     const [y, m, d] = [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()];
@@ -118,7 +118,7 @@ export function dueOccurrences(schedule: Schedule, from: number, to: number, cap
     if (next.at > to) return { count, capped: false, latest };
     count++; latest = next; cursor = next.at;
   }
-  // Too many to walk: the newest slot is still exact, the count is a floor.
+
   if (schedule.kind === 'interval') {
     const step = schedule.minutes * MINUTE;
     const at = schedule.anchor + Math.floor((to - schedule.anchor) / step) * step;
