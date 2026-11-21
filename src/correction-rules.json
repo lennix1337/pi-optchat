@@ -85,6 +85,7 @@
   },
   {
     "id": "self-build-in-wake",
+    "guardedAt": "2026-11-21T14:30:04Z",
     "quote": "vc tem usado o claude demais tbm, temos outras contas com 0 de uso ... precisa ser melhor balanceado o uso das outras contas como workers",
     "date": "18/11",
     "scope": "assistant tool calls of a run started by an OptChat heartbeat prompt",
