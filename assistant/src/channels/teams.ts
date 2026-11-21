@@ -43,7 +43,7 @@ export class TeamsChannel {
     if (typeof activity?.serviceUrl !== 'string' || !verifyTeams(authorization, { appId: o.appId, keys: o.keys(), now: o.now(), serviceUrl: activity.serviceUrl })) return { outcome: 'unauthenticated' };
     if (activity.channelData?.tenant?.id !== o.tenantId || (activity.conversation?.tenantId !== undefined && activity.conversation.tenantId !== o.tenantId)) return { outcome: 'foreign_workspace' };
     if (activity.type === 'invoke') {
-      // Adaptive card "approve" actions are remote clicks; the exact effect is reviewed in the authenticated panel.
+
       const taskId = typeof activity.value?.taskId === 'string' ? activity.value.taskId : '';
       return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };
     }

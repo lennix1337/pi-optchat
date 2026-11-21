@@ -30,7 +30,7 @@ export type SlackOptions = {
   relayChannels?: ReadonlySet<string>;
   now?: () => number; reviewLink: (taskId: string) => string;
 };
-// Edits, joins, bot posts and shares are not a person writing to the assistant now.
+
 const NON_HUMAN_SUBTYPES = new Set(['bot_message', 'message_changed', 'message_deleted', 'channel_join', 'thread_broadcast', 'file_share', 'me_message']);
 
 export class SlackChannel {
@@ -61,7 +61,7 @@ export class SlackChannel {
       const setting = HOME_SETTINGS[body.actions?.[0]?.action_id];
       if (o.relay && setting) return this.homeSetting(o.relay, body, setting);
       if (o.relay && typeof body.actions?.[0]?.action_id === 'string' && body.actions[0].action_id.startsWith(`${HOME_CHOICE}_`)) return this.homeChoice(o.relay, body);
-      // A button is a remote click, not the operator's authenticated review of the exact effect.
+
       const taskId = typeof body.actions?.[0]?.value === 'string' ? body.actions[0].value : '';
       return { outcome: 'review_required', reply: `Revise no painel autenticado: ${o.reviewLink(taskId)}` };
     }
@@ -76,7 +76,7 @@ export class SlackChannel {
     if (typeof body.event_id !== 'string' || typeof event.channel !== 'string' || typeof event.ts !== 'string') return { outcome: 'ignored' };
     const human = !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string';
     const relayed = o.relay && (event.channel.startsWith('D') || o.relayChannels?.has(event.channel));
-    // In the chat, a file the operator sends (a screenshot, an audio) is a message with an attachment.
+
     if (relayed) return this.relay(o.relay!, body.event_id, event, human || (event.subtype === 'file_share' && !event.bot_id && typeof event.user === 'string'));
     return admit({
       platform: 'slack', account: o.team, delivery: body.event_id, sender: typeof event.user === 'string' ? event.user : '',
@@ -97,7 +97,7 @@ export class SlackChannel {
     if (!channel.startsWith('D')) return { outcome: 'ignored' };
     if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
     const original = typeof body.message?.text === 'string' ? body.message.text : 'Aprovação';
-    // The buttons are retired by an outbox row that commits with the click, so a crash cannot leave them tappable twice.
+
     const retire = { channel, ts: post, text: `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : 'Negar'}*; o resultado vem nesta thread.` };
     return { outcome: relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text: answer }, retire) };
   }
