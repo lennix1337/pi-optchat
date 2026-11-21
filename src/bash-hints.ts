@@ -4,7 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 // files 15.3% (13.6% Python tracebacks), and text-mode Python on Windows turned LF files into CRLF.
 // A bash result for such a command gets one short hint line; it never changes isError or the exit code.
 
-type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du' | 'winpath' | 'ffonly' | 'stashclash' | 'ghlog' | 'pushrejected';
+type HintKind = 'edit' | 'read' | 'ripwire' | 'script' | 'tmp' | 'poll' | 'ghauth' | 'du' | 'winpath' | 'ffonly' | 'stashclash' | 'ghlog' | 'ghattempt' | 'pushrejected';
 const HINTS: Record<HintKind, string> = {
   edit: 'Hint: use the native edit/write tools for source changes; fewer errors, line endings kept.',
   read: 'Hint: use the native read tool with offset/limit instead of bash sed/cat/head.',
@@ -16,6 +16,7 @@ const HINTS: Record<HintKind, string> = {
   ffonly: 'Hint: the checkout is not on a branch that main can fast-forward to; run `git status -sb`, and if its branch is already merged `git switch main` first (never reset to force it).',
   stashclash: 'Hint: the stash was not applied and is still kept; compare with `git stash show -p stash@{0}` against `git diff`, or `git stash show -p stash@{0} | git apply --3way`; never `git stash drop` or checkout the file until its content is in the tree.',
   ghlog: 'Hint: no log usually means the job never ran a step (a billing or spending-limit refusal is one possible cause, not proven), not a code failure; check with `gh api repos/<o>/<r>/actions/runs/<id>/jobs -q \'.jobs[]|[.conclusion,(.steps|length)]\'` (0 steps), then read the run annotations for the reason; the local `npm run verify` stands in only when the cause is billing.',
+  ghattempt: 'Hint: an empty --log-failed often means a rerun passed and replaced the failed attempt; the failure is still in attempt 1: `gh api repos/<o>/<r>/actions/runs/<id>/attempts/1/jobs -q \'.jobs[]|select(.conclusion=="failure")|.id\'`, then `gh api --allow-escape-sequences repos/<o>/<r>/actions/jobs/<jobId>/logs | grep -A12 "not ok"`.',
   pushrejected: 'Hint: the remote has commits this branch lacks; `git fetch` then `git rebase origin/<branch>` (or merge) and push again, never force-push and never reset away the local commits.',
   du: 'Hint: du walks every file of a Windows tree (node_modules included) and timed out; use `git ls-files | wc -l`, `find . -maxdepth 2` or skip node_modules.',
   ripwire: 'Hint: use the native ripwire tool (map/task/search/symbol/callers/callees/impact/exemplar/edit_check/quality/test_gate); CLI only for other flags.',
@@ -80,6 +81,9 @@ const STASH_RESTORE = /\bgit\b[^\n]*\bstash\s+(?:pop|apply)\b/;
 const STASH_CLASH = /local changes[^\n]*would be overwritten/;
 
 const GH_RUN_LOG = /\bgh\s+run\s+view\b[^\n]*--log(?:-failed)?\b/;
+const GH_FAILED_LOG = /\bgh\s+run\s+view\b[^\n]*--log-failed\b/;
+// Pi's own annotations on an otherwise empty result.
+const TOOL_NOTES = /^(?:\(no output\)|\[pipe status:.*|Command exited with code \d+|Note: .*|Hint: .*)$/gm;
 const GH_LOG_MISSING = /log not found|no logs? (?:available|found)/i;
 
 const GIT_PUSH = /\bgit\b[^\n]*\bpush\b/;
@@ -98,6 +102,7 @@ export function bashHint(command: string, ripwireTool: boolean, output = ''): Hi
   if (FF_ONLY.test(command) && FF_REFUSED.test(output)) return 'ffonly';
   if (STASH_RESTORE.test(command) && STASH_CLASH.test(output)) return 'stashclash';
   if (GH_RUN_LOG.test(command) && GH_LOG_MISSING.test(output)) return 'ghlog';
+  if (GH_FAILED_LOG.test(command) && output.replace(TOOL_NOTES, '').trim() === '') return 'ghattempt';
   if (GIT_PUSH.test(command) && PUSH_REJECTED.test(output)) return 'pushrejected';
   if (DU_SUMMARY.test(command) && TIMED_OUT.test(output)) return 'du';
   if (ripwireTool && RIPWIRE_FLAGS.test(command)) return 'ripwire';
