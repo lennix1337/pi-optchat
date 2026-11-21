@@ -829,10 +829,9 @@ test('App Home sends structured worker details and their explicit connections to
   try {
     f.bridge.sawUserMessage('oi');
     await settle();
-    const body = f.requests.find(r => r.path === '/v1/slack/home')!.body as { team: string[]; mermaid: string };
-    assert.match(body.team[0]!, /agy · account\/Neon · GX18MCP · há 6 min/);
-    assert.match(body.mermaid, /w0 --> target0/);
-    assert.doesNotMatch(body.mermaid, /#\d/);
+    const body = f.requests.find(r => r.path === '/v1/slack/home')!.body as { team: string[] };
+    assert.equal(body.team[0], 'agy · account/Neon · GX18MCP → GX18MCP · há 6 min');
+    assert.ok(!('mermaid' in body));
   } finally { f.close(); }
 });
 

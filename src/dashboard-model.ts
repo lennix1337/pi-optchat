@@ -30,19 +30,3 @@ export function dashboard(input: DashboardInput) {
 }
 
 export type Dashboard = ReturnType<typeof dashboard>;
-
-function mermaidLabel(value: string): string {
-  return value.replace(/[\r\n\t]+/g, ' ').replace(/[#"&<>`]/g, character => `#${character.charCodeAt(0)};`);
-}
-
-export function dashboardMermaid(model: Dashboard): string {
-  const lines = ['flowchart LR', '  root["OptChat"]'];
-  model.workers.forEach((worker, index) => {
-    lines.push(`  w${index}["${mermaidLabel([worker.kind, worker.model, worker.label].filter(Boolean).join(' · '))}"]`, `  root --> w${index}`);
-    if (worker.target) {
-      const target = `${worker.target.repo}${worker.target.pr === undefined ? '' : `#${worker.target.pr}`}`;
-      lines.push(`  target${index}["${mermaidLabel(target)}"]`, `  w${index} --> target${index}`);
-    }
-  });
-  return lines.join('\n');
-}

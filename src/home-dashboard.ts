@@ -1,11 +1,19 @@
-import { dashboard, dashboardMermaid } from './dashboard-model.ts';
+import { dashboard } from './dashboard-model.ts';
 import { runningItem, type HomeWork } from './home-items.ts';
+
+export function shellTarget(label: string, command: string): { repo: string; pr?: number } | undefined {
+  if (!/(?:^|[\s/:])agy(?:$|[\s/:])/i.test(`${label} ${command}`)) return undefined;
+  const match = /(?:--repo(?:=|\s+)|\brepo:\s*)["']?([\w.-]+(?:\/[\w.-]+)?)(?:#([1-9]\d*))?/i.exec(`${label} ${command}`)
+    ?? /\b([\w.-]+(?:\/[\w.-]+)?)#([1-9]\d*)\b/.exec(label);
+  return match ? { repo: match[1]!, ...(match[2] ? { pr: Number(match[2]) } : {}) } : undefined;
+}
 
 export function homeDashboard(work: HomeWork, waiting: string[], state: string, modelName: string | undefined, now: number) {
   const model = dashboard({ now, pi: { state, model: modelName }, workers: work.workers ?? [], prs: work.prs, waiting, deliveries: [] });
-  const team = model.workers.slice(0, 30).map(w => runningItem([w.kind, w.model, w.label].filter(Boolean).join(' · '), w.started, now).slice(0, 400));
-  const diagramWorkers = model.workers.slice(0, 20).map(worker => ({ ...worker, kind: worker.kind.slice(0, 80), model: worker.model.slice(0, 120), label: worker.label.slice(0, 160), ...(worker.target ? { target: { ...worker.target, repo: worker.target.repo.slice(0, 160) } } : {}) }));
-  let mermaid = dashboardMermaid({ ...model, workers: diagramWorkers });
-  while (mermaid.length > 9500 && diagramWorkers.length) { diagramWorkers.pop(); mermaid = dashboardMermaid({ ...model, workers: diagramWorkers }); }
-  return { team, mermaid };
+  const team = model.workers.slice(0, 30).map(w => {
+    const label = [w.kind, w.model, w.label].filter(Boolean).map(part => part.slice(0, 90)).join(' · ');
+    const target = w.target ? ` → ${w.target.repo.slice(0, 100)}${w.target.pr === undefined ? '' : `#${w.target.pr}`}` : '';
+    return runningItem(label + target, w.started, now);
+  });
+  return { team };
 }

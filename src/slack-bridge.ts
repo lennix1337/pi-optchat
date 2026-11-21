@@ -66,7 +66,7 @@ const PROVIDER_RESUME = /^Provider (?:failover|retry|quota recovery) activated:/
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 
 
-const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, path === '/v1/slack/home' ? 140_000 : 20_000, cancel);
+const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, 20_000, cancel);
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
@@ -458,12 +458,12 @@ export class SlackBridge {
     if (!owner) return;
     const full = `${clipWords(text, HOME_CHARS - status.length)}${status}`;
     const choices = waiting.filter(w => w.choices?.length).slice(0, 3).map(w => ({ label: clipWords(w.text, 120), options: w.choices! }));
-    const { team, mermaid } = homeDashboard(work, waiting.map(item => item.text), this.work ? 'working' : 'idle', this.options.model(), this.options.now());
+    const { team } = homeDashboard(work, waiting.map(item => item.text), this.work ? 'working' : 'idle', this.options.model(), this.options.now());
     const fold = items.hidden ? 'more' : this.expanded ? 'less' : undefined;
 
 
     const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
-    this.publishHome(owner, { text: full, working: !!this.work, team, mermaid, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}), ...(settings ? { settings } : {}) }, old);
+    this.publishHome(owner, { text: full, working: !!this.work, team, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}), ...(settings ? { settings } : {}) }, old);
   }
 
   /** The Home's menus: model (the account is its provider) and thinking level; each pick comes back as the `modelo`/`thinking` command. */
