@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createBashTool, type BashOperations, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { reapingBashOperations, type LongBashMover } from './shell-reaper.ts';
 import { LONG_COMMAND_GRACE_SECONDS, longCommandReason } from './long-commands.ts';
@@ -47,6 +48,18 @@ export const plainText = (text: string) => text.replace(TERMINAL_ESCAPES, '');
 /** `build_exit=1`, `rc=2`, or `rc: 3` as ship.mjs prints it: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
 export function innerExitFailures(output: string): string[] {
   return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))(?:=|:[ \t]*)([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
+}
+
+const RC_APPENDED = />>?\s*(\S+)\s*$/;
+/** `work > log 2>&1; echo rc=$? >> log` hides the work's exit behind echo's 0 and keeps the output out of the notice: the rc lines the work appended to its own log. */
+export function loggedExitLines(command: string, read: (path: string) => string = path => readFileSync(path, 'utf8')): { path: string; lines: string[] } | undefined {
+  const last = command.trim().split(/;|&&|\n/).at(-1)?.trim() ?? '';
+  const path = /^(?:echo|printf)\s+["']?[\w.-]*(?:exit|rc)=\$\?/i.test(last) ? RC_APPENDED.exec(last)?.[1]?.replace(/^["']|["']$/g, '') : undefined;
+  if (!path) return undefined;
+  try {
+    const lines = read(path).split(/\r?\n/).filter(line => /^\s*[\w.-]*(?:exit|rc)=\d+\s*$/i.test(line)).map(line => line.trim());
+    return lines.length ? { path, lines } : undefined;
+  } catch { return undefined; }
 }
 
 const READERS = /^(?:tail|head|cat|echo|printf|grep|egrep|type|findstr|more|less|sed|awk|get-content|gc|select-string|write-output|write-host|true|ls|dir|fi|done)$/i;
@@ -212,8 +225,12 @@ export function shellReport(job: ShellJob): string {
   const output = tail.trim() ? `Last output${omitted > 0 ? ` (${omitted} earlier lines not shown)` : ''}:\n${tail}` : 'Output: (no output)';
   const closing = job.state === 'stopped' ? 'It was stopped and will not run again.' : 'It has finished.';
   const inner = innerExitFailures(job.output);
-  const reader = inner.length ? undefined : readerExitNote(job.command, job.output, job.exitCode);
-  const innerLine = inner.length ? [`Inner exit codes: ${inner.join(', ')} (the shell itself exited ${job.exitCode ?? 'normally'})`] : reader ? [reader] : [];
+  const logged = inner.length ? undefined : loggedExitLines(job.command);
+  const loggedFailures = logged?.lines.filter(line => !/=0$/.test(line)) ?? [];
+  const reader = inner.length || logged ? undefined : readerExitNote(job.command, job.output, job.exitCode);
+  const innerLine = inner.length ? [`Inner exit codes: ${inner.join(', ')} (the shell itself exited ${job.exitCode ?? 'normally'})`]
+    : logged ? [loggedFailures.length ? `Inner exit codes: ${loggedFailures.join(', ')} (read from ${logged.path}; the shell itself exited ${job.exitCode ?? 'normally'})` : `Work's own exit: ${logged.lines.at(-1)} (read from ${logged.path})`]
+    : reader ? [reader] : [];
   const alertLine = job.alert === undefined ? [] : [`Alert ${alertLabel(job.alert)}: ${job.matches ?? 0} ${job.matches === 1 ? 'match' : 'matches'} in total.`];
   return [`[shell ${job.id}] ${outcome}`, `Command: ${shortCommand}`, ...innerLine, ...alertLine, output,
     `Full output: ${job.log ?? `not kept; shell_status shows the last ${outputLimit / 1000} KB`}`,
