@@ -42,6 +42,7 @@
   },
   {
     "id": "utc-time",
+    "guardedAt": "2026-11-21T13:00:00Z",
     "quote": "Times in Brasília",
     "date": "AGENTS",
     "scope": "assistant final text",

@@ -88,11 +88,19 @@ export function abandonedCauses(reply: string): string[] {
   return sentences(reply).filter(s => ABANDONED_CAUSE.test(withoutQuotes(s)));
 }
 
-export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = []): string {
+/** A clock time in UTC ("12:43Z"): the operator reads Brasília time (profile rule; 36 hits in 7 days with no guard). */
+export const UTC_CLOCK = /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u;
+
+export function utcTimes(reply: string): string[] {
+  return sentences(reply).filter(s => UTC_CLOCK.test(withoutQuotes(s)));
+}
+
+export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = [], utc: readonly string[] = []): string {
   const parts = [`${CLAIM_CHECK_PREFIX}`];
   if (claims.length) parts.push(`Your reply states facts that no output of this run shows: ${claims.join(', ')}.`);
   if (admissions.length) parts.push(`Your reply admits not having checked: ${admissions.map(a => `"${a}"`).join(' ')}`);
   if (causes.length) parts.push(`Your reply gives up on a cause: ${causes.map(a => `"${a}"`).join(' ')} Take one more cheap step before sending (read the failing log, run the narrowest test, diff against the last good state) and report what it showed, or ship the diagnostic that would answer it.`);
+  if (utc.length) parts.push(`Your reply gives a time in UTC: ${utc.map(a => `"${a}"`).join(' ')} The operator reads Brasília time (UTC-3): convert every time and write it as HH:MM, without Z.`);
   parts.push('Before it reaches the operator, check each one with a read-only tool (test run, gh, curl, git log) and correct the reply, ' +
     'or say plainly which ones are not verified. Then give the final reply again, in Portuguese.');
   return parts.join(' ');
