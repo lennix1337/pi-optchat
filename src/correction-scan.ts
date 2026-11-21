@@ -169,7 +169,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
 
 export function scanCorrections(dir: string, since: number, until: number): ScanResult[] {
   if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) throw new Error('Invalid scan interval');
-  const results = rules.map(r => ({ id: r.id, count: 0, ...r.guardedAt ? { afterGuard: 0 } : {}, examples: [] as { file: string; line: number }[] }));
+  const results: ScanResult[] = rules.map(r => ({ id: r.id, count: 0, ...r.guardedAt ? { afterGuard: 0 } : {}, examples: [] }));
   for (const file of sessionFiles(dir, since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     let pacing = noPacing();
