@@ -391,7 +391,10 @@ test('the real retry-summary command retries a frozen node without resending the
 
 
 function shellScript(kind: 'idle' | 'mid' | 'stop', ids: string[]) {
-  const quick = `node -e "setTimeout(() => console.log('${kind}-done'), 500)"`;
+  const flag = `.shell-mid-${process.pid}-${Date.now()}`;
+  const finish = kind === 'mid' ? `require('fs').writeFileSync('${flag}', '');` : '';
+  const quick = `node -e "setTimeout(() => { console.log('${kind}-done'); ${finish} }, 500)"`;
+  const waitForShell = `node -e "const t = Date.now(), poll = () => require('fs').existsSync('${flag}') ? setTimeout(() => require('fs').unlinkSync('${flag}'), 2000) : Date.now() - t < 30000 && setTimeout(poll, 50); poll()"`;
   return (messages: Context['messages']): ScriptedCall | undefined => {
     const last = messages.at(-1), text = last ? textContent(last.content) : '';
     if (kind === 'stop' && last?.role === 'user' && text.endsWith('shell stop diagnostic'))
@@ -400,7 +403,7 @@ function shellScript(kind: 'idle' | 'mid' | 'stop', ids: string[]) {
       return { name: 'shell_start', arguments: { command: kind === 'stop' ? `node -e "setInterval(() => {}, 1000)"` : quick } };
     if (last?.role === 'toolResult' && last.toolName === 'shell_start') {
       ids.push(text.match(/Background shell (\S+) started/)?.[1] ?? '');
-      if (kind === 'mid') return { name: 'bash', arguments: { command: `node -e "setTimeout(() => {}, 2500)"` } };
+      if (kind === 'mid') return { name: 'bash', arguments: { command: waitForShell } };
       if (kind === 'stop') return { name: 'shell_stop', arguments: { id: ids.at(-1) ?? '' } };
     }
     return undefined;
