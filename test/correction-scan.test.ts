@@ -183,6 +183,17 @@ test('a rule with a guard reports how many violations happened after the guard w
  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('an admission the claim check intercepted is counted as caught, not as an after-guard violation', () => {
+ const admit = (timestamp: string) => ({ type: 'message', timestamp, message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Não confirmei que ele começou de fato.' }] } });
+ const check = { type: 'custom_message', customType: 'optchat-report', timestamp: '2026-11-20T10:00:01Z', content: '[OptChat claim check] Your reply says it did not confirm something.' };
+ const dir = mkdtempSync(join(tmpdir(), 'caught-'));
+ try {
+  writeFileSync(join(dir, 'session.jsonl'), [admit('2026-11-20T10:00:00Z'), check, admit('2026-11-20T11:00:00Z')].map(e => JSON.stringify(e)).join('\n'));
+  const row = scanCorrections(dir, Date.parse('2026-11-19'), Date.parse('2026-11-21')).find(r => r.id === 'unchecked-own-work')!;
+  assert.deepEqual([row.count, row.afterGuard, row.caught], [2, 1, 1]);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a pipe-status call the guard refused ("Not run:") is not a violation after the guard', () => {
  const bad = { ...call('bash', { command: 'npm test | tail -3; echo rc=' + '$' + '?' }), timestamp: '2026-11-20T10:00:00Z' };
  (bad.message.content[0] as { id?: string }).id = 'c1';

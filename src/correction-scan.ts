@@ -1,12 +1,12 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ABANDONED_CAUSE, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
+import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
 /** `guardedAt` (ISO) is when a live guard started refusing or retrying the behaviour: hits after it got past the guard. */
 export type Rule = { id: string; guardedAt?: string; quote: string; date: string; scope: string; detector: string; precision: string };
-export type ScanResult = { id: string; count: number; afterGuard?: number; examples: { file: string; line: number }[] };
+export type ScanResult = { id: string; count: number; afterGuard?: number; caught?: number; examples: { file: string; line: number }[] };
 export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', import.meta.url), 'utf8')) as Rule[];
 /** The sessions root: the PC keeps one project folder in it, the VM several, so the scan reads every subdirectory. */
 export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions');
@@ -173,6 +173,7 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
   for (const file of sessionFiles(dir, since)) {
     const lines = readFileSync(join(dir, file), 'utf8').split('\n');
     let pacing = noPacing();
+    const drafts: { result: number; line: number; at: number }[] = [];
     const calls = new Map<string, { result: number; at: number; example?: { file: string; line: number } }[]>();
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
@@ -183,10 +184,18 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
       rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) {
         results[n].count++;
         if (rule.guardedAt && at >= Date.parse(rule.guardedAt)) results[n].afterGuard!++;
+        drafts.push({ result: n, line: i, at });
         const example = results[n].examples.length < 3 ? { file, line: i + 1 } : undefined;
         if (example) results[n].examples.push(example);
         for (const c of toolCalls(event)) if (c.id) calls.set(c.id, [...calls.get(c.id) ?? [], { result: n, at, example }]);
       } });
+      if (event.type === 'custom_message' && typeof event.content === 'string' && event.content.startsWith(CLAIM_CHECK_PREFIX)) {
+        for (const d of drafts) if (i - d.line <= 6 && results[d.result].afterGuard !== undefined && d.at >= Date.parse(rules[d.result].guardedAt!)) {
+          results[d.result].afterGuard!--;
+          results[d.result].caught = (results[d.result].caught ?? 0) + 1;
+        }
+        drafts.length = 0;
+      }
       const reply = event.message;
       if (reply?.role === 'toolResult' && reply.toolCallId && calls.has(reply.toolCallId) && Array.isArray(reply.content) && reply.content.some(c => c.type === 'text' && /^(?:Not run|Não executado):/u.test(c.text ?? ''))) {
         for (const hit of calls.get(reply.toolCallId)!) {
