@@ -14,7 +14,7 @@ import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profi
 import { RELOAD_ENTRY } from '../src/self-reload.ts';
 import { textContent } from '../src/transcript.ts';
 import { emptyUsage } from '../src/usage.ts';
-import { isCompaction, removeDir } from './support.ts';
+import { isCompaction, loopLag, removeDir } from './support.ts';
 
 const sdk: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
@@ -39,7 +39,8 @@ test('native self reload replaces extensions then resumes tool execution and fin
   let continuationSeen = false, final = '';
   const errors: string[] = [], notices: string[] = [];
   // Dump the state shortly before the 20 s limit so a Windows hang shows which step it stuck at (the finally block never prints on a timeout).
-  const hangDump = setTimeout(() => console.log(`# self-reload still running at 15 s ${JSON.stringify({ marks, generations, reloads, executions, inspections, calls, continuationSeen, errors, notices })}`), 15000);
+  const lag = loopLag();
+  const hangDump = setTimeout(() => console.log(`# self-reload still running at 15 s ${JSON.stringify({ maxLoopLagMs: lag.max(), marks, generations, reloads, executions, inspections, calls, continuationSeen, errors, notices })}`), 15000);
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
   const runtime = await sdk.ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models.json'), refreshOnCreate: false });
@@ -112,7 +113,7 @@ test('native self reload replaces extensions then resumes tool execution and fin
     assert.equal(calls, 5, 'later manual reload never replays continuation');
     console.log(JSON.stringify({ generations, reloads, executions, inspections, calls, network, final, nativeRuntime: process.env.OPTCHAT_TEST_PI_ENTRY ?? 'pinned' }));
   } finally {
-    clearTimeout(hangDump);
+    clearTimeout(hangDump); lag.stop();
     mark('end'); console.log(`self-reload phase ms ${JSON.stringify(marks)}`);
     await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose();
     if (prior === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = prior;
