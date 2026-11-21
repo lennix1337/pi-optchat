@@ -63,9 +63,9 @@ export interface LiveRun {
   /** Why stop() ended it; the first stop wins. Unset for a connected run: its handoff says how it ended, and it cannot be resumed. */
   stoppedBy?: StopCause;
 }
-/** `parent`: the agent that started it was stopped, or ended while it still worked. `pi`: Pi closed or reloaded while it was paused (working runs are cut off and resumed instead); a paused child whose parent still works gets `parent`, since close() stops that parent, which marks its descendants first. */
+
 type StopCause = 'user' | 'parent' | 'pi';
-// Said plainly: the aborted request's own error names no cause and reads as a failure.
+
 const STOPPED: Record<StopCause, string> = {
   user: 'Stopped by the user. They ended it on purpose, so it did not fail: do not redo or delegate this task again unless they ask. Its chat is kept, so tell resumes it where it stopped.',
   parent: 'Stopped because the agent that started it stopped or ended. Its chat is kept, so tell resumes it where it stopped.',
@@ -78,42 +78,42 @@ export interface AgentTiming {
 }
 interface Options { parentSession?: string; usage?: UsageLedger; operations?: OperationJournal;
   recoveryEvent?: (event: unknown) => void; recoveryIncident?: (sessionId: string) => string | undefined; createSession?: typeof createAgentSession; shells?: ShellJobs;
-  /** Opt-in monotonic timings; contains no task, prompt, tool arguments or output. */
+
   onTiming?: (event: AgentTiming) => void;
-  /** Names of the built-in extensions the main session loaded (see `loadedBuiltins`). */
+
   builtins?: () => Iterable<string>;
-  /** Journals the reports a main-agent spawn has so far while its other children still run (none: the batch was delivered), so a crash cannot lose them. */
+
   hold?: (batch: string, texts: string[]) => void;
-  /** Read on every spawn, so a changed profile setting applies to the next one. Missing settings take their defaults. */
+
   settings?: () => Partial<Settings>;
-  /** Pi's extension event bus, used for the documented pi-subagents control RPC. */
+
   events?: SubagentEvents;
   summarizeHandoff?: (run: RunInfo, messages: AgentMessage[], descendants?: HandoffEvidence[]) => Promise<string>;
-  /** Manager mode: the model for a worker kind, and the crew whose project memory briefs contract workers. */
+
   route?: (kind: WorkerKind) => ModelChoice; crew?: Crew;
-  /** The manager's copy of each delivered peer message, `[from → to] text`: kept in memory, never a report (no manager turn). Default: appended to memory. */
+
   peerCopy?: (text: string) => void;
-  /** A finished peer was resumed by a message from `partner`, so whoever awaits `partner` (a wake) awaits it too. */
+
   peerResumed?: (resumed: string, partner: string) => void;
-  /** The profile's own instructions, without the import note and the operational records `instructions` adds: a contract worker keeps only its named sections. */
+
   profileInstructions?: () => string;
-  /** A run ended on its own or by a stop (completed, failed, stopped), before its report is delivered. */
+
   onRunEnd?: (run: RunInfo) => void;
-  /** A patrol worker asked the operator about a commitment (waiting_operator with choices): the only thing of a quiet patrol that reaches the manager. */
+
   escalated?: (project: string, id: string, run: string) => void;
-  /** The git facts a code worker's report carries after its own text, computed from its cwd (default: `reportAppendix`); empty for none. */
+
   appendix?: (cwd: string) => Promise<string>;
-  /** The cached quota: when `provider/model` comes back (epoch ms); undefined when it is free or nothing is known. Never calls a model. */
+
   quotaBlock?: (provider: string, model: string) => number | undefined;
-  /** Clock and timers of quota parking; tests replace them. */
+
   clock?: { now(): number; setTimer(run: () => void, ms: number): unknown; clearTimer(handle: unknown): void };
-  /** Workers just parked for quota: they report nothing until they resume, so nobody should keep waiting for them (a wake). */
+
   onPark?: (ids: string[]) => void }
 /** What a parked worker is resumed with once its account's quota is back. */
 export const QUOTA_BACK = 'Your model account was out of quota and is available again. Continue your task from where you stopped; do not start over.';
 /** Parked workers of one account are reported together once no new one has parked for this long. */
 export const PARK_NOTE_MS = 2000;
-/** A task of a spawn that waits for its account's quota instead of starting. */
+
 interface QueuedTask { id: string; model: string; until: number }
 interface QuotaHit { retryAt?: number; message: string }
 const queuedText = (queued: QueuedTask[], now: number) => {
@@ -144,11 +144,13 @@ export function specialistMemoryTool(crew: () => Crew, project: Specialist, tran
     },
   };
 }
-/** One spawn task: a plain subagent, or with `kind` a contract worker that gets its project's brief instead of the chat. */
-/** `model` is `provider/model` and overrides the kind's route; it may be any account or provider. */
-/** `peer` pairs a contract worker with an existing one of the same project (a reviewer names its author): both get tell_peer. */
-/** `patrol`: a read-only worker of the project (see patrol.ts), started by the heartbeat only; its report is recorded, never delivered, unless it fails. */
-/** `mcp`: explicit opt-in/out for external MCP servers (plan/mechanical skip `mcp` by default). */
+/**
+ * One spawn task: a plain subagent, or with `kind` a contract worker that gets its project's brief instead of the chat.
+ * `model` is `provider/model` and overrides the kind's route; it may be any account or provider.
+ * `peer` pairs a contract worker with an existing one of the same project (a reviewer names its author): both get tell_peer.
+ * `patrol`: a read-only worker of the project (see patrol.ts), started by the heartbeat only; its report is recorded, never delivered, unless it fails.
+ * `mcp`: explicit opt-in/out for external MCP servers (plan/mechanical skip `mcp` by default).
+ */
 export interface SpawnTask { task: string; cwd?: string; kind?: WorkerKind; project?: Specialist; model?: string; peer?: string; patrol?: boolean; mcp?: boolean }
 /** Why `task` may not pair with its `peer` (undefined: it may): only two of the main agent's contract workers of one project, each with no other peer. */
 export function peerRefusal(records: ReadonlyMap<string, RunInfo>, task: SpawnTask, project: string | undefined) {
@@ -164,7 +166,7 @@ export function peerRefusal(records: ReadonlyMap<string, RunInfo>, task: SpawnTa
   return undefined;
 }
 
-// Subagents load the user's installed extensions, except any copy of OptChat itself: they get memory tools directly and must not open a profile.
+
 const packageName = (path: string): string | undefined => {
   for (let dir = dirname(path); dir !== dirname(dir); dir = dirname(dir)) {
     const manifest = join(dir, 'package.json');
@@ -172,18 +174,17 @@ const packageName = (path: string): string | undefined => {
     try {
       const data: unknown = JSON.parse(readFileSync(manifest, 'utf8'));
       return data && typeof data === 'object' && 'name' in data && typeof data.name === 'string' ? data.name : undefined;
-    } catch { return undefined; } // A broken manifest is not OptChat's and must not block every spawn.
+    } catch { return undefined; }
   }
 };
 /** A task's cwd may start with `~` and may be relative to the spawning agent's directory. */
 export const taskDirectory = (cwd: string, path = '.', windows = process.platform === 'win32') =>
   resolve(cwd, path.replace(windows ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/, homedir()));
-/** How long after a worker finished a spawn in its project and directory is told it may be a follow-up. */
+
 const FOLLOW_UP_MS = 24 * 3_600_000;
 const isOptchat = (path: string) => packageName(path) === 'pi-optchat';
 
-// Pi's CLI adds its built-in extensions (MCP, codemode, tool search) to its own session; SDK sessions such as
-// subagents must add them. Pi versions that do not export a factory simply do not get that extension.
+// external: Pi's CLI loads built-in extensions; SDK sessions must add them explicitly.
 const BUILTINS: Record<string, string> = { mcp: 'createMcpExtension', codemode: 'createCodemodeExtension', 'tool-search': 'createToolSearchExtension' };
 const PREFIX = 'builtin:';
 /** The built-in extensions a session loaded: `--no-mcp`, `-builtin:<name>` settings and replacing extensions leave them out. */
@@ -194,8 +195,8 @@ export const builtinExtensions = (names: Iterable<string>): InlineExtension[] =>
   const create = Object.hasOwn(BUILTINS, name) ? (sdk as unknown as Record<string, unknown>)[BUILTINS[name]] : undefined;
   return typeof create === 'function' ? [{ name, factory: create(), replaceable: true, builtin: true }] : [];
 });
-/** The prompt size a child compacts within: the output-reserved, 5%-margin input budget as the main request, or the configured
- * turn share plus the child's task view (which can reach DEFER times the view budget while a merge is put off), if that is lower. */
+
+
 function childPromptBudget(contextWindow: number, fraction: number, maxOutputTokens?: number) {
   const inputBudget = inputTokenBudget(contextWindow, maxOutputTokens);
   const turnBudget = fraction > 0 ? Math.floor(contextWindow * fraction + VIEW * DEFER / 4) : inputBudget;
@@ -227,7 +228,7 @@ export function backfillChildUsage(directory: string, runs: Iterable<{ id: strin
   open: (file: string) => { getEntries(): SessionEntry[] } = file => SessionManager.open(file)) {
   const file = join(directory, 'child-usage-counted.json');
   let counted: Record<string, number> = {};
-  try { counted = JSON.parse(readFileSync(file, 'utf8')) as Record<string, number>; } catch { /* first open or unreadable: count everything */ }
+  try { counted = JSON.parse(readFileSync(file, 'utf8')) as Record<string, number>; } catch {   }
   const next: Record<string, number> = {};
   let changed = false;
   for (const run of runs) {
@@ -400,7 +401,7 @@ export class Children {
     const live = this.running.get(id);
     if (!live) return this.messages(id);
     const retained = live.session.sessionManager.getEntries().flatMap(e => e.type === 'message' ? [e.message] : []);
-    // Pi puts the finalized message in session.messages before message_end listeners run, then persists that same object.
+    // external: Pi inserts the finalized message before message_end listeners and persists the same object.
     const tail = live.streaming ?? live.session.messages.at(-1);
     return tail && !retained.includes(tail) ? [...retained, tail] : retained;
   }
@@ -505,7 +506,7 @@ export class Children {
     return hints.length ? ` Note: ${[...new Set(hints)].join(' ')}` : '';
   }
   private async launch(tasks: SpawnTask[], cwd: string, signal: AbortSignal | undefined, parentId: string | undefined, connected = false, onLaunch?: (ids: string[]) => void, replay?: string) {
-    // Router mode: a task is one bounded handoff. Refused when over the cap, never cut: its instructions must arrive whole.
+
     if (this.settings.routerMode) for (const { task } of tasks) checkHandoffSummary(task, HANDOFF_MAX_BYTES, 'Task');
     for (const directory of tasks.map(t => taskDirectory(cwd, t.cwd))) if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`No such directory: ${directory}`);
     if (this.closing) throw new Error('Profile is closing.');
@@ -528,7 +529,7 @@ export class Children {
       const renderingAt = performance.now();
       const allModels = tasks.map(task => this.modelOf(task));
       specialists = connected ? [] : this.ensureSpecialists(tasks, cwd);
-      // A task whose account is known to be out of quota would die on its first request: it waits for the reset instead (never for a child of an agent, whose parent would wait on it).
+
       const resets = allModels.map((chosen, i) => replay !== undefined || parentId !== undefined || connected || tasks[i].peer !== undefined ? undefined : this.options.quotaBlock?.(chosen.selected.provider, chosen.selected.model));
       const ready = tasks.flatMap((task, i) => resets[i] === undefined ? [i] : []);
       queued = tasks.flatMap((task, i) => resets[i] === undefined ? [] : [this.queue(task, allModels[i].selected, cwd, depth, parkUntil(this.now(), 0, resets[i]))]);
@@ -538,7 +539,7 @@ export class Children {
       launched = run.length ? await this.track(this.launchBatch({ tasks: run, cwd, depth, parentId, connected, models, signal, cancelled, ids: replay === undefined ? undefined : [replay] })) : [];
       for (const live of launched) if (live.info.peer) this.pair(live.info.id, live.info.peer.id);
     } finally { for (const peer of peers) this.pairing.delete(peer); }
-    // Grouped, the last child of this spawn to finish delivers every report; otherwise each reports on its own.
+
     const batch = groupReports && !connected ? { ids: launched.map(c => c.info.id), reports: new Map<string, string>() } : undefined;
     onLaunch?.(launched.map(c => c.info.id));
     for (const [i, live] of launched.entries()) {
@@ -582,7 +583,7 @@ export class Children {
    * since two of them in one checkout overwrite each other. Plan workers only read. Refused before anything starts. */
   private checkWriters(tasks: SpawnTask[], cwd: string, except?: string) {
     const holders = new Map<string, string>();
-    // A run being resumed holds its repo already, before it is registered as running; so does one parked for quota, which comes back to it.
+
     const parked = [...this.history.records.values()].filter(info => info.parked && info.id !== except);
     for (const info of [...[...this.running.values()].map(live => live.info), ...[...this.resuming].filter(id => id !== except).flatMap(id => this.history.records.get(id) ?? []), ...parked]) {
       const top = info.kind && !info.patrol && (WRITER_KINDS as readonly string[]).includes(info.kind) ? repoRoot(info.cwd) : undefined;
@@ -686,7 +687,7 @@ export class Children {
       }
     } catch (error) {
       for (const child of launched) {
-        await this.shutdown(child.session); // Extensions such as MCP close their connections and stop their server processes.
+        await this.shutdown(child.session);
         this.dispose(child.session); this.running.delete(child.info.id);
         transition(child.info, 'failed'); child.info.ended = Date.now(); child.info.report = `Launch failed: ${String(error)}`;
         if (child.info.connected) child.info.handoff = { reason: signal?.aborted ? 'disconnected' : 'failed' };
@@ -709,10 +710,10 @@ export class Children {
     const outputs = new OutputContext(new OutputStore(this.profileDirectory, o.sessionManager.getSessionId()));
     const metrics = new PerformanceMetrics();
     const { subagentLevels, maxAgents, memorySearch } = this.settings, delegates = depth < subagentLevels && !kind;
-    // A contract worker gets the profile's named sections only: no chat-view doc, no operational records, no skill catalog.
+
     const profile = kind ? leanProfile(this.options.profileInstructions?.() ?? this.instructions()) : this.instructions();
     const instructions = [profile, delegates ? delegation(maxAgents) : NO_DELEGATION, STEERABLE, connected ? CONNECTED : NOT_CONNECTED].filter(Boolean).join('\n\n');
-    // The user's settings list their installed packages; a copy in memory keeps the child from writing them back.
+
     const fraction = refreshFraction(this.settings.refreshAt);
     const settingsManager = SettingsManager.inMemory({ ...SettingsManager.create(directory, getAgentDir()).getSettings(),
       compaction: childCompaction(o.model, fraction, o.contract ? this.settings.workerCompactAtTokens : 0), cacheWarming: 'off' });
@@ -748,7 +749,7 @@ export class Children {
           if (o.peer) addPeerTool(); else this.peerTools.set(id, addPeerTool);
           pi.on('session_shutdown', () => { if (this.peerTools.get(id) === addPeerTool) this.peerTools.delete(id); });
         }
-        // A shell the child starts reports into the child's own session (shellNotice), so it can run a long gate and be woken with the outcome.
+
         if (this.options.shells) registerShellTools(pi, this.options.shells, () => { if (this.closing || !this.running.has(id)) throw new Error('Agent is closing'); }, {}, id);
         if (this.options.operations) {
           registerOperationSafety(pi, () => this.options.operations, this.options.recoveryIncident);
@@ -760,7 +761,7 @@ export class Children {
         }
         const provider = this.registry.getRegisteredProviderConfig(o.provider);
         if (provider) pi.registerProvider(o.provider, provider);
-        // Same prompt as the main agent (AGENTS.md files, skills, cwd); only the OptChat preamble differs.
+
         pi.on('before_agent_start', event => {
           event.systemPromptOptions.customPrompt = kind ? WORKER : allowSearch(`${SUBAGENT}\n\n${VIEW_DOC}${memorySearch ? SEARCH_DOC : ''}`, memorySearch);
           event.systemPromptOptions.sections.instructions = instructions;
@@ -776,7 +777,7 @@ export class Children {
       ...(kind ? { tools: [...(o.patrol ? PATROL_TOOLS : WORKER_TOOLS[kind])] } : {}),
       excludeTools: delegates ? [] : ['spawn', 'tell'],
     });
-    // Callers track the session only after this returns: clean up here if its extensions fail to start.
+
     try { await session.bindExtensions({}); }
     catch (error) { await this.shutdown(session); this.dispose(session); throw error; }
     return session;
@@ -825,7 +826,7 @@ export class Children {
     let live = this.running.get(to);
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) {
       if (live.info.state === 'stopping') throw refuse(live.stoppedBy === 'user' ? 'was stopped by the user' : 'is stopping');
-      await live.completion; // Its last turn is over: once recorded as finished, the message resumes it.
+      await live.completion;
       live = this.running.get(to);
     }
     const record = live?.info ?? this.history.records.get(to);
@@ -843,9 +844,9 @@ export class Children {
     let answer: string;
     try {
       if (live) {
-        await live.requeueing; // Keeps the queue in the order messages were sent.
+        await live.requeueing;
         if (live.info.state === 'running' && !live.interruption) await live.session.steer(note);
-        else { live.pendingReports.push(note); live.wake?.(); } // A paused peer keeps it until the user resumes it.
+        else { live.pendingReports.push(note); live.wake?.(); }
         this.changed();
         answer = `Message sent to ${to}.`;
       } else {
@@ -865,7 +866,7 @@ export class Children {
     const parent = this.running.get(parentId);
     if (!parent || !['running', 'waiting', 'paused'].includes(parent.info.state)) return false;
     if (parent.info.state === 'running') await parent.session.steer(text);
-    else { parent.pendingReports.push(text); parent.wake?.(); } // A paused parent keeps it until the user resumes it.
+    else { parent.pendingReports.push(text); parent.wake?.(); }
     this.changed();
     return true;
   }
@@ -882,8 +883,8 @@ export class Children {
     let parking: QuotaHit | undefined;
     try {
       if (info.connected) await this.report(`[${info.id}] User started a connected conversation in ${info.cwd}. That agent is handling this request with the user directly; don't do it yourself. Initial message: ${info.task}\n\nUse tell with this agent ID only if you know something it needs. It stays open between replies and sends a final handoff on completion or disconnect.`);
-      // A stop that lands before the first prompt has no turn to abort, so it is honoured here.
-      const state: RunState = info.state; // a local, so the loop below still sees later state changes
+
+      const state: RunState = info.state;
       if (this.closing || info.handoff || state === 'stopping') throw new Error('Stopped before its first request.');
       live.firstActivity = false;
       this.timed('prompt', info.id, undefined, prompt.length);
@@ -891,17 +892,17 @@ export class Children {
       while (info.state !== 'stopping') {
         if (live.interruption) {
           const guidance = live.interruption.filter(g => g.state === 'queued');
-          // Read Pi's queue only once a rebuild has landed, and take the interrupt's messages off it so they arrive once.
-          // Until this is done, tell() holds new messages in pendingGuidance, where the turn below or a pause picks them up.
+
+
           await live.requeueing;
           const texts = new Set(guidance.map(g => g.text));
           await this.requeue(live, session.clearQueue().steering.filter(text => !texts.has(text)));
           live.interruption = undefined;
           if (!guidance.length) {
-            // Nothing to hand over: the run waits for its next message instead of ending, and whoever waits on its report hears why.
+
             if (transition(info, 'paused')) {
               this.save(info);
-              // In a grouped spawn the note takes the run's place, so its siblings' reports are not held until the user comes back; its later report arrives on its own.
+
               const note = `[${info.id}] Interrupted by the user; it waits for their next message, so no report until then.`, batch = live.batch;
               live.batch = undefined;
               if (!info.connected) await (batch ? this.deliver(info, batch, note) : this.toParent(info.parentId, note))
@@ -909,7 +910,7 @@ export class Children {
             }
             continue;
           }
-          if (!transition(info, 'running')) continue; // A stop during the cleanup wins.
+          if (!transition(info, 'running')) continue;
           for (const g of guidance) g.state = 'delivered';
           this.save(info);
           await session.prompt(`Interrupted by the user:\n\n${guidance.map(g => g.text).join('\n\n')}`);
@@ -921,7 +922,7 @@ export class Children {
           continue;
         }
         const last = session.messages.findLast(m => m.role === 'assistant');
-        // An error ends the turn, not the run: children still at work report to it and it answers them, as the main agent does.
+
         if (!paused && last?.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted') && !live.pendingReports.length && !this.directChildren(info.id).length) break;
         if (live.pendingGuidance.length) {
           transition(info, 'running'); this.save(info);
@@ -940,7 +941,7 @@ export class Children {
         await Promise.race([...children, wake]); live.wake = undefined;
       }
       const last = session.messages.findLast(m => m.role === 'assistant');
-      // Out of quota is not a result: the run waits for the reset (park) instead of ending with a failure nobody can act on.
+
       parking = this.quotaHit(info, last?.role === 'assistant' && last.stopReason === 'error' ? last.errorMessage : undefined);
       if (!parking) {
         transition(info, info.state === 'stopping' || last?.role === 'assistant' && last.stopReason === 'aborted' ? 'stopped'
@@ -963,17 +964,17 @@ export class Children {
       this.timed('finished', info.id);
       for (const g of info.guidance) if (g.state === 'queued') g.state = 'undelivered';
       await this.shutdown(session);
-      // A failed dispose must neither keep the slot taken nor drop the report below.
+
       this.dispose(session); this.running.delete(info.id);
     }
     if (parking) { this.park(live, parking); return; }
     delete info.parks;
     if (info.cutOff) {
-      // Aborted by Pi closing, not by anyone's choice: no report now, the next start resumes it.
+
       if (info.state === 'stopped' && transition(info, 'interrupted')) { info.report = CUT_OFF; this.save(info); return; }
-      delete info.cutOff; // It finished on its own while Pi was closing.
+      delete info.cutOff;
     }
-    // Its cut-off children were named to it when it was resumed; having ended on its own, it no longer will resume them.
+
     if (!this.closing) for (const run of this.history.descendants(info.id)) if (run.cutOff) { delete run.cutOff; this.save(run); }
     if (info.connected) {
       info.handoff ??= { reason: 'failed' };
@@ -982,18 +983,18 @@ export class Children {
       await this.deliverHandoff(info);
       return;
     }
-    // Said plainly, so the parent does not take the user's choice for a failure and delegate the task again.
+
     if (!info.parentId) recordSubagentSignal(this.profileDirectory, info);
     if (this.deleting.has(info.id)) info.report = 'Deleted by the user while it was working. The user dropped this task on purpose: do not redo it or delegate it again unless they ask.';
-    // A metadata failure must not suppress delivery of the actual result.
+
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
     this.proposeMemory(info);
     this.recordRun(info);
     try { this.options.onRunEnd?.(info); } catch (error) { this.warn(`Run-end hook failed for ${info.id}: ${String(error)}`); }
-    // A patrol that finished is recorded above (run tree, and the notes it wrote on the commitments), not delivered: only an escalation reaches the manager. A failed one is news.
+
     if (info.patrol && info.state === 'completed') return;
-    // Router mode: the main agent gets the report bounded, with pointers to the run and its transcript, not the whole chat.
-    // A deleted run's transcript is gone.
+
+
     const text = this.settings.routerMode && !info.parentId ? routerReport(info)
       : `[${info.id}] ${info.report}${await this.appendixOf(info)}${this.deleting.has(info.id) ? '' : `\n\n${fullChat(info.id)}`}`;
     await this.deliver(info, live.batch, text);
@@ -1024,7 +1025,7 @@ export class Children {
     transition(info, 'interrupted');
     info.report = `Waiting for the quota of ${provider} (${hit.message}). It resumes by itself at ${untilText(until, now)} (Brasília), with its conversation.`;
     try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
-    // Its siblings of a grouped spawn report without it; it reports on its own once it has run again.
+
     const batch = live.batch;
     live.batch = undefined;
     if (batch) {
@@ -1085,7 +1086,7 @@ export class Children {
     const block = this.resetOf(run);
     if (block !== undefined && block > this.now()) { run.parked.until = block + PARK_MARGIN_MS; this.save(run); this.arm(id); return; }
     try {
-      // Never started, or its request failed before anything reached the transcript: it starts again from its task, under the same id.
+
       if (run.parked.queued || !this.transcribed(run)) {
         const task: SpawnTask = { task: run.task, model: run.model, ...run.kind && (WORKER_KINDS as readonly string[]).includes(run.kind) ? { kind: run.kind as WorkerKind, project: run.project } : {} };
         await this.track(this.launch([task], run.cwd, undefined, undefined, false, undefined, id));
@@ -1114,7 +1115,7 @@ export class Children {
       delete run.parked;
       transition(run, 'failed'); run.ended = this.now(); run.report = `Task error: could not start again after the quota came back: ${why}`;
     } else if (run.state !== 'failed') return;
-    // A launch that failed halfway already recorded itself as failed; either way the parent learns it now.
+
     try { this.save(run); } catch (saveError) { this.warn(`Could not save run metadata: ${String(saveError)}`); }
     await this.deliver(run, undefined, `[${id}] ${run.report ?? why}`);
     this.changed();
@@ -1131,7 +1132,7 @@ export class Children {
   }
   private async flushParkNotes() {
     this.parkNoteTimer = undefined;
-    // A worker stopped or resumed in the meantime is no longer waiting.
+
     const notes = [...this.parkNotes].map(([provider, note]) => [provider, { ...note, ids: note.ids.filter(id => this.history.records.get(id)?.parked) }] as const).filter(([, note]) => note.ids.length), now = this.now();
     this.parkNotes.clear();
     if (!notes.length || this.closing) return;
@@ -1183,9 +1184,9 @@ export class Children {
     const guidance: RunInfo['guidance'][number] = { text, date: Date.now(), state: 'queued', from: source };
     live.info.guidance.push(guidance); this.save(live.info);
     try {
-      await live.requeueing; // Keeps the queue in the order messages were sent.
+      await live.requeueing;
       if (live.info.state === 'running' && !live.interruption) await live.session.steer(text);
-      else { live.pendingGuidance.push(text); live.wake?.(); } // Waiting, paused or being interrupted: this message starts its next turn.
+      else { live.pendingGuidance.push(text); live.wake?.(); }
     }
     catch (error) { guidance.state = 'undelivered'; this.save(live.info); throw error; }
     if (guidance.state === 'undelivered') throw new Error(`${id} finished before it read the message. Tell it again to resume it.`);
@@ -1200,7 +1201,7 @@ export class Children {
     if (this.closing || this.deleting.has(id)) return false;
     try {
       const live = this.running.get(id);
-      // Its last turn is over but it is not recorded as finished yet: once it is, the notice resumes it.
+
       if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) {
         if (afterCompletion || !live.completion) return false;
         await live.completion;
@@ -1222,8 +1223,8 @@ export class Children {
     if (live?.info.state === 'paused') return 'paused';
     if (!live || !['running', 'waiting'].includes(live.info.state)) throw new Error(`No running subagent ${id}.`);
     const guidance = live.info.guidance.filter(g => g.state === 'queued');
-    // Nothing yields before the abort starts, so the run cannot finish in between and drop the messages.
-    // They leave pendingGuidance here and Pi's steering queue in execute(), which then sends them in one prompt.
+
+
     const texts = new Set(guidance.map(g => g.text));
     live.pendingGuidance = live.pendingGuidance.filter(text => !texts.has(text));
     live.interruption = guidance;
@@ -1236,15 +1237,15 @@ export class Children {
     const live = this.running.get(id);
     const text = live?.info.guidance.findLast(g => g.state === 'queued' && g.from === 'user')?.text;
     if (!live || text === undefined || live.requeueing || live.interruption) return undefined;
-    // The queue holds only texts, so of equal ones the last is taken back, record and queue entry alike.
+
     const guidance = live.info.guidance.findLast(g => g.state === 'queued' && g.text === text)!;
     const pending = live.pendingGuidance.lastIndexOf(guidance.text);
     if (pending >= 0) live.pendingGuidance.splice(pending, 1);
     else {
       const steering = live.session.getSteeringMessages();
       const at = steering.lastIndexOf(guidance.text);
-      if (at < 0) return undefined; // Already on its way to the agent.
-      // Pi cannot drop a single queued message: clear the queue and steer the rest back in order.
+      if (at < 0) return undefined;
+      // external: Pi cannot drop a single queued message.
       void this.requeue(live, live.session.clearQueue().steering.filter((_, i) => i !== at));
     }
     live.info.guidance.splice(live.info.guidance.indexOf(guidance), 1); this.save(live.info);
@@ -1274,7 +1275,7 @@ export class Children {
   private async preemptParkResume(id: string, run: RunInfo, automatic: Promise<string>, message: string, caller: string | undefined, route: RouteOverride) {
     this.retargeting.add(id); this.launching++; this.cancelPark(id);
     try {
-      // The stale opening is expected to reject once its generation is cancelled.
+
       try { await automatic; } catch (error) {
         if (!(error instanceof Error && error.message.includes('worker or route changed while opening'))) this.warn(`Superseded quota resume failed: ${String(error)}`);
       }
@@ -1291,7 +1292,7 @@ export class Children {
   }
   private async recoverResumeSave(info: RunInfo, run: RunInfo, session: AgentSession, error: unknown): Promise<never> {
     const id = run.id;
-    // Visibility after rename is not durability. Never dispatch on an uncertain save.
+
     const stored = this.history.matchesStored(info);
     if (stored !== false) {
       this.cancelPark(id);
@@ -1335,7 +1336,7 @@ export class Children {
     this.assertResumeOwner(run, caller);
     if (this.closing) throw new Error('Profile is closing.');
     if (run.parked?.queued) throw new Error(`${id} is queued until ${untilText(run.parked.until, this.now())} (Brasília) because ${run.parked.provider} is out of quota; it has not started, so there is nothing to resume. It starts by itself.`);
-    // One writer per repo holds for a resumed writer as for a new one.
+
     if (run.kind && (WRITER_KINDS as readonly string[]).includes(run.kind)) this.checkWriters([{ task: run.task, kind: run.kind as WorkerKind, cwd: run.cwd }], run.cwd, id);
     if (this.full(automatic ? 0 : 1)) throw new Error(`Profile limit: at most ${this.settings.maxAgents} active agents, including parents and descendants. ${id} can be resumed when one finishes.`);
     const manager = this.resumeTranscript(run);
@@ -1357,11 +1358,11 @@ export class Children {
     let reserved = true;
     try {
       const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol, mcp: run.mcp });
-      // stop() cannot see this child until it is registered, so a parent stopped meanwhile must cancel it here.
+
       if (!this.resumeOpenValid(id, run, session, snapshot, route, automaticGeneration)) {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping, or the worker or route changed while opening; nothing was started.');
       }
-      // The finished record stays untouched (and resumable) unless the new one is saved.
+
       const { ended: _ended, cutOff: _cutOff, parked: _parked, ...rest } = run;
       const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
       const prompt = cutOffChildren(text, cut);
@@ -1395,21 +1396,21 @@ export class Children {
   async resumeCutOff() {
     const cut = [...this.history.records.values()].filter(run => run.cutOff && !run.explicitRecovery).sort((a, b) => a.depth - b.depth || a.started - b.started).map(run => run.id);
     const resumed: string[] = [], lines: string[] = [], orphans: string[] = [];
-    // Always the current record: a `tell` during startup may have resumed the run and replaced it meanwhile.
+
     const current = (id: string) => { const run = this.history.records.get(id); return run?.cutOff && !run.explicitRecovery ? run : undefined; };
     const drop = (run: RunInfo) => { delete run.cutOff; this.save(run); };
     for (const id of cut) {
       const run = current(id);
       if (!run) continue;
       if (run.parentId) {
-        // Its parent was not cut off (it was paused, say) or could not be resumed: nobody else will mention it.
+
         if (!this.history.records.get(run.parentId)?.cutOff && !this.running.has(run.parentId)) { orphans.push(`${run.id} (under ${run.parentId})`); drop(run); }
         continue;
       }
       try { await this.track(this.resume(id, RESTARTED, undefined)); resumed.push(id); }
       catch (error) {
         const still = current(id);
-        if (!still) continue; // Resumed by someone else meanwhile.
+        if (!still) continue;
         lines.push(`Could not resume ${id}: ${error instanceof Error ? error.message : String(error)}`); drop(still);
       }
     }
@@ -1473,7 +1474,7 @@ export class Children {
     const live = this.running.get(id);
     const parked = this.history.records.get(id);
     if (!live && parked?.parked) {
-      // Waiting for quota: nothing runs, so ending it is only a record.
+
       this.cancelPark(id); delete parked.parked; delete parked.parks;
       transition(parked, 'stopped'); parked.ended = this.now(); parked.report = stoppedReport(cause, '');
       this.save(parked); this.changed();
@@ -1501,15 +1502,15 @@ export class Children {
     this.assertNative(id);
     if (!this.history.records.has(id)) throw new Error(`No subagent ${id}.`);
     if (this.deleting.has(id)) throw new Error(`${id} is already being deleted.`);
-    // A run that is live while being deleted reports its own deletion, even one a tell was resuming; a finished one has nothing left to say, so memory is told here.
+
     let reports = false;
     const runs = () => [id, ...this.history.descendants(id).map(run => run.id)], marked = new Set<string>();
-    // An overlapping delete of a descendant keeps its own marks, so neither delete clears the other's.
+
     const mark = () => { for (const run of runs()) if (!this.deleting.has(run)) { marked.add(run); this.deleting.add(run); } };
     mark(); this.changed();
     for (const run of runs()) this.cancelPark(run);
     try {
-      // Launches and resumes register their runs before they settle, and a stopped parent can still have children launching.
+
       for (;;) {
         await Promise.allSettled(this.launches);
         const live = runs().flatMap(run => this.running.get(run) ?? []);
@@ -1522,7 +1523,7 @@ export class Children {
       mark();
       const records = runs().flatMap(run => this.history.records.get(run) ?? []);
       if (records.some(run => run.connected && !run.handoff?.delivered)) throw new Error(`${id} has a connected conversation whose handoff has not reached the main agent yet, so it was kept.`);
-      for (const run of records.reverse()) this.history.remove(run.id); // Children first, so a failure never leaves one without its parent.
+      for (const run of records.reverse()) this.history.remove(run.id);
       if (!reports) this.memory.append('work', `[${id}] deleted by the user`);
     } finally { for (const run of marked) this.deleting.delete(run); this.changed(); }
   }
@@ -1554,7 +1555,7 @@ export class Children {
     if (this.parkNoteTimer !== undefined) { this.cancel(this.parkNoteTimer); this.parkNoteTimer = undefined; }
     this.parkNotes.clear();
     if (this.watcher) { clearInterval(this.watcher); this.watcher = undefined; }
-    // Only work in progress is picked up at the next start: not paused runs waiting for the user, runs being stopped, or connected windows (they hand off).
+
     for (const { info } of this.running.values()) if (!info.connected && (info.state === 'running' || info.state === 'waiting')) info.cutOff = true;
     await Promise.allSettled([...this.running.keys()].map(id => this.stop(id, 'pi')));
     await Promise.allSettled(this.launches);
