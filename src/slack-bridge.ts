@@ -170,6 +170,9 @@ function failure(messages: readonly AgentMessage[]): string {
   return last && (last.stopReason === 'error' || last.stopReason === 'aborted') ? `⚠️ A execução parou sem resposta (${last.stopReason}): ${last.errorMessage ?? 'sem detalhes'}` : '';
 }
 
+/** A still-running worker's progress note, as agents.ts relays it. */
+const WORKER_PROGRESS = /^\[[\w-]+\] Message from subagent \(still running\)/;
+
 export class SlackBridge {
   private generation = 0;
   /** The inbox read in flight, cancelled by stop(). */
@@ -182,6 +185,8 @@ export class SlackBridge {
   private homeInflight = false;
   /** A `[WhatsApp]` message entered the current run: its answer goes back there, not to Slack. */
   private whatsapp = false;
+  /** Every message of this run so far was a still-running worker's progress note: its answer is chatter, not news for the DM. */
+  private progressOnly: boolean | undefined;
   private homeNext: { owner: NonNullable<ReturnType<SlackBridge['owner']>>; body: object; old: object } | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
@@ -535,6 +540,7 @@ export class SlackBridge {
     // The run's own claim check sends its reply back once: the operator still waits for that reply, not the draft.
     if (text.startsWith(CLAIM_CHECK_PREFIX)) return;
     if (FROM_WHATSAPP.test(text)) this.whatsapp = true;
+    this.progressOnly = (this.progressOnly ?? true) && !match && WORKER_PROGRESS.test(text);
     if (!match) {
       // Another message (a gitwatch notice, a wake) steering this run would otherwise replace the answer the operator is waiting for.
       if (this.answering && this.replied && this.replied !== this.delivered) { this.delivered = this.replied; void this.answer(this.answering, this.replied, false); }
@@ -588,7 +594,8 @@ export class SlackBridge {
 
   /** `quiet`: a wake that delivered nothing (heartbeat-report silentWake): its effects reach the wake log, its text reaches nobody; an `unverified` warning still does. */
   async runEnded(messages: readonly AgentMessage[], unverified?: string, quiet = false): Promise<void> {
-    const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp;
+    const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp, progressOnly = this.progressOnly === true;
+    this.progressOnly = undefined;
     this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
     clearTimeout(this.workTimer); this.workTimer = undefined;
@@ -607,7 +614,7 @@ export class SlackBridge {
     }
     if (!waking) {
       // The WhatsApp bridge answers a run its message started.
-      const text = whatsapp || !this.options.everyAnswer?.() ? '' : last || failure(messages);
+      const text = whatsapp || !this.options.everyAnswer?.() ? '' : progressOnly ? failure(messages) : last || failure(messages);
       if (text) try { await this.publish(text, null, null); this.answered(null); }
       catch (error) { this.options.warn(`Answer not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
       return;
