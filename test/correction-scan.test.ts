@@ -260,3 +260,13 @@ test('live-claim is cleared by a live check since the last user message, and res
   assert.equal(scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r=>r.id==='live-claim')!.count, 1);
  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+// 20/11 "era pra ser padrao tbm rodar a suite de testes apenas no final, sem perder tempo testando a cada mudança".
+test('suite-repeat flags a second full suite in one run, not focused tests or a new run', () => {
+ const suite = call('bash', { command: 'cd ~/projetos/pi-optchat && npm test 2>&1 | tail -5' });
+ const verify = call('bash', { command: 'npm run verify > /tmp/v.log 2>&1; echo rc=$?' });
+ const focused = call('bash', { command: 'node --test test/heartbeat.test.ts' });
+ assert.equal(ruleCount('suite-repeat', [operator, suite, verify]), 1);
+ assert.equal(ruleCount('suite-repeat', [operator, suite, focused, focused]), 0, 'focused tests are the cheap check');
+ assert.equal(ruleCount('suite-repeat', [operator, suite, operator, verify]), 0, 'a new order starts a new run');
+ assert.equal(ruleCount('suite-repeat', [operator, call('bash', { command: 'node --test "test/*.test.ts"' }), suite]), 1);
+});

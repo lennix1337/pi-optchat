@@ -130,5 +130,13 @@
     "scope": "bash tool call of a run started by an OptChat heartbeat prompt",
     "detector": "dentai-in-wake",
     "precision": "Wake-run bash call that mentions dentai-mono, tecnologia-ai/dentai, dentai-ship or a DENTA-n card and also pushes, commits, creates or merges a PR, comments or deploys; reads are ignored; candidates require review (an order given before the wake is not visible here)."
+  },
+  {
+    "id": "suite-repeat",
+    "quote": "era pra ser padrao tbm rodar a suite de testes apenas no final, sem perder tempo testando a cada mudança, tudo que for identificado que perde tempo hoje tem que ser melhorado",
+    "date": "20/11",
+    "scope": "bash or shell_start call of one run (since the last user message or wake)",
+    "detector": "suite-repeat",
+    "precision": "A second full-suite command (npm test, npm run verify, node --test over test/*) in the same run; focused node --test files, tsc and lint are the cheap checks and are ignored; candidates require review (a rerun of the one suite that CI showed failing is legitimate)."
   }
 ]
