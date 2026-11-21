@@ -4,7 +4,7 @@ import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { finalText, registerSlackBridge } from './slack-bridge.ts';
-import { CLAIM_CHECK_PREFIX, branchEvidenceMessages, claimRetryText, evidenceText, abandonedCauses, uncheckedAdmissions, unbackedClaims, unbackedNote } from './claim-check.ts';
+import { CLAIM_CHECK_PREFIX, branchEvidenceMessages, claimRetryText, evidenceText, abandonedCauses, uncheckedAdmissions, utcTimes, unbackedClaims, unbackedNote } from './claim-check.ts';
 import { NO_WORK, readHomeWork, readWatch, stillWaiting } from './home-items.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
@@ -1324,8 +1324,9 @@ export default function optchat(host: ExtensionAPI) {
     const claims = settledCleanly && finalText(messages) ? unbackedClaims(finalText(messages), evidenceText([...recent(), ...messages])) : [];
     const admissions = settledCleanly && finalText(messages) ? uncheckedAdmissions(finalText(messages)) : [];
     const causes = settledCleanly && finalText(messages) ? abandonedCauses(finalText(messages)) : [];
+    const utc = settledCleanly && finalText(messages) ? utcTimes(finalText(messages)) : [];
     const retry = (wake && settled ? wakeRetry(wake, wakeRetried) : undefined) ??
-      ((claims.length || admissions.length || causes.length) && !claimRetried && settledCleanly ? claimRetryText(claims, admissions, causes) : undefined);
+      ((claims.length || admissions.length || causes.length || utc.length) && !claimRetried && settledCleanly ? claimRetryText(claims, admissions, causes, utc) : undefined);
     if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
     else if (waitingReload) {   }
     else if (retry?.startsWith(CLAIM_CHECK_PREFIX)) { claimRetried = true; void deliverReport(retry); }

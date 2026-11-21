@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims } from '../src/claim-check.ts';
+import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims, utcTimes } from '../src/claim-check.ts';
 
 test('multiple hash claims normalize the evidence at most once', () => {
   const evidence = 'ABC1234 DEF5678 '.repeat(1000);
@@ -92,4 +92,12 @@ test('a reply that gives up on a cause goes back once to take one more step (ope
   assert.deepEqual(abandonedCauses('A causa foi encontrada no carregamento.'), []);
   assert.deepEqual(abandonedCauses('O detector procura "causa não encontrada" no texto.'), []);
   assert.match(claimRetryText([], [], ['Causa não encontrada.']), /gives up on a cause[\s\S]*one more cheap step/);
+});
+
+test('a reply with a UTC clock time goes back once to be written in Brasília time (operator rule, UTC-3)', () => {
+  assert.deepEqual(utcTimes('O deploy terminou às 12:43Z.'), ['O deploy terminou às 12:43Z.']);
+  assert.equal(utcTimes('Rodou 09:30:15.123Z e depois parou.').length, 1);
+  assert.deepEqual(utcTimes('O deploy terminou às 09:43.'), []);
+  assert.deepEqual(utcTimes('O radar usa o formato "12:43Z" no título.'), []);
+  assert.match(claimRetryText([], [], [], ['Às 12:43Z.']), /time in UTC[\s\S]*Brasília time/);
 });
