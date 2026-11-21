@@ -86,7 +86,7 @@ function usesRipwire(call: Content): boolean {
 
 
 function writesSource(call: Content): boolean {
-  if (call.name === 'edit' || call.name === 'write') return true;
+  if (call.name === 'edit' || call.name === 'write') return !/^(?:\/tmp\/|.*[\\/]\.optchat[\\/])|\.(?:md|txt)$/u.test(String(call.arguments?.path ?? ''));
   if (call.name !== 'bash') return false;
   const command = String(call.arguments?.command ?? '');
   return /(?:>>?\s*(?!\/tmp\/)[^\s&|;<>]+\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b|\bsed\s+-i\b|\bgit\s+(?:apply|commit)\b|\bship\.mjs\b[^\n]*\s-m\s|open\([^)]*,\s*['"]w)/u.test(command);

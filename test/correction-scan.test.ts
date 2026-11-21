@@ -293,6 +293,8 @@ test('ripwire-first flags the first source write of a run without ripwire before
  assert.equal(ruleCount('ripwire-first', [operator, viaCli, write]), 0);
  assert.equal(ruleCount('ripwire-first', [operator, write, operator, write]), 2, 'a new order starts a new run');
  assert.equal(ruleCount('ripwire-first', [operator, call('bash', { command: 'git status' })]), 0);
+ const notCode = ['/tmp/note.ts', '/home/u/.optchat/profiles/p/heartbeat-queue.md', 'docs/readme.md'];
+ for (const path of notCode) assert.equal(ruleCount('ripwire-first', [operator, call('write', { path, content: 'x' })]), 0, path);
 });
 test('repeated-reply flags a final reply or send that repeats one already sent in the run, and resets on a new order', () => {
  const send = call('slack_send', { text: 'Mesclei o #192; o deploy ainda não foi verificado.' });
