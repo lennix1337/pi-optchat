@@ -162,5 +162,13 @@
     "scope": "slack_send/whatsapp_send call or final reply",
     "detector": "repeated-reply",
     "precision": "A message of 40+ characters sent twice in one run (same slack_send/whatsapp_send text again, or a final reply identical to one already sent); resets at each operator message or wake. Near-duplicates are not caught."
+  },
+  {
+    "id": "his-call",
+    "quote": "Still his: deploying to production, stopping processes I did not start, deleting data that cannot be regenerated (AGENTS Authority; 03/11 two kills he had not asked for, 06/11 taskkill took down the demo)",
+    "date": "03/11",
+    "scope": "bash tool call",
+    "detector": "his-call",
+    "precision": "deploy-web/deploy-changed/deploy-prod scripts, dentai-ship --deploy, wrangler deploy, kill/pkill/taskkill and rm -r/-rf; detects calls, not the operator's order or ownership of the process, so candidates require review."
   }
 ]
