@@ -2,22 +2,22 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-// This intentionally recognizes only simple diagnostic commands, not general shell syntax.
-// Git may execute configured helpers; ripwire may write caches/baselines.
+
+// external: Git may execute configured helpers; Ripwire may write caches or baselines.
 type Word = { value: string; quoted: boolean };
-/** `piped` marks a command fed by the previous command through `|`. */
+
 type Command = { words: Word[]; piped: boolean };
 
 const separator = /^(?:&&|\|\||;|\|)$/;
 
 function diagnosticTokens(command: string): string[] | undefined {
   if (/[\r\n\0]/.test(command)) return undefined;
-  // `$?` expands to a number, never to code, and `; echo rc=$?` ends most inspections. Any other
-  // expansion, or `$?` glued to more word characters, still fails closed in the tokenizer below.
+  // external: Bash expands $? to a numeric exit status.
+
   command = command.replace(/\$\?(?![\w?*\[])/g, '0');
-  // Quoted operators stay literal; unsupported expansions, escapes, word concatenation and
-  // redirects fail closed. In double quotes a backslash before any other character stays literal (bash
-  // keeps it); before `$`, a backtick, `"` or `\` it escapes, which the pattern still refuses. Only `2>&1` and output to /dev/null may disappear from the token list.
+  // external: Bash treats quoted operators as literals; in double quotes backslash behavior depends on the next character.
+
+
   const token = /\s+|(?:2>&1|[12]?>\s*\/dev\/null)(?=$|[\s;&|])|&&|\|\||[;|]|"(?:[^"$`\\\r\n]|\\[^"$`\\\r\n])*"|'[^'\r\n]*'|[^\s"'&;|$`<>\\(){}#!]+/gy;
   const tokens: string[] = [];
   let adjacent = false;
@@ -28,7 +28,7 @@ function diagnosticTokens(command: string): string[] | undefined {
     const value = match[0]; offset = token.lastIndex;
     if (/^\s/.test(value)) { adjacent = false; continue; }
     if (/^[12]?>/.test(value)) {
-      // `"a"2>&1` is a concatenated shell word, not a descriptor redirection.
+      // external: Bash treats an adjacent quoted word and redirection descriptor as concatenated shell text.
       if (adjacent && /^\d/.test(value)) return undefined;
       adjacent = false; continue;
     }
@@ -63,26 +63,26 @@ function diagnosticCommands(command: string): Command[] | undefined {
 function readOnlyRipgrep(words: Word[]): boolean {
   let options = true, noConfig = false;
   for (const word of words.slice(1)) {
-    // A glob could expand to an executable option such as --pre=... .
+    // external: A shell glob may expand to an executable option.
     if (!word.quoted && /[*?\[\]]/.test(word.value)) return false;
     if (options && word.value === '--') { options = false; continue; }
     if (!options || !word.value.startsWith('-')) continue;
     if (!['--no-config', '-n', '--line-number', '-i', '--ignore-case', '-l', '--files-with-matches', '--files', '-F', '--fixed-strings'].includes(word.value)) return false;
     if (word.value === '--no-config') noConfig = true;
   }
-  // RIPGREP_CONFIG_PATH may supply --pre or decompression helpers even to a plain search.
+  // external: RIPGREP_CONFIG_PATH may enable preprocessors or decompression helpers.
   return noConfig || !process.env.RIPGREP_CONFIG_PATH;
 }
 
-// Only `sed -n <line>[,<line>]p <files>`: other scripts may write (`w`) or execute (`e`), and an
-// unquoted glob could expand to a file named `-i`, which GNU sed would accept as in-place editing.
+// external: GNU sed can write or execute through script commands and accepts -i for in-place editing.
+
 function readOnlySed(words: Word[], piped: boolean): boolean {
   return piped && streamSubstitution(words) || words.length >= 3 && words[1].value === '-n' && /^\d+(?:,\d+)?p$/.test(words[2].value)
     && words.slice(3).every(word => !word.value.startsWith('-') && (word.quoted || !/[*?\[\]]/.test(word.value)));
 }
 
-// `... | sed [-E] 's/old/new/[gI]'` rewrites its standard input (how CI logs lose their timestamps) and
-// names no file. Any other flag could write (`w`) or run (`e`); a second command or an operand would add a file.
+// external: GNU sed substitution flags can invoke write or execute commands.
+
 const SUBSTITUTION = /^s\/(?:[^\/\\]|\\.)*\/(?:[^\/\\]|\\.)*\/[gIi]*$/;
 function streamSubstitution(words: Word[]): boolean {
   const script = words[words.length - 1];
@@ -92,21 +92,21 @@ function streamSubstitution(words: Word[]): boolean {
 }
 
 const hasGlob = (words: Word[]) => words.some(word => !word.quoted && /[*?\[\]]/.test(word.value));
-/** Getopt-style long options accept any unique prefix, so `--out` still means `--output`. */
+// external: Getopt-style long options accept any unique prefix.
 const abbreviates = (word: Word, option: string, minimum: number) => {
   const name = word.value.split('=')[0];
   return name.startsWith('--') && name.length >= minimum && option.startsWith(name) || name.startsWith(option);
 };
 const shortCluster = (word: Word, letter: string) => /^-[^-]/.test(word.value) && word.value.includes(letter);
 
-// `diff` has no output option, but `--output` is refused anyway in case a build adds one.
+
 const readOnlyDiff = (words: Word[]) => !words.some(word => abbreviates(word, '--output', 3));
-// `-o`/`--output` write a file and `--compress-program` runs a helper.
+// external: diff -o/--output writes a file and --compress-program runs a helper.
 const readOnlySort = (words: Word[]) => !words.some(word => shortCluster(word, 'o') || abbreviates(word, '--output', 3) || abbreviates(word, '--compress-program', 4));
-// `file -C` compiles a magic database to disk.
+// external: file -C writes a compiled magic database.
 const readOnlyFile = (words: Word[]) => !words.some(word => shortCluster(word, 'C') || abbreviates(word, '--compile', 4));
 
-// `uniq [INPUT [OUTPUT]]`: a second operand is an output file.
+// external: uniq uses a second operand as an output file.
 function readOnlyUniq(words: Word[]): boolean {
   let operands = 0, valueNext = false, options = true;
   for (const word of words.slice(1)) {
@@ -121,7 +121,7 @@ function readOnlyUniq(words: Word[]): boolean {
 function readOnlyBranch(words: Word[]): boolean {
   const flags = ['--list', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--show-current', '--no-color'];
   const listing = words.some(word => word.value === '--list');
-  // Operands are patterns only with --list; otherwise `git branch -v name` could create a branch.
+  // external: git branch -v with a name can create a branch unless --list is set.
   return words.every(word => flags.includes(word.value) || listing && !word.value.startsWith('-'));
 }
 
@@ -131,9 +131,9 @@ function readOnlyGitConfig(words: Word[]): boolean {
   return rest.length === 2 && ['--get', '--get-all', '--get-regexp'].includes(rest[0]) && !rest[1].startsWith('-');
 }
 
-// Only inspections: `-C <dir>` and `--no-pager` may precede the subcommand. `-c`, pagers and
-// `--ext-diff` can run configured programs and `--output` writes a file. Git may still run
-// configured helpers such as textconv or fsmonitor; that residual risk is accepted.
+// external: Git options and configured helpers such as textconv or fsmonitor may run programs or write files.
+
+
 function readOnlyGit(words: Word[]): boolean {
   let at = 1;
   for (; at < words.length; at++) {
@@ -145,27 +145,27 @@ function readOnlyGit(words: Word[]): boolean {
   const subcommand = words[at]?.value, rest = words.slice(at + 1);
   switch (subcommand) {
     case 'status': case 'log': case 'diff': case 'show': case 'rev-parse': case 'ls-files': case 'grep':
-      // `git grep -O` opens the matches in a pager or editor.
+      // external: git grep -O opens matches in a pager or editor.
       return !rest.some(word => abbreviates(word, '--output', 3) || abbreviates(word, '--ext-diff', 4) || abbreviates(word, '--open-files-in-pager', 3)
         || subcommand === 'grep' && shortCluster(word, 'O'));
     case 'branch': return readOnlyBranch(rest);
     case 'worktree': return rest.length >= 1 && rest[0].value === 'list' && rest.slice(1).every(word => ['--porcelain', '-v', '--verbose'].includes(word.value));
     case 'remote': return rest.every(word => ['-v', '--verbose'].includes(word.value));
     case 'config': return readOnlyGitConfig(rest);
-    // Listing stashes; `--output` and the like are not accepted, only the subcommand and a count.
+
     case 'stash': return rest.length >= 1 && rest[0].value === 'list' && rest.slice(1).every(word => ['--oneline', '--stat', '--no-color'].includes(word.value));
-    // `--upload-pack`/`-o` make ls-remote run a program or send options to the server.
+    // external: git ls-remote --upload-pack runs a program; -o sends options to the server.
     case 'ls-remote': return rest.every(word => !word.value.startsWith('-') || ['--heads', '--tags', '--refs', '-q', '--quiet', '--symref'].includes(word.value));
     default: return false;
   }
 }
 
-// `find` can run (`-exec`, `-ok`), delete (`-delete`) or write (`-fprint`, `-fls`) on its own.
+// external: find can execute, delete and write files.
 const FIND_MUTATING = /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/;
 const readOnlyFind = (words: Word[]) => !words.some(word => FIND_MUTATING.test(word.value));
 
-// GitHub reads only, by allow-list: any flag not named here (`--web`, `--method`, `--field`, `--input`, ...)
-// refuses the whole command, as do subcommands that change a PR, a run, a release or an account.
+
+
 const GH_READS: Record<string, string[]> = {
   pr: ['view', 'list', 'checks', 'diff', 'status'], run: ['list', 'view'], issue: ['view', 'list', 'status'], auth: ['status'],
 };
@@ -174,13 +174,13 @@ const GH_FLAGS = new Set(['--json', '--jq', '-q', '--repo', '-R', '--limit', '-L
 function readOnlyGh(words: Word[]): boolean {
   const rest = words.slice(1).map(word => word.value);
   if (rest[0] === 'api') {
-    // A GET only: no method, body, field, header or input flag, and not the GraphQL endpoint (always POST).
+    // external: GitHub GraphQL uses POST.
     const args = rest.slice(1);
     const paths = args.filter((value, at) => !value.startsWith('-') && !['--jq', '-q'].includes(args[at - 1]));
     return paths.length === 1 && paths[0] !== 'graphql' && args.every(value => !value.startsWith('-') || ['--jq', '-q', '--paginate'].includes(value));
   }
   if (!rest[0] || !GH_READS[rest[0]]?.includes(rest[1] ?? '')) return false;
-  // `-w` is `--web` on pr/issue (opens a browser) and `--workflow` only on `run list`.
+  // external: gh -w opens the browser on pr/issue but means --workflow on run list.
   return rest.slice(2).every(value => !value.startsWith('-') || GH_FLAGS.has(value) && !(value === '-w' && rest[0] !== 'run'));
 }
 
@@ -188,11 +188,11 @@ const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const CURL_FLAGS = /^-[sSfiIv]+$/;
 const CURL_LONG_FLAGS = new Set(['--silent', '--show-error', '--fail', '--include', '--head', '--verbose', '--compressed', '-q', '--disable']);
 const CURL_VALUES = new Set(['-m', '--max-time', '--connect-timeout', '-w', '--write-out', '-o', '--output']);
-// A curlrc can add `-o file`, `-d` or `-K` to every call; `-q`/`--disable` first skips it.
+// external: curlrc can add output files or request bodies unless disabled with -q/--disable first.
 const curlrc = () => [process.env.CURL_HOME, process.env.XDG_CONFIG_HOME, homedir(), process.env.APPDATA]
   .filter((dir): dir is string => !!dir).some(dir => existsSync(join(dir, '.curlrc')) || existsSync(join(dir, '_curlrc')));
 
-/** The single URL of a curl call whose options only shape its output, or undefined. */
+
 function curlOperand(words: Word[]): string | undefined {
   let url: string | undefined;
   for (let at = 1; at < words.length; at++) {
@@ -215,16 +215,16 @@ function loopbackUrl(url: string): boolean {
   } catch { return false; }
 }
 
-/** One GET (or HEAD) of a loopback URL: no body, method, header, config, redirect or output file. */
+
 function readOnlyCurl(words: Word[]): boolean {
   const url = curlOperand(words);
   const skipsConfig = ['-q', '--disable'].includes(words[1]?.value);
   return url !== undefined && (skipsConfig || !curlrc()) && loopbackUrl(url);
 }
 
-// PowerShell inspections: `-NoProfile [-NonInteractive] -Command '<script>'` where every command is an allow-listed
-// read cmdlet. Aliases (`kill`, `del`, `iex`, `%`), `&`, dot-sourcing, redirects, method calls, static members and
-// subexpressions inside strings are refused, so the script cannot start, stop, write or evaluate anything.
+
+
+
 const PS_CMDLETS = new Set(['get-ciminstance', 'get-process', 'get-service', 'get-content', 'get-childitem', 'get-item', 'get-itemproperty', 'get-date',
   'get-nettcpconnection', 'test-path', 'select-string', 'where-object', 'foreach-object', 'select-object', 'sort-object', 'group-object', 'measure-object',
   'format-table', 'format-list', 'convertto-json', 'convertfrom-json', 'out-string', 'write-output', 'write-host']);
@@ -233,13 +233,13 @@ const PS_OPTIONS = new Set(['-noprofile', '-noninteractive', '-nologo']);
 function readOnlyPowerShellScript(script: string): boolean {
   if (script.length > 2000 || /[\x00-\x1f]/.test(script)) return false;
   let bad = false;
-  // Strings become \u0001, opaque to the scan below, so a double-quoted one must not hide `$(...)`.
+
   const code = script.replace(/'(?:[^']|'')*'|"(?:[^"`]|"")*"/g, (text) => {
     if (text.startsWith('"') && /\$[({]/.test(text)) bad = true;
     return '\u0001';
   });
   if (bad || /['"`<>&?]|::/.test(code) || /\.\s*[\w$]*\s*\(/.test(code) || /\.\s*[$(\[@\u0001]/.test(code)) return false;
-  // Every place a command can start: the script, and after `|`, `;`, `{`, `(` or `=`.
+
   const slots = [0];
   for (let at = 0; at < code.length; at++) if ('|;{(='.includes(code[at])) slots.push(at + 1);
   for (const slot of slots) {
@@ -258,13 +258,13 @@ function readOnlyPowerShell(words: Word[]): boolean {
   return (flag === '-command' || flag === '-c') && !!script?.quoted && words.length === at + 2 && readOnlyPowerShellScript(script.value);
 }
 
-// Docker inspections only. `logs -f` never ends, and every other subcommand can run, stop or remove something.
+// external: docker logs -f follows indefinitely.
 const DOCKER_READS = new Set(['ps', 'stats', 'logs', 'inspect', 'images', 'top', 'version', 'info', 'port', 'diff']);
 const readOnlyDocker = (words: Word[]) => DOCKER_READS.has(words[1]?.value ?? '') && !hasGlob(words)
   && !words.some(word => word.value === '--follow' || shortCluster(word, 'f') && words[1].value === 'logs');
 
-// `ssh [-o BatchMode=yes|ConnectTimeout=N] host '<command>'` where the remote command is itself a read-only diagnostic.
-// Any other option can run a local program (`ProxyCommand`) or open a tunnel, and no command would start a shell.
+// external: SSH options such as ProxyCommand can run local programs; other options can open tunnels.
+
 function readOnlySsh(words: Word[]): boolean {
   let at = 1;
   while (words[at]?.value === '-o' && /^(?:BatchMode=yes|ConnectTimeout=\d+)$/.test(words[at + 1]?.value ?? '')) at += 2;
@@ -276,12 +276,12 @@ function readOnlySsh(words: Word[]): boolean {
 
 function readOnlyWords({ words, piped }: Command): boolean {
   const name = words[0].value;
-  // Beyond the long-standing set below, an unquoted glob could expand to an option.
+
   if (!['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'rg', 'sed', 'cd'].includes(name) && hasGlob(words)) return false;
   switch (name) {
     case 'rg': return readOnlyRipgrep(words);
     case 'sed': return readOnlySed(words, piped);
-    // `cd` only changes this shell's working directory; it is how most inspections start.
+
     case 'cd': return words.length === 2;
     case 'git': return readOnlyGit(words);
     case 'diff': return readOnlyDiff(words);
@@ -295,15 +295,15 @@ function readOnlyWords({ words, piped }: Command): boolean {
     case 'docker': return readOnlyDocker(words);
     case 'ssh': return readOnlySsh(words);
     case 'powershell': case 'powershell.exe': case 'pwsh': case 'pwsh.exe': return readOnlyPowerShell(words);
-    // `tr` only reads stdin; as the first command there is nothing it could usefully inspect.
+
     case 'tr': return piped;
     default: return ['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'echo', 'cmp', 'od', 'stat', 'cut', 'nl', 'which', 'type', 'tasklist', 'netstat', 'ps'].includes(name);
   }
 }
 
-/** Tools that only read; an uncertain earlier call must not keep them from checking the real state. */
+
 const READ_TOOLS = new Set(['shell_status', 'read_many', 'get_search_content', 'project_evidence', 'get_goal']);
-/** Observing actions of tools that dispatch on an action field; every other action may change a page, an app or a record. */
+
 const OBSERVING: Record<string, { field: string; fallback?: string; actions: Set<string> }> = {
   browser_harness: { field: 'action', fallback: 'status', actions: new Set(['status', 'inspect', 'state', 'screenshot', 'read']) },
   desktop: { field: 'command', fallback: 'status', actions: new Set(['snapshot', 'find', 'get', 'is', 'screenshot', 'list-windows', 'list-displays', 'list-apps', 'list-surfaces', 'list-notifications', 'clipboard-get', 'wait', 'status', 'version', 'skills']) },
