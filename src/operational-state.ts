@@ -135,7 +135,7 @@ function validateGrant(value: unknown, where: string): Grant {
   assertKeys(value, ['action', 'scope', 'allow', 'until'], where);
   if (!GRANT_ACTIONS.includes(value.action as GrantAction)) fail(`${where}.action must be one of ${GRANT_ACTIONS.join(', ')}`);
   if (typeof value.allow !== 'boolean') fail(`${where}.allow must be a boolean`);
-  // Stored as written (slashes aside): a Linux checkout is case-sensitive, and matching lowercases on its own.
+  // external: Linux file paths are case-sensitive.
   const scope = boundedString(value.scope, `${where}.scope`, MAX_SCOPE_CHARS).trim().replaceAll('\\', '/').replace(/\/+$/, '') || '/';
   const until = boundedString(value.until, `${where}.until`, 32);
   if (until !== 'done' && (!Number.isFinite(Date.parse(until)) || new Date(until).toISOString() !== until)) fail(`${where}.until must be 'done' or an ISO timestamp`);
@@ -232,7 +232,7 @@ function validateLineage(entries: OperationalEntry[]) {
 let validations = 0;
 /** How many documents have been validated so far; tests read it to prove a document is not validated again. */
 export const operationalValidations = () => validations;
-/** Documents that passed validation at the read or write boundary, frozen. Rendering one needs no second validation. */
+
 const sealedDocuments = new WeakSet<OperationalState>();
 function sealed(state: OperationalState): OperationalState {
   for (const entry of state.entries) {
@@ -262,8 +262,8 @@ export function emptyOperationalState(): OperationalState {
   return { version: OPERATIONAL_STATE_VERSION, entries: [] };
 }
 
-/** The last document read per file, with the file identity it was read at. Turn start, the status file and every tool gate read
- * the same unchanged document, and parsing and validating 256 records each time was measurable on every turn. */
+
+
 const documents = new Map<string, { identity: string; state: OperationalState }>();
 
 /** Reads and strictly validates the bounded JSON document. Corruption is surfaced rather than overwritten. The result is shared
@@ -284,10 +284,10 @@ export function readOperationalState(file: string): OperationalState {
   return state;
 }
 
-/**
- * The entries minus the oldest one that no longer steers anything: a check or change record, or an authorization whose
- * grant expired, and that no kept record supersedes. A full log must not refuse the operator's next order.
- */
+
+
+
+
 function withRoom(entries: readonly OperationalEntry[], now = Date.now()) {
   const referenced = new Set(entries.flatMap(entry => entry.supersedes ? [entry.supersedes] : []));
   const stale = (entry: OperationalEntry) => !referenced.has(entry.id)
@@ -299,7 +299,7 @@ function withRoom(entries: readonly OperationalEntry[], now = Date.now()) {
 /** Appends one explicit fact, preserving prior records and their supersession lineage. */
 export function updateOperationalState(file: string, update: OperationalUpdate): OperationalState {
   const input = validateUpdate(update);
-  // Older records may hold prose scopes; a new one must be matchable, or the grant it describes never applies.
+
   if (input.grant && /[\s;,#]/.test(input.grant.scope)) fail('grant.scope must be one repo root, path or glob (no spaces, lists or prose); put the details in text');
   const current = readOperationalState(file);
   const id = stableId(input);
@@ -330,7 +330,7 @@ let scopePatternsCompiled = 0;
 /** How many scope patterns have been compiled so far; a repeated scope is compiled once (see scopeRegex). */
 export const scopePatternCompiles = () => scopePatternsCompiled;
 
-/** Compiled scope patterns. Grant overlap compares every pair of grants on each turn, so one scope is compiled once, not per pair. */
+
 const scopePatterns = new Map<string, RegExp>();
 const SCOPE_PATTERNS_MAX = 1024;
 
@@ -346,7 +346,7 @@ function scopeRegex(scope: string) {
   return pattern;
 }
 
-/** The spelling scopes and targets are matched in: repeated separators collapse and a Git Bash `/c/` drive reads as `c:/`. */
+// external: Git Bash represents Windows drive paths as /c/.
 function matchPath(path: string) {
   return normalizeScope(path).replace(/\/{2,}/g, '/').replace(/^\/([a-z])(?=\/|$)/, '$1:');
 }
@@ -363,7 +363,7 @@ const REPO_SLUG = /^[\w.-]+\/[\w.-]+$/;
 export function grantCovers(scope: string, target: string, slugOf: FolderSlug = checkoutSlug) {
   if (scopeCovers(scope, target)) return true;
   const folder = matchPath(scope);
-  // The checkout is read at the scope's own spelling: Linux paths are case-sensitive.
+  // external: Linux file paths are case-sensitive.
   const checkout = (scope.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/\/+$/, '') || '/').replace(/^\/([a-z])(?=\/|$)/i, '$1:');
   return REPO_SLUG.test(target) && FOLDER_SCOPE.test(folder) && !folder.includes('*') && slugOf(checkout) === target.toLowerCase();
 }
@@ -385,13 +385,13 @@ export function latestGrant(state: OperationalState, action: GrantAction, target
   return activeGrants(state, now).filter(({ grant }) => grant.action === action && grantCovers(grant.scope, target)).at(-1);
 }
 
-/** Actions an operator's typed order may lift past an `ask` rule, and the words that must name them in the quote. */
+
 const ORDER_WORDS: Partial<Record<GrantAction, RegExp>> = { merge: /merg|mescl/i, deploy: /deplo/i, publish: /publi|release|lan[cç]/i };
 const NEGATION = /(?:^|[^\p{L}])(?:sem|n[ãa]o|nunca|nem|jamais|not|never|without|don'?t)(?![\p{L}])/iu;
 /** How long a typed order keeps lifting `ask` rules: a work session, not a standing permission. */
 export const ORDER_GRANT_TTL_MS = 12 * 3_600_000;
 
-/** True when some clause names the action with no negation before it, and no clause negates it. */
+
 function namesAction(text: string, action: GrantAction) {
   const word = ORDER_WORDS[action];
   if (!word) return false;
@@ -402,7 +402,7 @@ function namesAction(text: string, action: GrantAction) {
   return verdicts.length > 0 && verdicts.every(Boolean);
 }
 
-/** One place, not a family: an owner/repo slug or a path at least three levels deep, without wildcards. */
+
 const specificScope = (scope: string) => !scope.includes('*') && (/^[^/:]+\/[^/]+$/.test(scope) || scope.split('/').filter(Boolean).length >= 3);
 
 /**

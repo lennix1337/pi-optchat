@@ -44,7 +44,7 @@ export function asUser(message: AgentMessage): AgentMessage {
   const { content, customType, timestamp } = message;
   if (customType === REPORT_TYPE) return { role: 'user', content, timestamp };
   const tag = `[${customType}] `;
-  // A message that already opens with its own tag (gitwatch notices do) keeps it once.
+
   const tagged = (text: string) => text.startsWith(tag) ? text : tag + text;
   if (typeof content === 'string') return { role: 'user', content: tagged(content), timestamp };
   const [first, ...rest] = content;
@@ -77,7 +77,7 @@ export function logMessage(memory: Memory, message: AgentMessage, receipt?: stri
     if (message.stopReason === 'error' || message.stopReason === 'aborted')
       memory.append('echo', `Agent ${message.stopReason}: ${message.errorMessage ?? 'No further details'}`, date);
   } else if (message.role === 'toolResult') {
-    // Persist the original result; zoom pages it on demand, while boundedMessage keeps the live request small.
+
     const result = original?.role === 'toolResult' ? original : message;
     memory.append('echo', `${result.toolName}: ${textContent(result.content, result.toolName !== 'zoom')}`, date);
   }
@@ -88,7 +88,7 @@ export function boundedMessage(message: AgentMessage): AgentMessage {
   if (text.length <= CAP) return message;
   return { ...message, content: [{ type: 'text', text: cap(text) }, ...message.content.filter(c => c.type === 'image')] };
 }
-/** The caller supplies a single settled run, including any steering after text-only replies. */
+
 function completedExchange(history: readonly AgentMessage[]) {
   const last = history.findLastIndex(m => m.role === 'user' || m.role === 'assistant');
   const answer = history[last];
@@ -132,8 +132,8 @@ function latestExchange(branch: readonly SessionEntry[]) {
       end = -1;
     }
   }
-  // Older sessions have no run markers. Recover a successful exchange best-effort;
-  // text-only steering boundaries cannot be reconstructed for those old runs.
+
+
   const legacy = messages(branch.slice(0, legacyEnd));
   let boundary = 0;
   let latest: ReturnType<typeof completedExchange> = [];
@@ -151,14 +151,14 @@ function latestExchange(branch: readonly SessionEntry[]) {
 export const fullChat = (id: string) => `Full chat: zoom("${id}")`;
 export const withoutFullChat = (text: string) => text.replace(/\n\nFull chat: zoom\("[\w-]+"\)$/gm, '');
 const TASK = '\n</chat>\n\nYour task:\n';
-/** Tool-call entries are capped so a page holds many steps; tool-result text stays complete for paging. */
+
 const STEP = 1_000;
 /** A text-only subagent transcript for zoom(agent): tool-result text is complete, but image blocks are omitted. */
 export function runTranscript(messages: readonly AgentMessage[]) {
   const task = messages.find(message => message.role === 'user');
   return messages.flatMap(message => {
     if (message.role === 'user') {
-      // Only the task prompt holds the memory view (src/agents.ts): `${view}\n\nYour task:\n${task}`.
+
       const text = textContent(message.content, false), at = text.indexOf(TASK);
       return [`user|${message === task && isView(text) && at >= 0 ? text.slice(at + '\n</chat>\n\n'.length) : text}`];
     }
@@ -176,7 +176,7 @@ export function atWork(board: BoardView | undefined, deploy?: { since: number; c
   if (!note && !deploy) return undefined;
   const brief = (text: string) => {
     const words = flat(text).replaceAll('"', "'").split(/\s+/).filter(Boolean), start = words.slice(0, 6).join(' ');
-    // Six words, but never more than 60 characters: a task can be one long word.
+
     const preview = [...start].slice(0, 60).join('');
     return `"${preview}${words.length > 6 || preview.length < start.length ? '…' : ''}"`;
   };
@@ -186,7 +186,7 @@ export function atWork(board: BoardView | undefined, deploy?: { since: number; c
   ].join('\n');
 }
 
-/** Label wake-only inputs independently of the message that carries the historical view. */
+
 function labelWakeEvents(run: AgentMessage[]): AgentMessage[] {
   if (currentTask(run)?.role !== 'custom') return run;
   return run.map(message => {
@@ -201,11 +201,11 @@ function labelWakeEvents(run: AgentMessage[]): AgentMessage[] {
  * `state` follows the view; `status` goes last after cached content and only with new input. */
 export function buildContext(canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string,
   previous: readonly AgentMessage[] = [], state?: string, status?: string, focus?: string): AgentMessage[] {
-  // `context_with_system` supplies the live system/tool deltas; replay them so Pi and our estimator receive the same active schemas.
+
   const system = getCurrentSystemMessage(canonical);
   const head: SystemMessage = { role: 'system', content: prompt, toolsAdded: system?.toolsAdded, timestamp: 0 };
-  // Hidden extension messages can start native background-completion runs too. Keep them custom:
-  // display is a UI choice, not an indication that Pi has no current input.
+
+
   if (!run.some(m => m.role === 'user' || m.role === 'custom'))
     throw new Error('OptChat has no current input message; refusing to send historical context.');
   const inputs = labelWakeEvents(run);
@@ -213,7 +213,7 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
   const anchor = history.find(m => m.role === 'user' && previous.includes(m)) ?? currentTask(inputs);
   const messages = history.map(message => {
     if (message !== anchor || message.role !== 'user' && message.role !== 'custom') return message;
-    // OpenAI joins text blocks with nothing between them, so the user's words start their own paragraph after the view.
+    // external: OpenAI joins text blocks without a separator.
     const content = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
     const paragraph = <T extends (typeof content)[number]>(block: T): T => block.type === 'text' ? { ...block, text: `\n\n${block.text}` } : block;
     const [first, ...rest] = content;
@@ -226,7 +226,7 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
 
 const VIEW_OPEN = '<chat>\n';
 const VIEW_CLOSE = '\n</chat>';
-/** Parses the captured tiled view, excluding entries logged after it was rendered. */
+
 function viewParts(view: string) {
   if (!isView(view) || !view.endsWith(VIEW_CLOSE)) return;
   const body = view.slice(VIEW_OPEN.length, -VIEW_CLOSE.length), lines = body ? body.split('\n') : [];
@@ -247,7 +247,7 @@ function viewParts(view: string) {
 /** Estimates the complete assembled request and coarsens only through already-built summary nodes. */
 export function budgetContext(memory: Memory, canonical: AgentMessage[], run: AgentMessage[], view: string, prompt: string, inputBudget: number,
   previous: readonly AgentMessage[] = [], state?: string, status?: string, focus?: string): { messages: AgentMessage[]; tokens: number; fits: boolean } {
-  // Focus is expendable retrieval detail: omit it before coarsening any chronological history.
+
   if (focus) {
     const messages = buildContext(canonical, run, view, prompt, previous, state, status, focus);
     const tokens = estimatedContextTokens(messages);
@@ -255,7 +255,7 @@ export function budgetContext(memory: Memory, canonical: AgentMessage[], run: Ag
   }
   const build = (text: string) => buildContext(canonical, run, text, prompt, previous, state, status);
   let messages = build(view);
-  // Coarsening changes only the view; buildContext's system prompt and active schemas stay fixed within this call.
+
   const headTokens = estimatedContextTokens(messages.slice(0, 1));
   const count = (request: AgentMessage[]) => headTokens + estimatedContextTokens(request.slice(1));
   let tokens = count(messages), best = { messages, tokens, fits: tokens <= inputBudget };
@@ -279,7 +279,7 @@ export function budgetContext(memory: Memory, canonical: AgentMessage[], run: Ag
   return best;
 }
 
-/** Pi's own estimate for an image when it decides to compact: 4,800 characters, about 1,200 tokens. */
+// external: Pi estimates image compaction cost at 4,800 characters.
 const IMAGE_CHARS = 4_800;
 /** Characters a message adds to a request: its text, thinking, tool-call arguments and images, as Pi estimates them. Framing is left out. */
 export function messageChars(message: AgentMessage) {
@@ -321,9 +321,9 @@ export function coldBudget(budget: number | undefined, idleMs: number | undefine
   return budget !== undefined && idleMs !== undefined && idleMs >= TURN_ENTRY_MS ? Math.min(budget, COLD_REFRESH_CHARS) : budget;
 }
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
-/** The run's current input: its first user message before the model's first reply, or when a hidden extension message (a
- * background wake) started it, its first custom one. A message shown after the model began (a report, a gitwatch notice)
- * never takes the input's place: the view would move and the wake lose its label, rewriting the whole cached request. */
+
+
+
 const currentTask = (run: readonly AgentMessage[]) => {
   const replied = run.findIndex(m => m.role === 'assistant');
   return run.slice(0, replied < 0 ? run.length : replied).find(m => m.role === 'user') ?? run.find(m => m.role === 'custom')

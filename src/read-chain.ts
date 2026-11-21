@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { onlyReads } from './crew.ts';
 
-/** Tools that only read, whatever their input. */
+
 const READ_TOOLS = new Set(['read', 'read_many', 'grep', 'find', 'ls', 'zoom', 'date', 'output_read', 'project_evidence', 'shell_status', 'ripwire', 'specialist_memory']);
-/** For these tools only some actions read. */
+
 const READ_ACTIONS: Record<string, (action: unknown) => boolean> = {
   crew: action => action === 'list' || action === 'read' || action === 'view' || action === 'zoom',
   commitments: action => action === 'list',

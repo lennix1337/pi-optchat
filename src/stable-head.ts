@@ -35,8 +35,8 @@ const text = (content: SystemMessage['content']) => typeof content === 'string' 
 const holdsView = (message: AgentMessage) => (message.role === 'user' || message.role === 'custom') && Array.isArray(message.content)
   && message.content.some(block => block.type === 'text' && isView(block.text));
 
-/** The change from one state to another as a system message Pi sends in place: tools added, withdrawn or redefined, and prompt
- * sections updated. Undefined when the prompt changed in a way no section update explains. */
+
+
 function change(from: State, to: State, timestamp: number): { message?: SystemMessage } | undefined {
   const { toolsAdded, toolsRemoved } = getToolStateChanges(from.tools, to.tools);
   const sections: Record<string, string | null> = {};
@@ -46,7 +46,7 @@ function change(from: State, to: State, timestamp: number): { message?: SystemMe
       const old = from.sections[name], now = to.sections[name] ?? null;
       if (old === now || !old) continue;
       const at = prompt.indexOf(old);
-      // A section the prompt does not hold verbatim (the working directory goes after the view) needs no update.
+
       if (at < 0 || prompt.indexOf(old, at + 1) >= 0) continue;
       prompt = prompt.slice(0, at) + (now ?? '') + prompt.slice(at + old.length);
       sections[name] = now;
@@ -104,7 +104,7 @@ export class StableHead {
     const out: AgentMessage[] = [{ ...head, content: this.base.prompt, toolsAdded: [...this.base.tools] }, ...rest];
     if (!this.base.tools.length) delete (out[0] as SystemMessage).toolsAdded;
     for (const message of this.changes) {
-      // Before the first message after the one it followed; a status line (timestamp 0) at the end stays last.
+
       let at = out.findIndex((m, j) => j > anchor + 1 && m.role !== 'system' && m.timestamp > message.timestamp);
       if (at < 0) at = out.at(-1)?.timestamp === 0 && out.length > anchor + 2 ? out.length - 1 : out.length;
       out.splice(at, 0, message);

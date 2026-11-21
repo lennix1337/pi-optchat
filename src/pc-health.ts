@@ -44,7 +44,7 @@ export interface PcSources {
 const realDisk = (drive: string) => { const s = statfsSync(drive); return { free: s.bavail * s.bsize, total: s.blocks * s.bsize }; };
 const realReports = (dir: string) => readdirSync(dir).filter(n => /^report-.*\.json$/.test(n)).map(name => ({ name, mtimeMs: statSync(join(dir, name)).mtimeMs }));
 
-/** A probe that reads a free/total pair and fails below a minimum. */
+
 function capacityProbe(name: string, read: () => { free: number; total: number }, noun: string, minimum: (total: number) => number, limit: (free: number, total: number) => string): LocalProbe {
   return {
     name,

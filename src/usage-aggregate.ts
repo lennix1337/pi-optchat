@@ -16,7 +16,7 @@ const MINUTE = 60_000;
 const CHUNK = 1 << 20;
 const DATE = '"date":"', ISO_DATE = /^\d{4}-\d\d-\d\dT/;
 
-/** [minute, provider index, role index, calls, tokens, usd, unpriced tokens] */
+
 type Bucket = [number, number, number, number, number, number, number];
 export interface UsageAggregate {
   version: 1;
@@ -45,7 +45,7 @@ export function aggregateCalls(aggregate: UsageAggregate): Call[] {
     ({ at: minute * MINUTE + MINUTE / 2, provider: aggregate.providers[p]!, role: ROLE_KEYS[r]!, tokens, usd, calls: n, unpricedTokens: unpriced })).sort((a, b) => a.at - b.at);
 }
 
-export interface Scan { calls: Call[]; /** Offset just after the last complete line seen. */ end: number; bytesRead: number }
+export interface Scan { calls: Call[];   end: number; bytesRead: number }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
 function lineCall(line: string, sinceIso: string, sinceMs: number, rates: RateTable): { date: string; call?: Call } | undefined {
@@ -54,7 +54,7 @@ function lineCall(line: string, sinceIso: string, sinceMs: number, rates: RateTa
   const date = line.slice(at + DATE.length, at + DATE.length + 24);
   if (!ISO_DATE.test(date)) return undefined;
   if (date < sinceIso) return { date };
-  try { const call = toCall(JSON.parse(line), rates); return { date, call: call && call.at >= sinceMs ? call : undefined }; } catch { return { date }; /* a torn line */ }
+  try { const call = toCall(JSON.parse(line), rates); return { date, call: call && call.at >= sinceMs ? call : undefined }; } catch { return { date };   }
 }
 
 /**
@@ -69,7 +69,7 @@ export async function scanTail(file: string, sinceMs: number, rates: RateTable):
   let bytesRead = 0;
   try {
     const size = fstatSync(fd).size;
-    // A line still being written has no newline yet: it is neither read now nor counted as folded in.
+
     const probe = Buffer.alloc(Math.min(size, 64 << 10));
     readSync(fd, probe, 0, probe.length, size - probe.length); bytesRead += probe.length;
     const lastNewline = probe.lastIndexOf(10);
@@ -143,7 +143,7 @@ export async function updateUsageAggregate({ dir, now = Date.now(), usageFile = 
   let kept = rebuild ? undefined : readUsageAggregate(dir);
   let size: number;
   try { const fd = openSync(usageFile, 'r'); try { size = fstatSync(fd).size; } finally { closeSync(fd); } } catch { return undefined; }
-  if (kept && kept.offset > size) kept = undefined; // the log was replaced by a shorter one
+  if (kept && kept.offset > size) kept = undefined;
   const scan = kept ? await scanFrom(usageFile, kept.offset, from, rates) : await scanTail(usageFile, from, rates);
   if (!scan) return undefined;
   const aggregate = kept ?? emptyAggregate(0, from);

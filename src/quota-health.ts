@@ -144,7 +144,7 @@ export function providerLogProbe(file = PROVIDER_LOG_FILE, now: () => number = D
           const event = record(JSON.parse(line));
           const kind = event.kind, at = typeof event.t === 'string' ? Date.parse(event.t) : NaN;
           if (typeof kind === 'string' && /^[a-z_]+_failed$/.test(kind) && at >= since) counts.set(kind, (counts.get(kind) ?? 0) + 1);
-        } catch { /* a cut first line or a partial write */ }
+        } catch {   }
       }
       const repeated = [...counts].filter(([, n]) => n >= LOG_REPEATS);
       if (!repeated.length) return { ok: true, ms: 0, detail: 'sem falha repetida na última hora' };

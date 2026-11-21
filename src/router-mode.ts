@@ -1,19 +1,19 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { HANDOFF_MAX_BYTES, handoffEnvelope } from './handoff-envelope.ts';
 
-/**
- * Router mode (opt-in, off by default): the main agent talks to the operator and dispatches. Execution is not in its tool
- * set: commands, file edits and outside actions go to isolated workers started with spawn, whose reports return as
- * messages. The article this follows found that a neutral prompt never made the main session delegate, so the
- * restriction is in the tool set, where the model cannot choose around it.
- */
+
+
+
+
+
+
 /** Tools that execute commands, change files or act outside OptChat. A router's model never sees them. */
 export const ROUTER_WITHHELD: readonly string[] = ['bash', 'powershell', 'edit', 'write', 'shell_start', 'codemode', 'browser_harness', 'desktop', 'project_checks'];
 
 export const ROUTER_DOC = `# Router mode
 You route and report; you do not execute. Commands, builds, tests, git and file edits are not in your tool set. For such work, call spawn with one self-contained task per worker, naming its cwd; a worker runs in its own session with the full tools and reports back as a message. Read memory and report to the operator yourself. When a report arrives, state its outcome; do not re-run its work. Tasks and guidance are capped at ${HANDOFF_MAX_BYTES} bytes: put larger material in a file or memory page and pass its path or ID.`;
 
-/** The state key survives a /reload (same process), so tools taken out before a reload are still given back after it. */
+
 const STATE = Symbol.for('pi-optchat.router-removed');
 const store = globalThis as Record<symbol, string[] | undefined>;
 

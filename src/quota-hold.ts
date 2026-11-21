@@ -1,6 +1,6 @@
 import { brasiliaDayTime } from './pc-health.ts';
 
-/** A model call that ended because the account is out of quota or rate-limited, not because the request was wrong. */
+
 const QUOTA_ERROR = /\b429\b|rate[_ -]?limit|usage limit|quota|credit balance|resource[_ ]?exhausted|insufficient[_ ]credits?|too many requests/i;
 const UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
 
@@ -21,11 +21,11 @@ export function quotaError(message: string | undefined, now: number): { retryAt?
 
 /** Pause after a quota error's stated reset, so the first request does not land on the boundary. */
 export const PARK_MARGIN_MS = 60_000;
-/** The manager's held items are released this long after the reset it was told. */
+
 const OUTAGE_MARGIN_MS = 5000;
 /** A worker is parked this many times at most before its quota error is reported as a failure. */
 export const PARK_MAX = 6;
-/** Waits used when neither the cached quota nor the error says when it comes back (minutes by attempt). */
+
 const BACKOFF_MINUTES = [5, 15, 30, 60, 120, 240];
 
 /** When a parked worker tries again: the latest known reset (cache or error hint) plus the margin, else a growing wait. */
@@ -107,7 +107,7 @@ export class QuotaOutage<T> {
   private release() {
     this.timer = undefined;
     const until = this.blockedUntil();
-    if (until !== undefined) { this.arm(until); return; } // Still out (a later reset than first said): the same outage, no new notice.
+    if (until !== undefined) { this.arm(until); return; }
     this.open = false; this.lastError = undefined;
     const items = this.held.splice(0);
     if (items.length) this.host.send(items);

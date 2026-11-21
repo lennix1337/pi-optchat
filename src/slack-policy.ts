@@ -6,7 +6,7 @@
 export const DEFAULT_WORD_BUDGET = 100;
 /** Budgets of project channels by name; a channel without one uses the default. The DM is never overridden. */
 export type WordBudgets = Readonly<Record<string, number>>;
-/** Channels whose posts are logs, not conversation: a wake's list of effects reads better whole than split into a thread. */
+
 const BUILT_IN: WordBudgets = { wakes: 300 };
 export const wordBudget = (channel: string | null, budgets: WordBudgets = {}): number =>
   channel === null ? DEFAULT_WORD_BUDGET : budgets[channel] ?? BUILT_IN[channel] ?? DEFAULT_WORD_BUDGET;

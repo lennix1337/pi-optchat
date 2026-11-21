@@ -9,7 +9,7 @@ export const RELOAD_RESUME = 'optchat-reload-resume';
 /** pi-goal-x asks this before each goal checkpoint; a pending reload takes the next turn first (bounded by HOLD_MAX_MS). */
 export const GOAL_HOLD = 'pi-goal:continuation-hold';
 export const HOLD_MAX_MS = 60_000;
-// A disk checkpoint is not permission to resume after a crash or a later manual reload.
+
 const LEASES = Symbol.for('pi-optchat.self-reload-leases.v1');
 interface ReloadLease { completed: boolean; claimed?: boolean; resume?: () => void }
 const globalStore = globalThis as Record<symbol, unknown>;
@@ -19,7 +19,7 @@ interface Ticket {
   id: string; session: string; cwd: string; profile: string; checkpoint: string; created: number;
   state: 'requested' | 'reloading' | 'resuming' | 'completed' | 'cancelled' | 'failed';
 }
-/** Every ticket state change goes through `write`: a ticket that ended (completed, cancelled, failed) never moves again, so a late failure cannot rewrite the operator's cancellation. */
+
 const MOVES: Record<Ticket['state'], readonly Ticket['state'][]> = {
   requested: ['reloading', 'cancelled', 'failed'],
   reloading: ['resuming', 'cancelled', 'failed'],
@@ -53,7 +53,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     if (!live || !t || !(t.state === 'requested' || t.state === 'reloading' || (t.state === 'resuming' && !continuationStarted))) return;
     const key = `${t.id}:${t.state}`, now = Date.now();
     if (holding?.key !== key) holding = { key, since: now };
-    // A step that never comes (a lost command or continuation) must not stall the goal for good.
+
     if (now - holding.since <= HOLD_MAX_MS) (data as { hold(reason: string): void }).hold('OptChat self-reload pending');
   });
   pi.on('session_shutdown', () => { live = false; unhold(); });
@@ -72,7 +72,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     if (!current) return 'No local OptChat profile is open.';
     if (current.blocked) return current.blocked;
     if (ctx.hasPendingMessages()) return 'Queued messages must be delivered first.';
-    // A registered delegation extension must acknowledge readiness; absence is not evidence of idle.
+
     let subagentsAnswered = false;
     const reasons: string[] = [];
     pi.events.emit(CHECK, { sessionId: ctx.sessionManager.getSessionId(), respond(provider: string, reason?: string) {
@@ -105,7 +105,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     handler: async (token, ctx) => {
       const t = pending;
       if (!t || t.state !== 'requested' || token !== t.id || !sameOwner(t, ctx) || !commandSent) throw new Error('No matching live self-reload token. Use the self_reload tool.');
-      // An automatic turn (a wake, a notice) got here first: retry when it settles. Operator input cancels through 'input'.
+
       if (!ctx.isIdle()) { commandSent = false; return; }
       const reason = blocked(ctx);
       if (reason) { cancel(t, ctx, reason); return; }
@@ -118,13 +118,13 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
       const lease: ReloadLease = { completed: false }; leases.set(t.id, lease);
       try {
         await ctx.reload();
-        // Only the fresh runtime's callback may use Pi APIs; the old runtime signals completion through this lease.
+
         lease.completed = true;
         if (lease.resume) lease.resume();
         else { leases.delete(t.id); console.error('Self reload returned without a fresh OptChat continuation handler. Inspect extension loading errors; checkpoint retained, no automatic retry.'); }
       }
       catch (error) {
-        // No old extension API may be used after reload, even on partial failure.
+
         leases.delete(t.id);
         console.error(`Self reload failed; checkpoint retained, no automatic retry. Inspect runtime state: ${String(error)}`);
       }
@@ -160,10 +160,10 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
       cancel(t, ctx, 'Reload ownership or lifecycle was not confirmed. Inspect the saved checkpoint; nothing was replayed.'); return;
     }
     lease.claimed = true;
-    write(t, 'resuming'); // Claim before dispatch. A crash or failed delivery is never replayed automatically.
+    write(t, 'resuming');
     lease.resume = () => {
       leases.delete(t.id);
-      // Every extension and resource must finish loading before a new turn can begin.
+
       setImmediate(() => {
         if (!live || pending?.state !== 'resuming' || pending.id !== t.id) return;
         const reason = !ctx.isIdle() ? 'Another run started after reload.' : blocked(ctx);

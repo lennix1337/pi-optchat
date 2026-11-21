@@ -6,8 +6,8 @@ import { type OperationalUpdate, OperationalUpdateSchema, readOperationalState, 
 import { withoutBridgeNotes } from './slack-policy.ts';
 import { result } from './tools.ts';
 
-/** The live memory provides provenance; narrative summaries are never accepted as a source. */
-/** "latest" resolves to the operator's latest own message; the record keeps its real id. */
+
+
 function checkSource(memory: Memory, update: OperationalUpdate): OperationalUpdate {
   const latest = latestOperatorMessage(memory.root);
   if (update.sourceMessageId === 'latest') {
@@ -19,14 +19,14 @@ function checkSource(memory: Memory, update: OperationalUpdate): OperationalUpda
   if (!['authorization', 'constraint'].includes(update.kind)) return update;
   if (source.kind !== 'user' || source.origin)
     throw new Error('Authorization/constraint records require a direct non-imported user source; historical records grant no permission');
-  // The Slack bridge's appended notes are not his words: a quote of what he wrote, without them, is exact.
+
   const said = withoutBridgeNotes(source.text);
   if (update.text !== source.text && update.text !== said)
     throw new Error(`Authorization/constraint text must exactly quote the entire user source, not an interpreted or partial permission. ${quoteHint(update.text, said)}`);
   return update;
 }
 
-/** Where the text stops matching the source, with the source around that point, so one retry can quote it exactly. */
+
 function quoteHint(text: string, source: string): string {
   let at = 0;
   while (at < text.length && text[at] === source[at]) at++;
@@ -34,9 +34,9 @@ function quoteHint(text: string, source: string): string {
   return `Source is ${source.length} characters, yours ${text.length}; first difference at character ${at + 1}: source reads ${JSON.stringify(source.slice(from, at + 80))}`;
 }
 
-/** The new record and the count, not the whole document: echoing every record on each update cost tens of KB per call. */
+
 function recordReply(file: string, update: OperationalUpdate) {
-  // A full log drops its oldest stale entry to make room, so the count alone cannot tell a new record from a duplicate.
+
   const before = readOperationalState(file).entries.at(-1)?.id, next = updateOperationalState(file, update);
   const recorded = next.entries.at(-1)?.id !== before ? next.entries.at(-1) : undefined;
   return JSON.stringify({ recorded: recorded ?? 'already recorded (identical entry exists)', entries: next.entries.length });

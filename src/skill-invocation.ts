@@ -3,7 +3,7 @@
  * `/retro` turn was answered with a memory line and no tool call. This note, sent after the block, says it is an order. */
 export const SKILL_INVOCATION_TYPE = 'optchat-skill-invocation';
 
-// Pi's expansion (agent-session.js `_expandSkillCommand`): the block, then "\n\n" and the user's words when there are any.
+// external: Pi expands a skill command as its block followed by the user words.
 const SKILL_ONLY = /^<skill name="([^"]+)" location="[^"]*">\n[\s\S]*\n<\/skill>\s*$/;
 
 /** The note for a message that is only a skill block, or undefined when the operator wrote words of his own. */

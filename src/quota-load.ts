@@ -17,7 +17,7 @@ export interface EconomyFiles {
  */
 export function loadEconomy({ dir, now = Date.now(), weeks = 2, cacheFile = QUOTA_FILE, aggregate = readUsageAggregate(dir) }: EconomyFiles): Economy {
   const cached = Object.keys(record(record(readJsonOr<unknown>(cacheFile, {})).usageByProvider));
-  // A reading from before the aggregate begins has no calls to weigh, so it would only count points against nothing.
+
   const history = readQuotaHistory(dir, QUOTA_HISTORY_FILE).filter(row => !aggregate || row.fetchedAt >= aggregate.from);
   const economy = analyzeQuota(history, aggregate ? aggregateCalls(aggregate) : [], now, weeks, cached);
   return aggregate ? economy : { ...economy, usageMissing: true };

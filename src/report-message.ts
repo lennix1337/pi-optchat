@@ -9,7 +9,7 @@ export interface ReportDetails { count?: number }
 
 /** Split "[id] Message from subagent (still running): body" into a short label and the body. */
 export function reportParts(text: string, count = 1) {
-  text = withoutFullChat(text); // For the agent: the user has the Agents page.
+  text = withoutFullChat(text);
   if (count > 1) return { label: `${count} subagent reports`, body: text };
   const match = HEAD.exec(text);
   if (!match) return { label: 'subagent', body: text };
@@ -17,7 +17,7 @@ export function reportParts(text: string, count = 1) {
   return { label: `subagent ${match[1]} · ${kind}`, body: text.slice(match[0].length) };
 }
 
-/** The theme's neutral grey, darkened on dark themes so the box recedes behind the conversation. */
+
 function darkBackground(theme: Theme) {
   const rgb = /^\x1b\[48;2;(\d+);(\d+);(\d+)m$/.exec(theme.getBgAnsi('toolPendingBg'))?.slice(1).map(Number);
   if (!rgb || rgb[0] + rgb[1] + rgb[2] > 3 * 128) return (text: string) => theme.bg('toolPendingBg', text);

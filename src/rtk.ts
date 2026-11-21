@@ -1,14 +1,11 @@
-// The bash tool's output is the largest token cost of a session (7 days on 14/11: 8,187 calls, ~4.85M tokens, mostly git,
-// grep and file listings). rtk (github.com/rtk-ai/rtk) rewrites common commands to compact equivalents
-// (`git log` -> `rtk git log`) and keeps exit codes; `rtk rewrite` says which commands it handles. The model never types
-// rtk: the bash tool rewrites before running, and `full_output: true` runs the command as written.
+
+
+
+
 import { execFile } from 'node:child_process';
 import { commandSegments } from './long-commands.ts';
 
-/**
- * Rewrites that lose information a later step needs: `rtk find` drops the searched folder from paths, `rtk wc` the file
- * names, and `rtk git show <rev>:<path>` cuts the file it reads after about 115 lines.
- */
+// external: rtk find and wc can omit paths; rtk git show can truncate file content.
 const LOSSY = /(?:^|[\s;&|(])rtk\s+(?:find\b|wc\b|git\s+show\s+\S*:)/;
 const REWRITE_TIMEOUT_MS = 2000;
 

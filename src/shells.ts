@@ -39,16 +39,16 @@ export interface ShellReporter {
   /** Sends what is still waiting to go out together; called when another reporter replaces this one. */
   flush?(): void;
 }
-export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string; label?: string; /** A durable shell's own id and start, when OptChat follows it again. */ id?: string; started?: number }
+export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string; label?: string;   id?: string; started?: number }
 const outputLimit = 32_000;
-/** CSI, OSC (hyperlinks, titles), charset designations (`tput sgr0` prints ESC ( B) and lone ESC sequences: shell output carries them, and in a report they would recolour the TUI. */
+
 const TERMINAL_ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[()*+][ -~]|\u001b[@-_]/g;
 export const plainText = (text: string) => text.replace(TERMINAL_ESCAPES, '');
 /** `build_exit=1`, `rc=2`, or `rc: 3` as ship.mjs prints it: the exit codes a command line echoes after a pipe or `;` hides them from the shell's own status. */
 export function innerExitFailures(output: string): string[] {
   return [...output.matchAll(/^\s*([\w.-]*(?:exit|rc))(?:=|:[ \t]*)([1-9]\d*)\s*$/gim)].map(match => `${match[1]}=${match[2]}`);
 }
-/** Commands that only print what something else produced: when one ends the command line, its exit code says nothing about the work. */
+
 const READERS = /^(?:tail|head|cat|echo|printf|grep|egrep|type|findstr|more|less|sed|awk|get-content|gc|select-string|write-output|write-host|true|ls|dir|fi|done)$/i;
 /**
  * A background shell's `exit 0` that belongs to a reader at the end of the line (`work > log; tail log`, `work | tail`),
@@ -91,7 +91,7 @@ export class ShellJobs {
   begin(id: string, command: string, cwd: string, mode: ShellJob['mode'], owner = 'main', options: ShellOptions = {}) {
     this.jobs.set(id, { id, command, cwd, mode, owner, state: 'running', started: options.started ?? Date.now(), output: '', notify: options.notify ?? 'end', alert: options.alert, ...options.label ? { label: options.label } : {}, ...options.agent === undefined ? {} : { agent: options.agent } });
     this.changed();
-    try { this.lifecycle?.began(this.jobs.get(id)!); } catch { /* an observer never owns the job */ }
+    try { this.lifecycle?.began(this.jobs.get(id)!); } catch {   }
   }
   update(id: string, output: string, log?: string) {
     const job = this.jobs.get(id); if (!job) return;
@@ -106,12 +106,12 @@ export class ShellJobs {
     job.ended = Date.now();
     job.failedItself = failed;
     if (outcome.exitCode !== undefined) job.exitCode = outcome.exitCode;
-    // Never evict an active execution, even when many jobs finish together.
+
     for (const finished of this.list().filter(j => j.ended !== undefined).slice(50)) this.jobs.delete(finished.id);
     this.changed();
-    try { this.lifecycle?.ended(job); } catch { /* an observer never owns the job */ }
+    try { this.lifecycle?.ended(job); } catch {   }
     if (job.mode === 'background') {
-      try { this.endObserver?.(job); } catch { /* the journal is an observer, never the owner of the job's result */ }
+      try { this.endObserver?.(job); } catch {   }
     }
     const waiter = this.waiters.get(id);
     if (waiter) { this.waiters.delete(id); waiter(job); return; }
@@ -159,14 +159,14 @@ export class ShellJobs {
   async close() { for (const id of this.controllers.keys()) this.stop(id); await Promise.all(this.tasks); }
 }
 
-/** A /reload re-runs the extension in the same process, so running shells are handed to the reloaded OptChat instead of being stopped. */
+
 const HANDOFF = Symbol.for('pi-optchat.shell-handoff');
-/**
- * Bump when ShellJobs' methods change meaning: the reloaded code drives the old instance, so it adopts only one whose
- * methods it knows. A method added without a bump is still caught by `drivable` (2: settle() and its waiters, #107).
- */
+
+
+
+
 const HANDOFF_VERSION = 2;
-/** Whether the reloaded code can drive an instance built by older code: it has every method of the current class. */
+
 const drivable = (jobs: ShellJobs) => Object.getOwnPropertyNames(ShellJobs.prototype)
   .every(name => name === 'constructor' || typeof (jobs as unknown as Record<string, unknown>)[name] === 'function');
 interface ShellHandoff { version: number; profile: string; jobs: ShellJobs }
@@ -182,12 +182,12 @@ export function adoptShells(): { jobs: ShellJobs; profile: string } | undefined 
   delete handoffStore[HANDOFF];
   if (!handoff) return undefined;
   if (handoff.version === HANDOFF_VERSION && drivable(handoff.jobs)) return { jobs: handoff.jobs, profile: handoff.profile };
-  void handoff.jobs.close(); // Its tasks settle their own errors, so close() does not reject.
+  void handoff.jobs.close();
   return undefined;
 }
 
 const ALERT_INTERVAL_MS = 10_000;
-/** The local shell, with each raw output chunk also given to the alerts. The bash tool's own updates are only snapshots of its tail. */
+
 function tapped(watch: OutputAlerts): BashOperations {
   const local = reapingBashOperations();
   return { exec: (command, cwd, options) => local.exec(command, cwd, { ...options, onData: data => { watch.feed(data); options.onData(data); } }) };
@@ -195,7 +195,7 @@ function tapped(watch: OutputAlerts): BashOperations {
 const REPORT_LINES = 30, REPORT_CHARS = 3_000, REPORT_COMMAND_CHARS = 300;
 /** Whether a shell that ended in `state` is reported under its notify mode: every end, failures only (failed or timed out), or never. */
 export const endNoticeWanted = (notify: ShellNotify, state: ShellJob['state']) => notify === 'end' || (notify === 'failure' && state === 'failed');
-/** Background shells still running, for the status line. */
+
 /** A shell's title for people: its label when it has one, else its command. */
 export const shellTitle = (job: Pick<ShellJob, 'command' | 'label'>) => job.label ?? job.command;
 export const runningShells = (jobs: ShellJobs) => jobs.list().filter(job => job.mode === 'background' && (job.state === 'running' || job.state === 'stopping'));
@@ -266,7 +266,7 @@ Started by subagent ${job.agent}, which could not take it.`, once));
   const setTimer = options.setTimer ?? ((run, ms) => { const timer = setTimeout(run, ms); timer.unref?.(); return () => clearTimeout(timer); });
   const folding = new Map<string, { job: ShellJob; alerts: ShellAlert[]; since: number; cancel: () => void }>();
   const alertText = (fold: { job: ShellJob; alerts: ShellAlert[] }) => alertReport(fold.job.id, fold.job.alert ?? '', foldAlerts(fold.alerts));
-  /** The folded alerts of a shell, taken out of the wait. */
+
   const take = (id: string) => { const fold = folding.get(id); fold?.cancel(); folding.delete(id); return fold; };
   const report = (job: ShellJob, text: string, once: boolean, what: string) => send(job, text, once).catch(error => routes.failed(what, job, error));
   const release = (id: string) => { const fold = take(id); if (fold && routes.live()) void report(fold.job, alertText(fold), false, 'report an alert from shell'); };
@@ -296,9 +296,9 @@ export interface ShellSettings {
   durableDir?: () => string | undefined;
 }
 
-/** The shell_start arguments that a run needs. */
+
 interface ShellArgs { command: string; timeout?: number; notify?: ShellNotify; alert?: string; durable?: boolean; label?: string }
-/** The bash tool, run for one shell. Its raw output feeds the alerts, when there are any, and the last matches go out when the run ends. */
+
 async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSignal, update: (output: string, log?: string) => void, watch: OutputAlerts | undefined) {
   try {
     const result = await createBashTool(cwd, { operations: watch ? tapped(watch) : reapingBashOperations() })
@@ -308,7 +308,7 @@ async function runShell(id: string, cwd: string, args: ShellArgs, abort: AbortSi
       exitCode: typeof exitCode === 'number' ? exitCode : undefined, log: result.details?.fullOutputPath };
   } finally { watch?.end(); }
 }
-/** Starts a managed background shell for shell_start. A bad alert pattern is refused before anything starts. */
+
 function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, cwd: string, agent?: string): string {
   const pattern = args.alert === undefined ? undefined : alertPattern(args.alert);
   const notify = args.notify ?? settings.notifyDefault?.() ?? 'end';
@@ -328,17 +328,17 @@ function startShell(jobs: ShellJobs, settings: ShellSettings, args: ShellArgs, c
   return id;
 }
 
-/**
- * Sets the label on the job record itself. A /reload hands the running ShellJobs over (adoptShells), so its start() is the
- * code of the OptChat that created it: 17/11 a labelled watcher showed on the Home as id and command, because that
- * inventory came from before labels.
- */
+
+
+
+
+
 function labelled(jobs: ShellJobs, id: string, label: string | undefined): void {
   const job = label ? jobs.find(id) : undefined;
   if (job && !job.label) job.label = label;
 }
 
-/** Follows a durable shell as a managed background job under its own id: its end and alerts reach the agent as any shell's. */
+
 function followShell(jobs: ShellJobs, settings: ShellSettings, root: string, record: DurableRecord): string {
   const pattern = record.alert === undefined ? undefined : alertPattern(record.alert);
   const id: string = jobs.start(record.command, record.cwd, (abort, update) => {
@@ -391,9 +391,9 @@ export function readShell(job: ShellJob, reads: Map<string, { output: string; at
   const since = `${Math.round((now - last.at) / 1000)} s`;
   const ending = job.state === 'running' ? ' Its end arrives as a "[shell ID]" message: go on with other work or end the turn instead of reading again.' : '';
   if (output === last.output) return `${head}\nNo new output since the last read ${since} ago.${ending}`;
-  // While the output still holds what was read, the new part is what follows it; a repeated line must not be taken for the old end.
+
   if (output.startsWith(last.output)) return `${head}\nNew output since the last read ${since} ago:\n${output.slice(last.output.length).replace(/^\n/, '')}`;
-  // Once over the limit the kept output is a sliding tail, so the previous read is found by its end, not by its start.
+
   const seen = last.output.slice(-500), at = seen ? output.lastIndexOf(seen) : -1;
   if (at >= 0) return `${head}\nNew output since the last read ${since} ago:\n${output.slice(at + seen.length).replace(/^\n/, '')}`;
   return `${head}\n${output || '(No output yet)'}`;

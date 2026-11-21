@@ -18,7 +18,7 @@ export const SAME_PERIOD_MS = 5 * 60_000;
 export type RoleKey = 'main' | 'subagent' | 'compactor' | 'other';
 export const ROLE_KEYS: readonly RoleKey[] = ['main', 'subagent', 'compactor', 'other'];
 export interface Call {
-  at: number; provider: string; /** The record's role, folded to main/subagent/compactor/other. */ role: RoleKey; tokens: number;
+  at: number; provider: string;   role: RoleKey; tokens: number;
   /** API-equivalent US$; undefined when no price is known. */ usd?: number;
   /** A bucket of the usage aggregate stands for several calls, some of them maybe unpriced. */ calls?: number; unpricedTokens?: number;
 }
@@ -59,7 +59,7 @@ export function readRates(file = join(process.env.PI_CODING_AGENT_DIR || join(ho
   return table;
 }
 
-/** Pi's own cost formula (`calculateCost`): the price tier follows the whole request's input size. */
+// external: Pi calculateCost chooses price tiers from the full input size.
 function priced(usage: Record<string, unknown>, rates: Rates): number {
   const input = Number(usage.input) || 0, output = Number(usage.output) || 0, cacheRead = Number(usage.cacheRead) || 0, cacheWrite = Number(usage.cacheWrite) || 0;
   const long = Math.min(Number(usage.cacheWrite1h) || 0, cacheWrite);
@@ -108,7 +108,7 @@ export interface Week {
   /** Calls the usage log records without a provider (session overhead). */
   unattributed: Spend;
 }
-export interface Economy { now: number; since?: number; /** Set by the loader when the profile has no usage aggregate yet: the US$ and tokens below are then unknown, not zero. */ usageMissing?: true; accounts: AccountEconomy[]; weeks: Week[] }
+export interface Economy { now: number; since?: number;   usageMissing?: true; accounts: AccountEconomy[]; weeks: Week[] }
 
 interface Interval { from: number; to: number; points: number }
 /** Points consumed between consecutive readings of one window; a reset (new reset time) or a drop starts a new period and counts nothing, never a negative amount. */
@@ -124,7 +124,7 @@ export function intervalsOf(rows: readonly QuotaRow[], key: 'w5h' | 'w7d'): Inte
   return out;
 }
 
-/** Cumulative sums over one provider's calls, so any (from, to] interval is two binary searches. */
+
 class Ledger {
   readonly at: number[] = [];
   readonly tokens = [0]; readonly usd = [0]; readonly unpriced = [0]; readonly calls: Call[];
@@ -137,7 +137,7 @@ class Ledger {
       this.unpriced.push(this.unpriced.at(-1)! + unpricedOf(c));
     }
   }
-  /** Number of calls at or before `t`. */
+
   private upTo(t: number) { let lo = 0, hi = this.at.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (this.at[mid]! <= t) lo = mid + 1; else hi = mid; } return lo; }
   between(from: number, to: number) { const a = this.upTo(from), b = this.upTo(to); return { tokens: this.tokens[b]! - this.tokens[a]!, usd: this.usd[b]! - this.usd[a]!, unpricedTokens: this.unpriced[b]! - this.unpriced[a]! }; }
 }

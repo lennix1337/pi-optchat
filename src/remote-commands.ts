@@ -81,7 +81,7 @@ async function changeModel(state: CommandState, query: string): Promise<CommandR
   const name = refName(found), current = state.model();
   if (name === current) return { text: `Já estou em ${name}.` };
   const apply = async () => await state.select(found) ? `Modelo trocado para *${name}*.` : `O Pi recusou ${name} (sem credencial válida?). Continuo em ${state.model() ?? 'nenhum'}.`;
-  // The provider is the account: changing it is an account switch, which stays the operator's decision.
+
   if (current?.split('/')[0] !== found.provider) {
     return { text: `Trocar para *${name}* muda a conta (de ${current?.split('/')[0] ?? 'nenhuma'} para ${found.provider}).`, confirm: { summary: `trocar o modelo para ${name} (troca de conta)`, apply } };
   }
@@ -127,7 +127,7 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
   },
 ];
 
-/** Commands that take an argument; for the others only the bare word counts. */
+
 const TAKES_ARG = new Set(['modelo', 'thinking']);
 
 /**
@@ -143,7 +143,7 @@ export function remoteCommand(text: string): { command: RemoteCommand; arg: stri
 }
 
 const FAMILY: Record<string, string> = { anthropic: 'Claude', 'openai-codex': 'Codex', openai: 'OpenAI', google: 'Gemini' };
-/** An account as he names it: `anthropic-account-2` is "Claude conta 2", the base provider is conta 1. */
+
 function account(provider: string): { family: string; label: string } {
   const match = /^(.*?)-account-(\d+)$/.exec(provider), base = match?.[1] ?? provider;
   const family = FAMILY[base] ?? base;
@@ -161,10 +161,10 @@ export function modelName(ref: string | undefined): string {
   return `${name} \u00b7 ${claude && family === 'Claude' ? label.replace(/^Claude /, '') : label}`;
 }
 
-/**
- * The Home's quota, short: accounts with no usage window are left out, and a family whose every account is spent is one
- * line with the first return. The *cota* command keeps the full per-account list.
- */
+
+
+
+
 function homeQuota(state: CommandState): string[] {
   const all = accounts(record(state.failover()), state.now()).filter(a => safeIdentifier(a.id));
   if (!all.length) return ['• sem leitura de cota ainda'];
@@ -175,13 +175,13 @@ function homeQuota(state: CommandState): string[] {
     : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(record(state.failover()).usageByProvider)[a.id], state.now())}`));
 }
 
-/** Older than this, a cached reading says when it was taken. */
+
 const STALE_READING_MS = 3_600_000;
 
-/**
- * Both windows, named, each with its own reset (one unnamed percentage mixes the 5h window of one account with the 7d of
- * another); a window already renewed is 0%, and a reading over an hour old says its time.
- */
+
+
+
+
 function homeWindows(usage: unknown, now: number): string {
   const { w5h, w7d } = quotaWindows(usage), fetchedAt = record(usage).fetchedAt;
   const live = (w?: QuotaWindowRow) => w && w.resetAt > now ? w : undefined;

@@ -45,10 +45,10 @@ function parse(value: unknown): Frame {
   throw new Error('Invalid window message');
 }
 const SHORTENED = '\n[Display shortened; full text is saved in the transcript.]';
-/** Stays under the 4 MB frame bound even when JSON escapes some characters. */
+
 const ANSWER_LIMIT = 1_000_000;
 const shorten = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}${SHORTENED}` : text;
-/** Long text parts are cut and images dropped: the window only draws them, the owner keeps the full transcript. */
+
 function clipContent(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   return content.map(part => !record(part) ? part : part.type === 'text' && typeof part.text === 'string' ? { ...part, text: shorten(part.text, 50_000) }
@@ -56,14 +56,14 @@ function clipContent(content: unknown): unknown {
 }
 const clip = (message: AgentMessage) => ({ ...message, content: clipContent('content' in message ? message.content : []) }) as AgentMessage;
 const clipOutput = (output: unknown) => record(output) ? { ...output, content: clipContent(output.content) } : output;
-/**
- * Huge tool arguments (a large file write) would choke the socket; the window then falls back to text.
- * Partial tool output comes from any extension and may not serialize (a cycle, a BigInt); that falls back too
- * instead of throwing inside the status timer, which would take the owner's Pi down with it.
- */
+
+
+
+
+
 const fits = (value: unknown) => { try { return JSON.stringify(value).length < 1_000_000; } catch { return false; } };
 
-/** Local JSONL protocol, bounded before parsing. On POSIX the socket file is mode 0600, so only its OS user can connect; a Windows named pipe has no file permissions, so its hashed profile name is the only separation. */
+// external: POSIX sockets have filesystem permissions; Windows named pipes have no file permissions and use a hashed profile name for separation.
 function wire(socket: Socket, receive: (frame: Frame) => void) {
   let buffer = '';
   socket.setEncoding('utf8');
@@ -88,7 +88,7 @@ function wire(socket: Socket, receive: (frame: Frame) => void) {
 export async function serveWindows(directory: string, children: Children, available: () => boolean,
   report: (text: string) => Promise<void>) {
   const path = profileSocket(directory, 'windows'); checkSocketPath(path);
-  removeStaleSocket(path); // A previous owner can no longer hold the profile lock.
+  removeStaleSocket(path);
   const connections = new Set<Socket>();
   const work = new Set<Promise<void>>();
   let closing = false;
@@ -97,7 +97,7 @@ export async function serveWindows(directory: string, children: Children, availa
     connections.add(socket);
     let child: string | undefined, attached = false, cursor = 0, firstUser = true, lastStatus = '', ending = false;
     let finalMessages: AgentMessage[] | undefined;
-    const said = new Set<string>(); // Main-agent guidance and child reports reach the session as user messages too.
+    const said = new Set<string>();
     const controller = new AbortController();
     let queue = Promise.resolve();
     const track = (promise: Promise<void>) => { work.add(promise); void promise.finally(() => work.delete(promise)).catch(() => {}); };
@@ -125,8 +125,8 @@ export async function serveWindows(directory: string, children: Children, availa
             const live = children.live(id);
             const messages = live?.session.messages ?? children.messages(id);
             said.add(info.task.trim());
-            // This socket borrows the existing session, never its lifetime, slot or report destination.
-            // Other views (the main window's Agents page, other terminals) stay open alongside it.
+
+
             attached = true; child = id; finalMessages = live ? undefined : messages;
             for (const guidance of info.guidance) if (guidance.from === 'user') said.add(guidance.text.trim());
             send({ kind: 'event', name: 'started', text: child });
@@ -141,7 +141,7 @@ export async function serveWindows(directory: string, children: Children, availa
           } else {
             if (!child) throw new Error('Send your first request to start a conversation');
             if (frame.action === 'answer') {
-              // The agent's last reply in full, not the display copy that events carry (headless `pi -p` prints it).
+
               const text = children.live(child)?.session.getLastAssistantText() ?? '';
               if (text.length > ANSWER_LIMIT) throw new Error(`The reply is over ${ANSWER_LIMIT.toLocaleString('en')} characters; the original Pi window has it in full`);
               send({ kind: 'reply', id: frame.id, text }); return;
@@ -166,8 +166,8 @@ export async function serveWindows(directory: string, children: Children, availa
     });
     const drainMessages = (messages: AgentMessage[], task: string) => {
       const displayable = messages.filter(message => message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult');
-      // An attachment may replay hours of tool output. Pace the history instead of overflowing the bounded wire
-      // or starving the owner's event loop. The next status tick continues from the same cursor.
+
+
       let batch = 0;
       while (cursor < displayable.length) {
         if (batch++ >= 32 || socket.writableLength > 1_000_000) return false;
@@ -185,7 +185,7 @@ export async function serveWindows(directory: string, children: Children, availa
       if (!child || socket.destroyed || ending) return;
       const live = children.live(child), info = children.history.records.get(child);
       if (!info) {
-        // Deleted from the Agents page: end the window (and a headless join) instead of leaving it waiting forever.
+
         ending = true;
         send({ kind: 'event', name: 'finished', text: 'This conversation was deleted from the Agents page.' });
         return;
@@ -196,7 +196,7 @@ export async function serveWindows(directory: string, children: Children, availa
       let state: LiveState = { state: info.state, model: info.model,
         streaming: live?.streaming?.role === 'assistant' ? clip(live.streaming) : undefined,
         tools: live ? [...live.tools].map(([id, t]) => ({ id, name: t.name, args: t.args, output: clipOutput(t.output), started: t.started })) : [],
-        // A finished child counts until its report has reached this agent, so the agent never looks idle in between.
+
         agents: [...children.history.records.values()].filter(run => run.parentId === child && (isActiveRun(run) || children.live(run.id))).length };
       if (!fits(state)) state = { ...state, streaming: undefined, tools: state.tools.map(t => ({ ...t, args: {}, output: undefined })) };
       const status = JSON.stringify(state);
@@ -225,7 +225,7 @@ export async function serveWindows(directory: string, children: Children, availa
     server.close(() => resolve());
     for (const socket of connections) socket.destroy();
     await closed;
-    // A socket's close handler adds its cleanup after this point, so drain the tracked work instead of snapshotting it.
+
     while (work.size) await Promise.allSettled([...work]);
   };
 }
@@ -292,8 +292,8 @@ export async function joinHeadless(directory: string) {
   const outcome = new Promise<{ ended?: string; lost?: true }>(resolve => { settle = resolve; });
   const connection = await connectWindow(directory, event => {
     if (event.name === 'message' && event.from === 'agent') last = event.message;
-    // Waiting with no agents of its own means the agent is waiting for its user: the reply is done. A paused agent
-    // waits for the owner's user instead, and a finished one ends with `finished` once its last messages are sent.
+
+
     else if (event.name === 'status' && event.live?.state === 'waiting' && !event.live.agents) settle({});
     else if (event.name === 'finished') settle({ ended: event.text });
   }, () => settle({ lost: true }));
@@ -308,7 +308,7 @@ export async function joinHeadless(directory: string) {
       if (reply?.role === 'assistant' && (reply.stopReason === 'error' || reply.stopReason === 'aborted')) throw new Error(reply.errorMessage ?? `Request ${reply.stopReason}`);
       if (lost) throw new Error('Connection to the original Pi window was lost');
       if (ended !== undefined) throw new Error(`The conversation ended before a reply: ${ended}`);
-      // Events carry display copies cut for length, so the reply itself is fetched whole.
+
       const answer = await connection.request('answer') ?? '';
       await connection.request('complete');
       connection.close();

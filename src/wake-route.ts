@@ -74,7 +74,7 @@ export function parseLocalTriageVerdict(text: string): { decision: 'drop' | 'rea
         const reason = typeof parsed.reason === 'string' && parsed.reason.trim() ? parsed.reason.trim() : `local model (${word})`;
         return { decision: word, reason };
       }
-    } catch { /* fall through to line parsing */ }
+    } catch {   }
   }
   const match = /^\s*\**\s*(DROP|REACT)\b\**\s*[:\-–—]?\s*(.*)$/im.exec(trimmed);
   if (!match) return undefined;
