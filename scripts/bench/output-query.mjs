@@ -1,5 +1,5 @@
-// Deterministic offline benchmark for output_read structured queries (grep, json filter/fields, outline) vs character paging.
-// Run: node --experimental-transform-types scripts/bench/output-query.mjs
+
+
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

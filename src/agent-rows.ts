@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { isActiveRun, isRunning, type RunInfo } from './runs.ts';
 
-/** Boilerplate every worker task starts with (the shared prefix workers get for prompt-cache reasons), then a "Goal:"-style tag. Display only. */
+
 const BOILERPLATE = [
   /^\s*\[This run\]\s*/i,
   /^\s*You are an? [^.\n]*?\b(?:subagent|worker)\b[^.\n]*\.\s*/i,
@@ -90,7 +90,7 @@ export function toolBrief(name: string, args: unknown) {
 }
 
 const FAILED_RECENT_MS = 24 * 3_600_000;
-/** 0 live, 1 failed in the last 24 h, 2 the rest: what decides where a run sits in the panel. */
+
 function bucket(run: RunInfo, now: number) {
   if (isActiveRun(run)) return 0;
   return run.state === 'failed' && now - (run.ended ?? run.started) < FAILED_RECENT_MS ? 1 : 2;
@@ -105,7 +105,7 @@ export function panelOrder(runs: readonly RunInfo[], now = Date.now()): RunInfo[
   const ids = new Set(runs.map(r => r.id)), kids = new Map<string, RunInfo[]>();
   for (const run of runs) if (run.parentId && ids.has(run.parentId)) kids.set(run.parentId, [...kids.get(run.parentId) ?? [], run]);
   const order = (a: RunInfo, b: RunInfo) => bucket(a, now) - bucket(b, now) || recency(b) - recency(a) || a.id.localeCompare(b.id);
-  // A tree sits where its most urgent run does, and by the newest run of that urgency.
+
   const subtree = (run: RunInfo, seen = new Set<string>()): RunInfo[] => seen.has(run.id) ? [] : (seen.add(run.id), [run, ...(kids.get(run.id) ?? []).flatMap(k => subtree(k, seen))]);
   const key = (run: RunInfo) => {
     const members = subtree(run), urgency = Math.min(...members.map(m => bucket(m, now)));
@@ -123,7 +123,7 @@ export function panelOrder(runs: readonly RunInfo[], now = Date.now()): RunInfo[
   };
   const roots = runs.filter(r => !r.parentId || !ids.has(r.parentId)).sort(treeOrder);
   roots.forEach(visit);
-  [...runs].sort(order).forEach(visit); // Malformed cycles stay visible.
+  [...runs].sort(order).forEach(visit);
   return result;
 }
 

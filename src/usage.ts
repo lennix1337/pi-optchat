@@ -43,7 +43,7 @@ const latencyKeys = ['firstMs', 'responseMs'] as const;
 const validLatency = (value: unknown): value is Latency => record(value)
   && Object.keys(value).every(k => (latencyKeys as readonly string[]).includes(k)) && latencyKeys.some(k => value[k] !== undefined)
   && latencyKeys.every(k => value[k] === undefined || nonnegative(value[k]));
-/** Keeps the measured parts of a timing; undefined when nothing valid was measured. */
+
 function measured(value: Latency): Latency | undefined {
   const kept = Object.fromEntries(latencyKeys.filter(k => nonnegative(value[k])).map(k => [k, Math.round(value[k]!)]));
   return Object.keys(kept).length ? kept : undefined;
@@ -113,7 +113,7 @@ export function addUsage(total: Usage, usage: Usage) {
   for (const key of costKeys) total.cost[key] += usage.cost[key];
 }
 
-/** Timings waiting for their message's turn-end backfill, keyed by assistant message timestamp; bounded. */
+
 class PendingTimings {
   private readonly byTimestamp = new Map<number, Latency>();
   set(timestamp: number, latency: Latency) {
@@ -130,7 +130,7 @@ class PendingTimings {
   }
 }
 
-/** Parses one ledger line; undefined for an unreadable or invalid record. */
+
 function parseLine(line: string): UsageEntry | undefined {
   try { const entry: unknown = JSON.parse(line); return validEntry(entry) ? entry : undefined; } catch { return undefined; }
 }
@@ -140,11 +140,11 @@ function since(range: UsageRange, now: number) {
 }
 export type UsageSummary = ReturnType<typeof summarizeUsage> & { calls: number };
 
-/** What the ledger needs from its index over usage.jsonl, the source of truth. */
+
 interface UsageIndex {
   readonly invalid: number;
   readonly readBytes: number;
-  /** Appends validated, canonical records whose IDs it has not seen to usage.jsonl and indexes them. */
+
   append(entries: UsageEntry[]): void;
   all(): UsageEntry[];
   select(range: UsageRange, session: string, now: number): UsageEntry[];
@@ -152,7 +152,7 @@ interface UsageIndex {
   close?(): void;
 }
 
-/** Fallback index: reads the whole ledger into memory, so opening grows with the ledger. */
+
 class MemoryIndex implements UsageIndex {
   invalid = 0;
   readBytes = 0;
@@ -193,7 +193,7 @@ const sums = amounts.map(a => `SUM(${a}) AS ${a}`).join(', ');
 const timed = '(firstMs IS NOT NULL OR responseMs IS NOT NULL)';
 const sqlite = (() => { try { return process.getBuiltinModule('node:sqlite'); } catch { return undefined; } })();
 type Group = Record<typeof amounts[number], number> & { role: UsageRole; provider: string; model: string; first: number; calls: number; failures: number };
-/** Hash of the 4 KiB before `offset`: tells whether the ledger still holds the bytes the index has read. */
+
 function fingerprint(file: string, offset: number): { hash: string; bytes: number } {
   const start = Math.max(0, offset - 4096), block = Buffer.alloc(offset - start), fd = openSync(file, 'r');
   let bytes = 0;
@@ -201,10 +201,10 @@ function fingerprint(file: string, offset: number): { hash: string; bytes: numbe
   return { hash: createHash('sha256').update(block).digest('hex'), bytes };
 }
 
-/** usage.db: a disposable SQLite index over usage.jsonl, which stays the only copy of each record. The index keeps each record's
- * byte range, the columns the usage page aggregates, and hourly totals; it reads only the bytes the ledger gained since its last
- * read, and rebuilds itself when missing, unreadable, of another schema, or when the ledger no longer holds what it read.
- * Each operation opens and closes the database, so no handle outlives a call and other processes' appends are picked up. */
+
+
+
+
 function fileStat(file: string): { size: number; mtimeMs: number } {
   try { const s = statSync(file); return { size: s.size, mtimeMs: s.mtimeMs }; } catch { return { size: 0, mtimeMs: 0 }; }
 }
@@ -222,24 +222,24 @@ class SqliteIndex implements UsageIndex {
   invalid = 0;
   readBytes = 0;
   private readonly summaryCache = new Map<string, SummaryCacheEntry>();
-  /** One connection kept warm between calls: a fresh one per call started with an empty page cache and re-read the index's pages
-   * from disk on every footer refresh. It closes after 30 s unused, so a dropped ledger (a reload) releases the file. */
+
+
   private conn: DatabaseSync | undefined;
   private idle: ReturnType<typeof setTimeout> | undefined;
-  /** The ledger's size:mtime when the index last matched it; an unchanged ledger needs no sync. */
+
   private synced = '';
   constructor(private readonly file: string, private readonly db: string, private readonly warm = false) { this.use(() => {}); }
   close() {
     if (this.idle) clearTimeout(this.idle);
     this.idle = undefined; this.synced = '';
-    try { this.conn?.close(); } catch { /* already closed */ }
+    try { this.conn?.close(); } catch {   }
     this.conn = undefined;
   }
   private reset() { this.close(); this.summaryCache.clear(); for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(this.db + suffix, { force: true }); }
   private open() {
     const db = new sqlite!.DatabaseSync(this.db, { timeout: 5000 });
     try {
-      // synchronous=OFF: a write lost to an OS crash only costs a rebuild from the ledger.
+
       db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=OFF;
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS entries(n INTEGER PRIMARY KEY, id TEXT UNIQUE, pos INTEGER NOT NULL, len INTEGER NOT NULL, ts INTEGER NOT NULL,
@@ -258,7 +258,7 @@ class SqliteIndex implements UsageIndex {
   }
   private meta(db: DatabaseSync, key: string) { return (db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value?: string } | undefined)?.value; }
   private setMeta(db: DatabaseSync, key: string, value: string | number) { db.prepare('INSERT OR REPLACE INTO meta VALUES (?, ?)').run(key, String(value)); }
-  /** Runs `work` on a database synced with the ledger; an index that cannot be opened or synced is deleted and rebuilt once. */
+
   private use<T>(work: (db: DatabaseSync) => T): T {
     let db: DatabaseSync | undefined;
     for (let attempt = 1; !db; attempt++) {
@@ -289,7 +289,7 @@ class SqliteIndex implements UsageIndex {
     if (size === offset) return;
     const block = Buffer.alloc(size - offset), fd = openSync(this.file, 'r');
     try { this.readBytes += readSync(fd, block, 0, block.length, offset); } finally { closeSync(fd); }
-    // A last line without its newline is still being written; it is read once it ends.
+
     const end = block.lastIndexOf(0x0a) + 1;
     if (!end) return;
     const insert = db.prepare(`INSERT OR IGNORE INTO entries(id, pos, len, ts, session, role, provider, model, failed, firstMs, responseMs, ${amounts.join(', ')})
@@ -331,7 +331,7 @@ class SqliteIndex implements UsageIndex {
     for (const entry of fresh) appendJson(this.file, entry);
     this.use(() => {});
   }
-  /** The records of the matching rows, read back from the ledger in one pass over the bytes they span. */
+
   private records(where: string, params: (string | number)[]) {
     return this.use(db => {
       const rows = db.prepare(`SELECT pos, len FROM entries ${where} ORDER BY n`).all(...params) as { pos: number; len: number }[];
@@ -348,8 +348,8 @@ class SqliteIndex implements UsageIndex {
     if (range === 'All time') return this.all();
     return this.records('WHERE ts >= ? AND ts <= ?', [since(range, now), now]);
   }
-  /** Same result as summarizeUsage(select(...)) without reading the records: whole hours come from the hourly totals, the partial
-   * hours at either end and "This session" from the rows, and medians from the few rows that carry a measured latency. */
+
+
   summary(range: UsageRange, session: string, now: number): UsageSummary {
     const { size, mtimeMs } = fileStat(this.file);
     const stamp = `${size}:${mtimeMs}`;
@@ -417,7 +417,7 @@ class SqliteIndex implements UsageIndex {
   }
 }
 
-/** A torn last line becomes one unreadable record instead of swallowing the next append. */
+
 function endLastLine(file: string) {
   const size = existsSync(file) ? statSync(file).size : 0, last = Buffer.alloc(1);
   if (!size) return;
@@ -426,7 +426,7 @@ function endLastLine(file: string) {
   if (last[0] !== 0x0a) appendFileSync(file, '\n');
 }
 
-/** The SQLite index when this Node has node:sqlite and it opens; otherwise a full read, with a note saying why. */
+
 function openIndex(file: string, useSqlite: boolean, warm: boolean, notes: string[]): UsageIndex {
   if (sqlite && useSqlite) try { return new SqliteIndex(file, file.replace(/\.jsonl$/, '.db'), warm); }
   catch (error) { notes.push(`usage.db unavailable, reading usage.jsonl in full: ${error instanceof Error ? error.message : String(error)}`); }
@@ -490,7 +490,7 @@ export class UsageLedger {
     const cursorKey = `${session}:${runId ?? ''}`;
     const cursor = this.cursors.get(cursorKey) ?? 0, found: UsageEntry[] = [];
     for (const entry of entries.slice(cursor <= entries.length ? cursor : 0)) {
-      // Pi forks preserve entry IDs/timestamps. Never count inherited responses twice.
+      // external: Pi forks preserve entry IDs and timestamps.
       const usage = entry.type === 'message' ? backfilledMessage(entry, session, role, runId, this.timings.take(entry)) : backfilledOverhead(entry, session, role, runId);
       if (usage) found.push(usage);
     }
@@ -527,7 +527,7 @@ export function summarizeUsage(entries: UsageEntry[]) {
   const groups = new Map<string, { role: UsageRole; provider?: string; model: string; usage: Usage; calls: number; failures: number; samples: LatencySamples }>();
   let failures = 0;
   for (const entry of entries) {
-    // Provider is part of a model's identity; legacy records without it remain grouped under unknown.
+
     const key = JSON.stringify([entry.role, entry.provider ?? '', entry.model]);
     let group = groups.get(key);
     if (!group) { group = { role: entry.role, provider: entry.provider, model: entry.model, usage: emptyUsage(), calls: 0, failures: 0, samples: new LatencySamples() }; groups.set(key, group); }

@@ -11,10 +11,10 @@ import { emptyUsage } from '../src/usage.ts';
 import { textContent } from '../src/transcript.ts';
 import { removeDir } from './support.ts';
 
-/** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
+
 const nested = () => ({ subagentLevels: 3, maxAgents: 8 });
 
-// The MCP extension reads mcp.json, its log and OAuth tokens from Pi's agent dir: never the user's real one.
+
 const agentDir = process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-builtins-agent-'));
 const server = resolve(import.meta.dirname, 'fixtures', 'fake-mcp.mjs');
 const ALL = ['mcp', 'codemode', 'tool-search'];
@@ -24,12 +24,12 @@ async function until(condition: () => boolean) {
   while (!condition()) { if (Date.now() > deadline) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
 
-/** Whether every fake MCP server in the log has exited. Pi starts them in the test's dir, and Windows won't remove a live process's cwd (#164). */
+
 const exited = (log: string) => readFileSync(log, 'utf8').trim().split('\n').every(line => {
   try { process.kill(Number(line.split(' ')[1]), 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
 });
 
-/** A main session that loads the built-in extensions the way Pi's CLI does, and the names it reports. */
+
 async function mainBuiltins(cwd: string, settings: object, extra: ((pi: ExtensionAPI) => void)[] = []) {
   let api: ExtensionAPI | undefined;
   const settingsManager = SettingsManager.inMemory(settings);
@@ -57,7 +57,7 @@ test('subagents at every depth get the main session\'s built-in extensions and c
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   const reports: string[] = [], warnings: string[] = [], seen = new Map<string, string[]>();
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
-  // 'root' delegates 'nested'; every other task calls the MCP tool and reports its output.
+
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
     models: [{ id: 'child', name: 'Synthetic child', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
@@ -89,13 +89,13 @@ test('subagents at every depth get the main session\'s built-in extensions and c
     assert.equal(reports.length, 1);
     assert.match(reports[0], /root: .*nested: echo:nested/s, 'the nested subagent called the MCP tool and its report reached the root');
     for (const task of ['root', 'nested']) assert.ok(seen.get(task)?.includes('mcp__fake__echo'), `${task} sees the MCP tool`);
-    // Each subagent opens its own connection, and closes it when it ends.
+
     await until(() => servers().length === 4);
     assert.deepEqual(servers().map(line => line.split(' ')[0]).sort(), ['exit', 'exit', 'start', 'start']);
     await until(() => exited(log));
     await children.close();
 
-    // With MCP switched off for the main session, subagents do not connect either.
+
     reports.length = 0; seen.clear(); rmSync(log, { force: true });
     const off = spawnChildren(await mainBuiltins(dir, { extensions: ['-builtin:mcp'] }));
     await off.spawn([{ task: 'offline' }], dir);
@@ -123,7 +123,7 @@ test('a batch that fails mid-launch closes the MCP connections of the children i
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async () => {}, () => {}, dir, { settings: nested, builtins: () => ALL, createSession: async options => {
       if (++created === 2) {
-        // Fail only once the first child's server is up, so its connection must be closed.
+
         await until(() => existsSync(log));
         throw new Error('session store unavailable');
       }
@@ -151,7 +151,7 @@ test('a child whose extensions fail to start still closes its MCP connections', 
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async () => {}, () => {}, dir, { settings: nested, builtins: () => ALL, createSession: async options => {
       const made = await createAgentSession({ ...options, modelRuntime: runtime }), bind = made.session.bindExtensions.bind(made.session);
-      // Binding starts the MCP connection, then fails.
+
       made.session.bindExtensions = async bindings => { await bind(bindings); await until(() => existsSync(log)); throw new Error('binding failed'); };
       return made;
     } });
@@ -198,7 +198,7 @@ test('plan and mechanical workers skip external MCP servers unless the contract 
     assert.ok(!seen.get(mechTask)?.includes('mcp__fake__echo') && !seen.get(mechTask)?.includes('zoom'), 'mechanical keeps WORKER_TOOLS.mechanical');
     assert.ok(!seen.get(planTask)?.includes('spawn') && !seen.get(mechTask)?.includes('spawn'), 'isOptchat boundary preserved');
 
-    // Opt-out: mcp: true on a plan worker starts the MCP server and preserves it on resume.
+
     const optOutTask = contract('plan with mcp');
     const [optOutId] = await children.spawn([{ task: optOutTask, kind: 'plan', mcp: true }], dir);
     await until(() => !children.active);

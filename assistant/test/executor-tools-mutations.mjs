@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Disposable copy inside this checkout (so node_modules resolve upward); each guard removed must fail an assertion.
+
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const home = mkdtempSync(join(repo, 'executor-tools-mutants-'));
 const tests = ['executor-tools-service.test.ts', 'tool-review-lifecycle.test.ts', 'executor-tools-default-off.test.ts', 'pi-draft.test.ts'];

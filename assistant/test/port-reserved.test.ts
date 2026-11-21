@@ -11,7 +11,7 @@ import { killRecordedService, runScript, serviceHome } from './ops-support.ts';
 const assistant = fileURLToPath(new URL('../', import.meta.url));
 const error = (code: string) => Object.assign(new Error(`listen ${code}`), { code });
 
-// 11/11: after a reboot WinNAT reserved 49692-49791, which held the endpoint port; the log said only "Listen failed."
+// external: WinNAT may reserve port ranges after reboot.
 test('a failed listen logs its error code, and on Windows names the reserved range and a port below 49152', () => {
   const reserved = listenFailureMessage(error('EACCES'), 49761, 'win32');
   assert.match(reserved, /^Listen failed: EACCES on 127\.0\.0\.1:49761\./);
@@ -37,7 +37,7 @@ test('the start script reads the listen verdict only from what this start append
   assert.equal(listenFailure(log, 0), 'port_reserved');
 }));
 
-/** A disposable copy of this package whose server fails to listen with EACCES, the way a Windows excluded port range does. */
+
 function reservedPortCopy(root: string): string {
   const dir = join(root, 'copy');
   for (const part of ['src', 'scripts', 'package.json']) cpSync(join(assistant, part), join(dir, part), { recursive: true });
@@ -49,7 +49,7 @@ function reservedPortCopy(root: string): string {
 }
 
 test('start answers port_reserved with the port when the listen fails with EACCES, instead of start_unhealthy', { timeout: 60_000 }, () => privateDir('port-reserved-', async root => {
-  const svc = serviceHome(root, 47761 + 1000); // never listened on: the simulated server fails before it binds
+  const svc = serviceHome(root, 47761 + 1000);
   const dir = reservedPortCopy(root);
   try {
     const started = runScript('start', ['--config', svc.config], { dir });

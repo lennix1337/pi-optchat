@@ -16,7 +16,7 @@ import { isCompaction, removeDir } from './support.ts';
 const pi: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 
-// Each run settle checkpoints the profile with real git processes (4-5 per settle, ~25 for the human-input case, which settles once more than the others). On a slow Windows runner a spawn costs up to ~0.6 s, so the case legitimately needs 15+ s; the former 15 s budget timed out there. A real hang still fails, at 60 s.
+
 for (const criterion of ['second spawn', 'Slack final', 'Home idle', 'empty retry', 'human input', 'failed child', 'lost report'] as const) test(`owned wake worker: no premature ${criterion}`, { timeout: 60_000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'wake-workers-')), previous = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = dir;

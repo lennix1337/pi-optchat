@@ -1,0 +1,7 @@
+# Standalone test fixtures
+assistant/test/artifact-browser-fixture.mjs
+assistant/test/mcp-fixture-server.mjs
+assistant/test/takeover-visual-fixture.mjs
+assistant/test/task-fixtures.ts
+assistant/test/web-browser-fixture.mjs
+test/fixture-model.ts

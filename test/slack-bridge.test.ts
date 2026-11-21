@@ -15,8 +15,8 @@ import { wakeEffects } from '../src/wake-log.ts';
 import { claimRetryText, unbackedNote } from '../src/claim-check.ts';
 import { ACCEPT_CALL, acceptResult, FAILED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
-/** `channels`: the service's configured Slack channels besides the projects; without `wakes` a wake falls back to its repo channel. */
-/** Lets the Home publication chain (one request at a time, the newest view last) run to its end. */
+
+
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 
 function fixture(inbox: { seq: number; ts: string; thread: string | null; text: string; channelName?: string | null; channel?: string }[] = [], extra: Record<string, unknown> = {}, channels: string[] = []) {
@@ -30,7 +30,7 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
   const bridge = new SlackBridge({ sendUserMessage: ((text: string, options: unknown) => { sent.push({ text, options }); }) as never }, () => owner, {
     now: () => now,
     request: async (_owner, path, body) => {
-      // A refused post (an unconfigured channel) never reached Slack: it is not recorded.
+
       if (path === '/v1/slack/send' && (body as { channel?: string }).channel === 'wakes' && !channels.includes('wakes')) throw new HttpError(400);
       requests.push({ path, body });
       if (fail) throw fail;
@@ -45,7 +45,7 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
   });
   return { dir, owner, bridge, timers, sent, requests, inbox, advance: (ms: number) => { now += ms; }, fail: (error?: Error) => { fail = error; }, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
-/** A run's messages: one assistant message per reply text. */
+
 const replies = (...texts: string[]) => texts.map(text => ({ role: 'assistant', content: [{ type: 'text', text }] }) as unknown as AgentMessage);
 
 test('operator DMs become [Slack] user messages in order, once, across restarts', async () => {
@@ -179,12 +179,11 @@ test('with every answer on, a run woken only by a running worker\'s progress pos
   } finally { f.close(); }
 });
 
-/** An assistant message with these tool calls, then the final answer. */
 const calling = (calls: [string, unknown][], answer: string) => [
   { role: 'assistant', content: calls.map(([name, args], i) => ({ type: 'toolCall', id: `c${i}`, name, arguments: args })) },
   ...replies(answer),
 ] as unknown as AgentMessage[];
-/** The prompt a wake really starts with, as heartbeat.ts builds it: an intro line comes before the suggestion. */
+
 const WAKE = wakeText('fix the flaky test', 'haiku', 30, DEFAULT_HEARTBEAT, undefined, '# Wake radar');
 const SCHEDULED = wakeText('', 'haiku', 30, DEFAULT_HEARTBEAT, { path: '/p/q.md', item: '- [ ] x' });
 
@@ -219,7 +218,7 @@ test('a wake delivered the way OptChat really sends it, as a report custom messa
     if (path === '/v1/slack/send' && (body as { channel?: string }).channel === 'wakes') throw new HttpError(400);
     if (path === '/v1/slack/send') bodies.push(body); return { parts: 1, ts: '1.0' }; } });
   try {
-    // index.ts sendReport: once the OptChat prompt is ready, a report (the wake prompt too) is a custom message, not a user one.
+
     fire('message_end', { message: { role: 'custom', customType: REPORT_TYPE, content: WAKE, display: true } });
     fire('agent_start');
     await fire('agent_end', { messages: calling([['bash', { command: 'cd C:/projetos/pi-optchat && git commit -qm x && git push' }]], 'Corrigi.') });
@@ -320,7 +319,7 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
 test('a worker\'s branch shipped with crew accept is an effect of the wake: #wakes names its PR instead of "sem entrega"; a failed or uncertain accept is none', async () => {
   const accept = (id: string) => ({ role: 'assistant', content: [{ type: 'toolCall', id, name: 'crew', arguments: ACCEPT_CALL }] });
   const logged = (toolCallId: string, answer: { text: string; isError: boolean }) => ({ role: 'toolResult', toolCallId, isError: answer.isError, content: [{ type: 'text', text: answer.text }] });
-  // The answer quotes the worker's memory proposal, here with a line shaped like the PR line: accept did not open that one.
+
   const accepted = await acceptResult(SHIPPED, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
   const failed = await acceptResult(FAILED), uncertain = await acceptResult(UNCERTAIN);
   assert.deepEqual([accepted.isError, failed.isError, uncertain.isError], [false, true, false]);
@@ -371,7 +370,7 @@ test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake 
 });
 
 test('wakeChannel: an issue comment delivers to its repo, and an evidence draft in local-validation belongs to no project', () => {
-  // The 2026-10-29 wake: it drafted the reply under local-validation, then posted it on a Genexus18MCP issue.
+
   const draft: [string, unknown] = ['write', { path: 'C:/projetos/local-validation/runs/gx-746/comment.md', content: 'x' }];
   const comment: [string, unknown] = ['bash', { command: 'cd C:/projetos/Genexus18MCP && gh issue comment 746 --body-file C:/projetos/local-validation/runs/gx-746/comment.md' }];
   assert.equal(wakeChannel(calling([draft, comment], 'x')), 'genexus18mcp');
@@ -405,7 +404,7 @@ test('an approval post is decided only by aprovar/negar in its own DM thread, on
     const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; threadTs: null; approval?: boolean };
     assert.match(post.text, /Aprovação pendente.*push: git push origin main/s);
     assert.equal(post.approval, true, 'the post carries the Aprovar/Negar buttons');
-    // The ts the fixture returns for every send is 1.1: replies in that thread decide; elsewhere they are plain messages.
+
     f.inbox.push({ seq: 1, ts: '2.0', thread: null, text: 'aprovar' }, { seq: 2, ts: '3.0', thread: '9.9', text: 'aprovar' });
     assert.equal(await f.bridge.poll(), 2);
     assert.deepEqual(decisions, [], 'a bare "aprovar" outside the approval thread approves nothing');
@@ -471,7 +470,7 @@ test('negar drops the call, and an expired approval decides nothing', async () =
 });
 
 test('an approval decided at the terminal rewrites its Slack post without buttons, and its thread no longer decides', async () => {
-  // 2026-10-29: approved with /approve at the terminal, the DM post kept saying "Aprova\u00e7\u00e3o pendente".
+
   const f = fixture();
   try {
     const decisions: boolean[] = [];
@@ -491,7 +490,7 @@ test('an approval decided at the terminal rewrites its Slack post without button
     await f.bridge.askApproval({ token: 'c'.repeat(24), summary: 'rm x', label: 'delete', expires: 1_000_000 + 600_000, decide: () => true });
     await f.bridge.settled('c'.repeat(24), 'superseded');
     assert.match((f.requests.at(-1)!.body as { text: string }).text, /Substitu\u00edda/);
-    // Decided on WhatsApp: the Slack post names where, not "no terminal".
+
     await f.bridge.askApproval({ token: 'd'.repeat(24), summary: 'deploy', label: 'deploy', expires: 1_000_000 + 600_000, decide: () => true });
     await f.bridge.settled('d'.repeat(24), 'approved', 'WhatsApp');
     assert.match((f.requests.at(-1)!.body as { text: string }).text, /^\u2705 \*Aprovado no WhatsApp\* \u00b7 deploy: deploy$/u);
@@ -557,8 +556,8 @@ test('posts with a topic open a message once, then reply in its thread; the sent
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// 03/11: the operator never saw two retro DMs nor the link he asked for again: later slack_send posts of a topic
-// went only into the thread of its first post, and DentAI reports went to the DM instead of #dentai.
+
+
 test('slack_send replies in a topic thread also show in the conversation; automatic topic posts stay in the thread', async () => {
   const f = fixture();
   try {
@@ -766,7 +765,7 @@ test('App Home: a run typed in the terminal shows working too, with the live ste
   } finally { f.close(); }
 });
 
-/** The bodies the bridge posted to one service path, in order: `bodiesFor<T>(path)(f)`. */
+
 await settle();
 const bodiesFor = <T,>(path: string) => (f: ReturnType<typeof fixture>) => f.requests.filter(r => r.path === path).map(r => r.body as T);
 const homeBodies = bodiesFor<{ text: string; working?: boolean; approval?: string }>('/v1/slack/home');
@@ -804,7 +803,7 @@ test('parar from the DM or the Home stops the run in progress; idle says there w
 });
 
 test('App Home "Hoje": finished runs survive in home-day.json with totals, an hour bar and the next wake check', async () => {
-  const base = Date.parse('2026-11-02T12:00:00Z'); // 09:00 in Brasilia
+  const base = Date.parse('2026-11-02T12:00:00Z');
   let now = base;
   const f = fixture([], { now: () => now, nextWake: () => now + 45 * 60_000 });
   try {
@@ -826,7 +825,7 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
 });
 
 test('App Home: a service from before the buttons refuses the new fields; the text alone still goes out', async () => {
-  // The refusal as the real client reports it: HttpError, whose message never says "HTTP 400" (03/11: the Home froze for hours).
+
   const calls: Record<string, unknown>[] = [], warnings: string[] = [];
   const f = fixture([], { warn: (m: string) => warnings.push(m), request: async (_o: unknown, path: string, body: Record<string, unknown>) => {
     if (path !== '/v1/slack/home') return { parts: 1, ts: '1.1', channel: 'D1' };
@@ -900,7 +899,7 @@ test('App Home: a profile without the assistant publishes nothing and warns noth
   } finally { f.close(); }
 });
 
-/** A request fake whose enrichment calls take `ms` each and record how many were in flight at once. */
+
 function slowEnrichment(ms: number) {
   let inFlight = 0, peak = 0;
   const request = async (_o: unknown, path: string, body: any) => {

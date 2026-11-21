@@ -9,11 +9,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { atomicWrite, envDir, readJsonOr } from './store.ts';
 
-/**
- * The weekly Jarvis scoreboard in #harness: did the operator have to chase ("e aí?"), how fast Slack answered, what
- * got stuck, how many events never woke the model, what merged green. Every number comes from a local record; a metric
- * with no record says so instead of showing zero.
- */
+
+
+
+
+
 const WEEK_MS = 7 * 86_400_000;
 const STATE = 'slack-scoreboard.json';
 
@@ -39,13 +39,13 @@ const minutes = (ms: number) => {
   return m < 60 ? `${m}min` : `${Math.floor(m / 60)}h${m % 60 ? `${String(m % 60).padStart(2, '0')}` : ''}`;
 };
 const day = (at: number) => new Date(at).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit' });
-/** Says when a record started inside the week, so a short window is not read as a whole quiet week. */
+
 const partial = (recordingSince: number, from: number) => recordingSince > from ? ` · registro só desde ${day(recordingSince)}` : '';
 const correctionsLine = ({ count, recordingSince }: ScoreInputs['corrections'], from: number) => recordingSince === undefined
   ? '• Correções do operador: não medidas ainda (o registro começa com a próxima correção)'
   : `• Possíveis correções do operador: *${count}* (cada uma recebeu lembrete de virar teste ou regra)${partial(recordingSince, from)}`;
 
-/** Council decisions of the week from council.jsonl (written by scripts/council.mjs --reply). */
+
 function councilWeek(dir: string, from: number, to: number): ScoreInputs['council'] {
   let raw: string;
   try { raw = readFileSync(join(dir, 'council.jsonl'), 'utf8'); } catch { return undefined; }
@@ -150,14 +150,14 @@ export class WeeklyScoreboard {
     if (!owner || local.getDay() !== (this.options.weekday ?? 1) || local.getHours() < (this.options.at ?? 9) || local.getHours() >= (this.options.until ?? 12)) return false;
     const file = join(owner.dir, STATE), saved = readJsonOr<Saved>(file, {}), week = localDate(now);
     if (saved.week === week) return false;
-    if (this.scanning) return false; // the scan awaits a child process: a second check must not post the week again
+    if (this.scanning) return false;
     this.scanning = true;
     let violations: number | undefined;
     try { violations = await (this.options.scan ?? scanRuleViolations)(); } finally { this.scanning = false; }
     const { inputs, routing } = weekInputs(owner.dir, now, saved, this.options.gitwatchFile, violations);
     const traction = await (this.options.business ?? fetchBusiness)();
     if (traction) inputs.business = { ...traction, previous: saved.downloads };
-    atomicWrite(file, JSON.stringify({ week, ...routing ? { routing } : {}, ...traction ? { downloads: traction.downloads } : saved.downloads === undefined ? {} : { downloads: saved.downloads } })); // Before posting: a crash mid-post must not post twice.
+    atomicWrite(file, JSON.stringify({ week, ...routing ? { routing } : {}, ...traction ? { downloads: traction.downloads } : saved.downloads === undefined ? {} : { downloads: saved.downloads } }));
     await this.post(composeScoreboard(inputs), 'harness');
     return true;
   }

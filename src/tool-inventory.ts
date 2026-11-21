@@ -1,9 +1,9 @@
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext, SourceInfo, ToolInfo } from '@earendil-works/pi-coding-agent';
 
-// What the model can reach, where each tool comes from, what its declaration costs, and whether
-// the instructions ever name it. A declared tool the instructions never mention tends to be
-// forgotten: the model falls back to bash loops instead of the tool built for the job.
+
+
+
 
 export interface ToolRow {
   name: string;
@@ -31,7 +31,7 @@ export function sourceOf(info: SourceInfo | undefined): string {
   return /[\\/]/.test(info.source) ? base(info.source) : info.source;
 }
 
-// Pi's default prompt lists declared tools with their snippets; those lines describe the tool, they do not route to it.
+
 export function instructionText(systemPrompt: string): string {
   return systemPrompt.replace(/<tools>[\s\S]*?<\/tools>/g, '').replace(/<rules>[\s\S]*?<\/rules>/g, '');
 }
@@ -51,7 +51,7 @@ const signatureOf = (tool: ToolInfo) => {
 
 export function inventory(tools: readonly ToolInfo[], active: readonly string[], systemPrompt: string, lazy: ReadonlySet<string> = new Set()): ToolRow[] {
   const text = instructionText(systemPrompt), activeNames = new Set(active);
-  // The same rule as lazyLoadout: no script can call a model-only tool, so listing it hides nothing.
+  // external: Pi scripts cannot call model-only tools.
   const hides = (tool: ToolInfo) => lazy.has(tool.name) && tool.exposure !== 'model-only';
   return tools.filter(tool => tool.exposure !== 'hidden').map(tool => ({
     name: tool.name,
@@ -112,14 +112,14 @@ export function registerToolInventory(pi: ExtensionAPI, lazy: () => ReadonlySet<
       return { content: [{ type: 'text' as const, text: JSON.stringify({ tools: list, unnamed: unnamed(list) }) }], details: {} };
     },
   });
-  // Its own section, so other handlers that rewrite the instructions leave it alone; the text only
-  // changes when the tool set does, so the cached prompt prefix survives ordinary turns.
+
+
   pi.on('before_agent_start', event => {
     const index = onDemandIndex(inventory(pi.getAllTools(), pi.getActiveTools(), '', lazy()));
     if (index) event.systemPromptOptions.sections.on_demand_tools = index;
     else delete event.systemPromptOptions.sections.on_demand_tools;
   });
-  // Once per distinct set, so a new package without a routing line is noticed the first time it loads.
+
   let noticed = '';
   pi.on('agent_start', (_event, ctx) => {
     const missing = unnamed(rows(ctx)), key = missing.join(',');

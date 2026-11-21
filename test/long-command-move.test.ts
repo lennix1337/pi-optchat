@@ -31,8 +31,8 @@ test('a long command still running after the grace returns its background shell 
   assert.deepEqual(reports, ['completed: slow-ok']);
 });
 
-// moves.mjs over 14 days of sessions: 159 of 166 moved commands ended within 30 s (median 3.6 s), and each cost a
-// "[shell ID]" message, polls or an ended turn to get a result a foreground call would have returned.
+
+
 test('a long command that ends within the grace returns its output inline, and no end notice follows', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
   const result = await longCommandMover(jobs, {}, () => true, 10_000)({ command: printed, timeout: 121 }, process.cwd());
@@ -55,8 +55,8 @@ test('a failing long command that ends within the grace is an error result with 
   assert.deepEqual(reports, []);
 });
 
-// A command that echoes the exit code of an earlier stage (`...; echo rc=${PIPESTATUS[0]}`) exits 0 itself. Over 14 days
-// 25 such inline results came back flagged as errors and counted as wasted calls; the model had asked to read that rc.
+
+
 test('a long command that exits 0 after echoing a non-zero rc is not an error result', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
   const result = await longCommandMover(jobs, {}, () => true, 10_000)({ command: `node -e "console.log('1 failed'); console.log('rc=1')"`, timeout: 121 }, process.cwd());
@@ -77,8 +77,8 @@ test('an aborted call stops the shell it started instead of leaving it running',
   assert.deepEqual(reports, []);
 });
 
-// 37 bash calls in 14 days were refused with "Not run: it sleeps N s" and 29 of them were retried as shell_start:
-// the mover now does that step itself.
+
+
 test('a foreground wait is moved like a long command instead of refused', { timeout: 20_000 }, async () => {
   const jobs = new ShellJobs(), reports = recorder(jobs);
   const command = `node -e "setTimeout(() => console.log('waited'), 1500)" ; sleep 16 2>/dev/null || true`;
@@ -114,8 +114,8 @@ test('the bash tool moves a long call to a shell, runs a short one in place, and
   assert.equal(jobs.list().length, 1, 'only the long call started a managed shell');
 });
 
-// 04/11: a subagent is a plain Pi run with no OptChat profile; its `npm test` and `npm run check` were refused with
-// "Choose an OptChat profile first" because the mover asked the profile for a background shell.
+
+
 test('without an OptChat profile (a subagent\'s plain Pi run), a long call runs in place as plain bash, never refused', { timeout: 30_000 }, async () => {
   const jobs = new ShellJobs(), tools = new Map<string, any>();
   const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), on() {} } as unknown as ExtensionAPI;

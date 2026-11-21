@@ -1,4 +1,4 @@
-// Deterministic retrieval-policy replay, NOT an LLM quality or provider-cache benchmark.
+
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,7 +31,7 @@ export async function runResolutionBenchmark() {
       : `Unrelated topic ${i}: ${'detail '.repeat(80)}`);
     await memory.settle(AbortSignal.timeout(10000), 'tree');
     const originalView = memory.render(), originalText = memory.root.map(entry => entry.text);
-    // Baseline: deterministic marker-guided tree descent. This measures tool plumbing, not model branch choices.
+
     let id = 0, n = 64;
     while (n > 1) {
       const lines = plainZoom(id, n).split('\n');
@@ -45,7 +45,7 @@ export async function runResolutionBenchmark() {
     assert.ok(baselineOriginal.includes('disposable KBTeste only'));
     const treeBaseline = { toolCalls: baselineCalls, returnedBytes: baselineBytes };
 
-    // Candidate reads only the selected known branch. A second call opens the exact original passage.
+
     const targeted = await zoom.execute('find', { id: 0, n: 64, findText: 'GXE-FOCUS' });
     const targetedText = textContent(targeted.content);
     assert.ok(targetedText.includes('GXE-FOCUS'));
@@ -58,7 +58,7 @@ export async function runResolutionBenchmark() {
     let baselineRepeatBytes = 0, focusedRepeatBytes = 0;
     const roundtrips = 4;
     for (let turn = 0; turn < roundtrips; turn++) {
-      // Same known original in both policies; candidate retains only the successful page reference.
+
       baselineRepeatBytes += Buffer.byteLength(memory.zoom(17, 1));
       const detail = focus.render(memory);
       assert.ok(detail.includes('disposable KBTeste only'));
@@ -70,7 +70,7 @@ export async function runResolutionBenchmark() {
       focused: { extraToolCalls: 0, detailBytes: focusedRepeatBytes } };
     assert.ok(focusedRepeatBytes < baselineRepeatBytes);
 
-    // The focus can expose an old grant; the current correction and chronological order must stay present.
+
     const revoked = { role: 'user' as const, content: 'Correction: GXE-FOCUS permission revoked; read-only discussion now.', timestamp: 2 };
     const request = buildContext([], [...task, revoked], originalView, 'shared system', [], undefined, undefined, focus.render(memory));
     assert.ok(JSON.stringify(request).includes(revoked.content));

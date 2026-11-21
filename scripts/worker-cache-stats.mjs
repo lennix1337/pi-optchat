@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// What each crew worker pays to build its prompt cache: per worker run (usage rows with role "subagent"), the first call's cacheWrite and
-// cacheRead tokens, the run's total cacheWrite and its cost, then median / p90 over the runs. Read-only: streams usage.jsonl line by line.
-//
-//   node scripts/worker-cache-stats.mjs [usage.jsonl] [--since 2026-11-09] [--until 2026-11-11] [--provider anthropic] [--model sonnet] [--json] [--runs]
-//
-// --since/--until: inclusive UTC dates (YYYY-MM-DD) of each call. --provider/--model: case-insensitive regular expressions
-// (provider default "^anthropic": other providers report no cache writes). The default file is the swlucas05 profile's usage.jsonl.
+
+
+
+
+
+
+
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
@@ -75,11 +75,11 @@ export function summarize(runs) {
 }
 
 async function* usageRows(file) {
-  // Cheap pre-filter: only lines of role subagent are parsed (the file is ~150 MB).
+
   const lines = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line.includes('"role":"subagent"')) continue;
-    try { yield JSON.parse(line); } catch { /* a torn last line */ }
+    try { yield JSON.parse(line); } catch {   }
   }
 }
 

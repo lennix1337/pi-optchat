@@ -92,7 +92,7 @@ export class RoutineService {
       while (await this.runtime.runOnce());
       this.routines.tick();
     } catch (error) {
-      // Another owner took over (this process stalled past its lease): acquire again before the next pass.
+
       if (error instanceof Error && error.message === 'lease_lost') this.owned = false;
       throw error;
     }

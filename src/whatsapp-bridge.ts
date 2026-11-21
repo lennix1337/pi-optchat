@@ -82,7 +82,7 @@ export class WhatsAppBridge {
       const cursor = this.cursor(dir);
       if (!cursor) { this.save(dir, { after: new Date(this.options.now()).toISOString(), seen: [] }); return 0; }
       const out = JSON.parse(await this.options.run(this.config.wacli, this.args('--read-only', 'messages', 'list', '--chat', this.config.chat, '--after', cursor.after, '--asc', '--limit', '20')));
-      // wacli answers { success, data, error }; no store yet (not paired) or a lock problem comes back as an error.
+      // external: wacli returns success, data and error fields and reports unpaired or locked stores as errors.
       if (out?.success === false) throw new Error(`wacli: ${String(out.error).slice(0, 200)}`);
       const messages: Message[] = Array.isArray(out?.data?.messages) ? out.data.messages : [];
       let handled = 0;
@@ -90,7 +90,7 @@ export class WhatsAppBridge {
         if (cursor.seen.includes(m.MsgID)) continue;
         cursor.seen = [...cursor.seen, m.MsgID].slice(-50);
         if (Date.parse(m.Timestamp) > Date.parse(cursor.after)) cursor.after = m.Timestamp;
-        // The cursor moves before handling: a reply whose send failed is never sent twice (at most once).
+
         this.save(dir, cursor);
         if (!this.fromOperator(m)) continue;
         handled++;

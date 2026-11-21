@@ -124,7 +124,7 @@ test('a specialist with no memory or a thin memory is due for the audit, until a
     const day = 86_400_000, now = Date.now();
     const stamp = (specialist: string, days: number) => { const at = (now - days * day) / 1000; utimesSync(join(crewDir, specialist, 'memory.md'), at, at); };
     for (const specialist of ['dentai', 'harness', 'lolidle', 'orphan']) crew.write(specialist, 'charter', `# ${specialist}`);
-    // Memories that predate audit.json: a thin one and a full one, both last written 8 days ago.
+
     writeFileSync(join(crewDir, 'dentai', 'memory.md'), 'x'.repeat(272) + '\n');
     writeFileSync(join(crewDir, 'harness', 'memory.md'), 'y'.repeat(5 * 1024));
     stamp('dentai', 8); stamp('harness', 8);
@@ -196,7 +196,7 @@ test('manager mode adds no delegation reminder to tool results and has no settin
   assert.equal('delegateAfter' in (await import('../src/settings.ts')).SETTINGS, false);
 });
 
-/** A Children over a synthetic provider: `control.reply` is what workers answer, `control.hold` keeps their turn from ending until it resolves. */
+
 async function crewHarness(options: { providers?: Record<string, string[]>; route?: (kind: WorkerKind) => ModelChoice; compress?: Compressor; appendix?: (cwd: string) => Promise<string> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-agents-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
@@ -464,7 +464,7 @@ test('an explicit model that does not resolve fails the spawn, and a numbered ac
   } finally { await close(); }
 });
 
-/** A finished contract run as the crew records it. */
+
 const runOf = (i: number, project: string, report: string, extra: Partial<RunInfo> = {}): RunInfo => ({ id: `run${String(i).padStart(5, '0')}`, task: `Goal: GOAL_${i} keep the tree\n${CONTRACT}`,
   cwd: 'C:/projetos/pi-optchat', model: 'anthropic/claude-sonnet-5-5', thinking: 'high', parentSession: '', depth: 1, started: Date.now() - 3_600_000 + i * 1000, ended: Date.now() - 3_000_000 + i * 1000,
   state: 'completed', report, guidance: [], kind: 'code', project, ...extra });

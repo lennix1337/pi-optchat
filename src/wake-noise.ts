@@ -1,7 +1,7 @@
-/**
- * Text a woken turn must never send as its report (operator, 15/11: "chegou esses 2 wakes e vc n fez nada todo bugado";
- * "nao quero ser avisado de nada, só quero q vc trabalhe"). Pure text checks, shared by the wake guard and the correction scanner.
- */
+
+
+
+
 
 /**
  * A reply shaped like a memory line: `104704-112 OptChat ...`, `id+n|`, `user: ...; echo: ...`, or the date-and-id-range head the

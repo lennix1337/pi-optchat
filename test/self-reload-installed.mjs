@@ -1,4 +1,4 @@
-// Load the installed SDK in a child before support.ts sandboxes HOME. No live profile or provider credentials.
+
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';

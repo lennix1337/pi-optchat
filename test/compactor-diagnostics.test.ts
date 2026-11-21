@@ -87,8 +87,8 @@ test('empty, tool-only, truncated and provider-error replies have distinct diagn
 });
 
 test('an empty reply is asked again in the same compaction, so one blank answer is not an error', async () => {
-  // Claude Haiku 5.5 at high thinking sometimes ends its turn with no text (2026-10-24, node 47172+2);
-  // the same request then succeeds, so a blank answer is retried here rather than surfaced.
+  // external: Claude Haiku may return an empty end-turn response.
+
   const replies: AssistantMessage['content'][] = [[], [{ type: 'text', text: 'talk: SECRET OUTPUT' }]];
   const result = await run(() => replies.shift() ?? []);
   assert.equal(result.error, undefined);
@@ -98,8 +98,8 @@ test('an empty reply is asked again in the same compaction, so one blank answer 
 });
 
 test('a reply that only thinks is empty too, and the same request is asked again', async () => {
-  // Both live empties on 2026-10-24 (19:15:22Z thinking-only, 19:46:09Z no block at all) were end_turn replies
-  // to the byte-identical request that succeeded on attempt 2: provider nondeterminism, not a malformed request.
+  // external: A provider can return different results for byte-identical requests.
+
   const replies: AssistantMessage['content'][] = [
     [{ type: 'thinking', thinking: 'SECRET REASONING' }],
     [{ type: 'thinking', thinking: 'SECRET REASONING' }, { type: 'text', text: 'talk: SECRET OUTPUT' }],
@@ -122,8 +122,8 @@ test('a compactor that keeps answering with nothing still fails, naming the empt
 
 test('interrupted streams are identified without saving partial text or adding immediate retries', async () => {
   for (const message of ['terminated', 'Codex stream ended without a stop reason', 'read ECONNRESET', 'UND_ERR_SOCKET']) {
-    // The provider has started the response: retain the interruption diagnosis and let memory retry later,
-    // rather than issuing another provider call after partial generated output.
+
+
     const result = await run([{ type: 'text', text: 'partial SECRET OUTPUT' }], 'error', { message });
     assert.match(String(result.error), /stream interrupted before a usable summary/);
     assert.match(String(result.error), /fixture\/fixture/);
@@ -180,7 +180,7 @@ test('transport diagnostics allowlist observable nested codes and record abort s
   assert.equal(reset.lastEventElapsedMs, undefined);
   assert.doesNotMatch(JSON.stringify(reset), /SECRET|address|cause/);
 
-  // Pi's lazy stream converts provider setup exceptions to errorMessage, discarding their causes.
+  // external: Pi lazy streams convert provider setup exceptions to errorMessage and discard their causes.
   const flattened = await run([], 'error', { message: 'SECRET ERROR', thrown: true, cause: nested });
   assert.equal(flattened.diagnostics[0].transportCode, undefined);
   assert.equal(flattened.diagnostics[0].errorCategory, 'other');

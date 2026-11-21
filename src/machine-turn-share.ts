@@ -10,7 +10,7 @@ const textOf = (content?: Content): string => typeof content === 'string' ? cont
 export function classifyTrigger(event: Event): Trigger {
   const text = textOf(event.type === 'custom_message' ? event.content : event.message?.content);
   if (text.startsWith('[OptChat heartbeat]')) return 'heartbeat';
-  // A subagent's final report is a manager decision, not a notice: wake-model.ts keeps it on the main model.
+
   if (event.customType === 'optchat-report' && /^\[[0-9a-f]{8}\] /.test(text)) return 'worker';
   if (['gitwatch', 'optchat-report', 'optchat-reload-resume'].includes(event.customType ?? '') ||
       ['[gitwatch]', '[optchat-reload-resume]', '[shell ', '[OptChat claim check]'].some(prefix => text.startsWith(prefix))) return 'machine';

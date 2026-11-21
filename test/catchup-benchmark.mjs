@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { buildCatchup, renderCatchup } from '../src/catchup.ts';
 
-// Synthetic full-night receipt, not a provider/cache/token benchmark.
+
 const entries = [];
 const add = (kind, text) => entries.push({ i: entries.length, kind, text, date: new Date(Date.UTC(2026, 9, 27, 0, entries.length)).toISOString(), size: text.length });
 add('user', 'Synthetic operator request');

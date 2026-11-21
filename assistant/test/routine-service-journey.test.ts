@@ -18,7 +18,7 @@ test('service routine: paused creates nothing; the operator activates it; its sl
   writeFileSync(config, JSON.stringify({ version: 1, profileId: 'routine-owner', databasePath: join(dir, 'tasks.sqlite'), endpoint, token, routines: true,
     executor: { provider: 'fixture', model: 'draft', agentDir: fixtureAgentDir(dir, provider.url), channels: ['Rascunhos'] } }));
   const routine = (...args: string[]) => runScript('routine', [args[0], '--config', config, ...args.slice(1)]);
-  // A one-minute interval whose next slot falls 20 s from now; its previous slot is already in the past.
+
   const firstSlot = Date.now() + 20_000;
   const created = routine('create', '--id', 'resumo', '--title', 'Resumo do dia', '--channel', 'Rascunhos',
     '--schedule', JSON.stringify({ kind: 'interval', minutes: 1, anchor: firstSlot - 60_000 }));

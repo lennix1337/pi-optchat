@@ -1,6 +1,6 @@
-/**
- * Which deadline findings a specialist patrol takes from the manager's wake signals, with no dependencies beyond the deadline rules so the heartbeat and the config read it.
- */
+
+
+
 import { GLOBAL_PROJECT, OVERDUE_MS, type DueFinding, type DueState } from './commitment-due.ts';
 
 export type PatrolKind = 'mechanical' | 'code';

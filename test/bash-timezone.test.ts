@@ -5,7 +5,7 @@ import { bashIanaDate, registerBashTimezoneGuard } from '../src/bash-timezone.ts
 
 test('date with an IANA zone name is caught, since Git Bash has no zoneinfo and prints UTC', () => {
   const caught: [string, string][] = [
-    // 04/11 22:00 BRT: this printed "05/11 00:56 BRT" for hours of reports.
+
     ['TZ=America/Sao_Paulo date "+%d/%m %H:%M BRT"; echo rc=$?', 'America/Sao_Paulo'],
     ['cd x && gh run list; TZ=America/Sao_Paulo date +%H:%M', 'America/Sao_Paulo'],
     ["TZ='Europe/Lisbon' date", 'Europe/Lisbon'],

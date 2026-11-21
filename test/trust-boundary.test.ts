@@ -10,7 +10,7 @@ import { EffectApprovals } from '../src/authorization.ts';
 import { forgetBrowserPages, observeBrowser, sensitivePage } from '../src/external-effects.ts';
 import { ciProblem, directMerges, mergeRefusal, type Exec } from '../src/merge-ci-guard.ts';
 
-// The operator's real incidents and the everyday calls that must stay frictionless, through the real gate.
+
 const repo: Repo = { slug: () => 'lennix1337/pi-optchat', branch: () => 'feat/x' };
 const call = (command: string, tool = 'bash') => ({ session: 'owner', cwd: 'C:/projetos/pi-optchat', tool, input: tool === 'codemode' ? { code: command } : { command } });
 const lines = (found: Effect[]) => found.map(({ action, targets }) => [action, targets.join(',')].join(' '));
@@ -28,7 +28,7 @@ test('incidents: a real WhatsApp, a production HTTP write and an email are irrev
   assert.deepEqual(kinds('curl -X PATCH https://api.dentai.com.br/subscriptions/2cd5eaa6 --json \'{"plan":"br"}\''), ['production-write https:api.dentai.com.br']);
   assert.deepEqual(kinds('Invoke-RestMethod -Method Post -Uri https://usdentai.com/api/x -Body $b'), ['production-write https:usdentai.com']);
   assert.deepEqual(kinds('http POST api.dentai.com.br/leads name=x'), ['production-write https:api.dentai.com.br']);
-  // With a credential, a body, or a destructive verb, an empty request is no longer anonymous probing.
+
   for (const write of ['curl -X POST https://api.dentai.com.br/jobs/run -H "Authorization: Bearer $T"', 'curl -X POST -u admin:x https://api.dentai.com.br/x',
     'curl -X POST -b session=1 https://api.dentai.com.br/x', 'curl -X POST https://api.dentai.com.br/x -H "Stripe-Signature: t=1"',
     'curl -X PUT https://api.dentai.com.br/x', 'Invoke-RestMethod -Method Post -Uri https://api.dentai.com.br/x -Headers $h'])
@@ -36,14 +36,14 @@ test('incidents: a real WhatsApp, a production HTTP write and an email are irrev
   for (const read of ['curl -s https://api.dentai.com.br/health', 'curl -sI https://dentai.com.br/', 'curl -X GET https://api.dentai.com.br/plans',
     'curl -s https://graph.facebook.com/v19.0/me', 'wget -q https://dentai.com.br/robots.txt', 'Invoke-RestMethod https://api.dentai.com.br/health',
     'curl -X POST http://localhost:3000/api/x -d a=1',
-    // An anonymous, empty POST does only what any stranger on the internet can: a probe (webhook signature check, endpoint up).
+
     'curl -s -i -m 20 -X POST https://api.dentai.com.br/webhooks/stripe', 'curl -X POST https://api.github.com/x -H "Accept: application/json"', 'Invoke-WebRequest -Method Post -Uri https://usdentai.com/api/hook', 'grep -rn "curl -X POST https://graph.facebook.com" docs'])
     assert.deepEqual(kinds(read), [], read);
 });
 
 test('incidents 05/11: a page script that writes to production and a Stripe API write are production writes; their reads are not', () => {
   forgetBrowserPages();
-  // 116952: the Odontoclinic landing re-uploaded to production from a page script run through a browser helper.
+
   const pagePut = `node brave-dentai.mjs eval $T "(async()=>{const fd=new FormData();const r=await fetch('https://api.dentai.com.br/attract/admin/suppliers/cd0d87f8/html',{method:'PUT',credentials:'include',body:fd});return r.status})()"`;
   assert.deepEqual(kinds(pagePut), ['production-write https:api.dentai.com.br']);
   assert.deepEqual(kinds(pagePut.replaceAll("'", '\\"')), ['production-write https:api.dentai.com.br'], 'escaped quotes inside the shell string');
@@ -54,7 +54,7 @@ test('incidents 05/11: a page script that writes to production and a Stripe API 
   observeBrowser({ action: 'open', url: 'http://localhost:3000/' }, '{"status":"ok","tab":"L1"}');
   assert.deepEqual(browser("fetch('https://api.dentai.com.br/x',{method:'PATCH',body:b})"), ['production-write https:api.dentai.com.br']);
   assert.deepEqual(browser("fetch('/api/suppliers/1',{method:'DELETE'})"), ['production-write https:dentai.com.br'], 'a relative URL resolves against the tab page');
-  // 116829: a write through the Stripe API with the operator's key changes his live account.
+
   assert.deepEqual(kinds('curl -s https://api.stripe.com/v1/account -u "$K:" -d "business_profile[support_email]=contato@dentai.com.br"'), ['production-write https:api.stripe.com']);
   for (const read of ["fetch('https://api.dentai.com.br/health')", "fetch('https://api.dentai.com.br/x',{method:'GET'})", "fetch('/api/x',{method:'POST'})"])
     assert.deepEqual(browser(read, read.startsWith("fetch('/") ? 'L1' : 'P1'), [], read);
@@ -65,7 +65,7 @@ test('incidents 05/11: a page script that writes to production and a Stripe API 
 
 test('incident 06/11: a script file that submits a form on a production page, or writes to production, is a production write', () => {
   forgetBrowserPages();
-  // 128900: a CDP script in the temp folder filled and submitted the live Odontoclinic form (a fake lead) on an owned tab.
+
   const cdp = "const ws = new WebSocket(tab.webSocketDebuggerUrl);\nawait send('Runtime.evaluate', { expression: `document.getElementById('sim-nome').value = 'Teste'; f.requestSubmit()` });";
   const scripts: Record<string, string> = {
     '/tmp/odo-e2e.mjs': cdp,
@@ -118,7 +118,7 @@ test('the risk gate stops the incidents and lets everyday work through without a
     'gh pr create --fill', 'cat ~/.optchat/profiles/swlucas05/autonomy.json', 'rg -n autonomy src', 'gh run list --limit 5'];
   for (const command of everyday) assert.equal(gate.admit(call(command)), undefined, command);
   for (const tool of ['read', 'edit', 'write', 'zoom', 'ripwire', 'gitwatch']) assert.equal(gate.admit({ ...call(''), tool, input: { path: 'C:/projetos/pi-optchat/src/a.ts' } }), undefined, tool);
-  // 87018/87019: a subagent task text that mentions autonomy.json is prose, not a contract change.
+
   assert.notEqual(riskOf(gate, { ...call(''), tool: 'spawn', input: { tasks: [{ task: 'fix the classifier; never touch autonomy.json' }] } }), 'autonomy contract change');
 });
 
@@ -134,7 +134,7 @@ test('a click on a consent, account or billing page asks; browsing and other pag
   assert.equal(gate.admit(browser({ action: 'evaluate', tab: 'T1', expression: 'document.title' })), undefined, 'reading the page is free');
   assert.equal(gate.admit(browser({ action: 'inspect', tab: 'T1' })), undefined);
   assert.equal(gate.admit(browser({ action: 'click', tab: 'T2', node: 5 })), undefined);
-  // A click that lands on a consent page is caught on the next input: the result reports the page it is on now.
+
   observeBrowser({ action: 'click', tab: 'T2', node: 5 }, '{"status":"ok","tab":"T2","url":"https://console.cloud.google.com/billing/linkedaccount"}');
   assert.equal(riskOf(gate, browser({ action: 'click', tab: 'T2', node: 9 })), 'consent click');
   assert.deepEqual(classifyEffects({ tool: 'browser_harness', input: { action: 'click', tab: 'T2', node: 9 }, cwd: '.' }, repo), [{ action: 'consent', targets: ['console.cloud.google.com'] }]);
@@ -147,7 +147,7 @@ test('a click on a consent, account or billing page asks; browsing and other pag
   forgetBrowserPages();
 });
 
-// browser_harness v2: `exec` runs a Python cell whose helpers drive the same tab, so the gate reads the cell like it reads click/type/evaluate.
+// external: browser_harness v2 exec runs Python cells whose helpers operate on the same tab.
 test('an exec cell with input on a consent, account or billing page asks; reading cells and other pages do not', () => {
   forgetBrowserPages();
   const gate = new EffectApprovals({ mode: 'risk' });
@@ -164,11 +164,11 @@ test('an exec cell with input on a consent, account or billing page asks; readin
   assert.equal(gate.admit(exec(null)), undefined, 'no code, no input');
   assert.equal(gate.admit(exec(5)), undefined, 'code that is not text has no input');
   assert.deepEqual(classifyEffects({ tool: 'browser_harness', input: { action: 'exec', tab: 'T1', code: 'click(5)' }, cwd: '.' }, repo), [{ action: 'consent', targets: ['accounts.google.com'] }]);
-  // A cell that goes to a sensitive page and then clicks is caught before it runs.
+
   assert.equal(riskOf(gate, exec("goto('https://checkout.stripe.com/c/pay')\nclick(1)", 'T2')), 'consent click');
   assert.equal(gate.admit(exec("goto('https://example.org/')\nclick(1)", 'T2')), undefined);
   assert.equal(gate.admit(exec("goto('https://checkout.stripe.com/c/pay')\nstate()", 'T2')), undefined, 'looking is not consenting');
-  // The old actions behave as before; an exec-shaped `code` on them is ignored.
+
   assert.equal(riskOf(gate, { ...call(''), tool: 'browser_harness', input: { action: 'click', tab: 'T1', node: 5 } }), 'consent click');
   assert.equal(gate.admit({ ...call(''), tool: 'browser_harness', input: { action: 'evaluate', tab: 'T1', expression: 'document.title', code: 'click(5)' } }), undefined);
   assert.equal(gate.admit({ ...call(''), tool: 'browser_harness', input: { action: 'inspect', tab: 'T1', code: 'click(5)' } }), undefined);
@@ -185,12 +185,12 @@ test('a fetch or XHR written inside an exec cell is a production write like the 
   assert.deepEqual(cell("r = js('fetch(\\'/api/suppliers/1\\',{method:\"DELETE\"})')"), ['production-write https:dentai.com.br'], 'a relative URL resolves against the tab page');
   assert.deepEqual(cell('js("axios.delete(\'https://usdentai.com/api/users/1\')")'), ['production-write https:usdentai.com']);
   assert.deepEqual(cell('js("fetch(\'https://graph.facebook.com/v19.0/1/messages\',{method:\'POST\',body:b})")'), ['message graph.facebook.com']);
-  // goto in the same cell moves the page a relative URL is read against.
+
   assert.deepEqual(cell("goto('https://usdentai.com/app')\njs(\"fetch('/api/x',{method:'PUT'})\")", 'L1'), ['production-write https:usdentai.com']);
   for (const read of ["js(\"fetch('https://api.dentai.com.br/health')\")", "js(\"fetch('https://api.dentai.com.br/x',{method:'GET'})\")", 'state()', 'click(3)'])
     assert.deepEqual(cell(read), [], read);
   assert.deepEqual(cell("js(\"fetch('/api/x',{method:'POST'})\")", 'L1'), [], 'a local page is not production');
-  // An old action does not read `code`.
+
   assert.deepEqual(lines(classifyEffects({ tool: 'browser_harness', input: { action: 'evaluate', tab: 'P1', code: "js(\"fetch('https://api.dentai.com.br/x',{method:'PATCH'})\")" }, cwd: '' }, repo)), []);
   forgetBrowserPages();
 });
@@ -200,22 +200,22 @@ test('exec and state results move a tab to the page their header reports; goto f
   const consent = (tab: string) => lines(classifyEffects({ tool: 'browser_harness', input: { action: 'exec', tab, code: 'click(1)' }, cwd: '' }, repo));
   observeBrowser({ action: 'open', url: 'https://example.com/' }, '{"status":"ok","tab":"T1"}');
   assert.deepEqual(consent('T1'), []);
-  // The header's url is the page after the cell.
+
   observeBrowser({ action: 'exec', tab: 'T1', code: 'goto(url)' }, '{"status":"ok","tab":"T1","url":"https://pay.google.com/"}\n{"ok":true}');
   assert.deepEqual(consent('T1'), ['consent pay.google.com']);
   observeBrowser({ action: 'state', tab: 'T1' }, '{"status":"ok","tab":"T1","url":"https://example.com/back"}\n[]');
   assert.deepEqual(consent('T1'), [], 'state reports the page too');
-  // Only the header counts: a "url" printed by the page or the cell is not the tab address.
+
   observeBrowser({ action: 'exec', tab: 'T1', code: 'print(js("JSON.stringify(location)"))' }, '{"status":"ok","tab":"T1","url":"https://example.com/back"}\n{"url":"https://pay.google.com/"}');
   assert.deepEqual(consent('T1'), []);
   observeBrowser({ action: 'exec', tab: 'T1', code: 'x' }, 'not a header\n{"tab":"T1","url":"https://pay.google.com/"}');
   assert.deepEqual(consent('T1'), [], 'no header, no move');
-  // Without a header url (a timeout), the last goto of the cell is where the tab is heading.
+
   observeBrowser({ action: 'exec', tab: 'T1', code: "goto('https://example.org/a')\ngoto('https://checkout.stripe.com/c/pay')" }, '{"status":"error","tab":"T1"}');
   assert.deepEqual(consent('T1'), ['consent checkout.stripe.com']);
   observeBrowser({ action: 'exec', tab: 'T1', code: "goto('https://example.org/a')" }, '{"status":"ok","tab":"T1","url":"https://example.com/"}');
   assert.deepEqual(consent('T1'), [], 'the header wins over the goto text');
-  // A cell that goes to a non-literal address leaves the page as it was.
+
   observeBrowser({ action: 'exec', tab: 'T1', code: 'goto(target)' }, '{"status":"error","tab":"T1"}');
   assert.deepEqual(consent('T1'), []);
   observeBrowser({ action: 'state', tab: 'T1' }, '{"status":"ok","tab":"T1","url":"https://example.com/back"}\n[{"url":"https://pay.google.com/"}]');
@@ -224,10 +224,10 @@ test('exec and state results move a tab to the page their header reports; goto f
   assert.deepEqual(consent('T1'), [], 'no url in the header, no move');
   observeBrowser({ action: 'exec', code: 'x' }, '{"status":"ok","url":"https://pay.google.com/"}\n{"tab":"T9"}');
   assert.deepEqual(consent('T9'), [], 'a tab named only by the cell output is not the header');
-  // The header names the tab when the call did not.
+
   observeBrowser({ action: 'exec', code: 'x' }, '{"status":"ok","tab":"T3","url":"https://github.com/settings/tokens"}');
   assert.deepEqual(consent('T3'), ['consent github.com']);
-  // Old actions still read the url anywhere in the result, as before.
+
   observeBrowser({ action: 'click', tab: 'T1', node: 5 }, 'clicked\n{"tab":"T1","url":"https://pay.google.com/"}');
   assert.deepEqual(consent('T1'), ['consent pay.google.com']);
   forgetBrowserPages();
@@ -256,14 +256,14 @@ test('a merge runs only over green CI; --auto may wait only where GitHub itself 
   assert.deepEqual(directMerges('gh pr merge 31 --auto --squash', 'C:/projetos'), [{ pr: '31', dir: 'C:/projetos', auto: true }]);
   const running = { statusCheckRollup: [{ name: 'unit', status: 'IN_PROGRESS' }] };
   assert.equal(ciProblem({ ...running, mergeStateStatus: 'BLOCKED' }, true), undefined, 'required checks: GitHub waits');
-  // 2026-10-30, pi-browser-harness #1: no required checks, so --auto merged at once with CI still running.
+  // external: GitHub can immediately merge with --auto when no checks are required.
   assert.match(ciProblem({ ...running, mergeStateStatus: 'CLEAN' }, true)!, /still running: unit/);
   assert.match(ciProblem({ ...running, mergeStateStatus: 'BLOCKED' })!, /still running/, 'a direct merge never waits');
   assert.equal(ciProblem({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }, { name: 'docs', status: 'COMPLETED', conclusion: 'SKIPPED' }], mergeStateStatus: 'CLEAN' }), undefined);
   assert.match(ciProblem({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }] })!, /failing checks: unit/);
   assert.match(ciProblem({ statusCheckRollup: [{ name: 'windows', status: 'IN_PROGRESS' }] })!, /still running: windows/);
   assert.match(ciProblem({ statusCheckRollup: [{ context: 'ci/legacy', state: 'FAILURE' }] })!, /failing checks: ci\/legacy/);
-  // 18/11: pi-wacli #1-#5 (no workflow) and dentai #193 (checks not registered yet) merged with no check at all; #2 had a red local test.
+
   assert.match(ciProblem({ statusCheckRollup: [] })!, /no CI check/, 'a PR without any check tested nothing');
   const calls: string[][] = [];
   const exec = (view: object | Error): Exec => async (_c, args) => { calls.push(args); if (view instanceof Error) throw view; return { code: 0, stdout: JSON.stringify(view), stderr: '' }; };
@@ -278,7 +278,7 @@ test('a merge runs only over green CI; --auto may wait only where GitHub itself 
 test('a merge the guard cannot check before it runs is refused with the way through: a PR in a shell variable, a PR the same command creates', async () => {
   const calls: string[][] = [];
   const noPr: Exec = async (_c, args) => { calls.push(args); return { code: 1, stdout: '', stderr: 'no pull requests found for branch "docs/ci-runners"' }; };
-  // 2026-11-12: these were refused as "no pull requests found for branch "$n"" and retried in another turn.
+
   const loop = await mergeRefusal('for n in 976 977; do gh pr merge $n -R lennix1337/Genexus18MCP --squash --auto; done', 'C:/', noPr);
   assert.match(loop!, /^Not run: .*shell variable \(\$n\).*one `gh pr merge <N>` per PR/);
   const repo = await mergeRefusal('for r in pi-lsp:3; do gh pr merge 3 -R lennix1337/$p --squash; done', 'C:/', noPr);

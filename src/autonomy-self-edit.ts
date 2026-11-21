@@ -29,7 +29,7 @@ type Edit = { oldText: string; newText: string };
 const isEdit = (value: unknown): value is Edit => typeof value === 'object' && value !== null
   && typeof (value as Edit).oldText === 'string' && typeof (value as Edit).newText === 'string';
 
-/** The file text an `edit`/`write` call would leave, or undefined when it cannot be known exactly. */
+
 function resultingText(tool: string, input: Record<string, unknown>, current: string): string | undefined {
   if (tool === 'write') return typeof input.content === 'string' ? input.content : undefined;
   const edits = Array.isArray(input.edits) ? input.edits : isEdit(input) ? [input] : undefined;
@@ -66,7 +66,7 @@ export function judgeSelfEdit(dir: string | undefined, call: { tool: string; inp
   return compareContracts(current, text, live ? 'self-edit' : `copy ${input.path}`);
 }
 
-/** The live contract text against the text a call would leave: protected rules untouched, or why not. */
+
 function compareContracts(current: string, text: string, label: string): SelfEdit {
   let before: Contract, after: Contract;
   try { before = parseContract(JSON.parse(current)); } catch (error) { return { ok: false, reason: `current autonomy.json is invalid (${String(error)})` }; }

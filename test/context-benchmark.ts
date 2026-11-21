@@ -1,4 +1,4 @@
-// Local, synthetic and no inference. Report raw, previous capped view and recoverable projection separately.
+
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';

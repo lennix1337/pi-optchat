@@ -7,7 +7,7 @@ export const CPU_ON = 90, CPU_OFF = 80, CPU_SUSTAIN_MS = 60_000;
 export const MEM_ON = 85, MEM_OFF = 80, MEM_SUSTAIN_MS = 30_000;
 export const OWNER_ON = 50, OWNER_OFF = 35, OWNER_SUSTAIN_MS = 120_000;
 export const CLEAR_MS = 30_000, DEDUPE_MS = 15 * 60_000;
-/** The least CPU share of one owner that the alert text names, and that counts toward "for N min". */
+
 const NAMED_PCT = 3, DURATION_PCT = 10;
 
 type Phase = { name: 'idle' } | { name: 'rising'; since: number } | { name: 'firing'; since: number; sent: boolean; peak: number; below?: number; culprit: string };
@@ -15,10 +15,10 @@ interface Condition { key: string; on: number; off: number; sustainMs: number; v
 
 const minutes = (ms: number) => ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`;
 
-/**
- * Turns frames into messages: a condition must hold for its sustain time before it speaks, speaks once per culprit per 15 minutes,
- * and says when it is over (but only if it spoke). It sees time only through the frames, so a test drives it with a fake clock.
- */
+
+
+
+
 /** Thresholds a test or a live check may scale down; the defaults above are what runs for real. */
 export interface Limits { cpuOn: number; ownerOn: number; sustainMs: number }
 
@@ -44,7 +44,7 @@ export class MachineAlerts {
       conditions.push({ key: `owner:${g.group}`, ...this.ownerLimits(), value: g.cpuPct,
         describe: (f, value, since) => ({ culprit: `cpu:${g.group}`, text: `${this.name(g)} alone uses ${Math.round(value)}% of the machine (${g.procs} procs) for ${minutes(f.t - since)}.` }) });
     }
-    // A group that went quiet has no condition this frame: treat it as a value of zero so it can recover.
+
     for (const key of this.phases.keys()) if (key.startsWith('owner:') && !conditions.some(c => c.key === key)) conditions.push({ key, ...this.ownerLimits(), value: 0, describe: () => ({ text: '', culprit: key }) });
     const messages: string[] = [];
     for (const c of conditions) { const message = this.step(frame, c); if (message) messages.push(message); }

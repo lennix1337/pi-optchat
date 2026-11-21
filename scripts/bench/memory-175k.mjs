@@ -1,4 +1,4 @@
-// Offline 175k-message Memory.open RSS/heap/latency benchmark. Run via node --experimental-transform-types --expose-gc.
+
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

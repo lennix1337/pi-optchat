@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { atomicWrite } from './store.ts';
 import { type Memory } from './memory.ts';
 
-// One self-contained, read-only HTML snapshot of a profile's memory.
+
 export function exportBrowser(memory: Memory, profile: string, directory = memory.directory) {
   const data = JSON.stringify({
     profile, budget: memory.budget, size: memory.size, view: memory.view,
@@ -12,7 +12,7 @@ export function exportBrowser(memory: Memory, profile: string, directory = memor
   const path = join(directory, 'memory.html'); atomicWrite(path, PAGE.replace('__DATA__', () => data)); return path;
 }
 
-// Client code avoids backticks and template placeholders so it can live in String.raw.
+
 const PAGE = String.raw`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OptChat memory</title>
 <style>
 :root{--bg:#f7f3ea;--paper:#fffdf8;--ink:#2a2723;--muted:#6b6357;--rule:#e4dccd;--accent:#7d5630;--bar:#d5c7ad;--you:#3f6380;--talk:#2a2723;--work:#4c6a41;--tool:#6b6357;--note:#80601f;--hl:#f6e7c1}

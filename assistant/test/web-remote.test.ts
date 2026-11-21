@@ -8,7 +8,7 @@ import { createAssistantServer } from '../src/http/server.ts';
 const tailnet = 'https://desk.tail0000.ts.net';
 type Reply = { status: number; cookie: string | undefined };
 
-/** A tailnet proxy (tailscale serve) reaches the loopback listener with the phone's Host and Origin. */
+
 async function withServer(origins: string[] | undefined, fn: (call: (method: string, host: string, origin?: string) => Promise<Reply>) => Promise<void>) {
   const store = new TaskStore(':memory:', 'remote-test');
   const server: Server = createAssistantServer({ store, token: 'TEST-ONLY', profileId: 'remote-test', web: true, ...(origins ? { webOrigins: origins } : {}) });

@@ -14,11 +14,11 @@ import type { InspectionSource } from '../channels/inspection.ts';
 import { authenticate } from './auth.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from './io.ts';
 
-/** `cause` is only the error class and code (e.g. `Error ERR_INVALID_STATE`), never its message, stack or any request data. */
+
 type Diagnostic = { category: 'internal'; operation: 'request'; cause?: string };
 type ErrorObserver = (diagnostic: Diagnostic) => void | Promise<void>;
 function safeLog(message: string): void {
-  try { console.error(message); } catch { /* Diagnostics must not disrupt the request. */ }
+  try { console.error(message); } catch {   }
 }
 const safeToken = (v: unknown) => typeof v === 'string' && /^[A-Za-z][\w.-]{0,60}$/.test(v) ? v : undefined;
 function describeCause(error: unknown): string | undefined {
@@ -47,7 +47,7 @@ export function isAllowedRemote(address: string | undefined): boolean {
 /** The Google briefing as the service keeps it; absent when the server config names no Google connection. */
 export type BriefingProvider = { latest(): Promise<unknown | null>; refresh(): Promise<unknown> };
 /** The operator's Slack DM and project channels (name -> id) as a chat: queued operator messages, posting back to them only. */
-export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster; channels?: Record<string, string>; /** Where attachments the operator sent are saved. */ filesDir?: string };
+export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster; channels?: Record<string, string>;   filesDir?: string };
 /** The deterministic signal/outcome journal when `"signals":true`; every method validates its own input. */
 export type JournalApi = {
   ingest(value: unknown): unknown;
@@ -65,14 +65,14 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
   if (req.method === 'GET' && url.pathname === '/v1/slack/inbox') {
     query(url, ['after', 'limit', 'wait']);
     const names = new Map(Object.entries(slack.channels ?? {}).map(([name, id]) => [id, name]));
-    // `wait` holds the read (long poll) until a message arrives or the bound passes; without it the read answers at once.
+
     const messages = await slack.relay.waitAfter(numberParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER), numberParam(url, 'limit', 20, 1, 100), numberParam(url, 'wait', 0, 0, 15_000));
     send(res, 200, { messages: messages.map(m => ({ ...m, channelName: names.get(m.channel) ?? null })) }); return;
   }
   if (req.method === 'POST' && url.pathname === '/v1/slack/send') {
     query(url, []);
     const body = await readBody(req);
-    // `channel` names a configured project channel; without it the message goes to the operator's DM.
+
     const known = (value: unknown) => typeof value === 'string' && Object.hasOwn(slack.channels ?? {}, value);
     shape(body, { text: boundedText(40_000), threadTs, ...optionalFields(body, { channel: known, approval: (v: unknown) => typeof v === 'boolean', broadcast: (v: unknown) => typeof v === 'boolean' }) });
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
@@ -85,7 +85,7 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
   if (req.method === 'POST' && url.pathname === '/v1/slack/update') {
     query(url, []);
     const body = await readBody(req);
-    // Rewrites one of the bot's own DM posts (an approval once decided); Slack refuses edits to anyone else's message.
+    // external: Slack refuses edits to another sender's message.
     shape(body, { channel: (v: unknown) => typeof v === 'string' && /^D[A-Z0-9]{2,20}$/.test(v), ts: (v: unknown) => typeof v === 'string' && threadTs(v), text: boundedText(4_000) });
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
     const input = body as { channel: string; ts: string; text: string };
@@ -108,7 +108,7 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
 
 const channelId = (v: unknown) => typeof v === 'string' && /^[CDG][A-Z0-9]{2,20}$/.test(v);
 const messageTs = (v: unknown) => typeof v === 'string' && threadTs(v);
-/** Answers to tap on the Home: up to 3 items, each a short label and 1-4 short answers (a Slack button label fits 75). */
+// external: Slack button labels fit at most 75 characters.
 const homeChoices = (v: unknown) => Array.isArray(v) && v.length <= 3 && v.every(c => c !== null && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).every(k => k === 'label' || k === 'options')
   && typeof c.label === 'string' && c.label.length > 0 && c.label.length <= 120 && Array.isArray(c.options) && c.options.length > 0 && c.options.length <= 4
   && c.options.every((o: unknown) => typeof o === 'string' && o.trim().length > 0 && o.length <= 40));
@@ -122,8 +122,8 @@ const homeSettings = (v: unknown) => {
     && (s.model === undefined || settingRef(s.model)) && (s.level === undefined || level(s.level))
     && (s.levels === undefined || (Array.isArray(s.levels) && s.levels.length <= 7 && s.levels.every(level)));
 };
-/** Reactions on the operator's messages, reading a message he linked, his App Home, and saving a file he sent. */
-const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolean> | ((body: unknown) => Record<string, (v: unknown) => boolean>); /** The outbox kind of an outbound write; reads and local saves have none. */ write?: string; run: (poster: SlackPoster, body: Record<string, any>, slack: SlackBridge) => Promise<unknown> }> = {
+
+const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolean> | ((body: unknown) => Record<string, (v: unknown) => boolean>);   write?: string; run: (poster: SlackPoster, body: Record<string, any>, slack: SlackBridge) => Promise<unknown> }> = {
   '/v1/slack/react': { shape: { channel: channelId, ts: messageTs, name: (v: unknown) => typeof v === 'string' && /^[a-z0-9_+-]{1,40}$/.test(v), remove: (v: unknown) => typeof v === 'boolean' }, write: 'react', run: (p, b) => p.react(b.channel, b.ts, b.name, b.remove) },
   '/v1/slack/fetch': { shape: { channel: channelId, ts: messageTs, thread: messageTs }, run: (p, b) => p.fetchMessage(b.channel, b.ts, b.thread) },
   '/v1/slack/home': { shape: body => ({ text: boundedText(HOME_MAX), ...optionalFields(body, { working: (v: unknown) => typeof v === 'boolean', approval: messageTs, choices: homeChoices, fold: (v: unknown) => v === 'more' || v === 'less', settings: homeSettings }) }), write: 'home',
@@ -236,6 +236,6 @@ export function createAssistantServer({ store, token, profileId, web = false, we
   const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal }).catch(error => { reportError(onError, error); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
-  server.keepAliveTimeout = 10_000; // above Node's 5 s: a client stalled past it would write into a socket the server already closed (ECONNRESET)
+  server.keepAliveTimeout = 10_000; // external: Node's default 5-second timeout can cause ECONNRESET for stalled clients.
   return server;
 }

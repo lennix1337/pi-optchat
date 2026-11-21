@@ -14,7 +14,7 @@ import { mountNavigation } from '../src/navigation.ts';
 import { removeDir } from './support.ts';
 import { ShellJobs } from '../src/shells.ts';
 
-// Children load installed extensions from Pi's agent dir; keep tests away from the user's real one.
+
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
 
 async function until(condition: () => boolean) {
@@ -46,7 +46,7 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     inspector.handleInput('\r');
     assert.deepEqual(actions, [{ open: 'run-99' }]);
     const table = usagePage.render(100).filter(l => /claude-opus|claude-sonnet/.test(l));
-    // Provider identity separates same-named models; older records without it remain visible as unknown.
+
     assert.deepEqual(table.map(l => l.trim().split(/\s+/)), [
       ['main', 'anthropic/claude-opus-5-5', '$20.50', '24%', '1', '$20.50', '164k', '90%', '-', '-'],
       ['compactor', 'anthropic/claude-sonnet-5-5', '$60.00', '72%', '1', '$60.00', '164k', '90%', '-', '-'],
@@ -55,7 +55,7 @@ test('inspector reaches old runs, opens the selected agent, shows usage, resizes
     assert.equal(table[0].indexOf('$20.50') + 6, table[1].indexOf('$60.00') + 6);
     assert.match(usagePage.render(100).join('\n'), /estimated API cost/);
     assert.match(usagePage.render(100).join('\n'), /not a provider bill/);
-    // Untrusted model metadata is omitted rather than stored/rendered into the table.
+
     assert.ok(usagePage.render(100).some(l => /unknown\/unknown/.test(l)));
     assert.ok(usagePage.render(100).every(l => !l.includes('\x1b')));
     assert.doesNotMatch(usagePage.render(40).join('\n'), /claude-/);
@@ -95,7 +95,7 @@ test('d twice deletes the selected agent and the agents it started; any other ke
     assert.deepEqual([...children.history.records.keys()].sort(), ['newest', 'old'], 'its child went with it');
     assert.ok(!existsSync(join(dir, 'runs', 'child.optchat.json')));
     assert.match(selected(), /Task old/, 'the cursor moves to the next row');
-    // Moved onto a row that goes with the one being deleted, the cursor still lands on a row that remains.
+
     inspector.handleInput('\x1b[A');
     assert.match(selected(), /Task newest/);
     run('kept', 2); run('gone', 6); run('gone-child', 7, 'gone');

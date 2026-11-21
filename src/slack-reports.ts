@@ -36,11 +36,11 @@ const one = (s: string, max: number) => {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
 
-// ---- Day log: every channel post, so the morning summary can say what was done. ----
+
 const DAY = 'slack-day.jsonl';
 type DayEntry = { at: number; channel: string | null; line: string };
 export function logSent(dir: string, channel: string | null, text: string, now = Date.now()): void {
-  if (/^(?:⏸|☀️)/u.test(text)) return; // Approval prompts and the summary itself are not work done.
+  if (/^(?:⏸|☀️)/u.test(text)) return;
   appendRecent<DayEntry>(join(dir, DAY), { at: now, channel, line: one(text.replace(/^\*Wake\* · /, ''), 200) }, 256 * 1024, 3 * 86_400_000);
 }
 export const readDay = (dir: string, since: number): DayEntry[] => readJsonl<DayEntry>(join(dir, DAY), e => e.at >= since);
@@ -53,7 +53,7 @@ export function latestPerLink(day: DayEntry[]): DayEntry[] {
   return day.filter((e, i) => { const k = key(e); return !k || last.get(k) === i; });
 }
 
-// ---- The operator's PRs. ----
+
 type Gh = (args: string[]) => Promise<string>;
 const DROPPED = /dial tcp|TLS handshake timeout|connectex|connection (?:reset|refused)|i\/o timeout|EOF/i;
 const defaultGh: Gh = args => new Promise((resolve, reject) => execFile('gh', args, { timeout: 30_000, windowsHide: true, maxBuffer: 4 << 20 }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
@@ -104,14 +104,14 @@ export class PrWatch {
   /** One pass; the first ever only records what exists, so a fresh install posts nothing. */
   async poll(): Promise<number> {
     const owner = this.owner();
-    // Posts go through the assistant service; a profile without it would spend a GitHub call every pass for nothing.
+
     if (!owner || !existsSync(join(owner.dir, 'assistant.json'))) return 0;
     const now = this.now();
     const since = new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
-    // Open PRs come whatever their age: a quiet one must still be seen when it merges or gets comments.
+
     const read = async (q: string) => {
       const args = ['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `q=${q}`];
-      // A read, so a dropped connection (the GitHub API blips for seconds) is retried once; any other failure stays loud.
+
       try { return await this.gh(args); }
       catch (error) {
         const e = error as { message?: string; stderr?: string };
@@ -123,13 +123,13 @@ export class PrWatch {
     const search = async (q: string) => ((JSON.parse(await read(q)) as { data?: { search?: { nodes?: PrNode[] } } })
       .data?.search?.nodes ?? []).filter(n => typeof n?.number === 'number');
     const byKey = new Map<string, PrNode>();
-    // Independent reads: the open list and the recently updated ones go out together (one round trip of waiting, not two).
+
     const [open, updated] = await Promise.all([search('is:pr author:@me is:open'), search(`is:pr author:@me updated:>=${since}`)]);
     for (const n of [...open, ...updated]) byKey.set(`${n.repository.nameWithOwner}#${n.number}`, n);
     const nodes = [...byKey.values()];
     let known: Record<string, PrSeen> | undefined;
     try { known = JSON.parse(readFileSync(join(owner.dir, PRS), 'utf8')); } catch { known = undefined; }
-    // A recorded open PR in neither search is no longer open (merged or closed out of sight): it leaves the open list.
+
     const next: Record<string, PrSeen> = Object.fromEntries(Object.entries(known ?? {})
       .filter(([key, p]) => now - p.seen < PR_KEEP_MS && (byKey.has(key) || !p.sig.startsWith('OPEN:'))));
     let posted = 0;
@@ -143,7 +143,7 @@ export class PrWatch {
       next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel, ...nextSeen(known?.[key], sig, now), ...(pr.updatedAt ? { updated: Date.parse(pr.updatedAt) } : {}) };
       if (!change) continue;
       try { await this.post(`${change} · <${pr.url}|${pr.repository.name}#${pr.number}> ${one(pr.title, 120)}${pr.isDraft && pr.state === 'OPEN' ? ' (draft)' : ''}`, channel, `pr:${key}`); posted++; }
-      catch { /* the next pass sees no change; a lost post is not resent */ }
+      catch {   }
     }
     atomicWrite(join(owner.dir, PRS), JSON.stringify(next));
     return posted;
@@ -154,7 +154,7 @@ export class PrWatch {
   }
 }
 
-// ---- Morning summary in the DM. ----
+
 type Briefing = { localDate: string; items: { section: string; title: string; urgency: string }[]; sources: { sourceId: string; state: string }[] };
 type Request = (owner: ReportOwner, path: string, body?: unknown, timeoutMs?: number) => Promise<unknown>;
 const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assistantRequest(assistantConfig(owner), path, body, timeoutMs);
@@ -232,14 +232,14 @@ export class DailySummary {
     const minutes = local.getHours() * 60 + local.getMinutes();
     if (!owner || minutes < hh! * 60 + mm! || local.getHours() >= (this.options.until ?? 12)) return false;
     const today = localDate(now), file = join(owner.dir, DAILY);
-    try { if ((JSON.parse(readFileSync(file, 'utf8')) as { date?: string }).date === today) return false; } catch { /* first day */ }
-    atomicWrite(file, JSON.stringify({ date: today })); // Before posting: a crash mid-post must not post twice.
+    try { if ((JSON.parse(readFileSync(file, 'utf8')) as { date?: string }).date === today) return false; } catch {   }
+    atomicWrite(file, JSON.stringify({ date: today }));
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
     const interventionScoreboard = await (this.options.interventionScoreboard ?? scanInterventions)();
     const sent = await this.post(composeSummary({ interventionScoreboard, ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir)), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
       approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...sessionShares(this.options.sessionsDir ?? join(homedir(), '.pi', 'agent', 'sessions'), now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE) }), null);
-    // The date above says "tried"; `sentAt` and Slack's `ts` say "delivered": a date alone cannot tell a failed post from a sent one.
+
     const ts = (sent as { ts?: unknown } | undefined)?.ts;
     atomicWrite(file, JSON.stringify({ date: today, sentAt: (this.options.now ?? Date.now)(), ...(typeof ts === 'string' ? { ts } : {}) }));
     return true;
@@ -266,14 +266,14 @@ export function sessionShares(root: string, now: number): Pick<SummaryInputs, 'o
       }
     }
   };
-  try { scan(root); } catch { return {}; } // Optional source: omit rather than publish a partial count.
+  try { scan(root); } catch { return {}; }
   return {
     opusMachineShare: total ? `Opus em avisos de máquina: ${machine}/${total} (${Number((100 * machine / total).toFixed(1))}%) — meta: perto de 0 depois do #447` : undefined,
     wakeWithoutDelivery: wakes ? `Wakes sem entrega: ${without}/${wakes} (${Math.round(100 * without / wakes)}%) — um wake sem PR/commit/spawn conta como vazio` : undefined,
   };
 }
 
-/** GitHub around the operator in the last day; without `gh` or a login, the summary names the gap instead. */
+
 async function githubInputs(gh: Gh, now: number): Promise<Activity> {
   let me: string;
   try { me = (await gh(['api', 'user', '--jq', '.login'])).trim(); }
@@ -281,7 +281,7 @@ async function githubInputs(gh: Gh, now: number): Promise<Activity> {
   return githubActivity(gh, now, me);
 }
 
-/** What the assistant service knows: today's Google briefing and the panel's questions. Both are optional. */
+
 async function assistantInputs(owner: ReportOwner, today: string, request: Request): Promise<Pick<SummaryInputs, 'briefing' | 'waiting'>> {
   let briefing: Briefing | undefined;
   try {
@@ -290,7 +290,7 @@ async function assistantInputs(owner: ReportOwner, today: string, request: Reque
   } catch { briefing = undefined; }
   let waiting: string[] = [];
   try { waiting = ((await request(owner, '/v1/tasks?limit=50')) as { tasks: { status: string; title: string }[] }).tasks.filter(t => t.status === 'needs_input').map(t => t.title); }
-  catch { /* the panel is optional */ }
+  catch {   }
   return { briefing, waiting };
 }
 
@@ -307,7 +307,7 @@ export function localInputs(dir: string, now: number, prs: PrSeen[]): Omit<Summa
   return { predictions: donePredictions(dir, localDate(now)), day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now) };
 }
 
-/** Each account's quota with its resets, and the weekly API-equivalent comparison; a failure drops the section, never the summary. */
+
 function quotaSection(dir: string, now: number, cacheFile: string): Pick<SummaryInputs, 'accounts' | 'weekly'> {
   try {
     const state = readJsonOr<unknown>(cacheFile, {}), economy = loadEconomy({ dir, now, weeks: 2, cacheFile });

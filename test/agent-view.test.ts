@@ -56,7 +56,7 @@ test('agent view shows the child conversation like the main chat, fills the scre
     assert.equal(view.render(40).length, 12);
     view.handleInput('\x1b[5~');
     assert.match(plain(view.render(40)), /PgDn newer/);
-    view.handleInput('x'); // Finished agents take no input.
+    view.handleInput('x');
     view.handleInput('\x1b');
     assert.equal(closed, 1);
   } finally { view.dispose(); await children.close(); await memory.close(); removeDir(dir); }

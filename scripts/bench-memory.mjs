@@ -1,5 +1,5 @@
-// Memory benchmark for a realistic ~175k-message OptChat store and repeated live-session operations.
-// Run: node --experimental-transform-types --expose-gc scripts/bench-memory.mjs [--messages 175000] [--days 50] [--views 200] [--turns 50] [--snapshot]
+
+
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -106,7 +106,7 @@ try {
     if (buf) appendFileSync(mainFile, buf);
   }
 
-  // Build summaries at every tree level across day files.
+
   let treeNodes = 0;
   let treeDay = 0;
   let treeFile = join(memDir, 'tree', `${new Date(baseTime).toISOString().slice(0, 10)}.jsonl`);
@@ -129,7 +129,7 @@ try {
   }
   if (treeBuf) appendFileSync(treeFile, treeBuf);
 
-  // Write a realistic operational-state.json for renderStatus / readHomeWork
+
   writeFileSync(join(dir, 'operational-state.json'), JSON.stringify({
     version: 1,
     entries: [
@@ -149,7 +149,7 @@ try {
   console.log(`Memory.open: ${openMs.toFixed(1)} ms | stats=${JSON.stringify(memory.stats())}`);
   const afterOpen = sample('after Memory.open');
 
-  // Warm up focus & initial render
+
   const focus = new Focus();
   let lastView = memory.render();
   focus.observe({ id: 100, n: 1, kind: 'zoom', text: memory.zoom(100, 1) });
@@ -157,7 +157,7 @@ try {
   focus.render(memory);
   const afterWarmup = sample('after initial render+focus');
 
-  // Repeated view builds (simulating N turns)
+
   const viewStart = performance.now();
   for (let v = 0; v < VIEWS; v++) {
     lastView = memory.render();
@@ -167,7 +167,7 @@ try {
   console.log(`Built view + focus ${VIEWS}x in ${viewMs.toFixed(1)} ms (${(viewMs / VIEWS).toFixed(2)} ms/turn, viewBytes=${Buffer.byteLength(lastView)})`);
   const afterViews = sample(`after ${VIEWS} view builds`);
 
-  // Zoom (tree + cold original + hot original)
+
   for (let z = 0; z < 50; z++) {
     memory.zoom(z * 1024, 64);
     memory.zoom(z * 1000 + 1, 1);
@@ -175,26 +175,26 @@ try {
   }
   const afterZoom = sample('after 150 zooms');
 
-  // findText (zoom-navigation)
+
   for (let f = 0; f < 10; f++) {
     findInRange(memory, { id: 0, n: 131072, findText: `unique_token_${f * 13 + 7}` });
   }
   const afterFind = sample('after 10 findText');
 
-  // search
+
   for (let s = 0; s < 10; s++) {
     memory.search(`unique_token_${s * 17 + 3}`);
   }
   const afterSearch = sample('after 10 memory.search');
 
-  // status / Home rendering
+
   for (let r = 0; r < 50; r++) {
     renderStatus({ profile: 'bench', model: 'fixture/model', memory, operationalFile: join(dir, 'operational-state.json') });
     readHomeWork(dir, ['job-1 · npm test'], Date.now(), ['worker-1']);
   }
   const afterStatus = sample('after 50 status+Home');
 
-  // Append + summarize N turns
+
   const turnStart = performance.now();
   for (let t = 0; t < TURNS; t++) {
     memory.append('user', `turn ${t} user prompt ${'word '.repeat(60)}`);

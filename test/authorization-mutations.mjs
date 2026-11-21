@@ -1,4 +1,4 @@
-// Mutation proof uses generated disposable copies. Never edits the working source.
+
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

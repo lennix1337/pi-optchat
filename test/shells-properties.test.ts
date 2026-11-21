@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ShellJobs, innerExitFailures, plainText, readShell, type ShellJob } from '../src/shells.ts';
 
-// Seeded generator: a failing case reproduces from its seed.
+
 const rng = (seed: number) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 const CASES = 200;
 const pick = <T>(next: () => number, items: readonly T[]) => items[Math.floor(next() * items.length)];
@@ -11,7 +11,7 @@ const job = (output: string, state: ShellJob['state'] = 'running'): ShellJob =>
   ({ id: 'job', command: 'cmd', cwd: '/p', mode: 'background', owner: 'main', state, started: 0, output, notify: 'end' });
 
 test('reading a growing shell again and again shows every byte it printed, once, in order', () => {
-  // Short pieces from a small alphabet make the new output repeat the end of the old one, as logs and progress lines do.
+
   const pieces = ['ok\n', 'ok\n', '.', 'step 1\n', 'a', 'b', ''];
   for (let seed = 1; seed <= CASES; seed++) {
     const next = rng(seed), reads = new Map<string, { output: string; at: number }>();
@@ -47,7 +47,7 @@ test('find by id prefix returns the one job it names, and nothing when the prefi
   const hex = '0123456789abcdef';
   for (let seed = 1; seed <= CASES; seed++) {
     const next = rng(seed), jobs = new ShellJobs(), ids: string[] = [];
-    // Ids share their first characters often, as the short prefixes quoted in notices do.
+
     for (let i = 0; i < 6; i++) { const id = 'ab' + Array.from({ length: 8 }, () => pick(next, [...hex.slice(0, 3)])).join(''); if (!ids.includes(id)) { ids.push(id); jobs.begin(id, 'cmd', '/p', 'background'); } }
     for (const id of ids) {
       assert.equal(jobs.find(id)?.id, id, `seed ${seed}: full id ${id} not found`);

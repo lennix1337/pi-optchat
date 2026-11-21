@@ -49,7 +49,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
   const events: { type: string; text: string }[] = [], errors: string[] = [];
   let done!: () => void, reloadAttempted!: () => void;
   const finished = new Promise<void>(resolve => { done = resolve; });
-  // A timeout kills the test before any assertion or finally block prints, so dump the state just before the limit to show which step stuck.
+
   const started = Date.now(), marks: Record<string, number> = {}, mark = (name: string) => { marks[name] = Date.now() - started; };
   const lag = loopLag();
   const hangDump = originalTimer(() => console.log(`# wake-reload ${mode} still running at 12 s ${JSON.stringify({ maxLoopLagMs: lag.max(), marks, calls, reloads, effects, shutdown, observedContinuation, wakeAt, fired: !!fire, recoveryTimers: recoveryTimers.size, errors })}`), 12000);

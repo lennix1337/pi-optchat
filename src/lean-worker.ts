@@ -1,13 +1,13 @@
 import type { WorkerKind } from './crew.ts';
 
-/** What a contract worker (a spawn with a `kind`) carries on every request. A worker never delegates, browses, runs the operator's desktop or
- *  holds credentials, so its tool declarations and prompt leave out what the manager needs and the worker has never used. */
+
+
 const BASE = ['bash', 'read', 'edit', 'write', 'output_read', 'shell_start', 'shell_status', 'tell_parent', 'tell_peer', 'specialist_memory'];
 const CODE = [...BASE, 'shell_stop', 'operation_state', 'project_checks', 'project_evidence', 'zoom', 'ripwire'];
 const WEB = ['web_enable', 'web_search', 'source_check', 'fetch_content', 'get_search_content'];
 const HARD = [...CODE, 'lsp', 'codemode', ...WEB];
 
-/** Tool names a worker may use, by kind (Pi's `tools` allowlist: everything else stays unregistered). A plain subagent has no kind and no list. */
+
 /** A specialist patrol only reads: no edit or write, and bash is filtered to reads (patrol.ts). Its commitments tool is limited to its own project. */
 export const PATROL_TOOLS: readonly string[] = ['bash', 'read', 'output_read', 'project_evidence', 'specialist_memory', 'commitments'];
 export const WORKER_TOOLS: Record<WorkerKind, readonly string[]> = {
@@ -44,7 +44,7 @@ export function leanProfile(text: string) {
   return kept.join('\n').trimEnd();
 }
 
-/** Skills a worker lists: code navigation and checking, not the whole catalog. */
+
 const SKILLS = new Set(['local-validation', 'systematic-debugging', 'verification-before-completion', 'writing-for-agents']);
 export const leanSkill = (name: string) => name.startsWith('ripwire-') || SKILLS.has(name);
 

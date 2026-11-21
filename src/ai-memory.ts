@@ -45,7 +45,7 @@ export function aiMemoryWriter(server = process.env.AI_MEMORY_SERVER_URL ?? 'htt
     });
     const text = await response.text();
     if (!response.ok) throw new Error(`ai-memory HTTP ${response.status}: ${text.slice(0, 200)}`);
-    // Streamable HTTP may frame the JSON-RPC reply as an SSE `data:` line.
+    // external: Streamable HTTP can return JSON-RPC in an SSE data line.
     const json = text.split('\n').map(line => line.replace(/^data: ?/, '')).find(line => line.startsWith('{'));
     const reply = json ? JSON.parse(json) as { error?: unknown; result?: { isError?: boolean; content?: { text?: string }[] } } : undefined;
     if (!reply || reply.error || reply.result?.isError)

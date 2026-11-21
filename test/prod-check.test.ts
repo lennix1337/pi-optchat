@@ -110,7 +110,7 @@ test('ssh failures are rc 3 and name the cause without echoing stderr', async ()
   assert.equal((await fail('ssh: connect to host x port 22: Connection timed out')).error, 'unreachable');
   assert.equal((await fail('Permission denied (publickey).')).error, 'auth_failed');
   assert.equal(classifySshFailure('boom', 7).hint, 'ssh exited 7');
-  // exit 0 but the remote script never finished: not a healthy answer
+
   const cut = await checkHost('hetzner-dentai', {}, async () => ok(remote().replace('END', '')), () => 0);
   assert.equal(cut.status, 'unreachable');
   assert.equal(cut.error, 'incomplete_answer');
@@ -149,7 +149,7 @@ test('the remote script has no write, privilege or lifecycle verbs', () => {
     assert.doesNotMatch(script, new RegExp(`(^|[\\s;|&(])${verb}(?=[\\s;|&)]|$)`, 'm'), `forbidden verb: ${verb}`);
   }
   assert.doesNotMatch(script, /\btee\b|\bsudo\b|docker (compose|restart|stop|start|rm|kill|exec|run|up|down|cp)\b/);
-  // every docker call is one of the read verbs
+
   const docker = [...script.matchAll(/docker (\S+)/g)].map((m) => m[1]).filter((v) => /^[a-z]+$/.test(v)).sort();
   assert.deepEqual([...new Set(docker)], ['logs', 'ps', 'stats']);
 });
@@ -165,7 +165,7 @@ test('the nginx section prints counts only: no raw line, address, email or path 
     '2026/11/10 19:06:03 [notice] 1#1: signal process started',
   ].join('\n');
   const ran = spawnSync('awk', [program], { input: lines, encoding: 'utf8' });
-  if (ran.error) return; // no awk on this machine: the other tests still cover the script text
+  if (ran.error) return;
   assert.equal(ran.status, 0, ran.stderr);
   const rows = ran.stdout.trim().split('\n').sort();
   assert.deepEqual(rows, ['NGINX total=3 2xx=1 3xx=0 4xx=1 5xx=1', 'TLS TLSv1.2 1', 'TLS TLSv1.3 2']);

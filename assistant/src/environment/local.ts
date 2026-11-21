@@ -12,7 +12,6 @@ export interface Environment {
 
 export type Spawn = (file: string, args: string[], options: SpawnOptions) => ChildProcessWithoutNullStreams;
 
-/** Output a one-shot action may produce; a process that exceeds it is killed and reported as uncertain. */
 const MAX_OUTPUT = 4 * 1024 * 1024;
 
 /**
@@ -42,15 +41,14 @@ function runPlan(launch: Spawn, plan: Plan): Promise<RunResult> {
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => { stdout += chunk; if (stdout.length > MAX_OUTPUT) child.kill(); });
     child.stderr.on('data', (chunk: string) => { stderr += chunk; if (stderr.length > MAX_OUTPUT) child.kill(); });
-    // A child that exits before reading its input reports through its exit code, not as an unhandled stream error.
+    // external: a child may close stdin before reading it, causing a stream error.
     child.stdin.on('error', () => undefined);
     child.stdin.end(plan.stdin ?? '');
-    // A process that could not start is reported uncertain, as the Docker runner always did: a caller cannot tell it apart from one that ran.
     child.once('error', () => { clearTimeout(timer); resolve({ code: 1, stdout, stderr, uncertain: true }); });
     child.once('close', exitCode => {
       clearTimeout(timer);
       const code = typeof exitCode === 'number' ? exitCode : 1;
-      // A killed child (timeout, output limit) has no exit code; Docker reports its own failures as 125-127. Both may have acted.
+      // external: Docker reports its own failures as exit codes 125-127.
       resolve({ code, stdout, stderr, uncertain: exitCode === null || (code >= 125 && code <= 127) });
     });
   });

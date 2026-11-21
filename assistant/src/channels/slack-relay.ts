@@ -4,12 +4,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
 import { immediate } from '../store/transaction.ts';
 
-/**
- * The Slack DM as a chat with the operator's OptChat session. Operator DMs (already authenticated by Socket Mode, the
- * workspace/app check and the sender list) are queued here; the Pi session polls the queue over the loopback API and
- * answers through `SlackPoster`, whose destination is fixed to the operator. Remote text stays the operator's words
- * from a remote device: it never carries terminal approval authority (Pi marks it as extension input).
- */
+
+
+
+
+
+
 /** A Slack file the operator sent: only Slack's own file host is a trusted download. */
 export type SlackFile = { id: string; name: string; mimetype: string; url: string };
 export type RelayMessage = { seq: number; sender: string; channel: string; ts: string; thread: string | null; text: string; receivedAt: string; files?: SlackFile[] };
@@ -31,10 +31,10 @@ export function slackFiles(value: unknown): SlackFile[] {
 }
 
 const MAX_TEXT = 8000;
-/** Without a reader for this long, a new DM gets an automatic receipt so the operator knows it waits in the queue. */
+
 const READER_GRACE_MS = 2 * 60_000;
 const OFFLINE_RECEIPT = 'Recebi. O OptChat não está aberto agora; sua mensagem ficou na fila e eu respondo assim que ele voltar.';
-/** Slack's own refusals that say the post did not happen and may succeed later. */
+// external: Slack marks these refusals as retryable.
 const RETRYABLE_SLACK_ERRORS = new Set(['ratelimited', 'internal_error', 'service_unavailable']);
 
 /** Replaces an approval post with its decided text (no buttons), queued with the click that decided it. */
@@ -64,7 +64,7 @@ export class SlackRelay {
     const columns = this.db.prepare('PRAGMA table_info(slack_relay)').all() as { name: string }[];
     if (!columns.some(c => c.name === 'files')) this.db.exec('ALTER TABLE slack_relay ADD COLUMN files TEXT');
     this.outbox = new Outbox(this.db, options.profileId, { now: this.now, ...options.outbox });
-    // Before any dispatch: a send a previous process left in flight is uncertain, never resent.
+
     this.outbox.recover();
   }
 
@@ -132,7 +132,7 @@ export class SlackRelay {
       const timer = setTimeout(done, waitMs);
       this.arrivals.add(done);
     });
-    // A reader still held when the relay closes answers empty: the database it would read is gone.
+
     return this.closed ? [] : this.after(seq, limit);
   }
 
@@ -156,7 +156,7 @@ const MAX_DOWNLOAD = 50 * 1024 * 1024;
 export const UPLOAD_TYPES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf']);
 const MAX_UPLOAD = 10 * 1024 * 1024;
 const PART = 3900;
-/** Slack's limit for a section block's text; a longer approval post goes out without buttons (a thread reply still decides). */
+// external: Slack section block text is limited to 3,000 characters.
 const SECTION_MAX = 3000;
 /** The button ids `SlackChannel` turns into the operator's `aprovar`/`negar` in the post's thread. */
 export const APPROVAL_ACTIONS: Readonly<Record<string, 'aprovar' | 'negar'>> = { optchat_approve: 'aprovar', optchat_deny: 'negar' };
@@ -174,7 +174,7 @@ export const SETTING_VALUE = /^[\w./:-]{1,80}$/;
 export type HomeSettings = { model?: string; models: { value: string; label: string }[]; level?: string; levels?: string[] };
 export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings };
 
-/** Whole lines per section; a single line longer than a section is cut at the limit. */
+
 function sections(text: string): string[] {
   const out: string[] = [];
   let current = '';
@@ -194,7 +194,7 @@ function sections(text: string): string[] {
  */
 export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
   const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label }, ...extra });
-  // One question needs no caption: its text is right above in "Esperando voc\u00ea" (03/11, it repeated it). Several get a short one each.
+
   const many = (options.choices ?? []).length > 1;
   const caption = (label: string) => { const words = label.replace(/\s+/g, ' ').trim().split(' '); return words.length > 8 ? `${words.slice(0, 8).join(' ')}\u2026` : words.join(' '); };
   const choices = (options.choices ?? []).flatMap((choice, i) => [
@@ -278,7 +278,7 @@ export class SlackPoster {
     for (const [index, chunk] of chunks.entries()) {
       let body: { ts?: unknown; channel?: unknown };
       try { body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
-      // A later part that fails means earlier parts were posted: the whole send is uncertain, never a refusal to retry.
+
       catch (error) { throw index === 0 ? error : new Error('slack_partial_post'); }
       ts = typeof body.ts === 'string' ? body.ts : ts;
       posted = typeof body.channel === 'string' ? body.channel : posted;
@@ -321,7 +321,7 @@ export class SlackPoster {
   /** Reads one message the operator linked (read-only); the bot sees only conversations it is in. */
   async fetchMessage(channel: string, ts: string, thread = ts): Promise<{ user: string; text: string; files: SlackFile[] }> {
     if (!/^[CDG][A-Z0-9]{2,20}$/.test(channel)) throw new Error('unknown_channel');
-    // A reply is read through its thread; the parent always comes first, so the target is picked by ts.
+
     const body = await this.call(`${API}conversations.replies`, { channel, ts: thread, oldest: ts, latest: ts, inclusive: true, limit: 2 }, true) as { messages?: Record<string, unknown>[] };
     const message = body.messages?.find(m => m.ts === ts);
     if (!message) throw new Error('message_not_found');
@@ -339,7 +339,7 @@ export class SlackPoster {
     if (!FILE_HOST.test(url)) throw new Error('invalid_file_url');
     const response = await this.options.fetch(url, { redirect: 'error', signal: AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${this.options.botToken}` } });
     if (!response.ok) throw new Error(`slack_http_${response.status}`);
-    // Without the files:read scope Slack answers with its HTML login page, not an error status.
+    // external: Slack may return an HTML login page without files:read.
     if (/^text\/html/.test(response.headers.get('content-type') ?? '')) throw new Error('slack_file_forbidden');
     const data = Buffer.from(await response.arrayBuffer());
     if (data.length > MAX_DOWNLOAD) throw new Error('file_too_large');
@@ -355,11 +355,11 @@ export class SlackPoster {
     const response = await this.options.fetch(url, {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
       headers: { authorization: `Bearer ${this.options.botToken}`, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8' },
-      // Read methods take form fields.
+      // external: Slack read methods take form fields.
       body: form ? new URLSearchParams(Object.entries(payload).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(payload),
     });
     const body = await response.json() as { ok?: boolean; ts?: unknown; channel?: unknown; error?: unknown };
-    // Slack answers ok:false before it posts or edits anything: a definite refusal, retryable only for its rate and outage codes.
+    // external: Slack ok:false indicates the post or edit was refused.
     if (!body.ok) {
       const code = typeof body.error === 'string' ? body.error.replace(/[^\w.-]/g, '').slice(0, 60) : `http_${response.status}`;
       throw new OutboxRefused(`slack_${code}`, RETRYABLE_SLACK_ERRORS.has(code));

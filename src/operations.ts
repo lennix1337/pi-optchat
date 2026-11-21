@@ -17,7 +17,7 @@ interface Operation {
   recoveryIncidentId?: string;
   startedAt?: number;
   responseAt?: number;
-  /** Pi dispatch event precedes validation/tool_call; it does not prove the tool body ran. */
+  // external: Pi dispatch precedes argument validation and tool_call.
   dispatchObserved?: boolean;
 }
 const listed = (ops: readonly Readonly<Operation>[]) => ops.map(o => `${o.id} (${o.tool})`).join(', ');
@@ -72,7 +72,7 @@ export class OperationJournal {
     const id = `${session}:${call}`;
     if (!bounded(id, 1024) || !bounded(tool, 256)) throw new Error('Invalid operation identity');
     if (this.operations.some(o => o.id === id)) throw new Error('Duplicate operation intent; refusing replay');
-    // Keep unresolved intents; compact only records whose response or reconciliation is durable.
+
     const next = this.operations.length < LIMIT ? [...this.operations] : this.operations.filter(o => o.status === 'started' || o.status === 'response_recorded' && o.error);
     if (next.length >= LIMIT) throw new Error('Operation journal full of uncertain outcomes; reconcile before continuing');
     const fingerprint = createHash('sha256').update(JSON.stringify(args) ?? 'null').digest('hex');
@@ -119,8 +119,8 @@ export class OperationJournal {
 
 const INTERRUPTED = /timed? ?out|timeout|abort|interrupt|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|connection (?:reset|closed)|\b50[234]\b|SIG(?:KILL|TERM|INT|HUP)|terminated|outcome uncertain/i;
 
-// Only known pre-dispatch refusals bypass keyword detection; a generic "Invalid response" may
-// follow execution. Real transport failures and cut-offs still take precedence over these messages.
+
+
 const CUT_OFF = /timed? out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|connection (?:reset|closed)|SIG(?:KILL|TERM|INT|HUP)|abort|interrupt|terminated|\b50[234]\b/i;
 const REFUSED_BEFORE_RUNNING = /^(?:Invalid timeout: [\w.-]+$|Prior check active or outcome uncertain\.(?:\s|$))/;
 function completedCheckOutcome(text: string): boolean | undefined {
@@ -129,11 +129,11 @@ function completedCheckOutcome(text: string): boolean | undefined {
     if (receipt?.schema === 'pi-ripwire/v1' && receipt.kind === 'check'
       && ['passed', 'failed'].includes(receipt.status) && Number.isInteger(receipt.exitCode)
       && receipt.exitCode >= 0) return [124, 137, 143].includes(receipt.exitCode);
-  } catch { /* Non-JSON output is classified conservatively below. */ }
+  } catch {   }
   return undefined;
 }
 
-/** A tool that states its input never reached the target (agent-desktop's `disposition.delivery`) settled the call. */
+
 function declaredNotDelivered(text: string): boolean {
   try {
     const parsed = JSON.parse(text) as { error?: { disposition?: { delivery?: unknown } } } | null;
@@ -146,7 +146,7 @@ function refusedBeforeRunning(text: string): boolean {
   try {
     const parsed = JSON.parse(text) as { status?: unknown; message?: unknown } | null;
     if (parsed && typeof parsed === 'object' && parsed.status === 'error' && typeof parsed.message === 'string') message = parsed.message;
-  } catch { /* plain text */ }
+  } catch {   }
   return REFUSED_BEFORE_RUNNING.test(message.trim()) && !CUT_OFF.test(text);
 }
 
@@ -154,15 +154,15 @@ function refusedBeforeRunning(text: string): boolean {
  * Only an empty, interrupted, timed-out or gateway-failed response leaves external state unknown. */
 export function outcomeUnknown(content: readonly unknown[] | undefined): boolean {
   const text = (content ?? []).map(part => (part as { type?: string; text?: string }).type === 'text' ? (part as { text: string }).text : '').join('\n');
-  // Pi's bash tool ends a completed command with its exit code: the process ran to the end, so a word
-  // like "timeout" in its output (a grep hit, a config key) says nothing about this call. Codes 124,
-  // 137 and 143 are `timeout`/SIGKILL/SIGTERM inside the command, which can still cut an effect short.
+  // external: Pi bash appends a completion exit code; 124, 137 and 143 can indicate interruption.
+
+
   const exit = /Command exited with code (\d+)\s*$/.exec(text);
   if (exit) return ['124', '137', '143'].includes(exit[1]);
-  // Shells append their timeout/abort status last; scanning only the tail keeps test names like
-  // "handles timeout" inside an ordinary failing log from reopening the barrier.
+
+
   if (!text.trim()) return true;
-  // The runner's terminal receipt is execution evidence; words in failed assertions are not.
+
   const completed = completedCheckOutcome(text);
   if (completed !== undefined) return completed;
   if (refusedBeforeRunning(text) || declaredNotDelivered(text)) return false;
@@ -172,15 +172,15 @@ const failedUnobserved = (event: { isError: boolean; content?: readonly unknown[
 
 /** Installed on each session, including child sessions; intent persistence failure blocks execution. */
 export function registerOperationSafety(pi: ExtensionAPI, journal: () => OperationJournal | undefined, incident: (sessionId: string) => string | undefined = () => undefined) {
-  // Providers may reuse call IDs in later turns. Session entry IDs distinguish fresh calls; the map survives intervening tool-result entries.
+  // external: Providers can reuse tool call IDs in later turns.
   const executions = new Map<string, string>();
   const observed = new Set<string>();
   pi.on('tool_call', (event, ctx) => {
     const current = journal();
     if (!current) return;
     try {
-      // Trust installed read-only metadata or a fully recognized diagnostic command,
-      // never a model-supplied flag claiming that an arbitrary command is safe.
+
+
       const readOnly = pi.getAllTools().find(tool => tool.name === event.toolName)?.annotations?.readOnlyHint === true
         || isReadOnlyDiagnostic(event.toolName, event.input);
       const reason = current.blockReason(event.toolName, readOnly);
@@ -190,7 +190,7 @@ export function registerOperationSafety(pi: ExtensionAPI, journal: () => Operati
       current.start(session, call, event.toolName, event.input, readOnly, incident(session), observed.has(`${session}:${event.toolCallId}`));
       executions.set(`${session}:${event.toolCallId}`, call);
     } catch {
-      // A rejected duplicate ID must not let its synthetic error result acknowledge an earlier running call.
+
       executions.delete(`${ctx.sessionManager.getSessionId()}:${event.toolCallId}`);
       return { block: true, reason: 'Could not persist tool intent. Execution blocked; inspect the operation journal before retrying.' };
     }

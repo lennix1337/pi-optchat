@@ -14,7 +14,7 @@ function deferred() {
   return { promise, release };
 }
 
-/** A stale owner finishes after takeover; its write must not land. Returns the observed job. */
+
 async function staleOwnerScenario(dir: string, createRuntime: Create) {
   let now = 1000;
   const gates = { a: deferred(), b: deferred() }; const started = { a: deferred(), b: deferred() };
@@ -35,7 +35,7 @@ async function staleOwnerScenario(dir: string, createRuntime: Create) {
     assert.equal(b.job('job-1')!.state, 'queued', 'takeover recovers the in-flight idempotent job');
     const bRun = b.runOnce();
     await started.b.promise;
-    // Both owners now hold the job as running; the stale one finishes first.
+
     gates.a.release();
     const staleError = await aRun.then(() => null, (error: Error) => error.message);
     gates.b.release(); await bRun;
@@ -55,7 +55,7 @@ test('disposable mutant without the fencing check lets the stale owner overwrite
   const source = readFileSync(fileURLToPath(new URL('../src/runtime/worker.ts', import.meta.url)), 'utf8');
   const anchor = "lease.token !== this.token) throw new Error('lease_lost');";
   assert.equal(source.split(anchor).length, 2);
-  // Copy the whole source tree so the mutant keeps every import the real worker has.
+
   cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
   writeFileSync(join(dir, 'src', 'runtime', 'worker.ts'), source.replace(anchor, 'lease.token !== this.token) void 0;'));

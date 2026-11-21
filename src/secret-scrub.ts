@@ -1,8 +1,8 @@
-/**
- * Deterministic write-path secret scrubber (regex + Shannon entropy).
- * Replaces detected credentials with `[segredo:<tipo>]` while preserving
- * file paths, commit hashes, UUIDs, PR IDs, and credential-free URLs.
- */
+
+
+
+
+
 
 const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
 const URL_AUTH_RE = /(https?:\/\/)([^:@\s/]+):([^@\s/]+)@/gi;
@@ -76,14 +76,14 @@ function insideAnySpan(start: number, end: number, spans: readonly [number, numb
 }
 
 function isHighEntropySecret(token: string): boolean {
-  // Separators mark paths, branch names, test names and tool-call ids, which memory must keep verbatim.
+
   if (token.length < 32 || token.length > 512 || /[/_-]/.test(token)) return false;
   if (PURE_HEX_RE.test(token) || UUID_RE.test(token) || /^(?:[A-Z][a-z]{2,}|\d+)+$/.test(token)) return false;
   const hasLower = /[a-z]/.test(token);
   const hasUpper = /[A-Z]/.test(token);
   const hasDigit = /\d/.test(token);
   if (!hasDigit || !(hasLower || hasUpper)) return false;
-  // Require 3 character classes (upper + lower + digit), or >= 32 chars with higher entropy.
+
   const classes = (hasLower ? 1 : 0) + (hasUpper ? 1 : 0) + (hasDigit ? 1 : 0);
   if (classes < 3 && token.length < 32) return false;
   const threshold = classes >= 3 ? 3.8 : 4.1;

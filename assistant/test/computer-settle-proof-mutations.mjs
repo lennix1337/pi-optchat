@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-// Each mutant weakens the settle proof that lets a retry take over a stale removal reservation; the regression
-// tests must fail by assertion, not by crashing.
+
+
 const mutants = [
   { name: 'present container still being removed counts as settled', tests: ['computer-settle-proof.test.ts'],
     old: "return !inspected.uncertain && id === target && !!status && status !== 'removing';", replacement: 'return !inspected.uncertain && id === target && !!status;' },

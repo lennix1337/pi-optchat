@@ -31,8 +31,7 @@ test('a cap splits the pack in order, a solo report travels alone, and a bundle 
   assert.deepEqual(pack([reports[0], huge, reports[1]], 25).map(m => m.text.length), [10, 100, 10], 'a report over the cap goes whole, alone');
 });
 
-/** Pi 1.5: a send from idle starts a turn after a delay; a second send made meanwhile is refused and lost.
- * The start wait is far above that delay: a CI runner stalling the event loop must not read as a Pi that never started. */
+// external: Pi 1.5 can refuse a second send while an idle send is starting asynchronously.
 const fakePi = () => {
   const pi = { running: false, starting: false, delivered: [] as R[], lost: 0,
     send(report: R, fromIdle: boolean) {
@@ -62,7 +61,7 @@ test('30 reports pushed at once while idle leave in ceil(size/cap) messages, non
 test('an event-loop stall longer than the fake start delay does not lose a report', async () => {
   const { pi, dispatcher } = fakePi();
   dispatcher.pushAll([{ text: '[one] done' }]);
-  for (const end = Date.now() + 80; Date.now() < end;) { /* stall the loop while the start is pending */ }
+  for (const end = Date.now() + 80; Date.now() < end;) {   }
   await sleep(60);
   assert.equal(pi.lost, 0);
   assert.deepEqual(pi.delivered.map(m => m.text), ['[one] done']);

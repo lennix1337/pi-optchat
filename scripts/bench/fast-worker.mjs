@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Offline benchmark for fast-path plan/mechanical workers (no external MCP servers vs opt-out mcp: true).
-// Prints JSON { metric, value, unit, lowerIsBetter, ... } to stdout.
+
+
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -100,7 +100,7 @@ async function runCase({ kind, mcp }) {
     const lastLine = r.stdout.trim().split('\n').filter(Boolean).at(-1);
     const parsed = JSON.parse(lastLine);
     const pids = pidsFromLog(log);
-    // Re-measure or note: servers may have already exited at close(), so spawn count is exact and workerRssBytes is measured live.
+
     return {
       firstResponseMs: Number(parsed.firstResponseMs.toFixed(2)),
       workerRssMb: Number((parsed.workerRssBytes / (1024 * 1024)).toFixed(2)),
@@ -130,7 +130,7 @@ const before = await bench({ kind: 'plan', mcp: true });
 const afterPlan = await bench({ kind: 'plan' });
 const afterMechanical = await bench({ kind: 'mechanical' });
 
-// Also measure RSS of 3 live fake-mcp processes directly so we report real OS WorkingSet64 saved.
+
 async function measureMcpRssMb(count) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-mcp-rss-'));
   const log = join(dir, 'servers.log');

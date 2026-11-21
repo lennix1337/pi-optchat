@@ -41,13 +41,13 @@ test('a call that follows a tool result carries no status line: the turn already
 test('the status line goes last, and the turn\'s cache mark sits on the block before it', () => {
   const line = atWork(board([{}]))!;
   assert.deepEqual(buildContext([user], [user], view, 'prompt', [], undefined, line).at(-1), { role: 'user', content: [{ type: 'text', text: line }], timestamp: 0 });
-  // As Anthropic receives it, right after a tool result: the line changes between calls, so a mark on it would be written and never read.
+
   const payload = { messages: [
     { role: 'user', content: [{ type: 'text', text: view }, { type: 'text', text: 'question' }] },
     { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'bash', input: {} }] },
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] },
     { role: 'user', content: [{ type: 'text', text: line }] },
-    // Pi ends Anthropic requests with an empty system message carrying settings such as effort.
+    // external: Pi ends Anthropic requests with an empty system message carrying settings such as effort.
     { role: 'system', content: [], output_config: { effort: 'low' } },
   ] };
   const output = cachePayload(payload) as typeof payload & { cache_control?: unknown };

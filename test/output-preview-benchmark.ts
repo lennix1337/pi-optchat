@@ -21,7 +21,7 @@ const results = Object.entries(fixtures).map(([name, text]) => {
   const samples: number[][] = [[], []];
   const functions = [baseline, previewOutput];
   for (let n = 0; n < 41; n++) {
-    // Alternate execution order within the same process to reduce warm-up/order bias.
+
     for (const index of n % 2 ? [1, 0] : [0, 1]) {
       const start = performance.now();
       for (let i = 0; i < 3; i++) functions[index](text);

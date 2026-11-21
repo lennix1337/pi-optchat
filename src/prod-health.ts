@@ -11,22 +11,22 @@ import { applyRemedies, type Remedy } from './self-fix.ts';
 import { appendSignals } from './journal-spool.ts';
 import { atomicWrite, readJsonOr } from './store.ts';
 
-/**
- * Production health as a sense, read-only and without personal data: every few minutes each probe asks a public URL and
- * checks more than the status code (the expected content, the API's own subsystem report, latency) and reads the
- * deployed web build. A probe that fails twice in a row alerts once: a line in the project's Slack channel and one
- * woken turn; its recovery is posted without a turn. Steady state (healthy or still down) costs no model call.
- *
- * This sense looks from outside. For the inside of the host (containers, nginx status classes, origin TTFB, Prometheus
- * blackbox probes, disk) run `node scripts/prod-check.mjs [--host hetzner-dentai] [--since MIN] [--json]`: one read-only
- * ssh session, exit 0 healthy, 1 problems, 3 could not check.
- */
-/** `detail` replaces the latency in status lines for probes that measure something else (free disk, memory). */
+
+
+
+
+
+
+
+
+
+
+
 /** `edge`: CDN colo and cache status (Cloudflare cf-ray / cf-cache-status), so a slow stretch can be tied to a path. `waitMs`: time until the server answered (response headers); `ms - waitMs` is reading the body. Only remote probes have it. */
 export interface ProbeResult { ok: boolean; problem?: string; ms: number; build?: string; detail?: string; waitMs?: number; edge?: string }
 export interface Probe { name: string; url: string; slowMs: number; judge(status: number, body: string): { problem?: string; build?: string } }
-/** A probe of this machine rather than a URL. */
-/** `remedy` runs once when the probe goes down (see self-fix.ts). */
+
+
 /** `dir` is the profile directory the round runs for, for probes that read its files (assistant.json). */
 export interface LocalProbe { name: string; check(context?: { dir: string }): ProbeResult | Promise<ProbeResult>; remedy?: Remedy }
 export type Fetcher = (url: string, timeoutMs: number) => Promise<{ status: number; body: string; headersMs?: number; edge?: string }>;
@@ -124,7 +124,7 @@ export function advance(state: HealthState, results: Map<string, ProbeResult>, n
   return out;
 }
 
-/** Every remote probe failing to resolve its host at once says this machine's DNS is down, not production: such a round counts for nothing (the history still records it). One probe failing alone stays a real failure. */
+
 const DNS_FAULT = /\((ENOTFOUND|EAI_AGAIN)\)$/;
 function withoutLocalNetworkFaults(probes: readonly (Probe | LocalProbe)[], results: Map<string, ProbeResult>): Map<string, ProbeResult> {
   const remote = probes.filter(p => !('check' in p)).map(p => results.get(p.name)!);
@@ -142,14 +142,14 @@ export function healthLines(state: HealthState): string[] {
 
 const FILE = 'prod-health.json';
 const NL = String.fromCharCode(10);
-/** Rows kept in a monitor's history: at 5-minute rounds and three probes, about a day and a half; trimmed to HISTORY_KEEP once it passes HISTORY_MAX. */
+
 const HISTORY_MAX = 3000, HISTORY_KEEP = 2000;
 export let prodHealthReadBytes = 0;
 const historyLines = new Map<string, { size: number; lines: number }>();
 function fileSize(file: string): number {
   try { return statSync(file).size; } catch { return 0; }
 }
-/** One row per probe per round, so a slow or failed stretch can be dated afterwards (the state file only keeps the last round). Best effort: a full disk must not stop the probes. */
+
 function appendHistory(file: string, at: number, results: Map<string, ProbeResult>): void {
   if (!results.size) return;
   try {
@@ -177,7 +177,7 @@ function appendHistory(file: string, at: number, results: Map<string, ProbeResul
     } else {
       historyLines.set(file, { size: preSize + Buffer.byteLength(text), lines });
     }
-  } catch { /* history is diagnostic only */ }
+  } catch {   }
 }
 export const PC_FILE = 'pc-health.json';
 export function readHealth(dir: string, file = FILE): HealthState {
@@ -231,7 +231,7 @@ export const defaultMonitors = (): Monitor[] => [
 export async function tellTransitions(transitions: Transition[], post: (text: string, channel: string | null) => Promise<unknown>, wake: (text: string) => Promise<unknown> | void, test = false, route: Route = PRODUCTION) {
   for (const t of transitions) {
     const text = `${test ? '[teste de injeção] ' : ''}${t.text}`;
-    // A failed post is not lost: the wake below carries the same text, and a failed wake is posted instead.
+
     const posted = route.slack === false ? false : await post(text, route.channel).then(() => true, () => false);
     if (t.kind !== 'down' || !route.wakes) continue;
     const woke = await Promise.resolve(wake(`[OptChat health] ${text}\n${route.wakeNote ?? "Production is failing a read-only health probe. Investigate read-only (logs, recent deploys), report in #dentai, and do not write to production without the operator's OK."}${test ? ' This is a controlled injection test: confirm you received it and stop.' : ''}`)).then(() => true, () => false);
@@ -273,8 +273,8 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
     const o = owner();
     if (busy || !o || !existsSync(join(o.dir, 'assistant.json'))) return;
     busy = true;
-    try { await sample(o.dir, Date.now()); } catch { /* the history is a courtesy: the health round goes on */ }
-    // A failed round is retried next interval; /optchat-health shows why it failed.
+    try { await sample(o.dir, Date.now()); } catch {   }
+
     lastError = await roundAll(monitors, o.dir, tell, (transitions, monitor) => {
       appendSignals(o.dir, healthSignals(monitor.health.file, transitions, monitor.health.now()));
     });
@@ -306,7 +306,7 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
   });
 }
 
-/** Runs every monitor and tells its transitions; one monitor's failure does not skip the others. Returns the failures, if any. */
+
 async function roundAll(monitors: readonly Monitor[], dir: string, tell: (t: Transition[], test: boolean, route: Route) => Promise<void>, observe?: (t: Transition[], monitor: Monitor) => void): Promise<string | undefined> {
   const errors: string[] = [];
   for (const m of monitors) {
@@ -319,7 +319,7 @@ async function roundAll(monitors: readonly Monitor[], dir: string, tell: (t: Tra
   return errors.length ? errors.join('; ') : undefined;
 }
 
-/** A synthetic probe failing enough rounds to go down, in its own state directory. */
+
 async function injectedOutage(dir: string): Promise<Transition[]> {
   const probe: Probe = { name: 'Sonda de teste', url: 'https://example.invalid/', slowMs: 1000, judge: () => ({ problem: 'falha injetada' }) };
   const fake = new ProdHealth({ probes: [probe], fetcher: async () => ({ status: 500, body: '' }) });

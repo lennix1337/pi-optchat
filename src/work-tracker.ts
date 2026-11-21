@@ -20,7 +20,7 @@ import { textContent } from './transcript.ts';
 export type WorkOwner = { dir: string; name: string; sessionId: string };
 type Status = 'working' | 'needs_input' | 'ready_for_review' | 'succeeded' | 'failed';
 type Request = (owner: WorkOwner, path: string, body?: unknown) => Promise<unknown>;
-/** `project` (dentai, genexus18mcp, harness) rides on every event as `<channel> · <project>`; the panel filters by it. */
+
 type Open = { id: string; channel: string; revision: number; status: string; project?: Project };
 type Watched<T> = { subscribe(listener: () => void): () => void; snapshot(): T[] };
 
@@ -68,7 +68,7 @@ export class WorkTracker {
   /** The first user message of a run opens its task. */
   userMessage(text: string): void {
     if (this.started) {
-      // The operator typing into a wake makes it his turn: its end is the answer he waits for, not background work.
+
       if (this.run?.channel === 'Wake' && classify(text).channel === 'OptChat') this.run.channel = 'OptChat';
       return;
     }
@@ -124,7 +124,7 @@ export class WorkTracker {
         let entry = tracked.get(id);
         const finished = end(item);
         if (!entry) {
-          if (finished) continue; // Ended before we saw it run (e.g. history after a reload): not new work.
+          if (finished) continue;
           const { channel, title, project } = start(item);
           entry = { open: { ...this.open(channel), project }, done: false }; tracked.set(id, entry);
           const open = entry.open;
@@ -169,7 +169,7 @@ export class WorkTracker {
   }
 
   private async move(owner: WorkOwner, open: Open, next: Status, note: string): Promise<void> {
-    if (open.revision === 0 || open.status === next) return; // Never created (service down): nothing to move.
+    if (open.revision === 0 || open.status === next) return;
     const task = await this.request(owner, `/v1/tasks/${encodeURIComponent(open.id)}/transition`, { expectedRevision: open.revision, nextStatus: next, context: this.context(owner, open, note) }) as { revision: number; status: string };
     open.revision = task.revision; open.status = task.status;
   }

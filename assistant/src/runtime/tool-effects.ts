@@ -89,7 +89,7 @@ export class ToolEffects {
       const task = row ? JSON.parse(row.snapshot) as { status?: unknown; revision?: unknown } : undefined;
       if (item.state !== 'waiting' || task?.status !== 'working' || task.revision !== item.revision || !this.current(item.taskId, item.revision) || this.port.status(item.request.operationId) !== 'absent') throw new Error('tool_stale');
       if (!item.reviewId) { this.db.exec('COMMIT'); return item; }
-      // An expired window, a denied or a revoked review can never become ready: end the effect instead of waiting forever.
+
       if (item.request.expiresAt <= Date.now() || !this.port.ready(item.request, item.reviewId) && this.port.open && !this.port.open(item.request, item.reviewId)) {
         this.db.prepare("UPDATE tool_effects SET state = 'cancelled' WHERE id = ? AND state = 'waiting'").run(id);
         this.db.exec('COMMIT'); return this.get(id);

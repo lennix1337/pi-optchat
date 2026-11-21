@@ -31,9 +31,9 @@ function boundedResult(text: string, request: string) {
 function lineRange(text: string, startLine: number, requestedEnd: number) {
   if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(requestedEnd) || startLine < 1 || requestedEnd < startLine)
     throw new Error(`Invalid line range: use 1-based startLine <= endLine, at most ${OUTPUT_QUERY_MAX_LINES} lines per query`);
-  // A range wider than the cap is served up to the cap; the header names the range returned so the caller continues from there.
+
   let endLine = Math.min(requestedEnd, startLine + OUTPUT_QUERY_MAX_LINES - 1);
-  // Count every line for the header, but retain offsets only for the requested range.
+
   const breaks = /\r\n|\n|\r/g;
   let count = 1, from = 0, to = text.length;
   while (breaks.test(text)) {
@@ -99,7 +99,7 @@ function parsePath(path: string): PathSegment[] {
   return segments;
 }
 
-/** The error for an index the value cannot serve, naming the indexes it can. */
+
 function missingIndex(value: unknown, index: number) {
   const missing = `JSON path index ${index} does not exist; `;
   if (!Array.isArray(value)) return new Error(`${missing}the value is not an array`);
@@ -244,7 +244,7 @@ function outlineQuery(text: string, maxDepth = 3) {
     try {
       const root: unknown = JSON.parse(text);
       return boundedResult(`[Outline: json; ${bytes} bytes]\n${describeJson(root, 0, maxDepth)}`, 'a smaller maxDepth');
-    } catch { /* Fall through to text/log outline. */ }
+    } catch {   }
   }
   const lines = text.split(/\r\n|\n|\r/);
   if (lines.some(l => l.startsWith('diff --git '))) {

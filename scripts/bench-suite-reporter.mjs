@@ -1,4 +1,4 @@
-// JSONL evidence for scripts/bench-verify.ps1, deliberately outside the checkout.
+
 import { appendFileSync } from 'node:fs';
 export default async function* report(events) {
   for await (const event of events) {

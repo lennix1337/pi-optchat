@@ -44,7 +44,7 @@ test('real isolated browser refuses cross-origin/private redirects, mixed DNS, w
     assert.ok(lookups.includes('mixed.test'), 'mixed DNS refusal was exercised in the real broker');
     assert.ok(relay.failures() >= 2, 'mixed DNS and response bound failures are recorded');
     assert.equal((await run(['close'])).code, 0);
-    // The open relay holds an operation lease, so a takeover waits until the broker has really exited.
+
     await assert.rejects(computers.takeover(c.id, authority), /computer_operations_active/);
     await relay.close();
     await computers.takeover(c.id, authority);

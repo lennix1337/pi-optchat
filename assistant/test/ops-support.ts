@@ -46,7 +46,7 @@ export type ScriptResult = { status: number | null; stdout: string; stderr: stri
 function parsed(status: number | null, stdout: string, stderr: string): ScriptResult {
   const last = stdout.trim().split('\n').at(-1) ?? '';
   let json: Record<string, unknown> = {};
-  try { json = JSON.parse(last) as Record<string, unknown>; } catch { /* left empty: the caller asserts on status and output */ }
+  try { json = JSON.parse(last) as Record<string, unknown>; } catch {   }
   return { status, stdout, stderr, json };
 }
 /** Runs one ops script from `dir` (default: this checkout's scripts) and parses its final JSON line. */

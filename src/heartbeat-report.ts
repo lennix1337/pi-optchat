@@ -5,7 +5,7 @@ import { memoryShapedReply } from './wake-noise.ts';
 
 export { memoryShapedReply };
 
-/** The parts of Pi's messages a woken turn is read from. */
+
 interface TurnMessage { role: string; content?: unknown; toolCallId?: string; isError?: boolean; stopReason?: string; errorMessage?: string }
 interface Block { type?: string; text?: string; id?: string; name?: string; arguments?: { command?: unknown; action?: unknown } }
 
@@ -13,13 +13,13 @@ const blocks = (content: unknown): Block[] => Array.isArray(content) ? content.f
 const textOf = (content: unknown) => typeof content === 'string' ? content : blocks(content).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n');
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
 
-// `git commit`, `git -C dir push`, `git -c k=v commit`, anywhere in a shell command.
-// `scripts/ship.mjs` commits and pushes too: its wakes were logged as "committed nothing" (03/11 15:50, PR #97).
-// `gh pr merge` delivers too: a wake that merged a ready PR was logged as "committed nothing".
+
+
+
 const gitEffect = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:commit|push)\b|\bship\.mjs\b|\bgh\s+pr\s+merge\b/;
 const MAX_COMMITS = 20;
 
-/** `commit <sha> <branch>`, `push <old>..<new> <branch>` or `push new <branch>` for each one git printed. */
+
 function gitLines(output: string): string[] {
   const found: string[] = [];
   for (const m of output.matchAll(/^\[(.+?) ([0-9a-f]{7,40})\]/gm)) found.push(`commit ${m[2]} ${m[1].replace(/ \(root-commit\)$/, '')}`);
@@ -40,14 +40,14 @@ export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
       tools++;
       const command = block.arguments?.command;
       if (block.id && ['bash', 'powershell'].includes(block.name ?? '') && typeof command === 'string' && gitEffect.test(command)) gitCalls.set(block.id, command.slice(command.search(gitEffect)));
-      // `crew` accept ships a worker's branch itself, with no shell call: in manager mode it is how a wake delivers, and such wakes were logged as "committed nothing".
+
       if (block.id && block.name === 'crew' && block.arguments?.action === 'accept') accepts.add(block.id);
     } else if (message.role === 'toolResult' && message.toolCallId && gitCalls.has(message.toolCallId) && !message.isError) {
-      // `git commit -q`, `git push -q` and `gh pr merge` print no ref line: the successful command itself is the record.
+
       const lines = gitLines(textOf(message.content)), command = gitCalls.get(message.toolCallId) ?? '';
       for (const line of lines.length ? lines : [`ran ${oneLine(command).slice(0, 80)}`]) log(line);
     } else if (message.role === 'toolResult' && message.toolCallId && accepts.has(message.toolCallId) && !message.isError) {
-      // Unlike a git command, an accept that answered is no record by itself: an uncertain ship answers too, and names no PR.
+
       const pr = acceptedPr(textOf(message.content));
       if (pr) log(`pr ${pr.url}`);
     }
@@ -82,7 +82,7 @@ export function silentWake(summary: WakeSummary): boolean {
   return !summary.commits.length || memoryShapedReply(summary.reply);
 }
 
-export interface ReportContext { now: number; cap: number; minutes: number; /** Every wake of the daily cap's count; without it the report counts the logged wakes. */ wakes?: number[] }
+export interface ReportContext { now: number; cap: number; minutes: number;   wakes?: number[] }
 
 const DAY = 24 * 60 * 60_000, SHOWN_REPLY = 100;
 const clock = (at: number) => { const d = new Date(at); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };

@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-// Each guard is removed from a disposable copy of the source; the named test must then fail for the stated reason.
+
 const assistant = dirname(dirname(fileURLToPath(import.meta.url)));
 const root = mkdtempSync(join(tmpdir(), 'assistant-google-mutations-'));
 const google = 'src/connectors/google.ts';

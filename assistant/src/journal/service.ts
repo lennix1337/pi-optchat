@@ -51,7 +51,7 @@ export class SignalService {
       const category = decision.action === 'notify' ? 'signal_attention' : 'signal_cleared';
       for (const channel of this.channels) {
         try { this.notify({ id: `signal-${signal.sequence}`, channel, category, ref: signal.signalId }); notifications++; }
-        catch { /* The journal stays the source of truth; a refused notice is visible there. */ }
+        catch {   }
       }
     }
     return { signal, duplicate, decision, notifications };

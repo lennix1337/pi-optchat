@@ -105,12 +105,12 @@ test('never records auth headers, cookies, or secret query params while forwardi
 
     const summary = await proxy.close();
 
-    // Upstream still received the real headers & URL for transparent proxying.
+
     assert.equal(seenUpstreamHeaders?.authorization, `Bearer ${secrets[0]}`);
     assert.equal(seenUpstreamHeaders?.['x-api-key'], secrets[1]);
     assert.equal(seenUpstreamUrl, `/v1/messages?api_key=${secrets[4]}&beta=true`);
 
-    // Redacted metadata keeps non-secret headers and redacts sensitive ones.
+
     assert.equal(summary.turns[0].requestHeaders?.['x-request-id'], 'req-visible-id');
     assert.equal(summary.turns[0].requestHeaders?.authorization, '[REDACTED]');
     assert.equal(summary.turns[0].requestHeaders?.['x-api-key'], '[REDACTED]');
@@ -120,7 +120,7 @@ test('never records auth headers, cookies, or secret query params while forwardi
     assert.equal(summary.turns[0].responseHeaders?.['x-auth-token'], '[REDACTED]');
     assert.ok(summary.turns[0].path?.includes('api_key=REDACTED'));
 
-    // Every persisted file in outDir must contain zero secret values.
+
     const files = readdirSync(outDir);
     assert.ok(files.includes('turns.jsonl'));
     assert.ok(files.includes('summary.json'));
@@ -132,7 +132,7 @@ test('never records auth headers, cookies, or secret query params while forwardi
       }
     }
 
-    // Direct unit check on helpers.
+
     const redacted = redactHeaders({ Authorization: 'Bearer abc', 'X-My-Secret': 'xyz', Accept: 'application/json' });
     assert.deepEqual({ ...redacted }, { authorization: '[REDACTED]', 'x-my-secret': '[REDACTED]', accept: 'application/json' });
     assert.equal(redactPath('/v1/chat?token=abc&model=x'), '/v1/chat?token=REDACTED&model=x');
@@ -164,7 +164,7 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
     }
 
     if (reqCount === 2) {
-      // Streaming SSE response on turn 2 (cache hit).
+
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write(`event: message_start\ndata: ${JSON.stringify({
         type: 'message_start',
@@ -178,7 +178,7 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
       return;
     }
 
-    // Turn 3: cache miss due to tool mutation.
+
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       id: 'msg_3',
@@ -212,7 +212,7 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
     ],
   };
 
-  // Turn 2: identical prefix, cache_control moved forward to new turn.
+
   const turn2Body = {
     model: 'claude-sonnet-4-5',
     tools: baseTools,
@@ -224,7 +224,7 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
     ],
   };
 
-  // Turn 3: mutates tools[1] ("bash") description -> breaks KV cache!
+
   const turn3Body = {
     model: 'claude-sonnet-4-5',
     tools: [
@@ -254,11 +254,11 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
     assert.equal(summary.turnCount, 3);
     assert.equal(summary.cacheBreaks, 1);
 
-    // Exact JSON saved on disk.
+
     assert.equal(readFileSync(join(outDir, 'turn-0001.request.json'), 'utf8'), JSON.stringify(turn1Body));
     assert.equal(readFileSync(join(outDir, 'turn-0003.request.json'), 'utf8'), JSON.stringify(turn3Body));
 
-    // TTFB & usage per turn.
+
     for (const t of summary.turns) {
       assert.ok(typeof t.ttfbMs === 'number' && t.ttfbMs >= 5, `expected TTFB >= 5ms, got ${t.ttfbMs}`);
     }
@@ -268,13 +268,13 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
     assert.equal(summary.turns[1].usage?.cachedTokens, 1120);
     assert.equal(summary.turns[2].usage?.cachedTokens, 0);
 
-    // Breakpoints recorded.
+
     assert.deepEqual(
       summary.turns[0].breakpoints?.map((b) => b.location),
       ['tools[1]', 'system[1]', 'messages[0].content[0]'],
     );
 
-    // Transition 1 -> 2 preserved prefix; transition 2 -> 3 broke at tools[1] ("bash").
+
     assert.equal(summary.transitions[0].cacheBroken, false);
     assert.equal(summary.transitions[0].firstDiffByte, null);
     assert.equal(summary.transitions[1].cacheBroken, true);
@@ -284,7 +284,7 @@ test('captures exact JSON, cache_control breakpoints, SSE & JSON usage, TTFB, an
     assert.equal(summary.transitions[1].cause?.kind, 'tool_changed');
     assert.ok(typeof summary.transitions[1].firstDiffByte === 'number' && summary.transitions[1].firstDiffByte > 0);
 
-    // CLI `analyze` against captureDir produces the same result and readable report.
+
     const diskSummary = analyzeCaptureDir(outDir);
     assert.equal(diskSummary.cacheBreaks, 1);
     assert.equal(diskSummary.transitions[1].cause?.toolName, 'bash');
@@ -353,7 +353,7 @@ test('diffPrefix pinpoints system block and retroactive message mutations', () =
   assert.equal(msgDiff.cause?.section, 'messages');
   assert.equal(msgDiff.cause?.messageIndex, 0);
 
-  // Breakpoint count > 4 triggers warning, and OpenAI usage format is parsed.
+
   const overLimit = {
     ...base,
     tools: [{ name: 'zoom', cache_control: { type: 'ephemeral' } }],

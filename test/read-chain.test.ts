@@ -85,7 +85,7 @@ function fakePi() {
   return { pi, emit };
 }
 
-/** One turn as Pi runs it: the assistant message ends, then each call's result goes through the tool_result hooks. */
+
 function session(register: (pi: never) => void = pi => registerReadChainHint(pi)) {
   const { pi, emit } = fakePi();
   register(pi as never);

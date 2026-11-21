@@ -34,7 +34,7 @@ test('on Windows a rename refused while another process briefly holds the file i
   try {
     const file = join(dir, 'state.json');
     atomicWrite(file, 'previous committed value');
-    // Defender or the indexer opens a just-written file without delete sharing: rename then fails with EPERM/EACCES/EBUSY for a moment.
+    // external: Windows Defender or indexing may transiently prevent file renames with EPERM, EACCES or EBUSY.
     let refusals = 0;
     mock.method(fs, 'renameSync', (from: string, to: string) => {
       if (refusals < 3) { refusals++; throw windowsLock(['EPERM', 'EACCES', 'EBUSY'][refusals - 1]); }
@@ -56,7 +56,7 @@ test('on Windows a rename refused while another process briefly holds the file i
 });
 
 test('a profile lock is released by the OS when its owning process is killed', { timeout: 20_000 }, async () => {
-  // macOS's default TMPDIR can exceed the Unix socket path limit.
+  // external: macOS TMPDIR may exceed Unix socket path limits.
   const dir = mkdtempSync(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'oc-crash-'));
   const moduleUrl = new URL('../src/profiles.ts', import.meta.url).href;
   const script = `import { lockProfile } from ${JSON.stringify(moduleUrl)}; await lockProfile(process.argv[1], 'child owner'); process.send('ready');`;
@@ -79,7 +79,7 @@ test('a profile lock is released by the OS when its owning process is killed', {
     await assert.rejects(lockProfile(dir, 'another writer'), /replacement owner/);
   } finally {
     clearTimeout(timeout);
-    // `exit` rejects if the child failed to spawn; cleanup below must still run.
+    // external: The child process exit promise rejects on spawn failure.
     if (!exited) { child.kill('SIGKILL'); await exit.catch(() => {}); }
     await unlock?.(); removeDir(dir);
   }

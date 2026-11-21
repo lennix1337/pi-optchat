@@ -1,4 +1,4 @@
-// 03/11 GX18MCP 4.3.0 release: the operator ordered a release, then had to ask "não é ok suficiente?" three times.
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -18,15 +18,15 @@ test('reading the contract is not changing it', () => {
   assert.equal(touchesContract({ tool: 'bash', input: { command: `node --import tsx -e "JSON.parse(require('fs').readFileSync('${file}','utf8'))"` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `node --import tsx -e "require('fs').writeFileSync('${file}','{}')"` } }), true);
   assert.equal(touchesContract({ tool: 'codemode', input: { code: `await tools.bash({command:"cat ${file}"})` } }), false);
-  // Staging and committing a copy only records it (03/11: the dotfiles mirror commit waited for an approval).
+
   const mirror = 'C:/projetos/dotfiles/payload/pi/optchat/p/autonomy.json';
   assert.equal(touchesContract({ tool: 'bash', input: { command: `cd C:/projetos/dotfiles && git add ${mirror} && git commit -q -m "espelho" && git push origin main` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `git -C C:/projetos/dotfiles add payload/pi/optchat/p/autonomy.json` } }), false);
-  // ship.mjs commits and queues a PR like git does: a commit message that names the file only tells about it (04/11: 3 refusals).
+
   assert.equal(touchesContract({ tool: 'bash', input: { command: `cd C:/projetos/pi-optchat && node scripts/ship.mjs -m "Retro: ajusta o autonomy.json fora das regras protegidas" --all` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `node C:/projetos/pi-optchat/scripts/ship.mjs --pr 5 --body-file autonomy.json` } }), false);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `cp x ${file} && node scripts/ship.mjs -m "espelho"` } }), true);
-  // Writers still wait for the operator.
+
   assert.equal(touchesContract({ tool: 'bash', input: { command: `git checkout -- ${file}` } }), true);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `git add ${mirror} && cp x ${file}` } }), true);
   assert.equal(touchesContract({ tool: 'bash', input: { command: `find ~/.optchat -name autonomy.json -delete` } }), true);
@@ -41,15 +41,15 @@ test('a read-only command substitution naming the contract only reads it (04/11:
   const writes = (command: string) => touchesContract({ tool: 'bash', input: { command } });
   assert.equal(writes(`f=$(ls ${file} ~/.optchat/autonomy.json 2>/dev/null | head -1); echo "$f"; grep -n -i "deploy" "$f" | cut -c1-300 | head`), false);
   assert.equal(writes(`n=\`wc -l < ${file}\`; echo $n`), false);
-  // The variable carries the file name: what a later segment does with it is judged as if it named the file.
+
   assert.equal(writes(`f=$(ls ${file}); echo '{}' > "$f"`), true);
   assert.equal(writes(`f=$(ls ${file}); sed -i s/a/b/ \${f}`), true);
   assert.equal(writes(`x=$(cp y ${file})`), true);
   assert.equal(writes(`x=$(cat $(ls ${file}))`), true);
 });
 
-// 11/11: `cp <live profile>/autonomy.json <dotfiles mirror>/autonomy.json` was refused: both paths name the file, but it
-// only reads the live one. Only a write whose target is the live contract changes it.
+
+
 test('copying or printing the live contract into another path is not changing it; a write onto the live file is', () => {
   const live = join(tmpdir(), 'optchat-profile-p'), liveFile = `${live}/autonomy.json`.replaceAll('\\', '/');
   const mirror = 'C:/projetos/dotfiles/payload/pi/optchat/p/autonomy.json';

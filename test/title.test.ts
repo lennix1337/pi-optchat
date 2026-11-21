@@ -30,7 +30,7 @@ test('tab titles show the profile, whether the agent is working, and running sub
   assert.equal(windowTitle('personal', 'working'), '● ↳ personal');
   assert.equal(windowTitle('personal', 'done'), '↳ personal · done');
   assert.equal(windowTitle('personal', 'disconnected'), '↳ personal · disconnected');
-  // A status event never ends the conversation; the type keeps callers from expecting `done`/`disconnected`.
+
   const live: StatusState = statusState('running');
   assert.equal(live, 'working');
   assert.equal(statusState('stopping'), 'working');
@@ -108,13 +108,13 @@ test('the main window title follows the real Pi session: profile, working, runni
     await session.bindExtensions({ uiContext });
 
     assert.equal(titles[0], 'π fixture');
-    await sleep(300); // Interactive Pi writes its own "π - <cwd>" title right after session_start; ours follows.
+    await sleep(300); // external: Interactive Pi sets its own terminal title after session_start.
     assert.ok(titles.length >= 3 && titles.every((t): boolean => t === 'π fixture'), JSON.stringify(titles));
 
     const running = session.prompt('Long task.');
     await held;
     assert.equal(titles.at(-1), '● π fixture');
-    // A broken import journal must not stop the turn from settling: the working mark still clears.
+
     const journal = join(profilePath('fixture'), 'imports', 'pending.json');
     mkdirSync(join(profilePath('fixture'), 'imports'), { recursive: true }); writeFileSync(journal, '{');
     release(); await running; await session.agent.waitForIdle();
@@ -123,7 +123,7 @@ test('the main window title follows the real Pi session: profile, working, runni
     rmSync(journal);
 
     const before = titles.length;
-    session.setSessionName('renamed'); // Pi retitles the tab on renames.
+    session.setSessionName('renamed'); // external: Pi retitles the terminal on session rename.
     await until(() => titles.length > before);
     assert.equal(titles.at(-1), 'π fixture');
 

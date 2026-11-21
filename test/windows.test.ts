@@ -20,10 +20,10 @@ import { openConnectedWindow, registerConnectedRenderer } from '../src/connected
 import { createHandoffSummarizer } from '../src/handoff.ts';
 import { removeDir } from './support.ts';
 
-/** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
+
 const nested = () => ({ subagentLevels: 3, maxAgents: 8 });
 
-// Children load installed extensions from Pi's agent dir; keep tests away from the user's real one.
+
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
 
 async function until(predicate: () => boolean) {
@@ -76,9 +76,9 @@ async function fixture(contextWindow = 1_000_000, maxTokens = 64_000) {
       void (async () => {
         stream.push({ type: 'start', partial: message });
         const hold = !summary && (text.includes('hold work') || last?.role === 'toolResult' && text.includes('DESCENDANT_TESTS_PASSED_123'));
-        // A held reply is mid-stream, as a real one would be while the model is still writing.
+
         if (hold) stream.push({ type: 'text_delta', contentIndex: 0, delta: 'Reply', partial: message });
-        // Outlasts a few window status ticks, so its parent is seen waiting on it.
+
         if (!summary && text.endsWith('Your task:\nslow descendant')) await new Promise(resolve => setTimeout(resolve, 500));
         if (hold) await new Promise<void>(resolve => {
           if (options?.signal?.aborted) resolve(); else options?.signal?.addEventListener('abort', () => resolve(), { once: true });
@@ -170,7 +170,7 @@ test('connected window receives the real tool calls, results and live state, so 
   try {
     await client.request('start', 'descendant-evidence-task', f.dir);
     const id = events.find(e => e.name === 'started')?.text; assert.ok(id);
-    // The fake model calls bash, then holds its next reply open, so the window sees a streaming reply.
+
     await until(() => events.some(e => e.message?.role === 'toolResult'));
     const call = events.find(e => e.message?.role === 'assistant')?.message;
     assert.ok(call?.role === 'assistant' && call.content.some(p => p.type === 'toolCall' && p.name === 'bash' && p.id === 'evidence'));
@@ -190,14 +190,14 @@ test("a headless run joins a busy profile: it gets the final reply after the age
   try {
     const joined = await joinHeadless(f.dir);
     const reply = await joined.ask('spawn quick', f.dir);
-    // The agent spawns a slow child and waits for it, then answers with its report; only that last answer is the reply.
+
     assert.match(reply, /^Reply: .*Reply: slow descendant/s);
     const [id] = [...f.children.history.records.values()].filter(run => run.connected).map(run => run.id);
     await until(() => f.children.history.records.get(id)?.handoff?.delivered === true);
     assert.equal(f.children.history.records.get(id)?.state, 'completed');
     assert.match(f.reports.at(-1) ?? '', /completed by user/);
     await assert.rejects(joined.ask('again', f.dir), /one request/);
-    // Window events cut long text for display; the printed reply is never cut.
+
     assert.equal(await (await joinHeadless(f.dir)).ask('long reply', f.dir), `${'x'.repeat(300_000)}END`);
   } finally { await close(); await f.close(); }
 });
@@ -236,12 +236,12 @@ test('a connected window draws each reply with its tool results, the live turn, 
   registerConnectedRenderer(pi);
   const ctx = { cwd: f.dir, shutdown() {}, ui: { setStatus() {}, notify() {}, setWorkingMessage() {}, setTitle() {},
     setWidget: (_key: string, factory?: (tui: TuiMainScreen, theme: Theme) => Component) => { widget?.dispose?.(); widget = factory?.(tui, plainTheme); } } } as unknown as ExtensionContext;
-  // What the chat shows for a committed message, drawn through the registered renderer as Pi would.
+
   const chat = (message: typeof sent[number]) => plain(new CustomMessageComponent({ role: 'custom', customType: 'optchat-connected', content: message.content as string,
     display: true, details: message.details, timestamp: 1 }, renderer).render(100));
   const live = () => widget ? plain(widget.render(100)) : '';
   const turns = () => sent.filter(m => m.details?.turn);
-  // A turn restored before any window is live (after /reload) still draws as a tool box, not plain text.
+
   const restored = { content: '', details: { from: 'agent', turn: [
     { role: 'assistant', content: [{ type: 'toolCall', id: 'old', name: 'bash', arguments: { command: 'echo restored' } }], api: 'x', provider: 'x', model: 'x', usage: emptyUsage(), stopReason: 'toolUse', timestamp: 1 },
     { role: 'toolResult', toolCallId: 'old', toolName: 'bash', content: [{ type: 'text', text: 'RESTORED_OUTPUT' }], isError: false, timestamp: 2 },
@@ -255,7 +255,7 @@ test('a connected window draws each reply with its tool results, the live turn, 
     assert.match(chat(turns()[0]), /Reply: Investigate this repository\./);
     await until(() => !/Working|Waiting/.test(live()));
 
-    // A tool OptChat provides is drawn like a registered tool, on one line with its result, not as raw JSON.
+
     await window.submit('ask main');
     await until(() => turns().length >= 2);
     const asked = chat(turns()[1]);
@@ -264,11 +264,11 @@ test('a connected window draws each reply with its tool results, the live turn, 
     assert.doesNotMatch(asked, /^\s*"message":/m);
     await until(() => f.children.history.records.get(id)?.state === 'waiting' && turns().length >= 3);
 
-    // Waiting on its own agent spins with a count; waiting on you does not spin at all.
+
     await window.submit('spawn one');
     await until(() => /Waiting for 1 agent/.test(live()));
 
-    // The live turn shows the streaming reply under the spinner; the finished bash call settles into the chat with its output.
+
     await window.submit('descendant-evidence-task');
     await until(() => /Working/.test(live()) && /Reply/.test(live()));
     const bash = turns().map(chat).find(text => text.includes('printf'));
@@ -340,7 +340,7 @@ test('pending handoffs recover independently after one delivery fails, then retr
     for (const id of ids) await f.children.finish(id, 'complete');
     for (const id of ids) {
       const run = f.children.history.records.get(id)!;
-      // Simulate the durable state left by an owner crash before producing its handoff.
+
       run.state = 'waiting'; run.handoff = undefined; f.children.history.save(run);
     }
     const warnings: string[] = [], firstRecovery: string[] = [];
@@ -518,7 +518,7 @@ test('handoffs include stopped descendant evidence at every depth, including aft
     };
     checkEvidence(root.handoff!.text!);
 
-    // Recovery must use persisted relationships, and one missing transcript must not hide the others.
+
     root.state = 'waiting'; root.handoff = undefined; f.children.history.save(root);
     unlinkSync(childRun.sessionFile!); f.summaries.length = 0;
     const recovered: string[] = [];
@@ -543,7 +543,7 @@ for (const scenario of ['before-first-tick', 'after-reply', 'missing-transcript'
     });
     const close = await serveWindows(f.dir, f.children, () => true, async text => { f.reports.push(text); });
     const client = await connectWindow(f.dir, event => events.push(event), () => {});
-    // The server's connection handler runs on a later tick, so the mock must stay installed until it has captured the status timer.
+
     await until(() => tick !== undefined);
     interval.mock.restore();
     try {
@@ -887,7 +887,7 @@ test('the busy-profile menu offers background subagents below Connect and select
   }
 });
 
-/** A real local socket with a deliberately old or unresponsive owner, never a provider/API call. */
+
 async function unresponsiveOwner(directory: string, dropRequests = false) {
   const sockets = new Set<Socket>();
   const server = createServer(socket => {

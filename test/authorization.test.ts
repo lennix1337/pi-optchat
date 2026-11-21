@@ -176,10 +176,10 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   assert.equal(bells, 1, 'the terminal is alerted once per new pending call');
   await hooks.get('tool_call')!(event, ctx);
   assert.equal(bells, 1, 'a repeated refusal of the same call does not alert again');
-  // Only operator-typed input approves; the extension (or a report) cannot.
+
   assert.equal(await hooks.get('input')!({ text: '/approve', source: 'extension' }, ctx), undefined);
   assert.equal((await hooks.get('tool_call')!(event, ctx)).block, true);
-  // A token inside a sentence is not an approval, and the operator is told why.
+
   const value = /approve-effect ([a-f0-9]{24})/.exec(blocked.reason)![1];
   assert.equal(await hooks.get('input')!({ text: `ok then approve-effect ${value}`, source: 'interactive' }, ctx), undefined);
   assert.ok(notices.some(([text]) => /not approved/i.test(text) && /\/approve/.test(text)));
@@ -188,7 +188,7 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   assert.deepEqual(approved, { action: 'transform', text: `approve-effect ${value}` });
   assert.equal(await hooks.get('tool_call')!(event, ctx), undefined);
   assert.equal(widgets.at(-1), undefined, 'nothing pending: the widget is cleared');
-  // /deny drops the pending call and tells the model not to retry it.
+
   await hooks.get('tool_call')!(event, ctx);
   assert.ok(widgets.at(-1));
   const denied = await hooks.get('input')!({ text: '/deny', source: 'interactive' }, ctx);
@@ -251,7 +251,7 @@ test('manager-style interactive child input cannot grant a delegated invocation'
   const event = { toolName: 'bash', toolCallId: 'child-call', input: { command: 'git push origin main' } };
   const blocked = await hooks.get('tool_call')!(event, ctx);
   const value = /approve-effect ([a-f0-9]{24})/.exec(blocked.reason)?.[1] || 'a'.repeat(24);
-  // The SDK defaults child prompt/steer messages to interactive, even when authored by the manager.
+  // external: The Pi SDK defaults child prompt and steer messages to interactive.
   await hooks.get('input')?.({ text: `approve-effect ${value}`, source: 'interactive' }, ctx);
   assert.equal((await hooks.get('tool_call')!(event, ctx))?.block, true);
   assert.equal(hooks.has('input'), false, 'delegates must not register a granting input handler');
@@ -438,10 +438,10 @@ test('a call under a standing grant leaves another waiting call pending', () => 
 });
 
 test('a crew memory write that names the contract file is prose, not a contract change', () => {
-  // 09/11 ~19:52 BRT: a crew memory write about "autonomy.json scope names" was refused as a contract change.
+
   const text = 'Regra: o escopo novo de autonomy.json precisa de um emissor em effect-classifier.ts';
   assert.equal(touchesContract({ tool: 'crew', input: { action: 'write', project: 'harness', part: 'memory', text } }), false);
   assert.equal(touchesContract({ tool: 'crew', input: { action: 'write', project: 'harness', part: 'missions', text } }), false);
-  // The contract itself stays guarded: an edit of the file is still a contract change.
+
   assert.equal(touchesContract({ tool: 'edit', input: { path: '~/.optchat/profiles/swlucas05/autonomy.json', edits: [] } }), true);
 });

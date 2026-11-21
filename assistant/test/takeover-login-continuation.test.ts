@@ -11,7 +11,7 @@ import { onTakeoverDisplay } from '../src/computer/takeover-session.ts';
 import { connectOperator, KEYSYMS } from './takeover-operator.ts';
 
 const PASSWORD = `pw-${randomBytes(9).toString('hex')}`;
-/** A disposable login site that lives and runs inside the agent's own network-none container (127.0.0.1:8080). */
+
 const SITE = `
 const sessions = new Set();
 require('node:http').createServer((req, res) => {
@@ -71,7 +71,7 @@ test('operator logs in through takeover of the agent\'s own browser and the agen
     const colours = new Set<number>();
     for (let offset = 0; offset < screen.pixels.length; offset += 4 * 997) colours.add(screen.pixels.readUInt32LE(offset));
     assert.ok(screen.width >= 1024 && colours.size > 2, 'the operator sees a rendered desktop, not a blank screen');
-    // Focus the browser window under the pointer, then walk the form with the keyboard like a person would.
+
     operator.pointer(640, 400); operator.pointer(640, 400, 1); operator.pointer(640, 400);
     await new Promise(resolve => setTimeout(resolve, 300));
     await operator.press(KEYSYMS.Tab);

@@ -81,7 +81,7 @@ for (const failing of [false, true]) test(failing ? 'a long run refuses to drop 
       if (compression) compactions++; else { calls++; contexts.push(structuredClone(context.messages) as AgentMessage[]); }
       const content: AssistantMessage['content'] = compression ? [{ type: 'text', text: 'tool/echo: dump produced a large synthetic result; originals remain available through zoom.' }]
         : calls <= 18 ? [{ type: 'toolCall', id: `dump-${calls}`, name: 'dump', arguments: { i: calls } }] : [{ type: 'text', text: 'DONE' }];
-      // Force the real Pi threshold path after the long run, independently of OptChat's request-boundary refresh.
+
       const input = !compression && calls === 19 ? 50000 : Math.ceil(JSON.stringify(context.messages).length / 4);
       const message: AssistantMessage = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
         stopReason: compression || calls > 18 ? 'stop' : 'toolUse', usage: { ...emptyUsage(), input, totalTokens: input } };

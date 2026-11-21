@@ -7,18 +7,18 @@ import { TranscriptView } from './agent-view.ts';
 import { isReport, reportBox } from './report-message.ts';
 import { statusState, windowTitle, type WindowState } from './title.ts';
 
-/** `turn` is one finished reply of the agent with the results of its tool calls, drawn like Pi draws its own turns. */
+
 type Details = { from?: WindowEvent['from']; turn?: AgentMessage[] };
 
-/**
- * One transcript for the window, shared by the chat and the live widget, so tool calls keep their timings when they settle into the chat.
- * Pi's built-in tools keep their own renderers. Other tools' definitions live in the owner's process, out of reach here, so they get the
- * look Pi gives any registered tool without a renderer (`spawn tasks=[…]`) instead of the raw-JSON look of an unknown one.
- */
+
+
+
+
+
 let transcript: TranscriptView | undefined;
 const transcriptOn = (tui: TUI) => new TranscriptView(tui, process.cwd(), () => ({}));
 const view = (tui: TUI) => transcript ??= transcriptOn(tui);
-/** Turns drawn before this window has a live view (after /reload) still get their tool boxes; there is just no live screen to redraw. */
+
 let detached: TranscriptView | undefined;
 const NO_SCREEN = { requestRender() {} } as unknown as TUI;
 
@@ -36,14 +36,14 @@ export function registerConnectedRenderer(pi: ExtensionAPI) {
       return container;
     }
     if (message.details?.from === 'agent') return new Markdown(text.trim(), outputPad, 0, getMarkdownTheme());
-    // Reports from the agent's own subagents get the same dark box as in the main window.
+
     return isReport(text) ? reportBox(text, outputPad, theme) : undefined;
   });
 }
 
 const toolCalls = (message: AgentMessage) => message.role === 'assistant' ? message.content.flatMap(part => part.type === 'toolCall' ? [part.id] : []) : [];
 
-/** What normally sits at the bottom of Pi's chat while it works: the streaming reply, running tools and the working spinner. */
+
 class LiveTurn implements Component {
   private readonly loader: Loader;
   private readonly body = new Container();
@@ -52,7 +52,7 @@ class LiveTurn implements Component {
   live?: LiveState;
   constructor(private readonly tui: TUI, theme: Theme) {
     this.loader = new Loader(tui, text => theme.fg('accent', text), text => theme.fg('muted', text), 'Working');
-    // Running tools show their elapsed time, which only moves when they are redrawn.
+
     this.timer = setInterval(() => { if (this.live?.tools.length) this.update(); }, 1000); this.timer.unref();
   }
   private readonly timer: ReturnType<typeof setInterval>;
@@ -62,7 +62,7 @@ class LiveTurn implements Component {
     this.body.clear();
     for (const part of view(this.tui).build('', streaming ? [...this.turn, streaming] : this.turn, streaming, running)) this.body.addChild(part);
     const state = this.live?.state;
-    // Waiting with no agents of its own means it is waiting for you, so nothing spins, like an idle Pi.
+
     const agents = this.live?.agents ?? 0;
     const spin = !!state && statusState(state, agents) === 'working';
     this.loader.setMessage(state === 'waiting' ? `Waiting for ${agents === 1 ? '1 agent' : `${agents} agents`}` : state === 'stopping' ? 'Stopping' : 'Working');
@@ -76,13 +76,13 @@ class LiveTurn implements Component {
 }
 
 export async function openConnectedWindow(pi: ExtensionAPI, ctx: ExtensionContext, profile: string, setTitle: (title: string) => void = title => ctx.ui.setTitle(title), agentId?: string, activeOnly = false) {
-  // Each window draws with its own transcript, so nothing from an earlier window carries over.
+
   transcript = undefined;
   let started = false, ended = false, liveTurn: LiveTurn | undefined, live: LiveState | undefined, turn: AgentMessage[] = [];
   const title = (state: WindowState) => setTitle(windowTitle(profile, state));
   const display = (text: string, details: Details = {}) => pi.sendMessage<Details>({ customType: 'optchat-connected', content: text, display: true, details }, { triggerTurn: false });
   const refresh = () => { if (liveTurn) { liveTurn.turn = turn; liveTurn.live = live; liveTurn.update(); } };
-  /** A reply moves into the chat once all its tool calls have results, as Pi's own chat does when a tool finishes. */
+
   const commit = () => {
     if (!turn.length) return;
     const [reply] = turn;
@@ -98,7 +98,7 @@ export async function openConnectedWindow(pi: ExtensionAPI, ctx: ExtensionContex
       ctx.ui.setStatus('optchat', `OptChat: ${profile} · ${agentId ? 'attached' : 'connected'} agent ${event.text} · /complete`);
     } else if (event.name === 'status') {
       live = event.live; refresh();
-      // The tab says working exactly when the spinner spins.
+
       if (!ended && live) title(statusState(live.state, live.agents));
     } else if (event.message?.role === 'assistant') {
       commit(); turn = [event.message];
@@ -136,7 +136,7 @@ export async function openConnectedWindow(pi: ExtensionAPI, ctx: ExtensionContex
     display(`Connected to ${profile}'s original window. Messages here go to one subagent using the profile's subagent model. /tell-main sends a message to the main agent; /complete ends this conversation and sends a handoff. Closing this window interrupts it.`);
   }
   return {
-    /** Ended by /complete, by the owner, or by losing the owner: nothing left here to protect from a session switch. */
+
     get ended() { return ended; },
     async submit(text: string) {
       if (ended) throw new Error('Conversation ended. Use /new to start another.');

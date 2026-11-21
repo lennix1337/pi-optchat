@@ -1,9 +1,9 @@
-/** Ids a one-message line copied from <chat> instead of its own message. The compactor sees the whole view as context, and
- * standing items ("approvals 38f9c222, 44d5f68c open", "cause 103394 UNVERIFIED") spread from line to line: on 03/11, 148 of
- * 519 leaf lines (28.5%) named an approval, commitment, commit or message id that their message never mentions. Each copy
- * costs view bytes and says "still open" about something the message never checked, so the reader can't tell news from echo. */
 
-// Commitment and operational-state ids, commit/approval hex (8+ chars, letters and digits both), message numbers (5-6 digits).
+
+
+
+
+
 const ID = /\b(?:c_[0-9a-f]{6}|op_[0-9a-f]{8,}|(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,40}|[1-9]\d{4,5})\b/g;
 
 /** The ids in `line` that none of `sources` contains (a prefix of a longer hash in a source counts as contained). */
@@ -17,7 +17,7 @@ export const carriedFeedback = (ids: readonly string[]) => `Your line names ${id
 they come from other lines of <chat>. A line for one message says only what that message did or showed; open items elsewhere \
 stay in their own lines. Write the whole line again for the same <input> without them, and keep everything else.`;
 
-// Items end at ";" or a sentence; a parenthesis often carries the copied remark on its own.
+
 const items = (line: string) => line.split(/(?<=[;.])\s+/);
 
 /** Drops the parentheses, then the items, that satisfy `hits`. Never returns an empty line. */

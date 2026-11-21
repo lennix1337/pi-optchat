@@ -15,7 +15,7 @@ import { carriedFeedback, dropCarried, foreignIds } from './carried-ids.ts';
 import { cited, closedFeedback, dropClosed, type ClosedConflict } from './closed-conflicts.ts';
 
 export interface ModelChoice { provider: string; model: string; thinking: ThinkingLevel }
-/** Whether a provider is in the registry at all: multi-account drops its numbered accounts at every reload and publishes them again in its own session_start. */
+// external: pi-multi-account republishes numbered accounts at session_start after reload.
 const published = (registry: ModelRegistry, provider: string) => registry.getAll().some(model => model.provider === provider);
 /** The chosen model, with the base provider as the fallback: a published numbered account that lacks the model still runs it on the family's base account.
  * One not published yet resolves to nothing: the base account is another account, with its own bill (a reload sent summaries to an `anthropic` key with no credit). */
@@ -26,7 +26,7 @@ export function resolveModel(registry: ModelRegistry, selected: ModelChoice): { 
   const fallback = base === selected.provider || !published(registry, selected.provider) ? undefined : registry.find(base, selected.model);
   return fallback && { provider: base, model: fallback };
 }
-/** A numbered account multi-account has not published yet; after a reload it is back within about a second. */
+
 const accountPending = (registry: ModelRegistry, selected: ModelChoice) => accountGroup(selected.provider) !== selected.provider && !published(registry, selected.provider);
 const ACCOUNT_WAIT_MS = 10_000, ACCOUNT_POLL_MS = 100;
 /** A level the model can't take would be sent as no level, which Sonnet 5.5 runs at high effort; Pi's own sessions clamp the same way. */
@@ -35,20 +35,20 @@ export const reasoningFor = (model: Model<Api>, level: ThinkingLevel) => {
   return thinking === 'off' ? undefined : thinking;
 };
 
-/** Models can't count bytes, so the task shows the limit as a ruler; a real sample line got its content copied (recipe §4). */
+
 const RULER = '-'.repeat(NODE);
 const label = (part: Part) => `${start(part)}+${2 ** part.l}`;
 /** The recipe's compaction task. A tool result also gets the call that produced it, plus its output. */
 export function task(input: { source: string; part: Part; result?: string; call?: { i: number; text: string }; revise?: string }, targetBytes?: number) {
   const { source, part, result, call } = input;
-  // A one-time cleanup of a built line (src/closed-conflicts.ts): the same line, minus what the user closed.
+
   if (input.revise !== undefined) return `Compaction: rewrite line ${label(part)} without the closed conflicts in <closed>. Keep every other item, its kind tags,\nids, numbers and wording; drop only what cites them. Output only the line.\n<closed>\n${input.revise}\n</closed>\n`
     + (targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes.\n`) + `<input>\n${source}\n</input>`;
   const sizeHint = `${SUMMARY_SIGNPOSTS}\n` + (targetBytes === undefined ? '' : `Aim for at most ${targetBytes} UTF-8 bytes (not characters), leaving room below the limit.\n`);
   const callContext = call ? `\nThe call is in <call>: context, like <chat>.\n<call>\n${call.text}\n</call>` : '';
   if (!part.l) {
     const kind = /^(\w+): /.exec(source)?.[1];
-    // A zoom or saved-output echo shows old messages again; read as news it turned an old deploy into a new one (05/11).
+
     const replay = /^echo: (?:zoom|output_read|project_evidence|get_search_content): /.test(source)
       ? 'This echo replays earlier messages or saved output: report it as recalled (what was looked up and what it showed), never as something done now.\n' : '';
     return `Compaction: compress message ${part.i}${kind ? `, kind ${kind},` : ''} into one line of at most 512 bytes\n(about 70 words), the length of this ruler:\n${RULER}\n`
@@ -60,9 +60,9 @@ export function task(input: { source: string; part: Part; result?: string; call?
     + `<chat> may hold their messages, ${start(part)} to ${start(part) + 2 ** part.l - 1}, in more detail: take details\nof them from there too.\n${sizeHint}<input>\n${source}\n</input>`;
 }
 
-const WARM_MS = 4 * 60_000; // Anthropic's short cache lives 5 minutes from its last use.
+const WARM_MS = 4 * 60_000; // external: Anthropic short cache entries last five minutes from their last use.
 
-/** Parallel calls can't read a cache entry that isn't written yet, so one call primes a cold prefix and the rest wait until its response starts. */
+
 function primeFirst() {
   const warm = new Map<string, number | Promise<void>>();
   return async (prefix: string, signal: AbortSignal) => {
@@ -166,7 +166,7 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const turns = shared(), base = turns ? forModel(turns, model) : { systemPrompt: PROMPT };
-    // Only a one-message line is held to its own message; a merge may take details from the messages it covers.
+
     const own = [input.source, input.call?.text ?? '', input.result ?? '', String(input.part.i), String(input.call?.i ?? '')];
     const carriedIn = (line: string) => input.part.l === 0 && input.revise === undefined ? foreignIds(line, own) : [];
     let request = 0, failures = 0, attempts = 0, summaries = 0;
@@ -230,8 +230,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       const reply = await ask();
       const detail = `${model.provider}/${model.id}, ${thinking ?? 'off'}, stop=${reply.stopReason}`;
       if (reply.stopReason === 'length' || reply.content.some(block => block.type === 'toolCall')) continue;
-      // A model can end its turn with no text (Haiku 5.5 at high thinking does, rarely); the same
-      // request then usually succeeds, so ask again instead of failing the compaction.
+      // external: Haiku can return an empty end-turn response.
+
       if (reply.stopReason === 'stop' && !reply.content.some(block => block.type === 'text' && block.text.trim())) {
         blank = `${detail}; blocks=${reply.content.map(block => block.type).join(',') || 'none'}`;
         continue;
@@ -242,8 +242,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       if (size <= limit) {
         const hits = cited(line, closed()), carried = carriedIn(line);
         if (!hits.length && !carried.length) return line;
-        // A line citing a conflict the user closed is asked for again twice, then stripped of it (src/closed-conflicts.ts);
-        // one that only copies ids from other lines gets one more try (src/carried-ids.ts).
+
+
         stale = dropCarried(dropClosed(line, hits), carried);
         if (closedRetries++ >= (hits.length ? 2 : 1)) return stale;
         const feedback = [...hits.length ? [closedFeedback(hits)] : [], ...carried.length ? [carriedFeedback(carried)] : []].join('\n\n');
@@ -255,8 +255,8 @@ export function createCompressor(registry: ModelRegistry, choice: () => ModelCho
       const cut = Buffer.from(line).subarray(0, limit).toString('utf8').replace(/\uFFFD$/, '');
       messages.push({ role: 'user', content: tooLong(size, cut, limit, sourceBytes), timestamp: Date.now() });
     }
-    // The byte target guides retries, not a second failure cliff. Keep the shortest
-    // complete shrinking reply; persisted nodes and views account for actual bytes.
+
+
     if (stale !== undefined) return stale;
     if (shortest !== undefined) return dropCarried(dropClosed(shortest, closed()), carriedIn(shortest));
     if (!summaries && blank !== undefined) throw new Error(`Compactor returned no text in ${attempts} tries (${blank}). See compactor-diagnostics.jsonl.`);

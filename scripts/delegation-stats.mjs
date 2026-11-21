@@ -1,12 +1,12 @@
-// Measures how much of the operator's waiting in the OptChat main session is execution (commands, edits)
-// that a router could hand to a worker. Read-only: it reads Pi session files and prints one JSON object.
-//
-// An operator run is an optchat.run that holds a user-role message (the operator's words). Its wait is from the
-// first such message to the last assistant text of the run (the reply), or to the run end when there is none. Within the run, tool calls are
-// READ (inspection), EXEC (commands that change or check something, edit/write) or DELEGATED (already spawn/tell/
-// shell_start). The EXEC duration is the time from a call's assistant message to its tool result.
-//
-// usage: node scripts/delegation-stats.mjs <sessionsDir> [sinceISO]
+
+
+
+
+
+
+
+
+
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -23,7 +23,7 @@ if (!root) {
 }
 const LONG_MS = 60_000;
 const DELEGATED = new Set(['spawn', 'tell', 'shell_start', 'shell_status', 'shell_stop']);
-// Commands that only inspect: the same reading the batching measurement uses, plus GitHub/Git views.
+
 const READ_BASH = /^\s*(cd [^&;]+(&&|;)\s*)*(grep|rg|sed -n|cat|ls|head|tail|wc|find|stat|du|date|pwd|echo|type|where|which|git (-C \S+ )?(status|log|diff|show|branch|remote|worktree list|rev-parse|fetch)|gh (pr|issue|run) (view|list|checks|status)|gh auth status|ripwire\b)(\s|$)/;
 const isExec = call => call.name === 'bash'
   ? !READ_BASH.test(String(call.arguments?.command ?? ''))
@@ -51,7 +51,7 @@ for (const file of sessionFiles(root)) {
   const isOptChatMain = entries.some(e => e.type === 'custom' && e.customType === 'optchat.profile');
   if (!isOptChatMain) continue;
   stats.files++;
-  // Runs: start/end markers, with the messages between them.
+
   const runs = [];
   let open;
   for (const e of entries) {
@@ -60,7 +60,7 @@ for (const file of sessionFiles(root)) {
       else if (open) { open.end = Date.parse(e.timestamp); open = undefined; }
     } else if (e.type === 'message' && open) open.messages.push(e);
   }
-  // The operator's messages sit inside the run they start (a steer lands in the run already open).
+
   for (const run of runs) {
     if (run.end === undefined) continue;
     const asked = run.messages.filter(e => e.message?.role === 'user').map(e => Date.parse(e.timestamp)).filter(t => t >= sinceMs);

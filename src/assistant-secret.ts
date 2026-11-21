@@ -55,7 +55,7 @@ function listing(vault: Vault, profileId: string): string {
   return items.map(s => `${s.ref} · ${JSON.stringify(s.origin)} ${JSON.stringify(s.action)}${s.revoked ? ' · revoked' : ''}${s.expiresAt ? ` · expires ${new Date(s.expiresAt).toISOString()}` : ''}`).join('\n');
 }
 
-/** add/rotate: the binding comes from the arguments (add) or the existing active entry (rotate); the value only from the dialog. */
+
 async function enter(ctx: ExtensionCommandContext, vault: Vault, profileId: string, action: string, rest: string[]): Promise<void> {
   const found = action === 'rotate' ? vault.list(profileId).find(s => s.ref === rest[0] && !s.revoked) : undefined;
   const binding = action === 'add' ? { profileId, origin: rest[0]!, action: rest[1]! } : found && { profileId, origin: found.origin, action: found.action };

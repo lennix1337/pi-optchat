@@ -1,4 +1,4 @@
-// Pure policy shared by the in-container relay and hermetic adversarial tests.
+
 export function relayReadHeaders(origin, req, pending, issued) {
   const hosts = req.rawHeaders.filter((_, i) => i % 2 === 0).filter(name => name.toLowerCase() === 'host');
   if (hosts.length !== 1 || req.headers.host?.toLowerCase() !== new URL(origin).host) return null;

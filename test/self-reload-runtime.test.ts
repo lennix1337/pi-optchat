@@ -38,7 +38,6 @@ test('native self reload replaces extensions then resumes tool execution and fin
   let generations = 0, executions = 0, inspections = 0, calls = 0, reloads = 0;
   let continuationSeen = false, final = '';
   const errors: string[] = [], notices: string[] = [];
-  // Dump the state shortly before the 20 s limit so a Windows hang shows which step it stuck at (the finally block never prints on a timeout).
   const lag = loopLag();
   const hangDump = setTimeout(() => console.log(`# self-reload still running at 15 s ${JSON.stringify({ maxLoopLagMs: lag.max(), marks, generations, reloads, executions, inspections, calls, continuationSeen, errors, notices })}`), 15000);
   let finish!: () => void;

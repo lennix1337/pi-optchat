@@ -18,7 +18,7 @@ test('multiple hash claims normalize the evidence at most once', () => {
 });
 
 test('a pass count no output showed is unbacked; the counts a test runner prints back it', () => {
-  // 18/11: "API 31/31" was sent while the run's own vitest output showed 4 FAIL.
+
   assert.deepEqual(unbackedClaims('Validado: API 31/31 e web 10/10.', ' Test Files  4 failed | 2 passed\n Tests  4 failed | 27 passed (31)\n Tests 10 passed (10)'), ['31/31']);
   assert.deepEqual(unbackedClaims('Os testes que citam o README passaram (105 de 105).', 'ℹ pass 105\nℹ fail 0'), []);
   assert.deepEqual(unbackedClaims('npm run verify: 164 de 164 testes.', 'ℹ tests 164\nℹ pass 164\nℹ fail 0'), []);
@@ -30,7 +30,7 @@ test('dates, versions and times are not pass counts', () => {
 });
 
 test('digits around "de" or "of" inside an ID are not a pass count', () => {
-  // A shell ID such as 43733b62-5de6-… was read as "5 de 6" and sent a scripted run back for a claim check (CI flake).
+
   const id = '43733b62-5de6-4f1a-9b2c-0d7de7261234';
   assert.deepEqual(unbackedClaims(`OK: [shell ${id}] failed · exit 3\nfail-out`, `Background shell ${id} started`), []);
   assert.deepEqual(unbackedClaims('Os testes passaram: 3de4 e 2of9 são nomes.', ''), []);
@@ -66,7 +66,7 @@ test('a denied merge is no claim, and a merge word names only the PR next to it'
 });
 
 test('a gitwatch notice injected between runs backs the merge it reports', () => {
-  // 18/11: "#167 merged" was sent back three times although the notice "#167 merged af268f09" sat in the session.
+
   const entries = [
     { type: 'custom_message', content: '[gitwatch] lennix1337/dotfiles · 05:19\n#167 merged af268f09\n  #167 MERGED af268f09 · checks pass 4✓' },
     { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'O #168 foi mesclado.' }] } },
@@ -79,10 +79,10 @@ test('a gitwatch notice injected between runs backs the merge it reports', () =>
 test('"não confirmei" in the reply is an admission the run must check before sending (operator 18/11)', () => {
   assert.deepEqual(uncheckedAdmissions('Feito o PR. Não confirmei que ele começou de fato. Resto ok.'), ['Não confirmei que ele começou de fato.']);
   assert.deepEqual(uncheckedAdmissions('I did not verify the deploy.'), ['I did not verify the deploy.']);
-  // Reporting a verification gap of the world, or a check that was done, is not the admission.
+
   assert.deepEqual(uncheckedAdmissions('Não verificado: CI. Verifiquei o merge no GitHub.'), []);
   assert.match(claimRetryText([], ['Não confirmei X.']), /Não confirmei X\.[\s\S]*read-only tool/);
-  // 19/11: describing the feature itself, with the phrase in quotes, fired the retry.
+
   assert.deepEqual(uncheckedAdmissions('Quando uma resposta diz "não confirmei" ou \u201cI did not verify\u201d, ela volta uma vez.'), []);
 });
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Read-only baseline: seven Brasília calendar days including today; heuristics are not an audit.
+
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';

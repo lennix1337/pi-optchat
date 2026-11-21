@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { HelperSampler, parseSampleLine, type Sample } from '../src/machine-sample.ts';
 import { tempDir } from './support.ts';
 
-// Two lines the compiled helper printed on this PC (trimmed to a few processes; the second carries a command line like the helper adds for processes in Pi's tree).
+
 const recorded = readFileSync(new URL('./fixtures/machine-helper.jsonl', import.meta.url), 'utf8').trim().split('\n');
 
 test('a recorded helper line parses into machine numbers and process rows', () => {
@@ -78,7 +78,7 @@ test('the real helper compiles, samples this process and sees a child of the roo
 test('the real helper gives the command line of a fresh process whose parent is already gone', { skip: process.platform !== 'win32', timeout: 60_000 }, async () => {
   const { dir, close } = tempDir('optchat-machine-');
   const samples: Sample[] = [];
-  // A root nothing descends from: only the orphan rule can attach a command line.
+
   const sampler = new HelperSampler({ dir, rootPid: 99_999_999, intervalMs: 500, onSample: s => samples.push(s) });
   let orphan: number | undefined;
   try {
@@ -90,5 +90,5 @@ test('the real helper gives the command line of a fresh process whose parent is 
     const mine = samples.flatMap(s => s.procs).find(p => p.pid === orphan && p.cmd);
     assert.ok(mine?.cmd?.includes('orphan-probe'), 'an orphan carries its command line on its first sample');
     assert.ok(!samples.at(-1)!.procs.some(p => p.pid === launcher.pid), 'the launcher is gone, as in the incident');
-  } finally { sampler.stop(); if (orphan) try { process.kill(orphan); } catch { /* already gone */ } close(); }
+  } finally { sampler.stop(); if (orphan) try { process.kill(orphan); } catch {   } close(); }
 });

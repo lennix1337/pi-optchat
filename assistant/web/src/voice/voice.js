@@ -54,7 +54,7 @@ export class VoiceDraft {
   }
   async send() {
     if (this.state !== 'confirmed') throw new Error('confirmation_required');
-    // Only the text the human confirmed is sent; editing returns the draft to review.
+
     const text = this.confirmed;
     this.state = 'sending';
     try { await this.onSend({ kind: 'message', text }); }

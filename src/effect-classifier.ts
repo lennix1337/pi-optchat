@@ -46,7 +46,7 @@ async function asynchronous<T>(evaluation: Evaluation<T>): Promise<T> {
   return step.value;
 }
 
-/** Source markers of a script that talks to a model provider: SDK runtimes, provider clients, provider endpoints. */
+
 const modelClient = /\b(?:ModelRuntime|createAgentSession|completeSimple|streamSimple)\b|from\s+['"](?:@anthropic-ai\/sdk|openai|@google\/genai|@google\/generative-ai)['"]|api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com/;
 
 const unquote = (word: string) => word.replace(/^(['"])([^]*)\1$/, '$2');
@@ -68,7 +68,7 @@ export function normalPath(path: string, base?: string, keepCase = false) {
 }
 const tempDir = /^(?:[a-z]:\/(?:tmp|temp)(?:\/|$)|\/tmp(?:\/|$)|[a-z]:\/users\/[^/]+\/appdata\/local\/temp(?:\/|$)|\$\{?(?:tmp|temp|tmpdir)\b|\$env:(?:tmp|temp)\b|%temp%)/;
 
-/** Shell text as words; quotes group words and are kept, so `unquote` can tell data from code. */
+
 function words(text: string) {
   return text.match(/"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+/g) ?? [];
 }
@@ -98,7 +98,7 @@ export function segments(text: string, cwd: string, keepCase = false) {
       current += c;
     }
     if (quote) { current += '\n'; continue; }
-    // The marker may sit before a pipe or `;` that already flushed its segment (`cat <<'EOF' | wc -l`), so read the line, not `current`.
+
     heredoc = /<<-?\s*['"]?(\w+)['"]?/.exec(line)?.[1] ?? heredoc;
     flush();
   }
@@ -119,7 +119,7 @@ export function commandWords(command: string) {
   return all.slice(at);
 }
 
-/** `timeout [-k N] [--signal=S] DURATION command...` runs the command: where it starts, else `at` unchanged. */
+
 function afterTimeout(words: string[], at: number) {
   if (words[at] !== 'timeout') return at;
   let next = at + 1;
@@ -129,17 +129,17 @@ function afterTimeout(words: string[], at: number) {
 
 const isDeployScript = (word: string) => /(?:^|[/\\])deploy[-\w]*\.(?:ps1|sh|mjs|js|ts|cmd|bat)$/i.test(unquote(word));
 const isReleaseScript = (word: string) => /(?:^|[/\\])(?:release|publish)\.(?:ps1|sh|mjs|js|cmd|bat)$/i.test(unquote(word));
-/** Flags that make a deploy script only plan or print what it would do. */
-/** `--dry-run` (or `-n` for git push) before any `--`: the command reports what it would do and writes nothing. */
+
+
 const dryRunFlag = (args: string[], short = false) => args.slice(0, args.includes('--') ? args.indexOf('--') : undefined).some(arg => arg === '--dry-run' || (short && arg === '-n'));
 const isDryRun = (word: string) => /^-{1,2}(?:PlanOnly|WhatIf|DryRun|dry-run|plan|help|h)$/i.test(word);
 const interpreters = /^(?:pwsh|powershell|bash|sh|node|tsx|bun|deno|python3?|cmd)(?:\.exe)?$/i;
 const sqlWrite = /\b(?:update\s+[\w."]+(?:\s+(?:as\s+)?\w+)?\s+set|insert\s+into|delete\s+from|drop\s+(?:table|database|schema|index)|truncate\s+(?:table\s+)?[\w."]+|alter\s+table)\b/i;
 const remoteMutation = /\b(?:docker\s+(?:compose\b[^\n;&|]*\b(?:up|down|restart|rm|stop)\b|restart|rm|stop|kill|exec\b[^\n;&|]*\b(?:rm|kill)\b)|systemctl\s+(?:restart|stop|start|disable)|rm\s+-[a-z]*r|kubectl\s+(?:apply|delete|scale|rollout))\b/i;
 
-/** A database client as a command word (not a path or a longer name such as `psql-backups`). */
+
 const databaseClient = /(?:^|[\s;&|('"])(?:psql|mysql|mariadb|sqlite3|mongosh|redis-cli)(?=$|[\s;&|)'"])/i;
-/** Read-only forced by the command itself: `default_transaction_read_only=on` (PGOPTIONS, -c, SQL) or a read-only transaction. */
+
 const readOnlyForced = /\bdefault_transaction_read_only\s*(?:=|to\b)\s*'?on'?\b|\b(?:set\s+(?:session\s+characteristics\s+as\s+)?transaction|begin|start\s+transaction)\s+read\s+only\b/i;
 const readWriteAsked = /\bdefault_transaction_read_only\s*(?:=|to\b)\s*'?off'?\b|\bread\s+write\b/i;
 
@@ -148,8 +148,8 @@ const readWriteAsked = /\bdefault_transaction_read_only\s*(?:=|to\b)\s*'?off'?\b
  * the command does not force read-only (its SQL may sit in a file this text does not show). Else undefined.
  */
 export function productionWriteHost(text: string) {
-  // Flags that take a value (-i key, -p 22, -o Opt=x ...) consume it; the first other word is the host. Only an ssh
-  // the shell runs counts: one named inside quoted text (a commit message) or a heredoc body (a test file) does not.
+
+
   const sshCall = /(?:^|[\s;&|(])ssh(?:\s+(?:-[ipoFJLRDElbcmSWweOQ]\s*\S+|-[A-Za-z0-9]+))*\s+(?:[\w.-]+@)?(\w[\w.-]*)/;
   const unquoted = (command: string) => command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, '""');
   const ssh = segments(text, '').map(({ command }) => sshCall.exec(unquoted(command))?.[1]).find(Boolean);
@@ -157,11 +157,11 @@ export function productionWriteHost(text: string) {
   return ssh && (sqlWrite.test(text) || remoteMutation.test(text) || unprovenClient) ? ssh.toLowerCase() : undefined;
 }
 
-/** Commands that only print or record text: a destructive statement they quote is not run. */
+
 const textCommand = /^(?:echo|printf|grep|rg|cat|head|tail|less|ls|find|diff|git|gh)$/;
 const destructiveCommand = /(?:^|\s)dropdb\b|\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b[^\n]*--force-reset|\bdocker\s+volume\s+(?:rm|prune)\b|\bdocker(?:\s+|-)compose\b[^\n]*\sdown\b[^\n]*\s(?:-v|--volumes)\b/i;
 const destructiveSql = /\bdrop\s+(?:table|database|schema)\b|\btruncate\s+(?:table\s+)?[\w."]/i;
-/** `DELETE FROM t` up to the end of its statement (`;` or a closing quote) with no WHERE. */
+
 const deleteWithoutWhere = (text: string) => [...text.matchAll(/\bdelete\s+from\s+[^;"'`]*/gi)].some(([statement]) => !/\bwhere\b/i.test(statement));
 const commandName = (command: string) => unquote(commandWords(command)[0] ?? '').toLowerCase().split(/[/\\]/).at(-1)!;
 
@@ -177,21 +177,21 @@ export function databaseDestructive(text: string) {
   return [...code, ...bodies].some(part => destructiveCommand.test(part) || destructiveSql.test(part) || deleteWithoutWhere(part));
 }
 
-/** A recursive delete (rm -r, Remove-Item -Recurse, rd /s) whose targets are not all inside a temp folder. */
+
 function recursiveDelete(args: string[], dir: string): string[] | undefined {
   const flags = args.filter(arg => /^-/.test(arg) || /^\/s$/i.test(arg));
   if (!flags.some(flag => /^-[a-zA-Z]*[rR]|^--recursive$|^-Recurse$|^\/s$/i.test(flag))) return;
-  // PowerShell: `-ErrorAction Stop` and friends take a value, and `a,b` lists several paths; `\$env` is bash's escape.
+
   const valued = /^-(?:ErrorAction|EA|WarningAction|Filter|Include|Exclude)$/i;
   const targets = args.filter((arg, i) => !flags.includes(arg) && !valued.test(args[i - 1] ?? ''))
     .flatMap(arg => arg.split(',')).filter(Boolean).map(arg => normalPath(arg.replace(/^\\(?=\$)/, ''), dir));
   return !targets.length || !targets.every(target => tempDir.test(target)) ? targets : undefined;
 }
 
-/**
- * The processes `taskkill`, `kill`, `pkill`, `killall`, `Stop-Process` or `wmic ... delete` stop, as `pid:N` / `name:x`
- * (`process` when a pipe picks them). `kill -0`, `kill -l` and `kill -s 0` only look: undefined.
- */
+
+
+
+
 function processKill(lower: string, args: string[]): string[] | undefined {
   const after = (flag: RegExp) => args.flatMap((arg, i) => flag.test(arg) && args[i + 1] !== undefined ? args[i + 1].split(',') : []);
   const found = (targets: string[]) => targets.length ? targets : ['process'];
@@ -218,9 +218,9 @@ function* repoTargets(path: string, repo: AsyncRepo, args: string[], remote?: st
 
 function* pushEffect(args: string[], path: string, repo: AsyncRepo): Evaluation<Effect> {
   const [remote, ...refs] = args.filter(arg => !arg.startsWith('-'));
-  // A URL or path as the remote names no configured remote; origin is the best local guess.
+
   const targets = yield* repoTargets(path, repo, args, remote && /^[\w.-]+$/.test(remote) ? remote : undefined);
-  // Deleting a remote branch (`--delete x`, `-d x`, `:x`) removes work others may still need.
+
   if (args.some(arg => arg === '--delete' || arg === '-d') || refs.some(ref => /^:[^:]/.test(unquote(ref)))) return { action: 'discard', targets };
   if (args.some(arg => /^(?:--force(?:-with-lease)?(?:=.*)?|-f|--mirror|-[a-z]*f[a-z]*)$/.test(arg) || /^\+/.test(arg))) return { action: 'force-push', targets };
   const main = (ref: string) => /^(?:main|master)$/i.test(unquote(ref).split(':').at(-1)!.replace(/^refs\/heads\//, ''));
@@ -228,13 +228,13 @@ function* pushEffect(args: string[], path: string, repo: AsyncRepo): Evaluation<
   return { action: toMain ? 'push-main' : 'push', targets };
 }
 
-/** The source of a script run (not a test run, a check or an inline body), when it can be read. */
+
 function* scriptSource(w: string[], script: string, dir: string, repo: AsyncRepo): Evaluation<string | undefined> {
   if (!repo.script || w.some(arg => /^(?:--test|-e|--eval|-c|--check|-p|--print|-h|--help)$/.test(arg)) || !/\.(?:[cm]?[jt]s|py)$/i.test(unquote(script))) return;
   return yield* lookup(repo.script(normalPath(script, dir)));
 }
 
-/** A script run whose source calls a model provider is paid; its writes to production and messages count as well. */
+
 function* scriptRunEffects(w: string[], script: string, dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const source = yield* scriptSource(w, script, dir, repo);
   if (source === undefined) return [];
@@ -243,7 +243,7 @@ function* scriptRunEffects(w: string[], script: string, dir: string, repo: Async
 
 const maintenanceTarget = (name: string) => /pcmaintenance/i.test(name) ? 'pc-maintenance' : 'worktree-cleanup';
 
-/** `pwsh`/`bash`/`node`...: an inline `-Command`/`-c` body is classified like any shell text; a script argument by name or source. */
+
 function* interpreterEffects(w: string[], lower: string, dir: string, repo: AsyncRepo, depth: number): Evaluation<Effect[]> {
   const effects: Effect[] = [];
   const inline = w.findIndex(arg => /^-(?:c|Command|EncodedCommand)$/i.test(arg));
@@ -254,13 +254,13 @@ function* interpreterEffects(w: string[], lower: string, dir: string, repo: Asyn
   const script = w.slice(1).find(arg => !arg.startsWith('-'));
   if (script) effects.push(...yield* namedScriptEffects(unquote(script), w, dir, repo));
   if (lower === 'node' && script && /(?:^|[/\\])bench\.mjs$/.test(unquote(script)) && w.includes('run')) return [...effects, { action: 'paid', targets: ['model-run'] }];
-  // `node --import tsx file.ts`: the first argument that names a file is the script.
+
   const file = w.slice(1).find(arg => !arg.startsWith('-') && /\.(?:[cm]?[jt]s|py)$/i.test(unquote(arg)));
   if (file) effects.push(...yield* scriptRunEffects(w, file, dir, repo));
   return effects;
 }
 
-/** A script known by its name: deploy*, release/publish, or the maintenance cleanups with -Apply. */
+
 function* namedScriptEffects(script: string, w: string[], dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const name = script.split(/[/\\]/).at(-1)!;
   if (/^invoke-(?:pcmaintenance|worktreecleanup)/i.test(name)) return w.some(arg => /^-Apply$/i.test(arg)) ? [{ action: 'discard', targets: [maintenanceTarget(name)] }] : [];
@@ -270,7 +270,7 @@ function* namedScriptEffects(script: string, w: string[], dir: string, repo: Asy
   return [];
 }
 
-/** `git`: pushes by destination, and the subcommands that discard work. */
+
 function* gitEffects(w: string[], dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   let at = 1, path = dir;
   while (at < w.length && w[at].startsWith('-')) { if (w[at] === '-C' && w[at + 1] !== undefined) path = normalPath(w[++at], dir); else if (w[at] === '-c') at++; at++; }
@@ -280,18 +280,18 @@ function* gitEffects(w: string[], dir: string, repo: AsyncRepo): Evaluation<Effe
   const discards = (sub === 'reset' && /(?:^|\s)--hard\b/.test(rest)) || (sub === 'clean' && /(?:^|\s)-[a-z]*f/i.test(rest))
     || (sub === 'worktree' && /^remove\b/.test(rest) && /--force|-f\b/.test(rest)) || (sub === 'branch' && /(?:^|\s)-D\b/.test(rest))
     || (sub === 'stash' && /^(?:drop|clear)\b/.test(rest)) || ((sub === 'checkout' || sub === 'restore') && args.some(arg => arg === '.'));
-  // Work that already went forward is recreatable: say so in the targets, so the operator's rules can free it.
+
   return discards ? [{ action: 'discard', targets: [path, ...yield* mergedWork(sub, args, path, repo)] }] : [];
 }
 
-/** `merged-branch` when every branch `git branch -D` deletes is merged; `worktree-cleanup` when `git worktree remove --force` removes a clean worktree whose branch is merged. */
+
 function* mergedWork(sub: string, args: string[], path: string, repo: AsyncRepo): Evaluation<string[]> {
   const operands = args.slice(sub === 'worktree' ? 1 : 0).map(unquote);
-  // A lookup that throws or cannot tell leaves the discard as strict as before; the default branch is never "merged".
+
   const isMerged = function* (name: string): Evaluation<boolean> { try { return !/^(?:main|master|HEAD)$/i.test(name) && (yield* lookup(repo.merged?.(path, name))) === true; } catch { return false; } };
   if (sub === 'branch') {
     const names = operands.filter(arg => !arg.startsWith('-'));
-    // Only `-D` with branch names: `-r` and friends delete something else.
+
     if (operands.some(arg => arg.startsWith('-') && arg !== '-D') || !names.length) return [];
     for (const name of names) if (!(yield* isMerged(name))) return [];
     return ['merged-branch'];
@@ -302,23 +302,23 @@ function* mergedWork(sub: string, args: string[], path: string, repo: AsyncRepo)
   return state?.clean && (yield* isMerged(state.branch)) ? ['worktree-cleanup'] : [];
 }
 
-/** `gh`: merges, releases and repository creation/deletion, deploy workflows. */
+
 function* ghEffects(w: string[], dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const [group, verb] = w.slice(1), targets = () => repoTargets(dir, repo, w);
-  // `--admin` merges past failing or missing required checks: that is not merging, it is bypassing the CI.
+  // external: gh merge --admin bypasses required checks.
   if (group === 'pr' && verb === 'merge') return [{ action: w.includes('--admin') ? 'merge-bypass' : 'merge', targets: yield* targets() }];
   if ((group === 'release' && /^(?:create|upload|edit)$/.test(verb ?? '')) || (group === 'repo' && /^(?:create|delete)$/.test(verb ?? '')))
     return [{ action: 'publish', targets: yield* targets() }];
   if (group === 'workflow' && verb === 'run') {
     const names = w.slice(3).filter(arg => !arg.startsWith('-'));
-    // A deploy or prod workflow reaches live services; a release/publish one ships a package or tag.
+
     if (names.some(arg => /deploy|prod/i.test(arg))) return [{ action: 'deploy', targets: yield* targets() }];
     if (names.some(arg => /release|publish/i.test(arg))) return [{ action: 'publish', targets: yield* targets() }];
   }
   return [];
 }
 
-/** Package managers, deploy CLIs, `pi -p` and recursive deletes. */
+
 function* toolEffects(w: string[], lower: string, dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const args = w.slice(1).map(unquote);
   if (/^(?:npm|pnpm|yarn|cargo|vsce)$/.test(lower)) {
@@ -343,13 +343,13 @@ function* toolEffects(w: string[], lower: string, dir: string, repo: AsyncRepo):
 }
 
 const SSH_VALUED = /^-[ipoFJLRDElbcmSWweOQB]$/;
-/**
- * The command another program runs for this one: the remote command of `ssh host "..."`, the `/tr` of
- * `schtasks /create`, and what `cmd /c` or `conhost --headless` start. A deploy handed to the PC through any of them is
- * still a deploy. Undefined when the segment relays nothing.
- */
+
+
+
+
+
 function relayedCommand(w: string[], lower: string): string | undefined {
-  // Inside double quotes bash keeps `\"`, `\\`, `\$` escaped: the program that receives the body sees them plain.
+  // external: Bash double quotes preserve escapes for quote, backslash and dollar.
   const body = (word: string) => /^".*"$/s.test(word) ? word.slice(1, -1).replace(/\\(["\\$`])/g, '$1') : unquote(word);
   const rest = (from: number) => from < w.length ? w.slice(from).map(body).join(' ') : undefined;
   if (lower === 'ssh') {
@@ -369,11 +369,11 @@ function relayedCommand(w: string[], lower: string): string | undefined {
   return undefined;
 }
 
-/** The effects of one command segment, recursing into `pwsh -Command "..."`, `bash -c "..."`, ssh and scheduled tasks. */
+
 function* segmentEffects(command: string, dir: string, repo: AsyncRepo, depth: number): Evaluation<Effect[]> {
   const w = commandWords(command);
   if (!w.length) return [];
-  // A page script handed to any runner (a browser helper's `eval`, node -e...) writes where its fetch points.
+
   const page = pageScriptEffects(command);
   if (page.length) return page;
   const head = unquote(w[0]).replace(/^&$/, '').replace(/\.exe$/i, '');
@@ -398,11 +398,11 @@ function* segmentEffects(command: string, dir: string, repo: AsyncRepo, depth: n
   return external.length ? external : yield* toolEffects(w, lower, dir, repo);
 }
 
-/**
- * Replaces `$X` / `${X}` with what the same script assigned to X: `X=$(mktemp -d)` becomes a temp path, `X=<plain path>`
- * that path. So `T=$(mktemp -d); rm -rf $T` is seen as a temp cleanup and `R=main; git push origin $R` as a main push.
- * Anything assigned from other substitutions stays a variable (unknown, so still judged strictly).
- */
+
+
+
+
+
 function expandKnownVariables(text: string) {
   const known = new Map<string, string>();
   for (const [, name, value] of text.matchAll(/(?:^|[\s;&|(])([A-Za-z_]\w*)=("?\$\(mktemp\b[^)]*\)"?|[^\s;&|$`"'()]+)/g))
@@ -430,7 +430,7 @@ export const classifyEffects = (call: EffectCall, repo: Repo): Effect[] => synch
 export const classifyEffectsAsync = (call: EffectCall, repo: AsyncRepo): Promise<Effect[]> => asynchronous(evaluateEffects(call, repo));
 
 function* evaluateEffects({ tool, input, cwd }: EffectCall, repo: AsyncRepo): Evaluation<Effect[]> {
-  // Targets name the kind of spend: delegated agents on the operator's plan, or a direct model run (bench, pi -p, models.*).
+
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? [] : [{ action: 'paid', targets: ['subagent'] }];
   if (tool === 'browser_harness') { const consent = browserConsentEffect(input); return [...(consent ? [consent] : []), ...browserScriptEffects(input)]; }
   const shell = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? [input.command] : undefined;

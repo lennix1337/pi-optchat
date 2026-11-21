@@ -57,7 +57,7 @@ export async function runTransport(command: string, args: string[], config: Cont
           let terminal = false;
           for await (const event of forward(request.context, { ...wireOptions(request.options), signal: controller.signal, sessionId })) {
             if (controller.signal.aborted) throw new Error('Aborted');
-            // Provider error diagnostics may contain request information. Never send raw errors into the container.
+
             if (event.type === 'error') {
               const detail = event.error.errorMessage ?? '';
               providerFailure = /usage policy|policy.?refus|blocked by provider/i.test(detail) ? 'policy' : /quota|usage limit|rate.?limit|429|credits/i.test(detail) ? 'quota' : 'other';
@@ -94,7 +94,7 @@ export async function runTransport(command: string, args: string[], config: Cont
         else if (code !== 0 || !ready || !result) reject(new Error(`Container failed acceptance (exit ${code}; stderr ${stderrBytes} bytes).`));
         else resolve();
       });
-      // Only public model metadata is sent. Provider auth/header configuration never crosses the pipe.
+
       const m = config.model;
       const publicModel: Model<Api> = { id: m.id, name: m.name, api: m.api, provider: m.provider, baseUrl: 'https://invalid.local',
         reasoning: m.reasoning, input: m.input, cost: m.cost, contextWindow: m.contextWindow, maxTokens: m.maxTokens };

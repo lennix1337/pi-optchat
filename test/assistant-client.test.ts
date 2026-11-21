@@ -176,7 +176,7 @@ test('a read retries once when the server dropped the idle socket; a write never
   let hits = 0;
   const server = createServer((req, res) => {
     hits++;
-    if (hits % 2 === 1) { req.socket.destroy(); return; } // The server closed the connection before answering.
+    if (hits % 2 === 1) { req.socket.destroy(); return; }
     res.setHeader('content-type', 'application/json'); res.end('{"ok":true}');
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));

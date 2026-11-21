@@ -1,6 +1,6 @@
 import type { Entry } from './memory.ts';
 
-/** His Slack messages arrive as `[Slack] ` or `[Slack #channel] ` text; every other bracketed head is a machine notice. */
+
 const SLACK_HEAD = /^\[Slack(?: #[\w-]+)?\]\s+/;
 /**
  * What the operator himself wrote, or undefined for a machine notice that also arrives as a user message (gitwatch,

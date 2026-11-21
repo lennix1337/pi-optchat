@@ -24,7 +24,7 @@ const until = async (predicate: () => boolean, what: string) => {
   assert.ok(predicate(), what);
 };
 
-// Main spawns one child on "Spawn one."; the child works until it is stopped.
+
 async function start(dir: string, ui: Partial<ExtensionUIContext>) {
   mkdirSync(dir, { recursive: true });
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
@@ -80,7 +80,7 @@ test('a blocked /new, /resume, /fork or /clone says why and what lets it through
     saveConfig(profile, { ...loadConfig(profile), compactor: fixture, subagent: fixture });
     let pick = (_choice: string | undefined) => {}, picking = false;
     let agent = '', keys: string[] = [], onPage = false;
-    // `/optchat agents`: the Agents page opens `agent`, whose view takes `keys` and closes on Esc.
+
     const custom = (async (factory: Parameters<ExtensionUIContext['custom']>[0]) => {
       if ((onPage = !onPage)) return { open: agent };
       const pressed = [...keys, '\x1b'];
@@ -125,7 +125,7 @@ test('a blocked /new, /resume, /fork or /clone says why and what lets it through
 
     agent = /[0-9a-f]{8}/.exec((await owner.blocked({ type: 'session_before_switch', reason: 'new' })).notes[0])![0];
     const newSession = { type: 'session_before_switch', reason: 'new' } as const;
-    // A wall-clock deadline, not a count of polls: stopping a child on a loaded Windows runner outlasted 200 polls (~2 s).
+
     const waitFor = async (done: (note: string | undefined) => boolean) => {
       const deadline = Date.now() + 15_000;
       let note: string | undefined;

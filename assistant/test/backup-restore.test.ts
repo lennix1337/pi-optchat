@@ -16,7 +16,7 @@ import { PROFILE, seedTask } from './ops-support.ts';
 
 const operator = {};
 
-/** Worker + gateway on the service data directory, delivering effects to an external sink outside it. */
+
 function stack(dataDir: string, sink: string[], owner: string) {
   const gateway = createGateway({ databasePath: join(dataDir, 'gateway.sqlite'), profileId: 'p', operatorAuthority: operator, policy: m => m.action === 'review' ? 'review' : 'allow', inspect: () => ({ decision: 'allow', reasons: [] }) });
   const runtime = createRuntime({ databasePath: join(dataDir, 'runtime.sqlite'), owner, gateway, leaseMs: 60_000,
@@ -67,7 +67,7 @@ test('backup -> restore round trip: encrypted at rest, schema-checked, executed 
   assert.equal(contains(archive, 'mail A'), false);
   await assert.rejects(createBackup({ databasePath: join(data, 'tasks.sqlite'), profileId: PROFILE, out, protector }), /backup_exists/);
 
-  // Both the worker effect and a waiting tool complete after the snapshot.
+
   toolDb.exec("UPDATE tool_effects SET state = 'done' WHERE id = 'b'"); toolDb.close();
   await drain(live.runtime);
   assert.deepEqual(sink, ['mail A', 'mail B']);

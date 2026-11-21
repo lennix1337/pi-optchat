@@ -22,7 +22,7 @@ test('durable receipts distinguish Pi dispatch from a response alone without per
   registerOperationSafety({ on: (name: string, fn: (...args: any[]) => any) => hooks.set(name, fn),
     getAllTools: () => [], registerTool() {} } as unknown as ExtensionAPI, () => journal);
   const ctx = { sessionManager: { getSessionId: () => 's', getLeafId: () => 'leaf' } };
-  // Actual Pi 1.2 order: dispatch notification precedes argument validation/tool_call.
+  // external: Pi 1.2 dispatches notifications before argument validation and tool_call.
   hooks.get('tool_execution_start')!({ toolName: 'write', toolCallId: 'one' }, ctx);
   hooks.get('tool_call')!({ toolName: 'write', toolCallId: 'one', input: { secret: 'never-save-this' } }, ctx);
   const interrupted = new OperationJournal(dir);

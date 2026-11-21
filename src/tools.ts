@@ -15,11 +15,11 @@ export function searchPage(memory: Memory, text: string, before?: number) {
   if (!hits.length) return `No ${older}messages contain "${text}".`;
   const page = hits.slice(0, SEARCH_PAGE), needle = text.toLowerCase();
   const lines = page.map(entry => {
-    // Cut the original text, whose match may span lines, and flatten only the cut.
+
     const at = Math.max(0, entry.text.toLowerCase().indexOf(needle) - SNIPPET / 4);
     const snippet = flat(entry.text.slice(at, at + SNIPPET).replace(/^[\udc00-\udfff]|[\ud800-\udbff]$/g, ''));
-    // The live view, which may have folded since the turn's snapshot: its lines are built, so zoom always opens them.
-    const line = memory.covering(entry.i); // Named only when the hit is inside a summary line.
+
+    const line = memory.covering(entry.i);
     return `${entry.i}${line?.l ? ` (in ${start(line)}+${2 ** line.l})` : ''} · ${new Date(entry.date).toString().slice(0, 21)} · ${entry.kind}: ${at ? '…' : ''}${snippet}${at + SNIPPET < entry.text.length ? '…' : ''}`;
   });
   const more = hits.length > page.length ? `\nOlder matches: search again with before: ${page[page.length - 1].i}.` : '';
@@ -34,7 +34,7 @@ const zoomParameters = Type.Object({ id: Type.Optional(Type.Union([Type.Integer(
 /** A page of a run's transcript, saying where the next one starts. */
 export function runPage(text: string, offset = 0, limit = PAGE) {
   if (offset > text.length) throw new Error(`This transcript has ${text.length} characters; offset must be 0 to ${text.length}.`);
-  // Never split a surrogate pair: a page starts on its first half and ends after its second.
+
   const from = /[\udc00-\udfff]/.test(text[offset] ?? '') ? offset - 1 : offset;
   let to = Math.min(text.length, from + limit);
   if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to += to - 1 === from ? 1 : -1;
@@ -48,19 +48,19 @@ const FIND_AGENT = 'findText searches memory messages, not an agent transcript: 
 export async function readMemory(m: Memory, id: number, { n = 1, offset, limit, findText }: Pick<ZoomArguments, 'n' | 'offset' | 'limit' | 'findText'>, onRead?: (read: MemoryRead) => void) {
   if (findText !== undefined) {
     const found = findInRange(m, { id, n, findText, offset, limit });
-    // Touch older hits first so a bounded consumer retains the newest evidence from this batch.
+
     for (const read of found.reads.toReversed()) onRead?.(read);
     return result(found.text);
   }
   const text = m.zoom(id, n, offset, limit), page = result(text);
   const read = { id, n, ...n !== 1 || offset === undefined ? {} : { offset }, ...n !== 1 || limit === undefined ? {} : { limit } };
-  // A message's images come back with its text, as read returns a PNG; summaries stay text.
+
   const images = n === 1 ? await loadImages(m.store, text) : [];
   onRead?.(read);
   return { ...page, content: [...page.content, ...images] };
 }
 
-/** A zoom target that is no run: say where each kind of id is read, so the next call is the right one. */
+
 const noRun = (id: string) => `No run ${id}. Subagent run ids come from spawn/subagent; a background shell is read with shell_status; a memory message is zoom {id: number, n}.`;
 
 /** `runs` gives a subagent's messages by run id, live or finished; undefined for no such run.
@@ -77,7 +77,7 @@ export function memoryTools(memory: () => Memory, runs?: (id: string) => readonl
         if (messages) return result(runPage(runTranscript(messages), offset, limit));
         if (agent !== undefined) throw new Error(noRun(agent));
         if (id === undefined) throw new Error('zoom takes id and n, or agent.');
-        // A model may quote a message id; eight digits can be a run id, so those never open a message.
+
         if (typeof id === 'string' && (!/^\d+$/.test(id) || id.length === 8)) throw new Error(noRun(id));
         return readMemory(memory(), Number(id), args, onRead);
       } },

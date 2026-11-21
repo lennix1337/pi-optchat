@@ -19,10 +19,10 @@ async function until(condition: () => boolean) {
   while (!condition()) { if (Date.now() > deadline) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
 
-/**
- * Workers whose first turn calls shell_start on a command that ends when a marker file appears. "busy-*" and "gone-*" workers then
- * hold their next turn, so they are still running when the shell ends; the others finish at once.
- */
+
+
+
+
 async function harness() {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-worker-shell-'));
   const watcher = join(dir, 'watch.cjs');
@@ -63,7 +63,7 @@ async function harness() {
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'optchat-test', model: 'child', thinking: 'minimal' }), () => '',
     async text => { reports.push(withoutFullChat(text)); }, text => warnings.push(text), dir,
     { settings: () => ({ subagentLevels: 1, maxAgents: 8 }), shells, createSession: options => createAgentSession({ ...options, modelRuntime: runtime }) });
-  // The same wiring the profile uses (src/index.ts), with the main agent's inbox collected in `mainNotices`.
+
   shells.setReporter(shellReporter({ live: () => true, main: async text => { mainNotices.push(text); }, agent: (id, text) => children.shellNotice(id, text),
     failed: (what, job, error) => warnings.push(`${what} ${job.id}: ${String(error)}`) }));
   const release = (task: string) => writeFileSync(marker(task), 'go');

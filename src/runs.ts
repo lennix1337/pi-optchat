@@ -55,7 +55,7 @@ const moves: Record<RunState, readonly RunState[]> = {
   waiting: ['running', 'paused', 'stopping', 'completed', 'failed', 'stopped', 'interrupted'],
   paused: ['running', 'stopping', 'failed', 'stopped', 'interrupted'],
   stopping: ['stopped', 'failed', 'interrupted'],
-  // A finished run only takes the outcome of a connected handoff.
+
   completed: ['interrupted'], failed: ['completed', 'interrupted'], stopped: ['completed', 'interrupted'], interrupted: ['completed', 'failed', 'stopped'],
 };
 /** Every run state change goes through here, so a late stop cannot rewrite a finished run. Returns whether the run is now in `to` (true for a repeat, so a second stop can still abort a child that ignored the first). */
@@ -110,12 +110,12 @@ export class RunHistory {
         const run: unknown = JSON.parse(readFileSync(join(this.directory, file), 'utf8'));
         if (record(run) && run.depth === undefined) run.depth = 1;
         if (!isRun(run) || file !== `${run.id}.optchat.json`) throw new Error('Invalid metadata');
-        // Never follow a stored transcript pointer outside this profile's run directory.
+
         if (run.sessionFile) run.sessionFile = join(this.directory, basename(run.sessionFile));
         this.records.set(run.id, run);
         if (isActiveRun(run)) {
           if (run.connected) run.handoff ??= { reason: 'owner-stopped' };
-          // Paused runs wait for the user and stopping ones were stopped on purpose: neither is picked up again by itself.
+
           else if ((run.state === 'running' || run.state === 'waiting') && !run.explicitRecovery) run.cutOff = true;
           if (run.explicitRecovery) delete run.cutOff;
           transition(run, 'interrupted'); run.ended = Date.now();
@@ -129,7 +129,7 @@ export class RunHistory {
       } catch { this.warnings.push(`Could not read run metadata: ${file}`); }
     }
     const known = new Set([...this.records.values()].map(r => r.sessionFile));
-    // Make pre-inspector child sessions browsable without pretending to know their parent session.
+
     for (const file of files.filter(f => f.endsWith('.jsonl') && !known.has(join(this.directory, f)))) {
       try {
         const manager = SessionManager.open(join(this.directory, file));
@@ -196,6 +196,6 @@ export function orderRuns(records: Iterable<RunInfo>): RunInfo[] {
     for (const child of descendants.get(run.id) ?? []) visit(child);
   };
   for (const run of sorted) if (!run.parentId || !unique.has(run.parentId)) visit(run);
-  for (const run of sorted) visit(run); // Keep even malformed/orphaned old trees visible.
+  for (const run of sorted) visit(run);
   return result;
 }

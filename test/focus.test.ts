@@ -8,7 +8,7 @@ import { Focus, FOCUS_EXCERPT_CHARS, FOCUS_EXPIRE_AFTER, FOCUS_MAX_CHARS, FOCUS_
 import { removeDir } from './support.ts';
 
 type Zoom = Pick<Memory, 'zoom'>;
-/** A memory stand-in whose message `id` reads `text(id)`; records every call so tests can see nothing else was read. */
+
 function fake(text: (id: number) => string = id => `message ${id}`) {
   const calls: unknown[][] = [];
   const memory: Zoom = { zoom: (id, n, offset, limit) => { calls.push([id, n, offset, limit]); return `${id}+${n}|user: ${text(id)}`; } };
@@ -17,7 +17,7 @@ function fake(text: (id: number) => string = id => `message ${id}`) {
 const ids = (rendered: string) => [...rendered.matchAll(/^\[focus (\d+)\+/gm)].map(m => Number(m[1]));
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const BREAK = '\\r\\n|[\\n\\r\\v\\f\\u0085\\u2028\\u2029]';
-/** Lines a reader would take for frame syntax: those without the quote prefix. */
+
 const frameLines = (rendered: string) => rendered.split(new RegExp(BREAK)).filter(line => !line.startsWith('| ') && line !== '');
 const unquote = (quoted: string) => quoted.replace(new RegExp(`(^|${BREAK})\\| `, 'g'), '$1');
 

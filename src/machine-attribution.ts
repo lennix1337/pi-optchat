@@ -16,9 +16,9 @@ export function commandHead(command: string, max = 50): string {
   return [...head].length > max ? `${[...head].slice(0, max - 1).join('')}…` : head;
 }
 
-/** Words that say nothing about which call a process belongs to. */
+
 const GENERIC_WORDS = new Set(['bash', 'sh', 'cmd', 'zsh', 'pwsh', 'powershell', 'c', '-c', '/c', '/d', '/s', 'node', 'nodejs', 'program', 'files', 'usr', 'bin', 'git', 'exec']);
-/** A command as comparable words: lower case, forward slashes, no quotes or shell operators, each path cut to its last part (`"/c/Program Files/nodejs/npm" test` reads `program files npm test`), `.exe` dropped. */
+
 function commandWords(command: string): string[] {
   return command.toLowerCase().replace(/\\/g, '/').replace(/["'`]/g, ' ').split(/[\s;&|<>()]+/).filter(Boolean).map(w => w.replace(/\.exe$/, '').replace(/^.*\/(?=[^/])/, ''));
 }
@@ -35,7 +35,7 @@ export function commandBelongsTo(orphan: string, claimed: string): boolean {
   return false;
 }
 
-/** Whether `name` is a command shell: what Pi starts for each bash call. */
+
 const SHELL_NAME = /^(?:bash|sh|cmd|powershell|pwsh|zsh)(?:\.exe)?$/i;
 const CLAIM_BEFORE_MS = 2_000, CLAIM_AFTER_MS = 30_000, BOUND_BEFORE_MS = 60_000, BOUND_AFTER_MS = 2_000, FRESH_SLACK_MS = 1_500, REMEMBER_MS = 10 * 60_000, MCP_AFTER_RUN_MS = 30_000;
 
@@ -110,7 +110,7 @@ export class Attributor {
     if (this.inherited !== undefined) { this.remember(this.inherited, now); this.inherited = undefined; }
     this.claims = this.claims.filter(c => c.at > now - 6 * 3_600_000 || !c.bound);
     const live = new Map(sample.procs.map(p => [p.pid, p]));
-    // Parents start before their children, so one pass in start order sees each parent's owner first.
+
     const ordered = [...sample.procs].sort((a, b) => a.start - b.start || a.pid - b.pid);
     for (const p of ordered) {
       if (p.pid === 0) continue;

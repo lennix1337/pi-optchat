@@ -19,7 +19,7 @@ if (cli.length && (cli.length !== 2 || cli[0] !== '--task-image' || !/^swebench\
 }
 const taskImage = cli[1];
 const docker = (args: string[], timeout = 30_000) => execFileSync('docker', args, { encoding: 'utf8', timeout, maxBuffer: 8 * 1024 ** 2 });
-// This is functional acceptance with a fixture provider, never an inference/performance benchmark.
+
 assertSmokeGate('', freemem());
 const existingContainers = docker(['ps', '-q']).trim().split('\n').filter(Boolean);
 const context = await mkdtemp(join(tmpdir(), 'oc-bridge-build-'));
@@ -33,7 +33,7 @@ let compactionRequests = 0;
 try {
   stageContext(repo, context);
   if (taskImage) {
-    // Reuse the actual task environment, adding only the sandboxed Node/OptChat runtime.
+
     const { readFile } = await import('node:fs/promises');
     const original = await readFile(join(context, 'Dockerfile'), 'utf8');
     await writeFile(join(context, 'Dockerfile'), original.replace('FROM node:22-slim', 'FROM node:22-slim AS runtime')

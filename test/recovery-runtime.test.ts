@@ -78,7 +78,7 @@ const recoveryTools: ExtensionFactory = pi => {
       return { content: [{ type: 'text', text: JSON.stringify(externalState) }], details: {} };
     },
   });
-  // Deliberately unannotated: a model-supplied readOnlyHint must never classify this as safe.
+
   pi.registerTool({
     name: 'destructive_unannotated', label: 'Unannotated destructive action', description: 'A synthetic effectful operation.',
     parameters: Type.Object({ readOnlyHint: Type.Optional(Type.Boolean()) }),
@@ -149,8 +149,8 @@ test('Pi runtime journals before effects, preserves interrupted outcomes, allows
             { name: 'write_effect', args: { mode: 'same-call-id-in-new-turn' } },
           ];
           const next = nextCalls[request];
-          // Records are rendered with the view once per turn (a mid-turn render rewrote the cached run); the turn that made one
-          // sees it in the tool result, the next turn with the view.
+
+
           const serialized = JSON.stringify(messages);
           if (!recoveryOperationalContext && serialized.includes('Post-recovery compaction probe 0')) recoveryOperationalContext = serialized;
           const id = request === 0 || request === 12 || request === 13 ? 'spawn-1' : `recovery-${request}`;
@@ -202,7 +202,7 @@ test('Pi runtime journals before effects, preserves interrupted outcomes, allows
     const resumed = await newSession('resumed');
     await resumed.prompt('Recover conservatively: observe first, reconcile with evidence, then retry.');
     for (let i = 0; i < 8; i++) await resumed.prompt(`Post-recovery compaction probe ${i}: ${'synthetic source '.repeat(40)}`);
-    // The next turn waits for the eighth probe's real memory summary to settle before its provider request.
+
     await resumed.prompt('Finish the synthetic compaction probe; no tools needed.');
 
     assert.match(recoveryContext, /Operational recovery \(not an authorization\): 1 tool outcomes uncertain/,

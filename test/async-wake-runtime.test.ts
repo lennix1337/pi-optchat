@@ -14,7 +14,7 @@ import { TURN_REFRESHED } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
 import { isCompaction, removeDir } from './support.ts';
 
-// Also run this fixture against the installed runtime without changing dependencies or the live profile.
+
 const pi: typeof pinnedPi = process.env.OPTCHAT_TEST_PI_ENTRY
   ? await import(pathToFileURL(process.env.OPTCHAT_TEST_PI_ENTRY).href) : pinnedPi;
 

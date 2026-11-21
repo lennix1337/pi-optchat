@@ -1,4 +1,4 @@
-// Disposable-source negative controls for the outbox: removing each durable guard must fail an outbox test.
+
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -10,17 +10,17 @@ const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'assistant-outbox-mutants-'));
 const tests = ['service-outbox.test.ts'];
 const variants = [
-  // Staging outside the state change's transaction would let a rolled-back change leave an effect behind.
+
   ['stage-without-transaction', 'outbox/outbox.ts', 'if (!this.db.isTransaction) throw new Error(\'outbox_requires_transaction\');', ''],
-  // A conflicting replay of an idempotency key must be refused, not silently accepted.
+
   ['conflict-silent', 'outbox/outbox.ts', "throw new Error('outbox_conflict');\n      return 'duplicate';", "return 'duplicate';"],
-  // A restart must not turn a row interrupted mid-call back into pending (that is the duplicate-send path).
+
   ['recover-to-pending', 'outbox/outbox.ts', "SET state = 'uncertain', reason = 'interrupted', updated = ? WHERE profile = ? AND state = 'sending'", "SET state = 'pending', reason = 'interrupted', updated = ? WHERE profile = ? AND state = 'sending'"],
-  // A transport error that is not a definite refusal is uncertain; resending it could repeat the effect.
+
   ['uncertain-retried', 'outbox/outbox.ts', "return { kind: 'uncertain', reason: 'transport_error' };", "return { kind: 'retry', code: 'transport_error' };"],
-  // A definite refusal is terminal; only retryable ones return to pending.
+
   ['definite-refusal-retried', 'outbox/outbox.ts', "if (error.retryable && byDispatcher) return { kind: 'retry', code: error.message };\n    return { kind: 'failed', code: error.message };", "return { kind: 'retry', code: error.message };"],
-  // The claim is what keeps two dispatchers from sending the same row.
+
   ['claim-ignored', 'outbox/outbox.ts', 'if (!this.claim(row.id)) continue;', ''],
 ];
 let killed = 0;

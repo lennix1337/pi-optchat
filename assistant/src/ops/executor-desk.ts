@@ -25,7 +25,7 @@ export class ExecutorDesk {
     this.store = new TaskStore(config.databasePath, config.profileId);
     try {
       this.gateway = openToolGateway(config, this.authority);
-      // Listing only: this desk never prepares or dispatches an effect.
+
       const refuse = () => { throw new Error('operator_desk_read_only'); };
       this.effects = new ToolEffects(config.databasePath, { prepare: refuse, status: id => this.gateway.status(id), ready: () => false, dispatch: refuse }, () => false);
     } catch (error) { this.store.close(); throw error; }

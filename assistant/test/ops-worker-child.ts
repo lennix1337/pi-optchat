@@ -1,6 +1,6 @@
-// Disposable worker process for the ops journey: node ops-worker-child.ts <dataDir> <sinkFile>
-// Runs every queued job on the service data directory once, sending effects to an external sink file outside it,
-// so a restore of that directory cannot hide a repeated send.
+
+
+
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createGateway } from '../src/policy/gateway.ts';

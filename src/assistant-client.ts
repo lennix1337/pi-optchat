@@ -16,7 +16,7 @@ const safe = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 100
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const LIMIT = 50;
 
-/** `name` undefined (a monitor that only has the profile directory) accepts whichever profile the file names. */
+
 function config(owner: Pick<AssistantOwner, 'dir'> & { name?: string }) {
   let raw: string;
   try {
@@ -45,14 +45,14 @@ function config(owner: Pick<AssistantOwner, 'dir'> & { name?: string }) {
 export { config as assistantConfig, request as assistantRequest };
 export class HttpError extends Error { constructor(readonly status: number) { super('Assistant request failed.'); } }
 class ResponseTooLarge extends Error {}
-/** A kept-alive socket the server closed while idle fails the next request with a reset before any byte is read. */
+// external: A closed idle keep-alive socket can reset the next request before it returns bytes.
 const staleSocket = (error: unknown) => error instanceof TypeError && error.message === 'fetch failed'
   && ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(String((error.cause as { code?: unknown } | undefined)?.code));
 async function request(c: ReturnType<typeof config>, path: string, body?: unknown, timeoutMs = 5000, cancel?: AbortSignal): Promise<unknown> {
   const signal = cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs);
   const send = () => fetch(c.endpoint + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal,
     headers: { Authorization: `Bearer ${c.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  // Reads are idempotent, so one retry on a fresh socket is safe; writes never repeat (their effect may have landed).
+
   const began = Date.now(); let attempts = 1;
   const response = await send().catch(error => { if (body === undefined && staleSocket(error)) { attempts = 2; return send(); } throw error; })
     .catch(error => { if (error instanceof Error) Object.assign(error, { elapsedMs: Date.now() - began, attempts }); throw error; });
@@ -62,7 +62,7 @@ async function request(c: ReturnType<typeof config>, path: string, body?: unknow
   try {
     for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 256 * 1024) throw new ResponseTooLarge(); chunks.push(value); }
   } catch (error) {
-    try { await reader.cancel(); } catch { /* Preserve the original read failure. */ }
+    try { await reader.cancel(); } catch {   }
     throw error;
   } finally { reader.releaseLock(); }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
@@ -126,7 +126,7 @@ async function servicePage(c: ReturnType<typeof config>, owner: AssistantOwner, 
   return [`Assistant snapshots · ${tasks.length} tasks (metadata, not work or effect success)`, ...tasks.map(card), page.nextCursor === null ? 'End of page.' : `Continue: /assistant list ${encodeURIComponent(page.nextCursor as string)}`].join('\n');
 }
 
-/** The service's Google briefing. Titles come from mail and calendars: shown as escaped, untrusted data, never acted on. */
+
 async function briefingPage(c: ReturnType<typeof config>, owner: AssistantOwner, now: boolean): Promise<string> {
   let value: unknown;
   try { value = now ? await request(c, '/v1/briefing', {}, 120_000) : await request(c, '/v1/briefing'); }
@@ -150,7 +150,7 @@ async function briefingPage(c: ReturnType<typeof config>, owner: AssistantOwner,
     `${value.distractions} low-priority messages hidden.`].join('\n');
 }
 
-/** A slow failure (hang, then reset) differs from an instant refusal; say how long it took and whether the read was retried. */
+
 function slowDetail(error: unknown): string {
   const { elapsedMs, attempts } = error as { elapsedMs?: unknown; attempts?: unknown };
   if (typeof elapsedMs !== 'number' || elapsedMs < 1000) return '';

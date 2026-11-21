@@ -1,4 +1,4 @@
-// Generated disposable copies keep mutation proof away from the working sources.
+
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

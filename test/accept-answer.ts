@@ -4,7 +4,7 @@ import { Crew, crewTool } from '../src/crew.ts';
 import type { RunInfo } from '../src/runs.ts';
 import { tempDir } from './support.ts';
 
-// Kept apart from support.ts, which is the `--import` preload and must not evaluate product modules (see messages.ts).
+
 
 /** The `crew` call that accepts the worker run, as the manager makes it. */
 export const ACCEPT_CALL = { action: 'accept', run: 'run-1', title: 'feat: x', text: 'Problema, mudança, evidência.' } as const;
@@ -17,14 +17,14 @@ export const FAILED = { code: 1, out: 'status: failed\nstage: pr_create\ndetail:
 /** ship lost track after it opened the PR: the PR may exist, the outcome is not known. */
 export const UNCERTAIN = { code: 4, out: 'status: uncertain\nstage: auto_merge\npr: 7\nurl: "https://github.com/acme/app/pull/7"\nnext: gh pr view 7 --json autoMergeRequest,state para reconciliar\nrc: 4\n' };
 
-/** git as acceptRun asks it about a clean checkout on feat/x, two commits ahead of origin/main. No process runs. */
+
 const cleanBranch: GitRunner = async (_cwd, [command, ...rest]) => {
   if (command === 'symbolic-ref') return { code: 0, out: rest.at(-1) === 'HEAD' ? 'feat/x\n' : 'origin/main\n' };
   if (command === 'status') return { code: 0, out: '' };
   if (command === 'log') return { code: 0, out: 'b2b2b2b feat: change 2\na1a1a1a feat: change 1\n' };
   if (command === 'rev-list') return { code: 0, out: '2\n' };
   if (command === 'diff') return { code: 0, out: ' f1.txt | 1 +\n f2.txt | 2 ++\n 2 files changed, 3 insertions(+)\n' };
-  return { code: 0, out: 'true\n' }; // rev-parse: inside a work tree whose origin/main exists
+  return { code: 0, out: 'true\n' };
 };
 
 /**

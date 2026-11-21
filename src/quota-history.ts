@@ -59,7 +59,7 @@ export function readQuotaHistory(dir: string, file = QUOTA_HISTORY_FILE): QuotaR
       try {
         const row = JSON.parse(line) as QuotaRow;
         if (typeof row.provider === 'string' && nonnegative(row.fetchedAt) && nonnegative(row.at)) rows.push(row);
-      } catch { /* a torn line */ }
+      } catch {   }
     }
   }
   return rows.sort((a, b) => a.fetchedAt - b.fetchedAt || a.at - b.at);

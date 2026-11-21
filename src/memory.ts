@@ -34,15 +34,15 @@ const HEAD = 400;
 export const start = ({ l, i }: Part) => i * 2 ** l;
 export const end = (part: Part) => start(part) + 2 ** part.l;
 export const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
-/** The most of a tool result a call's summary task shows. */
+
 const RESULT = 12_000;
-/** Bound repeated-search caching to eight queries and 20,000 message indexes; broad and long queries are not retained. */
+
 /** The newest messages keep their text in RAM; older summarized ones are read back from the store when asked for. */
 export const HOT_TEXTS = 2048;
 const SEARCH_CACHE_QUERIES = 8;
 const SEARCH_CACHE_HITS = 20_000;
 const SEARCH_CACHE_QUERY_CHARS = 256;
-/** Ascending indexes of the original messages a query matches, scanned through message `scanned - 1`. */
+
 interface HitIndex { scanned: number; hits: number[] }
 const KIND_HEAD = new RegExp(`^\\s*(?:${KINDS.join('|')})\\s*:\\s*`, 'i');
 /** A cheap model can head a summary with the kind of a <chat> line it copied, so the code sets the message's own. */
@@ -71,7 +71,7 @@ export function alignedBlocks(from: number, to: number) {
   return tiles;
 }
 const HINT_BLOCKS = 6;
-/** The aligned lines that read the messages a bad id+n asked for, or '' when it started past the end or was not whole numbers. */
+
 function alignedHint(id: number, n: number, count: number) {
   if (!Number.isSafeInteger(id) || !Number.isSafeInteger(n) || id < 0 || n < 1 || id >= count) return '';
   const to = Math.min(id + n, count);
@@ -107,9 +107,9 @@ export function mostDue(view: readonly Part[], total: number, built: (part: Part
   }
   return best;
 }
-/** A view (recipe §3.2): lines that tile the log, oldest first. It grows a line per message and, once over `ceiling` bytes, over
- * `high` when the cache is cold, or when forced, merges its most due pairs in one batch down to `low`, merging what it can at each
- * change until then. */
+
+
+
 class Sawtooth {
   readonly parts: Part[] = [];
   private measured = 0;
@@ -117,9 +117,9 @@ class Sawtooth {
   constructor(private readonly high: number, private readonly low: number, private readonly node: (part: Part) => Summary | undefined,
     private readonly unbuilt: (i: number) => string, private readonly ceiling = high) {}
   private lineSize(part: Part) { return bytes(`${start(part)}+${2 ** part.l}|\n`) + (this.node(part)?.size ?? bytes(this.unbuilt(part.i))); }
-  get size() { return VIEW_FRAME_BYTES + this.measured + (this.parts.length ? 0 : 1); } // render() keeps a blank line in an empty view.
+  get size() { return VIEW_FRAME_BYTES + this.measured + (this.parts.length ? 0 : 1); }
   push(part: Part) { this.parts.push(part); this.measured += this.lineSize(part); }
-  /** The line covering message `at`. The lines tile the log in order, so a binary search finds it. */
+
   covering(at: number): Part | undefined {
     for (let lo = 0, hi = this.parts.length - 1; lo <= hi;) {
       const mid = (lo + hi) >> 1, p = this.parts[mid];
@@ -128,11 +128,11 @@ class Sawtooth {
       else return p;
     }
   }
-  /** A shown line's text changed size (Memory.revise). */
+
   resized(part: Part, delta: number) { if (this.parts.some(p => p.l === part.l && p.i === part.i)) this.measured += delta; }
-  /** A message got its node. Its line is usually still shown, but after a damaged tree file a saved parent can already hide it. */
+
   built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - bytes(this.unbuilt(i)); }
-  /** Returns whether any lines merged. */
+
   fit(total: number, force = false, cold = false) {
     const lines = this.parts.length;
     if (force || this.size > (cold ? this.high : this.ceiling)) this.merging = true;
@@ -157,7 +157,7 @@ const FLAG_ORIGIN = 1;
 const FLAG_RECEIPT = 2;
 const KIND_INDEX = new Map<Kind, number>(KINDS.map((k, i) => [k, i]));
 
-/** Packed metadata for cold messages (typed arrays + sparse maps), keeping ColdEntry to two fields (~24 B) and zero date strings in RAM. */
+
 class ColdIndex {
   private kinds = new Uint8Array(0);
   private sizes = new Uint32Array(0);
@@ -218,7 +218,7 @@ class ColdIndex {
   text(i: number): string { return this.store.reader?.(i)?.() ?? ''; }
 }
 
-/** A summarized message whose text lives on disk. Holds only (i, cold) so each object stays ~24 bytes in V8. */
+
 class ColdEntry implements Entry {
   constructor(readonly i: number, private readonly cold: ColdIndex) {}
   get kind(): Kind { return this.cold.kind(this.i); }
@@ -232,19 +232,19 @@ class ColdEntry implements Entry {
     return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
   }
 }
-/** A message the store loaded without its text (`FileStore.load(hot)`): its size travels instead, and `reader` gives the text. */
+
 function isColdRecord(value: unknown): boolean {
   return object(value) && !('text' in value) && Number.isSafeInteger(value.i) && KINDS.some(kind => kind === value.kind)
     && typeof value.size === 'number' && typeof value.date === 'string';
 }
-/** A summary whose text lives in the tree files; plain fields and one shared getter, like ColdEntry. */
+
 class ColdSummary implements Summary {
   constructor(readonly l: number, readonly i: number, readonly size: number, private readonly store: Store) {}
   get text() { return this.store.nodeText!(this.l, this.i); }
 }
 const MAX_TREE_LEVEL = 32;
 const MAX_TREE_INDEX = 10_000_000;
-/** Stores cold summaries as packed Uint32Array sizes per level (~1.3 MB for 325k nodes instead of ~38 MB of objects and Map buckets). */
+
 class ColdTreeMap implements Map<number, Summary> {
   private readonly warm = new Map<number, Summary>();
   private readonly coldLevels: Uint32Array[] = [];
@@ -373,7 +373,7 @@ export class Memory {
   stats() {
     let liveTexts = 0, liveTextBytes = 0;
     for (const entry of this.root) if (Object.getOwnPropertyDescriptor(entry, 'text')?.writable) { liveTexts++; liveTextBytes += Buffer.byteLength(entry.text); }
-    // Only summaries that still hold their text count: a ColdSummary reads it from disk, so its bytes are not heap.
+
     let treeTextBytes = 0, treeColdNodes = this.tree.coldSize;
     for (const node of this.tree.warmValues()) {
       if (Object.getOwnPropertyDescriptor(node, 'text')) treeTextBytes += Buffer.byteLength(node.text); else treeColdNodes++;
@@ -432,7 +432,7 @@ export class Memory {
     for (const node of this.tree.values()) { this.queueParent(node); yield; }
     for (let i = 0; i < this.root.length; i++) { if (!this.node({ l: 0, i })) this.unbuilt.add(i); yield; }
     for (let i = 0; i < this.root.length - HOT_TEXTS; i++) { this.chill(i); yield; }
-    // Refolding the log gives a different view than the live one, and every cache entry would miss, so the view is saved.
+
     const loaded = this.load(saved.view);
     for (const part of this.view) this.compaction.push(part);
     this.compaction.fit(loaded, true);
@@ -518,7 +518,7 @@ export class Memory {
     if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
     const clean = kind === 'echo' ? scrubSecrets(text) : text;
     const entry: Entry = { i: this.root.length, kind, text: clean, date, size: bytes(`${kind}: ${clean}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
-    // New messages retry ordinary failures, but policy refusals stay blocked until an explicit retry action.
+
     this.retryAt.clear();
     void this.enqueue(() => this.store.append(entry), error => {
       this.failed ??= error instanceof Error ? error.message : String(error);
@@ -649,17 +649,17 @@ export class Memory {
   }
   private pump() {
     if (this.stopped) return;
-    // One clock reading: skipping a part and arming its retry timer must agree on what is due.
+
     const now = Date.now();
     const run = (part: Part) => {
       const id = key(part);
       if (this.busy.has(id) || this.terminal.has(id) || (this.retryAt.get(id) ?? 0) > now) return;
-      // Schedule before telling waiters, so a turn never mistakes the gap before the next pump for a stall.
+
       const promise = this.build(part).catch(error => this.handleFailure(part, error))
         .finally(() => { this.busy.delete(id); this.schedule(); this.events.emit('change'); });
       this.busy.set(id, promise);
     };
-    // A message's node starts once fewer than `jobs` lines before it are unbuilt; a merge, once both halves are built.
+
     let ahead = 0;
     for (const i of this.unbuilt) {
       if (ahead++ === this.jobs) break;
@@ -671,7 +671,7 @@ export class Memory {
       if (this.busy.size >= this.jobs) return;
       run(part);
     }
-    // A later failure can have a later deadline than the timer installed by the first.
+
     const deadlines = [...this.retryAt.values()].filter(t => t > now && Number.isFinite(t));
     if (deadlines.length && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, Math.max(1, Math.min(...deadlines) - now));
     if (this.stalled) this.events.emit('change');
@@ -706,7 +706,7 @@ export class Memory {
     let changed = 0;
     for (const part of [...this.view]) {
       const node = this.node(part), note = node && stale(node.text);
-      // A short message is its own line: those are someone's exact words, never rewritten.
+
       if (!node || note === undefined || part.l === 0 && node.text === `${this.root[part.i].kind}: ${this.root[part.i].text}`) continue;
       let text = (await this.compress({ context: `${VIEW_OPEN}</chat>`, source: node.text, part, revise: note }, signal)).trim();
       if (text && part.l === 0) text = labeled(this.root[part.i].kind, text);
@@ -747,12 +747,12 @@ export class Memory {
       historical: this.hasOriginInRange(start(part), end(part)),
       ...(result === undefined ? {} : { result: cap(result, RESULT) }),
       ...(call ? { call: { i: call.i, text: cap(`tool: ${call.text}`, 4000) } } : {}) }, this.controller.signal)).trim();
-    // A model may copy a differently tagged line from <chat>; the source message keeps its own kind.
+
     if (text && part.l === 0 && text !== source) text = labeled(this.root[part.i].kind, text);
     if (this.stopped) return;
     if (!text) throw new Error('Compactor returned an empty summary.');
     const node = { ...part, text, size: lineBytes(text) };
-    // A failed node write fails the build, which is retried.
+
     const written = this.enqueue(() => this.store.appendNode(node), error => { throw error; });
     if (written) await written;
     this.tree.set(key(part), node); this.retryAt.delete(key(part)); this.merges.delete(key(part)); this.queueParent(part);
@@ -832,10 +832,10 @@ export class Memory {
       if (offset === undefined && text.length <= page) return `${id}+1|${kind}: ${text}`;
       if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0 || offset >= Math.max(1, text.length)))
         throw new Error(`Message ${id} has ${text.length} characters; offset must be 0 to ${Math.max(0, text.length - 1)}.`);
-      // Never split a surrogate pair: a page starts on its first half and ends after its second.
+
       const from = /[\udc00-\udfff]/.test(text[offset ?? 0] ?? '') ? (offset ?? 0) - 1 : offset ?? 0;
       let to = Math.min(text.length, from + page);
-      // A one-unit page on a pair takes the whole pair, so the next offset always moves forward.
+
       if (to < text.length && /[\ud800-\udbff]/.test(text[to - 1])) to += to - 1 === from ? 1 : -1;
       const hint = text.length <= PAGE ? `\n[note: this message is only ${text.length.toLocaleString('en-US')} characters and fits in one zoom; offset/limit are for messages over ${PAGE.toLocaleString('en-US')}]` : '';
       return `${id}+1|${kind}: ${text.slice(from, to)}\n[showing characters ${from}-${to} of ${text.length}${to < text.length ? `; next page: offset ${to}` : ''}]${hint}`;

@@ -12,7 +12,8 @@
     "image": "https://raw.githubusercontent.com/jonaslsaa/pi-optchat/main/docs/banner.jpg"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "npm run lint:comments && tsc --noEmit",
+    "lint:comments": "node scripts/lint-comments.mjs",
     "verify": "node scripts/verify.mjs",
     "test": "node scripts/verify.mjs --test-only",
     "test:one": "node --experimental-transform-types --no-warnings --import ./test/support.ts --test",

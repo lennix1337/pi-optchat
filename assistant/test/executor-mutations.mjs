@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Disposable copy of the executor sources; each guard removed must fail an assertion of assistant-executor.
+
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const home = mkdtempSync(join(tmpdir(), 'assistant-executor-mutants-'));
-// A worktree has no node_modules of its own: link the one Node resolves from the repo, never a stray copy above %TEMP%.
+
 const modules = (dir => { for (; !existsSync(join(dir, 'node_modules')); dir = dirname(dir)) if (dirname(dir) === dir) throw new Error('node_modules not found'); return join(dir, 'node_modules'); })(repo);
 const tests = ['task-executor.test.ts', 'task-response-reader.test.ts', 'pi-draft.test.ts', 'account-routes.test.ts'];
 const mutations = [

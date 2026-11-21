@@ -5,12 +5,12 @@ export interface MemoryRead { id: number; n: number; offset?: number; limit?: nu
 
 /** The bounds of one zoom `findText` call, so its work and its output stay small whatever the range. */
 export const FIND = {
-  maxText: 200,         // longest findText
-  scanChars: 1_000_000, // original characters searched per call
-  scanMessages: 4_096,  // messages examined per call
-  excerpts: 8,          // matches shown per call
-  context: 120,         // characters around a match
-  nextLimit: 2_000,     // limit of the suggested follow-up zoom
+  maxText: 200,
+  scanChars: 1_000_000,
+  scanMessages: 4_096,
+  excerpts: 8,
+  context: 120,
+  nextLimit: 2_000,
 } as const;
 
 const HIGH = /[\ud800-\udbff]/, LOW = /[\udc00-\udfff]/;
@@ -19,8 +19,8 @@ const quote = (text: string) => JSON.stringify(text);
 
 interface Folded { text: string; start(index: number): number; end(index: number): number }
 
-/** Lowercases text and maps folded indexes back to original ones. Normalize capital sigma first to avoid contextual final
- * sigma; only length-changing folds (U+0130) need the code-point map. Existing lowercase final sigma stays distinct. */
+
+
 function fold(text: string): Folded {
   const lower = (text.includes('\u03a3') ? text.replaceAll('\u03a3', '\u03c3') : text).toLowerCase();
   if (lower.length === text.length) return { text: lower, start: index => index, end: index => index };
@@ -34,15 +34,15 @@ function fold(text: string): Folded {
   return {
     text: folded,
     start: index => origin[index] ?? text.length,
-    // A folded index inside one character's expansion ends after that character.
+
     end: index => { while (index < origin.length && origin[index] === origin[index - 1]) index++; return origin[index] ?? text.length; },
   };
 }
 
-/** The aligned blocks that tile messages from..to-1, newest first. */
+
 const blocks = (from: number, to: number) => alignedBlocks(from, to).reverse();
 
-/** Logged zoom/search results only copy memory, so a range search skips them as Memory.search does. */
+
 const COPY_KINDS = new Set<string>(['tool', 'echo']);
 const isCopy = ({ kind, text }: { kind: string; text: string }) => COPY_KINDS.has(kind) && /^(zoom|search)[ :]/.test(text);
 
@@ -51,7 +51,7 @@ export interface FindArgs { id: number; n: number; findText: string; offset?: nu
 interface Hit { id: number; start: number; from: number; to: number }
 interface Scan { hits: Hit[]; searched: number; examined: number; skipped: number; more: boolean; resume?: { id: number; offset: number }; older: number }
 
-/** Admission shared with Memory.zoom, which stays the authority for a plain read: only an aligned, existing range. */
+
 function checkRange(memory: Memory, id: number, n: number) {
   if (!Number.isSafeInteger(id) || id < 0 || !Number.isSafeInteger(n) || n < 1 || !Number.isInteger(Math.log2(n)) || id % n || id + n > memory.root.length)
     throw noLine(id, n, memory.root.length);
@@ -68,7 +68,7 @@ function checkFind(memory: Memory, { id, n, findText, offset }: FindArgs) {
     throw new Error(`Message ${id} has ${length} characters; offset must be 0 to ${Math.max(0, length - 1)}.`);
 }
 
-/** Up to `max` non-overlapping matches of the folded needle in text[begin, end), as original [start, end) spans. */
+
 function spans(text: string, begin: number, end: number, needle: string, max: number) {
   const folded = fold(text.slice(begin, end)), found: [number, number][] = [];
   for (let at = folded.text.indexOf(needle); at >= 0 && found.length < max; at = folded.text.indexOf(needle, at + needle.length))
@@ -76,22 +76,22 @@ function spans(text: string, begin: number, end: number, needle: string, max: nu
   return found;
 }
 
-/** The excerpt around a match: FIND.context characters each side, never cutting a surrogate pair. */
+
 function hitAt(text: string, id: number, start: number, stop: number): Hit {
   const from = Math.max(0, start - FIND.context), to = Math.min(text.length, stop + FIND.context);
   return { id, start, from: from > 0 && LOW.test(text[from]) ? from - 1 : from, to: to < text.length && HIGH.test(text[to - 1]) ? to + 1 : to };
 }
 
-/** Where a search cut at `end` resumes: where a match could still start, and never before what was already shown. */
+
 function resumeAfterCut(text: string, begin: number, end: number, shownEnd: number, needleLength: number) {
   const resume = Math.max(shownEnd, end - needleLength + 1);
   return Math.max(begin, resume > begin && LOW.test(text[resume]) ? resume - 1 : resume);
 }
 
-/** Searches message i into `scan`; false once the call's bounds or its excerpt limit end the search there. */
+
 function scanMessage(scan: Scan, text: string, i: number, needle: string, begin: number) {
   const room = FIND.scanChars - scan.searched;
-  // Only the first message examined is searched in part; a later one that does not fit is left whole for its own call.
+
   if (scan.examined === FIND.scanMessages || text.length - begin > room && scan.searched > 0) { scan.older = i + 1; return false; }
   const end = Math.min(text.length, begin + room), found = spans(text, begin, end, needle, FIND.excerpts - scan.hits.length + 1);
   scan.searched += end - begin; scan.examined++;
@@ -121,7 +121,7 @@ function renderHit(memory: Memory, hit: Hit) {
   return `${hit.id} · ${date} · ${kind} · character ${hit.start} of ${text.length} · ${next}\n  ${hit.from ? '…' : ''}${flat(text.slice(hit.from, hit.to))}${hit.to < text.length ? '…' : ''}`;
 }
 
-/** The exact calls that search what this one did not: the rest of the message it stopped in, then the aligned blocks of older messages. */
+
 function renderNotSearched({ resume, older, more }: Scan, { id, findText }: FindArgs) {
   const calls = [...resume ? [`zoom(id: ${resume.id}, n: 1, findText: ${quote(findText)}, offset: ${resume.offset})`] : [],
     ...blocks(id, older).map(block => `zoom(id: ${block.id}, n: ${block.n}, findText: ${quote(findText)})`)];
@@ -135,7 +135,7 @@ function render(memory: Memory, scan: Scan, args: FindArgs) {
   const head = hits.length
     ? `${hits.length}${more ? '+' : ''} ${hits.length === 1 && !more ? 'match' : 'matches'} of "${findText}" in ${where}, newest message first (${coverage}).${more ? ` Only the first ${FIND.excerpts} are shown.` : ''}`
     : `No match of "${findText}" (any case, literal) in the part of ${where} that was searched (${coverage}).`;
-  // A caller that adds limit wants a short answer, which findText already gives: say so instead of refusing.
+
   const ignored = args.limit === undefined ? '' : '\n[limit was ignored: findText already returns bounded excerpts.]';
   return [head, ...hits.map(hit => renderHit(memory, hit))].join('\n') + renderNotSearched(scan, args) + ignored;
 }

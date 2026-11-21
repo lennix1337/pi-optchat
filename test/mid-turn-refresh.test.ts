@@ -228,12 +228,12 @@ test('a real child provider request budgets its current prompt, active tool sche
 });
 
 test('a turn past its threshold is sent as the refreshed view, its task verbatim and only its last tool call, and memory logs every step once', async () => {
-  // A 10,000-token window at 10%: a 4,000-character refresh threshold, with room for the complete system prompt.
+
   await refreshesAtFourThousandChars({ OPTCHAT_REFRESH_AT: '0.1', OPTCHAT_REFRESH_TOKENS: '0' });
 });
 
 test('a token cap below the window share refreshes the turn at the cap', async () => {
-  // The default 30% of 10,000 tokens would wait for 12,000 characters; a 1,000-token cap refreshes at 4,000, as above.
+
   await refreshesAtFourThousandChars({ OPTCHAT_REFRESH_AT: undefined, OPTCHAT_REFRESH_TOKENS: '1000' });
 });
 
@@ -292,10 +292,10 @@ async function refreshesAtFourThousandChars(env: Record<'OPTCHAT_REFRESH_AT' | '
     assert.ok(requestTokens.every(tokens => tokens <= inputTokenBudget(10_000, 1_000)), `provider received requests within the assembled input budget: ${requestTokens.join(', ')}`);
     assert.deepEqual(captured.map(c => c.messages.map(m => m.role).join(' ')), [
       'user', 'user assistant toolResult', 'user assistant toolResult assistant toolResult', 'user assistant toolResult assistant toolResult assistant toolResult',
-      // Over the threshold: the view now has the turn so far as lines, and the request only the task and the fourth step verbatim.
+
       'user assistant toolResult', 'user assistant toolResult assistant toolResult', 'user assistant toolResult assistant toolResult assistant toolResult',
       'user assistant toolResult assistant toolResult assistant toolResult assistant toolResult',
-      // Over again, counted from the last refresh.
+
       'user assistant toolResult']);
     const [first, refreshed] = [captured[0].messages[0], captured[4].messages[0]].map(m => textContent(m.content));
     assert.ok(first.endsWith(task) && !first.includes(TURN_REFRESHED));

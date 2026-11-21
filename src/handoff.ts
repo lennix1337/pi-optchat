@@ -37,11 +37,11 @@ export function createHandoffSummarizer(registry: ModelRegistry, choice: () => M
     const model = resolved.model;
     const transcript = Buffer.from([{ run, messages }, ...descendants].map(formatEvidence).join('\n\n'));
     const maxTokens = Math.min(OUTPUT_TOKENS, model.maxTokens, Math.floor(model.contextWindow / 4));
-    // Estimate four UTF-8 bytes per token, reserving 20% of the window for estimation
-    // error plus the output budget. This is a heuristic, not a provider token count.
+
+
     const inputTokens = Math.min(INPUT_TOKENS, Math.floor(model.contextWindow * 0.8) - maxTokens);
     if (inputTokens < 2000) throw new Error('Compactor context window too small for a handoff');
-    // Account for message framing as well as the actual system/user text below.
+
     const inputBytes = (inputTokens - 256) * 4;
     let summary = '';
     for (let offset = 0; offset < transcript.length;) {
@@ -49,7 +49,7 @@ export function createHandoffSummarizer(registry: ModelRegistry, choice: () => M
       const available = inputBytes - Buffer.byteLength(HANDOFF) - Buffer.byteLength(prefix);
       if (available < 4) throw new Error('Handoff instructions and prior summary leave no room for transcript evidence');
       let end = Math.min(transcript.length, offset + available);
-      // Keep multibyte characters intact at chunk boundaries.
+
       while (end < transcript.length && (transcript[end] & 0xc0) === 0x80) end--;
       const reply = await registry.streamSimple(model, {
         systemPrompt: HANDOFF,

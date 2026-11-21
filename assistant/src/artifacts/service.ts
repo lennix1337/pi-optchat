@@ -12,7 +12,7 @@ export function openArtifactService(options: { databasePath: string; profileId: 
   if (sourceRoots?.some(root => root === parse(root).root)) throw new Error('invalid_options');
   const root = join(dirname(options.databasePath), 'artifacts');
   createPrivateDirectory(root);
-  // The HTTP reader needs no producer root; registration CLI always supplies one explicitly.
+
   return openRegistry(root, { ...options, sourceRoots: sourceRoots ?? [root] });
 }
 

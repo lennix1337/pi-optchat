@@ -42,7 +42,7 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
     const gc = { start, end: start + duration, kind };
     gcs.push(gc);
     if (gcs.length > KEEP) gcs.shift();
-    // PerformanceObserver delivers GC entries asynchronously, sometimes after the watchdog tick.
+    // external: PerformanceObserver can deliver GC entries asynchronously after the watchdog tick.
     attributeLateGc(stalls, gc, gcTotals);
   };
   /** Marks a named span of work (a tool execution); call the returned function when it ends. Names only, never arguments or output. */
@@ -59,7 +59,7 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
       const total = overlapping.reduce((sum, gc) => sum + gc.end - gc.start, 0);
       const stall = { at: new Date(wall()).toISOString(), blockedMs: Math.round(blocked),
         gcMs: Math.round(total), gcKind: worst ? KINDS[worst.kind] ?? String(worst.kind) : null } as Stall;
-      // Monotonic bounds stay non-enumerable so existing deepEqual assertions and heap_report JSON keep their exact shape.
+
       Object.defineProperties(stall, { startMs: { value: last }, endMs: { value: t } });
       gcTotals.set(stall, { total, worst });
       const inside = spans.filter(sp => sp.start < t && (sp.end === undefined || sp.end > last));
@@ -75,7 +75,7 @@ export function createStallWatch(now: () => number = () => performance.now(), wa
       if (stalls.length > KEEP) stalls.shift();
     }
     last = t;
-    // Keep active spans even if many short hooks finish during them. Only completed history is evicted.
+
     let excess = Math.max(0, spans.length - KEEP * 5), kept = 0;
     for (const span of spans) {
       if (span.end !== undefined && (excess > 0 || span.end <= last - 60_000)) { if (excess > 0) excess--; continue; }
@@ -102,7 +102,7 @@ export function spanned<T>(name: string, step: () => T, watch: Pick<Watch, 'begi
  * Other extensions and Pi itself are not wrapped here. Returns a view of `pi` without mutating the host, which may be a Proxy. */
 export function spanHooks<T extends { on: (event: any, handler: (...args: any[]) => any) => unknown }>(pi: T, watch: Pick<Watch, 'begin'> = stallWatch()): T {
   const on: T['on'] = (event, handler) => {
-    // Registration happens once; retain only the source basename and line, never an absolute user path.
+
     const location = event === 'tool_result' || event === 'tool_execution_end'
       ? new Error().stack?.split('\n').map(line => /(?:^|[\\/ (])([^\\/(): ]+\.[cm]?[jt]s):(\d+):\d+\)?$/.exec(line))
         .find(match => match && match[1] !== 'loop-stalls.ts')
@@ -134,7 +134,7 @@ export function registerStallPhases(pi: ExtensionAPI, watch: Pick<Watch, 'begin'
   pi.on('session_before_compact', () => { close(compact); compact = watch.begin('phase:compact'); });
   pi.on('session_compact', () => { close(compact); compact = undefined; });
   pi.on('session_compact_failed', () => { close(compact); compact = undefined; });
-  // Pi fires tool_call before execution and tool_result after it, but other extensions may run before or after our handlers.
+  // external: Pi fires tool_call before execution and tool_result afterward; extension handler order can vary.
   pi.on('tool_execution_start', event => { if (event.toolName === 'bash') { const old = bash.get(event.toolCallId); close(old?.before); close(old?.after); bash.set(event.toolCallId, {}); } });
   pi.on('tool_call', event => { const phase = bash.get(event.toolCallId); if (phase && event.toolName === 'bash') { close(phase.before); phase.before = watch.begin('phase:bash-call-to-result'); } });
   pi.on('tool_result', event => { const phase = bash.get(event.toolCallId); if (phase && event.toolName === 'bash') { close(phase.before); close(phase.after); phase.before = undefined; phase.after = watch.begin('phase:bash-result-to-end'); } });
@@ -145,9 +145,9 @@ export function registerStallPhases(pi: ExtensionAPI, watch: Pick<Watch, 'begin'
 
 interface Held { watch: Watch; build: typeof createStallWatch; stop: () => void }
 
-/** Stalls survive an extension reload the way the event-loop histogram does: one watchdog per process.
- * A reload re-evaluates this module, so a watchdog built by older code (another `build`, or the bare watch
- * stored before `build` existed) is replaced by one with the current API, keeping its stalls. */
+
+
+
 const SHARED = Symbol.for('pi-optchat.loop-stalls');
 export function stallWatch(): Watch {
   const slot = globalThis as Record<symbol, unknown>;
@@ -161,7 +161,7 @@ export function stallWatch(): Watch {
   try {
     observer = new PerformanceObserver(list => { for (const e of list.getEntries()) watch.noteGc(e.startTime, e.duration, (e as unknown as { detail?: { kind?: number } }).detail?.kind ?? 0); });
     observer.observe({ entryTypes: ['gc'] });
-  } catch { /* the stall list still works without GC attribution */ }
+  } catch {   }
   slot[SHARED] = { watch, build: createStallWatch, stop: () => { clearInterval(timer); observer?.disconnect(); } } satisfies Held;
   return watch;
 }

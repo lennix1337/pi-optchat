@@ -1,11 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
 
-/**
- * Tool rows the agent ran back to back, with no text of its own between them, fold into the last one:
- * a summary line ("6 chamadas · bash ×3 · read ×2 · 14,2 s") over that call's title. A running call or
- * one that failed keeps its full row; ctrl+o (or a click on the row) shows every call as before.
- */
+
+
+
+
+
 
 type Resolver = Parameters<ExtensionAPI['registerToolRenderer']>[0];
 type Renderers = NonNullable<ReturnType<Resolver>>;
@@ -79,12 +79,12 @@ export class ToolGroups {
   }
 }
 
-/** The configured key of app.tools.expand; Pi versions without keyHint in the render context show ctrl+o. */
+
 const expandHint = (ctx: Context) => `(${(ctx as { keyText?: (id: string) => string }).keyText?.('app.tools.expand') || 'ctrl+o'} expande)`;
 
 const seconds = (s: number) => s < 0.05 ? '' : `${s.toFixed(1).replace('.', ',')} s`;
 
-/** One framed slice of a row: the call slot draws the top padding, the result slot the bottom one. */
+
 class Slot implements Component {
   constructor(private draw: (width: number) => string[]) {}
   render(width: number) { return this.draw(width); }
@@ -125,7 +125,7 @@ export function groupedRenderers(name: string, base: Renderers | undefined, grou
     renderShell: 'self',
     renderCall(args, theme, ctx) {
       const state = ctx.state as RowState;
-      // HTML export renders every call as partial: only the live TUI marks a row finished, so exports never fold.
+      // external: Pi HTML export renders tool calls as partial.
       Object.assign(state, { finished: !ctx.isPartial, error: ctx.isError, partial: ctx.isPartial, expanded: ctx.expanded, pad: ctx.outputPad, theme, baseShell: base?.renderShell });
       if (!ctx.isPartial) groups.note(ctx.toolCallId, { finished: true, error: ctx.isError, ms: ctx.durationMs });
       state.title = baseCall(args, theme, { ...ctx, lastComponent: state.title });
@@ -158,7 +158,7 @@ export function groupedRenderers(name: string, base: Renderers | undefined, grou
 
 /** Folds back-to-back tool rows in the TUI; PI_TOOL_GROUPS=0 keeps every row as Pi draws it. */
 export function mountToolGroups(pi: ExtensionAPI) {
-  // Hosts without tool renderers (older Pi, test doubles) keep the plain per-call rows.
+
   if (process.env.PI_TOOL_GROUPS === '0' || typeof pi.registerToolRenderer !== 'function') return;
   const groups = new ToolGroups();
   pi.registerToolRenderer((name, next) => groupedRenderers(name, next(), groups));

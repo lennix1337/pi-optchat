@@ -5,21 +5,21 @@ import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { commandWords, normalPath, segments } from './effect-classifier.ts';
 
-// A foreground `git commit` in a repo with a pre-commit hook runs the hook inside the bash call. dentai-mono's husky hook
-// runs the full api and web suites (minutes). When the call's timeout ends first, the commit's outcome is left uncertain
-// and every later bash call is refused until someone reconciles it. A commit that would run a hook is refused before it
-// runs, unless its bash call allows the hook to finish (or it runs in the background with shell_start).
+// external: Git commit executes pre-commit hooks before completing.
+
+
+
 
 /** A hook can run for minutes; a foreground bash call with less timeout than this may end while the commit is still going. */
 export const MIN_COMMIT_HOOK_TIMEOUT_SECONDS = 900;
 
 const unquote = (word: string) => word.replace(/^(['"])([^]*)\1$/, '$2');
-/** Flags that make `git commit` skip the hook (`-n` is `--no-verify`) or create no commit at all. */
+
 const RUNS_NO_HOOK = new Set(['--no-verify', '-n', '--dry-run']);
 
 const isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } };
 
-/** Output lines of a read-only git query run in `dir`, or undefined outside a repository or when git has no value. */
+
 const exec = promisify(execFile);
 async function gitLines(dir: string, args: string[]): Promise<string[] | undefined> {
   try {
@@ -42,7 +42,7 @@ export async function activePreCommitHook(dir: string): Promise<string | undefin
   return [join(hooks, 'pre-commit'), join(root, '.husky', 'pre-commit')].find(isFile);
 }
 
-/** The directory (`-C`, else the segment's) of a `git commit` that runs hooks, from the words of one command segment. */
+
 function hookedCommitDir(words: string[], dir: string): string | undefined {
   if (!words.length || unquote(words[0]).split(/[/\\]/).at(-1)!.replace(/\.exe$/i, '').toLowerCase() !== 'git') return undefined;
   let at = 1, path = dir;
@@ -56,7 +56,7 @@ function hookedCommitDir(words: string[], dir: string): string | undefined {
 
 /** The active pre-commit hook a `git commit` in `command` would run from `cwd`, or undefined. */
 export async function hookedCommit(command: string, cwd: string): Promise<string | undefined> {
-  // Case kept: the directory is opened, and Linux paths are case-sensitive.
+  // external: Linux file paths are case-sensitive.
   for (const { command: segment, dir } of segments(command, cwd, true)) {
     const path = hookedCommitDir(commandWords(segment), dir);
     const hook = path === undefined ? undefined : await activePreCommitHook(path);
@@ -71,7 +71,7 @@ export function registerCommitHookGuard(pi: ExtensionAPI) {
     if (event.toolName !== 'bash') return;
     const input = event.input as { command?: unknown; timeout?: unknown } | undefined;
     if (typeof input?.command !== 'string') return;
-    // Pi's bash tool has no default timeout: a call without one waits for the hook, however long it runs.
+    // external: Pi bash has no default timeout.
     if (typeof input.timeout !== 'number' || input.timeout >= MIN_COMMIT_HOOK_TIMEOUT_SECONDS) return;
     const hook = await hookedCommit(input.command, ctx?.cwd ?? process.cwd());
     if (!hook) return;

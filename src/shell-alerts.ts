@@ -20,7 +20,7 @@ export const OVERLAP_BYTES = 4 * 1024;
 export const SHOWN_MATCHES = 5;
 const SHOWN = SHOWN_MATCHES, CONTEXT = 2, CLIP_CHARS = 200, NEWLINE = 0x0a, CR = 0x0d;
 const FLAGS = 'imsu';
-/** `/pattern/flags`: the pattern runs to the last slash, so it may contain slashes. */
+
 const LITERAL = /^\/(.+)\/([^/]*)$/s;
 
 /**
@@ -46,13 +46,13 @@ export function excerpt(text: string, at = 0) {
   return `${start > 0 ? '…' : ''}${chars.slice(start, start + CLIP_CHARS).join('')}${start + CLIP_CHARS < chars.length ? '…' : ''}`;
 }
 
-/** The UTF-16 length of the first character of `text` (2 for a surrogate pair), 0 if empty: where a search may start to skip the overlap's first character. */
+
 function firstCharUnits(text: string) {
   const code = text.codePointAt(0);
   return code === undefined ? 0 : code > 0xffff ? 2 : 1;
 }
 
-/** The last OVERLAP_BYTES of a window, starting on a character boundary. */
+
 function overlapOf(window: Buffer) {
   let at = Math.max(0, window.length - OVERLAP_BYTES);
   while (at < window.length && (window[at] & 0xc0) === 0x80) at++;
@@ -95,7 +95,7 @@ export class OutputAlerts {
   private ended = false;
 
   constructor(options: OutputAlertsOptions) {
-    // Global, so that exec can start at any index; the caller's global and sticky flags are not needed.
+
     this.scan = new RegExp(options.pattern.source, options.pattern.flags.replace(/[gy]/g, '') + 'g');
     this.intervalMs = options.intervalMs;
     this.onAlert = options.onAlert;

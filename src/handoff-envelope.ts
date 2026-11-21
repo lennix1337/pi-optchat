@@ -1,7 +1,7 @@
-/**
- * The bounded handoff between agents: an ID, a short summary and pointers to the full sources (a run, a memory page,
- * a file). It never carries a transcript: its input has no message list, and its output never exceeds the byte cap.
- */
+
+
+
+
 
 /** The most bytes one handoff may carry, in UTF-8. */
 export const HANDOFF_MAX_BYTES = 8192;
@@ -52,7 +52,7 @@ export function handoffEnvelope(input: HandoffInput, maxBytes = HANDOFF_MAX_BYTE
   const whole = frame(input.summary, '');
   if (byteLength(whole) <= maxBytes) return { text: whole, bytes: byteLength(whole), truncated: false };
   const total = byteLength(input.summary);
-  // The note's digits never grow past the total's, so the frame sized with the total's note always fits.
+
   const room = maxBytes - byteLength(frame('', cutNote(total, total)));
   if (room < 0) throw new HandoffTooLarge(`Handoff frame alone is ${byteLength(frame('', cutNote(total, total)))} bytes; the limit is ${maxBytes}.`);
   const kept = clipBytes(input.summary, room);

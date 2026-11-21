@@ -1,4 +1,4 @@
-// Offline OutputContext projection benchmark across build/test fixtures.
+
 import { runContextBenchmark } from '../../test/context-benchmark.ts';
 
 const SAMPLES = 5;

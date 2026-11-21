@@ -11,7 +11,7 @@ import { withTempDir } from './support.ts';
 
 const MIN = 60_000, DAY = 86_400_000;
 const withDir = (run: (dir: string) => void | Promise<void>) => () => withTempDir('scoreboard-', run);
-/** Monday 2026-11-02 10:00 local time. */
+
 const monday = new Date(2026, 10, 2, 10, 0).getTime();
 
 test('"e aí" style chasing is a nudge; a real request is not', () => {
@@ -24,9 +24,9 @@ test('first-response time pairs each message with the first answer in its channe
   recordInbound(dir, null, 'e aí?', t0);
   recordInbound(dir, null, 'segredo do cliente 123', t0 + MIN);
   recordInbound(dir, 'dentai', 'olha o deploy', t0 + 2 * MIN);
-  recordAnswer(dir, 'harness', t0 + 3 * MIN); // another channel answers nobody here
+  recordAnswer(dir, 'harness', t0 + 3 * MIN);
   recordAnswer(dir, null, t0 + 5 * MIN);
-  recordAnswer(dir, null, t0 + 9 * MIN); // a second answer is not a first response
+  recordAnswer(dir, null, t0 + 9 * MIN);
   assert.ok(!readFileSync(join(dir, SLACK_METRICS), 'utf8').includes('segredo'));
   assert.deepEqual(slackWeek(dir, t0 - 1), { received: 3, answered: 2, waiting: 1, nudges: 1, medianMs: 4 * MIN, worstMs: 5 * MIN, recordingSince: t0 });
   assert.deepEqual(slackWeek(dir, t0 + 10 * MIN), { received: 0, answered: 0, waiting: 0, nudges: 0, recordingSince: t0 }, 'a quiet week is a measured zero');
@@ -48,7 +48,7 @@ test('the bridge records a DM on arrival and the answer only when Slack accepted
   fail = true; now += 2 * MIN;
   await bridge.runEnded([{ role: 'assistant', content: [{ type: 'text', text: 'feito' }] } as unknown as AgentMessage]);
   assert.deepEqual(slackWeek(dir, monday - 1), { received: 1, answered: 0, waiting: 1, nudges: 1, recordingSince: monday }, 'a failed reply is not an answer');
-  await bridge.poll(); // the cursor keeps the message from counting twice
+  await bridge.poll();
   bridge.sawUserMessage('[Slack] e aí?');
   fail = false; now += MIN;
   await bridge.runEnded([{ role: 'assistant', content: [{ type: 'text', text: 'feito' }] } as unknown as AgentMessage]);
@@ -107,7 +107,7 @@ test('weekly inputs: merged PRs of the week, Gitwatch routing as a delta from th
 
 test('the scoreboard posts once a week to #harness, Monday morning only, saving the next baseline first', withDir(async dir => {
   const posts: { text: string; channel: string | null }[] = [];
-  let now = monday - DAY; // Sunday
+  let now = monday - DAY;
   const gitwatch = join(dir, 'gitwatch.json');
   writeFileSync(gitwatch, JSON.stringify({ stats: { since: 1, woke: 4, quiet: 1 } }));
   const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async (text, channel) => { posts.push({ text, channel }); }, { now: () => now, gitwatchFile: gitwatch, scan: async () => { await new Promise(r => setTimeout(r, 5)); return 4; }, business: async () => undefined });
@@ -124,7 +124,7 @@ test('the scoreboard posts once a week to #harness, Monday morning only, saving 
   now = monday + 7 * DAY;
   assert.equal(await board.maybePost(), true);
   assert.match(posts[1]!.text, /\*3 de 4\* \(75%\)/);
-  now = monday + 14 * DAY + 3 * 3_600_000; // 13:00: too late, the week is skipped
+  now = monday + 14 * DAY + 3 * 3_600_000;
   assert.equal(await board.maybePost(), false);
 }));
 

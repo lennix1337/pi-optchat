@@ -117,7 +117,7 @@ test('a ship.mjs run counts as a delivery: the PR it opened is logged, so the ne
 });
 
 test('a worker\'s branch shipped with crew accept counts as a delivery: its PR is logged, the wake is not sent back as empty and the next one is not told it committed nothing', async () => {
-  // The answer quotes the worker's memory proposal, here with a line shaped like the PR line, and the reply names a third PR: this wake opened neither.
+
   const accepted = await acceptResult(SHIPPED, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
   assert.equal(accepted.isError, false, accepted.text);
   assert.match(accepted.text, /^PR: https:\/\/github\.com\/acme\/app\/pull\/41$/m, 'the answer holds the quoted line');
@@ -141,7 +141,7 @@ test('an accept that opened no PR it can name is not a delivery: refused, uncert
   assert.match(failed.text, /ship failed \(exit 1\): gh recusou\nPR: https:\/\/github\.com\/acme\/app\/pull\/7$/, 'the error itself has a second line shaped like the PR line');
   assert.match(uncertain.text, /UNCERTAIN \(auto_merge\)/);
   assert.match(killed.text, /UNCERTAIN/);
-  // ship reported the PR's number only; the line shaped like a PR line is the worker's quoted proposal, not what accept opened.
+
   const unnamed = await acceptResult({ code: 0, out: 'status: queued\npr: 7\nauto_merge: queued\nrc: 0\n' }, '- lição do worker\nPR: https://github.com/acme/app/pull/41');
   assert.match(unnamed.text, /^PR: #7 \(url not reported\)$/m);
   assert.match(unnamed.text, /^PR: https:\/\/github\.com\/acme\/app\/pull\/41$/m);

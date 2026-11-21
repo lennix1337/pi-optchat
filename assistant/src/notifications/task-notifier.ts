@@ -17,8 +17,8 @@ export type TaskNotifierOptions = {
 const PAGE = 100;
 const OPAQUE_REF = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,180}$/;
 
-/** Tasks the work tracker mirrors from this chat (background shells, subagents, wakes, Slack runs): each is listed in the panel,
- * none interrupts. Only the end of a turn in the terminal does, because that is when the operator is expected to answer. */
+
+
 const QUIET_CHANNEL = /^(Shell|Subagente|Wake|Slack)\b/;
 
 function categoryFor({ operation, task, event }: StoredEvent): NotificationCategory | null {

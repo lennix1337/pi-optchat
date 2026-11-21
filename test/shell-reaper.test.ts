@@ -6,10 +6,10 @@ import { syncBuiltinESMExports } from 'node:module';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { ownedWindowsPids, reapingBashOperations, registerReapingBash } from '../src/shell-reaper.ts';
 
-// Layout observed on 2026-10-29 for `cat /dev/zero | grep -c x | head -1` under Git Bash: the Git
-// wrapper (24100) starts /usr/bin/bash (32472, MSYS pid 783). Each pipeline stage was forked and then
-// exec'd, so its Windows parent (40748, 25816, 3596) is already gone and `taskkill /T` cannot reach it.
-// Only MSYS knows the stages belong to bash 783. 779/781 are another session's shell.
+// external: Git Bash pipeline processes can lose their Windows parent; taskkill /T cannot reach those children.
+
+
+
 const windows = new Map([[24100, 26952], [32472, 24100], [17256, 40748], [16788, 25816], [2712, 3596], [21944, 36480], [37616, 1]]);
 const msys = [
   { pid: 783, ppid: 1, pgid: 783, winpid: 32472 },
@@ -20,8 +20,8 @@ const msys = [
   { pid: 781, ppid: 779, pgid: 779, winpid: 37616 },
 ];
 
-// The fixture pids are real-looking, so the test runner itself may hold one of them (a run failed when node got 17256):
-// pass a `self` outside the fixture so the result does not depend on the runner's pid.
+
+
 const outside = 1;
 
 test('a killed shell owns the pipeline stages whose Windows parents are gone', () => {
@@ -33,7 +33,7 @@ test('the reaper never kills its own process, even when it sits in the shell tre
 });
 
 test('a shell that joined an outer MSYS group does not take that whole group with it', () => {
-  // Started from an MSYS parent (500, not ours): bash 783 keeps group 500. Its own children still go; 501 stays.
+
   const nested = [{ pid: 500, ppid: 1, pgid: 500, winpid: 9000 }, { pid: 501, ppid: 500, pgid: 500, winpid: 9001 },
     { pid: 783, ppid: 500, pgid: 500, winpid: 32472 }, { pid: 784, ppid: 783, pgid: 500, winpid: 17256 }];
   assert.deepEqual([...ownedWindowsPids(24100, windows, nested, outside)].sort((a, b) => a - b), [17256, 24100, 32472]);
@@ -93,7 +93,7 @@ const MARKER = `reaperprobe${process.pid}`;
 const survivors = () => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
   `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${MARKER}*' -and $_.Name -notin 'powershell.exe','node.exe' } | ForEach-Object { $_.ProcessId }`],
 { encoding: 'utf8', windowsHide: true }).split(/\s+/).filter(Boolean);
-// On failure, name each survivor (image, parent, age) so a CI flake shows which stage escaped the reap.
+
 const describeSurvivors = (pids: string[]) => pids.length ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
   `Get-CimInstance Win32_Process | Where-Object { @(${pids.join(',')}) -contains $_.ProcessId } | ForEach-Object { "$($_.ProcessId) $($_.Name) parent=$($_.ParentProcessId) created=$($_.CreationDate.ToString('HH:mm:ss.fff'))" }`],
 { encoding: 'utf8', windowsHide: true }).trim() : '';

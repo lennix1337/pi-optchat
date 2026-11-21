@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { KeyProtector } from '../src/secrets/protector.ts';
 import { withDir } from './runtime-support.ts';
 
-// The vault refuses a directory others can read, so fixtures get an owner-only ACL (current user, SYSTEM, Administrators).
+
 const system32 = (tool: string) => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', tool);
 let currentSid: string | undefined;
 function ownerOnly(dir: string): void {

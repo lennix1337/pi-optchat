@@ -8,7 +8,7 @@ import { readOperationalState } from './operational-state.ts';
  * lines still cited the "no Git" rule the operator replaced at 87165). The compactor refuses such a line and asks again. */
 export interface ClosedConflict { id: string; say: string; cites: (segment: string) => boolean }
 
-/** `closed-conflicts.json` in the profile: `match` (and `with`, when given) are case-insensitive regexes a segment must both hit. */
+
 interface ClosedRecord { id: string; match: string; with?: string; say: string }
 export const CLOSED_FILE = 'closed-conflicts.json';
 
@@ -21,7 +21,7 @@ function isRecord(value: unknown): value is ClosedRecord {
 export function fromRecords(records: unknown): ClosedConflict[] {
   if (!Array.isArray(records) || !records.every(isRecord)) throw new Error(`${CLOSED_FILE} must be a list of {id, match, with?, say}.`);
   return records.map(record => {
-    // In JSON "\b" is a backspace, not a word boundary: such a pattern silently never matches (02/11 entry autonomy-0211).
+    // external: JSON parses \b as backspace, not a regex word boundary.
     for (const pattern of [record.match, record.with ?? '']) if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(pattern)) {
       throw new Error(`${CLOSED_FILE} entry ${record.id} has a control character in a pattern: write \\\\b, \\\\d in JSON for \\b, \\d.`);
     }
@@ -58,9 +58,9 @@ export function closedConflictsOf(dir: string, warn: (text: string) => void = ()
   };
 }
 
-/** "user 142336" credits words to the operator, so message 142336 must be his. On 10/11 the compactor credited a tool call
- * (142336, a read_many) with "merges need tests, review, green CI", and two others (122880, 145488) with a reload ban; for days
- * most lines repeated them as his rules, and the assistant obeyed a memory he never wrote. Ids it cannot see (imports) pass. */
+
+
+
 const CREDITED = /\b(?:user|operator|operador)\s+(\d{5,6})\b/gi;
 const NOT_HIS = new Set(['tool', 'echo', 'talk', 'work']);
 export function misattributed(kindOf: (i: number) => string | undefined): ClosedConflict {
@@ -76,7 +76,7 @@ export function misattributed(kindOf: (i: number) => string | undefined): Closed
   };
 }
 
-// Lines separate items with ";" and sentences; a parenthesis often carries the stale remark on its own.
+
 const items = (line: string) => line.split(/(?<=[;.])\s+/);
 export function cited(line: string, list: readonly ClosedConflict[]): ClosedConflict[] {
   const parts = [...items(line), ...line.match(/\([^()]*\)/g) ?? []];

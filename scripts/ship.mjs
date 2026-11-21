@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// ship: the PR flow in one call. It commits the selected paths, pushes the branch, opens the PR (or reuses the open
-// one), queues auto-merge only where GitHub waits for the checks, and reports the state. Stdout is one flat
-// `key: value` object (AXI-compact; a TOON subset for flat scalar objects); stderr carries usage only. It never forces
-// a push, never skips hooks and never merges with --admin.
+
+
+
+
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup';
-// A commit runs the repository's pre-commit hook (lint, types, tests, build), which can take many minutes: killing it at the local limit leaves the hook running orphaned.
+
 const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
 const SAFE_GH_ARG = /^[A-Za-z0-9._/,:=-]+$/;
@@ -37,11 +37,11 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --sync               depois do merge: vai para a branch padrão, puxa só com fast-forward e apaga a branch local anterior se o git a considera mesclada; num worktree, atualiza o checkout principal e deixa o worktree
 saída: "status" final. exit 0 feito · 1 falhou · 2 recusado antes de qualquer efeito · 3 PR aberta sem auto-merge · 4 efeito incerto: reconcilie, não repita`;
 
-/** A stop with a final status and its fields. Refusals stop before any effect; uncertain stops name the stage to reconcile. */
+
 class Stop extends Error {
   constructor(status, fields) { super(status); this.status = status; this.fields = fields; }
 }
-// GitHub closes the issue when a PR with one of these words merges; the profile reserves that for a reproduced fix.
+// external: GitHub closing keywords close linked issues when a PR merges.
 const CLOSING_KEYWORD = /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s*:?\s+(?:[\w.-]+\/[\w.-]+)?#\d+/i;
 const refuse = (error, hint) => new Stop('refused', { error, hint });
 const failed = (stage, result, next) => new Stop('failed', { stage, detail: tail(result.err || result.out), next });
@@ -50,10 +50,10 @@ const uncertain = (stage, next) => new Stop('uncertain', { stage, next });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const firstLine = text => (text.trim().split(/\r?\n/)[0] ?? '').slice(0, 200);
 const tail = text => text.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ').slice(0, 300);
-// SHIP_<KIND>_TIMEOUT_MS bounds one stage kind; SHIP_TIMEOUT_MS is the shared bound of every kind but commit.
+
 const timeoutFor = kind => Number(process.env[`SHIP_${kind.toUpperCase()}_TIMEOUT_MS`] || (kind === 'commit' ? undefined : process.env.SHIP_TIMEOUT_MS)) || TIMEOUT_MS[kind];
 
-// --- output: a flat key: value object; values that could be misread (colons, quotes, numeric text) are quoted ---
+
 const TOON_ESCAPE = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
 function toon(value) {
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -62,7 +62,7 @@ function toon(value) {
     || /^-(\s|$)/.test(text) || /[:"\\[\]{},\n\r\t]/.test(text);
   return quote ? `"${text.replace(/[\\"\n\r\t]/g, ch => TOON_ESCAPE[ch])}"` : text;
 }
-// Wall time spent waiting on git and gh, by step, so a slow ship says where the seconds went instead of leaving a guess.
+
 const spent = { commit: 0, push: 0, gh: 0 };
 const STARTED = Date.now();
 const timingOf = () => (Object.values(spent).some(Boolean)
@@ -74,12 +74,12 @@ function emit(status, fields) {
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
     .map(([key, value]) => `${key}: ${toon(value)}`);
   const code = EXIT[status];
-  // Last line repeats the exit code: a run piped into tail/head reports the pipe's code, not ours.
+
   process.stdout.write(`${lines.join('\n')}\nrc: ${code}\n`);
   return code;
 }
 
-// --- processes: git and gh run without a shell; gh falls back to one only when it is a .cmd shim that execFile cannot start alone ---
+
 function run(file, args, kind, shell = false) {
   return new Promise(resolve => {
     const began = Date.now();
@@ -96,8 +96,7 @@ function run(file, args, kind, shell = false) {
   });
 }
 const git = (args, kind = 'local') => run('git', args, kind);
-// The first gh on PATH, directory by directory as the shell would pick it. Only a .cmd/.bat shim needs a shell (arguments passed SAFE_GH_ARG,
-// so it cannot reinterpret them); a real executable runs without cmd.exe and without Node's DEP0190 warning.
+// external: Windows .cmd/.bat shims require a shell; Node warns about shell arguments in DEP0190.
 let ghFound;
 function findGh() {
   if (ghFound) return ghFound;
@@ -112,15 +111,15 @@ function findGh() {
   }
   return (ghFound = { file: 'gh', shell: win });
 }
-// `free` is free text that may pass unchecked when gh runs without a shell (a .cmd shim would reinterpret it).
+
 function gh(args, kind = 'gh', free) {
   const found = findGh();
   if (!args.every(arg => SAFE_GH_ARG.test(arg) || (arg === free && !found.shell))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
   return run(found.file, args, kind, found.shell);
 }
 
-// --- pull requests and checks ---
-// A read, so a dropped connection is retried once (the GitHub API blips for seconds); a write is never retried here.
+
+
 const DROPPED = /dial tcp|TLS handshake timeout|connectex|connection (?:reset|refused)|i\/o timeout|EOF/i;
 async function viewPr(ref) {
   const args = ['pr', 'view', String(ref), '--json', PR_FIELDS];
@@ -151,11 +150,7 @@ function summarizeChecks(rollup = []) {
 }
 const checksText = summary => (summary.total === 0 ? 'none reported' : `${summary.pass} pass / ${summary.pending} pending / ${summary.failed.length} fail`);
 
-/**
- * Whether auto-merge may be queued. GitHub queues an --auto request and waits for the required checks only when the
- * merge state is BLOCKED; in any other state (CLEAN with no checks, or checks that are not required) it would merge at
- * once without the validation the operator asks for. A failing check always stops the queue.
- */
+// external: GitHub auto-merge waits for required checks only in BLOCKED state; otherwise it may merge immediately.
 function decide(pr) {
   if (pr.state === 'MERGED') return { action: 'merged' };
   if (pr.state !== 'OPEN') return { action: 'stop', reason: 'pr_closed' };
@@ -163,7 +158,7 @@ function decide(pr) {
   const checks = summarizeChecks(pr.statusCheckRollup);
   if (checks.failed.length) return { action: 'stop', reason: 'checks_failed', detail: checks.failed.slice(0, 5).join(', ') };
   if (pr.mergeStateStatus === 'BLOCKED') return { action: 'enqueue' };
-  // CLEAN with every check finished and green: nothing is left to wait for, and GitHub refuses to queue auto-merge here.
+  // external: GitHub refuses to queue auto-merge when nothing remains to wait for.
   if (pr.mergeStateStatus === 'CLEAN' && checks.total > 0 && checks.pending === 0) return { action: 'merge_now' };
   const reason = {
     CLEAN: checks.total ? 'merge_would_be_immediate' : 'checks_not_reported',
@@ -172,7 +167,7 @@ function decide(pr) {
   return { action: 'stop', reason };
 }
 
-/** Reads the PR until GitHub has settled its state, up to `waitSeconds`: UNKNOWN, or CLEAN before any check shows up. */
+
 async function settle(number, waitSeconds) {
   const deadline = Date.now() + waitSeconds * 1000;
   for (;;) {
@@ -183,7 +178,7 @@ async function settle(number, waitSeconds) {
       && (pr.mergeStateStatus === 'UNKNOWN' || (pr.mergeStateStatus === 'CLEAN' && !pr.statusCheckRollup?.length));
     const left = deadline - Date.now();
     if (!unsettled || left <= 0) return view;
-    await sleep(Math.min(1000, left)); // a view costs ~0.6 s; 1 s keeps the wait short without hammering the API
+    await sleep(Math.min(1000, left));
   }
 }
 
@@ -236,11 +231,11 @@ function nextFor(reason, number) {
   }
 }
 
-/**
- * Asks pi-gitwatch's poller to follow the PR (a file in its `follow/` folder, the format of pi-gitwatch
- * src/follow-requests.ts). Its bash hook never sees this process's `gh pr create`, so without this the merge of a
- * shipped PR woke nobody (03/11: #91, #92, #94).
- */
+
+
+
+
+
 let followSubscriber;
 function requestFollow(url) {
   const m = /github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/.exec(url ?? '');
@@ -267,7 +262,7 @@ function reportAuto(ctx, result) {
   return emit('not_queued', { ...common, auto_merge: 'not_queued', reason: result.reason, detail: result.detail, next: nextFor(result.reason, ctx.pr) });
 }
 
-// The description goes through a file under .git: gh arguments must stay in SAFE_GH_ARG, and free text cannot.
+
 async function openPr(branch, base, body, title) {
   const file = (await git(['rev-parse', '--git-path', 'SHIP_PR_BODY'])).out.trim();
   writeFileSync(file, `${body.trim()}\n`);
@@ -286,13 +281,13 @@ async function openPr(branch, base, body, title) {
   throw uncertain('pr_create', `gh pr view ${branch} para reconciliar; não repita o gh pr create`);
 }
 
-// --- the flow ---
+
 async function autoMergeOnly(opts, ctx) {
   if (opts.dryRun) return emit('dry_run', { ...ctx, plan: 'ver checks > enfileirar auto-merge se o GitHub esperar os checks' });
   return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait));
 }
 
-// A linked worktree cannot switch to the default branch: the main checkout holds it. Returns that checkout's path when cwd is a linked worktree.
+
 async function mainCheckoutOf() {
   const [dir, common, list] = await Promise.all([
     git(['rev-parse', '--path-format=absolute', '--git-dir']),
@@ -303,7 +298,7 @@ async function mainCheckoutOf() {
   return /^worktree (.+)$/m.exec(list.out)?.[1]?.trim();
 }
 
-// Brings the default branch of the main checkout up to date without touching this worktree; a busy main checkout is reported, never forced.
+
 async function syncMainCheckout(main, branch, base) {
   const next = `este worktree (${branch}) continua: remova-o a partir do checkout principal (skill worktree-cleanup)`;
   const [onR, dirtyR] = await Promise.all([git(['-C', main, 'symbolic-ref', '--quiet', '--short', 'HEAD']), git(['-C', main, 'status', '--porcelain'])]);
@@ -316,7 +311,7 @@ async function syncMainCheckout(main, branch, base) {
   return emit('synced', { branch, head, main_checkout: 'fast-forwarded', local_branch: `kept ${branch}`, next });
 }
 
-// After a merge: back on the default branch, fast-forwarded, and the finished branch removed only when git itself calls it merged (-d, never -D).
+
 async function syncAfterMerge(opts, ctx) {
   const [branchR, originR, dirtyR] = await Promise.all([
     git(['symbolic-ref', '--quiet', '--short', 'HEAD']),
@@ -369,7 +364,7 @@ async function shipBranch(opts, ctx) {
   }
   if (!creating && !opts.directMain && branch === base) {
     const hint = `a branch é ${base}: passe --branch NOME para criar uma, ou --direct-main para enviar direto`;
-    // A new branch always opens a new PR: name the missing description now, not on the retry.
+
     if (opts.body !== undefined) throw refuse('default_branch', hint);
     throw new Stop('refused', { error: 'default_branch', also: 'body_required', hint: `${hint}; com --branch, a PR nova também precisa de -b "problema, mudança, pendências e evidência" ou --body-file ARQ` });
   }
@@ -377,7 +372,7 @@ async function shipBranch(opts, ctx) {
   if (!opts.directMain && !SAFE_REF.test(branch)) throw refuse('branch_name_unsupported', `nome de branch fora do formato aceito pelo gh: ${branch}`);
   if (!selecting && staged && opts.message === undefined) throw refuse('message_required', 'há mudanças staged: passe -m "assunto"');
 
-  // The read-only lookups overlap with staging and the commit; their results are needed only before a push or a PR.
+
   const aheadP = git(['rev-list', '--count', `origin/${base}..HEAD`]);
   const existingP = opts.directMain ? Promise.resolve(undefined) : viewPr(branch);
   if (!opts.directMain && opts.body === undefined) {
@@ -466,7 +461,7 @@ async function shipBranch(opts, ctx) {
   return reportAuto(ctx, await autoMerge(pr.number, opts.wait));
 }
 
-// --- arguments and entry ---
+
 function parseArgs(argv) {
   const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, title: undefined, body: undefined, closesVerified: false, help: false };
   const valueOf = (flag, i) => {
@@ -483,7 +478,7 @@ function parseArgs(argv) {
     if (arg === '-h' || arg === '--help') opts.help = true;
     else if (arg === '-m' || arg === '--message') { opts.message = valueOf(arg, i); i++; }
     else if (arg === '-b' || arg === '--body') {
-      // A description may open with a markdown list ("- ..."), so only a missing value is refused here.
+
       if (argv[i + 1] === undefined) throw refuse('missing_value', `${arg} precisa de um valor`);
       opts.body = argv[++i];
     }

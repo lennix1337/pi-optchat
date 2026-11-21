@@ -19,15 +19,15 @@ type Renderers = ConstructorParameters<typeof ToolExecutionComponent>[4];
 type Guidance = RunInfo['guidance'];
 type Running = Map<string, { output?: unknown; started: number }>;
 
-/** Pi's own renderers for its built-in tools, so saved runs draw like the main chat. */
+
 const builtIns: Record<string, (cwd: string) => Renderers> = {
   bash: createBashToolDefinition, read: createReadToolDefinition, edit: createEditToolDefinition, write: createWriteToolDefinition,
   grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
 };
 
-/** Reports from the child's own agents start with their id, e.g. "[1a2b3c4d] ...". */
+
 const REPORT = /^\[[0-9a-f]{8}\] /;
-/** Connected windows prefix the main agent's guidance with this line. */
+
 const MAIN_PREFIX = '[Main agent guidance]\n';
 
 /** Who a user-role message in the child's conversation came from. Runs saved before senders were recorded count as the user's. */
@@ -37,7 +37,7 @@ export function senderOf(text: string, guidance: Guidance = []): 'user' | 'manag
   return guidance.findLast(g => g.text === text)?.from === 'manager' ? 'manager' : 'user';
 }
 
-/** Background traffic gets Pi's labelled box, as extension messages do in the main chat; only the user's own words look typed. */
+
 const boxed = (label: string, text: string, timestamp: number) =>
   new CustomMessageComponent({ role: 'custom', customType: label, content: text, display: true, timestamp }, undefined, getMarkdownTheme());
 
@@ -85,7 +85,7 @@ export class TranscriptView {
       const started = this.starts.get(id), ended = this.ends.get(id);
       if (started !== undefined) state.startedAt = started;
       if (ended !== undefined) state.endedAt = ended;
-      // The view redraws every second itself; the renderer's own timer would keep redrawing Pi after the view closes.
+
       state.interval ??= 'view';
     };
     return {
@@ -111,7 +111,7 @@ export class TranscriptView {
             : new UserMessageComponent(text, getMarkdownTheme());
           this.messages.set(message, component);
         }
-        if (parts.length && component instanceof UserMessageComponent) parts.push(new Spacer(1)); // Boxes bring their own.
+        if (parts.length && component instanceof UserMessageComponent) parts.push(new Spacer(1));
         parts.push(component);
       } else if (message.role === 'assistant') {
         const live = message === streaming;
@@ -142,14 +142,14 @@ export class TranscriptView {
       }
     }
     if (!streaming) this.streaming = undefined;
-    // Each call below redraws, so only pass on what changed since the last frame.
+
     for (const [id, run] of running ?? []) {
       const tool = this.tools.get(id);
       if (!tool || this.settled.has(id)) continue;
       if (!this.settled.has(`started:${id}`)) { this.starts.set(id, run.started); tool.markExecutionStarted(); this.settled.add(`started:${id}`); }
       const partial = run.output !== this.partials.get(id) ? toolResult(run.output) : undefined;
       if (partial) { tool.updateResult(partial, true); this.partials.set(id, run.output); }
-      else tool.invalidate(); // Ticks the running time.
+      else tool.invalidate();
     }
     return parts;
   }
@@ -174,11 +174,11 @@ const statusOf = (run: RunInfo, children: Children) => {
   return tools.length ? `running ${tools.join(', ')}` : live.streaming ? 'writing' : 'working';
 };
 
-/**
- * The subagent's conversation in place of the main one: same message components, one header line,
- * an input that guides the agent, and Esc back to the main chat. A UI projection only.
- */
-/** The input area: the editor for a live run, a read-only line for a finished one. */
+
+
+
+
+
 function inputLines(run: RunInfo | undefined, live: boolean, width: number, color: (tone: ViewTone, text: string) => string, editor: Editor, canMessage: boolean): string[] {
   if (canMessage) return editor.render(width);
   if (live) return [color('dim', ' Stopping…')];
@@ -192,10 +192,10 @@ function inputLines(run: RunInfo | undefined, live: boolean, width: number, colo
 export class AgentView implements Component, Focusable {
   private readonly editor: Editor;
   private readonly transcript: TranscriptView;
-  private back = 0; // Lines scrolled up from the newest; 0 follows live output.
+  private back = 0;
   private bodyHeight = 1;
   private overflow = 0;
-  private drawn = { lines: 0, width: 0 }; // Last frame, so new output doesn't move what you're reading while scrolled up.
+  private drawn = { lines: 0, width: 0 };
   private saved?: AgentMessage[];
   private savedAt = 0;
   private wasLive = false;
@@ -254,11 +254,11 @@ export class AgentView implements Component, Focusable {
     const stopping = this.confirmStop; this.confirmStop = false; this.notice = '';
     const escape = matchesKey(data, 'escape') && !this.editor.isShowingAutocomplete(), interrupt = matchesKey(data, 'ctrl+c');
     if ((escape || interrupt) && this.editor.getText()) {
-      this.editor.setText(''); // First press clears a draft, as in the main editor.
+      this.editor.setText('');
       return this.options.redraw();
     }
     if (escape || interrupt && !this.canInterrupt) return this.close();
-    // Up on an empty input pulls the newest queued message back to edit: sending it queues the new text, clearing it drops it.
+
     const pulled = matchesKey(data, 'up') && !this.editor.getText() && this.canMessage ? children.withdraw(id) : undefined;
     if (pulled !== undefined) this.editor.setText(pulled);
     else if (interrupt) {
@@ -278,8 +278,8 @@ export class AgentView implements Component, Focusable {
   }
   private messages(run: RunInfo) {
     const { children } = this.options, live = children.live(run.id);
-    // Saved transcripts are read once; live ones come from memory each frame, plus one final read when the run ends.
-    // A running pi-subagents run has no in-memory session here, so re-read its JSONL at most once a second while it grows.
+
+
     const growing = run.source === 'pi-subagents' && isActiveRun(run) && Date.now() - this.savedAt >= 1000;
     if (live || this.wasLive || !this.saved || growing) {
       try { this.saved = children.messages(run.id); this.savedAt = Date.now(); }
@@ -319,11 +319,11 @@ export class AgentView implements Component, Focusable {
     const top = [this.header(run, width), color('borderMuted', '─'.repeat(width))];
     const input = this.inputLines(run, !!live, width);
     const pending = (run?.guidance ?? []).filter(g => g.state !== 'delivered');
-    // Only the conversation gives way to the controls: at most three pending lines, then a count.
+
     const queued = pending.slice(-3).map(g => color(g.state === 'queued' ? 'muted' : 'warning',
       ` ${g.state === 'queued' ? 'Queued' : 'Not delivered'}${g.from === 'manager' ? ' (main agent)' : ''}: ${oneLine(g.text)}`));
     if (pending.length > 3) queued.unshift(color('muted', ` +${pending.length - 3} more not yet delivered`));
-    this.bodyHeight = Math.max(0, height - top.length - input.length - 1 - queued.length); // One footer line.
+    this.bodyHeight = Math.max(0, height - top.length - input.length - 1 - queued.length);
     const parts = run ? this.transcript.build(run.task, this.messages(run), live?.streaming, live?.tools, run.guidance) : [];
     const lines = parts.flatMap(part => part.render(width));
     if (this.back && this.drawn.width === width) this.back += Math.max(0, lines.length - this.drawn.lines);
@@ -347,7 +347,7 @@ export class AgentView implements Component, Focusable {
       : color('dim', ` ${keys.join(' · ')}`);
     const scrolled = this.back ? color('warning', `↑ ${this.back} lines up `) : '';
     const footer = [visibleWidth(hint) + visibleWidth(scrolled) < width ? `${hint}${' '.repeat(width - visibleWidth(hint) - visibleWidth(scrolled))}${scrolled}` : hint];
-    // On a terminal too short for everything, the header goes first; the input and footer stay.
+
     return [...top, ...body, ...queued, ...input, ...footer].slice(-height).map(line => truncateToWidth(line, width));
   }
 }

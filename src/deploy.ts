@@ -1,27 +1,27 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { commandWords, segments } from './effect-classifier.ts';
 
-/**
- * A production deploy runs in the foreground of the main session, never through a worker, and the machine stays quiet while it
- * runs. This file knows when one is in flight: the run of a deploy entry point (a bash/powershell call, or a background shell,
- * including a bash call that the long-command mover turned into a shell) marks it until that call or shell ends. While it is,
- * spawn/subagent launches are refused, running workers are told to hold heavy local work, and the
- * status note shows the deploy.
- */
+
+
+
+
+
+
+
 
 /** The deploy entry points: script names (`*` matches any characters); a pattern with a space matches the start of the command line (`fly deploy`). */
 export const DEPLOY_COMMANDS: readonly string[] = ['deploy-web.ps1', 'deploy-prod.ps1', 'deploy-all.ps1', 'deploy-changed.ps1', 'run-rollout*.ps1'];
 
 const unquote = (word: string) => word.replace(/^(['"])(.*)\1$/s, '$2');
-/** `whole`: the pattern is a script name and must match all of it; else it matches the start of a command line. */
+
 const globToRegExp = (pattern: string, whole: boolean) => new RegExp(`^${pattern.trim().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/\\\\\\s]*')}${whole ? '$' : ''}`, 'i');
 const INTERPRETER = /^(?:pwsh|powershell|bash|sh|zsh|cmd|node|tsx|bun|deno|python3?)(?:\.exe)?$/i;
-/** Interpreter flags that take a value, which must not be taken for the script. */
+
 const FLAG_WITH_VALUE = /^-(?:ExecutionPolicy|ep|WindowStyle|Version|ConfigurationName|WorkingDirectory|wd|InputFormat|OutputFormat)$/i;
-/** A deploy that only plans or prints what it would do is quick and writes nothing: it does not hold the machine. */
+
 const PLAN_ONLY = /^-{1,2}(?:PlanOnly|WhatIf|DryRun|dry-run|plan|help|h)$/i;
 
-/** Whether one command (segment) runs a deploy entry point; `patterns` are the script names/command prefixes. */
+
 function runsPattern(words: string[], patterns: readonly RegExp[], prefixes: readonly RegExp[], depth: number): boolean {
   if (words.length === 0 || words.some(word => PLAN_ONLY.test(unquote(word)))) return false;
   const first = unquote(words[0]);
@@ -47,7 +47,7 @@ export function isDeployCommand(command: string, extra: readonly string[] = []):
   return segments(command, '').some(part => runsPattern(commandWords(part.command), patterns, prefixes, 0));
 }
 
-export interface DeployInfo { since: number; command: string; /** The background shell that runs it; absent for a foreground call. */ shell?: string }
+export interface DeployInfo { since: number; command: string;   shell?: string }
 export interface DeploySource {
   /** The background shells running now. */
   shells(): readonly { id: string; command: string; started: number }[];
@@ -94,7 +94,7 @@ export class DeployWatch {
     try {
       if (now && !before) this.hooks.started(now);
       else if (!now && before) this.hooks.ended(before);
-    } catch { /* telling workers is a courtesy: it never fails the call or the shell that triggered it */ }
+    } catch {   }
   }
   reset() { this.calls.clear(); this.shellMatches.clear(); this.current = undefined; }
 }
@@ -118,12 +118,12 @@ export function workerHooks(workers: () => Workers | undefined): DeployHooks {
 export function registerDeployGuard(pi: ExtensionAPI, watch: DeployWatch, subscribe: (listener: () => void) => () => void) {
   let unsubscribe: (() => void) | undefined;
   pi.on('session_start', () => { unsubscribe?.(); unsubscribe = subscribe(() => watch.refresh()); watch.refresh(); });
-  // A /reload leaves shells running for the new instance, which reads them itself; this one lets go of the shells and its state.
+
   pi.on('session_shutdown', () => { unsubscribe?.(); unsubscribe = undefined; watch.reset(); });
   pi.on('tool_call', event => {
     const input = event.input as { command?: unknown; action?: unknown } | undefined;
     if (['bash', 'powershell', 'shell_start'].includes(event.toolName) && typeof input?.command === 'string') watch.begin(event.toolCallId, event.toolName, input.command);
-    // `subagent` without an action launches; with one it manages runs that already exist.
+
     const launches = event.toolName === 'spawn' || event.toolName === 'subagent' && !input?.action;
     const deploy = launches ? watch.active() : undefined;
     if (deploy) return { block: true, reason: refusal(deploy) };

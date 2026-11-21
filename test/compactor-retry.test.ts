@@ -29,7 +29,7 @@ async function fixture(errors: string[], abortOnFailure = false, successText = '
       const message: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: error ? 'partial text must not survive' : successText }], api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), stopReason: error ? 'error' : 'stop', usage: emptyUsage(), ...(error ? { errorMessage: error } : {}) };
       queueMicrotask(async () => {
-        // This case models a failure after the response started; it must not be retried even though its text says "terminated".
+
         if (error === 'terminated') await options?.onResponse?.({ status: 200, headers: {} }, model);
         if (error) stream.push({ type: 'error', reason: 'error', error: message });
         else stream.push({ type: 'done', reason: 'stop', message });

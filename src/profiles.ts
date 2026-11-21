@@ -19,9 +19,9 @@ const PIPE_PREFIX = '\\\\.\\pipe\\';
 
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
 export type Role = 'compactor' | 'subagent';
-/** alternates: per-provider models a role uses while the main model is on that provider, e.g. a Codex model on a Codex account. */
-/** wakeModel: the model a heartbeat wake runs on instead of the main one, the main model coming back when the wake settles;
- * a list holds one per provider family (Anthropic, Codex...), so the wake gets cheaper on whichever the main model is on. */
+
+
+
 /** workerModels: manager mode's routes, one list per worker kind with one entry per provider family (see `routeFor`). */
 export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; alternates?: Partial<Record<Role, ModelChoice[]>>; heartbeat?: HeartbeatPlan; heartbeatRadar?: string[]; wakeModel?: ModelChoice | ModelChoice[]; workerModels?: WorkerRoutes;
   /** Whether a wake whose main-model family is out of quota may run on another family's wakeModel (default true; see wakeRoutes). */
@@ -41,7 +41,7 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
-  compactor: { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'xhigh' }, // The recipe's: a cheap model at xhigh effort.
+  compactor: { provider: 'anthropic', model: 'claude-haiku-5-5', thinking: 'xhigh' },
   subagent: { provider: 'anthropic', model: 'claude-opus-5-5', thinking: 'high' },
   ...DEFAULT_SETTINGS,
 };
@@ -58,8 +58,8 @@ export function createProfile(name: string) {
   const dir = profilePath(name);
   if (existsSync(dir)) throw new Error(`Profile already exists: ${name}`);
   mkdirSync(resolve(dir, '..'), { recursive: true, mode: 0o700 });
-  // Claim the directory exclusively, so a competing creator cannot have its
-  // profile overwritten or removed by this attempt's cleanup.
+
+
   mkdirSync(dir, { mode: 0o700 });
   try {
     saveConfig(dir, defaults);
@@ -87,9 +87,9 @@ export function modelFor(config: ProfileConfig, role: Role, main: MainModel | un
   const alternates = config.alternates?.[role];
   const alternate = alternates?.find(choice => choice.provider === main.provider) ?? alternates?.find(choice => accountGroup(choice.provider) === group);
   const chosen = alternate ?? (accountGroup(own.provider) === group ? own : undefined);
-  // A numbered account: the role follows the account the main model is already serving on, not the base one it was configured with.
+
   if (chosen) return accountGroup(chosen.provider) === group && main.provider !== group ? { ...chosen, provider: main.provider } : chosen;
-  // No choice for this provider: the main model, at the lowest effort it takes (clamped by the caller).
+
   return { provider: main.provider, model: main.model, thinking: 'off' };
 }
 /** The model a heartbeat wake switches to: the profile's wakeModel for the main model's provider family, on the account the
@@ -101,7 +101,7 @@ export function wakeModelFor(config: ProfileConfig, main: MainModel | undefined)
   if (!wake) return undefined;
   return wake.model === main.model ? undefined : { ...wake, provider: main.provider };
 }
-/** The numbered accounts a provider family is published under, base provider first, then `-account-N` in numeric order. */
+
 const familyAccounts = (group: string, providers: string[]) => [...new Set(providers.filter(provider => accountGroup(provider) === group))]
   .sort((a, b) => (a === group ? -1 : b === group ? 1 : a.localeCompare(b, undefined, { numeric: true })));
 /**
@@ -152,7 +152,7 @@ export function loadConfig(dir: string): ProfileConfig {
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol);
     if (problem) throw new Error(problem);
-    // The optional fields were validated above; an absent or empty one stays out of the config.
+
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;
     return { compactor: value.compactor, subagent: value.subagent, ...present, ...value.wakeRouteAcrossFamilies === false ? { wakeRouteAcrossFamilies: false } : {}, ...value.machineTurnsOnWakeModel === false ? { machineTurnsOnWakeModel: false } : {}, ...readSettings(value) };
   }
@@ -171,12 +171,12 @@ export class ProfileBusyError extends Error {
 /** POSIX keeps a socket file in the profile itself, so every Pi on the profile finds the same one whatever its TMPDIR, and Git skips it. Windows has no Unix sockets, so the profile path is hashed into a named pipe in the machine-wide pipe namespace. */
 export function profileSocket(dir: string, purpose: 'lock' | 'windows' = 'lock') {
   if (!isWindows) return join(dir, `${purpose}.sock`);
-  // Hash the directory's real identity, so another casing, a junction or a symlink to the same profile finds the same pipe.
+
   let identity = resolve(dir); try { identity = realpathSync.native(identity); } catch {}
   return `${PIPE_PREFIX}optchat-${createHash('sha256').update(identity.toLowerCase()).digest('hex').slice(0, 16)}-${purpose}`;
 }
 
-// sun_path is 104 bytes on macOS and 108 elsewhere, both including the NUL; Windows named pipes are capped at 259 UTF-16 code units. Node 22 can bind a truncated POSIX socket instead of failing, so check before listening on every platform.
+// external: POSIX socket paths and Windows named pipes have bounded lengths; Node 22 can bind a truncated POSIX path.
 export const SOCKET_PATH_LIMIT = process.platform === 'darwin' ? 103 : isWindows ? 259 : 107;
 export function checkSocketPath(path: string) {
   const length = isWindows ? path.length : Buffer.byteLength(path);
@@ -186,7 +186,7 @@ export function checkSocketPath(path: string) {
   }
 }
 
-/** A socket that may be replaced; a file that only shares its name is refused, never deleted. A Windows pipe has no filesystem entry, so there is nothing to check or remove. */
+// external: Windows named pipes have no filesystem entry.
 function existingSocket(path: string): { stat: Stats; removable: true } | { removable: false } | undefined {
   if (isWindows) return { removable: false };
   let stat; try { stat = lstatSync(path); } catch { return undefined; }
@@ -196,7 +196,7 @@ function existingSocket(path: string): { stat: Stats; removable: true } | { remo
 /** Removes a dead socket left by a previous owner. */
 export function removeStaleSocket(path: string) { if (existingSocket(path)?.removable) unlinkSync(path); }
 
-/** Asks the current owner who holds the socket; nothing answering means the entry is stale. A Windows pipe that has disappeared reports ENOENT instead of ECONNREFUSED. */
+// external: Windows pipes report ENOENT after their owner disappears, unlike a stale POSIX socket.
 function readOwner(path: string) {
   return new Promise<string | undefined>((resolve, reject) => {
     const socket = createConnection(path); let message = '';
@@ -223,7 +223,7 @@ export async function lockProfile(dir: string, description: string) {
     if (!before) throw new Error('Profile lock changed; try again.');
     const owner = await readOwner(socketPath);
     if (owner !== undefined) throw new ProfileBusyError(owner);
-    // Nothing answered, so the entry is stale. POSIX leaves a file behind that can be removed; a Windows pipe disappears with its owner, so rebinding is the whole cleanup.
+    // external: POSIX sockets leave a filesystem entry; Windows pipes disappear with their owner.
     if (before.removable) {
       if (statSync(socketPath).ino !== before.stat.ino) throw new Error('Profile lock changed; try again.');
       unlinkSync(socketPath);

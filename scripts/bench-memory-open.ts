@@ -1,4 +1,4 @@
-// Disposable synthetic memory-open/reload probe. Run with node --expose-gc --experimental-transform-types scripts/bench-memory-open.ts [cycles] [max-block-ms].
+
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,7 +43,7 @@ try {
     globalThis.gc?.();
     const before = process.memoryUsage();
     const { elapsed, longest } = await openAndClose();
-    // Let the one-second FileStore read cache expire and discard the completed async frame before GC.
+
     await new Promise(resolve => setTimeout(resolve, 1100));
     globalThis.gc?.();
     const after = process.memoryUsage();

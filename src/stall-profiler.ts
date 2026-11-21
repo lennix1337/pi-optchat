@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { stallWatch, type Stall, type StallCpu } from './loop-stalls.ts';
 
 const DEFAULT_WINDOW_MS = 10_000;
-/** 4000 µs keeps CPU-bound overhead under 2% (~1.95% measured vs 4.44% at 1000 µs) while still capturing ~250 samples/s during stalls. */
+
 const DEFAULT_INTERVAL_US = 4_000;
 const TOP_LIMIT = 5;
 const MAX_STACK_DEPTH = 8;
@@ -61,8 +61,8 @@ export function attributeStallCpu(
     return undefined;
   }
 
-  // V8 profile.startTime / endTime use base::TimeTicks (µs since OS boot), which shares monotonic rate with performance.now()
-  // up to a constant offset; anchoring endTime to windowEndMs maps the entire profile onto performance.now().
+  // external: V8 profile timestamps and performance.now use monotonic clocks with different origins.
+
   const durationMs = Math.max(0, (profile.endTime - profile.startTime) / 1000);
   const windowStartMs = windowEndMs - durationMs;
   if (stallEndMs <= windowStartMs || stallStartMs >= windowEndMs) return undefined;
@@ -143,7 +143,7 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
   let stopped = false;
   let rolling = false;
   let startPromise: Promise<void> | null = null;
-  // The previous window is kept too: a stall the watch records only after this roll fired is attributed on the next one.
+
   let lastProfile: { profile: CpuProfileLike; windowEndMs: number } | null = null;
   let previousProfile: { profile: CpuProfileLike; windowEndMs: number } | null = null;
 
@@ -163,7 +163,7 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
         timer = setInterval(() => { void roll(); }, windowMs);
         timer.unref();
       } catch {
-        // Inspector may be unavailable in restricted runtimes; stallWatch continues without CPU attribution.
+        // external: Node inspector may be unavailable in restricted runtimes.
         stop();
       }
     })();
@@ -188,7 +188,7 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
         }
       }
     } catch {
-      // Ignore transient stop/start errors when shutting down.
+
     } finally {
       rolling = false;
     }
@@ -199,7 +199,7 @@ export function createStallProfiler(opts: { windowMs?: number; intervalUs?: numb
     lastProfile = previousProfile = null;
     if (timer) { clearInterval(timer); timer = null; }
     if (session) {
-      try { session.disconnect(); } catch { /* already disconnected */ }
+      try { session.disconnect(); } catch {   }
       session = null;
     }
   };
@@ -214,7 +214,7 @@ const SHARED = Symbol.for('pi-optchat.stall-profiler');
 export function startStallProfiler(opts?: { windowMs?: number; intervalUs?: number }): StallProfilerHandle | undefined {
   const slot = globalThis as Record<symbol, StallProfilerHandle | undefined>;
   if (process.env.PI_STALL_PROFILER !== '1') {
-    // A Pi reload keeps globalThis: a profiler an older copy of this module started keeps rolling unless stopped here.
+
     slot[SHARED]?.stop();
     delete slot[SHARED];
     return undefined;

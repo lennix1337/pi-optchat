@@ -60,7 +60,7 @@ export function errorCategory(error: unknown): UsageErrorCategory {
   if (/auth|api.key|401|403/i.test(text)) return 'authentication';
   if (/overload|unavailable|\b502\b|\b503\b|\b504\b|\b529\b/i.test(text)) return 'unavailable';
   if (/upstream connect error|disconnect\/reset before headers|connection refused|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|fetch failed/i.test(text)) return 'connection_failure';
-  // The Anthropic SDK reports a rejected fetch (a reset before any response) as a bare "Connection error." and drops the cause.
+  // external: The Anthropic SDK can report a rejected fetch as Connection error without its cause.
   if (/^connection error\.?$/i.test(text.trim())) return 'connection_failure';
   if (/timeout|timed.out/i.test(text)) return 'timeout';
   if (/context|too.long|token.limit/i.test(text)) return 'context_limit';
@@ -191,7 +191,7 @@ export class CompactorTrace {
     this.diagnostic.elapsedMs = Date.now() - this.began;
     this.diagnostic.aborted = signal.aborted;
     if (signal.aborted) {
-      // Memory.close aborts with an AbortError whose message names the source; other reasons stay 'unknown'.
+
       const reason: unknown = signal.reason instanceof DOMException ? signal.reason.message : signal.reason;
       this.diagnostic.abortSource = typeof reason === 'string' && abortSources.has(reason) ? reason as CompactorDiagnostic['abortSource'] : 'unknown';
     }
@@ -216,7 +216,7 @@ function appendBoundedDiagnostic(directory: string, name: string, diagnostic: ob
   if (existsSync(file) && statSync(file).size + bytes(line) > 1_000_000) renameSync(file, `${file}.1`);
   appendFileSync(file, line, { mode: 0o600 });
 }
-/** Project before persisting; each JSONL diagnostic stream rotates at 1 MB. */
+
 function writeProjectedDiagnostic<T>(directory: string, name: string, value: T, project: (value: T) => object | undefined) {
   const diagnostic = project(value);
   if (diagnostic) appendBoundedDiagnostic(directory, name, diagnostic);

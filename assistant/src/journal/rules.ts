@@ -9,13 +9,13 @@ export type ReflexRule = {
   cooldownMs: number;
 };
 
-/** Kinds that close an open issue for the same subject. A recovery without an open issue is only recorded. */
+
 const RECOVERY: ReadonlySet<SignalKind> = new Set([
   'ci.passed', 'pr.merged', 'shell.succeeded', 'subagent.completed', 'quota.recovered',
   'health.recovered', 'pc.recovered', 'google.recovered', 'routine.succeeded',
 ]);
-/** Kinds the operator must see. The notification carries fixed text; the journal keeps the subject. A subagent end is
- * recorded only: its report already reaches the main agent, so there is no model turn for the reflex path to replace. */
+
+
 const ATTENTION: ReadonlySet<SignalKind> = new Set([
   'ci.failed', 'pr.conflict', 'shell.failed', 'quota.exhausted', 'quota.near',
   'health.down', 'pc.disk_low', 'pc.memory_low', 'pc.maintenance_stale', 'google.unavailable',

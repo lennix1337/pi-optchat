@@ -17,7 +17,7 @@ test('a tick that arrives on time records nothing; a late one records the blocke
 
 test('a garbage collection inside the stall window is named as its cause; one outside is not', () => {
   const c = clock(), watch = createStallWatch(c.now);
-  watch.noteGc(1000 - 500, 50, 2); // before the stall window
+  watch.noteGc(1000 - 500, 50, 2);
   watch.noteGc(1300, 400, constants.NODE_PERFORMANCE_GC_MAJOR);
   watch.noteGc(1750, 30, constants.NODE_PERFORMANCE_GC_MINOR);
   c.advance(1100); watch.tick();
@@ -32,7 +32,7 @@ test('GC notifications arriving after the watchdog tick update the overlapping s
   c.advance(1100); watch.tick();
   watch.noteGc(1300, 400, constants.NODE_PERFORMANCE_GC_MAJOR);
   watch.noteGc(1750, 30, constants.NODE_PERFORMANCE_GC_MINOR);
-  watch.noteGc(2200, 50, constants.NODE_PERFORMANCE_GC_MINOR); // after the recorded stall
+  watch.noteGc(2200, 50, constants.NODE_PERFORMANCE_GC_MINOR);
   const [stall] = watch.stalls();
   assert.equal(stall.gcMs, 430);
   assert.equal(stall.gcKind, 'mark-sweep-compact');
@@ -106,9 +106,9 @@ test('heap_report carries the stall list inside eventLoop', async () => {
 
 test('a stall names instrumented tools overlapping its window; no span makes no claim about uninstrumented work', () => {
   const c = clock(), watch = createStallWatch(c.now);
-  const early = watch.begin('tool:read'); c.advance(100); early(); // ended before the stall window
+  const early = watch.begin('tool:read'); c.advance(100); early();
   watch.tick();
-  const bash = watch.begin('tool:bash'); // still running when the loop wakes up
+  const bash = watch.begin('tool:bash');
   const grep = watch.begin('tool:grep'); c.advance(500); grep();
   c.advance(700); watch.tick();
   assert.deepEqual(watch.stalls()[0].during, ['tool:bash', 'tool:grep']);
@@ -120,7 +120,7 @@ test('a stall names instrumented tools overlapping its window; no span makes no 
 test('a watchdog left in the process by an older build (before an extension reload) is replaced, keeping its stalls', () => {
   const key = Symbol.for('pi-optchat.loop-stalls'), slot = globalThis as Record<symbol, unknown>, saved = slot[key];
   const old = { at: '2026-11-14T09:41:16.098Z', blockedMs: 3173, gcMs: 7, gcKind: 'scavenge' };
-  slot[key] = { tick() {}, noteGc() {}, stalls: () => [old] }; // the shape before begin() existed
+  slot[key] = { tick() {}, noteGc() {}, stalls: () => [old] };
   try {
     const watch = stallWatch();
     assert.equal(typeof watch.begin, 'function');

@@ -6,7 +6,7 @@ import { navigate, runShell, shellRequest } from '../src/computer/effects.ts';
 import { checkNavigation, isInternalHost } from '../src/computer/network.ts';
 import { base, inspectContainer, withComputers } from './computer-support.ts';
 
-// Every writable or mountable place; /proc, /sys and /dev are skipped because grep would read device files forever.
+// external: reading device files under /proc, /sys and /dev may never finish.
 const DIRS = '/work /tmp /home /root /mnt /media /run /srv /opt /etc /var';
 
 test('a computer has no network, mounts, socket, capabilities or root, and a read-only root filesystem', () => withComputers(async ({ computers, gateway }) => {

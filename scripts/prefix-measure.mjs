@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Measures what the main agent sends on EVERY request (system prompt, instruction sections, skill catalogue,
-// tool declarations) by running the real Pi CLI with the live package set against a local fake Anthropic
-// endpoint that records the request body. No provider call, no live profile writes: everything runs in a
-// throw-away agent dir and OptChat home under os.tmpdir(); the live ~/.pi/agent and profile are only read.
-//
-//   node scripts/prefix-measure.mjs [--optchat <dir>] [--cwd <dir>] [--out file.json] [--keep]
-//
-// --optchat: the pi-optchat checkout to load in place of the one in settings.json (default: this repo).
-// Output: JSON with bytes of system text, tool schemas (per tool, per source) and the instruction sections.
+
+
+
+
+
+
+
+
+
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -27,7 +27,7 @@ const liveHome = join(homedir(), '.optchat');
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value ?? ''), 'utf8');
 
 const bodies = [];
-// --probe '<javascript>': the first answer is a codemode call running it, so the second request carries its result.
+
 const probe = flag('probe');
 const server = createServer((req, res) => {
   const chunks = [];
@@ -82,7 +82,7 @@ const profile = join(home, 'profiles', profileName);
 mkdirSync(profile, { recursive: true });
 cpSync(join(liveHome, 'profiles', profileName, 'AGENTS.md'), join(profile, 'AGENTS.md'));
 const config = JSON.parse(readFileSync(join(liveHome, 'profiles', profileName, 'config.json'), 'utf8'));
-// Same profile, minus everything that would reach out (heartbeat wakes, daily retro, sync).
+
 Object.assign(config, { heartbeatMinutes: 0, dailyRetro: 'off', syncStatus: false, syncAiMemory: false, syncOptMem: false });
 writeFileSync(join(profile, 'config.json'), JSON.stringify(config, null, 2));
 writeFileSync(join(home, 'last-profile'), profileName);

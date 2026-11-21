@@ -1,8 +1,8 @@
-/**
- * The specialist patrol: when a tick finds deadline signals for commitments a specialist owns, a read-only worker of that specialist
- * checks them instead of the manager being woken. It records what it saw on the commitments, escalates only what needs the operator,
- * and an item it did not settle still reaches the manager the next tick as the plain deadline signal (see patrol-divert.ts).
- */
+
+
+
+
+
 import { existsSync } from 'node:fs';
 import { Type } from 'typebox';
 import type { SpawnTask } from './agents.ts';
@@ -94,7 +94,7 @@ const GH_API_WRITES = new Set(['-X', '--method', '-f', '-F', '--field', '--raw-f
 const PLAIN = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'sort', 'uniq', 'echo', 'pwd', 'date', 'stat', 'file', 'tree', 'cut', 'tr', 'diff', 'basename', 'dirname', 'realpath', 'cd', 'true']);
 const FIND_WRITES = new Set(['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprintf', '-fls', '-fprint0']);
 
-/** The words of each command of a shell line, or the reason it cannot be read: a redirection or a substitution outside single quotes can write. */
+
 function commandsOf(line: string): string[][] | string {
   const commands: string[][] = [[]];
   let word = '', open = false, quote: '' | "'" | '"' = '';

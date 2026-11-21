@@ -188,7 +188,7 @@ test('a patrol run does not count as the specialist’s last work run, so it nev
   assert.deepEqual(lastRunsOf(runs, 1000), { dentai: { id: 'a', at: 200 } });
 });
 
-/** One Children run on a synthetic model, ending with `reason`; returns what its report callback got and the session options. */
+
 async function runPatrol(reason: 'stop' | 'error', dir: string, spec: { patrol: boolean }) {
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });

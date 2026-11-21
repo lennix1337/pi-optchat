@@ -34,7 +34,7 @@ test('a pid that has exited is reported as gone, not as an inspection failure', 
 
 test('stop and health never kill or trust a process this tool did not start', { timeout: 60_000 }, () => privateDir('ops-ownership-', async root => {
   const svc = serviceHome(root, await freePort());
-  // A process this test spawned but the ops scripts did not: a stand-in for a reused pid.
+
   const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
   try {
     const info = processInfo(foreign.pid!);
@@ -57,7 +57,7 @@ test('stop and health never kill or trust a process this tool did not start', { 
 
 test('a drained server exits even when a closed connection still waits for its peer', { timeout: 30_000 }, () => privateDir('ops-linger-', async root => {
   const stopFile = join(root, 'stop'), port = await freePort();
-  // close() leaves a referenced handle behind, as Slack's WebSocket does while it waits ~10 s for the close frame.
+  // external: Slack WebSocket close can wait about 10 s for its peer.
   const script = `import { createServer } from 'node:http';
     import { serve } from ${JSON.stringify(new URL('../src/main.ts', import.meta.url).href)};
     serve(createServer(), { close() { setInterval(() => {}, 1000); } }, { endpoint: 'http://127.0.0.1:${port}', token: 'linger-token', profileId: 'p' });`;
@@ -74,7 +74,7 @@ test('a drained server exits even when a closed connection still waits for its p
   } finally { child.kill(); }
 }));
 
-/** A disposable copy of this package, optionally with a source edit, standing in for another installed version. */
+
 function version(root: string, name: string, edits: [string, string, string][] = []): string {
   const dir = join(root, name);
   for (const part of ['src', 'scripts', 'package.json']) cpSync(join(assistant, part), join(dir, part), { recursive: true });
@@ -90,7 +90,7 @@ test('safe update: drain, back up, migrate, health-check, then roll back to the 
   const port = await freePort();
   const svc = serviceHome(root, port);
   const v1 = version(root, 'v1');
-  // v2 migrates the task database to schema 2, then fails its health check.
+
   const v2 = version(root, 'v2', [
     ['src/store/db.ts', "if (version > 1) throw new Error('Unsupported database version');", "if (version > 2) throw new Error('Unsupported database version'); if (version === 1) this.db.exec('ALTER TABLE tasks ADD COLUMN v2 TEXT; PRAGMA user_version = 2');"],
     ['src/http/server.ts', "send(res, 200, store.list(cursor, numberParam(url, 'limit', 50, 1, 100))); return;", "throw new Error('v2 regression');"],

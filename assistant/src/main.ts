@@ -128,7 +128,7 @@ function validSlackChannels(value: unknown): value is Record<string, string> {
 
 export function readConfig(path: string): Config {
   if (!isAbsolute(path)) throw new Error('Invalid configuration path');
-  // The privacy precheck assumes a quiescent, user-controlled directory.
+
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   let data: Buffer;
   try {
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     if (config.learning) {
       const path = join(dirname(config.databasePath), 'learning-display.sqlite');
       prepareDatabase(path);
-      // Only read APIs are passed to the panel. Mutation authority stays in the separate trusted CLI.
+
       learning = new DisplayLearning({ databasePath: path, profileId: config.profileId, operatorAuthority: {} });
     }
     workers = await openWorkers(config, store);
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
 
 type Workers = { server: { executor?: () => import('./runtime/task-executor.ts').ExecutorStatus; prompt?: import('./channels/web.ts').PromptSource }; start(): void; close(): Promise<void> };
 
-/** The opt-in background workers: routines, and the draft executor, which also drafts tasks the routines vouch for. */
+
 async function openWorkers(config: Config, store: import('./store/db.ts').TaskStore): Promise<Workers> {
   let routines: import('./routines/service.ts').RoutineService | undefined;
   let executor: import('./runtime/task-executor.ts').TaskExecutor | undefined;
@@ -234,7 +234,7 @@ async function openWorkers(config: Config, store: import('./store/db.ts').TaskSt
   const drafts = executor;
   return {
     server: drafts ? { executor: () => drafts.status(), prompt: task => drafts.prompt(task) } : {},
-    // Reported once per run of failures; each keeps retrying, and health.mjs shows the executor failing meanwhile.
+
     start() {
       routines?.start(() => console.error('Routine pass failed; it keeps retrying.'));
       drafts?.start(() => console.error('Draft executor pass failed; it keeps retrying. See health.mjs for the current state.'));
@@ -251,14 +251,14 @@ type Notices = {
 type Journal = { stop(): void; api: import('./http/server.ts').JournalApi };
 type Briefings = { stop(): void; provider: import('./http/server.ts').BriefingProvider };
 
-/** Optional Slack intake, local notices and Google briefing; null (after reporting which one failed) stops startup. */
+
 async function startExtras(config: Config, store: import('./store/db.ts').TaskStore, web = false): Promise<{ stop(): void; notices?: () => import('./notifications/center.ts').NotificationRecord[]; server: { briefings?: import('./http/server.ts').BriefingProvider; slack?: import('./http/server.ts').SlackBridge; journal?: import('./http/server.ts').JournalApi } } | null> {
   let slack: Awaited<ReturnType<typeof startSlack>> | undefined;
   if (config.slack) {
     try { slack = await startSlack(config, config.slack, store); }
     catch { console.error('Slack channel could not be initialized.'); return null; }
   }
-  // The Pi's own timers die with it, so the service that outlives it tells the operator when it fell and did not come back.
+
   let piWatch: import('./pi-watch.ts').PiWatch | undefined;
   const poster = slack?.bridge?.poster;
   if (poster) {
@@ -288,7 +288,7 @@ async function startExtras(config: Config, store: import('./store/db.ts').TaskSt
   };
 }
 
-/** The deterministic journal and its spool poller; it never calls a model or dispatches work. */
+
 async function startJournal(config: Config, notices: Notices | undefined, channels: readonly NotificationChannel[]): Promise<Journal> {
   const { SignalStore } = await import('./journal/store.ts');
   const { SignalService } = await import('./journal/service.ts');
@@ -304,7 +304,7 @@ async function startJournal(config: Config, notices: Notices | undefined, channe
   return { stop() { poller.stop(); outcomes.stop(); store.close(); }, api: service };
 }
 
-/** Reads the named Google accounts' mail and agenda once a day after `dailyAt`; failures are logged by code only. */
+
 async function startGoogle(config: Config, settings: GoogleConfig, notices: Notices | undefined): Promise<Briefings> {
   const { GoogleLocal } = await import('./connectors/google-local.ts');
   const { BriefingService } = await import('./briefing/service.ts');
@@ -323,7 +323,7 @@ async function startGoogle(config: Config, settings: GoogleConfig, notices: Noti
   return { stop() { service.stop(); local.close(); }, provider: service };
 }
 
-/** Local toasts for suggested tasks, needed input, review, finish and failure. The config flag is the consent. */
+
 async function startNotifications(config: Config, settings: NotificationsConfig, store: import('./store/db.ts').TaskStore): Promise<Notices> {
   const { createNotificationCenter } = await import('./notifications/center.ts');
   const { TaskNotifier, windowsToast } = await import('./notifications/task-notifier.ts');
@@ -339,22 +339,22 @@ async function startNotifications(config: Config, settings: NotificationsConfig,
     stop() { notifier.stop(); center.close(); },
     list() { return center.list(50); },
     notify(input) { center.notify(input); },
-    // Delivered by the notifier's next pass; the same id again is a no-op, so a restart does not repeat the toast.
+
     announce(id, ref) { try { center.notify({ id, channel: 'local', category: 'briefing_ready', ref }); } catch { console.error('Notification could not be recorded.'); } },
   };
 }
 
-/**
- * Socket Mode intake: listed operators' messages become suggested tasks. With a bot token, DMs are a chat instead:
- * queued for the OptChat session and answered in the first operator's DM.
- */
+
+
+
+
 async function startSlack(config: Config, settings: SlackConfig, store: import('./store/db.ts').TaskStore): Promise<{ stop(): void; bridge?: import('./http/server.ts').SlackBridge }> {
   const { ChannelLedger } = await import('./channels/inbound.ts');
   const { SlackChannel } = await import('./channels/slack.ts');
   const { SlackSocket } = await import('./channels/slack-socket.ts');
   const ledgerPath = join(dirname(config.databasePath), 'channels.sqlite');
   prepareDatabase(ledgerPath);
-  // The operator's own configuration file is the authority that lists who may write to the assistant.
+
   const authority = {};
   const ledger = new ChannelLedger({ databasePath: ledgerPath, profileId: config.profileId, operatorAuthority: authority });
   ledger.replaceSenders('slack', settings.team, settings.operators, 'operador', authority);
@@ -409,13 +409,11 @@ export function serve(server: Server, store: { close(): void | Promise<void> }, 
       clearTimeout(deadline);
       try { await store.close(); } catch { console.error('Assistant resource shutdown failed.'); process.exitCode = 1; }
       console.log('Assistant stopped: admission closed, requests drained, database closed.');
-      // Everything durable is closed. A remote close handshake (Slack's WebSocket waits ~10 s for its peer) must not
-      // keep the process alive past the stop script's grace period; unref'd, this fires only if such a handle lingers.
+      // external: Slack's WebSocket close handshake can wait about 10 seconds.
       setTimeout(() => process.exit(), 1500).unref();
     });
   };
-  // Set only by assistant/scripts/start.mjs: Windows has no graceful signal for a detached process, so stop.mjs
-  // asks for a drain by creating this file in the private config directory.
+  // external: Windows has no graceful signal for a detached process.
   const stopFile = process.env.OPTCHAT_ASSISTANT_STOP_FILE;
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);

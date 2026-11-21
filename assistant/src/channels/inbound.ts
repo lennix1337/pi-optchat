@@ -92,12 +92,12 @@ export function admit(message: RemoteMessage, options: AdmitOptions): Received {
   const binding = message.thread ? ledger.thread(message.platform, message.account, message.conversation, message.thread) : null;
   if (binding) {
     const current = store.get(binding.taskId);
-    // Any later change to the task (answer, new question, cancel) bumps its revision, so the binding is exact.
+
     if (!current || current.status !== 'needs_input' || current.revision !== binding.revision) return { outcome: 'stale', taskId: binding.taskId, reply: options.reviewLink(binding.taskId) };
     store.respond({ version: 1, profileId, taskId: current.taskId, revision: current.revision, inputRevision: current.inputRevision, text: text.slice(0, 4000) }, event(current.taskId));
     return { outcome: 'responded', taskId: current.taskId };
   }
-  // The task ID derives from the delivery, so a redelivery (retry, restart) finds the task instead of making another.
+
   const taskId = `${message.platform}-${sha256(sourceEventId).slice(0, 32)}`;
   if (store.get(taskId)) return { outcome: 'duplicate', taskId };
   const title = [...text.replace(/\s+/g, ' ')].slice(0, MAX_TITLE).join('');
@@ -129,7 +129,7 @@ export class ChannelSender {
       if (code === 'operation_already_dispatched') return { outcome: 'already_dispatched' };
       return { outcome: 'invalid' };
     }
-    // A question binds replies in its thread to the exact input it asked for.
+
     if (task?.status === 'needs_input' && task.taskId === notice.taskId) {
       ledger.recordThread({ platform: notice.platform, account: notice.account, conversation: notice.conversation, thread: posted.thread, taskId: task.taskId, revision: task.revision, inputRevision: task.inputRevision });
     }

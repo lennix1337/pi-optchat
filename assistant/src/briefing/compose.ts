@@ -68,7 +68,7 @@ export class BriefingComposer {
     const existing = this.dailyFor(localDate);
     if (existing) return existing;
     const briefing = await this.compose('daily', localDate);
-    // The first client to commit wins; a client that composed concurrently returns the stored one.
+
     this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'daily', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
     return this.dailyFor(localDate)!;
   }
@@ -91,7 +91,7 @@ export class BriefingComposer {
     const item = briefing.items.find(candidate => candidate.itemId === itemId) ?? fail('briefing_item_unknown');
     if (!item.startable) fail('briefing_item_not_startable');
     const store = this.options.store;
-    // Keyed by the source item, so the same mail or event started from two briefings or clients is one task.
+
     const taskId = `briefing-${sha256(item.sourceRef).slice(0, 32)}`;
     const existing = store.get(taskId);
     if (existing) return existing;
@@ -102,7 +102,7 @@ export class BriefingComposer {
       sequence: store.nextSequence(), correlationId: briefing.briefingId, evidence: { kind: 'observed', reference: `briefing:${briefing.briefingId}#${item.itemId}` },
     };
     try { return store.create(task, event); } catch (error) {
-      // Another client may have started the same item between the check and the insert.
+
       const raced = store.get(taskId);
       if (raced) return raced;
       throw error;
@@ -129,8 +129,8 @@ export class BriefingComposer {
     const taskSequence = this.readTasks(since, sources, items);
     const agenda: (Omit<BriefingItem, 'itemId'> & { at: string })[] = [];
     const { from, to } = dayRange(localDate, this.options.timeZone);
-    // Each account's mail and agenda are independent reads, and so are the accounts: they run together. What each read
-    // found is merged back in the configured order, so the briefing is the same whatever order the answers came in.
+
+
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
       const found = { mail: [] as Omit<BriefingItem, 'itemId'>[], changes: [] as Omit<BriefingItem, 'itemId'>[], agenda: [] as (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: 0 };
       const [mail, calendar] = await Promise.all([
@@ -222,7 +222,7 @@ function updatedSince(event: CalendarEvent, createdAt: string): boolean {
   return event.updated !== null && Date.parse(event.updated) > Date.parse(createdAt);
 }
 
-/** [local midnight, next local midnight) of a local date, as instants. */
+
 function dayRange(localDate: string, timeZone: string): { from: string; to: string } {
   const [year, month, day] = localDate.split('-').map(Number);
   const next = new Date(Date.UTC(year, month - 1, day + 1));

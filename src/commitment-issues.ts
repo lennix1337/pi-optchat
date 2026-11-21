@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 export type IssueReference = { repo: string; number: number };
-// These names are explicit aliases, verified against gh repo view; unknown names are never inferred from cwd.
+
 const aliases: readonly [RegExp, string][] = [
   [/\b(?:Genexus18MCP|GX18MCP)\b/i, 'lennix1337/Genexus18MCP'],
   [/\bpi-optchat\b/i, 'lennix1337/pi-optchat'],

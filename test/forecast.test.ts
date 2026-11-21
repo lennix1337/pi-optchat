@@ -4,7 +4,7 @@ import type { Commitment } from '../src/commitments.ts';
 import { forecast, type PrOutlook } from '../src/forecast.ts';
 import { composeSummary, nextSeen, outlook } from '../src/slack-reports.ts';
 
-const now = Date.parse('2026-10-31T10:00:00Z'); // 07:00 in Brasília
+const now = Date.parse('2026-10-31T10:00:00Z');
 const H = 3_600_000;
 const commitment = (id: string, due: string | undefined, status: Commitment['status'] = 'open'): Commitment => ({
   id, text: `tarefa ${id}`, owner: 'optchat', source: '1', createdAt: '2026-10-31T09:00:00Z', updatedAt: '2026-10-31T09:00:00Z',
@@ -16,9 +16,9 @@ test('the forecast names what tends to go wrong today and stays quiet about heal
   const lines = forecast({
     now,
     commitments: [
-      commitment('c1', '2026-10-31T20:00:00Z'), // due today 17:00
-      commitment('c2', '2026-11-02T20:00:00Z'), // due in two days: not today's risk
-      commitment('c3', '2026-10-31T08:00:00Z'), // overdue: listed by the overdue section, not here
+      commitment('c1', '2026-10-31T20:00:00Z'),
+      commitment('c2', '2026-11-02T20:00:00Z'),
+      commitment('c3', '2026-10-31T08:00:00Z'),
       commitment('c4', '2026-10-31T12:00:00Z', 'done'),
     ],
     prs: [pr(1, 'FAILURE', 5), pr(2, 'PENDING', 3), pr(3, 'PENDING', 0.5), pr(4, 'SUCCESS', 1, 3), pr(5, 'SUCCESS', 72), pr(6, 'SUCCESS', 5)],

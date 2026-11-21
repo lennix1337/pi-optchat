@@ -18,7 +18,7 @@ import { removeDir } from './support.ts';
 let sentReasoning: string | undefined;
 let sentStep = '';
 let sentRetry = '';
-/** A fake model with a configurable first response and a fitting retry by default. */
+
 async function attempts(first: number, { source = 'user: ' + 'a long message '.repeat(70), merge = false, accepted, first: text = 'x', retryText = 'x'.repeat(400), firstEnd, ends = 1,
   contextWindow = 100000, maxTokens = 1000, shared, stats, replies, persist = false }:
   { source?: string; merge?: boolean; accepted?: number; first?: string; retryText?: string; firstEnd?: 'length' | 'toolUse'; ends?: number;
@@ -28,7 +28,7 @@ async function attempts(first: number, { source = 'user: ' + 'a long message '.r
   let calls = 0;
   runtime.registerProvider('optchat-test', {
     baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
-    // Like Sonnet 5.5: thinking can't be turned off.
+    // external: Sonnet 5.5 does not support disabling thinking.
     models: [{ id: 'compactor', name: 'Synthetic compactor', reasoning: true, thinkingLevelMap: { off: null, minimal: null }, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens }],
     streamSimple(model, context, options) {
       sentReasoning = options?.reasoning;
@@ -159,7 +159,7 @@ test('a thinking level the model can\'t take is clamped like Pi does, not sent a
 });
 
 test('a merge that is not smaller than the two lines it replaces is retried', async () => {
-  const children = ['a'.repeat(280), 'b'.repeat(280)].join('\n'); // 561 bytes
+  const children = ['a'.repeat(280), 'b'.repeat(280)].join('\n');
   assert.deepEqual(await attempts(590, { source: children, merge: true, accepted: 640 }), { calls: 2, bytes: 400 });
   assert.deepEqual(await attempts(590, { source: 'c'.repeat(1000), merge: true, accepted: 640 }), { calls: 1, bytes: 590 });
 });
@@ -180,7 +180,7 @@ test('the task is the recipe\'s, with a 512-dash ruler for the size, and a merge
 });
 
 test('an echo that replays memory or saved output is summarized as a lookup, never as an action taken now', () => {
-  // 05/11: a zoom echo of an old shell_start deploy (116635) became the line "OptChat deployed d4d925a0 instead" at 117838.
+
   for (const source of ['echo: zoom: 116635+1|tool: shell_start {"command":"deploy-changed.ps1 -Commit d4d925a0"}', 'echo: output_read: {"ok":true}'])
     assert.match(task({ source, part: { l: 0, i: 117838 } }), /replays earlier messages or saved output: report it as recalled .*never as something done now/);
   assert.doesNotMatch(task({ source: 'echo: bash: ok', part: { l: 0, i: 41 } }), /replays earlier/);
@@ -263,7 +263,7 @@ test('handoffs clamp the compactor\'s thinking level too', async () => {
   } finally { removeDir(dir); }
 });
 
-/** The system prompt the compactor's request carried, read from what the provider received. */
+
 async function promptSent(shared: Shared) {
   const stats = { calls: 0, prefixes: [] as string[] };
   await attempts(1, { shared, stats, replies: ['x'.repeat(100)] });

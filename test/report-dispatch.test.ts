@@ -4,7 +4,7 @@ import { ReportDispatcher } from '../src/report-dispatch.ts';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/** Pi as 1.5 behaves: a send from idle starts a turn after a delay and a second send made meanwhile is refused and lost. */
+// external: Pi 1.5 can refuse a second send while an idle send is starting asynchronously.
 const fakePi = ({ startMs = 10, startsTurn = () => true }: { startMs?: number; startsTurn?: (text: string) => boolean } = {}) => {
   const pi = { running: false, starting: false, delivered: [] as string[], lost: [] as string[], sends: [] as string[],
     send(text: string, fromIdle: boolean) {
@@ -40,7 +40,7 @@ test('a turn started by someone else lets the waiting reports through without wa
   const { pi, dispatcher } = fakePi({ startMs: 5_000 });
   dispatcher.push('first'); dispatcher.push('second');
   assert.deepEqual(pi.sends, ['first']);
-  pi.running = true; // the operator typed a message: a turn is running now
+  pi.running = true;
   await sleep(20);
   assert.deepEqual(pi.sends, ['first', 'second']);
   assert.deepEqual(pi.delivered, ['second']);

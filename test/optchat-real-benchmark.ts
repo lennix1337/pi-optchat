@@ -68,8 +68,8 @@ async function runTask(task: OpenHumanTask, source: string) {
   let context: string | undefined;
   const traces = new Map<string, BenchmarkCacheTrace>();
   try {
-    // An idle infrastructure service does not break container isolation. Record it for both A/B variants;
-    // unknown containers or a busy service still block. Never stop unrelated work or weaken the RAM gate.
+
+
     receipt.hostBeforeBuild = liveHostEvidence();
     receipt.sourceHash = await snapshotHash(source);
     receipt.phase = 'model-runtime';
@@ -123,7 +123,7 @@ async function runTask(task: OpenHumanTask, source: string) {
   } catch (error) {
     if (error instanceof Error && 'evidence' in error) receipt.report = error.evidence;
     receipt.state = receipt.phase === 'inference' ? 'failed-no-retry' : 'blocked-before-inference';
-    // Never include raw provider/build diagnostics, credentials or URLs from errors in receipts.
+
     receipt.failures = [{ phase: receipt.phase ?? 'preflight',
       errorName: error instanceof Error ? error.name : 'Unknown',
       errorCode: error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && /^[A-Z_]+$/.test(error.code) ? error.code : undefined,
@@ -163,8 +163,8 @@ async function main(args: string[]) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch(() => { console.error('OptChat benchmark setup failed; no retry.'); process.exitCode = 1; })
     .finally(() => {
-      // A one-job CLI is finished after transport cancellation, cleanup and durable receipt writes.
-      // Do not keep a completed benchmark alive waiting for provider connection-pool idle timers.
+
+
       process.stdout.write('', () => process.stderr.write('', () => process.exit(Number(process.exitCode ?? 0))));
     });
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Operator-only disposable offline text preview; this is not a network browser.
+
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

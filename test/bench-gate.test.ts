@@ -107,7 +107,7 @@ test('timings and memory baseline per machine; sizes and counts stay shared', ()
   });
   assert.deepEqual(Object.keys(shared), ['c.bytes', 'd.count']);
   assert.deepEqual(Object.keys(machine), ['a.ms', 'b.heap']);
-  // A timing with no baseline on this machine is reported, never failed.
+
   const result = compareMetrics({ 'a.ms': { value: 99, unit: 'ms', lowerIsBetter: true } }, shared);
   assert.equal(result.passed, true);
   assert.equal(result.added[0]?.metric, 'a.ms');

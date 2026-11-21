@@ -10,7 +10,7 @@ import { atWork } from '../src/transcript.ts';
 import { boardView } from '../src/waiting-board.ts';
 
 type Handler = (event: any) => any;
-/** A Pi whose events run every handler registered for them, in registration order, like Pi does. */
+
 function fakePi() {
   const handlers = new Map<string, Handler[]>();
   const pi = { on: (name: string, handler: Handler) => { handlers.set(name, [...handlers.get(name) ?? [], handler]); } };
@@ -18,7 +18,7 @@ function fakePi() {
   return { pi, emit };
 }
 
-/** The extension's wiring: the guard and the watch over one ShellJobs. */
+
 function harness(options: { extra?: string[]; working?: { id: string }[]} = {}) {
   const { pi, emit } = fakePi();
   const shells = new ShellJobs();
@@ -36,7 +36,7 @@ function harness(options: { extra?: string[]; working?: { id: string }[]} = {}) 
   return { emit, shells, watch, told, call };
 }
 
-/** A shell body that ends when the test says so, successfully or not. */
+
 function gate() {
   let end!: (ok: boolean) => void;
   const done = new Promise<{ output: string; failed: boolean }>((resolve, reject) => { end = ok => ok ? resolve({ output: 'live', failed: false }) : reject(new Error('gates failed')); });
@@ -126,7 +126,7 @@ test('a foreground deploy call refuses launches until its result arrives, whatev
     assert.equal(h.call('spawn', { tasks: [] }).blocked?.block, true);
     deploy.finish('Command exited with code 1');
     assert.equal(h.call('spawn', { tasks: [] }).blocked, undefined);
-    // A call that other hooks refuse still ends with a tool result: the watch cannot stay stuck.
+
     const refused = h.call(tool, { command: 'pwsh -File scripts/release/deploy-web.ps1 -Commit abc' });
     refused.finish('Blocked');
     assert.equal(h.watch.active(), undefined);
@@ -151,7 +151,7 @@ test('running workers hear one hold message when a deploy starts and one release
   const h = harness({ working: [{ id: 'w1' }, { id: 'w2' }] });
   const running = gate();
   const shell = h.shells.start('pwsh -File scripts/release/deploy-web.ps1', '/project', running.run);
-  h.shells.update(shell, 'gates…'); // Output updates are not new deploys.
+  h.shells.update(shell, 'gates…');
   h.call('spawn', { tasks: [] });
   assert.deepEqual(h.told.map(line => line.split(':')[0]), ['w1', 'w2']);
   assert.ok(h.told[0].includes(HOLD(h.watch.active()!).slice(0, 60)));

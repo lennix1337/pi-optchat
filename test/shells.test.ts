@@ -126,7 +126,7 @@ test('a handed-off shell keeps running, its end waits for the next reporter, and
 });
 
 test('a handoff from code whose ShellJobs lacks a current method is stopped, not adopted', async () => {
-  // Before #107 the version stayed 1 while ShellJobs gained settle(), so the reloaded mover called a missing method.
+
   const store = globalThis as Record<symbol, unknown>, current = new ShellJobs();
   let closed = 0;
   const old = Object.create(null) as Record<string, unknown>;
@@ -160,7 +160,7 @@ test('a managed background shell reports its end once, with state, exit code and
     update('compiling', 'C:/tmp/full-build.log');
     return { output: 'compiling\nFAIL module x', failed: true, exitCode: 3, log: 'C:/tmp/full-build.log' };
   });
-  await new Promise(resolve => setImmediate(resolve)); // a job that finishes on its own is not stopped by close()
+  await new Promise(resolve => setImmediate(resolve));
   await jobs.close();
   assert.deepEqual(reports, [{ id, state: 'failed', exitCode: 3, log: 'C:/tmp/full-build.log', output: 'compiling\nFAIL module x' }]);
   jobs.end(id, 'again', false);
@@ -209,7 +209,7 @@ test('the status line lists only background shells still running', () => {
   assert.deepEqual(runningShells(jobs).map(job => job.id), ['running']);
 });
 const prng = (seed: number) => () => (seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff) / 0x7fffffff;
-/** Feeds `bytes` in random pieces of 1 to 40 bytes, often a single byte, so chunk boundaries fall everywhere. */
+
 function feedRandomly(watch: OutputAlerts, bytes: Buffer, random: () => number) {
   for (let at = 0; at < bytes.length;) {
     const size = random() < 0.2 ? 1 : 1 + Math.floor(random() * 40);
@@ -217,7 +217,7 @@ function feedRandomly(watch: OutputAlerts, bytes: Buffer, random: () => number) 
     at += size;
   }
 }
-/** A clock the test moves by hand: timers fire in time order as it passes them. */
+
 function fakeClock() {
   let now = 0;
   const timers: { at: number; run: () => void; cancelled: boolean }[] = [];
@@ -306,7 +306,7 @@ test('shell_start keeps a label, and people see it instead of the command (Home 
 });
 
 test('a label survives a ShellJobs handed over by a /reload from before labels (17/11: the Home showed id and command)', async () => {
-  // An inventory adopted across /reload keeps the old start(), which dropped the label option.
+
   class OldJobs extends ShellJobs { override start(command: string, cwd: string, run: any, options: any = {}) { const { label: _drop, ...rest } = options; return super.start(command, cwd, run, rest); } }
   const jobs = new OldJobs(), tools = new Map<string, any>();
   registerShells(fakePi(tools), jobs, () => {}, {});
@@ -357,7 +357,7 @@ test('a line longer than 64 KiB is scanned in pieces: a match in a later piece i
   assert.equal(alerts.at(-1)?.total, 2);
   assert.ok(alerts.every(alert => alert.shown.every(match => !match.text.includes('\uFFFD'))), 'no character is cut in two');
   assert.ok(alerts[0].shown[0].text.includes('MATCH'), 'the excerpt is centred on the match, not on the start of the line');
-  // Pieces that all match still count the line once; and a character cut in two would show up as a replacement character when scanned.
+
   const many: ShellAlert[] = [], x = new OutputAlerts({ pattern: /x/, intervalMs: 0, onAlert: alert => many.push(alert) });
   x.feed(Buffer.from('x'.repeat(150_000) + '\n')); x.end();
   assert.deepEqual(shownLines(many), [1], 'a line whose several pieces match is counted once');
@@ -467,7 +467,7 @@ test('through the real bash tool, a 60-second window sends the first match at on
 test('a match that straddles the 64 KiB piece boundary of a long line is found, and its line is counted once', () => {
   const alerts: ShellAlert[] = [];
   const watch = new OutputAlerts({ pattern: /MERGED/, intervalMs: 0, onAlert: alert => alerts.push(alert) });
-  // MERGED spans bytes 65532 to 65537, so the first piece ends after MERG.
+
   watch.feed(Buffer.from('x'.repeat(65_532) + 'MERGED\n'));
   watch.end();
   assert.deepEqual(shownLines(alerts), [1], 'found across the boundary');
@@ -477,7 +477,7 @@ test('a match that straddles the 64 KiB piece boundary of a long line is found, 
 test('a match that two overlapping pieces both scan is counted once', () => {
   const alerts: ShellAlert[] = [];
   const watch = new OutputAlerts({ pattern: /MERGED/, intervalMs: 0, onAlert: alert => alerts.push(alert) });
-  // MERGED lies in the overlap that the second piece scans again.
+
   watch.feed(Buffer.from('x'.repeat(62_000) + 'MERGED' + 'x'.repeat(5_600) + '\n'));
   watch.end();
   assert.deepEqual(shownLines(alerts), [1]);
@@ -560,7 +560,7 @@ test('terminal escape sequences in shell output never reach the report, so colou
   assert.ok(!alert.includes(esc));
 });
 
-// 278 shell_status reads of running shells in 14 days returned output already read: 1.2 MB sent to the model again.
+
 test('shell_status returns the whole output once, then only what is new, and one line when nothing is', () => {
   const job = { id: 's1', command: 'npm test', cwd: '.', mode: 'background', owner: 'main', state: 'running', started: 0, output: 'line 1\nline 2', notify: 'end' } as ShellJob;
   const reads = new Map<string, { output: string; at: number }>();
@@ -580,7 +580,7 @@ test('shell_status returns the whole output once, then only what is new, and one
   assert.match(readShell({ ...job, id: 's2' }, reads, 15_000), /line 4$/, 'each shell has its own first read');
 });
 
-// exec-log: shell_status/shell_stop with an id that is not a shell (subagent run, expired shell) answered a bare error.
+
 test('shell_status and shell_stop name the known shells when the id matches none', async () => {
   const jobs = new ShellJobs(), tools = new Map<string, any>();
   registerShells(fakePi(tools), jobs);

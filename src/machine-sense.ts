@@ -5,12 +5,12 @@ import { MachineAlerts, type Frame, type GroupFrame, type Limits } from './machi
 import { MachineLedger, type LedgerRow } from './machine-ledger.ts';
 import type { ProcRow, Sample } from './machine-sample.ts';
 
-/** Windows priority classes (idle 0x40, below normal 0x4000, normal 0x20, above 0x8000, high 0x80, realtime 0x100), lowest first: lowering means moving to a lower rank, never a higher one. */
+// external: Windows priority classes are not numerically ordered by priority.
 const RANK = new Map<number, number>([[0x40, 0], [0x4000, 1], [0x20, 2], [0x8000, 3], [0x80, 4], [0x100, 5]]);
 const KEEP_FRAMES_MS = 30 * 60_000;
 const OPERATOR_ACTIVE_S = 60;
 const FRAME_GROUPS = 25;
-/** The owners the next Pi process inherits (see `Attributor.remembered`). */
+
 const OWNERS_FILE = 'owners.json';
 
 export interface MachineSenseOptions {
@@ -60,13 +60,13 @@ export class MachineSense {
   constructor(private options: MachineSenseOptions) {
     this.alerts = new MachineAlerts(options.limits);
     let inherited: unknown;
-    try { inherited = JSON.parse(readFileSync(join(options.dir, OWNERS_FILE), 'utf8')); } catch { /* none yet, or torn: start empty */ }
+    try { inherited = JSON.parse(readFileSync(join(options.dir, OWNERS_FILE), 'utf8')); } catch {   }
     this.attributor = new Attributor({ hostPid: options.hostPid, mcp: options.mcp, runs: options.runs, inherited });
     this.ledger = new MachineLedger(options.dir);
     this.alerts.actionNote = () => { const note = this.lowerNote; this.lowerNote = ''; return note || undefined; };
   }
 
-  // Recording who started what.
+
   /** A command of OptChat's began (a bash call, shell_start, a worker's call): its processes belong to `owner`. Returns the handle for `ended`. */
   began(job: { id: string; command: string; mode: 'foreground' | 'background'; agent?: string }, at: number): number {
     const head = commandHead(job.command);
@@ -79,7 +79,7 @@ export class MachineSense {
   /** OptChat's own shell process just started. Below-normal when the setting asks: children inherit the class on Windows. */
   spawned(pid: number, command: string, at: number) {
     this.attributor.bind(pid, command, at);
-    if (pid !== this.options.hostPid && this.options.lowerOwn()) { try { this.options.setPriority(pid, 'below-normal'); } catch { /* the shell runs at normal priority rather than not at all */ } }
+    if (pid !== this.options.hostPid && this.options.lowerOwn()) { try { this.options.setPriority(pid, 'below-normal'); } catch {   } }
   }
 
   /** Lowers `pid` to idle priority only when attribution says OptChat started it. Returns what happened. */
@@ -107,7 +107,7 @@ export class MachineSense {
       const key = `${p.pid}:${p.start}`;
       cpuMs.set(key, p.cpuMs);
       const before = this.prev?.cpuMs.get(key);
-      // A process first seen now started within the interval, so everything it used counts, except on the very first sample.
+
       const used = !this.prev ? 0 : Math.max(0, (before === undefined ? p.cpuMs : p.cpuMs - before) / 1000);
       let g = byGroup.get(owner.group);
       if (!g) byGroup.set(owner.group, g = { group: owner.group, kind: owner.kind, heavy: { detail: owner.detail, cpuS: -1 }, cpuS: 0, rssMb: 0, procs: 0 });
@@ -125,7 +125,7 @@ export class MachineSense {
     this.record(sample, dt, groups, byGroup, cpu, totalProcs);
     const frame: Frame = { t: sample.t, threads: this.options.threads, cpu, memPct, idleS: sample.idleS, groups };
     this.govern(frame);
-    for (const text of this.alerts.evaluate(frame)) { try { this.options.notify(text); } catch { /* delivery failed: the ledger still has the numbers */ } }
+    for (const text of this.alerts.evaluate(frame)) { try { this.options.notify(text); } catch {   } }
     this.last = { t: sample.t, cpu, memUsedMb: sample.memUsedMb, memTotalMb: sample.memTotalMb, idleS: sample.idleS, threads: this.options.threads, processes: totalProcs, lowered: this.loweredCount,
       owners: [...groups].sort((a, b) => b.cpuPct - a.cpuPct || b.rssMb - a.rssMb).map(g => ({ ...g })) };
   }
@@ -149,7 +149,7 @@ export class MachineSense {
     if (count) { this.loweredCount += count; this.lowerNote = `Operator active: lowered ${count} of our processes (${[...names].join(', ')}) to Idle priority; nothing was stopped.`; }
   }
 
-  // The ledger: one row per owner per minute, written when the minute is over.
+
   private record(sample: Sample, dt: number, groups: GroupFrame[], byGroup: Map<string, { cpuS: number }>, cpu: number | null, totalProcs: number) {
     const minute = minuteOf(sample.t);
     if (this.pending && this.pending.minute !== minute) this.flush();
@@ -170,7 +170,7 @@ export class MachineSense {
   private rows(pending: Pending): LedgerRow[] {
     const host = this.options.hostPid, rows: LedgerRow[] = [{ t: pending.minute, owner: 'machine', kind: 'machine', cpuS: round1(pending.cpuS), rssMb: Math.round(pending.memMb), procs: pending.procs, wallS: Math.round(pending.wallS), host }];
     for (const acc of pending.acc.values()) {
-      // Idle externals would only be noise: our own owners always get a row, other programs only when they cost something.
+
       if ((acc.kind === 'external' || acc.kind === 'unattributed') && acc.cpuS < 0.5 && acc.rssMb < 150) continue;
       if (acc.cpuS < 0.05 && acc.rssMb < 50 && acc.kind !== 'mcp') continue;
       rows.push({ t: pending.minute, owner: acc.owner, kind: acc.kind, ...acc.detail ? { detail: acc.detail } : {}, cpuS: round1(acc.cpuS), rssMb: Math.round(acc.rssMb), procs: acc.procs, wallS: Math.round(acc.wallS), host });
@@ -189,7 +189,7 @@ export class MachineSense {
 
   private saveOwners() {
     const file = join(this.options.dir, OWNERS_FILE);
-    try { writeFileSync(`${file}.tmp`, JSON.stringify(this.attributor.remembered())); renameSync(`${file}.tmp`, file); } catch { /* the next minute retries; at worst a restart reads its leftovers as external */ }
+    try { writeFileSync(`${file}.tmp`, JSON.stringify(this.attributor.remembered())); renameSync(`${file}.tmp`, file); } catch {   }
   }
 
   /** Collection sizes for `heap_report`. */
@@ -199,7 +199,7 @@ export class MachineSense {
       machineExternals: a.externals, machineUnattributed: a.unattributed, machineLowered: this.lowered.size, machinePendingOwners: this.pending?.acc.size ?? 0 };
   }
 
-  // Reading it back.
+
   now(): MachineNow | undefined { return this.last; }
   /** Ledger rows from `since` on, plus the minute not yet written. */
   history(since: number): LedgerRow[] {

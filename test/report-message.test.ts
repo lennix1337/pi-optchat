@@ -23,7 +23,7 @@ test('subagent messages render as a dark labelled box, never in the user-message
   assert.deepEqual(reportParts('[8964a512] Connected agent message: hi'), { label: 'subagent 8964a512 · connected window', body: 'hi' });
   assert.deepEqual(reportParts('no id'), { label: 'subagent', body: 'no id' });
   assert.deepEqual(reportParts('[8964a512] One.\n\n[0f6d1168] Two.', 2), { label: '2 subagent reports', body: '[8964a512] One.\n\n[0f6d1168] Two.' });
-  // One report quoting a child's is still one report: the count comes with the message, not from its text.
+
   assert.equal(reportParts('[8964a512] Heard: [0f6d1168] a done\n\n[1c2d3e4f] b done').label, 'subagent 8964a512 · report');
   let renderer: MessageRenderer | undefined;
   registerReportRenderer({ registerMessageRenderer: (_type: string, r: MessageRenderer) => { renderer = r; } } as unknown as ExtensionAPI);
@@ -94,7 +94,7 @@ test('a report reaches an idle or busy main agent as a user message to the model
     const report = (text: string) => session!.sendCustomMessage({ customType: REPORT_TYPE, content: text, display: true }, { triggerTurn: true, deliverAs: 'steer' });
 
     await session.prompt('Start a subagent.');
-    // Idle: Pi runs the report without before_agent_start, so OptChat must start the run itself.
+    // external: Pi runs idle reports without before_agent_start.
     await report('[8964a512] Message from subagent (still running): step 1 done');
     await session.agent.waitForIdle();
     const idle = captured.at(-1)!.messages;
@@ -103,13 +103,13 @@ test('a report reaches an idle or busy main agent as a user message to the model
     assert.equal(systems.at(-1), systems[0], 'the report run reuses the main system prompt');
     assert.ok(systems[0].length > 0);
 
-    // The next question sees the report as the previous exchange's request.
+
     await session.prompt('What did it say?');
     const next = captured.at(-1)!.messages;
     assert.deepEqual(next.map(m => m.role), ['user', 'assistant', 'user']);
     assert.ok(textContent(next[0].content).endsWith('step 1 done'));
 
-    // Busy: the report is steered into the running turn.
+
     const running = session.prompt('Long task.');
     await held;
     await report('[8964a512] Final report.');
@@ -144,7 +144,7 @@ test('reports a crash held back with unfinished siblings are delivered at the ne
     createProfile('fixture');
     const profile = profilePath('fixture');
     saveConfig(profile, { ...loadConfig(profile), compactor: { provider: 'fixture', model: 'fixture', thinking: 'off' } });
-    // Pi died after one child of a two-child spawn finished: its report was journaled, held for its sibling.
+
     writeFileSync(join(profile, 'pending-reports.json'), JSON.stringify([{ text: '[8964a512] a done', count: 1, batch: '8964a512' }]));
     const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
     runtime.registerProvider('fixture', {
@@ -186,7 +186,7 @@ test('a report steered into a running turn reaches the main agent once, even whe
   const dir = mkdtempSync(join(tmpdir(), 'oc-lost-'));
   const oldHome = process.env.OPTCHAT_HOME, oldAgent = process.env.PI_CODING_AGENT_DIR;
   process.env.OPTCHAT_HOME = dir;
-  process.env.PI_CODING_AGENT_DIR = join(dir, 'agent'); // Children load installed extensions from here.
+  process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
   const until = async (predicate: () => boolean, what: string) => {
     for (const deadline = Date.now() + 10000; !predicate();) {
       if (Date.now() > deadline) assert.fail(`Timed out: ${what}`);
@@ -215,7 +215,7 @@ test('a report steered into a running turn reaches the main agent once, even whe
         }
         const stream = createAssistantMessageEventStream();
         void (async () => {
-          // After the spawn, main keeps writing until released or aborted, so the child's report waits in Pi's steering queue.
+
           if (child && text.endsWith('slowly.')) await new Promise(r => setTimeout(r, 300));
           if (last?.role === 'toolResult' && hold) {
             stream.push({ type: 'start', partial: reply });
@@ -231,7 +231,7 @@ test('a report steered into a running turn reaches the main agent once, even whe
     const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
     const loader = new DefaultResourceLoader({ cwd: dir, agentDir: join(dir, 'agent'), settingsManager,
       noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, extensionFactories: [(pi: ExtensionAPI) => {
-        // Another extension's slow settle handler, during which the child reports: Pi is idle, so it holds that report for its own run.
+
         pi.on('agent_settled', async () => {
           if (!settling) return;
           settling = false;
@@ -251,12 +251,12 @@ test('a report steered into a running turn reaches the main agent once, even whe
     const reportTurn = async (stop: 'esc' | 'abort' | 'none') => {
       const before = work().length, running = s.prompt('Spawn one.');
       await until(() => s.agent.hasQueuedMessages(), 'the report is queued as a steer');
-      // What Esc does in Pi's editor: take the queue back, then abort the run. A bare abort leaves the steer queued in Pi.
+      // external: Pi editor Esc reclaims the steering queue before aborting; a bare abort leaves it queued.
       if (stop === 'esc') s.clearQueue();
       if (stop === 'none') release(); else await s.abort();
       await running;
       await until(() => work().length > before && s.isIdle, 'the report is logged');
-      await new Promise(r => setTimeout(r, 100)); // room for a wrong second delivery
+      await new Promise(r => setTimeout(r, 100));
     };
 
     await reportTurn('esc');

@@ -58,7 +58,7 @@ test('real Pi runtime sends preview, searches original, preserves canonical evid
   });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: join(root, 'agent'), settingsManager, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true,
-    // The synthetic bash comes first: Pi keeps the first registration of a name, and OptChat re-registers bash on Windows.
+    // external: Pi keeps the first tool registration for a given name.
     extensionFactories: [pi => pi.registerTool({ name: 'bash', label: 'Synthetic log', description: 'Return synthetic log without executing commands.', parameters: Type.Object({ command: Type.String() }),
       async execute() { return { content: [{ type: 'text', text: response() }], details: {} }; } }), optchat] });
   await loader.reload();
@@ -82,7 +82,7 @@ test('real Pi runtime sends preview, searches original, preserves canonical evid
     assert.deepEqual(journal.operations.map((operation: { tool: string }) => operation.tool), ['bash', 'bash', 'bash']);
     assert.equal(journal.operations[0].error, false);
 
-    // The same provider-only pipeline also runs inside real SDK child sessions.
+
     calls = 0; projected = ''; retrieved = '';
     const memory = new Memory(join(root, 'child-memory'), async () => 'summary', () => {});
     const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'fixture', model: 'fixture', thinking: 'off' }), () => 'Preserve this exact child instruction.',

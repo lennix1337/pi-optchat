@@ -1,4 +1,4 @@
-// Full local suites share an OS-owned lock across worktrees; no stale PID files.
+
 import { createServer, createConnection } from 'node:net';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -31,7 +31,7 @@ async function checkOwner(port) {
     socket.setTimeout(2000, () => socket.destroy(new Error(`Suite lock on port ${port} did not respond`)));
     socket.on('data', data => { text += data; if (text.length > OWNER.length) socket.destroy(new Error(`Port ${port} is not a pi-optchat suite lock`)); });
     socket.on('end', () => { socket.destroy(); text === OWNER ? resolve() : reject(new Error(`Port ${port} is not a pi-optchat suite lock`)); });
-    socket.on('error', error => error.code === 'ECONNREFUSED' ? resolve() : reject(error)); // Owner exited between bind and probe.
+    socket.on('error', error => error.code === 'ECONNREFUSED' ? resolve() : reject(error));
   });
 }
 

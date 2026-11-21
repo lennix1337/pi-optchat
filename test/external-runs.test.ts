@@ -74,16 +74,16 @@ test('an async status becomes a panel row with the real model, thinking level an
   assert.equal(run?.started, 100);
   assert.equal(run?.ended, 400);
   assert.equal(run?.durationUnknown, undefined);
-  // A running status has no end time yet, and a status without a start time cannot be placed in the list.
+
   assert.equal(asyncStatusToRuns(status({ state: 'running', endedAt: undefined }))[0]?.ended, undefined);
   assert.deepEqual(asyncStatusToRuns({ runId: 'x', state: 'running' }), []);
   assert.deepEqual(asyncStatusToRuns({ runId: 'x', state: 'mystery' }), []);
   assert.deepEqual(asyncStatusToRuns('not an object'), []);
-  // A model written with its thinking suffix shows both parts from the first frame.
+
   const [early] = asyncStatusToRuns({ runId: 'y', state: 'running', startedAt: 10, model: 'anthropic/claude-haiku-5-5:low' });
   assert.equal(early?.model, 'anthropic/claude-haiku-5-5');
   assert.equal(early?.thinking, 'low');
-  // A model id that merely contains a colon is left alone.
+
   const [colon] = asyncStatusToRuns({ runId: 'z', state: 'running', startedAt: 10, model: 'openrouter:some/model' });
   assert.equal(colon?.model, 'openrouter:some/model');
   assert.equal(colon?.thinking, 'unknown');
@@ -101,7 +101,7 @@ test('a multi-step run shows one row per step, each with its own model, thinking
   assert.deepEqual(rows.map(row => row.model), ['anthropic/claude-haiku-5-5', 'openai-codex/gpt-6.1-sol', 'anthropic/claude-opus-5-5']);
   assert.deepEqual(rows.map(row => row.thinking), ['low', 'high', 'off']);
   assert.deepEqual(rows.map(row => row.agent), ['scout', 'worker', 'reviewer']);
-  // The runner counts steps by position, so the control target is the step's place in the list.
+
   assert.deepEqual(rows.map(row => row.externalStepIndex), [0, 1, 2]);
   assert.equal(rows[0].ended, 200);
   assert.equal(rows[1].ended, undefined);
@@ -137,7 +137,7 @@ test('external runs are read from disk, and hiding one keeps it out of the panel
     assert.equal(runs.activeCount(), 0);
     assert.equal(runs.hide('pi-run-a'), true);
     assert.equal(runs.get('pi-run-a'), undefined);
-    // A new panel instance in the same profile keeps the run hidden.
+
     const again = new ExternalRuns(profile, { root, throttleMs: 0 });
     again.refresh(true);
     assert.equal(again.get('pi-run-a'), undefined);
@@ -153,7 +153,7 @@ test('a pi-subagents run whose runner is gone shows as interrupted, not running,
     writeRun(root, 'dead', running('dead', { pid: 11 }));
     writeRun(root, 'alive', running('alive', { pid: 22 }));
     writeRun(root, 'just-written', running('just-written', { pid: 33, lastUpdate: now - 1000 }));
-    // A recycled PID still answers, but the runner would have written its timeout result long ago.
+
     writeRun(root, 'overdue', running('overdue', { pid: 44, timeoutMs: 30 * minute, deadlineAt: now - 20 * minute, lastUpdate: now - 15 * minute }));
     writeRun(root, 'no-pid', running('no-pid', {}));
     const alive = new Set([22, 44]);
@@ -166,7 +166,7 @@ test('a pi-subagents run whose runner is gone shows as interrupted, not running,
     assert.equal(runs.get('pi-overdue')?.state, 'interrupted');
     assert.equal(runs.get('pi-no-pid')?.state, 'running', 'no PID is no evidence');
     assert.equal(runs.activeCount(), 3);
-    // The runner dies after the status was cached: the next refresh notices without the file changing.
+
     alive.delete(22);
     runs.refresh(true);
     assert.equal(runs.get('pi-alive')?.state, 'interrupted');
@@ -220,7 +220,7 @@ test('a running foreground child shows in the panel, and its saved history keeps
     assert.equal(live?.agent, 'delegate');
     assert.equal(live?.started, 100);
     assert.equal(live?.ended, undefined);
-    // The saved history replaces the live row and keeps the start time the live record knew.
+
     rmSync(join(root, 'async-subagent-results', 'live-foreground', 'r1-0.json'));
     writeHistory(root, { version: 1, runs: [{ runId: 'r1', cwd: 'C:\\work', updatedAt: 500, children: [{ agent: 'delegate', index: 0, status: 'completed', model: 'anthropic/claude-haiku-5-5' }] }] });
     runs.refresh(true);
@@ -264,7 +264,7 @@ test('the control inbox carries a stop, a steer and an interrupt request to the 
     assert.ok(steerFile.startsWith(steerRequestsDir(dir)));
     assert.equal(JSON.parse(readFileSync(requestInterrupt(dir, { source: 'pi-optchat' }), 'utf8')).type, 'interrupt');
     assert.throws(() => requestSteer(dir, '   '), /cannot be empty/);
-    // A runner that closed its inbox says so instead of dropping the request.
+
     mkdirSync(join(dir, 'control'), { recursive: true });
     writeFileSync(join(dir, 'control', 'stop-inbox-closed.json'), JSON.stringify({ version: 1, closedAt: 1 }));
     assert.throws(() => requestStop(dir), /closed its stop inbox/);
@@ -276,7 +276,7 @@ test('the merged list puts live runs first and keeps a parent next to its childr
     ({ id, task: id, cwd: '.', model: 'test/model', thinking: 'off', parentSession: '', started, depth: parentId ? 2 : 1, ...(parentId ? { parentId } : {}), state, guidance: [] });
   const ordered = orderRuns([native('parent', 10), native('child', 20, 'parent'), { ...native('live', 5, undefined, 'running'), id: 'pi-live', source: 'pi-subagents' as const }]);
   assert.deepEqual(ordered.map(run => run.id), ['pi-live', 'parent', 'child']);
-  // An id that a native run already uses stays with the native run.
+
   const clash = orderRuns([native('pi-same', 10), { ...native('pi-same', 5, undefined, 'running'), source: 'pi-subagents' as const }]);
   assert.equal(clash.length, 1);
   assert.equal(clash[0].source, undefined);
@@ -306,11 +306,11 @@ test('the pi-subagents RPC answers are correlated per request, and a missing pee
   assert.equal(requests[0].method, 'stop');
   assert.deepEqual(requests[0].params, { id: 'run-a' });
   assert.equal(requests[0].source.extension, 'pi-optchat');
-  // An error reply is an error, not a silent no-op.
+
   reply = request => { events.emit(`subagents:rpc:v1:reply:${request.requestId}`, { version: 1, requestId: request.requestId, success: false, error: { code: 'not_found', message: 'No such run in this session.' } }); };
   await assert.rejects(() => rpc.call('steer', { id: 'run-a', message: 'hi' }), /No such run in this session/);
-  // Without a peer the call says so instead of hanging.
-  // The RPC timer is unref'd so it never keeps Pi alive; hold the loop open here or Node 22 ends the file before it fires.
+
+  // external: Node unref timers do not keep the event loop alive.
   const silent = new SubagentRpc({ emit: () => {}, on: () => () => {} }, 20);
   const keepAlive = setInterval(() => {}, 1000);
   try { await assert.rejects(() => silent.call('stop', { id: 'run-a' }), /did not answer stop/); } finally { clearInterval(keepAlive); }
@@ -326,7 +326,7 @@ test('the agents panel lists pi-subagents runs with their own model, and d hides
     const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
     const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
     const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
-    // Two native runs on another model: the π run's own model is the unusual one, so the panel names it.
+
     for (const id of ['native-1', 'native-2']) children.history.records.set(id, { id, task: `Native ${id}`, cwd: dir, model: 'anthropic/claude-sonnet-5-5', thinking: 'high', parentSession: 'parent', depth: 1, started: 1e12, ended: 1e12 + 1, state: 'completed', guidance: [] });
     const inspector = new Inspector({ profile: 'personal', session: 'parent', children, usage: new UsageLedger(dir), memory, page: 'agents', rows: () => 24, redraw: () => {}, done: () => {}, color: (_tone, text) => text, context: () => undefined });
     try {
@@ -380,7 +380,7 @@ test('a live pi-subagents run is steered and stopped through the runner control 
       const stops = readdirSync(stopRequestsDir(runDir)).map(file => JSON.parse(readFileSync(join(stopRequestsDir(runDir), file), 'utf8')));
       assert.equal(stops.length, 1);
       assert.equal(stops[0].type, 'stop');
-      // OptChat's own agent control never touches a run that belongs to pi-subagents.
+
       await assert.rejects(() => children.tell('pi-run-a', 'from the main agent', 'manager'), /only the user can steer it/);
     } finally { view.dispose(); await children.close(); await memory.close(); removeDir(dir); }
   } finally { if (previous === undefined) delete process.env.PI_SUBAGENTS_TEMP_ROOT; else process.env.PI_SUBAGENTS_TEMP_ROOT = previous; removeDir(root); }
@@ -496,7 +496,7 @@ test('ExternalRuns.refresh still discovers a new async run added in the same mti
     runs.refresh(true);
     assert.equal(runs.get('pi-run-a')?.state, 'completed');
     writeRun(root, 'run-b', status({ runId: 'run-b', state: 'running', endedAt: undefined }));
-    // Simulate coarse filesystem mtime granularity where creating run-b leaves asyncDir mtime unchanged.
+
     utimesSync(runs.paths.asyncDir, beforeMtime / 1000, beforeMtime / 1000);
     runs.refresh();
     assert.equal(runs.get('pi-run-b')?.state, 'running', 'same-tick async run must not be skipped permanently');

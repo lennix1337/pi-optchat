@@ -44,7 +44,7 @@ test('registered input → frozen report → command/tool → restart preserves 
   assert.equal(report.details.covered, 29);
   assert.match(report.content[0].text, /1 pending mechanical approvals/);
   assert.match(report.content[0].text, /operation_state/);
-  // The receipt reaches the operator through Slack and /catchup; no widget stays pinned above the editor.
+
   assert.deepEqual(f.widgets, []);
   const saved = readFileSync(join(dir, 'catchup.json'), 'utf8');
   f.add('talk', 'this belongs to the next interval');
@@ -144,7 +144,7 @@ test('native catchup command renders Markdown, code colors and terminal hyperlin
     await showCatchup({ ...f.context, ui: { custom: async (factory: Function) => {
       rendered = factory({ terminal: { rows: 30 }, requestRender() {} }, undefined, undefined, () => {}).render(80).join('\n');
     } } } as unknown as ExtensionContext, '```json\n{"status": true, "count": 3}\n```');
-    // Pi intentionally displays dim code fences; token colors distinguish a rendered block from raw text.
+    // external: Pi displays code fences dimly.
     assert.match(rendered, /\x1b\[[0-9;]+m"status"\x1b\[39m/);
     assert.match(rendered, /\x1b\[[0-9;]+mtrue\x1b\[39m/);
     await f.commands.get('catchup').handler('json', { ...f.context, ui: { custom: async (factory: Function) => {

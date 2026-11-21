@@ -74,8 +74,8 @@ export function lastCacheHit(sessionManager: Pick<ExtensionContext['sessionManag
   return undefined;
 }
 const quotaTone = (used: number): Tone | undefined => used >= 95 ? 'error' : used >= 80 ? 'warning' : undefined;
-/** A window that already renewed is an old reading: it shows `?` rather than a use that no longer holds. */
-/** A window with its reset time; the weekly one always names the day, since its reset is days away. */
+
+
 const windowPart = (name: string, w: QuotaWindowRow, now: number, withDay = false): Pick<Segment, 'text' | 'tone'> =>
   w.resetAt <= now ? { text: `${name} ?` } : { text: `${name} ${Math.round(w.used)}% (${resetText(w.resetAt, now, withDay)})`, tone: quotaTone(w.used) };
 

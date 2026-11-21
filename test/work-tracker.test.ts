@@ -16,7 +16,7 @@ import type { RunInfo } from '../src/runs.ts';
 
 const answer = (text: string, stopReason = 'stop') => [{ role: 'assistant', content: [{ type: 'text', text }], stopReason }] as unknown as AgentMessage[];
 
-/** Tracker -> real loopback HTTP API -> SQLite store, as the panel reads it. */
+
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'work-tracker-'));
   const store = new TaskStore(join(dir, 'db'), 'p');
@@ -40,7 +40,7 @@ test('a run becomes a working task and ends in review with its final answer as t
     await f.tracker.idle();
     const [task] = f.tasks();
     assert.equal(task.status, 'working'); assert.equal(task.title, 'quantas issues abertas?'); assert.equal(task.verification, 'not_verified');
-    f.tracker.userMessage('steer mid-run'); // Not a new task.
+    f.tracker.userMessage('steer mid-run');
     f.tracker.runEnded(answer('São 12 abertas.'));
     await f.tracker.idle();
     assert.equal(f.tasks().length, 1);
@@ -103,7 +103,7 @@ test('an aborted run fails; wakes are labelled and never wait for an answer', as
     await f.tracker.idle();
     const byTitle = new Map(f.tasks().map(t => [t.title, t]));
     assert.equal(byTitle.get('Wake: fix GX #739')?.status, 'needs_input');
-    assert.equal(byTitle.get('outra coisa')?.status, 'failed'); // Not a continuation of the wake.
+    assert.equal(byTitle.get('outra coisa')?.status, 'failed');
   } finally { await f.close(); }
 });
 

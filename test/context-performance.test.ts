@@ -110,7 +110,7 @@ test('tool execution time is kept per tool name, with percentiles over bounded s
     };
     for (let i = 1; i <= 10; i++) await run(`read${i}`, 'read', i);
     await run('slow', 'bash', 5000);
-    // Overlapping calls (a codemode script running two reads) are timed each from its own start.
+
     await emit('tool_execution_start', { toolCallId: 'p', toolName: 'codemode' });
     await emit('tool_execution_start', { toolCallId: 'q', toolName: 'read', parentToolCallId: 'p' }); clock += 7;
     await emit('tool_execution_end', { toolCallId: 'q', toolName: 'read' }); clock += 3;
@@ -161,9 +161,9 @@ test('each measured assistant response reports its latency once, keyed by messag
   await emit('before_provider_request', { payload: {} });
   await emit('message_update', { message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } });
   await emit('message_end', { message: { role: 'assistant', timestamp: 42 } });
-  await emit('message_end', { message: { role: 'assistant', timestamp: 43 } }); // no request in flight: nothing measured
+  await emit('message_end', { message: { role: 'assistant', timestamp: 43 } });
   await emit('before_provider_request', { payload: {} });
-  await emit('message_end', { message: { role: 'assistant', timestamp: 44 } }); // no content seen: response only
+  await emit('message_end', { message: { role: 'assistant', timestamp: 44 } });
   assert.deepEqual(reported.map(([t, l]) => [t, Object.keys(l).sort()]), [[42, ['firstMs', 'responseMs']], [44, ['responseMs']]]);
   for (const [, latency] of reported) for (const value of Object.values(latency)) assert.ok(Number.isFinite(value) && value >= 0);
 });
@@ -175,13 +175,13 @@ test("Pi's own work around a request is timed: turn start to the context hook, a
   try {
     registerPerformance({ on: (name: string, fn: Function) => { handlers.set(name, [...handlers.get(name) ?? [], fn]); } } as unknown as ExtensionAPI, () => metrics);
     const emit = async (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event); };
-    await emit('context_with_system'); // a request nobody announced (a summary call) records nothing
+    await emit('context_with_system');
     assert.equal(metrics.snapshot().stages.pi_pre_request, undefined);
     await emit('turn_start'); clock += 40;
-    await emit('context_with_system'); clock += 500; // the provider answers
+    await emit('context_with_system'); clock += 500;
     await emit('message_end', { message: { role: 'assistant' } }); clock += 7;
     await emit('turn_end');
-    // A tool turn: the boundary starts at the last message, not at the assistant message the tool ran after.
+
     await emit('tool_execution_start', { toolCallId: 'a', toolName: 'read' }); clock += 9000;
     await emit('tool_execution_end', { toolCallId: 'a', toolName: 'read' }); clock += 12;
     await emit('context_with_system');

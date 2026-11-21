@@ -17,7 +17,7 @@ export interface DueItem {
   probeState?: { at: number; failure?: string; signalledAt?: number };
 }
 const isClosed = (status: string) => status === 'done' || status === 'dropped';
-/** The specialists a text can name, by the words that name them (the same split as `specialistOf`). */
+
 const NAMES: [string, RegExp][] = [
   ['dotfiles', /\bdotfiles\b/i],
   ['dentai', /\b(?:dentai|usdentai|odontoclinic|denta-\d+)/i],
@@ -30,7 +30,7 @@ export function inferProject(text: string): string | undefined {
   return hit.length === 1 ? hit[0] : undefined;
 }
 const dueMs = (item: DueItem) => item.due === undefined ? NaN : Date.parse(item.due);
-/** The items the operator owes are his to settle: the deadline rules concern what OptChat promised. */
+
 const ours = (item: DueItem) => item.owner === 'optchat' && !isClosed(item.status);
 
 /** Open or blocked, or waiting on the operator without a question to tap, and overdue for a day or more. A waiting item with choices is the question already. */

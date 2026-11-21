@@ -106,7 +106,7 @@ test('the verified identity must be the expected account: a different Google acc
   assert.deepEqual(google.list(), []);
   assert.deepEqual(vault.list('p').filter(s => s.action !== 'google.client'), [], 'no token of the wrong account is kept');
   assert.ok(!contains(diskBytes(dir), TOKEN_CANARY));
-  // Revoking at Google would revoke that account's whole grant to this client, including a connection that legitimately uses it.
+  // external: Google token revocation affects the entire client grant.
   assert.equal(fake.requests('/revoke').length, 0);
 }));
 

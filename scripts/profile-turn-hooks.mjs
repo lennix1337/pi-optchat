@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Offline replay of pure bash classifiers and claim checking on a Pi JSONL session. No commands are executed.
-// Usage: node --experimental-transform-types scripts/profile-turn-hooks.mjs /path/to/session.jsonl
-// Uses the first 8,000 lines and the preceding 400 chronological entries as an approximation of the branch history.
-// Reports only aggregate timing, never session content. Reading/parsing is outside timed hooks.
+
+
+
+
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { bashHint } from '../src/bash-hints.ts';
@@ -16,7 +16,7 @@ const calls = new Map();
 const samples = [];
 const claimSamples = [];
 const history = [];
-// A fixed prefix makes repeated runs comparable even if the source session is active.
+
 for (const line of readFileSync(path, 'utf8').split('\n').slice(0, 8000)) {
   let entry;
   try { entry = JSON.parse(line); } catch { continue; }
@@ -48,7 +48,7 @@ function report(name, times) {
 }
 console.log(`Completed bash calls: ${samples.length}`);
 for (const [name, fn] of measures) {
-  // Warm the implementation before collecting per-call timings.
+
   for (const sample of samples.slice(0, 100)) fn(sample);
   const times = samples.map(sample => { const start = performance.now(); fn(sample); return performance.now() - start; });
   report(name, times);
