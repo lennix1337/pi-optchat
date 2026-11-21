@@ -269,3 +269,13 @@ test('suite-repeat flags a second full suite in one run, not focused tests or a 
  assert.equal(ruleCount('suite-repeat', [operator, suite, operator, verify]), 0, 'a new order starts a new run');
  assert.equal(ruleCount('suite-repeat', [operator, call('bash', { command: 'node --test "test/*.test.ts"' }), suite]), 1);
 });
+test('ripwire-first flags the first source write of a run without ripwire before it, once', () => {
+ const write = call('edit', { path: 'src/a.ts', edits: [{ oldText: 'a', newText: 'b' }] });
+ const viaTool = call('ripwire', { root: '/r', action: 'task', query: 'x' });
+ const viaCli = call('bash', { command: 'cd /r && ripwire task "x" --json' });
+ assert.equal(ruleCount('ripwire-first', [operator, write, write]), 1);
+ assert.equal(ruleCount('ripwire-first', [operator, viaTool, write]), 0);
+ assert.equal(ruleCount('ripwire-first', [operator, viaCli, write]), 0);
+ assert.equal(ruleCount('ripwire-first', [operator, write, operator, write]), 2, 'a new order starts a new run');
+ assert.equal(ruleCount('ripwire-first', [operator, call('bash', { command: 'git status' })]), 0);
+});

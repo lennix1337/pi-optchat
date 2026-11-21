@@ -138,5 +138,13 @@
     "scope": "bash or shell_start call of one run (since the last user message or wake)",
     "detector": "suite-repeat",
     "precision": "A second full-suite command (npm test, npm run verify, node --test over test/*) in the same run; focused node --test files, tsc and lint are the cheap checks and are ignored; candidates require review (a rerun of the one suite that CI showed failing is legitimate)."
+  },
+  {
+    "id": "ripwire-first",
+    "quote": "ta com o ripwire instalado ai e adicionado como tool e orientando a usar? vc e os workers? se nao ja instala e faz a orientacao que é pra usar sempre",
+    "date": "21/11",
+    "scope": "edit/write or source-writing bash call of one run (since the last user message or wake)",
+    "detector": "ripwire-first",
+    "precision": "The first source write of a run with no ripwire tool call or ripwire CLI call before it; one hit per run; trivial edits and repos already known count too, so candidates require review."
   }
 ]
