@@ -33,7 +33,7 @@ export function browserMedia() {
       let chunks = []; let discard = false;
       let resolve; let reject;
       const audio = new Promise((yes, no) => { resolve = yes; reject = no; });
-      // Cancellation may happen without anyone awaiting stop().
+
       void audio.catch(() => {});
       const stopTracks = () => { for (const track of stream.getTracks()) track.stop(); };
       const stop = () => { if (recorder.state !== 'inactive') recorder.stop(); stopTracks(); };

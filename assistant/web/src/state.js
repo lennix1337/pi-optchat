@@ -97,14 +97,14 @@ export class PanelLifecycle {
   async write(marker, send, history) {
     this.refreshMarker();
     if (this.marker) throw new Error('pending mutation');
-    // Persist only identifiers, before the request can leave the browser.
+
     const pending = { requestId: marker.requestId, action: marker.action, ...(marker.taskId ? { taskId: marker.taskId } : {}) };
     this.storage.setItem(this.key, JSON.stringify(pending));
     this.marker = pending;
     let task;
     try { task = await send(); }
     catch (error) {
-      // These statuses are emitted before mutation, or after the store rolled back a conflict.
+
       if ([400, 401, 403, 404, 409].includes(error.status)) this.clearMarker(pending);
       throw error;
     }
@@ -150,7 +150,7 @@ export function deepLinkTask(hash) {
   try { taskId = decodeURIComponent(match[1]); } catch { return null; }
   return taskId.length <= MAX_TASK_ID && !/\p{Cc}/u.test(taskId) ? taskId : null;
 }
-// Chat originals are opened by the terminal client; the panel never fetches or links an evidence reference.
+
 export function originalAccess(reference) {
   return /^optchat:[A-Za-z0-9_.-]+:\d+$/.test(reference) ? { kind: 'chat', command: `/assistant original ${reference}` } : { kind: 'text' };
 }
@@ -163,7 +163,7 @@ export class ResponseQueue {
   }
   pending() { return [...this.items]; }
   remove(id) { this.items = this.items.filter(item => item.id !== id); }
-  // send resolves true only when the result was confirmed; anything else holds the rest in order.
+
   async drain(send) {
     while (this.items.length) {
       const item = this.items.shift();
