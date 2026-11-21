@@ -58,3 +58,10 @@ export const isCompaction = (context: { messages: readonly { role: string; conte
   context.messages.some(message => message.role === 'user' && /Compaction: (?:compress message|merge lines)/.test(JSON.stringify(message.content)));
 
 process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }); } catch { /* EBUSY on Windows: leave it */ } });
+
+/** Event-loop stall meter for a hang dump: the largest gap (ms) between 50 ms ticks tells a starved runner from a real deadlock. */
+export function loopLag() {
+  let last = Date.now(), max = 0;
+  const timer = setInterval(() => { const now = Date.now(); max = Math.max(max, now - last - 50); last = now; }, 50); timer.unref();
+  return { max: () => max, stop: () => clearInterval(timer) };
+}
