@@ -146,5 +146,13 @@
     "scope": "edit/write or source-writing bash call of one run (since the last user message or wake)",
     "detector": "ripwire-first",
     "precision": "The first source write of a run with no ripwire tool call or ripwire CLI call before it; one hit per run; trivial edits and repos already known count too, so candidates require review."
+  },
+  {
+    "id": "destructive-git",
+    "quote": "Destructive or irreversible actions need a clear scope and explicit authorization",
+    "date": "AGENTS",
+    "scope": "bash tool call",
+    "detector": "destructive-git",
+    "precision": "git reset --hard, git clean -f, git branch -D, git stash drop/clear and git worktree remove --force; detects calls, not operator authorization or a verified-merged branch, so candidates require review."
   }
 ]
