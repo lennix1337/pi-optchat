@@ -13,10 +13,10 @@ import { textContent, withoutFullChat } from '../src/transcript.ts';
 import { removeDir } from './support.ts';
 import { userTexts } from './messages.ts';
 
-/** These tests cover delegation below the first level, which profiles opt into with Subagent levels. */
+
 const nested = () => ({ subagentLevels: 3, maxAgents: 8 });
 
-// Children load installed extensions from Pi's agent dir; keep tests away from the user's real one.
+
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), 'optchat-agent-'));
 
 async function until(condition: () => boolean) {
@@ -24,11 +24,11 @@ async function until(condition: () => boolean) {
   while (!condition()) { if (Date.now() > deadline) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
 
-/**
- * A synthetic model whose replies show what the child remembers: its first reply is "<task> first report";
- * later replies quote that first reply, so they prove the earlier conversation is back in context.
- * "resume <id>" makes it call tell on that child. Tasks starting with "hold" or "boss" wait for a release on their first turn.
- */
+
+
+
+
+
 async function setup(prefix: string) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   const releases = new Map<string, () => void>();
@@ -105,7 +105,7 @@ test('tell resumes a finished child with its earlier conversation, also from an 
     assert.equal(userTexts(children.messages(id)).length, 2, 'one transcript holds both runs');
     assert.match(readFileSync(after.sessionFile!, 'utf8'), /one more thing/);
 
-    // A new Pi session only has the run record and transcript on disk.
+
     await children.close();
     later = make('second-session');
     assert.equal(later.history.records.get(id)?.state, 'completed');
@@ -132,7 +132,7 @@ test('only the parent resumes a nested child, and the resumed child reports to t
     assert.deepEqual(reports, [`[${boss}] boss resumed after "boss first report" heard: [${worker}] worker first report`]);
     await assert.rejects(children.tell(worker, 'from main'), /that parent is no longer running\. Resume .* instead, or spawn a new subagent/);
 
-    // The main agent resumes the boss, which resumes its worker with its own tell tool.
+
     await children.tell(boss, `resume ${worker}`);
     await until(() => !children.active);
     const bossMessages = JSON.stringify(children.messages(boss));
@@ -149,7 +149,7 @@ test('only the parent resumes a nested child, and the resumed child reports to t
 
 test('resuming refuses connected windows, missing or broken transcripts, and a full profile', async () => {
   const { dir, releases, make, cleanup } = await setup('optchat-resume-errors-');
-  // A connected conversation from an earlier session: its handoff was already delivered.
+
   mkdirSync(join(dir, 'runs'), { recursive: true });
   writeFileSync(join(dir, 'runs', 'window1.optchat.json'), JSON.stringify({ id: 'window1', task: 'chat', cwd: dir, model: 'optchat-test/child', thinking: 'minimal',
     parentSession: 'old', depth: 1, started: 1, ended: 2, state: 'completed', guidance: [], connected: true, handoff: { reason: 'complete', text: 'done', delivered: true } }));
@@ -185,7 +185,7 @@ test('a child whose parent stops while it is being resumed does not start', asyn
   const { dir, releases, hooks, make, cleanup } = await setup('optchat-resume-cancel-');
   const children = make('session');
   try {
-    // The parent is stopped while its child's session is being opened: the child must not start.
+
     const [boss] = await children.spawn([{ task: 'boss' }], dir);
     await until(() => releases.has('boss'));
     const [worker] = await children.spawn([{ task: 'worker' }], dir, undefined, boss);
@@ -233,7 +233,7 @@ test('a resume whose record cannot be saved leaves the child finished and resuma
   const { dir, hooks, reports, make, cleanup } = await setup('optchat-resume-save-');
   const children = make('session');
   try {
-    // Saving the resumed record fails: nothing changes, the session is closed, and a later resume works.
+
     const [solo] = await children.spawn([{ task: 'solo' }], dir);
     await until(() => !children.active);
     const save = children.history.save.bind(children.history);
@@ -321,7 +321,7 @@ test('subagents cut off by Pi closing or crashing are resumed at the next start,
     const [held] = await first.spawn([{ task: 'hold on' }], dir);
     const [crashed] = await first.spawn([{ task: 'crashed' }], dir);
     await until(() => releases.has('hold on') && first.history.records.get(crashed)?.state === 'completed' && !first.live(crashed));
-    // As if Pi had died while this one was still working.
+
     first.history.save({ ...first.history.records.get(crashed)!, state: 'running', ended: undefined });
     reports.length = 0;
     await first.close();
@@ -374,7 +374,7 @@ test('runs stopped or paused by the user, finished runs and older interrupted on
     await first.stop(stopped);
     assert.equal(await first.interrupt(paused), 'paused');
     await until(() => first.history.records.get(stopped)?.state === 'stopped' && first.history.records.get(paused)?.state === 'paused');
-    // Interrupted before Pi resumed cut-off runs.
+
     first.history.save({ ...first.history.records.get(old)!, state: 'interrupted' });
     await first.close();
     const before = reports.length;
@@ -397,7 +397,7 @@ test('a cut-off child is named to its resumed parent, or to the main agent when 
     const [worker] = await first.spawn([{ task: 'hold worker' }], dir, undefined, boss);
     const [stray] = await first.spawn([{ task: 'hold stray' }], dir, undefined, idle);
     await until(() => releases.has('hold worker') && releases.has('hold stray'));
-    assert.equal(await first.interrupt(idle), 'paused'); // Waiting for the user: not resumed, but its working child was cut off.
+    assert.equal(await first.interrupt(idle), 'paused');
     await until(() => first.history.records.get(idle)?.state === 'paused');
     reports.length = 0;
     await first.close();
@@ -423,7 +423,7 @@ test('a cut-off run the main agent resumes itself during startup is left alone',
     reports.length = 0;
 
     later = make('second-session');
-    // The first resume stalls while it opens; meanwhile the main agent tells the other one, which resumes it.
+
     let opening!: () => void, release!: () => void;
     const started = new Promise<void>(resolve => { opening = resolve; });
     hooks.beforeSession = () => { hooks.beforeSession = undefined; opening(); return new Promise<void>(resolve => { release = resolve; }); };

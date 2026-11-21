@@ -8,13 +8,13 @@ import { boardView, type BoardInput } from '../src/waiting-board.ts';
 import { renderWaitingBoard } from '../src/navigation.ts';
 import { footerRows, FooterState, type FooterInput } from '../src/footer.ts';
 
-/**
- * The whole panel as text: the waiting board above the editor and the footer under it, at 80 and 120 columns, against a checked-in snapshot.
- * `UPDATE_SNAPSHOTS=1` rewrites the files after a wording change worth keeping; the diff then shows in review.
- */
+
+
+
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIN = 60_000, HOUR = 60 * MIN;
-const NOW = Date.parse('2026-11-11T18:40:00Z'); // 15:40 in Brasília
+const NOW = Date.parse('2026-11-11T18:40:00Z');
 const plain = (_tone: string, text: string) => text;
 
 const board: BoardInput = {

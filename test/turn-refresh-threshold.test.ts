@@ -9,16 +9,16 @@ import { estimatedContextTokens, inputTokenBudget } from '../src/run-context.ts'
 import { buildContext, refreshBudget, refreshedRun, refreshFraction, refreshPoint } from '../src/transcript.ts';
 import { toolCallMessage, toolResultMessage, userMessage } from './messages.ts';
 
-// Turn refresh threshold at 10% on the main model (claude-opus-5-5: 1M window, 128K max output, no price tiers).
-// The trigger counts the run's characters at about 4 per token, so 10% moves a turn at about 100K tokens. These tests pin
-// that lever. The shipped default stays 30%; 10% is a per-profile or OPTCHAT_REFRESH_AT choice.
+
+
+
 
 const WINDOW = 1_000_000;
 const LOW = 0.1;
 const MAIN_OUTPUT = 128_000;
-const TRIGGER = 400_000; // characters: 0.1 × 1,000,000 × 4
+const TRIGGER = 400_000;
 const task = () => userMessage('Do the work.');
-/** One tool call and its result, whose text is `chars` long. */
+
 const step = (id: string, chars: number): AgentMessage[] => [toolCallMessage(id, 'read'), toolResultMessage(id, 'read', `${id} `.padEnd(chars, '.'))];
 const resultIds = (run: readonly AgentMessage[]) => run.flatMap(m => m.role === 'toolResult' ? [m.toolCallId] : []);
 
@@ -73,9 +73,9 @@ test('a last step over half the trigger goes out verbatim, then the run refreshe
 
 test('the largest request 10% lets through still fits the 1M input budget with a wide margin', () => {
   const budget = refreshBudget(WINDOW, LOW)!;
-  const prompt = 'p'.repeat(72_000); // about 18K tokens of system prompt
-  const view = `<chat>\n${'v'.repeat(VIEW)}\n</chat>`; // the view at its 128,000-byte cap
-  // Worst case that does not refresh: the run sits at the trigger and one parallel step (500,000 characters) is the latest step.
+  const prompt = 'p'.repeat(72_000);
+  const view = `<chat>\n${'v'.repeat(VIEW)}\n</chat>`;
+
   const run: AgentMessage[] = [task(), ...step('a', 390_000), ...step('big', 500_000)];
   assert.equal(refreshPoint(run, 0, budget), undefined, 'the one big step is over half the trigger, so it is kept as it is');
   const request = buildContext([], run, view, prompt);

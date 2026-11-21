@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-// This entry point is deliberately offline-only. Never copy credentials or mount the checkout.
+
 export const contextFiles = ['package.json', 'package-lock.json', 'tsconfig.json', 'src', 'test/headless.test.ts', 'test/support.ts',
   'test/optchat-container-agent.ts', 'test/optchat-model-bridge.ts'];
 export const dockerfile = `FROM node:22-slim
@@ -42,7 +42,7 @@ export function stageContext(repo, destination) {
 
 export function main(args) {
   if (args.length !== 1 || !['--preflight', '--run', '--run-offline-shared'].includes(args[0])) throw new Error('Use --preflight, --run or --run-offline-shared (synthetic provider only; no inference).');
-  // Functional acceptance may coexist with services; this mode never produces benchmark measurements.
+
   const sharedOfflineSmoke = args[0] === '--run-offline-shared';
   const docker = (args, timeout = 30_000) => execFileSync('docker', args, { encoding: 'utf8', timeout, maxBuffer: 8 * 1024 ** 2 });
   assertSmokeGate(docker(['ps', '-q']), freemem(), sharedOfflineSmoke);
@@ -56,11 +56,11 @@ export function main(args) {
   try {
     stageContext(repo, context);
     console.log(docker(['build', '--tag', image, context], 600_000));
-    // Recheck immediately before execution: building does not reserve the isolation slot.
+
     assertSmokeGate(docker(['ps', '-q']), freemem(), sharedOfflineSmoke);
     console.log(docker(smokeArgs(image, name), 120_000));
   } finally {
-    // Only unique task-created identities are touched, including after timeouts.
+
     try { docker(['rm', '--force', name]); } catch (error) { console.error('Container cleanup:', error.message); }
     try { docker(['image', 'rm', image]); } catch (error) { console.error('Image cleanup:', error.message); }
     rmSync(context, { recursive: true, force: true });

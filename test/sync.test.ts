@@ -39,7 +39,7 @@ test('note parts fit OptMem, split at words, never inside a character, and lose 
   });
   const body = parts.map(part => part.slice(part.indexOf('] ') + 2)).join(' ');
   assert.equal(body, text.replace(/\s+/g, ' ').trim());
-  // A line that fits is one part; a word longer than the room is cut by bytes; newlines become spaces.
+
   assert.deepEqual(noteParts(0, 63, 'short\nline'), ['[optchat 0-63 1/1] short line']);
   for (const part of noteParts(0, 63, 'x'.repeat(600))) assert.ok(bytes(part) <= NOTE_BYTES);
   assert.ok(noteParts(0, 63, '"quoted" --flag $HOME %PATH% `tick` \\ back').every(part => bytes(part) <= NOTE_BYTES));
@@ -59,7 +59,7 @@ test('the status keeps the oldest and newest lines within its budget, names what
     assert.ok(text.includes(`\n${last.i * 2 ** last.l}+${2 ** last.l}|`), 'the newest line is kept');
     assert.match(text, /^0\+\d+\|/m);
     assert.match(text, /\(messages \d+-\d+ omitted here/);
-    // The full default budget holds a small chat whole.
+
     const small = renderStatus({ profile: 'p', memory });
     assert.ok(bytes(small) <= STATUS_BYTES);
   } finally { await memory.close(); }
@@ -88,7 +88,7 @@ test('sync starts at the newest finished block, sends each block once and in ord
     await first.s.now();
     assert.ok(first.sent.slice(count).every(note => note.startsWith(`[optchat ${3 * BLOCK}-${4 * BLOCK - 1} `)) && first.sent.length > count);
     await first.s.close();
-    // A new Sync on the same profile continues; nothing is sent twice.
+
     const again = sync(dir, memory);
     await again.s.now();
     assert.deepEqual(again.sent, []);
@@ -112,7 +112,7 @@ test('a failed note warns once, keeps its place and is retried; a note already i
     await s.s.now();
     assert.equal(attempts[1], attempts[0], 'the same note is retried');
     await s.s.close();
-    // A crash after OptMem saved a note, before the cursor moved: the log already has it.
+
     writeFileSync(join(dir, 'optmem-sync.json'), JSON.stringify({ block: 1, part: 0 }));
     const sentAgain: string[] = [];
     const dedupe = sync(dir, memory, { send: async text => { sentAgain.push(text); }, hasNote: marker => attempts.some(a => a.startsWith(marker)) });
@@ -153,7 +153,7 @@ test('the status file is rewritten only when its content changes, debounced, and
     const bad = sync(dir, memory, { statusFile: join(dir, 'blocked.md'), optmem: () => false });
     await bad.s.now(); memory.append('user', 'more'); await memory.settle(); await bad.s.now();
     assert.equal(bad.warnings.length, 1);
-    // Once the path frees up, the write is retried without waiting for another chat change.
+
     removeDir(join(dir, 'blocked.md'));
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.match(readFileSync(join(dir, 'blocked.md'), 'utf8'), /\|user: more/);
@@ -194,7 +194,7 @@ test('ai-memory sync imports every finished block from block 0 in order, then a 
     assert.equal(pages[1].abstract, memory.node({ l: BLOCK_LEVEL, i: 1 })!.text.slice(0, 1000));
     assert.match(pages[3].body, /^# OptChat status: profile p/);
 
-    // A new sync on the same profile writes nothing until another block finishes.
+
     for (let i = 0; i < BLOCK; i++) memory.append('user', `later ${i}`);
     await memory.settle(undefined, 'tree');
     const again: string[] = [];

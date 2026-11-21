@@ -17,12 +17,12 @@ import { emptyUsage } from '../src/usage.ts';
 import { WaitingBoard } from '../src/waiting-board.ts';
 import { removeDir } from './support.ts';
 
-// 19:00Z is 16:00 in Brasília.
+
 const START = Date.UTC(2025, 10, 10, 19, 0, 0);
 const MIN = 60_000;
 const HINT = '429 {"type":"error","error":{"type":"rate_limit_error","message":"Try again in ~60 min"}}';
 
-// Retries inside Pi would only delay the quota error these tests are about.
+
 mkdirSync(process.env.PI_CODING_AGENT_DIR!, { recursive: true });
 writeFileSync(join(process.env.PI_CODING_AGENT_DIR!, 'settings.json'), JSON.stringify({ retry: { enabled: false } }));
 
@@ -32,7 +32,7 @@ async function until(condition: () => boolean, label = 'condition') {
   while (!condition()) { if (Date.now() > deadline) assert.fail(`Timed out: ${label}`); await nap(10); }
 }
 
-/** A clock the test moves by hand: timers run, in order, as time passes. */
+
 function fakeClock() {
   let now = START, seq = 0;
   const timers = new Map<number, { at: number; run: () => void }>();
@@ -82,7 +82,7 @@ function installProviders(runtime: ModelRuntime, control: TestControl, seen: str
     models: [{ id: 'child', name: 'Synthetic child', reasoning: provider === 'quota-reasoning', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
     streamSimple: syntheticStream(provider, control, seen, routes, calls, verdict) });
 }
-/** Workers on a synthetic provider whose answer the test chooses per task: out of quota, or a short answer (`tooly` first calls a tool). */
+
 async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { until?: number } = {}, verdict: (task: string, call: number) => Verdict = () => 'limit') {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-quota-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
@@ -217,7 +217,7 @@ test('retarget changes thinking off to high and preserves it on explicit continu
   const file = join(h.dir, 'runs', `${id}.optchat.json`);
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).thinking, 'high');
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).explicitRecovery, true);
-  // Model a crash during a legitimate retargeted execution using its persisted metadata.
+
   h.children.history.save({ ...h.children.history.records.get(id)!, state: 'running' });
   await h.children.close();
   const reloaded = h.build(h.clock);
@@ -753,7 +753,7 @@ test('while every manager model is out of quota, items are held, one notice is g
   assert.equal(clock.pending, 0);
 });
 
-/** The host of the manager: a route is out while its own hint (learned from a failed turn on that provider) is in the future. */
+
 const hintsOnly = (routes: string[]) => (learned: Readonly<Record<string, number>>) => {
   const ends = routes.map(provider => learned[provider]);
   return ends.every(at => at !== undefined) ? Math.min(...ends as number[]) : undefined;
@@ -777,14 +777,14 @@ test('an outage learned only from a failed turn holds items until the retry hint
 test('a retry hint from another provider does not hold items while the manager\'s own account has quota', async () => {
   const clock = fakeClock();
   const notices: string[] = [], sent: string[][] = [];
-  let cached: number | undefined = START + 30 * MIN; // The cache says the manager's account (main) is out for 30 min.
+  let cached: number | undefined = START + 30 * MIN;
   const until = (learned: Readonly<Record<string, number>>) => {
     const ends = [cached, learned.main].filter((at): at is number => at !== undefined && at > clock.now());
     return ends.length ? Math.max(...ends) : undefined;
   };
   const outage = new QuotaOutage<string>({ now: clock.now, until, notice: text => notices.push(text), send: items => sent.push(items), setTimer: clock.setTimer, clearTimer: clock.clearTimer });
   assert.equal(outage.offer('report'), true, 'the manager\'s account is out');
-  // The failover tried another account, which answered with a 16-hour limit: it says nothing about the manager's account.
+
   outage.note('You have hit your ChatGPT usage limit (team plan). Try again in ~998 min.', 'other');
   cached = undefined;
   await clock.advance(40 * MIN);
@@ -797,15 +797,15 @@ test('a retry hint from another provider does not hold items while the manager\'
 test('switching the manager to a model with quota releases what was held for the old one, without waiting for its timer', async () => {
   const clock = fakeClock();
   const sent: string[][] = [];
-  let returns: number | undefined = START + 10 * MIN; // The main model's account: out for 10 minutes.
+  let returns: number | undefined = START + 10 * MIN;
   const outage = new QuotaOutage<string>({ now: clock.now, until: () => returns, notice: () => {}, send: items => sent.push(items), setTimer: clock.setTimer, clearTimer: clock.clearTimer });
   assert.equal(outage.offer('report'), true);
-  returns = START + 600 * MIN; // The failover moved the main model to an account that is out for hours.
+  returns = START + 600 * MIN;
   await clock.advance(11 * MIN);
   assert.deepEqual(sent, [], 'the first timer found the new main model still out and re-armed for the later time');
   outage.recheck();
   assert.deepEqual(sent, [], 'a model switch that leaves everything out holds on');
-  returns = undefined; // The operator switches to an account that has quota.
+  returns = undefined;
   outage.recheck();
   assert.deepEqual(sent, [['report']], 'released at once');
   assert.equal(clock.pending, 0, 'and the old timer is gone');

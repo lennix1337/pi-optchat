@@ -5,7 +5,7 @@ import { bashMangledPowerShell, registerPowerShellQuotingGuard } from '../src/po
 
 test('PowerShell variables inside bash double quotes are caught before bash expands them', () => {
   const mangled: [string, string][] = [
-    // The two calls of 03/11 that returned nothing.
+
     [String.raw`powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'x' } | Select-Object ProcessId"`, '$_'],
     [String.raw`powershell -NoProfile -Command "Get-Process | ForEach-Object { $p = $_; $p.Id }"`, '$_'],
     ['pwsh -c "$env:PATH"', '$env:'],
@@ -13,7 +13,7 @@ test('PowerShell variables inside bash double quotes are caught before bash expa
     ['powershell -Command "Write-Output $(Get-Date)"', '$('],
     ['powershell -Command "$proc.Kill()"', '$proc'],
     ['cd x && powershell -NoProfile -Command "$a[0]"', '$a'],
-    // A -File later in the line or inside the script does not excuse the -Command script.
+
     ['powershell -Command "Get-Item -File $_.x"', '$_'],
     ['powershell -Command "$PSItem"', '$PSItem'],
   ];
@@ -30,10 +30,10 @@ test('scripts bash leaves alone, and bash variables meant for bash, are not refu
     'echo "$_.x" ; ls',
     "cat > probe.ps1 <<'EOF'\nGet-Process | Where-Object { $_.CPU -gt 10 }\nEOF\npowershell -File probe.ps1",
     'echo "powershell" "$_.x"',
-    // 05/11: the word inside a grep pattern is text, not a call; the later "$((...))" belongs to bash.
+
     'cd C:/projetos; s=$(date +%s%N); grep -rln "before PowerShell starts" pi-* | wc -l; echo "grep rc=$? $(( ($(date +%s%N)-s)/1000000 ))ms"; s=$(date +%s%N); rg -l "before PowerShell starts" pi-* | wc -l; echo "rg $(( ($(date +%s%N)-s)/1000000 ))ms"',
     "grep -n 'run pwsh -c here' notes.md; echo \"$(date)\"; echo \"$(whoami)\"",
-    // 12/11: the .ps1 route itself was refused three times because bash converts the path with $(cygpath).
+
     "cat > /tmp/hogps.ps1 <<'EOF'\nGet-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' }\nEOF\npowershell -NoProfile -ExecutionPolicy Bypass -File \"$(cygpath -w /tmp/hogps.ps1)\"",
     'pwsh -NoProfile -f "$(cygpath -w x.ps1)" -Name "$(whoami)"',
   ];

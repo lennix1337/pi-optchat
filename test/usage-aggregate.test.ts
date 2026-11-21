@@ -86,7 +86,7 @@ test('the commands never open usage.jsonl: they answer from the profile aggregat
   sampleQuota(dir, cacheOf(NOW - 2 * HOUR, 15), NOW - 2 * HOUR);
   sampleQuota(dir, cacheOf(NOW - HOUR, 17), NOW - HOUR);
   await update(dir);
-  // A directory in place of the log: any attempt to read it throws. The aggregate alone must be enough.
+
   rmSync(file); mkdirSync(file);
   const economy = loadEconomy({ dir, now: NOW, cacheFile, weeks: 1 });
   assert.equal(economy.usageMissing, undefined);
@@ -127,7 +127,7 @@ test('the sampler round writes the quota history and the aggregate, and a failur
   await sampleQuotaRound(dir, NOW, cacheFile);
   assert.equal(readQuotaHistory(dir, QUOTA_HISTORY_FILE).length, 1);
   assert.equal(aggregateCalls(readUsageAggregate(dir)!).length, 1);
-  // The aggregate cannot be built (a directory sits where the file goes), yet the history row is still written and the error surfaces.
+
   const blocked = tmp(t);
   mkdirSync(join(blocked, USAGE_AGGREGATE_FILE));
   writeFileSync(join(blocked, 'usage.jsonl'), line(NOW - 1000, 5));

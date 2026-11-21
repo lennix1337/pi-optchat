@@ -1,4 +1,4 @@
-// Mutation evidence uses generated copies only. The live checkout is never patched.
+
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

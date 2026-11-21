@@ -3,11 +3,7 @@ import { strict as assert } from 'node:assert';
 import { Agent, type AgentMessage, type QueueMode } from '@earendil-works/pi-agent-core';
 import { createFauxCore, fauxAssistantMessage } from '@earendil-works/pi-ai';
 
-/**
- * How queued steering messages reach the model. Notices that arrive while a model call runs wait in Pi's steering
- * queue; `one-at-a-time` (Pi's default) hands over one per model turn, so each notice costs its own model call. This
- * measures it offline, with the faux provider (no network): the same notices as one batch cost one call.
- */
+// external: Pi defaults to one-at-a-time delivery of queued steering messages.
 const NOTICES = ['[gitwatch] #56 ready', '[optchat-report] CI verde', '[subagent] pronto'];
 
 async function runWith(steeringMode: QueueMode | 'single', notices = NOTICES) {
@@ -18,7 +14,7 @@ async function runWith(steeringMode: QueueMode | 'single', notices = NOTICES) {
   let modelCalls = 0;
   const streamFn: typeof core.streamSimple = (model, context, options) => {
     modelCalls++;
-    // The notices arrive while the first model call is running.
+
     if (modelCalls === 1) {
       if (steeringMode === 'single') agent.steer(user(notices.join('\n\n')));
       else for (const notice of notices) agent.steer(user(notice));

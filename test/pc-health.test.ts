@@ -9,7 +9,7 @@ import { FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, re
 import { composeSummary } from '../src/slack-reports.ts';
 
 const GB = 1e9;
-const T0 = Date.parse('2026-10-30T22:00:00Z'); // 19:00 in Brasília
+const T0 = Date.parse('2026-10-30T22:00:00Z');
 
 test('disk, memory and the maintenance report are judged against their limits', async () => {
   assert.deepEqual(await diskProbe('C:\\', () => ({ free: 122 * GB, total: 1023 * GB })).check(), { ok: true, ms: 0, detail: '122 GB livres de 1023 GB' });

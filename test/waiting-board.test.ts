@@ -9,7 +9,7 @@ import { BoardNavigation, mountWaitingBoard, renderExpandedBoard, renderWaitingB
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { visibleWidth } from '@earendil-works/pi-tui';
 
-// 2026-11-11 16:49 UTC is 13:49 in Brasília.
+
 const NOW = Date.parse('2026-11-11T16:49:00Z');
 const MIN = 60_000, HOUR = 60 * MIN;
 const run = (over: Partial<BoardRun> = {}): BoardRun => ({ id: 'a1b2c3d4', task: 'Fix the flaky wake test', cwd: 'C:/projetos/pi-optchat', model: 'anthropic-account-2/claude-sonnet-5-5', state: 'running', started: NOW - 12 * MIN, updated: NOW - 5_000, toolAt: NOW - 5_000, phase: 'testes', ...over });
@@ -319,7 +319,7 @@ test('mounted, the widget keeps the compact look until the board is focused, the
   unmount(); board.close(); mock.timers.reset();
 });
 
-// A worker's task is the shared prefix, then the contract: Goal, Acceptance, Evidence, Authority.
+
 const BRIEF = ["You are a subagent. Don't write memory pages.", '', 'Context: the operator wants the board readable.', 'Goal: In pi-optchat, make the waiting board reachable from the keyboard. Then more.', 'Acceptance: tests in test/navigation.test.ts.', 'Evidence: red-before.', 'Authority: edit and commit locally.'].join('\n');
 
 test('a worker line names the Goal of the contract, not the shared prefix, and the model by its short name', () => {

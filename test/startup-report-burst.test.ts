@@ -15,11 +15,7 @@ import { memoryDirectory } from '../src/import/job.ts';
 const COUNT = 12;
 const texts = Array.from({ length: COUNT }, (_, i) => `[burst${String(i).padStart(2, '0')}] child ${i} done`);
 
-/**
- * Pi 1.5 starts a turn from `sendUserMessage` after asynchronous checks and refuses every further send made in the meantime
- * ("Agent is already processing a prompt"); the extension runtime reports that only through `onError`. The Pi installed for
- * the tests (1.2) queues those sends instead, so this puts the 1.5 refusal in front of it.
- */
+// external: Pi 1.5 can reject additional sends while a turn starts; 1.2 queues them.
 const refuseConcurrentStarts = (session: Awaited<ReturnType<typeof createAgentSession>>['session']) => {
   let starting = false;
   session.subscribe(event => { if (event.type === 'agent_start' || event.type === 'agent_end') starting = false; });
@@ -31,7 +27,7 @@ const refuseConcurrentStarts = (session: Awaited<ReturnType<typeof createAgentSe
   };
 };
 
-/** Pi session on a fixture model that records every message of every request, started on a journal holding `texts`. */
+
 const withJournal = async (run: (ctx: { profile: string; seen: Set<string>; errors: string[]; session: Awaited<ReturnType<typeof createAgentSession>>['session'] }) => Promise<void>) => {
   const dir = mkdtempSync(join(tmpdir(), 'oc-burst-'));
   const oldHome = process.env.OPTCHAT_HOME;

@@ -228,7 +228,7 @@ test('another extension\'s shown custom message becomes a user message tagged wi
   assert.deepEqual(custom('screenshot', [{ type: 'text', text: 'Screenshot attached.' }, image]), { role: 'user', content: [{ type: 'text', text: '[screenshot] Screenshot attached.' }, image], timestamp: 1 });
   assert.deepEqual(custom('screenshot', [image]), { role: 'user', content: [{ type: 'text', text: '[screenshot]' }, image], timestamp: 1 });
   assert.deepEqual(custom(REPORT_TYPE, '[8964a512] Done.'), { role: 'user', content: '[8964a512] Done.', timestamp: 1 });
-  // A message that already names its type ("[gitwatch] owner/repo \u00b7 14:23") is not tagged twice.
+
   assert.deepEqual(custom('gitwatch', '[gitwatch] o/r \u00b7 14:23\n#28 merged'), { role: 'user', content: '[gitwatch] o/r \u00b7 14:23\n#28 merged', timestamp: 1 });
   assert.deepEqual(custom('gitwatch', [{ type: 'text', text: '[gitwatch] o/r' }]), { role: 'user', content: [{ type: 'text', text: '[gitwatch] o/r' }], timestamp: 1 });
   assert.deepEqual(custom('gitwatch', '[gitwatchers] x'), { role: 'user', content: '[gitwatch] [gitwatchers] x', timestamp: 1 }, 'only the exact tag counts');
@@ -240,7 +240,7 @@ test('another extension\'s shown custom message starts a turn and stays in memor
   const oldHome = process.env.OPTCHAT_HOME;
   process.env.OPTCHAT_HOME = dir;
   const captured: Context['messages'][] = [];
-  // As Pi's plan-mode example extension injects its instructions with every prompt while plan mode is on.
+  // external: Pi plan-mode example injects instructions with every prompt.
   const plan = '[PLAN MODE ACTIVE]\nYou are in plan mode.';
   let planning = false;
   const planMode = (pi: ExtensionAPI) => pi.on('before_agent_start', () => planning ? { message: { customType: 'plan-mode-context', content: plan, display: false } } : undefined);
@@ -274,7 +274,7 @@ test('another extension\'s shown custom message starts a turn and stays in memor
       resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom'] })).session;
     await session.bindExtensions({});
     await session.prompt('Start the scout.');
-    // As pi-interactive-subagents reports a finished subagent while Pi is idle.
+    // external: pi-interactive-subagents can report a finished subagent while Pi is idle.
     const result = 'Sub-agent "Scout" finished: found three files.';
     await session.sendCustomMessage({ customType: 'subagent_result', content: result, display: true }, { triggerTurn: true, deliverAs: 'steer' });
     await session.agent.waitForIdle();
@@ -401,15 +401,15 @@ test('a /skill: command is logged once, as its expansion, and never recovered as
   }
 });
 
-// A normal view cannot contain an unbuilt merged line: Sawtooth merges only built parents.
-// Force the real settle to wait for leaves to exercise its abort/error UI paths.
+
+
 function forceSummaryWait(settle: typeof Memory.prototype.settle) {
   Memory.prototype.settle = function (signal, until, graceMs) {
     return settle.call(this, signal, until, until === 'turn' && graceMs === 0 ? undefined : graceMs);
   };
 }
 
-/** Exercise the real UI and compactor with either the normal zero grace or a forced wait to test the waiting UI lifecycle. */
+
 async function waitForSummaries(failure: string | undefined, shown: (working: (string | undefined)[], asked: string[]) => boolean, forceWait = true) {
   const settle = Memory.prototype.settle;
   const dir = mkdtempSync(join(tmpdir(), 'optchat-wait-'));
@@ -435,7 +435,7 @@ async function waitForSummaries(failure: string | undefined, shown: (working: (s
         const stream = createAssistantMessageEventStream();
         if (compression && failure) {
           reply.stopReason = 'error'; reply.errorMessage = failure;
-          // Fail only once the turn is waiting, so the message has to change while it is shown.
+
           const fail = () => working.at(-1) === 'Waiting for OptChat summaries…' ? (stream.push({ type: 'error', reason: 'error', error: reply }), stream.end()) : options?.signal?.aborted ? (stream.push({ type: 'error', reason: 'aborted', error: reply }), stream.end()) : setTimeout(fail, 10);
           fail();
         } else if (compression) {
@@ -490,7 +490,7 @@ test('a failing summarizer says why the turn is waiting, then the turn goes on w
   assert.match(asked.at(-1)!, /not summarized yet: zoom it\)[\s\S]*Second question\./);
 });
 
-// A 1x1 PNG.
+
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 test('typed text drops image placeholders and the image notes Pi appends', () => {
@@ -574,7 +574,7 @@ test('an input queued during a run and handed back by Esc is logged once, as sen
           const reply = answer(reason === 'stop' ? 'Done.' : '', reason); reply.api = model.api; reply.provider = model.provider; reply.model = model.id;
           stream.push(reason === 'stop' ? { type: 'done', reason, message: reply } : { type: 'error', reason, error: reply }); stream.end();
         };
-        // Every other turn runs until it is aborted, like a long command.
+
         if (calls++ % 2 === 0) { options?.signal?.addEventListener('abort', () => end('aborted')); streaming(); }
         else queueMicrotask(() => end('stop'));
         return stream;
@@ -595,13 +595,13 @@ test('an input queued during a run and handed back by Esc is logged once, as sen
       const long = s.prompt('Run a long command.');
       await started;
       await s.prompt(queued, { streamingBehavior: 'steer' });
-      // What Esc does in Pi's editor: take the queued text back, then abort the run.
+      // external: Pi editor Esc reclaims queued text before aborting.
       s.clearQueue(); await s.abort(); await long;
       await s.prompt(sent);
     };
     await handBack('Reply with pineapple.', 'Reply with pineapple.');
     await handBack('Reply with mango.', 'Reply with mango, please.');
-    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); // recovers the journal, as /reload does
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     session.dispose(); session = undefined;
     const main = join(dir, 'profiles', 'fixture', 'main');
     const log = readdirSync(main).flatMap(file => readFileSync(join(main, file), 'utf8').trim().split('\n')).map(line => JSON.parse(line));

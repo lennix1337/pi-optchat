@@ -15,7 +15,7 @@ import { removeDir } from './support.ts';
 const WINDOW = 1_000_000, MAX_OUTPUT = 128_000;
 const CONTRACT = ['Goal: report done.', 'Acceptance: a report.', 'Evidence: none.', 'Authority: read only.'].join('\n');
 
-/** Spawns children on a 1M-window model and reports the context size at which Pi compacts each one. */
+
 async function compactsAt(settings: Partial<Settings>, task: { kind?: 'code' | 'mechanical' }) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-worker-compact-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});

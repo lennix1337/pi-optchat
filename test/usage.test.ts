@@ -20,7 +20,7 @@ test('measured response latency persists with the provider-reported call and sum
       session.appendMessage(call(now + i));
       ledger.timing(now + i, { firstMs, responseMs });
     }
-    session.appendMessage(call(now + 3)); // unmeasured calls stay valid and are left out of the median
+    session.appendMessage(call(now + 3));
     ledger.timing(now + 9, { firstMs: -1, responseMs: Number.NaN });
     ledger.backfill(session.getEntries(), session.getSessionId());
     const reloaded = new UsageLedger(dir);
@@ -207,16 +207,16 @@ test('All time keeps entries dated after now', () => {
   } finally { removeDir(dir); }
 });
 
-/** A ledger line, as another writer (or an older OptChat) would append it. */
+
 function record(i: number, now: number, extra: Partial<UsageEntry> = {}): UsageEntry {
   const usage = { ...emptyUsage(), input: i, output: 2 * i, cacheRead: 10 * i, totalTokens: 13 * i, cost: { ...emptyUsage().cost, input: i / 1000, total: i / 300 } };
   return { id: `r${i}`, date: new Date(now - i * 600_000).toISOString(), role: i % 3 ? 'main' : 'compactor', provider: i % 2 ? 'anthropic' : undefined,
     model: `m${i % 4}`, session: i % 5 ? 's1' : 's2', usage, ...(i % 4 ? { latency: { firstMs: 100 * i, responseMs: 200 * i } } : {}), ...(i % 7 ? {} : { failed: true }), ...extra };
 }
-/** 40 records 10 minutes apart all fall on the same local day, whatever the hour the suite runs. */
+
 const middayYesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); d.setHours(12, 0, 0, 0); return d.getTime(); };
 const writeLedger = (dir: string, lines: unknown[]) => writeFileSync(join(dir, 'usage.jsonl'), lines.map(l => JSON.stringify(l) + '\n').join(''));
-/** The index's SQL totals must equal summing the same records in JavaScript, for every range. */
+
 function assertSummariesMatch(ledger: UsageLedger, session: string, now: number) {
   for (const range of ranges) {
     const records = ledger.select(range, session, now), expected = summarizeUsage(records), actual = ledger.summary(range, session, now);
@@ -248,7 +248,7 @@ test('usage.db is a disposable index: it picks up other writers, rebuilds when d
     assert.equal(ledger.select('All time', '', now).length, 41, 'another writer\'s complete line is indexed; its unfinished line waits');
     appendFileSync(join(dir, 'usage.jsonl'), JSON.stringify(record(42, now)).slice(20) + '\n');
     assert.equal(ledger.select('All time', '', now).length, 42, 'the line is read once it ends');
-    assertSummariesMatch(ledger, 's1', now); // the late records join hours the index had already totalled
+    assertSummariesMatch(ledger, 's1', now);
 
     rmSync(db);
     assert.equal(new UsageLedger(dir).entries.length, 42, 'a deleted index is rebuilt from the ledger');
@@ -273,8 +273,8 @@ test('reopening reads only what the ledger gained, and adding keeps one record p
   try {
     writeLedger(dir, Array.from({ length: 60 }, (_, i) => record(i + 1, now)));
     new UsageLedger(dir);
-    // Rewrite the first record in place, far before the bytes the index fingerprints: an append-only ledger never does this,
-    // so an index that re-read the whole file on open would show the change in its totals and this one does not.
+
+
     const file = join(dir, 'usage.jsonl'), text = readFileSync(file, 'utf8');
     writeFileSync(file, text.replace('"model":"m1"', '"model":"mX"'));
     const ledger = new UsageLedger(dir);
@@ -332,7 +332,7 @@ test('summaries that miss the cache reuse one warm index connection and read no 
     ledger = new UsageLedger(dir, { warm: true });
     ledger.summary('Today', 's1', now);
     const before = ledger.readBytes;
-    // Each session key misses the summary cache, so every call queries the index.
+
     for (let i = 0; i < 6; i++) ledger.summary('This session', `s${i}`, now);
     assert.equal(ledger.readBytes - before, 0, 'an unchanged ledger must not be re-fingerprinted on every query');
     const other = new UsageLedger(dir);
@@ -355,13 +355,13 @@ test('repeated summary calls on an unchanged ledger read 0 bytes and invalidate 
     }
     assert.equal(ledger.readBytes - before, 0, 'unchanged usage.jsonl must not be re-read on repeated summary() calls');
 
-    // External append invalidates the stat-guarded cache.
+
     const other = new UsageLedger(dir);
     other.add(record(41, now + 10_000));
     const afterAppend = ledger.summary('Today', 's1', now + 10_000);
     assert.equal(afterAppend.calls, first.calls + 1);
 
-    // Crossing midnight invalidates Today.
+
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(0, 0, 1, 0);

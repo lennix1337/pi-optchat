@@ -14,7 +14,7 @@ import { memoryTools } from '../src/tools.ts';
 import { buildContext, logMessage, pieces, stateless, textContent } from '../src/transcript.ts';
 import { registerFixtureModel } from './fixture-model.ts';
 
-/** One compaction against a fixture model; returns the context the model was sent. */
+
 async function compaction(shared?: Parameters<typeof createCompressor>[4]) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-recipe-'));
   let sent: Context | undefined;
@@ -33,14 +33,14 @@ test('a compaction is a call like a turn: the turns\' system prompt and tools, a
   const tools = [{ name: 'zoom', description: 'Zoom.', parameters: Type.Object({}) }];
   const turn = await compaction(() => ({ systemPrompt: `${PROMPT}\n\n<instructions>\nBe brief.\n</instructions>`, tools }));
   assert.equal(system(turn), `${PROMPT}\n\n<instructions>\nBe brief.\n</instructions>`);
-  // Pi hands a provider the tools on the system message.
+  // external: Pi supplies tools to providers on the system message.
   const head = turn.messages.find(m => (m as { role: string }).role === 'system') as { toolsAdded?: { name: string }[] } | undefined;
   assert.deepEqual(head?.toolsAdded?.map(tool => tool.name), ['zoom']);
 });
 
 test('a compactor on another model than the turns gets their system prompt but not their tools: there is no cache to share', async () => {
-  // 2026-11-08: Haiku compactions behind Sonnet/Opus turns sent the turns' 40 tools (59 KB of a 142 KB request) on every call,
-  // ~2,000 calls a day, for a prefix no turn could read.
+
+
   const tools = [{ name: 'zoom', description: 'Zoom.', parameters: Type.Object({}) }];
   const toolsOf = (context: Context) => (context.messages.find(m => (m as { role: string }).role === 'system') as { toolsAdded?: { name: string }[] } | undefined)?.toolsAdded?.map(tool => tool.name);
   const other = await compaction(() => ({ systemPrompt: `${PROMPT}\n\nturns`, tools, model: { provider: 'anthropic', model: 'claude-sonnet-5-5' } }));

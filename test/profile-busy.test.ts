@@ -52,7 +52,7 @@ test('a busy profile offers to connect or pick another profile, and picking anot
     }
     unlock = await lockProfile(profilePath('busy'), 'busy · PID 1 · elsewhere');
 
-    // New session: pick `busy`, it's taken, choose "Back", then pick `other`.
+
     const asked: { title: string, options: string[] }[] = [];
     const picks = ['busy', 'Back', 'other'];
     const fresh = await start(dir, { select: async (title, options) => { asked.push({ title, options }); return picks.shift(); } });
@@ -65,8 +65,8 @@ test('a busy profile offers to connect or pick another profile, and picking anot
     const bound = fresh.manager.getEntries().filter(e => e.type === 'custom' && e.customType === 'optchat.profile');
     assert.deepEqual(bound.map(e => e.type === 'custom' && e.data), [{ name: 'other' }], 'the session is bound to the profile actually opened');
 
-    // `/optchat profile` makes a fresh session already bound to its pick; a busy pick can still go Back and rebind.
-    const switchedPicks = ['Back', 'third']; // `other` is held by the session above
+
+    const switchedPicks = ['Back', 'third'];
     const switched = await start(dir, { select: async () => switchedPicks.shift() }, 'busy');
     sessions.push(switched.session);
     assert.equal(switched.titles[0], 'π third');
@@ -74,7 +74,7 @@ test('a busy profile offers to connect or pick another profile, and picking anot
     const rebound = switched.manager.getEntries().filter(e => e.type === 'custom' && e.customType === 'optchat.profile');
     assert.deepEqual(rebound.map(e => e.type === 'custom' && e.data), [{ name: 'busy' }, { name: 'third' }], 'the latest binding wins');
 
-    // A resumed conversation already belongs to `busy`, so it can only connect (or cancel), not switch.
+
     const resumedAsked: string[][] = [];
     const resumed = await start(dir, { select: async (_title, options) => { resumedAsked.push(options); return undefined; } }, 'busy', true);
     sessions.push(resumed.session);
@@ -178,7 +178,7 @@ test('a socket path over the system limit names OPTCHAT_HOME and its length with
   const root = mkdtempSync(join(tmpdir(), 'optchat-limit-'));
   try {
     if (isWindows) {
-      // The pipe name is hashed from the profile path, so a long profile directory cannot overflow it; an over-long hand-built name is still refused before listen.
+
       const long = join(root, 'p'.repeat(200)); mkdirSync(long);
       const unlock = await lockProfile(long, 'holder'); await unlock();
       assert.match(profileSocket(root), /^\\\\\.\\pipe\\optchat-[0-9a-f]{16}-lock$/);

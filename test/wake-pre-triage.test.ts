@@ -57,12 +57,12 @@ test('preTriage drops radar noise and unchanged radars, and reacts on any real s
   assert.equal(first.decision, 'react');
   assert.ok(first.radarDigest);
 
-  // Only volatile figures (age, latency, free disk, header timestamp) changed -> drop.
+
   const second = preTriage({ radar: actionableRadar(5), previousRadarDigest: first.radarDigest, now: NOW + 30 * MIN });
   assert.equal(second.decision, 'drop');
   assert.equal(second.reason, 'nothing changed');
 
-  // New CI failure or PR update -> react.
+
   const changed = preTriage({
     radar: actionableRadar(6, '- lennix1337/dentai-mono main: CI failure abc1234 (1h ago)\n'),
     previousRadarDigest: first.radarDigest,
@@ -71,7 +71,7 @@ test('preTriage drops radar noise and unchanged radars, and reacts on any real s
   assert.equal(changed.decision, 'react');
   assert.equal(changed.reason, 'radar changed');
 
-  // Queued item, error stop, running agents/shells, due commitment, or missing radar -> react (never drop).
+
   assert.equal(preTriage({ radar: noiseRadar(), queued: true, now: NOW }).decision, 'react');
   assert.equal(preTriage({ radar: noiseRadar(), lastStop: 'error: rate limit', now: NOW }).decision, 'react');
   assert.equal(preTriage({ radar: noiseRadar(), runningAgents: 1, now: NOW }).decision, 'react');
@@ -93,17 +93,17 @@ test('local model triage is disabled by default and fails open on errors or ambi
   assert.equal((await queryLocalTriage({ enabled: false, url: 'http://127.0.0.1:11434/api/generate', model: 'gemma3:1b' }, 'snap', neverCalled)).decision, 'react');
   assert.equal(called, 0, 'disabled localTriage makes zero HTTP calls');
 
-  // Ollama /api/generate DROP
+
   const ollamaDrop = (async () => new Response(JSON.stringify({ response: 'DROP: only disk and probes OK' }), { status: 200 })) as unknown as typeof fetch;
   assert.deepEqual(await queryLocalTriage({ enabled: true, kind: 'ollama', url: 'http://127.0.0.1:11434/api/generate', model: 'gemma3:1b' }, 'snap', ollamaDrop),
     { decision: 'drop', reason: 'only disk and probes OK' });
 
-  // llama.cpp / OpenAI /v1/chat/completions JSON DROP
+
   const llamaDrop = (async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"decision":"drop","reason":"idle night"}' } }] }), { status: 200 })) as unknown as typeof fetch;
   assert.deepEqual(await queryLocalTriage({ enabled: true, kind: 'openai', url: 'http://127.0.0.1:8080/v1/chat/completions', model: 'qwen2.5' }, 'snap', llamaDrop),
     { decision: 'drop', reason: 'idle night' });
 
-  // Fail-open cases: HTTP 500, network error, invalid JSON, ambiguous text
+
   const http500 = (async () => new Response('err', { status: 500 })) as unknown as typeof fetch;
   assert.equal((await queryLocalTriage({ enabled: true, url: 'http://127.0.0.1:11434/api/generate', model: 'm' }, 'snap', http500)).decision, 'react');
   assert.equal((await queryLocalTriage({ enabled: true, url: 'http://127.0.0.1:11434/api/generate', model: 'm' }, 'snap', neverCalled)).decision, 'react');
@@ -132,10 +132,10 @@ test('Heartbeat preTriage skips cloud check on drop, logs a short dropped line, 
     const checks: number[] = [], woken: string[] = [];
     const verdicts: Beat[] = [{ wake: true, text: 'fix PR 42' }, { wake: true, text: 'fix new CI' }];
     const radars = [
-      actionableRadar(1), // tick 1: initial actionable -> react -> WAKE
-      actionableRadar(2), // tick 2: unchanged -> drop (0 cloud calls)
-      noiseRadar(3),      // tick 3: noise only -> drop (0 cloud calls)
-      actionableRadar(4, '- lennix1337/dentai-mono main: CI failure deadbeef (1h ago)\n'), // tick 4: changed -> react -> WAKE
+      actionableRadar(1),
+      actionableRadar(2),
+      noiseRadar(3),
+      actionableRadar(4, '- lennix1337/dentai-mono main: CI failure deadbeef (1h ago)\n'),
     ];
     const beat = new Heartbeat({
       dir, now: () => now, minutes: () => 30, maxWakes: () => 2, always: () => false, busy: () => undefined,
@@ -154,11 +154,11 @@ test('Heartbeat preTriage skips cloud check on drop, logs a short dropped line, 
       await beat.settled();
     };
 
-    await step(); // tick 1 -> WAKE
+    await step();
     beat.turnSettled({ reply: 'worked on PR 42', tools: 2, commits: ['abc1234'] });
-    await step(); // tick 2 -> drop (nothing changed)
-    await step(); // tick 3 -> drop (radar noise only)
-    await step(); // tick 4 -> WAKE
+    await step();
+    await step();
+    await step();
 
     assert.equal(checks.length, 2, 'only 2 of 4 ticks called the cloud check');
     assert.equal(woken.length, 2, 'dropped ticks did not consume the 2-wake daily cap');
@@ -168,10 +168,10 @@ test('Heartbeat preTriage skips cloud check on drop, logs a short dropped line, 
     assert.equal(saved.daily[0].wakes, 2);
     assert.equal(normalizedRadarDigest(actionableRadar(1)) !== undefined, true);
 
-    // previousWake skips dropped records and still points to the last real wake.
+
     assert.equal(previousWake(dir)?.trigger, 'check');
 
-    // renderReport includes short dropped lines without counting them as real wakes.
+
     const report = renderReport(saved.wakeLog, { now, cap: 2, minutes: 30, wakes: saved.wakes });
     assert.match(report, /2 wakes today/);
     assert.match(report, /pre-triage: nothing changed → dropped/);

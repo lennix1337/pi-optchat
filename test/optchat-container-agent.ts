@@ -24,7 +24,7 @@ export async function runContainerAgent(config: ContainerAgentConfig, bridge: Co
   }
   const runtime = await ModelRuntime.create({ authPath: join(home, 'no-auth.json'), modelsPath: null,
     modelsStorePath: join(home, 'models.json'), refreshOnCreate: false, allowModelNetwork: false });
-  // Never import provider headers, credentials, or remote configuration from the host.
+
   const model = config.model;
   runtime.registerProvider(model.provider, { baseUrl: 'https://invalid.local', apiKey: 'pipe-only', api: model.api,
     models: [{ id: model.id, name: model.name, reasoning: model.reasoning, input: model.input, cost: model.cost,

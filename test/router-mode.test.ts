@@ -66,7 +66,7 @@ test('syncRouterTools applies the set once, and gives the tools back after a /re
   assert.ok(!first.active.includes('bash'));
   syncRouterTools(first.pi, true);
   assert.equal(first.calls.length, 1, 'already in the router set: no second change');
-  // A /reload re-runs the extension with the session's tools, while the taken ones are remembered by the process.
+
   const reloaded = fakePi([...first.active]);
   syncRouterTools(reloaded.pi, false);
   assert.ok(reloaded.active.includes('bash') && reloaded.active.includes('shell_start'), 'bash and shell_start come back after the reload');

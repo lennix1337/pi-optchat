@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { tempDir } from './support.ts';
 
-// scripts/ship.mjs is exercised through its command line only: real git on a temp clone of a bare origin, and a fake
-// `gh` on PATH (test/fixtures/fake-gh.mjs), so every effect that ran is visible in the origin or in the gh log.
+
+
 const SHIP = fileURLToPath(new URL('../scripts/ship.mjs', import.meta.url));
 const FAKE_GH = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
 const IDENTITY = { GIT_AUTHOR_NAME: 'Ship Test', GIT_AUTHOR_EMAIL: 'ship@test.invalid', GIT_COMMITTER_NAME: 'Ship Test', GIT_COMMITTER_EMAIL: 'ship@test.invalid' };
@@ -78,7 +78,7 @@ test('refuses the default branch without --direct-main, before any effect', t =>
   assert.equal(r.code, 2);
   assert.equal(r.out.status, 'refused');
   assert.equal(r.out.error, 'default_branch');
-  // 06/11: the retry with --branch was refused again for the missing description; one refusal names both.
+
   assert.equal(r.out.also, 'body_required');
   assert.match(String(r.out.hint), /--branch NOME.*--body-file ARQ/);
   assert.equal(ship(fx, ['-m', 'mexe no main', '-b', 'corpo', 'a.txt']).out.also, undefined, 'with a description only the branch is missing');
@@ -350,7 +350,7 @@ test('CLEAN with checks still running would merge at once, so it is not queued',
   assert.equal(r.out.checks, '0 pass / 1 pending / 0 fail');
   assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
 
-  // Without a required check GitHub never queues: repeating --pr cannot help, so the hint names the merge that can.
+  // external: GitHub auto-merge cannot queue without a required check.
   assert.doesNotMatch(r.out.next, /ship\.mjs --pr/);
   assert.match(r.out.next, /gh pr merge 1 --squash/);
 });
@@ -453,7 +453,7 @@ test('a PR create that times out is reconciled and not replayed', t => {
   writeFileSync(hook, '#!/bin/sh\nsleep 2\n');
   chmodSync(hook, 0o755);
   commitFile(fx, 'a.txt');
-  // Only the create call gets the short bound: a push slower than it (a loaded Windows runner) must not be taken for the hung create.
+
   const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt'], { SHIP_CREATE_TIMEOUT_MS: '1500' });
   assert.equal(r.code, 4);
   assert.equal(r.out.status, 'uncertain');
@@ -476,7 +476,7 @@ test('a commit that outlives its own timeout stays uncertain', t => {
   const fx = fixture();
   const hook = join(fx.work, '.git', 'hooks', 'pre-commit');
   const finished = join(fx.work, '.git', 'hook-finished');
-  // The killed commit leaves the hook's `sleep` running inside the work tree; on Windows that holds the directory (EBUSY on cleanup in CI), so cleanup waits for the hook to end first.
+  // external: On Windows a hook child can hold a worktree directory after its parent is killed.
   t.after(() => {
     for (let i = 0; i < 100 && !existsSync(finished); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     fx.close();

@@ -11,7 +11,7 @@ import { accountLines, accountText, reportText, resetText, weeklyLines, windowTe
 import { quotaCommandText } from '../src/quota-command.ts';
 
 const HOUR = 3_600_000, DAY = 24 * HOUR;
-const NOW = Date.UTC(2026, 10, 11, 12, 0); // 11/11 09:00 in Brasília
+const NOW = Date.UTC(2026, 10, 11, 12, 0);
 const tmp = (t: { after(fn: () => void): void }) => { const dir = mkdtempSync(join(tmpdir(), 'quota-tracking-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const lines = (file: string) => readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as QuotaRow);
 
@@ -29,7 +29,7 @@ test('the sampler writes one row per account, with both windows and their resets
   assert.deepEqual(lines(file)[1], { at: NOW, provider: 'anthropic-account-2', fetchedAt: NOW - 60_000, w5h: { used: 5, resetAt: NOW + 3 * HOUR }, w7d: { used: 19, resetAt: NOW + 6 * DAY } });
   assert.deepEqual(sampleQuota(dir, cache(NOW - 60_000), NOW + 5 * 60_000), [], 'the same reading again adds nothing');
   assert.equal(lines(file).length, 2);
-  // Only the account whose reading moved gets a row.
+
   const moved = cache(NOW - 60_000); (moved.usageByProvider['anthropic-account-2'] as { fetchedAt: number }).fetchedAt = NOW + 240_000;
   assert.deepEqual(sampleQuota(dir, moved, NOW + 10 * 60_000).map(r => r.provider), ['anthropic-account-2']);
   assert.equal(lines(file).length, 3);
@@ -68,7 +68,7 @@ test('the history stays bounded: past the size limit the live file rotates to .1
   assert.ok(all.length < 120 && all.length > 10, `${all.length} rows kept of 120`);
   assert.equal(all.at(-1)!.fetchedAt, NOW + 59 * 60_000, 'the newest reading survives');
   assert.deepEqual(all.map(r => r.fetchedAt), [...all.map(r => r.fetchedAt)].sort((a, b) => a - b), 'oldest first across both files');
-  // A reading already written is still deduplicated after the file rotated.
+
   assert.deepEqual(sampleQuota(dir, cache(NOW + 59 * 60_000), NOW + 3_600_000, QUOTA_HISTORY_FILE, max), []);
 });
 
@@ -80,9 +80,9 @@ test('percentage points add up inside one period; a reset or a drop starts a new
   const intervals = intervalsOf(rows, 'w7d');
   assert.deepEqual(intervals.map(i => i.points), [4, 6, 6, 1], '10→14→20, [reset: 20→3 is no delta], 3→9, [drop 9→5 is no delta], 5→6');
   assert.ok(intervals.every(i => i.points >= 0));
-  // A new reset stamp that only jitters by a few seconds is the same period.
+
   assert.deepEqual(intervalsOf([row(1, 10, reset1), row(2, 12, reset1 + 4000)], 'w7d').map(i => i.points), [2]);
-  // A reading without the window (an api-key row) breaks the chain instead of bridging it.
+
   const gap = [row(1, 10, reset1), { at: 2, provider: 'p', fetchedAt: 2 } as QuotaRow, row(3, 30, reset1)];
   assert.deepEqual(intervalsOf(gap, 'w7d'), []);
 });
@@ -154,9 +154,9 @@ test('unpriced tokens keep US$ per 1% unknown and report tokens per 1% instead o
 test('the weekly comparison splits the last 7 days and the 7 before by account and by role, with window edges counted once', () => {
   const calls = [
     call(NOW - 1000, 'acc', 10, 100, 'main'), call(NOW - DAY, 'acc', 5, 50, 'subagent'), call(NOW - 2 * DAY, 'acc', 2, 20, 'compactor'), call(NOW - 3 * DAY, 'acc', 1, 10, 'advisor'),
-    call(NOW - WEEK_MS, 'acc', 100, 1000, 'main'), // exactly 7 days ago: the previous week (its end is inclusive)
+    call(NOW - WEEK_MS, 'acc', 100, 1000, 'main'),
     call(NOW - WEEK_MS - DAY, 'acc', 20, 200, 'main'), call(NOW - WEEK_MS - 2 * DAY, 'acc2', 30, 300, 'subagent'),
-    call(NOW - 2 * WEEK_MS, 'acc', 1000, 1, 'main'), // exactly 14 days ago: before both weeks
+    call(NOW - 2 * WEEK_MS, 'acc', 1000, 1, 'main'),
     call(NOW - DAY, '', 0.5, 5, 'heartbeat'),
   ];
   const rows = [row(NOW - 3 * DAY, 10, NOW + DAY, 'w7d', 'acc'), row(NOW - 2 * DAY, 18, NOW + DAY, 'w7d', 'acc'), row(NOW - WEEK_MS - 3 * DAY, 1, NOW - 6 * DAY, 'w7d', 'acc'), row(NOW - WEEK_MS - 2 * DAY, 4, NOW - 6 * DAY, 'w7d', 'acc')];
@@ -253,7 +253,7 @@ test('a week that predates the history says so instead of printing 0 points', ()
 test('reading usage.jsonl stops at the first chunk that is entirely older than the window, even when a line has a garbled date', async t => {
   const dir = tmp(t), file = join(dir, 'usage.jsonl'), pad = 'x'.repeat(250);
   const make = (at: number) => JSON.stringify({ date: new Date(at).toISOString(), role: 'main', provider: 'p', model: 'm', pad, usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { total: 1 } } });
-  const out = [make(NOW - 10 * HOUR)]; // an in-range record far back, out of order: only reachable if the reader did not stop
+  const out = [make(NOW - 10 * HOUR)];
   for (let i = 0; i < 22_000; i++) out.push(i === 20_000 ? '{"date":"zzz-not-a-date","pad":"' + pad + '"}' : make(NOW - 30 * DAY));
   out.push(make(NOW - 1000));
   writeFileSync(file, out.join('\n') + '\n');
@@ -279,12 +279,12 @@ test('repeated sampleQuota calls on unchanged history read 0 bytes and still pic
   for (let i = 1; i <= 5; i++) assert.deepEqual(sampleQuota(dir, cache(NOW), NOW + i * 1000), []);
   assert.equal(quotaHistoryReadBytes - before, 0, 'unchanged quota-history.jsonl must not be re-read');
 
-  // New fetchedAt appends without re-reading the history file.
+
   const beforeAppend = quotaHistoryReadBytes;
   assert.equal(sampleQuota(dir, cache(NOW + 60_000), NOW + 60_000).length, 2);
   assert.equal(quotaHistoryReadBytes - beforeAppend, 0);
 
-  // External append invalidates the stat-guarded cache.
+
   const external: QuotaRow = { at: NOW + 120_000, provider: 'anthropic', fetchedAt: NOW + 120_000 };
   appendFileSync(join(dir, QUOTA_HISTORY_FILE), JSON.stringify(external) + '\n');
   assert.equal(sampleQuota(dir, cache(NOW + 120_000), NOW + 120_000).length, 1);

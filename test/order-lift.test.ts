@@ -9,7 +9,7 @@ import type { Repo } from '../src/autonomy.ts';
 import { grantCovers, orderGrantFor, readOperationalState, updateOperationalState, type OperationalUpdate } from '../src/operational-state.ts';
 import { withTempDir } from './support.ts';
 
-/** The live profile's autonomy.json as it stood on 2026-10-30, copied here; the operator's own file is never read or written. */
+
 const LIVE_CONTRACT = {
   version: 1, default: 'ask', rules: [
     { action: 'force-push', scope: ['*'], level: 'ask', note: 'never force without the operator' },
@@ -30,7 +30,7 @@ const LIVE_CONTRACT = {
   ],
 };
 
-/** The checkout C:/projetos/dentai-mono as the operator has it: its origin is the DentAI repository. */
+
 const REPO: Repo = {
   slug: path => path === 'c:/projetos/dentai-mono' ? 'tecnologia-ai/dentai' : undefined,
   branch: path => path === 'c:/projetos/dentai-mono' ? 'main' : undefined,
@@ -46,16 +46,16 @@ const ORDER = {
 } satisfies OperationalUpdate;
 const QUOTES: Record<string, string> = { '86853': 'pode fazer o merge e deploy' };
 
-/** The call was refused, and the refusal says the operator decides under autonomy.json (not some other failure). */
+
 function waitsForOperator(refusal: { block?: boolean; reason?: string } | undefined) {
   assert.equal(refusal?.block, true, 'the call waits');
   assert.match(refusal!.reason!, /autonomy\.json says this waits for the operator/);
 }
 
-/**
- * The gate as index.ts wires it in risk mode: the contract in the profile folder, and the operator's typed orders read
- * back from operational-state.json (an unreadable file lifts nothing). Every call runs in the owning session.
- */
+
+
+
+
 function session(directory: string, quotes: Record<string, string>, { checkoutSlug: slugOf = fixtureSlugs, now = Date.now }: { checkoutSlug?: (folder: string) => string | undefined; now?: () => number } = {}) {
   writeFileSync(join(directory, 'autonomy.json'), JSON.stringify(LIVE_CONTRACT));
   const file = join(directory, 'operational-state.json');

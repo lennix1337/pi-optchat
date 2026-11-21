@@ -21,7 +21,7 @@ test('operational tool validates original provenance and never treats assistant/
     await assert.rejects(tool.execute('b', { update: { kind: 'authorization', text: 'Push approved', sourceMessageId: '2' } }), /direct non-imported user/);
     await assert.rejects(tool.execute('c', { update: { kind: 'decision', text: 'Invalid source', sourceMessageId: '9999' } }), /original message/);
     await assert.rejects(tool.execute('fabricated', { update: { kind: 'authorization', text: 'Production deploy approved', sourceMessageId: '0' } }), /exactly quote the entire user source/);
-    // The refusal shows where the text diverges and the source around it, so one retry can quote it exactly.
+
     await assert.rejects(tool.execute('hint', { update: { kind: 'constraint', text: 'Implement locally; do pull.', sourceMessageId: '0' } }),
       (e: Error) => /first difference at character 23/.test(e.message) && e.message.includes('do not push.'));
     const recorded = await tool.execute('d', { update: { kind: 'constraint', text: 'Implement locally; do not push.', sourceMessageId: '0' } });
@@ -67,21 +67,21 @@ test('sourceMessageId "latest" names the operator\'s latest own message, never a
     memory.append('talk', 'Merged #12.');
     const decided = JSON.parse((await tool.execute('a', { update: { kind: 'decision', text: 'Merge #12 now', sourceMessageId: 'latest' } })).content[0]!.text);
     assert.equal(decided.recorded.sourceMessageId, '0');
-    // The exact-quote rule still applies to the message "latest" resolves to.
+
     await assert.rejects(tool.execute('b', { update: { kind: 'authorization', text: 'merge everything', sourceMessageId: 'latest' } }), /exactly quote/);
     const authorized = JSON.parse((await tool.execute('c', { update: { kind: 'authorization', text: 'pode mergear o 12', sourceMessageId: 'latest' } })).content[0]!.text);
     assert.equal(authorized.recorded.sourceMessageId, '0');
-    // A Slack message from him counts as his words.
+
     memory.append('user', '[Slack #harness] faz o 3');
     const slack = JSON.parse((await tool.execute('d', { update: { kind: 'decision', text: 'do item 3', sourceMessageId: 'latest' } })).content[0]!.text);
     assert.equal(slack.recorded.sourceMessageId, '4');
-    // The Slack bridge appends its word-budget and mid-run notes to his message; they are not his words, so a quote of
-    // what he wrote is exact (05/11 116250: the refusal left his PR order unrecorded, and memory called it UNRESOLVED for a day).
+
+
     memory.append('user', '[Slack #dentai] ok pode fazer um pacote de tudo isso no PR\n\n(Responda em até 100 palavras; o que passar disso vai para a thread.)\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)');
     const quoted = JSON.parse((await tool.execute('g', { update: { kind: 'authorization', text: '[Slack #dentai] ok pode fazer um pacote de tudo isso no PR', sourceMessageId: 'latest' } })).content[0]!.text);
     assert.equal(quoted.recorded.sourceMessageId, '5');
     await assert.rejects(tool.execute('h', { update: { kind: 'authorization', text: '[Slack #dentai] ok pode fazer', sourceMessageId: 'latest' } }), /exactly quote/);
-    // An imported conversation is history, not his latest word.
+
     memory.append('user', 'imported request', undefined, undefined, { source: 'pi', conversation: 'old', message: '3', title: 'Imported conversation' });
     const afterImport = JSON.parse((await tool.execute('f', { update: { kind: 'decision', text: 'still item 3', sourceMessageId: 'latest' } })).content[0]!.text);
     assert.equal(afterImport.recorded.sourceMessageId, '5');

@@ -8,12 +8,12 @@ import { Collector, DIGEST_CAP, Situation, band, judge, renderSnapshot, situatio
 import { GITWATCH_FAILURES, parseGitwatch, parseQuota, parseReboots, realSources, rebootCause } from '../src/situation-sources.ts';
 import { tempDir } from './support.ts';
 
-// 11 Nov 2026, 10:00 in Brasília (UTC-3).
+
 const NOW = Date.parse('2026-11-11T13:00:00Z');
 const at = (hhmm: string, day = '2026-11-11') => Date.parse(`${day}T${hhmm}:00-03:00`);
 const MIN = 60_000;
 
-/** A situation over fixed facts the test edits between turns; `ids` hands out a new run per call. */
+
 function harness(initial: Facts, extra: { stateFile?: string; logFile?: string; cap?: number } = {}) {
   let facts = initial, now = NOW, run = 0;
   const collector = new Collector({ reboots: undefined } as Sources, () => now);
@@ -199,7 +199,7 @@ test('a corrupt or unwritable state does not break the turn', () => {
   } finally { dir.close(); }
 });
 
-// ---- the collector ----
+
 
 test('a slow source never blocks a turn: the snapshot answers at once, without the fact, and the value lands later', async () => {
   let release!: (value: 'down') => void;
@@ -225,7 +225,7 @@ test('a source that hangs forever is cut at its timeout, keeps the last good val
 });
 
 test('a caller waiting on a hung source keeps the event loop alive until the source is cut, in a process with nothing else running', async () => {
-  // Inside the test runner other handles hide this: with only unref'd timers pending, a process that awaits the collector exits (code 13) on the await.
+  // external: Node exits while awaiting a promise when only unrefed timers remain.
   const module = pathToFileURL(join(import.meta.dirname, '../src/situation.ts')).href;
   const script = `import { Collector } from '${module}';
     let call = 0;
@@ -281,7 +281,7 @@ test('a turn with a hung collector still returns inside the budget', () => {
   assert.ok(performance.now() - started < 150);
 });
 
-// ---- the readers ----
+
 
 const ev = (id: number, time: string, m?: string) => ({ t: Date.parse(time), id, ...m ? { m } : {} });
 

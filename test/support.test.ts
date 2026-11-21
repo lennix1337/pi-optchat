@@ -9,7 +9,7 @@ import { removeDir, tempDir, withTempDir } from './support.ts';
 
 test('a test process leaves nothing in the temp dir: not a forgotten dir, not one rewritten after its removal, not a worker thread\'s', () => {
   const temp = mkdtempSync(join(tmpdir(), 'optchat-support-'));
-  // Like Pi's image-resize worker: started from a file, so it loads --import again, and terminated, so it never sees 'exit'.
+
   const worker = join(temp, 'worker.mjs');
   writeFileSync(worker, "import { parentPort } from 'node:worker_threads'; parentPort.postMessage('up'); setInterval(() => {}, 1000);");
   const script = `

@@ -8,7 +8,7 @@ import { emptyUsage } from '../src/usage.ts';
 import { childToolSchemas } from '../src/child-resources.ts';
 import { createBashToolDefinition } from '@earendil-works/pi-coding-agent';
 
-// Register the actual extension without opening a profile or invoking a lifecycle hook.
+
 function registeredTools() {
   const tools = new Map<string, ToolDefinition>();
   optchat({ on() {}, events: { on: () => () => {} }, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
@@ -55,8 +55,8 @@ test('spawn accepts a worker kind and a project specialist', () => {
   }
   assert.throws(() => validate(tools.get('crew')!, { action: 'zoom', project: 'harness', id: -1 }), /id/);
 });
-// Pi's own tools that OptChat re-registers to change how they run; Pi's inputs stay exactly as they are,
-// plus only the optional extras listed here.
+
+
 const nativeOverrides = ['bash'];
 const nativeExtras: Record<string, string[]> = { bash: ['full_output'] };
 const tools = registeredTools();

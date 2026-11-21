@@ -79,7 +79,7 @@ test('an open PR merged out of sight leaves the open list, and GitHub activity i
     const watch = new PrWatch(() => ({ dir, name: 'p' }), recorder().post, async () => JSON.stringify({ data: { search: { nodes } } }), () => Date.parse('2026-10-29T12:00:00Z'));
     await watch.poll();
     assert.equal(watch.open(dir).find(p => p.title === 'T1')?.updated, Date.parse('2026-10-29T11:00:00Z'));
-    nodes = [node(1, '2026-10-29T11:00:00Z')]; // #2 merged by someone else and no search returns it any more
+    nodes = [node(1, '2026-10-29T11:00:00Z')];
     await watch.poll();
     assert.deepEqual(watch.open(dir).map(p => p.title), ['T1']);
   } finally { rmSync(dir, { recursive: true, force: true }); }

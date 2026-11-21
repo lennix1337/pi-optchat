@@ -13,7 +13,7 @@ const entry = (i: number, text: string): Entry => ({ i, kind: 'user', text, size
 const node = (i: number, text: string): Summary => ({ l: 0, i, text, size: 0 });
 const temp = () => mkdtempSync(join(tmpdir(), 'optchat-store-'));
 
-/** What every store must do, so a new one can run the same checks against itself. */
+
 function contract(name: string, open: (dir: string, warn: (s: string) => void) => Store) {
   test(`${name}: what is written loads back, in order, in a fresh store`, async () => {
     const dir = temp();
@@ -96,7 +96,7 @@ test('a process interrupted before the JSONL commit newline cannot activate or l
 });
 
 test('a store with a lease holds the profile instead of the local lock, renews it, and frees it on release', async () => {
-  // Two machines sharing one lease table.
+
   let holder: string | undefined, beats = 0;
   const machine = (): { lock: Lease } => ({ lock: {
     async lease(_profile, who) { if (holder !== undefined) return holder; holder = who; return undefined; },
@@ -118,7 +118,7 @@ test('a store with a lease holds the profile instead of the local lock, renews i
   } finally { mock.timers.reset(); removeDir(dir); }
 });
 
-/** A store that writes behind, each write landing sooner than the one before it, unless it was started while `fail` was set. */
+
 function behind() {
   const landed: string[] = [];
   let fail = false, delay = 20;
@@ -151,7 +151,7 @@ test('once a write-behind append fails, nothing more is written, summary nodes i
   const memory = new Memory({ directory: temp(), store, saved: await store.load() }, async () => { await gate; return 'summary'; }, text => warnings.push(text));
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   await wait(30); landed.length = 0;
-  // Long enough to need the compactor, so its node is written only after the failed append has settled and the queue is empty.
+
   failing(true); memory.append('user', 'lost '.repeat(200)); memory.append('user', 'queued behind it');
   await wait(60);
   assert.match(warnings.join('\n'), /Memory could not be saved: offline/);
@@ -203,13 +203,13 @@ test('a past day of the log is parsed once: later opens take its records from a 
     const index = join(dir, 'load-index', '2020-01-01.jsonl.json');
     assert.ok(existsSync(index), 'the past day gets an index');
     assert.ok(!existsSync(join(dir, 'load-index', '2020-01-02.jsonl.json')), 'the newest day, still written to, gets none');
-    // The index is what a second open reads: a size changed only there shows up.
+
     const saved = JSON.parse(readFileSync(index, 'utf8'));
     saved.rows[0][2].size = 999; writeFileSync(index, JSON.stringify(saved));
     const second = new FileStore(dir, () => {});
     assert.equal((second.load(1).entries[0] as { size: number }).size, 999);
     assert.equal(second.reader(1)?.(), 'old two', 'texts still read back from the log');
-    // An appended past day no longer matches its index and is parsed again.
+
     appendFileSync(past, JSON.stringify(entry(3, 'late')) + '\n');
     assert.deepEqual(new FileStore(dir, () => {}).load(1).entries[0], cold);
   } finally { removeDir(dir); }

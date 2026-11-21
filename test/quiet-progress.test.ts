@@ -21,10 +21,10 @@ async function until(predicate: () => boolean, what: string) {
 
 const PROGRESS = 'Halfway: the parser is done.';
 
-/**
- * A real Pi session with the extension, whose root worker reports progress with tell_parent while the main agent is idle,
- * and only then finishes. `mainRequests` are the model requests of the main agent; the worker's are not counted.
- */
+
+
+
+
 async function withWorker(holdMain: boolean, run: (ctx: { session: Awaited<ReturnType<typeof createAgentSession>>['session']; manager: SessionManager; dir: string;
   mainRequests: Context[]; releaseProgress: () => void; releaseFinish: () => void; releaseMain: () => void }) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-quiet-'));
@@ -100,12 +100,12 @@ test('a worker\'s progress message does not start a turn of an idle main agent, 
 
     releaseProgress();
     await until(() => shown(manager, PROGRESS).length > 0, 'the progress message in the session');
-    await sleep(300); // a turn started by the message would have asked the model by now
+    await sleep(300);
     assert.equal(mainRequests.length, turns, 'no new main-agent request: the message started no turn');
     assert.equal(session.isStreaming, false);
     assert.match(shown(manager, PROGRESS)[0], /Message from subagent \(still running\)/);
 
-    // The worker's final report still wakes the main agent, and the progress message is in context by then.
+
     releaseFinish();
     await until(() => mainRequests.length > turns, 'the final report starting a turn');
     await session.agent.waitForIdle();
@@ -121,11 +121,11 @@ test('a worker\'s progress message does not start a turn of an idle main agent, 
 test('a worker\'s progress message is still steered into a main agent that is running', async () => {
   await withWorker(true, async ({ session, mainRequests, releaseProgress, releaseFinish, releaseMain }) => {
     const running = session.prompt('Spawn one.');
-    // The main agent is held mid-turn, right after its spawn call, while the worker runs.
+
     await until(() => session.isStreaming && mainRequests.length >= 2, 'the main agent held mid-turn');
     const turns = mainRequests.length;
     releaseProgress();
-    await sleep(1_800); // reports that arrive mid-turn gather for 1.5 s before they steer in
+    await sleep(1_800);
     releaseMain();
     await running; await session.agent.waitForIdle();
     const seen = mainRequests.slice(turns).some(r => r.messages.some(m => m.role === 'user' && textContent(m.content).includes(PROGRESS)));

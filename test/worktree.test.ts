@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { tempDir } from './support.ts';
 
-// scripts/worktree.mjs through its command line, on a temp clone of a bare origin.
+
 const SCRIPT = fileURLToPath(new URL('../scripts/worktree.mjs', import.meta.url));
 const ID = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.invalid' };
 

@@ -7,7 +7,7 @@ const call = (id: string, name = 'bash') => ({ type: 'toolCall', id, name, argum
 const assistant = (...content: unknown[]) => ({ role: 'assistant', content });
 const theme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t } as never;
 
-/** Draws one tool row the way Pi's self shell does: call slot, then result slot, nothing when both are empty. */
+
 function row(groups: ToolGroups, id: string, opts: { partial?: boolean; error?: boolean; expanded?: boolean; ms?: number; name?: string } = {}) {
   const renderers = groupedRenderers(opts.name ?? 'bash', {
     renderCall: (args: unknown) => new Text(`$ ${(args as { command?: string }).command ?? id}`, 0, 0),
