@@ -1,6 +1,6 @@
 
 
-export interface HeapSample { at: number; heapUsedMb: number; afterGc: boolean; rssMb?: number }
+export interface HeapSample { at: number; heapUsedMb: number; afterGc: boolean; rssMb?: number; heapTotalMb?: number; externalMb?: number }
 export interface HeapGrowth { mbPerHour: number; spanH: number; fromMb: number; toMb: number }
 
 const HOUR = 3_600_000;
@@ -32,9 +32,11 @@ export function heapGrowthLine(growth: HeapGrowth | undefined, { thresholdMbPerH
   return `Pi heap grows ~${Math.round(growth.mbPerHour)} MB/h over ${Math.round(growth.spanH)} h (${Math.round(growth.fromMb)} -> ${Math.round(growth.toMb)} MB)`;
 }
 
-/** `Pi RSS 713 MB, above the 500 MB goal in the last 3 samples` while the newest `minPoints` samples carrying an RSS all exceed `limitMb`; undefined otherwise. The heap can sit at 270 MB while native memory keeps the process at 700 MB, so the heap trend alone misses it. */
+/** `Pi RSS 713 MB, above the 500 MB goal in the last 3 samples (V8 heap 366 MB, external 30 MB, other native 317 MB)` while the newest `minPoints` samples carrying an RSS all exceed `limitMb`; undefined otherwise. The heap can sit at 270 MB while native memory keeps the process at 700 MB, so the heap trend alone misses it; the split names which part holds the RSS. */
 export function rssLine(samples: readonly HeapSample[], { limitMb = 500, minPoints = 3 } = {}): string | undefined {
-  const recent = samples.flatMap(sample => sample.rssMb === undefined ? [] : [sample.rssMb]).slice(-minPoints);
-  if (recent.length < minPoints || !recent.every(mb => mb > limitMb)) return undefined;
-  return `Pi RSS ${Math.round(recent.at(-1)!)} MB, above the ${limitMb} MB goal in the last ${minPoints} samples`;
+  const withRss = samples.filter(sample => sample.rssMb !== undefined), recent = withRss.slice(-minPoints);
+  if (recent.length < minPoints || !recent.every(sample => sample.rssMb! > limitMb)) return undefined;
+  const last = recent.at(-1)!, line = `Pi RSS ${Math.round(last.rssMb!)} MB, above the ${limitMb} MB goal in the last ${minPoints} samples`;
+  if (last.heapTotalMb === undefined || last.externalMb === undefined) return line;
+  return `${line} (V8 heap ${Math.round(last.heapTotalMb)} MB, external ${Math.round(last.externalMb)} MB, other native ${Math.round(last.rssMb! - last.heapTotalMb - last.externalMb)} MB)`;
 }

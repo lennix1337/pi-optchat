@@ -1032,7 +1032,7 @@ test('wakeTriage: an RSS held above the goal signals once under global, and re-a
   const h = harness({ always: true, minutes: 15, wakes: 1000, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 270, rss: at => at < 3 * HOUR ? 713 : at < 6 * HOUR ? 430 : 720 });
   await tickFor(h, 2);
   assert.equal(rssLines(h).length, 1, 'one signal for the whole stretch above the goal');
-  assert.match(rssLines(h)[0]!, /^Pi RSS 713 MB, above the 500 MB goal in the last 3 samples$/);
+  assert.match(rssLines(h)[0]!, /^Pi RSS 713 MB, above the 500 MB goal in the last 3 samples \(V8 heap \d+ MB, external \d+ MB, other native -?\d+ MB\)$/);
   assert.equal(saved(h.dir).rssAlarm, true);
   await tickFor(h, 4);
   assert.equal(saved(h.dir).rssAlarm, false, 'back under the goal clears the alarm');
@@ -1053,8 +1053,9 @@ test('a heartbeat.json from before the heap watch loads and gains the samples; a
     const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), triage: () => triaged(), heap: () => 1500 });
     writeFileSync(join(h.dir, 'heartbeat.json'), JSON.stringify({ wakes: [], checks: [], wakeLog: [], routeBlocks: {}, routeFailures: {}, daily: [], ...heap === undefined ? {} : { heap, heapAlarm: 'maybe' } }));
     h.beat.arm(); await h.advance(15 * MIN);
-    assert.deepEqual(saved(h.dir).heap.map(({ rssMb: _rss, ...rest }: { rssMb?: number }) => rest), [{ at: 15 * MIN, heapUsedMb: 1500, afterGc: false }]);
+    assert.deepEqual(saved(h.dir).heap.map(({ rssMb: _rss, heapTotalMb: _total, externalMb: _external, ...rest }: { rssMb?: number; heapTotalMb?: number; externalMb?: number }) => rest), [{ at: 15 * MIN, heapUsedMb: 1500, afterGc: false }]);
     assert.equal(typeof saved(h.dir).heap[0].rssMb, 'number', 'the sample now carries the process RSS');
+    assert.equal(typeof saved(h.dir).heap[0].externalMb, 'number', 'and the split of it');
     rmSync(h.dir, { recursive: true, force: true });
   }
 });

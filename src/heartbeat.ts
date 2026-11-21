@@ -607,7 +607,8 @@ export class Heartbeat {
     const held = { patrolAt: saved.patrolAt ?? {}, patrolled: saved.patrolled ?? {}, escalations: saved.escalations ?? [] };
     const diverted = checked && patrol ? divert(checked, before, patrol, held, at) : undefined, due = diverted ?? checked;
     const asked = held.escalations.map(({ project, line }) => ({ id: '', project, kind: 'due' as const, line }));
-    const heap = recordHeapSample(saved.heap ?? [], { at, heapUsedMb: (this.deps.heapMb?.() ?? process.memoryUsage().heapUsed / 1_048_576), afterGc: false, rssMb: (this.deps.rssMb?.() ?? process.memoryUsage().rss / 1_048_576) });
+    const usage = process.memoryUsage();
+    const heap = recordHeapSample(saved.heap ?? [], { at, heapUsedMb: (this.deps.heapMb?.() ?? usage.heapUsed / 1_048_576), afterGc: false, rssMb: (this.deps.rssMb?.() ?? usage.rss / 1_048_576), heapTotalMb: usage.heapTotal / 1_048_576, externalMb: usage.external / 1_048_576 });
     const heapLine = heapGrowthLine(heapGrowth(heap, at));
     if (heapLine && !saved.heapAlarm) asked.push({ id: '', project: 'global', kind: 'due', line: heapLine });
     const rssText = rssLine(heap);

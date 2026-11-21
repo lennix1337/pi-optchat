@@ -62,6 +62,8 @@ test('recording keeps the last 24 h only, relative to the new sample', () => {
 test('rssLine: names the Pi RSS once the last three samples all sit above the goal, and stays quiet otherwise', () => {
   const at = (rssMb: number | undefined, i: number): HeapSample => ({ at: i * H, heapUsedMb: 260, afterGc: false, ...rssMb === undefined ? {} : { rssMb } });
   assert.equal(rssLine([at(713, 0), at(720, 1), at(705, 2)]), 'Pi RSS 705 MB, above the 500 MB goal in the last 3 samples');
+  const split = { ...at(705, 2), heapTotalMb: 366, externalMb: 30 };
+  assert.equal(rssLine([at(713, 0), at(720, 1), split]), 'Pi RSS 705 MB, above the 500 MB goal in the last 3 samples (V8 heap 366 MB, external 30 MB, other native 309 MB)', 'the newest sample splits the RSS into heap, external and other native');
   assert.equal(rssLine([at(713, 0), at(480, 1), at(705, 2)]), undefined, 'one sample under the goal breaks the stretch');
   assert.equal(rssLine([at(713, 0), at(720, 1)]), undefined, 'two samples are not enough');
   assert.equal(rssLine([at(undefined, 0), at(undefined, 1), at(undefined, 2)]), undefined, 'samples from before the RSS watch carry no RSS');
