@@ -24,17 +24,13 @@ export type Plan = { file: string; args: string[]; env?: Record<string, string>;
 const MAX_ARGS = 256, MAX_ARG = 4096, MAX_TEXT = 4000, MAX_DATA = 1 << 20;
 const DEFAULT_DOCKER_TIMEOUT_MS = 30_000, MAX_DOCKER_TIMEOUT_MS = 120_000;
 
-/** Docker subcommands the computer manager uses. `image` is limited to `image inspect` below. */
 const DOCKER_SUBCOMMANDS: ReadonlySet<string> = new Set(['info', 'image', 'inspect', 'ps', 'pause', 'unpause', 'run', 'start', 'exec', 'rm']);
-/** Flags that would give a container host files, devices, privileges or the host's namespaces, refused whatever the subcommand. */
 const DOCKER_REFUSED_FLAGS: ReadonlySet<string> = new Set(['--privileged', '--cap-add', '--device', '--volume', '-v', '--mount', '--pid', '--userns']);
-/** Networks that join the host's or another container's namespace; the manager runs its computers with `--network none`. */
 const SHARED_NETWORK = /^(host|container:.*)$/;
 
 const CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
-// Windows PowerShell 5.1 with the toast script; the text travels in the environment, not on the command line.
 const TOAST_SCRIPT = `
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null
@@ -47,7 +43,7 @@ $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powersh
 `;
 const TOAST_ENCODED = Buffer.from(TOAST_SCRIPT, 'utf16le').toString('base64');
 
-// Data travels on stdin, never argv: DPAPI (CurrentUser) only unwraps for this Windows account on this machine.
+// external: DPAPI CurrentUser unwraps only for this Windows account on this machine.
 const DPAPI_SCRIPT = `$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
 $i=[Console]::In.ReadToEnd().Trim().Split(' ')
@@ -56,10 +52,9 @@ $s=[Security.Cryptography.DataProtectionScope]::CurrentUser
 $o=if($i[0] -eq 'protect'){[Security.Cryptography.ProtectedData]::Protect($d,$null,$s)}else{[Security.Cryptography.ProtectedData]::Unprotect($d,$null,$s)}
 [Console]::Out.Write([Convert]::ToBase64String($o))`;
 const DPAPI_ENCODED = Buffer.from(DPAPI_SCRIPT, 'utf16le').toString('base64');
-/** A PowerShell start can take 7-8 s on a loaded runner and over 15 s at its tail; a stuck one is cut off past that. */
+// external: PowerShell startup can exceed 15 seconds on a loaded runner.
 const DPAPI_TIMEOUT_MS = 60_000;
 
-/** The exact docker argv for each stream program; the caller supplies only the container. */
 const STREAM_ARGS: Record<OpenRequest['program'], (container: string) => string[]> = {
   'https-relay': container => ['exec', '--interactive', '--user', '1000:1000', '--workdir', '/work', container, 'timeout', '-s', 'KILL', '150', 'node', '/opt/optchat/https-relay.mjs'],
   'socat-viewer': container => ['exec', '-i', container, 'socat', '-', 'TCP:127.0.0.1:6088'],
@@ -95,7 +90,6 @@ function timeout(value: unknown, fallback: number, max: number): number {
   return value as number;
 }
 
-/** The allow-list of run actions: each validated request maps to one fixed process. */
 const RUN_ACTIONS = new Map<string, (request: Record<string, unknown>) => Plan>([
   ['docker', request => ({ file: 'docker', args: checkDockerArgs(request.args), timeoutMs: timeout(request.timeoutMs, DEFAULT_DOCKER_TIMEOUT_MS, MAX_DOCKER_TIMEOUT_MS) })],
   ['toast', request => {
@@ -109,7 +103,6 @@ const RUN_ACTIONS = new Map<string, (request: Record<string, unknown>) => Plan>(
   }],
 ]);
 
-/** The allow-list of stream actions: a long-lived child whose stdio the caller pipes. */
 const STREAM_ACTIONS = new Map<string, (request: Record<string, unknown>) => Plan>([
   ['docker_stream', request => {
     if (typeof request.container !== 'string' || !CONTAINER.test(request.container)) refused('invalid_container');

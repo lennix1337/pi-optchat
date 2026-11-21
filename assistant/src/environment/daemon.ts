@@ -16,7 +16,6 @@ import type { Environment } from './local.ts';
 export const DAEMON_RUN_PATH = '/v1/run';
 const MAX_BODY = 64 * 1024;
 const MAX_DRAIN = 1024 * 1024;
-/** A base64url string of 32 random bytes, the only form `loadOrCreateToken` writes. */
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const RESPONSE_TIMEOUT_MS = 130_000;
 
@@ -47,7 +46,7 @@ function bearerMatches(header: string | undefined, expected: Buffer): boolean {
 async function readRequest(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
-  // An oversized body is drained, not cut off, so the client still reads the 413; past the drain cap the socket is closed.
+  // external: closing the socket early can prevent the client from receiving HTTP 413.
   for await (const chunk of request) {
     size += (chunk as Buffer).length;
     if (size > MAX_DRAIN) { request.destroy(); throw new EnvironmentRefused('body_too_large'); }
@@ -74,7 +73,6 @@ async function handle(environment: Environment, expected: Buffer, request: Incom
   }
   try { send(response, 200, await environment.run(body as RunRequest)); }
   catch (error) {
-    // The allow-list refused the request before any process started; anything else is a daemon fault, not a result.
     if (error instanceof EnvironmentRefused) { send(response, 400, { error: error.message }); return; }
     throw error;
   }
