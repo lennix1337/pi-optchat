@@ -1008,7 +1008,7 @@ test('App Home: a work reader that throws leaves the Home to go out without the 
 const sendsOf = bodiesFor<{ text: string; threadTs: string | null; channel?: string }>('/v1/slack/send');
 const paragraphs = (n: number) => Array.from({ length: n }, (_, i) => `Parágrafo ${i + 1}: ${Array.from({ length: 30 }, () => 'palavra').join(' ')}.`).join('\n\n');
 
-test('a final answer over the DM budget goes out as a short head, then the rest of it in a thread reply', async () => {
+test('a final answer over the DM budget still goes out whole, in one message', async () => {
   const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'resume o dia' }]);
   try {
     await f.bridge.poll();
@@ -1016,13 +1016,9 @@ test('a final answer over the DM budget goes out as a short head, then the rest 
     const long = paragraphs(6);
     await f.bridge.runEnded(replies(long));
     const sends = sendsOf(f);
-    assert.equal(sends.length, 2, 'a head, then the rest');
-    assert.ok(words(sends[0]!.text) <= 100, `head has ${words(sends[0]!.text)} words`);
-    assert.match(sends[0]!.text, /continua na thread/);
-    assert.equal(sends[0]!.threadTs, null, 'the head is the answer, in the DM as before');
-    assert.ok(!sends[1]!.text.includes('Parágrafo 1:'), 'the thread does not repeat the head');
-    assert.equal(words(sends[0]!.text.split('\n\n_')[0]!) + words(sends[1]!.text), words(long), 'head and rest together are the whole answer');
-    assert.equal(sends[1]!.threadTs, '1.1', "the rest replies in the head's thread");
+    assert.equal(sends.length, 1, 'one message, no thread reply');
+    assert.equal(sends[0]!.text, long);
+    assert.doesNotMatch(sends[0]!.text, /continua na thread/);
   } finally { f.close(); }
 });
 
@@ -1036,55 +1032,23 @@ test('a final answer within the budget is one post, as before', async () => {
   } finally { f.close(); }
 });
 
-test('slack_send over the channel budget posts a head in the channel and the full text in its thread', async () => {
-  const f = fixture();
+test('slack_send, topic posts and wake reports over the budget go out whole, in one message', async () => {
+  const f = fixture([], { wordBudgets: { dentai: 60 } });
   try {
     const long = Array.from({ length: 150 }, (_, i) => `item${i}`).join(' ');
     await f.bridge.post(long, 'dentai');
-    const sends = sendsOf(f);
-    assert.deepEqual(sends.map(s => s.channel), ['dentai', 'dentai']);
-    assert.ok(words(sends[0]!.text) <= 100);
-    assert.ok(long.endsWith(sends[1]!.text) && !sends[1]!.text.startsWith('item0 '), 'the thread gets what the head left out');
-    assert.equal(sends[1]!.threadTs, '1.1');
-  } finally { f.close(); }
-});
-
-test('a topic post over the budget keeps its topic thread, and the full text goes in that thread too', async () => {
-  const f = fixture();
-  try {
-    const long = Array.from({ length: 150 }, (_, i) => `t${i}`).join(' ');
+    assert.deepEqual(sendsOf(f).map(s => [s.channel, s.text]), [['dentai', long]]);
+    f.requests.length = 0;
     await f.bridge.post('primeiro post', 'harness', 'denta-1');
     f.requests.length = 0;
     await f.bridge.post(long, 'harness', 'denta-1');
-    const sends = sendsOf(f);
-    assert.equal(sends.length, 2);
-    assert.equal(sends[0]!.threadTs, '1.1', 'the topic reply goes in the topic thread');
-    assert.equal(sends[1]!.threadTs, '1.1', 'and so does the rest');
-    assert.ok(long.endsWith(sends[1]!.text) && !sends[1]!.text.startsWith('t0 '));
-  } finally { f.close(); }
-});
-
-test('the word budget is per channel: a project channel can set its own, the DM keeps the default', async () => {
-  const f = fixture([], { wordBudgets: { dentai: 60 } });
-  try {
-    const eighty = Array.from({ length: 80 }, (_, i) => `p${i}`).join(' ');
-    await f.bridge.post(eighty, 'dentai');
-    assert.equal(sendsOf(f).length, 2, 'over the dentai budget of 60: split');
+    assert.deepEqual(sendsOf(f).map(s => [s.threadTs, s.text]), [['1.1', long]], 'a topic post stays in its topic thread, whole');
     f.requests.length = 0;
-    await f.bridge.post(eighty, null);
-    assert.deepEqual(sendsOf(f), [{ text: eighty, threadTs: null }], 'within the DM budget of 100: whole');
-  } finally { f.close(); }
-});
-
-test('a wake report over the budget is split the same way, in the repo channel', async () => {
-  const f = fixture();
-  try {
     f.bridge.sawUserMessage(WAKE);
     await f.bridge.runEnded(calling([['bash', { command: 'cd C:/projetos/Genexus18MCP && git commit -m fix && git push' }]], paragraphs(5)));
-    const sends = sendsOf(f);
-    assert.equal(sends.length, 2, JSON.stringify(sends.map(s => s.text.slice(0, 40))));
-    assert.ok(words(sends[0]!.text) <= 100);
-    assert.ok(`*Wake* · ${paragraphs(5)}`.endsWith(sends[1]!.text) && !sends[1]!.text.includes('Parágrafo 1:'), 'the thread carries what the head left out');
+    const wake = sendsOf(f);
+    assert.equal(wake.length, 1, JSON.stringify(wake.map(s => s.text.slice(0, 40))));
+    assert.ok(wake[0]!.text.includes('Parágrafo 5:'));
   } finally { f.close(); }
 });
 
