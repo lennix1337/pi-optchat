@@ -7,7 +7,7 @@ import type { ArtifactRecord, ArtifactRegistry, ReviewDecision } from './registr
 
 const previewTtlMs = 5 * 60_000;
 const maxPreviews = 256;
-
+/** Media type for download, and the type an untrusted preview renders as. */
 const mediaTypes: ReadonlyMap<string, { download: string; preview: string }> = new Map([
   ['.md', { download: 'text/markdown; charset=utf-8', preview: 'text/plain; charset=utf-8' }],
   ['.html', { download: 'text/html; charset=utf-8', preview: 'text/html; charset=utf-8' }],
@@ -15,7 +15,7 @@ const mediaTypes: ReadonlyMap<string, { download: string; preview: string }> = n
   ['.json', { download: 'application/json', preview: 'text/plain; charset=utf-8' }],
   ['.css', { download: 'text/css; charset=utf-8', preview: 'text/plain; charset=utf-8' }],
 ]);
-
+/** Registry refusals that mean "this version cannot be served as registered", not a client mistake. */
 const unavailable = new Set(['artifact_changed', 'artifact_location_invalid']);
 
 /**
@@ -93,7 +93,7 @@ export class ArtifactRoutes {
     send(res, 200, { url: `/web/preview/${token}`, expiresAt: new Date(expires).toISOString() }, access.headers);
   }
 
-
+  /** A preview capability opens one version for the browser session that requested it, until it expires. */
   private preview(res: ServerResponse, token: string, access: PanelAccess): void {
     const grant = this.previews.get(token);
     if (!grant || grant.sessionId !== access.sessionId || grant.expires <= this.now()) { send(res, 404, { error: 'Not found' }, access.headers); return; }
