@@ -14,6 +14,9 @@ const MERGED = /\b(?:mesclad[oa]s?|merged|mergead[oa]s?|entrou na main)\b/iu;
 const MERGE_TO_COME = /(?:\b(?:quando|depois\s+que|assim\s+que|ap[oó]s|at[eé]\s+que|caso|se|once|when|after|until|if)\b[^.;:,]{0,40}|\b(?:for|forem|estiver|estiverem|seja|sejam)\s+)$/iu;
 const LIVE = /\b(?:no ar|est[aá] live|deployed|deployad[oa])\b/iu;
 const LIVE_EVIDENCE = /\b(?:200|healthy|rollouts? done|RESUMO)\b/u;
+const RELOADED = /\b(?:reloaded|recarregad[oa]s?)\b|\breload\s+(?:feito|conclu[ií]do|done|completed?)\b|\brecarga\s+(?:feita|conclu[ií]da)\b/iu;
+const RELOAD_NOT_DONE = /(?:\b(?:n[aã]o|ainda n[aã]o|not|nem|sem|precisa|falta|ser|be|needs?|must|should|deve|para|pra)\b[^.]{0,30}|\bse\s+)$/iu;
+const RELOAD_EVIDENCE = /\[optchat-reload-resume\]|Pi reloaded natively|Reload nativo conclu/iu;
 
 
 function runnerShows(evidence: string, a: number, b: number): boolean {
@@ -67,6 +70,9 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
         const n = m[1]!;
         if (!new RegExp(`(?:#|/pull/|PR\\s?)${n}\\b[\\s\\S]{0,200}\\b(?:MERGED|merged|Merged)\\b|\\b(?:MERGED|merged|Merged)\\b[\\s\\S]{0,200}(?:#|/pull/|PR\\s?)${n}\\b`, 'u').test(evidence)) out.add(`#${n} mesclado`);
       }
+    }
+    for (const w of s.matchAll(new RegExp(RELOADED.source, 'giu'))) {
+      if (!RELOAD_NOT_DONE.test(s.slice(Math.max(0, w.index - 40), w.index)) && !RELOAD_EVIDENCE.test(evidence)) out.add('reload feito');
     }
     if (LIVE.test(s) && !/\b(?:n[aã]o|ainda n[aã]o|not)\b[^.]{0,30}\b(?:no ar|live|deployed)/iu.test(s) && !LIVE_EVIDENCE.test(evidence)) out.add('no ar');
   }
