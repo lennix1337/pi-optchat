@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 import { assistantConfig, assistantRequest } from '../src/assistant-client.ts';
 import { readQuotaState } from '../src/quota-health.ts';
 import { loadConfig } from '../src/profiles.ts';
-import { ADVISOR_MODEL, AGY_ADVISOR, advisorLine, agyAnswer, askAdvisor, debatePrompt, debateTurns, decisionChanged, offersModel, pickAdvisor } from '../src/council.ts';
+import { ADVISOR_MODEL, AGY_ADVISOR, advisorLine, agyAnswer, askAdvisor, councilReport, debatePrompt, debateTurns, decisionChanged, offersModel, pickAdvisor } from '../src/council.ts';
 
 const USAGE = 'usage: council.mjs --me "<model · account>" [--reply TS] [--channel wakes] [--profile DIR] < text';
 const { values } = parseArgs({ options: { me: { type: 'string' }, reply: { type: 'string' }, channel: { type: 'string' }, profile: { type: 'string' } } });
@@ -56,5 +56,5 @@ for (const { advisor, role } of debateTurns([codex, existsSync(agyPc) ? AGY_ADVI
   if (answer.text) transcript.push(line);
   answers.push({ advisor, role, answer: answer.text, error: answer.text ? undefined : answer.error ?? 'empty' });
 }
-console.log(JSON.stringify({ channel, ts: head.ts, answers }));
+console.log(councilReport(head.ts, channel, answers));
 if (!answers.some(a => a.answer)) process.exit(answers.length ? 3 : 0);
