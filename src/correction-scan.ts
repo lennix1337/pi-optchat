@@ -43,7 +43,7 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
-    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, verified: false, suites: heartbeat ? 0 : state.suites, ripwired: false, sent: [], shipped: 0 };
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, verified: false, suites: heartbeat ? 0 : state.suites, ripwired: heartbeat ? false : state.ripwired, sent: [], shipped: 0 };
   } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0 };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
