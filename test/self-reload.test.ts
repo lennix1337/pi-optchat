@@ -199,3 +199,10 @@ test('a failing checkpoint still records the failure when nothing else moved the
   assert.equal(f.latest().state, 'failed'); assert.equal(f.reloads(), 0);
   assert.match(f.notices.at(-1)!, /checkpoint failed: Error: checkpoint disk full/);
 });
+
+test('a cancelled ticket keeps the reason in its saved entry', async () => {
+  const f = fixture(); await f.request(); f.busy('new background job');
+  await f.emit('agent_settled', { aborted: false });
+  assert.equal(f.latest().state, 'cancelled');
+  assert.match(f.latest().reason, /new background job/);
+});

@@ -16,7 +16,7 @@ const globalStore = globalThis as Record<symbol, unknown>;
 const leases = (globalStore[LEASES] ??= new Map<string, ReloadLease>()) as Map<string, ReloadLease>;
 interface Owner { profile: string; blocked?: string }
 interface Ticket {
-  id: string; session: string; cwd: string; profile: string; checkpoint: string; created: number;
+  id: string; session: string; cwd: string; profile: string; checkpoint: string; created: number; reason?: string;
   state: 'requested' | 'reloading' | 'resuming' | 'completed' | 'cancelled' | 'failed';
 }
 
@@ -58,10 +58,10 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
   });
   pi.on('session_shutdown', () => { live = false; unhold(); });
   /** Records the move and returns the new ticket; undefined when the ticket's latest state does not allow it (the caller must then do nothing more). */
-  const write = (t: Ticket, state: Ticket['state']) => {
+  const write = (t: Ticket, state: Ticket['state'], reason?: string) => {
     const current = pending?.id === t.id ? pending.state : t.state;
     if (!MOVES[current].includes(state)) return undefined;
-    const next = { ...t, state }; pi.appendEntry(RELOAD_ENTRY, next); pending = next; return next;
+    const next = { ...t, state, ...(reason ? { reason: reason.slice(0, 300) } : {}) }; pi.appendEntry(RELOAD_ENTRY, next); pending = next; return next;
   };
   const sameOwner = (t: Ticket, ctx: ExtensionContext) => {
     if (t.profile !== owner()?.profile) return false;
@@ -83,7 +83,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     return reasons.join(' ') || undefined;
   };
   const cancel = (t: Ticket, ctx: ExtensionContext, reason: string) => {
-    if (!write(t, 'cancelled')) return;
+    if (!write(t, 'cancelled', reason)) return;
     ctx.ui.notify(`Self reload/continuation cancelled: ${reason} No automatic replay. Inspect the checkpoint before requesting again.`, 'warning');
   };
   pi.registerTool({ name: 'self_reload', label: 'Reload and continue',
