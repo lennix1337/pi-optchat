@@ -1,5 +1,6 @@
 /** A report sent this recently and not yet logged may still be on its way through Pi's queue. */
 export const REPORT_IN_FLIGHT_MS = 2 * 60_000;
+export const DELIVERY_BLOCK = 'still being delivered';
 
 export interface PendingReport { text: string; sentAt?: number; awaitingProcessing?: boolean; workerRecovery?: boolean }
 
@@ -25,7 +26,7 @@ export function reportsBlockReload(reports: readonly PendingReport[], now: numbe
     (r.awaitingProcessing || r.workerRecovery || r.sentAt !== undefined && now - r.sentAt < REPORT_IN_FLIGHT_MS));
   if (!blocking.length) return undefined;
   const waiting = reports.length - blocking.length;
-  return `${blocking.length} report(s) still being delivered: ${describeReports(blocking)}.`
+  return `${blocking.length} report(s) ${DELIVERY_BLOCK}: ${describeReports(blocking)}.`
     + (waiting ? ` ${waiting} other journaled report(s) are redelivered after the reload.` : '')
     + ' Retry once they reach the chat.';
 }

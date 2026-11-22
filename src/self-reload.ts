@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import { DELIVERY_BLOCK, REPORT_IN_FLIGHT_MS } from './pending-reports.ts';
 
 export const RELOAD_ENTRY = 'optchat.self-reload';
 const COMMAND = 'optchat-self-reload';
@@ -9,6 +10,8 @@ export const RELOAD_RESUME = 'optchat-reload-resume';
 /** pi-goal-x asks this before each goal checkpoint; a pending reload takes the next turn first (bounded by HOLD_MAX_MS). */
 export const GOAL_HOLD = 'pi-goal:continuation-hold';
 export const HOLD_MAX_MS = 60_000;
+const DELIVERY_POLL_MS = 10_000;
+const DELIVERY_WAIT_MS = REPORT_IN_FLIGHT_MS + 60_000;
 
 const LEASES = Symbol.for('pi-optchat.self-reload-leases.v1');
 interface ReloadLease { completed: boolean; claimed?: boolean; resume?: () => void }
@@ -142,12 +145,21 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
       if (continuationStarted) write(pending, event.aborted || runFailed(ctx) ? 'failed' : 'completed');
       return;
     }
-    if (pending.state !== 'requested' || commandSent) return;
-    const reason = event.aborted || runFailed(ctx) ? 'Run was aborted or did not finish successfully.' : blocked(ctx);
-    if (reason) { cancel(pending, ctx, reason); return; }
-    commandSent = true;
-    pi.sendUserMessage(`/${COMMAND} ${pending.id}`, { expandPromptTemplates: true, deliverAs: 'followUp' });
+    if (pending.state === 'requested') settleRequest(event, ctx, Date.now() + DELIVERY_WAIT_MS);
   });
+  /** A report still reaching the chat only delays the reload; any other reason cancels it at once. */
+  const settleRequest = (event: { aborted?: boolean }, ctx: ExtensionContext, giveUpAt: number) => {
+    const t = pending;
+    if (!t || t.state !== 'requested' || commandSent) return;
+    const reason = event.aborted || runFailed(ctx) ? 'Run was aborted or did not finish successfully.' : blocked(ctx);
+    if (reason?.includes(DELIVERY_BLOCK) && Date.now() < giveUpAt && live) {
+      setTimeout(() => settleRequest(event, ctx, giveUpAt), DELIVERY_POLL_MS).unref();
+      return;
+    }
+    if (reason) { cancel(t, ctx, reason); return; }
+    commandSent = true;
+    pi.sendUserMessage(`/${COMMAND} ${t.id}`, { expandPromptTemplates: true, deliverAs: 'followUp' });
+  };
   pi.on('session_start', (event, ctx) => {
     const t = saved(ctx);
     if (!t || !['requested', 'reloading', 'resuming'].includes(t.state)) return;
