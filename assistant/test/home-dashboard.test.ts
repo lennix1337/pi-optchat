@@ -75,3 +75,34 @@ test('publishing a team uses views.publish only', async () => {
   assert.ok(calls[0].url.endsWith('views.publish'));
   assert.ok(calls[0].body.view.blocks.some((b: any) => b.type === 'section' && b.text.text.includes('GX18MCP#42')));
 });
+
+test('Home waits for Slack to accept a just-uploaded image instead of losing the whole view', { skip: spawnSync('dot', ['-V']).status !== 0 }, async () => {
+  const publishes: boolean[] = [];
+  let refusals = 2;
+  const fetcher: typeof fetch = async (url, init) => {
+    const name = String(url).split('/').pop()!;
+    if (name === 'files.getUploadURLExternal') return new Response(JSON.stringify({ ok: true, upload_url: 'https://files.slack.com/upload/test', file_id: 'F1' }));
+    if (name !== 'views.publish') return new Response(JSON.stringify({ ok: true }));
+    const image = JSON.parse(String(init?.body)).view.blocks.some((b: any) => b.type === 'image');
+    publishes.push(image);
+    return new Response(JSON.stringify(image && refusals-- > 0 ? { ok: false, error: 'invalid_arguments' } : { ok: true }));
+  };
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U123', fetch: fetcher, dotPath: 'dot', imageRetryMs: 0 });
+  await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
+  assert.deepEqual(publishes, [true, true, true]);
+});
+
+test('Home falls back to the text view when Slack never accepts the image', { skip: spawnSync('dot', ['-V']).status !== 0 }, async () => {
+  const publishes: boolean[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    const name = String(url).split('/').pop()!;
+    if (name === 'files.getUploadURLExternal') return new Response(JSON.stringify({ ok: true, upload_url: 'https://files.slack.com/upload/test', file_id: 'F1' }));
+    if (name !== 'views.publish') return new Response(JSON.stringify({ ok: true }));
+    const image = JSON.parse(String(init?.body)).view.blocks.some((b: any) => b.type === 'image');
+    publishes.push(image);
+    return new Response(JSON.stringify(image ? { ok: false, error: 'invalid_arguments' } : { ok: true }));
+  };
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U123', fetch: fetcher, dotPath: 'dot', imageRetryMs: 0 });
+  await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
+  assert.equal(publishes.at(-1), false);
+});
