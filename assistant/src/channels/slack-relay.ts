@@ -348,9 +348,10 @@ export class SlackPoster {
           const png = await renderGraph(options.graph, this.options.dotPath);
           if (png) { imageFile = await this.uploadBytes(png, 'home.png'); replaced = this.graphCache?.file; this.graphCache = { key, file: imageFile }; }
         }
-      } catch (error) { console.warn('App Home diagram unavailable:', error instanceof OutboxRefused ? error.message : 'render_or_upload_failed'); }
+      } catch (error) { console.warn('App Home diagram unavailable:', error instanceof Error ? error.message.slice(0, 120) : 'render_or_upload_failed'); }
     }
     await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, { ...options, imageFile }) } });
+    if (options.graph) console.info(`App Home published, diagram ${imageFile ? 'attached' : 'missing'}`);
     if (replaced) await this.call(`${API}files.delete`, { file: replaced }).catch(() => console.warn('App Home: previous diagram not deleted'));
   }
 
