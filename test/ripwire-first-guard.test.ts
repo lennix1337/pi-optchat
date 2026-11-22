@@ -23,6 +23,12 @@ test('reads, notes and scratch files never trigger it', () => {
     assert.equal(guard.check(call), undefined);
 });
 
+test('sed -i on a scratch file under /tmp is not a source write; on a repo file it is', () => {
+  assert.equal(ripwireFirstGuard().check({ name: 'bash', arguments: { command: "sed -i 's/a/b/g' /tmp/apphome.ps1 && scp -q /tmp/apphome.ps1 pc:x" } }), undefined);
+  assert.match(ripwireFirstGuard().check({ name: 'bash', arguments: { command: "sed -i 's/a/b/' src/a.ts" } }) ?? '', /^Não executado/);
+  assert.match(ripwireFirstGuard().check({ name: 'bash', arguments: { command: "sed -i 's/a/b/' /tmp/x.ts src/a.ts" } }) ?? '', /^Não executado/);
+});
+
 test('the tool_call hook refuses the first edit of a run and a new input starts a new run', async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
   registerRipwireFirst({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } }, { perInput: true });
