@@ -50,10 +50,9 @@ const ROLE_ASK: Record<DebateRole, string> = {
 
 /** One turn's prompt: the operator's context, the wake's candidates and leaning, what was said so far, and the turn's
  *  job. The council exists to bring disagreement and other ideas, not approval (operator, 19/11). */
-export function debatePrompt(candidates: string, transcript: string[], role: DebateRole): string {
+export function debatePrompt(candidates: string, transcript: string[], role: DebateRole, context = ''): string {
   const said = transcript.length ? `\n\nO debate até agora:\n${transcript.join('\n')}` : '';
-  return `Você é um conselheiro crítico num debate de no máximo 5 mensagens sobre o que um wake vai fazer agora: um turno autônomo de um assistente (Jarvis) que trabalha sozinho para o operador, um dev brasileiro dono da DentAI (SaaS odontológico), do Genexus18MCP e de uma harness de agentes (Pi/OptChat).
-A intenção dele para este conselho: ser unreasonably ambitious. O conselho existe para puxar a ambição para cima: nunca proponha reduzir a ambição, cortar escopo ou "começar menor"; se a proposta é pequena demais, diga o que seria 10x maior e como chegar lá. Simplicidade vale no jeito de construir, não no tamanho da aposta. Ele quer resultado entregue (PR mergeado), velocidade, autonomia, debate e ideias diferentes, não uma lista de concordâncias.
+  return `${context || 'Você é um conselheiro crítico num debate de no máximo 5 mensagens sobre o que um wake vai fazer agora: um turno autônomo de um assistente.'}
 O wake propôs estes candidatos, com notas e a inclinação dele:
 
 ${candidates}${said}

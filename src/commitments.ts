@@ -413,7 +413,7 @@ function listText(dir: string, all: boolean, now: number) {
   }).join('\n');
 }
 
-type Owner = { dir: string; sourceExists(id: string): boolean; latestSource?(): string | undefined };
+type Owner = { dir: string; issueAliases?: Record<string, string>; sourceExists(id: string): boolean; latestSource?(): string | undefined };
 
 export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
   return {
@@ -448,7 +448,7 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
 /** Registers the tool and the presence nudges of a running turn. */
 export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undefined, now: () => number = Date.now) {
   const presence = new Presence();
-  const issues = new IssueStateCache(ghIssueState, Date.now, (key, error) => logBackgroundFailure(owner()?.dir, `commitment issues ${key}`, error));
+  const issues = new IssueStateCache(ghIssueState, Date.now, (key, error) => logBackgroundFailure(owner()?.dir, `commitment issues ${key}`, error), () => owner()?.issueAliases ?? {});
   const issueText = (c: Commitment) => `${c.text} ${c.next ?? ''}`;
   const required = () => {
     const o = owner();

@@ -3,16 +3,44 @@ import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { advance, DEFAULT_PROBES, healthSignals, prodHealthReadBytes, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState } from '../src/prod-health.ts';
+import { advance, configuredProbes, healthSignals, prodHealthReadBytes, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState, type ProductionHealthConfig } from '../src/prod-health.ts';
 import { QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { composeSummary } from '../src/slack-reports.ts';
+import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
+import * as healthModule from '../src/prod-health.ts';
 
-const [api, web, us] = DEFAULT_PROBES as [typeof DEFAULT_PROBES[0], typeof DEFAULT_PROBES[0], typeof DEFAULT_PROBES[0]];
+test('production probes and route are configured, not built-in', () => {
+  const configured = (healthModule as unknown as { configuredProbes: (p: unknown[]) => { name: string; url: string }[] }).configuredProbes;
+  assert.deepEqual(configured([]), []);
+  assert.deepEqual(configured([{ name: 'Fixture', url: 'https://example.invalid/', slowMs: 3000, judge: { kind: 'jsonHealth', okStatus: 'ok' } }]).map(({ name, url }) => ({ name, url })), [{ name: 'Fixture', url: 'https://example.invalid/' }]);
+});
+
+const fixture: ProductionHealthConfig = { channel: 'fixture', wakeNote: "Investigate read-only; do not write to production without the operator's OK.", probes: [
+  { name: 'API DentAI', url: 'https://api.example.invalid/health', slowMs: 3000, judge: { kind: 'jsonHealth', okStatus: 'ok' } },
+  { name: 'Site dentai.com.br', url: 'https://example.invalid/', slowMs: 4000, judge: { kind: 'regex', pattern: '<html[^>]*lang="pt-BR"', buildPattern: 'data-dpl-id="([0-9a-f]{7,40})"', problem: 'página sem o conteúdo esperado (html pt-BR com build)' } },
+  { name: 'Site usdentai.com', url: 'https://other.example.invalid/', slowMs: 4000, judge: { kind: 'regex', pattern: '<title>[^<]*Dentai', flags: 'i', problem: 'página sem o título esperado' } },
+] };
+const [api, web, us] = configuredProbes(fixture.probes) as [ReturnType<typeof configuredProbes>[0], ReturnType<typeof configuredProbes>[0], ReturnType<typeof configuredProbes>[0]];
 
 const API_OK = '{"status":"ok","timestamp":"2026-10-30T22:11:04.388Z","latency":288,"details":{"db":{"status":"ok"},"ai":{"status":"ok"},"redis":{"status":"ok"}}}';
 const WEB_OK = '<!DOCTYPE html><html data-dpl-id="9781524fc90c09a4acfe8f92dc28a6862d548360" class="x" lang="pt-BR"><head>';
 const US_OK = '<!doctype html> <html lang="en-US"> <head> <title>Dentai | AI Smile Simulations for Dentists</title>';
 const T0 = Date.parse('2026-10-30T22:00:00Z');
+
+test('profile rejects invalid production configuration and saves a valid fixture', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'health-config-'));
+  try {
+    saveConfig(dir, { ...defaults, prodHealth: fixture, productionHosts: ['example.invalid'] });
+    assert.deepEqual(loadConfig(dir).prodHealth, fixture);
+    assert.deepEqual(loadConfig(dir).productionHosts, ['example.invalid']);
+    saveConfig(dir, { ...defaults, prodHealth: { ...fixture, probes: [{ ...fixture.probes[0]!, url: 'http://example.invalid' }] } });
+    assert.throws(() => loadConfig(dir));
+    saveConfig(dir, { ...defaults, prodHealth: { ...fixture, probes: [{ name: 'x', url: 'https://example.invalid', slowMs: 1, judge: { kind: 'regex', pattern: '[', problem: 'bad' } }] } });
+    assert.throws(() => loadConfig(dir));
+    saveConfig(dir, { ...defaults, productionHosts: ['*.example.invalid'] });
+    assert.throws(() => loadConfig(dir));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('probes judge content, not only the status code: a degraded subsystem, a blank page and slowness fail', async () => {
   const at = (body: string, status = 200, delay = 0): Fetcher => async () => { clock += delay; return { status, body }; };
@@ -48,7 +76,7 @@ test('a round probes in parallel, keeps state per profile and feeds the 07:00 su
   const dir = mkdtempSync(join(tmpdir(), 'health-'));
   try {
     const bodies: Record<string, string> = { [api.url]: API_OK, [web.url]: WEB_OK, [us.url]: US_OK };
-    const health = new ProdHealth({ fetcher: async url => ({ status: 200, body: bodies[url]! }), now: () => T0 });
+    const health = new ProdHealth({ probes: [api, web, us], fetcher: async url => ({ status: 200, body: bodies[url]! }), now: () => T0 });
     assert.deepEqual(await health.round(dir), []);
     const lines = healthLines(readHealth(dir));
     assert.deepEqual(lines, ['✅ API DentAI (0 ms)', '✅ Site dentai.com.br (0 ms) · build 9781524f', '✅ Site usdentai.com (0 ms)']);
@@ -61,7 +89,7 @@ test('every round leaves a history line per probe, so a slow episode can be date
   try {
     let clock = T0, delay = 0;
     const bodies: Record<string, string> = { [api.url]: API_OK, [web.url]: WEB_OK, [us.url]: US_OK };
-    const health = new ProdHealth({ fetcher: async url => { clock += url === web.url ? delay : 0; return { status: 200, body: bodies[url]! }; }, now: () => clock });
+    const health = new ProdHealth({ probes: [api, web, us], fetcher: async url => { clock += url === web.url ? delay : 0; return { status: 200, body: bodies[url]! }; }, now: () => clock });
     await health.round(dir);
     delay = 8000; clock += 300_000;
     await health.round(dir);
@@ -83,10 +111,10 @@ test('registered: /optchat-health test drives the real alert path: #dentai post 
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const posts: [string, string | null][] = [], wakes: string[] = [], notices: string[] = [];
   const pi = { on: () => {}, registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, c) };
-  registerProdHealth(pi as never, () => ({ dir }), async (text, channel) => { posts.push([text, channel]); }, text => { wakes.push(text); });
+  registerProdHealth(pi as never, () => ({ dir, prodHealth: fixture }), async (text, channel) => { posts.push([text, channel]); }, text => { wakes.push(text); });
   try {
     await commands.get('optchat-health')!.handler('test', { ui: { notify: (m: string) => notices.push(m) } });
-    assert.deepEqual(posts.map(([t, c]) => [c, /^\[teste de injeção\] 🔴 Sonda de teste com problema às \d\d:\d\d: falha injetada/.test(t)]), [['dentai', true]]);
+    assert.deepEqual(posts.map(([t, c]) => [c, /^\[teste de injeção\] 🔴 Sonda de teste com problema às \d\d:\d\d: falha injetada/.test(t)]), [['fixture', true]]);
     assert.equal(wakes.length, 1);
     assert.match(wakes[0]!, /controlled injection test/);
     assert.match(wakes[0]!, /do not write to production without the operator's OK/);
@@ -96,15 +124,15 @@ test('registered: /optchat-health test drives the real alert path: #dentai post 
 
 test('a recovery is posted without waking anyone; an outage post that fails still wakes', async () => {
   const posts: string[] = [], wakes: string[] = [];
-  await tellTransitions([{ probe: 'API DentAI', kind: 'recovered', text: '✅ API DentAI voltou' }], async (text: string) => { posts.push(text); }, (text: string) => { wakes.push(text); });
+  await tellTransitions([{ probe: 'API DentAI', kind: 'recovered', text: '✅ API DentAI voltou' }], async (text: string) => { posts.push(text); }, (text: string) => { wakes.push(text); }, false, { channel: fixture.channel, wakes: true });
   assert.deepEqual([posts, wakes], [['✅ API DentAI voltou'], []]);
-  await tellTransitions([{ probe: 'API DentAI', kind: 'down', text: '🔴 API DentAI com problema' }], async () => { throw new Error("slack down"); }, (text: string) => { wakes.push(text); });
+  await tellTransitions([{ probe: 'API DentAI', kind: 'down', text: '🔴 API DentAI com problema' }], async () => { throw new Error("slack down"); }, (text: string) => { wakes.push(text); }, false, { channel: fixture.channel, wakes: true });
   assert.equal(wakes.length, 1);
 });
 
 test('an outage whose wake fails is said in #dentai, so it is never silent', async () => {
   const posts: string[] = [];
-  await tellTransitions([{ probe: 'API DentAI', kind: 'down', text: '🔴 API DentAI com problema' }], async (text: string) => { posts.push(text); }, async () => { throw new Error('session closed'); });
+  await tellTransitions([{ probe: 'API DentAI', kind: 'down', text: '🔴 API DentAI com problema' }], async (text: string) => { posts.push(text); }, async () => { throw new Error('session closed'); }, false, { channel: fixture.channel, wakes: true });
   assert.deepEqual(posts, ['🔴 API DentAI com problema', '🔴 API DentAI com problema (não consegui acordar o agente: veja no terminal)']);
 });
 
@@ -168,11 +196,11 @@ test('every remote probe failing on DNS is this machine\'s network, not producti
   const dir = mkdtempSync(join(tmpdir(), 'health-'));
   try {
     const dns: Fetcher = async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }); };
-    const health = new ProdHealth({ fetcher: dns, now: () => T0 });
+    const health = new ProdHealth({ probes: [api, web, us], fetcher: dns, now: () => T0 });
     for (let i = 0; i < FAILURES_BEFORE_ALERT + 1; i++) assert.deepEqual(await health.round(dir), []);
     assert.ok(Object.values(readHealth(dir)).every(s => s.failures === 0 && !s.down), 'rounds from a broken local network count nothing');
     const oneDns: Fetcher = async url => { if (url === api.url) return dns(url, 1); return { status: 200, body: url === web.url ? WEB_OK : US_OK }; };
-    const single = new ProdHealth({ fetcher: oneDns, now: () => T0 });
+    const single = new ProdHealth({ probes: [api, web, us], fetcher: oneDns, now: () => T0 });
     let told: unknown[] = [];
     for (let i = 0; i < FAILURES_BEFORE_ALERT; i++) told = await single.round(dir);
     assert.equal(told.length, 1, 'one probe failing on DNS while the others answer is a real outage');
@@ -183,7 +211,7 @@ test('repeated rounds append history without re-reading the history file until t
   const dir = mkdtempSync(join(tmpdir(), 'health-io-'));
   try {
     const fetcher: Fetcher = async url => ({ status: 200, body: url === api.url ? API_OK : url === web.url ? WEB_OK : US_OK });
-    const health = new ProdHealth({ fetcher, now: () => T0 });
+    const health = new ProdHealth({ probes: [api, web, us], fetcher, now: () => T0 });
     await health.round(dir);
     const before = prodHealthReadBytes;
     for (let i = 0; i < 5; i++) await health.round(dir);

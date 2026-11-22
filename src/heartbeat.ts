@@ -189,30 +189,31 @@ export function previousWakeNote(wake: WakeRecord) {
 If that wake left something open or unconfirmed (a CI run still running, a PR not merged, a check or deploy not confirmed), close it first: check it now and report the result. Start new work only after that, or when it is blocked and you say why.`;
 }
 
-/** Every wake ships something (operator, 03/11: "i dont want a wake where nothing's done at all"): a wake that only re-read state, closed
- * nothing and committed nothing failed, even when every pending item waits on an event or on him. */
-export const DELIVERY_RULE = `Every wake delivers a change: one that only re-reads state and reports "nothing new" failed (operator, 03/11). The end goal of this harness is a living assistant that helps the operator through his day on its own: it notices what he needs, decides and acts without being asked (operator, 08/11). Clearing the queue is the floor, not the delivery: be ambitious. When the pending items wait on events or on the operator, build a new capability toward that goal in the harness (pi-optchat, subagents, gitwatch, multi-account, ripwire, tools, or a new package), measured before and after and finished end to end. Time-box investigation: when a hunt (an issue cause, a stall) has gone 10 tool calls without a fix in sight, ship what it produced (a red test, a diagnostic that would have answered it, a tool) or switch to building; a wake whose report has no PR or commit link failed (operator 14/11: "quero que todos entreguem algo, mesmo que precise criar algo novo").`;
+/** Neutral default; profiles can supply their own delivery instructions. */
+export const DELIVERY_RULE = 'Choose useful work within the operator’s instructions, and verify any change before reporting it.';
 
 
-/** The council script: candidates to #wakes, the least used Codex account answers in the thread (operator 19/11: "o modelo com menos cota entra na conversa pra opinar"). */
+/** The council script path is substituted into configured wake instructions. */
 export const COUNCIL_SCRIPT = fileURLToPath(new URL('../scripts/council.mjs', import.meta.url));
 
-export const BRAINSTORM_NOTE = `Before you pick the delivery, brainstorm: write 5 concrete candidates from different areas (a harness capability, Genexus18MCP or his own projects (never a DentAI business or conversion experiment: he is its developer, not its owner; only what he asks there), an open issue, something he asked for in recent days), score each 1-5 on fit with what we are building here (a living assistant that notices, decides and acts on its own) and with his personality (YAGNI and KISS, results over reports, speed, autonomy), end the list with your leaning and why ("Inclino para N porque ..."), then hold the wake council: pipe it to \`node --experimental-transform-types --no-warnings ${COUNCIL_SCRIPT} --me "<your model · account>"\` (it posts it to #wakes and runs a debate in that thread, each under its own name: the least used Codex account attacks your leaning and brings an alternative, agy disagrees with what was said, the Codex advisor answers it), then decide on the arguments, not the scores: in one short message answer each objection (accepted or rejected, and why) and end with "Mudou: sim" or "Mudou: não" (whether the debate changed your leaning), posted with the same command plus \`--reply <ts it printed>\` (the 5th and last message; operator 19/11: debate and other ideas, not agreement), then build the choice to a merged PR through a worker on another route, not on this session (operator 18/11: Claude is over-used, other accounts sit at 0%): agy first (\`~/.pi/agent/bin/agy-pc.mjs\` or agy-worker, while the \`agy\` row of quota-health.json is over 10%), else \`spawn\` with kind and an explicit \`model\` of the Codex account with less use (\`openai-codex-account-2/gpt-6.1-terra\` or \`openai-codex/gpt-6.1-terra\`, each under 80% of its 7d window), with a Goal/Acceptance/Evidence/Authority contract and a local commit only; you review the diff, run the gate, ship and merge. Do it yourself only a few-line edit. The advisors argue; you decide, and changing your mind on a better argument is the point. No council when the script says no account has room. Do not repeat the last wake's pick (operator 19/11: "sempre tem algo a fazer, inovar em algo, brainstorm e escolher a opcao que mais combina com o que estamos fazendo aqui e a minha personalidade").`;
+export const BRAINSTORM_NOTE = 'Consider alternative work and choose based on evidence, impact, and the operator’s priorities.';
 
-/** Said when the radar has not moved since the last wake: the wake still delivers, with new work (operator, 02/11: "mesmo que nao tenha algo pendente, cria algo novo"). */
-export const NEW_WORK_NOTE = `The radar is unchanged since the last wake: nothing pending moved. This wake still delivers: after closing anything the last wake left open, design and build a new capability toward the living assistant that helps the operator through his day on its own (operator, 08/11), above all in the harness (pi-optchat, subagents, gitwatch, multi-account, ripwire, tools), measured before and after, and finish it end to end.`;
+/** Default notice when the radar has not moved since the last wake. */
+export const NEW_WORK_NOTE = 'The radar is unchanged since the last wake: nothing pending moved.';
 
-/** The operator wants no notice of a wake (15/11: "nao quero ser avisado de nada, só quero q vc trabalhe"): it delivers and reports that, or ends with no text. */
-export const WAKE_SILENCE = 'This call is a turn, never a compaction: work with your tools, and never answer with a memory line (a date and id range such as "15/11 164384-387 OptChat: ...", "machine notice, not user words"). Do not restate or ask again what waits on the operator (commitments in waiting_operator, "awaits user"): he already knows. Never send a "nothing new" summary: deliver a change and report it, or end with no text.';
+/** Default notice distinguishing a wake from a compaction. */
+export const WAKE_SILENCE = 'This call is a turn, not a compaction. Do not repeat questions already waiting on the operator.';
 
 /** The whole text of a woken turn: the wake text from wakeText(), the previous wake to close first (when there is one), and the report language. */
-export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false) {
-  return [wake, ...previous ? [previousWakeNote(previous)] : [], ...unchanged ? [NEW_WORK_NOTE] : [],
-    WAKE_SILENCE, 'Write your final report in Portuguese (pt-BR), with every time in Brasília time (UTC-3, e.g. 15:41).'].join('\n');
+export interface HeartbeatInstructions { delivery?: string; brainstorm?: string; newWork?: string; silence?: string }
+
+export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false, instructions: HeartbeatInstructions = {}) {
+  return [wake, ...previous ? [previousWakeNote(previous)] : [], ...unchanged ? [instructions.newWork ?? NEW_WORK_NOTE] : [],
+    instructions.silence ?? WAKE_SILENCE, 'Write your final report in Portuguese (pt-BR), with every time in Brasília time (UTC-3, e.g. 15:41).'].join('\n');
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
-export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string) {
+export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}) {
   const opening = task
     ? `A cheap check (${model}) woke you and suggests: ${task}
 The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first; it is a candidate, not a selection or permission.`
@@ -223,8 +224,8 @@ ${queue.item}
 Read the backlog to inspect other open items before choosing, within the limits below. Mark an item \`- [x]\` only after delivery, or \`- [!]\` with a concrete blocker; not being selected is not a blocker. Never take an item marked \`- [!]\` or described as blocked. Do not drain the backlog automatically.`;
   return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
-Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance. ${DELIVERY_RULE}
-${BRAINSTORM_NOTE}
+Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance. ${instructions.delivery ?? DELIVERY_RULE}
+${(instructions.brainstorm ?? BRAINSTORM_NOTE).replaceAll('{{councilScript}}', COUNCIL_SCRIPT)}
 The operator's jobs for idle time (candidates, not a priority order):
 ${list(plan.jobs)}
 Allowed, unattended:
@@ -236,11 +237,11 @@ Follow the operator's standing instructions. End with a short report of what you
 
 /** The text of a wake that project signals started: what moved (`note`, from crewWakeNote), then the delivery rule, since a signal that
  * needs nothing still leaves a wake that must deliver (19/11), and the limits of a turn nobody is watching. */
-export function signalWakeText(idleMinutes: number, plan: HeartbeatPlan, note: string) {
+export function signalWakeText(idleMinutes: number, plan: HeartbeatPlan, note: string, instructions: HeartbeatInstructions = {}) {
   return `[OptChat heartbeat] You have been idle for ${idleMinutes} min and the operator is away. Project signals woke you (no model check ran): the projects below moved since the last wake.
 ${note}
-Settle each signal first, with the evidence you read from its project now, not from the line alone. A signal that needs the operator waits for him: do not guess it and do not report it again. When settling them left no commit or PR, the wake is not done: ${DELIVERY_RULE}
-${BRAINSTORM_NOTE}
+Settle each signal first, with the evidence you read from its project now, not from the line alone. A signal that needs the operator waits for him: do not guess it and do not report it again. When settling them left no commit or PR, the wake is not done: ${instructions.delivery ?? DELIVERY_RULE}
+${(instructions.brainstorm ?? BRAINSTORM_NOTE).replaceAll('{{councilScript}}', COUNCIL_SCRIPT)}
 Allowed, unattended:
 ${list(plan.allowed)}
 Never, unless the operator already asked for exactly that:

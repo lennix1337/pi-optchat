@@ -13,6 +13,13 @@ import type { ModelChoice } from '../src/compactor.ts';
 
 const MIN = 60_000;
 
+test('wake instructions come from the profile rather than personal defaults', () => {
+  const defaults = wakeText('', 'model', 30, DEFAULT_HEARTBEAT);
+  assert.doesNotMatch(defaults, /DentAI/);
+  const custom = wakeText('', 'model', 30, DEFAULT_HEARTBEAT, undefined, undefined, { brainstorm: 'fixture brainstorm' });
+  assert.match(custom, /fixture brainstorm/);
+});
+
 
 function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
@@ -559,8 +566,9 @@ test('the woken turn states the previous wake in Brasília time, its outcome and
   assert.doesNotMatch(wakeTurn(wakeText('', 'anthropic/claude-haiku-5-5', 15, plan)), /Previous wake/);
 });
 
-test('every woken turn says it is a turn, forbids memory-line replies, re-asking what waits on the operator and "nothing new" reports (15/11 17:12/17:22)', () => {
-  for (const text of [wakeTurn(wakeText('fix PR 9', 'haiku', 30, plan)), wakeTurn(wakeText('', '', 30, plan)), wakeTurn(signalWakeText(15, plan, 'signals'))]) {
+test('configured turn instructions survive each wake path', () => {
+  const instructions = { silence: 'turn, never a compaction; never answer with a memory line; Do not restate or ask again what waits on the operator; Never send a "nothing new" summary' };
+  for (const text of [wakeTurn(wakeText('fix PR 9', 'haiku', 30, plan), undefined, false, instructions), wakeTurn(wakeText('', '', 30, plan), undefined, false, instructions), wakeTurn(signalWakeText(15, plan, 'signals'), undefined, false, instructions)]) {
     assert.match(text, /turn, never a compaction/);
     assert.match(text, /never answer with a memory line/);
     assert.match(text, /Do not restate or ask again what waits on the operator/);
@@ -585,27 +593,24 @@ test('a heartbeat.json with a damaged skip streak or digest reads as no state, s
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('every wake names the end goal and asks for a new capability toward it, not upkeep alone', () => {
-  const wake = wakeTurn(wakeText('', 'haiku', 15, plan), undefined, true);
-  for (const text of [DELIVERY_RULE, NEW_WORK_NOTE]) {
+test('configured delivery and new-work instructions reach the wake', () => {
+  const instructions = { delivery: 'living assistant through his day new capability ambitious Clearing the queue is the floor', newWork: 'living assistant through his day new capability', brainstorm: '5 concrete candidates personality {{councilScript}} --reply' };
+  const wake = wakeTurn(wakeText('', 'haiku', 15, plan, undefined, undefined, instructions), undefined, true, instructions);
+  for (const text of [instructions.delivery, instructions.newWork]) {
     assert.match(text, /living assistant/);
     assert.match(text, /through his day/);
     assert.match(text, /new capability/);
   }
   assert.match(wake, /ambitious/);
   assert.match(wake, /Clearing the queue is the floor/);
-  assert.ok(wakeText('', 'haiku', 15, plan).includes(BRAINSTORM_NOTE), 'the build wake brainstorms before it picks');
-  assert.match(BRAINSTORM_NOTE, /5 concrete candidates/);
-  assert.doesNotMatch(BRAINSTORM_NOTE, /DentAI conversion|DentAI.{0,20}revenue/i, 'operator 20/11: he is DentAI\'s dev, not its owner: a wake never proposes business experiments there');
-  assert.match(BRAINSTORM_NOTE, /personality/);
-  assert.ok(/scripts[\\/]council\.mjs/.test(BRAINSTORM_NOTE) && /--reply/.test(BRAINSTORM_NOTE), 'the wake asks the council before it decides');
+  assert.match(wake, /5 concrete candidates/);
+  assert.match(wake, /personality/);
+  assert.ok(/scripts[\\/]council\.mjs/.test(wake) && /--reply/.test(wake), 'the configured script placeholder is expanded');
 });
 
-test('the wake builds through a worker on another account, not on the Claude session (operator 18/11)', () => {
-  assert.match(BRAINSTORM_NOTE, /worker/);
-  assert.match(BRAINSTORM_NOTE, /agy/);
-  assert.match(BRAINSTORM_NOTE, /openai-codex/);
-  assert.match(BRAINSTORM_NOTE, /you review/);
+test('configured worker instructions reach the wake', () => {
+  const text = wakeText('', 'haiku', 15, plan, undefined, undefined, { brainstorm: 'worker, other account, review' });
+  assert.match(text, /worker, other account, review/);
 });
 
 test('every wake is told to deliver a change, and one after an empty wake is told it was empty', () => {
@@ -1078,10 +1083,10 @@ test('without wakeTriage the heartbeat samples no heap', async () => {
   rmSync(h.dir, { recursive: true, force: true });
 });
 
-test('every wake must end with a PR or commit and time-boxes read-only hunts', async () => {
-  const { DELIVERY_RULE } = await import('../src/heartbeat.ts');
-  assert.match(DELIVERY_RULE, /10 tool calls/);
-  assert.match(DELIVERY_RULE, /no PR or commit link failed/);
+test('custom delivery limits are preserved in the wake', () => {
+  const text = wakeText('', 'haiku', 15, plan, undefined, undefined, { delivery: '10 tool calls; no PR or commit link failed' });
+  assert.match(text, /10 tool calls/);
+  assert.match(text, /no PR or commit link failed/);
 });
 
 test('with wakeTriage nextWakeAt is the tick of the build wake, not the next check that may sleep (19/11: Home said 10:34, nothing ran)', async () => {

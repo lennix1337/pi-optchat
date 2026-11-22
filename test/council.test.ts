@@ -9,6 +9,11 @@ const state = (usage: Record<string, number>, cooldowns: Record<string, number> 
   exhaustedUntilByProvider: cooldowns,
 });
 
+test('council background comes only from profile configuration', () => {
+  assert.doesNotMatch(debatePrompt('candidate', [], 'critic'), /DentAI/);
+  assert.match(debatePrompt('candidate', [], 'critic', 'fixture background'), /fixture background/);
+});
+
 test('the advisor is the least used Codex account, never Claude itself', () => {
   const pick = pickAdvisor(state({ 'anthropic-account-2': 2, 'openai-codex': 30, 'openai-codex-account-2': 5 }), now);
   assert.deepEqual(pick, { account: 'openai-codex-account-2', model: 'openai-codex-account-2/gpt-6.2-sol', used: 5 });
@@ -90,11 +95,9 @@ test('the decision records whether the debate changed the leaning', () => {
   assert.equal(decisionChanged('Decido 1.'), undefined);
 });
 
-test('the council pushes ambition up, never trims it (operator 20/11: "quero um conselho com essa intencao")', () => {
+test('configured council context is passed to every role', () => {
   for (const role of ['critic', 'second', 'rebuttal'] as const) {
-    const prompt = debatePrompt('1. placar (4/5)\nInclino para 1.', [], role);
-    assert.match(prompt, /unreasonably ambitious/i);
-    assert.match(prompt, /nunca proponha reduzir a ambição/i);
-    assert.doesNotMatch(prompt, /valoriza YAGNI/);
+    const prompt = debatePrompt('1. placar (4/5)\nInclino para 1.', [], role, 'fixture: challenge assumptions');
+    assert.match(prompt, /fixture: challenge assumptions/);
   }
 });

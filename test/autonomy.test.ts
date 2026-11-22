@@ -7,6 +7,24 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { classifyEffects, decide, parseContract, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { touchesContract } from '../src/authorization.ts';
+import * as external from '../src/external-effects.ts';
+
+test('production hosts are profile-scoped and an absent map fails closed', async () => {
+  const withHosts = (external as unknown as { withProductionHosts: <T>(hosts: string[] | undefined, fn: () => T) => T }).withProductionHosts;
+  assert.ok(effects('curl -X POST -d x https://unknown.example/path').some(e => e.startsWith('production-write')));
+  const selected = await withHosts(['fixture.example'], async () => {
+    await Promise.resolve();
+    return [effects('curl -X POST -d x https://sub.fixture.example/path'), effects('curl -X POST -d x https://other.example/path')];
+  });
+  assert.ok(selected[0]!.some(e => e.startsWith('production-write')));
+  assert.deepEqual(selected[1], []);
+  assert.ok(withHosts([], () => effects('curl -X POST -d x https://other.example/path')).some(e => e.startsWith('production-write')));
+  const isolated = await Promise.all(['first.example', 'second.example'].map(host => withHosts([host], async () => {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    return effects(`curl -X POST -d x https://${host}/path`);
+  })));
+  assert.ok(isolated.every(result => result.some(e => e.startsWith('production-write'))));
+});
 
 
 const repos: Record<string, [string, string]> = {

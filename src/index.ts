@@ -215,7 +215,7 @@ export default function optchat(host: ExtensionAPI) {
   registerRipwireFirst(pi, { perInput: true });
   registerSelfBuildGuard(pi, { perInput: true });
   registerSuiteOnceGuard(pi);
-  const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir,
+  const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir, productionHosts: () => active?.config.productionHosts,
 
   orderGrant: effect => {
     const profile = active;
@@ -569,8 +569,9 @@ export default function optchat(host: ExtensionAPI) {
         const runs = lastRunsOf(profile.children.runs(), Date.now());
         const note = beat.signals?.length ? crewWakeNote(profile.crew.missions(), [], [], beat.signals.map(signal => ({ ...signal, lastRun: runs[signal.project]?.id })))
           : profile.config.managerMode ? crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts()) : '';
-        const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged);
+        const instructions = profile.config.heartbeatInstructions;
+        const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions)
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
@@ -983,7 +984,7 @@ export default function optchat(host: ExtensionAPI) {
   registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
 
   registerQuotaCommand(pi, () => slackOwner()?.dir);
-  registerProdHealth(pi, slackOwner, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
+  registerProdHealth(pi, () => { const owner = slackOwner(); return owner ? { ...owner, prodHealth: active?.config.prodHealth } : undefined; }, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
 
   const work = registerWorkTracker(pi, () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name, sessionId: active.sessionId } : undefined);
   const unwatchWork: (() => void)[] = [];
@@ -994,6 +995,7 @@ export default function optchat(host: ExtensionAPI) {
     const a = active;
     return a && inPhase('open', 'closing', 'import-paused') ? {
       dir: a.dir,
+      issueAliases: a.config.issueAliases,
       sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; },
       latestSource: () => { flush(); const latest = latestOperatorMessage(a.memory.root); return latest ? String(latest.i) : undefined; },
     } : undefined;
