@@ -25,7 +25,7 @@ test('blocks third git am after the same failure, normalizing whitespace', async
   assert.equal(await f.call('git am /tmp/x.patch', 'other'), undefined);
 });
 
-test('scp failures reset on different error, different command or success', async () => {
+test('scp failures survive other commands and reset only on its own different error or success', async () => {
   const f = fixture();
   const cmd = 'scp file agy-pc:/tmp/file';
   const error = 'scp: dest open "/tmp/file": Failure\nCommand exited with code 1';
@@ -36,11 +36,21 @@ test('scp failures reset on different error, different command or success', asyn
   f.result(cmd, error);
   assert.equal((await f.call(cmd))?.block, true);
   assert.equal(await f.call('pwd'), undefined);
-  assert.equal(await f.call(cmd), undefined);
-  f.result(cmd, error);
+  f.result('pwd', '/tmp', false);
+  assert.equal((await f.call(cmd))?.block, true);
   f.result(cmd, '', false);
   f.result(cmd, error);
   assert.equal(await f.call(cmd), undefined);
+});
+
+test('only the 20 most recent failing commands are remembered per session', async () => {
+  const f = fixture();
+  for (let i = 0; i < 20; i++) f.result(`cmd ${i}`, 'failed');
+  f.result('cmd 0', 'failed');
+  f.result('cmd 20', 'failed');
+  assert.equal((await f.call('cmd 0'))?.block, true);
+  f.result('cmd 1', 'failed');
+  assert.equal(await f.call('cmd 1'), undefined);
 });
 
 test('session lifecycle clears repeated failures', async () => {
