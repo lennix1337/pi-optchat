@@ -92,3 +92,15 @@ export function askAdvisor(args: string[], options: { command?: string; timeoutM
 export function advisorLine(advisor: Advisor, answer: string): string {
   return `🤖 *${advisor.model.slice(advisor.account.length + 1)} · ${advisor.account}* (conselheiro): ${answer.trim()}`;
 }
+
+export interface CouncilAnswer { advisor: Advisor; role: DebateRole; answer?: string; error?: string }
+
+/** What the wake reads after the debate: each answer whole, one per line, then how to post the decision.
+ *  A single JSON line got cut by the tool output limit and the verdict was never read. */
+export function councilReport(ts: string, channel: string, answers: readonly CouncilAnswer[]): string {
+  const lines = answers.map(({ advisor, role, answer, error }) => {
+    const who = `${role} · ${advisor.model.slice(advisor.account.length + 1)}`;
+    return answer ? `${who}: ${answer.trim().replace(/\s*\n\s*/g, ' ')}` : `${who}: não respondeu: ${error ?? 'resposta vazia'}`;
+  });
+  return [...lines, `decida e responda com: council.mjs --me "<modelo · conta>" --reply ${ts}${channel === 'wakes' ? '' : ` --channel ${channel}`}`].join('\n');
+}

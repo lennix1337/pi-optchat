@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AGY_ADVISOR, advisorLine, agyAnswer, askAdvisor, debatePrompt, debateTurns, decisionChanged, offersModel, pickAdvisor } from '../src/council.ts';
+import { AGY_ADVISOR, advisorLine, councilReport, agyAnswer, askAdvisor, debatePrompt, debateTurns, decisionChanged, offersModel, pickAdvisor } from '../src/council.ts';
 
 const now = Date.parse('2026-11-19T03:00:00Z');
 const later = now + 86_400_000;
@@ -100,4 +100,17 @@ test('configured council context is passed to every role', () => {
     const prompt = debatePrompt('1. placar (4/5)\nInclino para 1.', [], role, 'fixture: challenge assumptions');
     assert.match(prompt, /fixture: challenge assumptions/);
   }
+});
+
+test('the council report prints each advisor answer in full on its own lines, then the thread ts to reply on', () => {
+  const long = 'Objeção: ' + 'x'.repeat(900);
+  const sol = { account: 'openai-codex-account-2', model: 'openai-codex-account-2/gpt-6.2-sol', used: 1 };
+  const report = councilReport('1795.22', 'wakes', [
+    { advisor: sol, role: 'critic', answer: long },
+    { advisor: AGY_ADVISOR, role: 'second', answer: undefined, error: 'sem resposta em 300 s' },
+  ]);
+  assert.ok(report.split('\n').every(l => l.length <= 1000));
+  assert.match(report, new RegExp(`critic · gpt-6.2-sol: Objeção: x{900}`));
+  assert.match(report, /second · gemini-4-neon-high: não respondeu: sem resposta em 300 s/);
+  assert.match(report.split('\n').at(-1)!, /--reply 1795\.22/);
 });
