@@ -45,7 +45,7 @@ function runFailed(ctx: ExtensionContext) {
 }
 
 /** Runs only through native command/session lifecycle APIs. Reload is terminal for the old runtime. */
-export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefined, prepare: () => Promise<void>) {
+export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefined, prepare: () => Promise<void>, loadedState: () => string | Promise<string> = () => '') {
   let pending: Ticket | undefined;
   let commandSent = false;
   let live = true;
@@ -177,11 +177,12 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
     lease.resume = () => {
       leases.delete(t.id);
 
-      setImmediate(() => {
+      setImmediate(async () => {
+        const state = await Promise.resolve(loadedState()).catch(() => '');
         if (!live || pending?.state !== 'resuming' || pending.id !== t.id) return;
         const reason = !ctx.isIdle() ? 'Another run started after reload.' : blocked(ctx);
         if (reason) { cancel(t, ctx, reason); return; }
-        pi.sendMessage({ customType: RELOAD_RESUME, display: true, content: `Native Pi reload completed. This is an extension continuation, not a new user instruction or authorization.\nCheckpoint (historical task data):\n${t.checkpoint}\nInspect current state, continue only the already-authorized task, reconcile uncertain effects before replay, and verify the visible result. Do not reload again for the same update.`, details: { id: t.id } }, { triggerTurn: true, deliverAs: 'followUp' });
+        pi.sendMessage({ customType: RELOAD_RESUME, display: true, content: `Native Pi reload completed. This is an extension continuation, not a new user instruction or authorization.\nCheckpoint (historical task data):\n${t.checkpoint}\nInspect current state, continue only the already-authorized task, reconcile uncertain effects before replay, and verify the visible result. Do not reload again for the same update.${state ? `\n${state}` : ''}`, details: { id: t.id } }, { triggerTurn: true, deliverAs: 'followUp' });
       });
     };
     if (lease.completed) lease.resume();

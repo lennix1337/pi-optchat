@@ -8,7 +8,7 @@ function fixture(prepare: () => Promise<void> = async () => {}) {
   let busy: string | undefined, reloads = 0, prepares = 0, running = false;
   let tools: any[] = [], responder: ((data: any) => void) | undefined;
   const listeners = new Map<string, ((data: unknown) => void)[]>();
-  let replacement: string | undefined;
+  let replacement: string | undefined; let loadedState = () => '';
   const ctx = { cwd: 'fixture-cwd', mode: 'tui', isIdle: () => !running, hasPendingMessages: () => false,
     sessionManager: { getSessionId: () => 'session-1', getBranch: () => entries },
     ui: { notify: (message: string) => notices.push(message) }, reload: async () => { reloads++; } } as unknown as ExtensionContext;
@@ -22,7 +22,7 @@ function fixture(prepare: () => Promise<void> = async () => {}) {
     appendEntry: (customType: string, data: unknown) => entries.push({ type: 'custom', customType, data: structuredClone(data) }),
     sendUserMessage: (...args: any[]) => sent.push(['command', ...args]), sendMessage: (...args: any[]) => sent.push(['message', ...args]) } as unknown as ExtensionAPI;
   let toolDef: any;
-  const attach = () => { hooks.clear(); registerSelfReload(pi, () => ({ profile: 'fixture', blocked: busy }), async () => { prepares++; await prepare(); }); };
+  const attach = () => { hooks.clear(); registerSelfReload(pi, () => ({ profile: 'fixture', blocked: busy }), async () => { prepares++; await prepare(); }, () => loadedState()); };
   const emit = async (name: string, event: any = {}) => { for (const hook of hooks.get(name) ?? []) await hook(event, ctx); await new Promise(resolve => setImmediate(resolve)); };
   attach();
   (ctx as any).reload = async () => {
@@ -36,7 +36,7 @@ function fixture(prepare: () => Promise<void> = async () => {}) {
     request: () => toolDef.execute('call-1', { checkpoint: 'Verified A. Next inspect B; do not repeat A.' }, new AbortController().signal, undefined, ctx),
     busy: (reason?: string) => { busy = reason; }, running: (on: boolean) => { running = on; }, reloads: () => reloads, prepares: () => prepares,
     latest: () => entries.filter(e => e.customType === RELOAD_ENTRY).at(-1)?.data,
-    replacement: (kind: string) => { replacement = kind; },
+    replacement: (kind: string) => { replacement = kind; }, loaded: (fn: () => string) => { loadedState = fn; },
     delegation: (answer?: string | false) => { tools = [{ name: 'subagent' }]; responder = answer === false ? undefined : data => data.respond('pi-subagents', answer); } };
 }
 
@@ -240,4 +240,14 @@ test('a follow-up run already started when the request settles does not cancel t
   (f.entries as any[]).push({ type: 'message', message: { role: 'assistant', stopReason: 'stop' } });
   await f.emit('agent_settled', { aborted: false });
   assert.equal(f.sent.length, 1); assert.match(f.sent[0][1], /^\/optchat-self-reload /);
+});
+
+test('the continuation after the reload carries the loaded-code check, so nobody claims it unverified', async () => {
+  const f = fixture(); f.loaded(() => 'Loaded-code check after the reload: OK, the Pi runs every local package HEAD.');
+  await f.request();
+  await f.emit('agent_settled', { aborted: false });
+  const token = f.sent[0][1].split(' ')[1];
+  await f.commands.get('optchat-self-reload').handler(token, f.ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(f.sent[1][1].content, /Loaded-code check after the reload: OK/);
 });
