@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
-import { SLACK_PREFIX, SlackBridge, clipWords, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
+import { SLACK_PREFIX, SlackBridge, clipWords, finalText, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
 import { budgetNote, words } from '../src/slack-policy.ts';
 import { readDay } from '../src/home-day.ts';
 import { REPORT_TYPE } from '../src/transcript.ts';
@@ -69,6 +69,34 @@ test('the final answer of a run that received a Slack message goes back to the D
     const reply = f.requests.find(r => r.path === '/v1/slack/send');
     assert.deepEqual(reply?.body, { text: 'Tudo verde.', threadTs: '4.0' });
   } finally { f.close(); }
+});
+
+test('internal compaction blocks in a final answer are not relayed to the DM', async () => {
+  const f = fixture([{ seq: 1, ts: '5.0', thread: '4.0', text: 'status?' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    await f.bridge.runEnded(replies('Tudo verde.\n\n<compaction-line>22/11 10:34 BRT: internal summary</compaction-line>'));
+    const reply = f.requests.find(r => r.path === '/v1/slack/send');
+    assert.deepEqual(reply?.body, { text: 'Tudo verde.', threadTs: '4.0' });
+  } finally { f.close(); }
+});
+
+test('the answer sent during a hold also omits internal blocks', async () => {
+  const f = fixture([{ seq: 1, ts: '5.0', thread: '4.0', text: 'status?' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    f.bridge.assistantSaid(replies('Pronto.\n<compaction-line>internal</compaction-line>')[0]!);
+    await f.bridge.answerDuringHold();
+    assert.deepEqual(f.requests.find(r => r.path === '/v1/slack/send')?.body, { text: 'Pronto.', threadTs: '4.0' });
+  } finally { f.close(); }
+});
+
+test('final answer defence removes repeated and unfinished internal blocks', () => {
+  assert.equal(finalText(replies('Antes <compaction-line>um</compaction-line> meio <compaction-line>dois</compaction-line> depois')), 'Antes  meio  depois');
+  assert.equal(finalText(replies('Resposta.\n<compaction-line>unfinished')), 'Resposta.');
+  assert.equal(finalText(replies('<compaction-line>secret</compaction-line>')), '');
 });
 
 test('a notice steering a Slack run does not swallow the answer the operator was waiting for', async () => {
