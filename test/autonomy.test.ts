@@ -19,7 +19,7 @@ const scripts: Record<string, string> = {
   'c:/projetos/pi-optchat/scripts/report.mjs': "import { readFileSync } from 'node:fs'\nconsole.log(readFileSync('x', 'utf8'))",
 };
 const repo: Repo = { slug: (path, remote) => remote === 'fork' ? 'lennix1337/ripwire' : repos[path]?.[0], branch: path => repos[path]?.[1], script: path => scripts[path] };
-const effects = (command: string, cwd = 'C:/Users/swluc', tool = 'bash') => classifyEffects({ tool, input: { command }, cwd }, repo)
+const effects = (command: string, cwd = 'C:/Users/me', tool = 'bash') => classifyEffects({ tool, input: { command }, cwd }, repo)
   .map(e => `${e.action} ${e.targets.join(',')}`.trim());
 
 test('pushes are told apart by destination: a branch, the default branch, or a force push', () => {
@@ -34,15 +34,15 @@ test('pushes are told apart by destination: a branch, the default branch, or a f
 });
 
 test('merges, publishing and deploys name the repository they touch', () => {
-  assert.deepEqual(effects('gh pr merge 124 --repo tecnologia-ai/dentai --squash'), ['merge c:/users/swluc,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('gh pr merge 124 --repo tecnologia-ai/dentai --squash'), ['merge c:/users/me,tecnologia-ai/dentai']);
   assert.deepEqual(effects('cd C:/projetos/dentai-mono && gh pr merge 86 --squash'), ['merge c:/projetos/dentai-mono,tecnologia-ai/dentai']);
   assert.deepEqual(effects('npm publish --access public', 'C:/projetos/pi-optchat'), ['publish c:/projetos/pi-optchat,lennix1337/pi-optchat']);
-  assert.deepEqual(effects('gh release create v4.0.4 -R lennix1337/Genexus18MCP'), ['publish c:/users/swluc,lennix1337/genexus18mcp']);
+  assert.deepEqual(effects('gh release create v4.0.4 -R lennix1337/Genexus18MCP'), ['publish c:/users/me,lennix1337/genexus18mcp']);
   assert.deepEqual(effects('cd C:/projetos/dentai-mono && pwsh -File scripts/release/deploy-changed.ps1 -Sha 6f7d5915'), ['deploy c:/projetos/dentai-mono,tecnologia-ai/dentai']);
-  assert.deepEqual(effects('gh workflow run deploy-prod.yml -R tecnologia-ai/dentai'), ['deploy c:/users/swluc,tecnologia-ai/dentai']);
-  assert.deepEqual(effects('gh workflow run publish.yml --ref main -R lennix1337/pi-ripwire-but-better'), ['publish c:/users/swluc,lennix1337/pi-ripwire-but-better'], 'a package publish workflow is a publish, not a deploy');
-  assert.deepEqual(effects('gh workflow run release.yml -R lennix1337/pi-vault'), ['publish c:/users/swluc,lennix1337/pi-vault']);
-  assert.deepEqual(effects('gh workflow run release-prod.yml -R tecnologia-ai/dentai'), ['deploy c:/users/swluc,tecnologia-ai/dentai'], 'a prod workflow stays a deploy');
+  assert.deepEqual(effects('gh workflow run deploy-prod.yml -R tecnologia-ai/dentai'), ['deploy c:/users/me,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('gh workflow run publish.yml --ref main -R lennix1337/pi-ripwire-but-better'), ['publish c:/users/me,lennix1337/pi-ripwire-but-better'], 'a package publish workflow is a publish, not a deploy');
+  assert.deepEqual(effects('gh workflow run release.yml -R lennix1337/pi-vault'), ['publish c:/users/me,lennix1337/pi-vault']);
+  assert.deepEqual(effects('gh workflow run release-prod.yml -R tecnologia-ai/dentai'), ['deploy c:/users/me,tecnologia-ai/dentai'], 'a prod workflow stays a deploy');
   assert.deepEqual(effects('cd C:/projetos/pi-optchat && pwsh -NoProfile -File ./release.ps1 -Version 4.0.4'), ['publish c:/projetos/pi-optchat,lennix1337/pi-optchat']);
   assert.deepEqual(effects('cd C:/projetos/pi-optchat && pwsh -NoProfile -File ./release.ps1 -WhatIf'), []);
   assert.deepEqual(effects('git push origin --delete fix/old', 'C:/projetos/dentai-mono'), ['discard c:/projetos/dentai-mono,tecnologia-ai/dentai'], 'deleting a remote branch is a discard');
@@ -137,7 +137,7 @@ test('relative paths are resolved against cd and the working directory; deletes 
   assert.deepEqual(effects('O=/c/tmp/gxe-bench; rm -rf $O; mkdir -p $O'), []);
   assert.deepEqual(effects('D=$(git rev-parse --show-toplevel); rm -rf $D'), ['recursive-delete $d'], 'an unknown value stays strict');
   assert.deepEqual(effects('R=main; git push origin $R', 'C:/projetos/pi-optchat'), ['push-main c:/projetos/pi-optchat,lennix1337/pi-optchat']);
-  assert.deepEqual(effects('for n in 83 85 86; do gh pr merge $n --repo tecnologia-ai/dentai --squash; done'), ['merge c:/users/swluc,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('for n in 83 85 86; do gh pr merge $n --repo tecnologia-ai/dentai --squash; done'), ['merge c:/users/me,tecnologia-ai/dentai']);
   assert.deepEqual(effects('git push origin > /c/tmp/push.log 2>&1', 'C:/projetos/dotfiles'), ['push-main c:/projetos/dotfiles,lennix1337/dotfiles'], 'a redirection is not a refspec');
 });
 
@@ -166,7 +166,7 @@ const contract = parseContract({
     { action: 'force-push', scope: ['*'], level: 'ask' },
   ],
 });
-const verdict = (command: string, cwd = 'C:/Users/swluc') => decide(contract, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo), Date.parse('2026-10-28T00:00:00Z')).level;
+const verdict = (command: string, cwd = 'C:/Users/me') => decide(contract, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo), Date.parse('2026-10-28T00:00:00Z')).level;
 
 test('the first live rule that matches the action and a target decides; otherwise the default', () => {
   assert.equal(verdict('git push -u origin feat/x', 'C:/projetos/pi-optchat'), 'free');
@@ -198,7 +198,7 @@ test('a delete of several folders is as strict as its strictest folder', () => {
 test('a call with no recognised effect runs and is logged even when the default asks', () => {
 
   const strict = parseContract({ version: 1, default: 'ask', rules: [{ action: 'push', scope: ['lennix1337/*'], level: 'free' }] });
-  const level = (command: string, cwd = 'C:/Users/swluc') => decide(strict, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo)).level;
+  const level = (command: string, cwd = 'C:/Users/me') => decide(strict, classifyEffects({ tool: 'bash', input: { command }, cwd }, repo)).level;
   assert.equal(level('git status'), 'report', 'nothing for the contract to decide');
   assert.equal(level('git push origin main', 'C:/projetos/dentai-mono'), 'ask', 'an effect no rule names still gets the default');
   assert.equal(level('git push -u origin feat/x', 'C:/projetos/pi-optchat'), 'free');
@@ -351,7 +351,7 @@ test('only a call that can change the contract file is a contract change; search
   for (const command of [
     `cd C:/projetos/pi-optchat && grep -rn "touchesContract\\|${f}" src/*.ts | grep -v "^src/a" | head -15`,
     `cat ~/.optchat/${f}`, `ls ~/.optchat/${f} 2>&1`, `jq .rules ~/.optchat/${f} 2>/dev/null`,
-    `Get-Content C:/Users/swluc/.optchat/${f}`, `git log --oneline -- src/${f}`,
+    `Get-Content C:/Users/me/.optchat/${f}`, `git log --oneline -- src/${f}`,
     `cd C:/projetos/pi-optchat && cat > vc-tmp.mts <<'EOF'\nconsole.log(decide(c, call('grep -n ${f} src/autonomy.ts')));\nEOF\nnode vc-tmp.mts; rm -f vc-tmp.mts`,
     `cat ~/.optchat/${f} > /tmp/contract-copy.json`, `diff proposed.json ~/.optchat/${f} > /tmp/d.txt 2>&1`,
     `cp ~/.optchat/${f} /tmp/backup.json`, `node scripts/check.mjs && grep -c ${f} src/autonomy.ts`,
@@ -362,7 +362,7 @@ test('only a call that can change the contract file is a contract change; search
     `cat > ~/.optchat/${f} <<'EOF'\n{}\nEOF`, `tee ~/.optchat/${f} <<EOF\n{}\nEOF`,
     `echo x >> ~/.optchat/${f}`, `cat a 1> "~/.optchat/${f}"`, `mv proposed.json ~/.optchat/${f}`,
   ]) assert.equal(bash(command), true, command);
-  assert.equal(touchesContract({ tool: 'edit', input: { path: `C:/Users/swluc/.optchat/${f}`, edits: [] } }), true);
+  assert.equal(touchesContract({ tool: 'edit', input: { path: `C:/Users/me/.optchat/${f}`, edits: [] } }), true);
   assert.equal(touchesContract({ tool: 'write', input: { path: `~/.optchat/${f}`, content: '{}' } }), true);
   assert.equal(touchesContract({ tool: 'edit', input: { path: 'src/authorization.ts', edits: [{ oldText: 'a', newText: `names ${f}` }] } }), false);
   assert.equal(touchesContract({ tool: 'self_reload', input: { checkpoint: `copy of ${f} still needs the operator` } }), false);
@@ -420,7 +420,7 @@ test('risk mode stops deploys and production writes unless the operator wrote a 
 test('a command run under timeout is still classified: the 2026-10-29 Worker deploy passed the gate unseen', () => {
   assert.deepEqual(effects('cd C:/projetos/dentai-mono && timeout 300 npx wrangler deploy --config wrangler.jsonc --var LANDING_MODE:marketing'), ['deploy c:/projetos/dentai-mono,tecnologia-ai/dentai']);
   assert.deepEqual(effects('timeout -k 5 60s git push origin main', 'C:/projetos/dotfiles'), ['push-main c:/projetos/dotfiles,lennix1337/dotfiles']);
-  assert.deepEqual(effects('timeout --signal=KILL 2m gh pr merge 1 --repo tecnologia-ai/dentai'), ['merge c:/users/swluc,tecnologia-ai/dentai']);
+  assert.deepEqual(effects('timeout --signal=KILL 2m gh pr merge 1 --repo tecnologia-ai/dentai'), ['merge c:/users/me,tecnologia-ai/dentai']);
   assert.deepEqual(effects('timeout 90 agent-browser --session x get url'), []);
 });
 

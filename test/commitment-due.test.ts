@@ -5,12 +5,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dueFindings, escalationLine, nextDue, overdueDay, OVERDUE_MS, type DueItem, type DueState } from '../src/commitment-due.ts';
 import { addCommitment, commitmentsContext, commitmentsTool, readCommitments } from '../src/commitments.ts';
+import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 
 const T0 = Date.parse('2026-11-10T12:00:00Z');
 const HOUR = 3_600_000;
 const iso = (at: number) => new Date(at).toISOString();
 const item = (extra: Partial<DueItem> = {}): DueItem => ({ id: 'c_aaaaaa', text: 'ship the thing', owner: 'optchat', status: 'open', due: iso(T0), ...extra });
 const fresh = (): DueState => ({ dueSeen: [], escalated: {} });
+
+test('inference uses only configured project patterns and keeps ambiguous items global', () => {
+  const items = [item({ text: 'ALPHA-42' }), item({ id: 'c_bbbbbb', text: 'alpha and beta' })];
+  assert.deepEqual(dueFindings(items, fresh(), T0).findings.map(f => f.project), ['global', 'global']);
+  const patterns = { first: '\\balpha(?:-\\d+)?\\b', second: '\\bbeta\\b' };
+  assert.deepEqual(dueFindings(items, fresh(), T0, patterns).findings.map(f => f.project), ['first', 'global']);
+});
+
+test('profile preserves valid project patterns and rejects malformed patterns', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'due-config-'));
+  try {
+    saveConfig(dir, { ...defaults, commitmentProjects: { demo: '\\bdemo\\b' } });
+    assert.equal(dueFindings([item({ text: 'DEMO' })], fresh(), T0, loadConfig(dir).commitmentProjects).findings[0]!.project, 'demo');
+    saveConfig(dir, { ...defaults, commitmentProjects: { demo: '[' } });
+    assert.throws(() => loadConfig(dir), /Invalid profile config/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('a due time that passed signals once, with the id and text; the project is its project field, else global', () => {
   const items = [item(), item({ id: 'c_bbbbbb', text: 'other', project: 'dentai', due: iso(T0 + 5 * 60_000) })];
@@ -146,7 +164,7 @@ test('an item with no project field belongs to the one specialist its text names
     named('c_000005', 'VM Oracle jarvis: criar e entrar por SSH'),
     named('c_000006', 'Mexer no dotfiles', 'dentai'),
     named('c_000007', 'Espelhar config no dotfiles payload'),
-  ], fresh(), T0 + 10 * 60_000).findings;
+  ], fresh(), T0 + 10 * 60_000, { dentai: '\\bdentai', dotfiles: '\\bdotfiles\\b', genexus18mcp: '\\bgenexus', harness: '\\bpi-[a-z]+' }).findings;
   assert.deepEqual(found.map(f => [f.id, f.project]), [
     ['c_000001', 'dentai'], ['c_000002', 'harness'], ['c_000003', 'genexus18mcp'], ['c_000004', 'global'], ['c_000005', 'global'], ['c_000006', 'dentai'], ['c_000007', 'dotfiles'],
   ]);

@@ -72,11 +72,11 @@ test('incident 06/11: a script file that submits a form on a production page, or
     '/tmp/odo-url.mjs': `${cdp}\nconst origin = 'https://dentai.com.br';`,
     '/tmp/lead.mjs': "await fetch('https://api.dentai.com.br/leads', { method: 'POST', body })",
     '/tmp/read.mjs': "const r = await fetch('https://api.dentai.com.br/health'); console.log(await r.text())",
-    '/tmp/local.mjs': `${cdp}\nconst page = 'http://localhost:3100/odontoclinic';`,
+    '/tmp/local.mjs': `${cdp}\nconst page = 'http://localhost:3100/sample-clinic';`,
   };
   const scriptRepo: Repo = { ...repo, script: path => scripts[path] };
   const run = (command: string) => lines(classifyEffects({ tool: 'bash', input: { command }, cwd: 'C:/projetos/pi-optchat' }, scriptRepo));
-  observeBrowser({ action: 'navigate', tab: 'B28A5503AB0400E9C87DA330EFA164E1', url: 'https://dentai.com.br/odontoclinic' }, '{"status":"ok"}');
+  observeBrowser({ action: 'navigate', tab: 'B28A5503AB0400E9C87DA330EFA164E1', url: 'https://dentai.com.br/sample-clinic' }, '{"status":"ok"}');
   observeBrowser({ action: 'open', url: 'http://localhost:3100/' }, '{"status":"ok","tab":"LOCAL0001"}');
   assert.deepEqual(run('sleep 3; cd /tmp && timeout 60 node odo-e2e.mjs B28A5503AB0400E9C87DA330EFA164E1; echo rc=$?'), ['production-write https:dentai.com.br'], 'the owned tab it drives is on production');
   assert.deepEqual(run('node /tmp/odo-e2e.mjs B28A5503'), ['production-write https:dentai.com.br'], 'a tab id prefix names the same tab');
@@ -115,7 +115,7 @@ test('the risk gate stops the incidents and lets everyday work through without a
   for (const [command, kind] of stopped) assert.equal(riskOf(gate, call(command)), kind, command);
   assert.equal(riskOf(gate, call('await tools.bash({command:"curl -X POST https://api.sendgrid.com/v3/mail/send -d x"})', 'codemode')), 'third-party message');
   const everyday = ['git status', 'git commit -m "feat: x"', 'npm test', 'curl -s https://api.dentai.com.br/health', 'gh pr view 31 --json state',
-    'gh pr create --fill', 'cat ~/.optchat/profiles/swlucas05/autonomy.json', 'rg -n autonomy src', 'gh run list --limit 5'];
+    'gh pr create --fill', 'cat ~/.optchat/profiles/sample-profile/autonomy.json', 'rg -n autonomy src', 'gh run list --limit 5'];
   for (const command of everyday) assert.equal(gate.admit(call(command)), undefined, command);
   for (const tool of ['read', 'edit', 'write', 'zoom', 'ripwire', 'gitwatch']) assert.equal(gate.admit({ ...call(''), tool, input: { path: 'C:/projetos/pi-optchat/src/a.ts' } }), undefined, tool);
 

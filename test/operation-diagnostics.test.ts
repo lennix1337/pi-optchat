@@ -234,7 +234,7 @@ test('everyday inspections seen refused behind an uncertain barrier are read-onl
     'git status --short; echo rc=$?', 'cd C:/projetos/x && git log --oneline -1 | cat; echo st=$?', 'echo "exit $?"',
     'date', 'date +%H:%M:%S', 'date -u "+%Y-%m-%d"', 'ps -e', 'ps -eo pid,etime,args | grep node',
     'git stash list | head -3', 'git ls-remote origin refs/heads/main', 'git -C C:/projetos/x ls-remote --heads origin',
-    "find C:/Users/swluc/.pi -maxdepth 1 -name '*.json' -mmin -60",
+    "find C:/Users/me/.pi -maxdepth 1 -name '*.json' -mmin -60",
     "gh pr view 43 --json state,mergeStateStatus --jq '{state,auto:(.autoMergeRequest!=null)}'", 'gh pr list --state open --json number,title', 'gh pr checks 7', 'gh pr diff 7 --name-only',
     'gh run list --repo lennix1337/dotfiles --branch main --limit 2 --json databaseId,status,conclusion', 'gh run view 123 --log-failed | tail -20', 'gh issue view 5 --comments',
     "gh api repos/lennix1337/pi-optchat/pulls/43 --jq '{state,merged}'", 'gh auth status --hostname github.com',

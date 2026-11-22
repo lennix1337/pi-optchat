@@ -232,9 +232,9 @@ test('a folder grant lifts an order for the GitHub repo its checkout points at, 
   updateOperationalState(file, { kind: 'authorization', text: said['86853'], sourceMessageId: '86853', grant: { action: 'merge', scope: 'C:/projetos/dentai-mono', allow: true, until: 'done' } });
   const state = readOperationalState(file);
   const lift = (targets: string[]) => orderGrantFor(state, { action: 'merge', targets }, id => said[id], Date.now(), slugs);
-  assert.match(lift(['c:/users/swluc', 'tecnologia-ai/dentai'])!, /86853/, 'gh pr merge --repo from another folder');
-  assert.equal(lift(['c:/users/swluc', 'lennix1337/dentai']), undefined, 'a same-named repository under another owner');
-  assert.equal(orderGrantFor(state, { action: 'merge', targets: ['c:/users/swluc', 'tecnologia-ai/dentai'] }, id => said[id], Date.now(), () => undefined), undefined, 'no checkout, no slug to match');
+  assert.match(lift(['c:/users/me', 'tecnologia-ai/dentai'])!, /86853/, 'gh pr merge --repo from another folder');
+  assert.equal(lift(['c:/users/me', 'lennix1337/dentai']), undefined, 'a same-named repository under another owner');
+  assert.equal(orderGrantFor(state, { action: 'merge', targets: ['c:/users/me', 'tecnologia-ai/dentai'] }, id => said[id], Date.now(), () => undefined), undefined, 'no checkout, no slug to match');
 }));
 
 test('an unchanged operational file is parsed and validated once, not on every read', () => withDirectory(directory => {

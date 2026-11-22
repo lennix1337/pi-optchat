@@ -38,7 +38,7 @@ async function render(runs: RunInfo[], width: number, setup: (children: Children
   const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
   for (const info of runs) children.history.records.set(info.id, info);
   setup(children);
-  const inspector = new Inspector({ profile: 'swlucas05', session: 'parent', children, usage: new UsageLedger(dir), memory, page: 'agents', rows: () => 40, redraw: () => {}, done: () => {},
+  const inspector = new Inspector({ profile: 'sample-profile', session: 'parent', children, usage: new UsageLedger(dir), memory, page: 'agents', rows: () => 40, redraw: () => {}, done: () => {},
     color: (_tone, text) => text, context: () => undefined, now: () => NOW });
   try { return { lines: inspector.render(width), inspector }; } finally { inspector.dispose(); await children.close(); await memory.close(); removeDir(dir); }
 }
@@ -61,7 +61,7 @@ test('Agents page: the run is shown by its own goal, the live one first with wha
   assert.match(rows[2], /Finish step 1 of the migration\..*3h ago · 14m$/, 'completed runs follow, newest first, with age and duration');
   assert.deepEqual(rows.slice(2).map(r => /step (\d)/.exec(r)?.[1]), ['1', '2', '3', '4', '5']);
   assert.equal(text.match(/sonnet/g), null, 'the most common model is not repeated on every row');
-  assert.match(lines[1], /OptChat · swlucas05 · Agents\s+1 running · 1 failed today · 5 done$/);
+  assert.match(lines[1], /OptChat · sample-profile · Agents\s+1 running · 1 failed today · 5 done$/);
   assert.doesNotMatch(text, /saved|\d+\/\d+/);
   assert.ok(lines.every(l => visibleWidth(l) <= 160));
 });

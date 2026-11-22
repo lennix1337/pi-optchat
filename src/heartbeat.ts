@@ -603,7 +603,7 @@ export class Heartbeat {
     const digests = readable ? projectDigests(radar, lastStop) : { ...kept, ...stop };
     const { 'global:stop': _stop, ...radarOnly } = digests;
     const before = { dueSeen: saved.dueSeen ?? [], escalated: saved.escalated ?? {} }, patrol = this.deps.patrol?.();
-    const checked = triage.commitments ? dueFindings(triage.commitments, before, at) : undefined;
+    const checked = triage.commitments ? dueFindings(triage.commitments, before, at, triage.commitmentProjects) : undefined;
     const held = { patrolAt: saved.patrolAt ?? {}, patrolled: saved.patrolled ?? {}, escalations: saved.escalations ?? [] };
     const diverted = checked && patrol ? divert(checked, before, patrol, held, at) : undefined, due = diverted ?? checked;
     const asked = held.escalations.map(({ project, line }) => ({ id: '', project, kind: 'due' as const, line }));
