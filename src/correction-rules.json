@@ -190,5 +190,13 @@
     "scope": "edit/write tool call into a project repo (not dotfiles or dentai-mono)",
     "detector": "package-pii",
     "precision": "Written text with a Brazilian phone number or WhatsApp JID (55 + 10-11 digits) that has no run of four zeros; fixtures with such numbers are candidates for review. Names and other personal values are not detected."
+  },
+  {
+    "id": "promise-no-action",
+    "quote": "vc é burro? (21/11); nao entregou (21/11); 'Estou corrigindo' sem corrigir; AGENTS: while work is left, a turn ends with a tool call",
+    "date": "22/11",
+    "scope": "assistant final text (stopReason stop)",
+    "detector": "promise-no-action",
+    "precision": "Last sentence of a final reply announces immediate work (vou/estou + corrigir, investigar, rodar...) and the turn ends without a tool call; candidates require review for a deferred step that waits on an event or on the operator."
   }
 ]

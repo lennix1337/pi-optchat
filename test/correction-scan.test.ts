@@ -26,6 +26,7 @@ const cases: [string, object, object][] = [
  ['live-claim', call('slack_send',{text:'No ar às 10:52: a correção do Seus Projetos.'}), call('slack_send',{text:'Mesclei o #192; o deploy ainda não foi verificado.'})],
  ['repeated-reply', {type:'message',timestamp:'2026-11-14T00:00:00Z',message:{role:'assistant',stopReason:'toolUse',content:[SENT,SENT]}}, call('slack_send',{text:'Mesclei o #192; o deploy ainda não foi verificado.'})],
  ['package-pii', call('edit',{path:'/home/u/projetos/pi-wacli/README.md',edits:[{oldText:'x',newText:'"jid": "5511997429889@s.whatsapp.net"'}]}), call('write',{path:'/home/u/projetos/pi-wacli/README.md',content:'"jid": "5511900000001@s.whatsapp.net"'})],
+ ['promise-no-action', text('Li o log. Vou corrigir o supervisor agora.'), text('Corrigi o supervisor; vou revisar o diff depois do reload?')],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
