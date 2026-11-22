@@ -58,7 +58,7 @@ test('bash hook refuses dirty resets even when approvals are disabled', async ()
     f.dirty();
     const hooks = new Map<string, (...args: any[]) => any>();
     registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI, { enabled: false });
-    const result = await hooks.get('tool_call')!({ toolName: 'bash', input: { command: 'git reset --hard' } }, { cwd: f.dir });
+    const result = await hooks.get('tool_call')!({ toolName: 'bash', input: { command: 'git reset --hard' } }, { cwd: f.dir, sessionManager: { getSessionId: () => 'test' } });
     assert.equal(result.block, true);
     assert.match(result.reason, /alterações/i);
   } finally { f.cleanup(); }
