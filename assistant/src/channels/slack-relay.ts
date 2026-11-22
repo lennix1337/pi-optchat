@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
 import { immediate } from '../store/transaction.ts';
 import { teamBlocks } from './home-blocks.ts';
+import { renderGraph, type HomeGraph } from './home-graph.ts';
 
 
 
@@ -173,7 +174,7 @@ export type HomeChoice = { label: string; options: string[] };
 export const HOME_SETTINGS: Readonly<Record<string, 'modelo' | 'thinking'>> = { optchat_home_model: 'modelo', optchat_home_thinking: 'thinking' };
 export const SETTING_VALUE = /^[\w./:-]{1,80}$/;
 export type HomeSettings = { model?: string; models: { value: string; label: string }[]; level?: string; levels?: string[] };
-export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings; team?: string[] };
+export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings; team?: string[]; graph?: HomeGraph; imageFile?: string };
 
 
 function sections(text: string): string[] {
@@ -208,7 +209,7 @@ export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
     ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [],
     ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : [],
   ];
-  return [...options.team !== undefined ? [{ type: 'header', text: { type: 'plain_text', text: 'OptChat · Painel' } }] : [], ...sections(text).slice(0, 30).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...teamBlocks(options.team), ...choices.slice(0, 6), ...settingBlocks(options.settings), { type: 'actions', elements }].slice(0, 100);
+  return [...options.team !== undefined ? [{ type: 'header', text: { type: 'plain_text', text: 'OptChat · Painel' } }] : [], ...sections(text).slice(0, 30).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...(options.imageFile ? [{ type: 'image', slack_file: { id: options.imageFile }, alt_text: 'Diagrama dos trabalhos em andamento' }] : []), ...teamBlocks(options.team), ...choices.slice(0, 6), ...settingBlocks(options.settings), { type: 'actions', elements }].slice(0, 100);
 }
 
 function settingBlocks(settings: HomeSettings | undefined): unknown[] {
@@ -257,8 +258,9 @@ function parts(text: string): string[] {
  * Destinations come from the operator's config, never from the caller as a raw id.
  */
 export class SlackPoster {
-  private readonly options: { botToken: string; operator: string; channels: Record<string, string>; fetch: typeof fetch };
-  constructor(options: { botToken: string; operator: string; channels?: Record<string, string>; fetch?: typeof fetch }) {
+  private readonly options: { botToken: string; operator: string; channels: Record<string, string>; fetch: typeof fetch; dotPath?: string };
+  private graphCache: { key: string; file: string } | undefined;
+  constructor(options: { botToken: string; operator: string; channels?: Record<string, string>; fetch?: typeof fetch; dotPath?: string }) {
     if (!/^xoxb-[\x21-\x7e]+$/.test(options.botToken)) throw new Error('invalid_bot_token');
     if (!/^[UW][A-Z0-9]{2,20}$/.test(options.operator)) throw new Error('invalid_operator');
     this.options = { fetch: globalThis.fetch, channels: {}, ...options };
@@ -298,12 +300,16 @@ export class SlackPoster {
     const name = basename(path);
     const target = destination ?? String((await this.call(`${API}conversations.open`, { users: this.options.operator }, true) as { channel?: { id?: unknown } }).channel?.id ?? '');
     if (!/^[CDG][A-Z0-9]{2,20}$/.test(target)) throw new OutboxRefused('unknown_channel');
-    const slot = await this.call(`${API}files.getUploadURLExternal`, { filename: name, length: size }, true) as { upload_url?: unknown; file_id?: unknown };
-    if (typeof slot.upload_url !== 'string' || typeof slot.file_id !== 'string' || !FILE_HOST.test(slot.upload_url)) throw new OutboxRefused('slack_upload_slot');
-    const put = await this.options.fetch(slot.upload_url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60_000), body: readFileSync(path) });
+    return { file: await this.uploadBytes(readFileSync(path), name, target, options.threadTs) };
+  }
+
+  private async uploadBytes(bytes: Buffer, name: string, target?: string, threadTs?: string): Promise<string> {
+    const slot = await this.call(`${API}files.getUploadURLExternal`, { filename: name, length: bytes.length }, true) as { upload_url?: unknown; file_id?: unknown };
+    if (typeof slot.upload_url !== 'string' || typeof slot.file_id !== 'string' || !/^F[A-Z0-9]+$/.test(slot.file_id) || !FILE_HOST.test(slot.upload_url)) throw new OutboxRefused('slack_upload_slot');
+    const put = await this.options.fetch(slot.upload_url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60_000), body: new Uint8Array(bytes) });
     if (!put.ok) throw new Error('slack_upload_failed');
-    await this.call(`${API}files.completeUploadExternal`, { files: [{ id: slot.file_id, title: name }], channel_id: target, ...(options.threadTs ? { thread_ts: options.threadTs } : {}) });
-    return { file: slot.file_id };
+    await this.call(`${API}files.completeUploadExternal`, { files: [{ id: slot.file_id, title: name }], ...(target ? { channel_id: target } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) });
+    return slot.file_id;
   }
 
   /** Rewrites one of the bot's own DM posts as plain text, dropping its buttons. */
@@ -332,7 +338,18 @@ export class SlackPoster {
   /** The operator's App Home: what the assistant is doing now. */
   async publishHome(markdown: string, options: HomeOptions = {}): Promise<void> {
     const text = slackText(markdown).slice(0, HOME_MAX);
-    await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, options) } });
+    let imageFile: string | undefined;
+    if (options.graph) {
+      const key = JSON.stringify(options.graph);
+      try {
+        if (this.graphCache?.key === key) imageFile = this.graphCache.file;
+        else {
+          const png = await renderGraph(options.graph, this.options.dotPath);
+          if (png) { imageFile = await this.uploadBytes(png, 'home.png'); this.graphCache = { key, file: imageFile }; }
+        }
+      } catch (error) { console.warn('App Home diagram unavailable:', error instanceof OutboxRefused ? error.message : 'render_or_upload_failed'); }
+    }
+    await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, { ...options, imageFile }) } });
   }
 
   /** Saves a Slack-hosted file under `<dir>/slack-files`, so the agent can read an image or transcribe audio. */

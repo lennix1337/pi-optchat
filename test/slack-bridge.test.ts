@@ -824,13 +824,21 @@ test('App Home "Hoje": finished runs survive in home-day.json with totals, an ho
   } finally { f.close(); }
 });
 
+test('Home request allows enough time for a bounded render and file upload', async () => {
+  const bridge = await import('../src/slack-bridge.ts');
+  assert.equal(bridge.slackRequestTimeout('/v1/slack/home'), 120_000);
+  assert.equal(bridge.slackRequestTimeout('/v1/slack/send'), 20_000);
+});
+
 test('App Home sends structured worker details and their explicit connections to the service', async () => {
   const f = fixture([], { items: () => ({ prs: [], commitments: [], jobs: [], agents: [], workers: [{ id: 'w', kind: 'agy', model: 'account/Neon', label: 'GX18MCP', started: 640000, target: { repo: 'GX18MCP' } }] }) });
   try {
     f.bridge.sawUserMessage('oi');
     await settle();
-    const body = f.requests.find(r => r.path === '/v1/slack/home')!.body as { team: string[] };
+    const body = f.requests.find(r => r.path === '/v1/slack/home')!.body as { team: string[]; graph: { nodes: { id: string }[]; edges: { from: string; to: string }[] } };
     assert.equal(body.team[0], 'agy · account/Neon · GX18MCP → GX18MCP · há 6 min');
+    assert.ok(body.graph.nodes.some(node => node.id === 'worker0'));
+    assert.deepEqual(body.graph.edges, [{ from: 'session', to: 'worker0' }]);
     assert.ok(!('mermaid' in body));
   } finally { f.close(); }
 });
