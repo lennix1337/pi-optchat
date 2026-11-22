@@ -40,7 +40,12 @@ type Hooks = { on(event: string, handler: (event: any, ctx: any) => unknown): un
 export function registerRipwireFirst(pi: Hooks, opts: { perInput?: boolean } = {}) {
   if (process.env.OPTCHAT_RIPWIRE_FIRST === 'off') return;
   const guard = ripwireFirstGuard();
-  if (opts.perInput) pi.on('input', () => { guard.reset(); });
+  if (opts.perInput) {
+    pi.on('input', () => { guard.reset(); });
+    pi.on('before_agent_start', (event: { messageType: string; message?: { customType?: string; content?: unknown } }) => {
+      if (event.messageType === 'custom' && event.message?.customType === 'optchat-report' && typeof event.message.content === 'string' && event.message.content.startsWith('[OptChat heartbeat]')) guard.reset();
+    });
+  }
   pi.on('session_start', () => { guard.reset(); });
   pi.on('tool_call', (event: { toolName: string; input: Record<string, unknown> }) => {
     const reason = guard.check({ name: event.toolName, arguments: event.input });
