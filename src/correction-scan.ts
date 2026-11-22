@@ -26,7 +26,7 @@ function sessionFiles(dir: string, since: number): string[] {
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
-type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number };
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; verified?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number };
 
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
@@ -43,8 +43,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
-    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, suites: heartbeat ? 0 : state.suites, ripwired: false, sent: [], shipped: 0 };
-  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, suites: 0, ripwired: false, sent: [], shipped: 0 };
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, verified: false, suites: heartbeat ? 0 : state.suites, ripwired: false, sent: [], shipped: 0 };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0 };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -56,6 +56,7 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   }
   const calls = toolCalls(event);
   if (calls.some(verifiesLive)) state = { ...state, checked: true };
+  if (calls.some(verifiesMerge)) state = { ...state, verified: true };
   const sent = [...(state.sent ?? []), ...calls.filter(isOutbound).map(outboundText)];
   if (sent.length) state = { ...state, sent };
   const shipped = (state.shipped ?? 0) + calls.filter(shipsChange).length;
@@ -67,9 +68,9 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
   const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
-  return { wake: state.wake, wakeEdits, checked: state.checked, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  return { wake: state.wake, wakeEdits, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
 
@@ -108,6 +109,10 @@ function writesRealPhone(call: Content): boolean {
 
 const isOutbound = (call: Content): boolean => call.name === 'slack_send' || call.name === 'whatsapp_send';
 const outboundText = (call: Content): string => String(call.arguments?.text ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
+
+function verifiesMerge(call: Content): boolean {
+  return call.name === 'bash' && /\b(?:gh\s+pr\s+checks|statusCheckRollup|mergeStateStatus|gh\s+run\s+(?:watch|view)|npm\s+(?:run\s+)?verify|dentai-ship|local-verify\.mjs)\b/u.test(String(call.arguments?.command ?? ''));
+}
 
 function verifiesLive(call: Content): boolean {
   if (call.name === 'browser_harness') return true;
@@ -160,7 +165,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'premature-merge': return calls.some(c => {
       const command = String(c.arguments?.command ?? '');
       return c.name === 'bash' && /(?:^|[;&|\n])\s*gh\s+pr\s+merge\b/u.test(command) && !/\s--(?:auto|disable-auto)\b/u.test(command) &&
-        !/\b(?:gh\s+pr\s+checks|statusCheckRollup|mergeStateStatus|gh\s+run\s+(?:watch|view)|npm\s+(?:run\s+)?verify|dentai-ship)\b/u.test(command);
+        !pacing.verified && !verifiesMerge(c);
     });
     case 'self-work-under-pacing': return pacing.directWork < 3 && nextPacing(pacing, event).directWork >= 3;
     case 'self-build-in-wake': return (pacing.wakeEdits ?? 0) < 3 && (nextPacing(pacing, event).wakeEdits ?? 0) >= 3;
