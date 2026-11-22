@@ -258,9 +258,9 @@ function parts(text: string): string[] {
  * Destinations come from the operator's config, never from the caller as a raw id.
  */
 export class SlackPoster {
-  private readonly options: { botToken: string; operator: string; channels: Record<string, string>; fetch: typeof fetch; dotPath?: string };
+  private readonly options: { botToken: string; operator: string; channels: Record<string, string>; fetch: typeof fetch; dotPath?: string; imageRetryMs?: number };
   private graphCache: { key: string; file: string } | undefined;
-  constructor(options: { botToken: string; operator: string; channels?: Record<string, string>; fetch?: typeof fetch; dotPath?: string }) {
+  constructor(options: { botToken: string; operator: string; channels?: Record<string, string>; fetch?: typeof fetch; dotPath?: string; imageRetryMs?: number }) {
     if (!/^xoxb-[\x21-\x7e]+$/.test(options.botToken)) throw new Error('invalid_bot_token');
     if (!/^[UW][A-Z0-9]{2,20}$/.test(options.operator)) throw new Error('invalid_operator');
     this.options = { fetch: globalThis.fetch, channels: {}, ...options };
@@ -350,7 +350,16 @@ export class SlackPoster {
         }
       } catch (error) { console.warn('App Home diagram unavailable:', error instanceof Error ? error.message.slice(0, 120) : 'render_or_upload_failed'); }
     }
-    await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, { ...options, imageFile }) } });
+    const publish = (file?: string) => this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, { ...options, imageFile: file }) } });
+    // external: Slack rejects a just-uploaded file as invalid_arguments until it finishes processing (about 3 s).
+    for (let attempt = 0; imageFile; attempt++) {
+      try { await publish(imageFile); break; } catch (error) {
+        if (!(error instanceof OutboxRefused) || error.message !== 'slack_invalid_arguments') throw error;
+        if (attempt >= 5) { imageFile = undefined; this.graphCache = undefined; break; }
+        await new Promise(resolve => setTimeout(resolve, this.options.imageRetryMs ?? 1500));
+      }
+    }
+    if (!imageFile) await publish();
     if (options.graph) console.info(`App Home published, diagram ${imageFile ? 'attached' : 'missing'}`);
     if (replaced) await this.call(`${API}files.delete`, { file: replaced }).catch(() => console.warn('App Home: previous diagram not deleted'));
   }
