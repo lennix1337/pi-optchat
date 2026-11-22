@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { commandWords, segments } from './effect-classifier.ts';
 
 /**
@@ -91,13 +91,52 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
   return undefined;
 }
 
+export async function freezeGreen(command: string, cwd: string, exec: Exec): Promise<{ reason?: string; note?: string }> {
+  let note: string | undefined;
+  for (const segment of segments(command, cwd, true)) {
+    const words = commandWords(segment.command).map(unquote);
+    const exe = words[0]?.replace(/\.exe$/i, '').split(/[/\\]/).at(-1);
+    let dir = segment.dir;
+    let branch: string | undefined;
+    if (exe === 'git') {
+      let i = 1;
+      while (words[i] === '-C' && words[i + 1]) { dir = resolve(dir, words[i + 1]!); i += 2; }
+      if (words[i] !== 'push') continue;
+      const args = words.slice(i + 1).filter(w => !w.startsWith('-'));
+      const ref = args[1];
+      branch = ref?.includes(':') ? ref.split(':').at(-1)?.replace(/^refs\/heads\//, '') : ref;
+      if (branch === 'HEAD') branch = undefined;
+      if (ref?.startsWith(':')) continue;
+    } else if (exe === 'node' && /(?:^|[/\\])ship\.mjs$/.test(words[1] ?? '')) {
+      if (words.includes('--pr') || words.includes('--dry-run') || words.includes('--help')) continue;
+      const at = words.indexOf('--branch');
+      if (at >= 0) branch = words[at + 1];
+    } else continue;
+    try {
+      const out = await exec('gh', ['pr', 'view', ...(branch ? [branch] : []), '--json', 'state,statusCheckRollup,mergeStateStatus'], { cwd: dir, timeout: 20_000 });
+      if (out.code !== 0 && /no pull requests found/i.test(out.stderr)) continue;
+      if (out.code !== 0 || out.killed) { note = `Freeze-green: could not read PR checks (${(out.stderr || 'gh failed').trim().slice(0, 160)}); allowing push.`; continue; }
+      const view = JSON.parse(out.stdout) as Rollup & { state?: string };
+      if (view.state === 'OPEN' && !ciProblem(view)) return { reason: 'Not run: the PR passed its checks. Changes after green need a reported failure (red check or review finding) or an explicit operator order; open a new PR instead.' };
+    } catch (error) {
+      note = `Freeze-green: could not read PR checks (${error instanceof Error ? error.message.slice(0, 160) : 'gh failed'}); allowing push.`;
+    }
+  }
+  return { note };
+}
+
 /** Main session and subagents alike: a direct merge waits for green CI. */
 export function registerMergeCiGuard(pi: ExtensionAPI, exec: Exec = (command, args, options) => pi.exec(command, args, options)) {
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName !== 'bash' && event.toolName !== 'shell_start') return;
     const command = (event.input as { command?: unknown } | undefined)?.command;
-    if (typeof command !== 'string' || !/\bgh\b[^\n]*\bpr\b[^\n]*\bmerge\b/.test(command)) return;
-    const reason = await mergeRefusal(command, ctx?.cwd ?? process.cwd(), exec);
-    return reason ? { block: true, reason } : undefined;
+    if (typeof command !== 'string') return;
+    if (/\bgh\b[^\n]*\bpr\b[^\n]*\bmerge\b/.test(command)) {
+      const reason = await mergeRefusal(command, ctx?.cwd ?? process.cwd(), exec);
+      if (reason) return { block: true, reason };
+    }
+    const frozen = await freezeGreen(command, ctx?.cwd ?? process.cwd(), exec);
+    if (frozen.note) ctx?.ui.notify(frozen.note, 'warning');
+    return frozen.reason ? { block: true, reason: frozen.reason } : undefined;
   });
 }
