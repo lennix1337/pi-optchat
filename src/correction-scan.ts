@@ -73,12 +73,10 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
 }
 
 
-/** A call that opens or pushes a change of its own: ship.mjs (not --dry-run or --pr), gh pr create, git push. */
 const shipsChange = (call: Content): boolean => call.name === 'bash' && (() => {
   const command = withoutQuotedText(String(call.arguments?.command ?? ''));
   return (/\bship\.mjs\b/u.test(command) && !/\s--(?:dry-run|pr)\b/u.test(command)) || /\bgh\s+pr\s+create\b|\bgit\s+push\b/u.test(command);
 })();
-/** Operator 22/11: a retro DM that cites more PRs than the retro itself shipped is a recap of the day, not new fixes. */
 function retroRecap(calls: Content[], shippedBefore: number): boolean {
   let shipped = shippedBefore;
   for (const call of calls) {
