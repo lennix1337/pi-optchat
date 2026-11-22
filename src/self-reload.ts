@@ -151,6 +151,7 @@ export function registerSelfReload(pi: ExtensionAPI, owner: () => Owner | undefi
   const settleRequest = (event: { aborted?: boolean }, ctx: ExtensionContext, giveUpAt: number) => {
     const t = pending;
     if (!t || t.state !== 'requested' || commandSent) return;
+    if (!event.aborted && !ctx.isIdle()) return;
     const reason = event.aborted || runFailed(ctx) ? 'Run was aborted or did not finish successfully.' : blocked(ctx);
     if (reason?.includes(DELIVERY_BLOCK) && Date.now() < giveUpAt && live) {
       setTimeout(() => settleRequest(event, ctx, giveUpAt), DELIVERY_POLL_MS).unref();
