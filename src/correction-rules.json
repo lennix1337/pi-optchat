@@ -204,6 +204,7 @@
     "quote": "AGENTS Tool routing: 'Never poll gh in loops: its notice is the result'; never wait for a background result with sleep; 22/11: shells sleep-polled 7 min waiting on wacli",
     "date": "22/11",
     "scope": "bash calls",
+    "guardedAt": "2026-11-22T10:45:00Z",
     "detector": "sleep-poll",
     "precision": "A bash call that sleeps 15 s or more, or sleeps inside a while/until/for loop (quoted text ignored); sleeps under 15 s are allowed. Candidates need review for a bounded wait with no completion notice."
   }

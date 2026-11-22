@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
+import { sleepsToWait, withoutQuotedText } from './sleep-poll-guard.ts';
 import { runsSuite } from './suite-once-guard.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
@@ -118,17 +119,6 @@ function verifiesLive(call: Content): boolean {
 const SCRATCH_RM = /\brm\s+(?:-\S+\s+)+(?:(?:\/tmp\/|~\/\.cache\/|\$HOME\/\.cache\/)[^\s;&|]*\s*)+(?=[;&|\n]|$)/gu;
 function withoutScratchCleanup(command: string): string {
   return command.replace(SCRATCH_RM, '').replace(/\bkill\s+-0\b/gu, '');
-}
-
-function sleepsToWait(command: string): boolean {
-  if (/\b(?:while|until|for)\b[^\n]*;\s*do\b[^\n]*\bsleep\s+\d/u.test(command)) return true;
-  return [...command.matchAll(/(?:^|[;&|\n(]\s*)sleep\s+(\d+(?:\.\d+)?)([smhd]?)/gu)].some(m => Number(m[1]) * ({ m: 60, h: 3600, d: 86400 }[m[2]] ?? 1) >= 15);
-}
-
-function withoutQuotedText(command: string): string {
-  return command
-    .replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/gu, '')
-    .replace(/"(?:[^"\\]|\\[\s\S])*"|'[^']*'/gu, '""');
 }
 
 export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): boolean {
