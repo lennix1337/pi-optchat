@@ -186,6 +186,7 @@
   },
   {
     "id": "package-pii",
+    "guardedAt": "2026-11-22T19:52:17Z",
     "quote": "pi wacli é público? tu não ta botando esses números pra lá? ... deveria sempre construir pela base e adicionar pra mim como uma configuração, mas deixar o pacote em si como um produto generalizado",
     "date": "22/11",
     "scope": "edit/write tool call into a project repo (not dotfiles or dentai-mono)",
