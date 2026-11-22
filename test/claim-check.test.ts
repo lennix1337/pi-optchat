@@ -65,6 +65,14 @@ test('a denied merge is no claim, and a merge word names only the PR next to it'
   assert.deepEqual(unbackedClaims('Abri o PR #157 para o navegador, testado à parte; o #155 já estava mesclado.', '#155 MERGED'), []);
 });
 
+test('a merge still to come is no claim, a past one is', () => {
+  assert.deepEqual(unbackedClaims('Quando o #521 for mesclado, recarrego o Pi.', ''), []);
+  assert.deepEqual(unbackedClaims('Recarrego quando a #520 for mesclada e o worker commitar.', ''), []);
+  assert.deepEqual(unbackedClaims('Depois que o #522 estiver mesclado, sigo.', ''), []);
+  assert.deepEqual(unbackedClaims('Reload once #523 is merged.', ''), []);
+  assert.deepEqual(unbackedClaims('Quando chegou, o #521 já estava mesclado.', ''), ['#521 mesclado']);
+});
+
 test('a gitwatch notice injected between runs backs the merge it reports', () => {
 
   const entries = [

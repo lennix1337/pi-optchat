@@ -11,6 +11,7 @@ export const CLAIM_CHECK_PREFIX = '[OptChat claim check]';
 
 const KEYWORD = /\b(?:test|teste|testes|tests|pass|passed|passou|passaram|passando|verde|green|checks?|specs?|suites?|ok|falh\w*|fail\w*|validad\w*|verificad\w*)\b|✓/iu;
 const MERGED = /\b(?:mesclad[oa]s?|merged|mergead[oa]s?|entrou na main)\b/iu;
+const MERGE_TO_COME = /(?:\b(?:quando|depois\s+que|assim\s+que|ap[oó]s|at[eé]\s+que|caso|se|once|when|after|until|if)\b[^.;:,]{0,40}|\b(?:for|forem|estiver|estiverem|seja|sejam)\s+)$/iu;
 const LIVE = /\b(?:no ar|est[aá] live|deployed|deployad[oa])\b/iu;
 const LIVE_EVIDENCE = /\b(?:200|healthy|rollouts? done|RESUMO)\b/u;
 
@@ -59,7 +60,8 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
     }
     for (const w of s.matchAll(new RegExp(MERGED.source, 'giu'))) {
 
-      if (/\b(?:n[aã]o|not|nem)\b[^.#]{0,25}$/iu.test(s.slice(0, w.index))) continue;
+      const before = s.slice(0, w.index);
+      if (/\b(?:n[aã]o|not|nem)\b[^.#]{0,25}$/iu.test(before) || MERGE_TO_COME.test(before)) continue;
       const near = s.slice(Math.max(0, w.index - 40), w.index + w[0].length + 40);
       for (const m of near.matchAll(/#(\d{1,6})\b/gu)) {
         const n = m[1]!;
