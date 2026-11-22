@@ -8,6 +8,16 @@ export function shellTarget(label: string, command: string): { repo: string; pr?
   return match ? { repo: match[1]!, ...(match[2] ? { pr: Number(match[2]) } : {}) } : undefined;
 }
 
+export function homeShell(job: { id: string; label?: string; command: string; started: number }, now: number) {
+  const supplied = job.label?.trim();
+  const label = supplied && supplied !== job.command.trim() ? supplied : 'Comando em segundo plano';
+  const target = shellTarget(job.label ?? '', job.command);
+  return {
+    job: runningItem(label, job.started, now),
+    worker: { id: job.id, kind: 'shell', model: '', label, started: job.started, ...(target ? { target } : {}) },
+  };
+}
+
 export function homeDashboard(work: HomeWork, waiting: string[], state: string, modelName: string | undefined, now: number) {
   const model = dashboard({ now, pi: { state, model: modelName }, workers: work.workers ?? [], prs: work.prs, waiting, deliveries: [] });
   const team = model.workers.slice(0, 30).map(w => {

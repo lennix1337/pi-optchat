@@ -6,7 +6,7 @@ import { registerAssistantMemory } from './assistant-memory.ts';
 import { finalText, registerSlackBridge } from './slack-bridge.ts';
 import { CLAIM_CHECK_PREFIX, branchEvidenceMessages, claimRetryText, evidenceText, abandonedCauses, uncheckedAdmissions, utcTimes, unbackedClaims, unbackedNote } from './claim-check.ts';
 import { NO_WORK, readHomeWork, readWatch, runningItem, stillWaiting } from './home-items.ts';
-import { shellTarget } from './home-dashboard.ts';
+import { homeShell } from './home-dashboard.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
 import { registerToolInventory } from './tool-inventory.ts';
@@ -966,11 +966,9 @@ export default function optchat(host: ExtensionAPI) {
         const jobs = runningShells(shells);
         const agents = runs.map(r => runningItem(`subagente ${r.id} \u00b7 ${oneLine(r.task)}`, r.started, now));
         const workers = runs.map(r => ({ id: r.id, kind: r.kind ?? 'subagente', model: r.model, label: oneLine(r.task), started: r.started, ...(r.cwd ? { target: { repo: basename(r.cwd) } } : {}) }));
-        workers.push(...jobs.map(job => {
-          const target = shellTarget(job.label ?? '', job.command);
-          return { id: job.id, kind: 'shell', model: '', label: job.label ?? job.command, started: job.started, ...(target ? { target } : {}) };
-        }));
-        return { ...readHomeWork(a.dir, jobs.map(job => runningItem(job.label ?? `${job.id} \u00b7 ${job.command}`, job.started, now)), now, agents), workers };
+        const homeJobs = jobs.map(job => homeShell(job, now));
+        workers.push(...homeJobs.map(job => job.worker));
+        return { ...readHomeWork(a.dir, homeJobs.map(job => job.job), now, agents), workers };
       } });
 
   slack.setWaiting(() => {
