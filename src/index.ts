@@ -117,6 +117,7 @@ import { heapReportTool, noteReload, reloadCount } from './heap-report.ts';
 import { registerExecLog } from './exec-log.ts';
 import { profilePhase, type ProfilePhase } from './profile-phase.ts';
 import { housekeepingBoundary } from './housekeeping.ts';
+import { loadedCodeProbe } from './loaded-code-health.ts';
 import { HOLD_MAX_MS, RELOAD_RESUME, registerSelfReload, reloadLease } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
 import { MachineService, machineService, machineTool } from './machine-service.ts';
@@ -1384,7 +1385,10 @@ export default function optchat(host: ExtensionAPI) {
       active.operations.blockReason('self_reload'),
     ];
     return { profile: active.name, blocked: blockers.find((reason): reason is string => typeof reason === 'string') };
-  }, async () => { flush(); await checkpoints; await checkpoint(required().dir); });
+  }, async () => { flush(); await checkpoints; await checkpoint(required().dir); }, async () => {
+    const probe = await loadedCodeProbe().check();
+    return probe.ok ? 'Loaded-code check after the reload: OK, the Pi runs every local package HEAD.' : `Loaded-code check after the reload: ${probe.problem}`;
+  });
   registerConnectedRenderer(pi);
   registerReportRenderer(pi);
   const [zoom, date] = memoryTools(() => required().memory, id => required().children.transcript(id), ref => required().focus.observe(ref));
