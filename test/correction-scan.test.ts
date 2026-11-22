@@ -311,3 +311,12 @@ test('repeated-reply flags a final reply or send that repeats one already sent i
  assert.equal(ruleCount('repeated-reply', [operator, send, operator, send]), 0, 'a new order starts a new run');
  assert.equal(ruleCount('repeated-reply', [operator, call('slack_send', { text: 'ok' }), call('slack_send', { text: 'ok' })]), 0, 'short texts are ignored');
 });
+test('retro-recap flags a retro DM citing more PRs than the run shipped, not one whose fixes it shipped', () => {
+  const dm = call('slack_send', { text: 'Retro 21/11: release -> #186; tail rc -> #503; git am -> #508.' });
+  const ship = call('bash', { command: 'node scripts/ship.mjs -m "fix" --all' });
+  assert.equal(ruleCount('retro-recap', [operator, ship, dm]), 1, 'three cited, one shipped: a recap');
+  assert.equal(ruleCount('retro-recap', [operator, ship, ship, ship, dm]), 0);
+  assert.equal(ruleCount('retro-recap', [operator, ship, ship, ship, operator, dm]), 1, 'a new order starts a new run');
+  assert.equal(ruleCount('retro-recap', [operator, call('bash', { command: 'node scripts/ship.mjs --dry-run -m x' }), dm]), 1, 'a dry run ships nothing');
+  assert.equal(ruleCount('retro-recap', [operator, call('slack_send', { text: 'Mesclei #186 e #503.' })]), 0, 'not a retro');
+});

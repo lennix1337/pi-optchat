@@ -26,7 +26,7 @@ function sessionFiles(dir: string, since: number): string[] {
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
-type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; suites?: number; ripwired?: boolean; sent?: string[] };
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number };
 
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
@@ -43,8 +43,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
-    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, suites: heartbeat ? 0 : state.suites, ripwired: false, sent: [] };
-  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, suites: 0, ripwired: false, sent: [] };
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, suites: heartbeat ? 0 : state.suites, ripwired: false, sent: [], shipped: 0 };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, suites: 0, ripwired: false, sent: [], shipped: 0 };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -58,6 +58,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   if (calls.some(verifiesLive)) state = { ...state, checked: true };
   const sent = [...(state.sent ?? []), ...calls.filter(isOutbound).map(outboundText)];
   if (sent.length) state = { ...state, sent };
+  const shipped = (state.shipped ?? 0) + calls.filter(shipsChange).length;
+  if (shipped) state = { ...state, shipped };
   const suites = (state.suites ?? 0) + calls.filter(runsSuite).length;
   if (suites) state = { ...state, suites };
   state = { ...state, ripwired: state.ripwired || calls.some(c => usesRipwire(c) || writesSource(c)) };
@@ -65,11 +67,30 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, suites: state.suites, ripwired: state.ripwired, sent: state.sent, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
   const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
-  return { wake: state.wake, wakeEdits, checked: state.checked, suites: state.suites, ripwired: state.ripwired, sent: state.sent, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  return { wake: state.wake, wakeEdits, checked: state.checked, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
+
+/** A call that opens or pushes a change of its own: ship.mjs (not --dry-run or --pr), gh pr create, git push. */
+const shipsChange = (call: Content): boolean => call.name === 'bash' && (() => {
+  const command = withoutQuotedText(String(call.arguments?.command ?? ''));
+  return (/\bship\.mjs\b/u.test(command) && !/\s--(?:dry-run|pr)\b/u.test(command)) || /\bgh\s+pr\s+create\b|\bgit\s+push\b/u.test(command);
+})();
+/** Operator 22/11: a retro DM that cites more PRs than the retro itself shipped is a recap of the day, not new fixes. */
+function retroRecap(calls: Content[], shippedBefore: number): boolean {
+  let shipped = shippedBefore;
+  for (const call of calls) {
+    if (shipsChange(call)) { shipped++; continue; }
+    if (!isOutbound(call)) continue;
+    const text = String(call.arguments?.text ?? '');
+    if (!/\bretro\b/iu.test(text)) continue;
+    const cited = new Set(text.match(/#\d+\b/gu) ?? []).size;
+    if (cited >= 2 && cited > shipped) return true;
+  }
+  return false;
+}
 
 const isOutbound = (call: Content): boolean => call.name === 'slack_send' || call.name === 'whatsapp_send';
 const outboundText = (call: Content): string => String(call.arguments?.text ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
@@ -140,6 +161,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
       (c.name === 'slack_send' || c.name === 'whatsapp_send') &&
       /^\W*(?:j[áa]\s+(?:est[áa]|est[ãa]o)\s+no\s+ar|no\s+ar\b|(?:est[áa]|est[ãa]o)\s+no\s+ar|ao\s+vivo\b)/iu.test(String(c.arguments?.text ?? '')) &&
       !/\b(?:hip[óo]tese|n[ãa]o\s+verific\w*|n[ãa]o\s+confirm\w*|n[ãa]o\s+testei|unverified)\b/iu.test(String(c.arguments?.text ?? '')));
+    case 'retro-recap': return retroRecap(calls, pacing.shipped ?? 0);
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b(?:[^;\n|&]|&(?!&))*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'destructive-git': return calls.some(c => c.name === 'bash' && /\bgit\s+(?:-C\s+\S+\s+)?(?:reset\b[^\n;|&]*\s--hard\b|clean\b[^\n;|&]*\s-[a-z]*f|branch\b[^\n;|&]*\s-D\b|stash\s+(?:drop|clear)\b|worktree\s+remove\b[^\n;|&]*\s(?:--force|-f)\b)/u.test(String(c.arguments?.command ?? '')));
