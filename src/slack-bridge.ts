@@ -22,6 +22,7 @@ import { transcribeAudio } from './transcribe.ts';
 import { budgetNote, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
 import { homeDashboard, homeGraph } from './home-dashboard.ts';
+import { memoryShapedReply } from './wake-noise.ts';
 import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
 
@@ -115,7 +116,8 @@ export function clipWords(text: string, max: number): string {
   return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
 }
 function withoutCompactionBlocks(text: string): string {
-  return text.replace(/<compaction-line>[\s\S]*?(?:<\/compaction-line>|$)/g, '').trim();
+  const clean = text.replace(/<compaction-line>[\s\S]*?(?:<\/compaction-line>|$)/g, '').trim();
+  return memoryShapedReply(clean) ? '' : clean;
 }
 
 function recentThoughts(previous: string[], content: unknown): string[] {

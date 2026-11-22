@@ -99,6 +99,21 @@ test('final answer defence removes repeated and unfinished internal blocks', () 
   assert.equal(finalText(replies('<compaction-line>secret</compaction-line>')), '');
 });
 
+test('a final answer shaped like a memory line is not relayed to the DM', async () => {
+  const leaked = '22/11 pi-optchat 185512-15 OptChat: bash ran tests; echo: 31 pass. Home live UNVERIFIED.';
+  assert.equal(finalText(replies(leaked)), '');
+  assert.equal(finalText(replies('talk: Rodada 7 entregue.\ntool: bash ran tests')), '');
+  assert.equal(finalText(replies('22/11 12:30: o PR #528 foi mesclado.')), '22/11 12:30: o PR #528 foi mesclado.');
+  const f = fixture([{ seq: 1, ts: '5.0', thread: '4.0', text: 'status?' }]);
+  try {
+    await f.bridge.poll();
+    f.bridge.sawUserMessage(f.sent[0]!.text);
+    await f.bridge.runEnded(replies(leaked));
+    const reply = f.requests.find(r => r.path === '/v1/slack/send');
+    assert.match(String((reply?.body as { text: string }).text), /sem resposta em texto/);
+  } finally { f.close(); }
+});
+
 test('a notice steering a Slack run does not swallow the answer the operator was waiting for', async () => {
   const f = fixture([{ seq: 1, ts: '5.0', thread: null, text: 'pode revisar no meu nome?' }]);
   try {
