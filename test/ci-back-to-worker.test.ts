@@ -10,6 +10,19 @@ const setup = (state?: string, taken = true) => {
 };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('red CI follow-up contains the four fields and prior notices for the same PR', async () => {
+  const { handle, sent } = setup('completed');
+  const event = { pr: 7, kind: 'checks', text: 'checks failed: windows', wake: true };
+  handle(claim({ text: '#7 checks failed: windows\nread the failing job log: gh run view 123 --repo o/r --log-failed', events: [event] }));
+  await settle();
+  handle(claim({ text: '#7 checks failed: linux\nread the failing job log: gh run view 456 --repo o/r --log-failed', events: [{ ...event, text: 'checks failed: linux' }] }));
+  await settle();
+  assert.match(sent[1], /Esperado:.*checks/);
+  assert.match(sent[1], /Visto:[\s\S]*checks failed: linux[\s\S]*gh run view 456/);
+  assert.match(sent[1], /Área permitida:[\s\S]*arquivos.*PR/);
+  assert.match(sent[1], /Já tentado\/falhou:[\s\S]*checks failed: windows[\s\S]*gh run view 123/);
+});
+
 test('red CI of a shipped PR resumes the worker that wrote it', async () => {
   const { handle, sent, manager } = setup('completed'), c = claim();
   handle(c); await settle();
