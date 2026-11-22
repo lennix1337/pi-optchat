@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, uncheckedAdmissions, unbackedClaims, utcTimes } from '../src/claim-check.ts';
+import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, freeActionQuestions, uncheckedAdmissions, unbackedClaims, utcTimes } from '../src/claim-check.ts';
 
 test('multiple hash claims normalize the evidence at most once', () => {
   const evidence = 'ABC1234 DEF5678 '.repeat(1000);
@@ -95,6 +95,14 @@ test('"não confirmei" in the reply is an admission the run must check before se
   assert.match(claimRetryText(['#5 mesclado']), /say plainly which ones are not verified/);
 
   assert.deepEqual(uncheckedAdmissions('Quando uma resposta diz "não confirmei" ou \u201cI did not verify\u201d, ela volta uma vez.'), []);
+});
+
+test('permission questions for free actions trigger a retry, except quoted text and production deploy', () => {
+  assert.deepEqual(freeActionQuestions('Posso mergear a PR?'), ['Posso mergear a PR?']);
+  assert.deepEqual(freeActionQuestions('Recarrego o Pi?'), ['Recarrego o Pi?']);
+  assert.deepEqual(freeActionQuestions('Faço o deploy em produção?'), []);
+  assert.deepEqual(freeActionQuestions('Ele perguntou “Posso mergear a PR?”'), []);
+  assert.match(claimRetryText([], [], [], [], ['Posso mergear a PR?']), /do the action now[\s\S]*drop the question[\s\S]*production deploy/i);
 });
 
 test('a reply that gives up on a cause goes back once to take one more step (operator 15/11)', () => {

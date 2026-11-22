@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
+import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, FREE_ACTION, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
 import { weakensTest } from './weaken-test-guard.ts';
 import { writesRealPhone } from './package-pii-guard.ts';
@@ -136,7 +136,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
   const final = msg.stopReason === 'stop' ? msg.content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n') : '';
   const calls = msg.content.filter(c => c.type === 'toolCall');
   switch (rule.detector) {
-    case 'free-action': return /\b(?:posso|pode|quer que eu|rodo|devo)\b[^?\n]{0,80}\b(?:merge\w*|push\w*|recarreg\w*|reload\w*|reinici\w*|restart\w*|public\w*|publish\w*|pr)\b[^?\n]{0,60}\?/iu.test(final);
+    case 'free-action': return FREE_ACTION.test(withoutQuotes(final));
     case 'ending-offer': return /se quiser\s*,?\s*(?:é|e) só (?:dizer|avisar|falar)[.!]?\s*$/iu.test(final);
     case 'wake-silence': return !!pacing.wake && !!final && (memoryShapedReply(final) || reasksPending(final) || nothingNewReply(final));
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
