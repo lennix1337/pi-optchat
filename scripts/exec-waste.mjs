@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { selectedProfileDir } from './selected-profile.mjs';
 
 export const RETRY_WINDOW_MS = 10 * 60_000;
 const TOP = 8;
@@ -80,7 +81,7 @@ export function readRows(dir) {
 const USAGE = 'usage: exec-waste.mjs [logDir] [sinceISO] | --dir=LOGDIR --since=ISO';
 
 /** Positional `[logDir] [sinceISO]` (an empty logDir keeps the default) or `--dir`/`--since`; anything else is refused, never read as a path. */
-export function parseArgs(argv, home = homedir(), now = Date.now()) {
+export function parseArgs(argv, home = homedir(), now = Date.now(), root = join(home, '.optchat')) {
   const named = {}, positional = [];
   for (let k = 0; k < argv.length; k++) {
     const arg = argv[k], flag = /^--(dir|since)(?:=(.*))?$/.exec(arg);
@@ -89,7 +90,7 @@ export function parseArgs(argv, home = homedir(), now = Date.now()) {
     else positional.push(arg);
   }
   if (positional.length > 2) throw new Error(`too many arguments. ${USAGE}`);
-  const dir = named.dir || positional[0] || join(home, '.optchat', 'profiles', 'swlucas05');
+  const dir = named.dir || positional[0] || selectedProfileDir(root);
   const sinceText = named.since ?? positional[1];
   const since = sinceText ? Date.parse(sinceText) : now - 7 * 86_400_000;
   if (Number.isNaN(since)) throw new Error(`not a date: ${sinceText}. ${USAGE}`);
@@ -102,7 +103,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
       console.log(USAGE);
       process.exit(0);
     }
-    const { dir, since } = parseArgs(process.argv.slice(2));
+    const { dir, since } = parseArgs(process.argv.slice(2), homedir(), Date.now(), process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
     const rows = readRows(dir);
     if (!rows.length) throw new Error(`no exec-log rows in ${dir}. ${USAGE}`);
     console.log(JSON.stringify(summarize(rows, since), null, 1));

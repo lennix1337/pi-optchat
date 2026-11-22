@@ -1,13 +1,13 @@
 import { createReadStream, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { selectedProfileDir } from './selected-profile.mjs';
 import { parseArgs } from 'node:util';
 import { classifyCacheMisses } from '../src/cache-misses.ts';
 
 // external: Node parseArgs does not support optional option values.
 const argv = process.argv.slice(2).flatMap((a, i, all) => (a === '--diag' && (i === all.length - 1 || all[i + 1].startsWith('--')) ? ['--diag=auto'] : [a]));
-const USAGE = 'Usage: node scripts/cache-misses.mjs [--dir PROFILE_DIR | --usage PATH/usage.jsonl] [--model claude-opus-5-5] [--since 2026-10-28] [--diag [PATH/cache-diagnostics.jsonl]] [--days N]  (read-only; money = cacheWrite cost; dir defaults to the swlucas05 profile; headChangeByDay lists the last N days of data, default 14, 0 = all)';
+const USAGE = 'Usage: node scripts/cache-misses.mjs [--dir PROFILE_DIR | --usage PATH/usage.jsonl] [--model claude-opus-5-5] [--since 2026-10-28] [--diag [PATH/cache-diagnostics.jsonl]] [--days N]  (read-only; money = cacheWrite cost; dir defaults to the selected profile; headChangeByDay lists the last N days of data, default 14, 0 = all)';
 if (argv.includes('--help') || argv.includes('-h')) {
   console.log(USAGE);
   process.exit(0);
@@ -25,7 +25,7 @@ if (!Number.isInteger(days) || days < 0) {
   console.error(`--days needs a whole number >= 0. ${USAGE}`);
   process.exit(2);
 }
-const dir = values.dir ?? join(homedir(), '.optchat', 'profiles', 'swlucas05');
+const dir = values.dir ?? selectedProfileDir();
 values.usage ??= join(dir, 'usage.jsonl');
 if (values.diag === 'auto') values.diag = join(dir, 'cache-diagnostics.jsonl');
 if (values.diag && !existsSync(values.diag) && !existsSync(`${values.diag}.1`)) {

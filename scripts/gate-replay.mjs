@@ -11,9 +11,10 @@ import { parseArgs } from 'node:util';
 import { classifyEffects, decide, gitRepo, parseContract } from '../src/autonomy.ts';
 import { judgeSelfEdit } from '../src/autonomy-self-edit.ts';
 import { touchesContract } from '../src/authorization.ts';
+import { selectedProfileDir } from './selected-profile.mjs';
 
 const DEFAULT_SESSIONS = join(homedir(), '.pi', 'agent', 'sessions');
-const DEFAULT_AUTONOMY = join(homedir(), '.optchat', 'profiles', 'swlucas05', 'autonomy.json');
+const DEFAULT_AUTONOMY = join(selectedProfileDir(), 'autonomy.json');
 
 const OUTCOME_RANK = { unanswered: 0, denied: 1, approved: 2 };
 

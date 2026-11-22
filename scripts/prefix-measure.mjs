@@ -14,16 +14,17 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symli
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectedProfile } from './selected-profile.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const flag = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
 const optchatDir = resolve(flag('optchat', join(here, '..')));
-const cwd = resolve(flag('cwd', 'C:/projetos/pi-optchat'));
+const cwd = resolve(flag('cwd', optchatDir));
 const outFile = flag('out');
-const profileName = flag('profile', 'swlucas05');
+const profileName = flag('profile') ?? selectedProfile();
 const liveAgent = join(homedir(), '.pi', 'agent');
-const liveHome = join(homedir(), '.optchat');
+const liveHome = process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat');
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value ?? ''), 'utf8');
 
 const bodies = [];

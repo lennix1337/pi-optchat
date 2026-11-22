@@ -2,17 +2,17 @@
 
 
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { foreignIds } from '../src/carried-ids.ts';
+import { selectedProfileDir } from './selected-profile.mjs';
 
 if (process.argv.slice(2).some(a => a === '--help' || a === '-h')) {
   console.log('usage: foreign-id-rate.mjs [profileDir] [fromId] [splitId]  (run with node --experimental-transform-types)');
   process.exit(0);
 }
 const [d, f, split = ''] = process.argv.slice(2);
-const dir = d || join(homedir(), '.optchat', 'profiles', 'swlucas05');
-const from = f || '104200';
+const dir = d || selectedProfileDir();
+const from = f || '0';
 const date = new Date().toISOString().slice(0, 10);
 const read = (sub) => readFileSync(join(dir, sub, `${date}.jsonl`), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const msgs = new Map(read('main').map((m) => [m.i, m]));

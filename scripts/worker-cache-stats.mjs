@@ -8,10 +8,10 @@
 
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { homedir } from 'node:os';
+import { selectedProfileDir } from './selected-profile.mjs';
 import { join } from 'node:path';
 
-export const DEFAULT_FILE = join(homedir(), '.optchat', 'profiles', 'swlucas05', 'usage.jsonl');
+export const DEFAULT_FILE = join(selectedProfileDir(), 'usage.jsonl');
 
 export function parseArgs(argv) {
   const options = { file: DEFAULT_FILE, since: undefined, until: undefined, provider: '^anthropic', model: undefined, json: false, runs: false };
