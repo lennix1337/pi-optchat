@@ -5,11 +5,11 @@ import { GOAL_HOLD, HOLD_MAX_MS, registerSelfReload, RELOAD_ENTRY } from '../src
 
 function fixture(prepare: () => Promise<void> = async () => {}) {
   const entries: any[] = [], notices: string[] = [], sent: any[] = [], commands = new Map<string, any>(), hooks = new Map<string, any[]>();
-  let busy: string | undefined, reloads = 0, prepares = 0;
+  let busy: string | undefined, reloads = 0, prepares = 0, running = false;
   let tools: any[] = [], responder: ((data: any) => void) | undefined;
   const listeners = new Map<string, ((data: unknown) => void)[]>();
   let replacement: string | undefined;
-  const ctx = { cwd: 'fixture-cwd', mode: 'tui', isIdle: () => true, hasPendingMessages: () => false,
+  const ctx = { cwd: 'fixture-cwd', mode: 'tui', isIdle: () => !running, hasPendingMessages: () => false,
     sessionManager: { getSessionId: () => 'session-1', getBranch: () => entries },
     ui: { notify: (message: string) => notices.push(message) }, reload: async () => { reloads++; } } as unknown as ExtensionContext;
   const pi = { on: (name: string, hook: any) => { hooks.set(name, [...hooks.get(name) ?? [], hook]); return () => {}; },
@@ -34,7 +34,7 @@ function fixture(prepare: () => Promise<void> = async () => {}) {
   const goalHeld = () => { let reason: string | undefined; pi.events.emit(GOAL_HOLD, { hold: (why: string) => { reason ??= why; } }); return reason; };
   return { ctx, pi, entries, notices, sent, commands, emit, attach, goalHeld, tool: () => toolDef,
     request: () => toolDef.execute('call-1', { checkpoint: 'Verified A. Next inspect B; do not repeat A.' }, new AbortController().signal, undefined, ctx),
-    busy: (reason?: string) => { busy = reason; }, reloads: () => reloads, prepares: () => prepares,
+    busy: (reason?: string) => { busy = reason; }, running: (on: boolean) => { running = on; }, reloads: () => reloads, prepares: () => prepares,
     latest: () => entries.filter(e => e.customType === RELOAD_ENTRY).at(-1)?.data,
     replacement: (kind: string) => { replacement = kind; },
     delegation: (answer?: string | false) => { tools = [{ name: 'subagent' }]; responder = answer === false ? undefined : data => data.respond('pi-subagents', answer); } };
@@ -228,4 +228,16 @@ test('a report that never finishes delivering cancels the reload after the wait'
     for (let i = 0; i < 20; i++) { mock.timers.tick(10_000); await new Promise(resolve => setImmediate(resolve)); }
     assert.equal(f.latest().state, 'cancelled'); assert.equal(f.sent.length, 0);
   } finally { mock.timers.reset(); }
+});
+
+test('a follow-up run already started when the request settles does not cancel the reload', async () => {
+  const f = fixture(); await f.request();
+  f.running(true);
+  (f.entries as any[]).push({ type: 'message', message: { role: 'assistant', stopReason: 'toolUse' } });
+  await f.emit('agent_settled', { aborted: false });
+  assert.equal(f.latest().state, 'requested'); assert.equal(f.sent.length, 0);
+  f.running(false);
+  (f.entries as any[]).push({ type: 'message', message: { role: 'assistant', stopReason: 'stop' } });
+  await f.emit('agent_settled', { aborted: false });
+  assert.equal(f.sent.length, 1); assert.match(f.sent[0][1], /^\/optchat-self-reload /);
 });
