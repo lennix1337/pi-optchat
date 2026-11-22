@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dashboard } from '../src/dashboard-model.ts';
-import { homeDashboard, shellTarget } from '../src/home-dashboard.ts';
+import { homeDashboard, homeShell, shellTarget } from '../src/home-dashboard.ts';
+import { renderWork } from '../src/home-items.ts';
 
 test('dashboard is a detached, panel-independent snapshot', () => {
   const workers = [{ id: 'w1', kind: 'agy', model: 'Neon', label: 'GX18MCP', started: 1000, target: { repo: 'org/gx', pr: 42 } }];
@@ -23,6 +24,22 @@ test('team lines show only an explicitly supplied repository and PR', () => {
   const result = homeDashboard({ workers, prs: [], commitments: [], jobs: [] }, [], 'working', undefined, 360000);
   assert.equal(result.team[0], 'agy · Neon · GX18MCP → GX18MCP#42 · há 6 min');
   assert.equal(result.team[1], 'shell · sem alvo · há 6 min');
+});
+
+test('home shell projection never includes the raw command', () => {
+  const secret = 'unset -v EXAMPLE_SECRET_TOKEN';
+  const shell = { id: 's1', command: secret, started: 0 };
+  const unnamed = homeShell(shell, 60_000);
+  const named = homeShell({ ...shell, label: 'Executando testes' }, 60_000);
+  const repeated = homeShell({ ...shell, label: secret }, 60_000);
+  assert.equal(repeated.job, 'Comando em segundo plano · há 1 min');
+  assert.equal(unnamed.job, 'Comando em segundo plano · há 1 min');
+  assert.equal(named.job, 'Executando testes · há 1 min');
+  const work = { prs: [], commitments: [], jobs: [unnamed.job, named.job], workers: [unnamed.worker, named.worker] };
+  const visible = [renderWork(work), ...homeDashboard(work, [], 'working', undefined, 60_000).team].join('\n');
+  assert.match(visible, /Comando em segundo plano/);
+  assert.match(visible, /Executando testes/);
+  assert.doesNotMatch(visible, /EXAMPLE_SECRET_TOKEN|unset -v/);
 });
 
 test('agy shell target requires an explicit repo in its label or flag', () => {
