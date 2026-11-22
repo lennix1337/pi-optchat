@@ -114,6 +114,10 @@ export function clipWords(text: string, max: number): string {
   const cut = text.slice(0, max - 1), space = cut.search(/\s\S*$/);
   return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
 }
+function withoutCompactionBlocks(text: string): string {
+  return text.replace(/<compaction-line>[\s\S]*?(?:<\/compaction-line>|$)/g, '').trim();
+}
+
 function recentThoughts(previous: string[], content: unknown): string[] {
   if (!Array.isArray(content)) return previous;
   const thoughts = [...previous];
@@ -163,7 +167,7 @@ export function wakeChannel(messages: readonly AgentMessage[]): string | null | 
 
 export function finalText(messages: readonly AgentMessage[]): string {
   const last = [...messages].reverse().find(m => m.role === 'assistant');
-  return last ? textContent(last.content, false).trim() : '';
+  return last ? withoutCompactionBlocks(textContent(last.content, false)) : '';
 }
 
 
@@ -572,7 +576,7 @@ export class SlackBridge {
     if (this.running && this.work) this.work.thoughts = recentThoughts(this.work.thoughts, content);
     if (!this.answering) return;
     if (Array.isArray(content) && content.some(part => (part as { type?: string })?.type === 'toolCall')) return;
-    const text = textContent(message.content, false).trim();
+    const text = withoutCompactionBlocks(textContent(message.content, false));
     if (text) this.replied = text;
   }
 
