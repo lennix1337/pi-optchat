@@ -145,12 +145,12 @@ function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
   };
   return {
     async admit(call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) {
-      const refusal = gate.admit(call);
+      const refusal = withProductionHosts(contract.productionHosts?.(), () => gate.admit(call));
       const pending = refusal?.token ? gate.pendingFor(call.session).find(p => p.token === refusal.token) : undefined;
       if (!pending || notes.has(pending.token)) return { refusal, note: (pending && notes.get(pending.token)) ?? '' };
       const note = await decide(pending, call, ctx);
 
-      if (note === undefined) return { refusal: gate.admit(call), note: '' };
+      if (note === undefined) return { refusal: withProductionHosts(contract.productionHosts?.(), () => gate.admit(call)), note: '' };
       if (note) notes.set(pending.token, note);
       return { refusal, note };
     },
@@ -227,7 +227,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     if (blocked) return blocked;
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };
-    if (!grant) return gate.admit(call) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
+    if (!grant) return withProductionHosts(productionHosts?.(), () => gate.admit(call)) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
     const { refusal, note } = await admission.admit(call, ctx);
     display.show(ctx);
     if (!refusal) return;
