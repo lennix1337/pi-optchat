@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { GOAL_HOLD, HOLD_MAX_MS, registerSelfReload, RELOAD_ENTRY } from '../src/self-reload.ts';
@@ -205,4 +205,27 @@ test('a cancelled ticket keeps the reason in its saved entry', async () => {
   await f.emit('agent_settled', { aborted: false });
   assert.equal(f.latest().state, 'cancelled');
   assert.match(f.latest().reason, /new background job/);
+});
+
+test('a report still being delivered delays the reload instead of cancelling it', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const f = fixture(); await f.request();
+    f.busy('1 report(s) still being delivered: claim check.');
+    await f.emit('agent_settled', { aborted: false });
+    assert.equal(f.latest().state, 'requested'); assert.equal(f.sent.length, 0);
+    f.busy(undefined); mock.timers.tick(10_000); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.sent.length, 1); assert.match(f.sent[0][1], /^\/optchat-self-reload /);
+  } finally { mock.timers.reset(); }
+});
+
+test('a report that never finishes delivering cancels the reload after the wait', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  try {
+    const f = fixture(); await f.request();
+    f.busy('1 report(s) still being delivered: claim check.');
+    await f.emit('agent_settled', { aborted: false });
+    for (let i = 0; i < 20; i++) { mock.timers.tick(10_000); await new Promise(resolve => setImmediate(resolve)); }
+    assert.equal(f.latest().state, 'cancelled'); assert.equal(f.sent.length, 0);
+  } finally { mock.timers.reset(); }
 });
