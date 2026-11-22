@@ -3,6 +3,7 @@ import { basename, extname, isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
 import { immediate } from '../store/transaction.ts';
+import { teamBlocks } from './home-blocks.ts';
 
 
 
@@ -172,7 +173,7 @@ export type HomeChoice = { label: string; options: string[] };
 export const HOME_SETTINGS: Readonly<Record<string, 'modelo' | 'thinking'>> = { optchat_home_model: 'modelo', optchat_home_thinking: 'thinking' };
 export const SETTING_VALUE = /^[\w./:-]{1,80}$/;
 export type HomeSettings = { model?: string; models: { value: string; label: string }[]; level?: string; levels?: string[] };
-export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings };
+export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings; team?: string[] };
 
 
 function sections(text: string): string[] {
@@ -207,7 +208,7 @@ export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
     ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [],
     ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : [],
   ];
-  return [...sections(text).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...choices, ...settingBlocks(options.settings), { type: 'actions', elements }];
+  return [...options.team !== undefined ? [{ type: 'header', text: { type: 'plain_text', text: 'OptChat · Painel' } }] : [], ...sections(text).slice(0, 30).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...teamBlocks(options.team), ...choices.slice(0, 6), ...settingBlocks(options.settings), { type: 'actions', elements }].slice(0, 100);
 }
 
 function settingBlocks(settings: HomeSettings | undefined): unknown[] {
