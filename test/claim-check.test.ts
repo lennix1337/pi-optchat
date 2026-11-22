@@ -112,3 +112,10 @@ test('a reply with a UTC clock time goes back once to be written in Brasília ti
   assert.deepEqual(utcTimes('O radar usa o formato "12:43Z" no título.'), []);
   assert.match(claimRetryText([], [], [], ['Às 12:43Z.']), /time in UTC[\s\S]*Brasília time/);
 });
+
+test('a reload claim needs the reload-resume notice; pending or negated reloads are no claim', () => {
+  assert.deepEqual(unbackedClaims('Pi recarregado às 12:04.', 'Reload requested for the end of this run. Reload has not happened yet.'), ['reload feito']);
+  assert.deepEqual(unbackedClaims('Reload done, probe verde.', ''), ['reload feito']);
+  assert.deepEqual(unbackedClaims('O Pi foi reloaded.', '[optchat-reload-resume] Reload nativo concluído'), []);
+  assert.deepEqual(unbackedClaims('Pi ainda não recarregado; o código precisa ser recarregado; reload requested.', ''), []);
+});
