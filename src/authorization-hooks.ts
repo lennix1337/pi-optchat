@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { worktreeRemovalRefusal } from './worktree-guard.ts';
 import { discardRefusal } from './discard-guard.ts';
 import { pipeStatusRefusal } from './pipe-status-guard.ts';
+import { registerRepeatStop } from './repeat-stop-guard.ts';
 import { winPathRefusal } from './winpath-guard.ts';
 
 const WIDGET = 'optchat-approval';
@@ -193,13 +194,14 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   /** Longest a pending call is held back from `onPending` while the run goes on. */
   holdMs = 3 * 60_000 } = {}) {
   const env = process.env.OPTCHAT_EFFECT_APPROVALS;
-  const guard = async (event: { toolName: string; input: unknown }, cwd: string) => {
+  const repeatStop = registerRepeatStop(pi);
+  const guard = async (event: { toolName: string; input: unknown }, cwd: string, session: string) => {
     if (event.toolName !== 'bash' || !event.input || typeof event.input !== 'object' || !('command' in event.input) || typeof event.input.command !== 'string') return;
-    const reason = pipeStatusRefusal(event.input.command) ?? (process.env.OPTCHAT_WINPATH_GUARD === 'off' ? undefined : winPathRefusal(event.input.command)) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd);
+    const reason = repeatStop(session, event.input.command) ?? pipeStatusRefusal(event.input.command) ?? (process.env.OPTCHAT_WINPATH_GUARD === 'off' ? undefined : winPathRefusal(event.input.command)) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd);
     if (reason) return { block: true as const, reason };
   };
   if (!(enabled ?? (env === '1' || env === 'risk'))) {
-    pi.on('tool_call', (event, ctx) => guard(event, ctx.cwd));
+    pi.on('tool_call', (event, ctx) => guard(event, ctx.cwd, ctx.sessionManager.getSessionId()));
     return;
   }
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), contractDir, onSettled: (token, outcome) => onSettled?.(token, outcome) });
@@ -219,7 +221,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     return RESULTS[result];
   });
   pi.on('tool_call', async (event, ctx) => {
-    const blocked = await guard(event, ctx.cwd);
+    const blocked = await guard(event, ctx.cwd, ctx.sessionManager.getSessionId());
     if (blocked) return blocked;
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };

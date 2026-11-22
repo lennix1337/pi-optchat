@@ -13,7 +13,7 @@ for (const command of ['npm test 2>&1 | tail -5; echo rc=${PIPESTATUS[0]}', 'npm
 test('the bash tool_call hook blocks the tail-then-rc pattern before it runs', async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
   registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI, { enabled: false });
-  const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', input: { command } }, { cwd: '/tmp' });
+  const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', input: { command } }, { cwd: '/tmp', sessionManager: { getSessionId: () => 'test' } });
   const blocked = await call('npm test | tail -3; echo rc=$?');
   assert.equal(blocked.block, true);
   assert.match(blocked.reason, /PIPESTATUS/);

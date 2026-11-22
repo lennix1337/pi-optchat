@@ -26,7 +26,7 @@ test('the gate refuses an unmerged worktree removal whatever the contract says',
     const hooks = new Map<string, (...args: any[]) => any>();
     registerEffectApprovals({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI,
       { enabled: true });
-    const result = await hooks.get('tool_call')!({ toolName: 'bash', input: { command: `git -C "${f.repo}" worktree remove -f "${f.tree}"` } }, { cwd: f.repo });
+    const result = await hooks.get('tool_call')!({ toolName: 'bash', input: { command: `git -C "${f.repo}" worktree remove -f "${f.tree}"` } }, { cwd: f.repo, sessionManager: { getSessionId: () => 'test' } });
     assert.match(result.reason, /feature.*explicit order/i);
   } finally { f.cleanup(); }
 });
