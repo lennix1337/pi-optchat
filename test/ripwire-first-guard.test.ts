@@ -38,3 +38,14 @@ test('the tool_call hook refuses the first edit of a run and a new input starts 
   hooks.get('input')!({ text: 'next', source: 'interactive' }, {});
   assert.equal((await edit()).block, true);
 });
+
+test('a heartbeat wake starts a new run: the first source write is refused again; a worker notice does not', () => {
+  const hooks = new Map<string, (event: any, ctx?: any) => unknown>();
+  registerRipwireFirst({ on: (name, handler) => { hooks.set(name, handler); } }, { perInput: true });
+  const write = () => hooks.get('tool_call')!({ toolName: 'edit', input: { path: '/repo/src/a.ts' } }) as { block?: boolean } | undefined;
+  hooks.get('tool_call')!({ toolName: 'ripwire', input: { action: 'search' } });
+  hooks.get('before_agent_start')!({ messageType: 'custom', message: { customType: 'optchat-report', content: '[shell abc] completed' } });
+  assert.equal(write(), undefined, 'a notice mid-run keeps the run');
+  hooks.get('before_agent_start')!({ messageType: 'custom', message: { customType: 'optchat-report', content: '[OptChat heartbeat] You have been idle for 30 min' } });
+  assert.equal(write()?.block, true, 'a wake is a new run and needs ripwire again');
+});
