@@ -174,5 +174,13 @@
     "scope": "bash tool call",
     "detector": "his-call",
     "precision": "deploy-web/deploy-changed/deploy-prod scripts, dentai-ship --deploy, wrangler deploy, kill/pkill/taskkill and rm -r/-rf; detects calls, not the operator's order or ownership of the process, so candidates require review."
+  },
+  {
+    "id": "retro-recap",
+    "quote": "as retros estao perdendo um pouco o sentido, era pra achar ainda mais coisas pra corrigir e melhorar, velocidade, qualidade, entregas mais precisas, mas agora vc só fica relatando oq fez no dia",
+    "date": "21/11",
+    "scope": "slack_send/whatsapp_send call",
+    "detector": "retro-recap",
+    "precision": "A message naming 'retro' that cites 2+ distinct #N refs, more than the changes the same run shipped (ship.mjs, gh pr create, git push) before it; resets at each operator message or report. Counts refs, not whether each was a new finding."
   }
 ]

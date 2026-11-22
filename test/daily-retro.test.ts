@@ -80,3 +80,9 @@ test('the retro prompt asks for fixes of what went badly, not a recap of the day
   assert.match(p, /problem -> fix/);
   assert.match(p, /Never recap/);
 });
+test('the retro prompt asks for new measured findings, not the day\'s shipped fixes', () => {
+  const p = retroPrompt('2026-11-21');
+  assert.match(p, /at least three NEW problems/);
+  assert.match(p, /already shipped during the day are not retro findings/);
+  assert.match(p, /order -> merge time/);
+});

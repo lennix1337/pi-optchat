@@ -25,8 +25,10 @@ export function markRetro(dir: string, now: number) {
 export function retroPrompt(date: string, machine: string[] = []) {
   return [
     `Daily retro (operator 03/11, standing order), ${date}. A retro is action, not a diary (operator 14/11: "é pra analisar o dia e melhorar o que foi ruim, não me contar o que aconteceu").`,
-    'Run the `retro` skill (~/.agents/skills/retro/SKILL.md) over today\'s work in this chat and list what went badly, each with its evidence:',
+    'Run the `retro` skill (~/.agents/skills/retro/SKILL.md) over today\'s work in this chat and hunt for what went badly, each with its evidence:',
     'slow deliveries, low-quality merges, replies he had to correct, Slack/Home friction, and every wake that ended without shipping a change.',
+    'Measure before judging (operator 21/11: "era pra achar ainda mais coisas pra corrigir e melhorar, velocidade, qualidade, entregas mais precisas, mas agora vc só fica relatando oq fez no dia"): order -> merge time, tool calls and retries per delivery, red CI and reverted or re-fixed merges, claims the claim check caught, hits of `node scripts/correction-scan.mjs` over the day.',
+    'Find at least three NEW problems in speed, quality and precision. Fixes already shipped during the day are not retro findings and never go in the DM; a retro that only lists them failed.',
     'For each one, find why it happened and ship the fix now, without asking: harness code (PR + auto-merge), the swlucas05 profile AGENTS.md, skills, and autonomy.json',
     '(edit/write of the file; rules for deploy, production writes, paid runs, messages, consent, publish, force-push, installs, `*` and the default stay his and need his tap).',
     'Each fix gets a regression test or a measurement where one applies; mirror profile changes in dotfiles payload/pi.',
