@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
 import { weakensTest } from './weaken-test-guard.ts';
+import { writesRealPhone } from './package-pii-guard.ts';
 import { runsSuite } from './suite-once-guard.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
@@ -97,15 +98,6 @@ function endsWithPromise(final: string): boolean {
   const last = withoutQuotes(final).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().split(/\n+/u).map(l => l.trim()).filter(Boolean).pop() ?? '';
   const sentence = last.split(/(?<=[.!])\s+/u).pop() ?? '';
   return !sentence.includes('?') && PROMISE_ENDING.test(sentence);
-}
-
-const PACKAGE_PATH = /[\\/]projetos[\\/](?!dotfiles[\\/]|dentai-mono[\\/])/u;
-const PHONE = /\b55\d{10,11}\b/gu;
-function writesRealPhone(call: Content): boolean {
-  if ((call.name !== 'edit' && call.name !== 'write') || !PACKAGE_PATH.test(String(call.arguments?.path ?? ''))) return false;
-  const edits = Array.isArray(call.arguments?.edits) ? call.arguments.edits : [call.arguments];
-  return edits.some((e: { newText?: string; content?: string } | undefined) =>
-    (String(e?.newText ?? e?.content ?? '').match(PHONE) ?? []).some(n => !n.includes('0000')));
 }
 
 const isOutbound = (call: Content): boolean => call.name === 'slack_send' || call.name === 'whatsapp_send';
