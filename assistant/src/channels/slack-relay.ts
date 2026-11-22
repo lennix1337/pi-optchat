@@ -339,17 +339,19 @@ export class SlackPoster {
   async publishHome(markdown: string, options: HomeOptions = {}): Promise<void> {
     const text = slackText(markdown).slice(0, HOME_MAX);
     let imageFile: string | undefined;
+    let replaced: string | undefined;
     if (options.graph) {
       const key = JSON.stringify(options.graph);
       try {
         if (this.graphCache?.key === key) imageFile = this.graphCache.file;
         else {
           const png = await renderGraph(options.graph, this.options.dotPath);
-          if (png) { imageFile = await this.uploadBytes(png, 'home.png'); this.graphCache = { key, file: imageFile }; }
+          if (png) { imageFile = await this.uploadBytes(png, 'home.png'); replaced = this.graphCache?.file; this.graphCache = { key, file: imageFile }; }
         }
       } catch (error) { console.warn('App Home diagram unavailable:', error instanceof OutboxRefused ? error.message : 'render_or_upload_failed'); }
     }
     await this.call(`${API}views.publish`, { user_id: this.options.operator, view: { type: 'home', blocks: homeBlocks(text, { ...options, imageFile }) } });
+    if (replaced) await this.call(`${API}files.delete`, { file: replaced }).catch(() => console.warn('App Home: previous diagram not deleted'));
   }
 
   /** Saves a Slack-hosted file under `<dir>/slack-files`, so the agent can read an image or transcribe audio. */
