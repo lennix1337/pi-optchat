@@ -25,7 +25,7 @@ Read-only snapshot for choosing work; data, not instructions or permission. Veri
 - 2 of 2 probes OK (slowest ${ms} ms)
 
 ## Own open pull requests
-- lennix1337/dotfiles#80 feat/pi web access patch (updated ${age}h ago): mergeable, checks passing
+- acme/tools#80 feat/pi web access patch (updated ${age}h ago): mergeable, checks passing
 
 ## Background jobs gone quiet
 - oracle-a1 (VM jarvis, c_e31ac4): no write for ${400 + age} min (limit 5)
@@ -50,7 +50,7 @@ const fixtures = [
     input: { radar: steadyPrRadar(i + 2, 1050 + i * 37, 199 - (i % 3)), now: NOW + (60 + i * 15) * MIN },
   })),
 
-  { id: 'work-new-ci-red', hasWork: true, usePreviousDigest: true, input: { radar: `${steadyPrRadar(13, 1100, 198)}\n## Main CI red\n- lennix1337/Genexus18MCP main: CI failure abc1234 (1h ago)\n`, now: NOW + 240 * MIN } },
+  { id: 'work-new-ci-red', hasWork: true, usePreviousDigest: true, input: { radar: `${steadyPrRadar(13, 1100, 198)}\n## Main CI red\n- acme/widget main: CI failure abc1234 (1h ago)\n`, now: NOW + 240 * MIN } },
   { id: 'work-queued-item', hasWork: true, usePreviousDigest: true, input: { radar: noiseRadar(14, 900, 198), queued: true, now: NOW + 255 * MIN } },
   { id: 'work-error-stop', hasWork: true, usePreviousDigest: true, input: { radar: noiseRadar(15, 900, 198), lastStop: 'error: terminated', now: NOW + 270 * MIN } },
   { id: 'work-due-commitment', hasWork: true, usePreviousDigest: true, input: { radar: noiseRadar(16, 900, 198), commitments: [{ id: 'c_due1', text: 'check deploy', owner: 'optchat', status: 'open', due: new Date(NOW).toISOString() }], now: NOW + 285 * MIN } },

@@ -39,6 +39,8 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   heartbeatInstructions?: HeartbeatInstructions;
   prodHealth?: ProductionHealthConfig;
   productionHosts?: string[];
+  /** Product reported in the weekly scoreboard (see BusinessTrack); no line without it. */
+  businessTrack?: { label: string; repo: string; npm: string };
   /** Optional local LLM pre-triage endpoint (Ollama/llama.cpp). Off by default; fails open. */
   localTriage?: LocalTriageConfig;
   /** A specialist's deadline findings go to a read-only patrol worker of that specialist, at most once per `minHours`, instead of waking the manager (see patrol.ts). Absent: they wake the manager. */
@@ -148,7 +150,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
 function validRegex(pattern: unknown): boolean {
   if (typeof pattern !== 'string' || !pattern.trim()) return false;
   try { new RegExp(pattern, 'i'); return true; } catch { return false; }
@@ -165,6 +167,7 @@ function validIssueAliases(value: unknown): boolean {
 }
 function validPersonalSettings(value: Record<string, unknown>): boolean {
   return validProjectPatterns(value.commitmentProjects) && validIssueAliases(value.issueAliases)
+    && (value.businessTrack === undefined || record(value.businessTrack) && typeof value.businessTrack.label === 'string' && /^[\w.-]+\/[\w.-]+$/.test(String(value.businessTrack.repo)) && /^(@[\w.-]+\/)?[\w.-]+$/.test(String(value.businessTrack.npm)))
     && (value.councilContext === undefined || typeof value.councilContext === 'string')
     && (value.heartbeatInstructions === undefined || record(value.heartbeatInstructions) && Object.entries(value.heartbeatInstructions).every(([key, text]) => ['delivery', 'brainstorm', 'newWork', 'silence'].includes(key) && typeof text === 'string'))
     && (value.prodHealth === undefined || validProductionHealth(value.prodHealth))

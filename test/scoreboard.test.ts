@@ -10,6 +10,7 @@ import { recordCorrection } from '../src/corrections.ts';
 import { withTempDir } from './support.ts';
 
 const MIN = 60_000, DAY = 86_400_000;
+const track = { label: 'Acme', repo: 'acme/widget', npm: 'acme-pkg' };
 const withDir = (run: (dir: string) => void | Promise<void>) => () => withTempDir('scoreboard-', run);
 
 const monday = new Date(2026, 10, 2, 10, 0).getTime();
@@ -128,21 +129,21 @@ test('the scoreboard posts once a week to #harness, Monday morning only, saving 
   assert.equal(await board.maybePost(), false);
 }));
 
-test('the business line shows GX18MCP npm downloads against last week, stars, and says revenue is not measured', () => {
+test('the business line shows the configured product\'s npm downloads against last week, stars, and says revenue is not measured', () => {
   const base = { from: monday - 7 * DAY, to: monday, slack: { received: 0, answered: 0, nudges: 0, waiting: 0 } as never, corrections: { count: 0 }, merged: { green: 0, other: 0 } };
-  const text = composeScoreboard({ ...base, business: { downloads: 1837, previous: 1500, stars: 46 } });
-  assert.match(text, /GX18MCP: \*1837\* downloads npm na semana \(\+337 vs\. semana anterior\), 46 estrelas/);
-  assert.match(text, /Receita \(DentAI, GX18MCP, Vitrine\): não medida/);
+  const text = composeScoreboard({ ...base, business: { label: 'Acme', downloads: 1837, previous: 1500, stars: 46 } });
+  assert.match(text, /Acme: \*1837\* downloads npm na semana \(\+337 vs\. semana anterior\), 46 estrelas/);
+  assert.match(text, /Receita: não medida/);
   assert.match(composeScoreboard({ ...base, business: { downloads: 10, stars: 3 } }), /\*10\* downloads npm na semana, 3 estrelas/);
-  assert.match(composeScoreboard(base), /GX18MCP: não medido/);
+  assert.match(composeScoreboard(base), /Tração do produto: não medida/);
 });
 
 test('fetchBusiness reads npm weekly downloads and GitHub stars, and degrades to undefined on failure', async () => {
   const urls: string[] = [];
   const ok = async (url: string) => { urls.push(url); return { ok: true, json: async () => url.includes('npmjs') ? { downloads: 99 } : { stargazers_count: 7 } } as Response; };
-  assert.deepEqual(await fetchBusiness(ok), { downloads: 99, stars: 7 });
-  assert.ok(urls.some(u => u.includes('last-week/genexus-mcp')) && urls.some(u => u.includes('repos/lennix1337/Genexus18MCP')));
-  assert.equal(await fetchBusiness(async () => { throw new Error('offline'); }), undefined);
+  assert.deepEqual(await fetchBusiness(track, ok), { label: 'Acme', downloads: 99, stars: 7 });
+  assert.ok(urls.some(u => u.includes('last-week/acme-pkg')) && urls.some(u => u.includes('repos/acme/widget')));
+  assert.equal(await fetchBusiness(track, async () => { throw new Error('offline'); }), undefined);
 });
 
 test('the business line adds open issues and issues closed in the week when known; fetchBusiness reads them best-effort', async () => {
@@ -150,10 +151,10 @@ test('the business line adds open issues and issues closed in the week when know
   assert.match(composeScoreboard({ ...base, business: { downloads: 10, stars: 3, issues: { open: 9, closedWeek: 4 } } }), /3 estrelas, \*9\* issues abertas \(4 fechadas na semana\)/);
   const urls: string[] = [];
   const get = async (url: string) => { urls.push(url); return { ok: true, json: async () => url.includes('npmjs') ? { downloads: 99 } : url.includes('search/issues') ? { total_count: url.includes('state%3Aopen') || url.includes('state:open') ? 9 : 4 } : { stargazers_count: 7 } } as Response; };
-  assert.deepEqual(await fetchBusiness(get), { downloads: 99, stars: 7, issues: { open: 9, closedWeek: 4 } });
+  assert.deepEqual(await fetchBusiness(track, get), { label: 'Acme', downloads: 99, stars: 7, issues: { open: 9, closedWeek: 4 } });
   assert.ok(urls.some(u => u.includes('closed:>=') || u.includes('closed%3A%3E%3D')));
   const noSearch = async (url: string) => url.includes('search/issues') ? { ok: false, status: 403 } as Response : get(url);
-  assert.deepEqual(await fetchBusiness(noSearch), { downloads: 99, stars: 7 });
+  assert.deepEqual(await fetchBusiness(track, noSearch), { label: 'Acme', downloads: 99, stars: 7 });
 });
 
 test('the weekly post saves downloads as the next week\'s baseline', withDir(async dir => {
@@ -161,6 +162,18 @@ test('the weekly post saves downloads as the next week\'s baseline', withDir(asy
   const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async text => { posts.push(text); }, { now: () => monday, scan: async () => 0, business: async () => ({ downloads: 50, stars: 2 }) });
   await board.maybePost();
   assert.equal(JSON.parse(readFileSync(join(dir, 'slack-scoreboard.json'), 'utf8')).downloads, 50);
+}));
+
+test('without a valid businessTrack in the profile config the weekly post measures no product and names none', withDir(async dir => {
+  const posts: string[] = [];
+  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async text => { posts.push(text); }, { now: () => monday, scan: async () => 0 });
+  await board.maybePost();
+  assert.match(posts[0]!, /Tração do produto: não medida/);
+  assert.doesNotMatch(posts[0]!, /GX18MCP|DentAI|Vitrine/);
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ businessTrack: { label: 'X', repo: 'no-slash', npm: 'pkg' } }));
+  writeFileSync(join(dir, 'slack-scoreboard.json'), '{}');
+  assert.equal(await board.maybePost(), true);
+  assert.match(posts[1]!, /Tração do produto: não medida/);
 }));
 
 test('the council line counts decisions the debate changed this week from council.jsonl; no record is unmeasured', withDir(dir => {

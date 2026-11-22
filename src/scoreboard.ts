@@ -19,7 +19,9 @@ const STATE = 'slack-scoreboard.json';
 
 type Routing = { since: number; woke: number; quiet: number };
 type Saved = { week?: string; routing?: Routing; downloads?: number };
-export type Business = { downloads: number; stars: number; previous?: number; issues?: { open: number; closedWeek: number } };
+/** The product whose traction the weekly post reports: a GitHub `owner/name` and an npm package, set in the profile config (`businessTrack`). */
+export type BusinessTrack = { label: string; repo: string; npm: string };
+export type Business = { label?: string; downloads: number; stars: number; previous?: number; issues?: { open: number; closedWeek: number } };
 export type ScoreInputs = {
   predictions?: { hits: number; total: number };
   /** Wake councils decided this week and how many the debate changed ("Mudou: sim"); undefined without a record. */
@@ -68,9 +70,9 @@ export function composeScoreboard({ from, to, slack, corrections, ruleViolations
   lines.push(predictions?.total ? `• Previsões acertadas (7d): *${predictions.hits}* de *${predictions.total}*` : '• Previsões acertadas (7d): não medido');
   lines.push(council ? `• Conselho do wake (7d): mudou minha decisão em *${council.changed}* de *${council.total}*` : '• Conselho do wake (7d): não medido');
   lines.push(business
-    ? `• GX18MCP: *${business.downloads}* downloads npm na semana${business.previous === undefined ? '' : ` (${business.downloads >= business.previous ? '+' : '−'}${Math.abs(business.downloads - business.previous)} vs. semana anterior)`}, ${business.stars} estrelas${business.issues ? `, *${business.issues.open}* issues abertas (${business.issues.closedWeek} fechadas na semana)` : ''}`
-    : '• GX18MCP: não medido (npm ou GitHub fora do ar)');
-  lines.push('• Receita (DentAI, GX18MCP, Vitrine): não medida (sem leitura automática de Stripe/GA4; só o operador decide gasto)');
+    ? `• ${business.label ?? 'Produto'}: *${business.downloads}* downloads npm na semana${business.previous === undefined ? '' : ` (${business.downloads >= business.previous ? '+' : '−'}${Math.abs(business.downloads - business.previous)} vs. semana anterior)`}, ${business.stars} estrelas${business.issues ? `, *${business.issues.open}* issues abertas (${business.issues.closedWeek} fechadas na semana)` : ''}`
+    : '• Tração do produto: não medida (sem `businessTrack` no perfil, ou npm/GitHub fora do ar)');
+  lines.push('• Receita: não medida (sem leitura automática de Stripe/GA4; só o operador decide gasto)');
   lines.push(commitments
     ? `• Pendências minhas travadas agora: *${commitments.stuck}* sem progresso há 24h+, *${commitments.overdue}* atrasadas (meta 0)`
     : '• Pendências: compromissos ilegíveis, não medido');
@@ -105,25 +107,25 @@ export function weekInputs(dir: string, now: number, saved: Saved,
   return { inputs: { predictions: predictionWeek(dir, from, now), council: councilWeek(dir, from, now), from, to: now, slack: slackWeek(dir, from), corrections: correctionsWeek(dir, from), ruleViolations, commitments, routing: delta, merged }, routing };
 }
 
-/** GX18MCP traction from public endpoints: npm downloads of the last week, GitHub stars and, when the search API answers, open and weekly-closed issues. Undefined when npm or the repo read fails. */
-export async function fetchBusiness(get: (url: string) => Promise<Response> = url => fetch(url, { signal: AbortSignal.timeout(10_000) }), now = Date.now()): Promise<Omit<Business, 'previous'> | undefined> {
+/** Traction of the configured product from public endpoints: npm downloads of the last week, GitHub stars and, when the search API answers, open and weekly-closed issues. Undefined when npm or the repo read fails. */
+export async function fetchBusiness(track: BusinessTrack, get: (url: string) => Promise<Response> = url => fetch(url, { signal: AbortSignal.timeout(10_000) }), now = Date.now()): Promise<Omit<Business, 'previous'> | undefined> {
   const json = async <T>(url: string) => {
     const res = await get(url);
     if (!res.ok) throw new Error(`${url}: ${res.status}`);
     return await res.json() as T;
   };
-  const count = async (query: string) => (await json<{ total_count?: number }>(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(`repo:lennix1337/Genexus18MCP is:issue ${query}`)}`)).total_count;
+  const count = async (query: string) => (await json<{ total_count?: number }>(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(`repo:${track.repo} is:issue ${query}`)}`)).total_count;
   try {
     const since = new Date(now - 7 * 86_400_000).toISOString().slice(0, 10);
     const [npm, repo, open, closedWeek] = await Promise.all([
-      json<{ downloads?: number }>('https://api.npmjs.org/downloads/point/last-week/genexus-mcp'),
-      json<{ stargazers_count?: number }>('https://api.github.com/repos/lennix1337/Genexus18MCP'),
+      json<{ downloads?: number }>(`https://api.npmjs.org/downloads/point/last-week/${track.npm}`),
+      json<{ stargazers_count?: number }>(`https://api.github.com/repos/${track.repo}`),
       count('state:open').catch(() => undefined),
       count(`closed:>=${since}`).catch(() => undefined),
     ]);
     if (!Number.isFinite(npm.downloads) || !Number.isFinite(repo.stargazers_count)) return undefined;
     const issues = Number.isFinite(open) && Number.isFinite(closedWeek) ? { issues: { open: open!, closedWeek: closedWeek! } } : {};
-    return { downloads: npm.downloads!, stars: repo.stargazers_count!, ...issues };
+    return { label: track.label, downloads: npm.downloads!, stars: repo.stargazers_count!, ...issues };
   } catch { return undefined; }
 }
 
@@ -137,10 +139,16 @@ export function scanRuleViolations(): Promise<number | undefined> {
   }));
 }
 
+async function configuredBusiness(dir: string): Promise<Omit<Business, 'previous'> | undefined> {
+  const track = readJsonOr<{ businessTrack?: Partial<BusinessTrack> }>(join(dir, 'config.json'), {}).businessTrack;
+  if (!track || typeof track.label !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(track.repo ?? '') || !/^(@[\w.-]+\/)?[\w.-]+$/.test(track.npm ?? '')) return undefined;
+  return fetchBusiness(track as BusinessTrack);
+}
+
 export class WeeklyScoreboard {
   private scanning = false;
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post,
-    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined>; business?: () => Promise<Omit<Business, 'previous'> | undefined> } = {}) {}
+    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined>; business?: (dir: string) => Promise<Omit<Business, 'previous'> | undefined> } = {}) {}
 
   /** Posts once a week, the first check on `weekday` (Monday) between `at` (09h) and `until` (noon) local time. */
   async maybePost(): Promise<boolean> {
@@ -155,7 +163,7 @@ export class WeeklyScoreboard {
     let violations: number | undefined;
     try { violations = await (this.options.scan ?? scanRuleViolations)(); } finally { this.scanning = false; }
     const { inputs, routing } = weekInputs(owner.dir, now, saved, this.options.gitwatchFile, violations);
-    const traction = await (this.options.business ?? fetchBusiness)();
+    const traction = await (this.options.business ?? configuredBusiness)(owner.dir);
     if (traction) inputs.business = { ...traction, previous: saved.downloads };
     atomicWrite(file, JSON.stringify({ week, ...routing ? { routing } : {}, ...traction ? { downloads: traction.downloads } : saved.downloads === undefined ? {} : { downloads: saved.downloads } }));
     await this.post(composeScoreboard(inputs), 'harness');
