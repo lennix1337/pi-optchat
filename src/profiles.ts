@@ -13,6 +13,7 @@ import { invalidTriage } from './wake-signals.ts';
 import { invalidLocalTriage, type LocalTriageConfig } from './wake-route.ts';
 import { validRoutes, type WorkerRoutes } from './crew.ts';
 import { accountGroup } from './account.ts';
+import type { ProjectPatterns } from './commitment-due.ts';
 
 export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
@@ -30,6 +31,8 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   machineTurnsOnWakeModel?: boolean;
   /** Event-driven wakes (see wake-signals.ts): a heartbeat tick wakes the agent only for a project with news, or once every `buildMinutes` to build something new. Absent: every tick wakes as before. */
   wakeTriage?: { buildMinutes: number; stallHours?: number };
+  /** Case-insensitive regular expressions for inferring a commitment's specialist. Empty by default. */
+  commitmentProjects?: ProjectPatterns;
   /** Optional local LLM pre-triage endpoint (Ollama/llama.cpp). Off by default; fails open. */
   localTriage?: LocalTriageConfig;
   /** A specialist's deadline findings go to a read-only patrol worker of that specialist, at most once per `minHours`, instead of waking the manager (see patrol.ts). Absent: they wake the manager. */
@@ -139,13 +142,22 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects'] as const;
+function validProjectPatterns(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!record(value)) return false;
+  return Object.entries(value).every(([name, pattern]) => {
+    if (!name.trim() || typeof pattern !== 'string' || !pattern.trim()) return false;
+    try { new RegExp(pattern, 'i'); return true; } catch { return false; }
+  });
+}
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
   if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || !alternates(value.alternates)
     || value.wakeModel !== undefined && !(Array.isArray(value.wakeModel) ? value.wakeModel.length > 0 && value.wakeModel.every(modelChoice) : modelChoice(value.wakeModel))
     || value.wakeRouteAcrossFamilies !== undefined && typeof value.wakeRouteAcrossFamilies !== 'boolean'
     || value.machineTurnsOnWakeModel !== undefined && typeof value.machineTurnsOnWakeModel !== 'boolean'
+    || !validProjectPatterns(value.commitmentProjects)
     || value.workerModels !== undefined && !validRoutes(value.workerModels, modelChoice)
     || value.lazyTools !== undefined && !(Array.isArray(value.lazyTools) && value.lazyTools.every(entry => typeof entry === 'string' && entry.trim() !== ''))
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);

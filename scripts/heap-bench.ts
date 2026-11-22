@@ -17,7 +17,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { assertSandbox, blockNetwork, copyProfile } from './bench-sandbox.ts';
 
 const arg = (name: string, fallback?: string) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : fallback; };
-const source = arg('source'), profile = arg('profile', 'swlucas05')!, workers = Number(arg('workers', '20')), turns = Number(arg('turns', '500'));
+const source = arg('source'), profile = arg('profile', 'bench')!, workers = Number(arg('workers', '20')), turns = Number(arg('turns', '500'));
 if (!source) throw new Error('--source <profile directory to copy from> is required');
 if (typeof globalThis.gc !== 'function') throw new Error('run with --expose-gc');
 const scratch = mkdtempSync(join(tmpdir(), 'heap-bench-'));

@@ -297,7 +297,7 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
       { type: 'toolCall', id: 's', name: 'bash', arguments: { command: 'cd C:/projetos/Genexus18MCP && node C:/projetos/pi-optchat/scripts/ship.mjs -m x a.cs' } },
       { type: 'toolCall', id: 'c', name: 'bash', arguments: { command: 'cd C:/projetos/Genexus18MCP && gh issue comment 886 --body x' } },
       { type: 'toolCall', id: 'd', name: 'bash', arguments: { command: 'cd C:/projetos/Genexus18MCP && git push -q origin --delete fix/888' } },
-      { type: 'toolCall', id: 'w', name: 'write', arguments: { path: 'C:/Users/swluc/AppData/Local/Temp/pr.md', content: 'x' } },
+      { type: 'toolCall', id: 'w', name: 'write', arguments: { path: 'C:/Users/me/AppData/Local/Temp/pr.md', content: 'x' } },
       { type: 'toolCall', id: 'r', name: 'read', arguments: { path: 'C:/projetos/Genexus18MCP/b.cs' } },
       { type: 'toolCall', id: 'k', name: 'commitments', arguments: { action: 'update', id: 'c_a0ae29', status: 'done' } },
     ] },
@@ -364,7 +364,7 @@ test('wakeEffects ignores commands quoted in scripts, searches, heredocs and mes
 
 test('wakeChannel: most-touched repo wins, unmapped work goes to the DM, a wake that already used slack_send is not repeated', () => {
   assert.equal(wakeChannel(calling([['edit', { path: 'C:/projetos/pi-goal-x/a.ts' }], ['write', { path: 'C:/projetos/pi-optchat/b.ts' }], ['edit', { path: 'C:/projetos/dentai-mono/c.ts' }]], 'x')), 'harness');
-  assert.equal(wakeChannel(calling([['edit', { path: 'C:/Users/swluc/.optchat/profiles/p/AGENTS.md' }]], 'x')), null);
+  assert.equal(wakeChannel(calling([['edit', { path: 'C:/Users/me/.optchat/profiles/p/AGENTS.md' }]], 'x')), null);
   assert.equal(wakeChannel(calling([['edit', { path: 'C:/projetos/dentai-mono/c.ts' }], ['slack_send', { text: 'pronto', channel: 'dentai' }]], 'x')), undefined);
   assert.equal(wakeChannel(calling([['bash', { command: 'cd C:/projetos/dotfiles && gh pr create --fill' }]], 'x')), 'harness');
 });
@@ -599,7 +599,7 @@ test('slack_send without a channel goes to the channel of the work: its topic, e
   const f = fixture();
   try {
     f.bridge.runStarted();
-    assert.deepEqual(await f.bridge.report('Link da Beatriz: https://x', undefined, 'dentai-tunnel-beatriz'), { channel: 'dentai' });
+    assert.deepEqual(await f.bridge.report('Link da Alex: https://x', undefined, 'dentai-tunnel-alex'), { channel: 'dentai' });
     f.bridge.toolStarted('bash', { command: 'cd C:/projetos/pi-optchat && git status' });
     f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/a.ts' });
     assert.deepEqual(await f.bridge.report('PR aberto'), { channel: 'harness' });
@@ -611,7 +611,7 @@ test('slack_send without a channel goes to the channel of the work: its topic, e
 });
 
 test('slack_send without a channel during a run started by his DM answers in that DM, whatever the repos', async () => {
-  const f = fixture([{ seq: 1, ts: '1793000000.000100', thread: null, text: 'como ta a beatriz?', channel: 'D0OWNER' } as never]);
+  const f = fixture([{ seq: 1, ts: '1793000000.000100', thread: null, text: 'como ta a alex?', channel: 'D0OWNER' } as never]);
   try {
     await f.bridge.poll();
     f.bridge.runStarted();

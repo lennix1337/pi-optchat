@@ -5,14 +5,15 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beatSnapshot, checkBeat, heartbeatPlan } from '../src/heartbeat.ts';
 import { loadConfig } from '../src/profiles.ts';
+import { selectedProfile } from '../scripts/selected-profile.mjs';
 
-const [profile = 'swlucas05', name = 'anthropic/claude-haiku-5-5'] = process.argv.slice(2);
+const [profile = selectedProfile(), name = 'anthropic/claude-haiku-5-5'] = process.argv.slice(2);
 const version = readFileSync(join(homedir(), '.pi/agent/install/current-version'), 'utf8').trim();
 const sdk = await import(pathToFileURL(join(homedir(), '.pi/agent/install/releases', version, 'node_modules/@earendil-works/pi-coding-agent/dist/index.js')).href);
 const agent = join(homedir(), '.pi/agent');
 const registry = new sdk.ModelRegistry(await sdk.ModelRuntime.create({ authPath: join(agent, 'auth.json'), modelsPath: join(agent, 'models.json'), modelsStorePath: join(agent, 'models-store.json'), refreshOnCreate: false }));
 
-const dir = join(homedir(), '.optchat/profiles', profile);
+const dir = join(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'), 'profiles', profile);
 
 const snapshot = beatSnapshot({ view: readFileSync(join(homedir(), '.optchat/status.md'), 'utf8'), state: '', idleMinutes: 30, agents: [], shells: [],
   plan: heartbeatPlan(loadConfig(dir)) });

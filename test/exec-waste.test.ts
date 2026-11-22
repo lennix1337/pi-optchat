@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 // @ts-expect-error plain .mjs script without types
 import { intentOf, parseArgs, summarize } from '../scripts/exec-waste.mjs';
@@ -59,6 +62,18 @@ test('exec-waste takes --since and --dir and refuses what it would otherwise rea
   assert.deepEqual(parseArgs(['', '2026-11-07T12:00Z'], home, now), { dir: parseArgs([], home, now).dir, since: Date.parse('2026-11-07T12:00Z') });
   assert.throws(() => parseArgs(['--sinse=2026-11-07'], home, now), /unknown option --sinse/);
   assert.throws(() => parseArgs(['--since=ontem'], home, now), /not a date: ontem/);
+});
+
+test('exec-waste defaults to the last selected profile, not a personal account', () => {
+  const home = mkdtempSync(join(tmpdir(), 'exec-profile-'));
+  try {
+    mkdirSync(join(home, '.optchat'));
+    writeFileSync(join(home, '.optchat', 'last-profile'), 'example\n');
+    assert.equal(parseArgs([], home).dir, join(home, '.optchat', 'profiles', 'example'));
+    assert.equal(parseArgs([], '/unused', Date.now(), join(home, '.optchat')).dir, join(home, '.optchat', 'profiles', 'example'));
+    writeFileSync(join(home, '.optchat', 'last-profile'), '../escape');
+    assert.throws(() => parseArgs([], home), /Invalid last-profile/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test('exec-waste exits 2 with the usage instead of printing zeros for a directory with no log', () => {

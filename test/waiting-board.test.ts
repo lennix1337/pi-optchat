@@ -108,9 +108,9 @@ test('a parked worker says when it tries again, a paused one says paused, a stop
 });
 
 test('a PR in CI shows its repo, number, checks, time pending and auto-merge; the model\'s note names it owner/repo#N', () => {
-  const gitwatch = { polledAt: NOW - 10_000, prs: [{ repo: 'swlucas05/pi-optchat', number: 280, title: 'x', url: 'u', head: 'h', mergeState: 'CLEAN', autoMerge: true, checks: { pass: 2, fail: 0, pending: 3 }, pendingSince: NOW - 4 * MIN, next: undefined }] };
+  const gitwatch = { polledAt: NOW - 10_000, prs: [{ repo: 'sample-profile/pi-optchat', number: 280, title: 'x', url: 'u', head: 'h', mergeState: 'CLEAN', autoMerge: true, checks: { pass: 2, fail: 0, pending: 3 }, pendingSince: NOW - 4 * MIN, next: undefined }] };
   assert.deepEqual(texts({ gitwatch }), ['pi-optchat #280 · CI 2/5 · 4m · auto-merge']);
-  assert.equal(boardNote(boardView(input({ gitwatch })))!.split('\n')[1], '- swlucas05/pi-optchat#280 · CI 2/5 · 4m · auto-merge');
+  assert.equal(boardNote(boardView(input({ gitwatch })))!.split('\n')[1], '- sample-profile/pi-optchat#280 · CI 2/5 · 4m · auto-merge');
   const failing = { prs: [{ repo: 'o/r', number: 1, checks: { pass: 1, fail: 2, pending: 0 }, mergeState: 'DIRTY' }] };
   assert.deepEqual(texts({ gitwatch: failing }), ['r #1 · CI 1/3 ✗2 · conflito']);
   assert.equal(boardView(input({ gitwatch: failing })).lines[0].tone, 'bad');
@@ -158,7 +158,7 @@ test('a success fades in four minutes, any shell in ninety seconds (failed too: 
 });
 
 test('finished work stays ten minutes, newest first after the pending lines: workers, shells and gitwatch notices', () => {
-  const notices = [{ repo: 'swlucas05/pi-optchat', wake: true, text: 'PR #279 merged', at: NOW - 2 * MIN, events: [{ pr: 279, kind: 'merged', text: 'merged abc1234' }] },
+  const notices = [{ repo: 'sample-profile/pi-optchat', wake: true, text: 'PR #279 merged', at: NOW - 2 * MIN, events: [{ pr: 279, kind: 'merged', text: 'merged abc1234' }] },
     { repo: 'o/r', at: NOW - 11 * MIN, events: [{ pr: 1, kind: 'merged', text: 'merged' }] },
     { repo: 'o/r', at: new Date(NOW - 3 * MIN).toISOString(), events: [{ pr: 5, kind: 'checks', text: 'checks failed: lint' }, { pr: 5, kind: 'push', text: 'new head f00' }] }];
   const view = expandedView(input({
@@ -177,7 +177,7 @@ test('finished work stays ten minutes, newest first after the pending lines: wor
 });
 
 test('the expanded board keeps each question and each shell whole, with the shell\'s last output line, and lists every question', () => {
-  const waiting = [ask({ text: 'aprovar o deploy da 1.4.1 em produção depois de conferir o changelog inteiro com a Beatriz', choices: undefined, since: undefined }), ask({ text: 'decidir X', choices: undefined, since: undefined }), ask({ text: 'responder o PR #12', choices: undefined, since: undefined }), ask({ text: 'liberar a cota', choices: undefined, since: undefined })];
+  const waiting = [ask({ text: 'aprovar o deploy da 1.4.1 em produção depois de conferir o changelog inteiro com a Alex', choices: undefined, since: undefined }), ask({ text: 'decidir X', choices: undefined, since: undefined }), ask({ text: 'responder o PR #12', choices: undefined, since: undefined }), ask({ text: 'liberar a cota', choices: undefined, since: undefined })];
   const command = 'cd C:/projetos/pi-optchat && grep -n "Inspector" src/index.ts src/navigation.ts src/waiting-board.ts test/navigation.test.ts';
   const inp = input({ waiting, shells: [shell({ command, state: 'completed', ended: NOW - MIN, exitCode: 0, last: 'src/index.ts:93: import { x }' })] });
   const compact = boardView(inp), full = expandedView(inp);
@@ -193,7 +193,7 @@ test('the expanded board keeps each question and each shell whole, with the shel
 });
 
 test('the focused board draws every item wrapped to the width, a cursor on one and the keys that move it', () => {
-  const waiting = [ask({ text: 'aprovar o deploy da 1.4.1 em produção depois de conferir o changelog inteiro com a Beatriz', choices: undefined, since: undefined }), ask({ text: 'decidir X', choices: undefined, since: undefined }), ask({ text: 'responder o PR #12', choices: undefined, since: undefined })];
+  const waiting = [ask({ text: 'aprovar o deploy da 1.4.1 em produção depois de conferir o changelog inteiro com a Alex', choices: undefined, since: undefined }), ask({ text: 'decidir X', choices: undefined, since: undefined }), ask({ text: 'responder o PR #12', choices: undefined, since: undefined })];
   const view = expandedView(input({ waiting }));
   const lines = renderExpandedBoard(view.lines, 1, 40, plain);
   assert.equal(lines.every(l => visibleWidth(l) <= 40), true);

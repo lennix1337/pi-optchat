@@ -10,8 +10,8 @@ test('a recursive grep over project trees skips node_modules and worktrees', () 
 
     [String.raw`cd C:/projetos; grep -rln "expands \$_\|before PowerShell starts" --include=*.ts pi-* dotfiles 2>/dev/null | head`,
       String.raw`cd C:/projetos; grep ${EXCLUDES} -rln "expands \$_\|before PowerShell starts" --include=*.ts pi-* dotfiles 2>/dev/null | head`],
-    [`grep -rln 'This is the swlucas05 profile' C:/Users/swluc/.pi C:/projetos/dotfiles/payload/pi 2>/dev/null | grep -v node_modules`,
-      `grep ${EXCLUDES} -rln 'This is the swlucas05 profile' C:/Users/swluc/.pi C:/projetos/dotfiles/payload/pi 2>/dev/null | grep -v node_modules`],
+    [`grep -rln 'This is the sample-profile profile' C:/Users/me/.pi C:/projetos/dotfiles/payload/pi 2>/dev/null | grep -v node_modules`,
+      `grep ${EXCLUDES} -rln 'This is the sample-profile profile' C:/Users/me/.pi C:/projetos/dotfiles/payload/pi 2>/dev/null | grep -v node_modules`],
     ['grep -R foo src', `grep ${EXCLUDES} -R foo src`],
     ['grep -n --recursive foo .', `grep ${EXCLUDES} -n --recursive foo .`],
     ['ls && grep -rhoE "x" a; grep -rn y b', `ls && grep ${EXCLUDES} -rhoE "x" a; grep ${EXCLUDES} -rn y b`],

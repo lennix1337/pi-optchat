@@ -217,7 +217,7 @@ function tabPage(id: string) {
 
 /**
  * The production writes and messages of a script file run from the shell (06/11: a CDP script filled and submitted the
- * live Odontoclinic form, a fake lead). Its fetch/XHR calls count like a page script's; its page input (a click, a
+ * live example clinic form, a fake lead). Its fetch/XHR calls count like a page script's; its page input (a click, a
  * submit, a value set, CDP input) counts as a production write when the script names a production page, or is handed
  * a URL or an owned tab last seen on one.
  */

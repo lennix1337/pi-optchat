@@ -443,5 +443,5 @@ test('a crew memory write that names the contract file is prose, not a contract 
   assert.equal(touchesContract({ tool: 'crew', input: { action: 'write', project: 'harness', part: 'memory', text } }), false);
   assert.equal(touchesContract({ tool: 'crew', input: { action: 'write', project: 'harness', part: 'missions', text } }), false);
 
-  assert.equal(touchesContract({ tool: 'edit', input: { path: '~/.optchat/profiles/swlucas05/autonomy.json', edits: [] } }), true);
+  assert.equal(touchesContract({ tool: 'edit', input: { path: '~/.optchat/profiles/sample-profile/autonomy.json', edits: [] } }), true);
 });

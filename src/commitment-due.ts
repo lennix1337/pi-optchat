@@ -18,15 +18,10 @@ export interface DueItem {
 }
 const isClosed = (status: string) => status === 'done' || status === 'dropped';
 
-const NAMES: [string, RegExp][] = [
-  ['dotfiles', /\bdotfiles\b/i],
-  ['dentai', /\b(?:dentai|usdentai|odontoclinic|denta-\d+)/i],
-  ['genexus18mcp', /\b(?:genexus|gx18|evo3)/i],
-  ['harness', /\b(?:pi-[a-z]+|optchat|harness|ripwire|gitwatch|compactor|goal-x|crew)\b/i],
-];
+export type ProjectPatterns = Readonly<Record<string, string>>;
 /** The one specialist a commitment's text names, for an item with no `project` field. None or two stay with the manager, so a patrol never takes what is not clearly its own. */
-export function inferProject(text: string): string | undefined {
-  const hit = NAMES.filter(([, words]) => words.test(text)).map(([project]) => project);
+export function inferProject(text: string, patterns: ProjectPatterns = {}): string | undefined {
+  const hit = Object.entries(patterns).filter(([, pattern]) => new RegExp(pattern, 'i').test(text)).map(([project]) => project);
   return hit.length === 1 ? hit[0] : undefined;
 }
 const dueMs = (item: DueItem) => item.due === undefined ? NaN : Date.parse(item.due);
@@ -47,7 +42,7 @@ export interface DueFinding { id: string; project: string; kind: 'due' | 'overdu
 
 /** The signals of this tick and the state to keep once the tick settles. A due time signals once (its key stays recorded while the item is open); an item overdue
  * for a day signals instead of its due line, at most once per day; closed items and items no longer there leave the state. */
-export function dueFindings(items: readonly DueItem[], state: DueState, now: number): { findings: DueFinding[]; state: DueState } {
+export function dueFindings(items: readonly DueItem[], state: DueState, now: number, patterns: ProjectPatterns = {}): { findings: DueFinding[]; state: DueState } {
   const findings: DueFinding[] = [], dueSeen: string[] = [], escalated: Record<string, number> = {};
   for (const item of items) {
     if (item.status === 'open' && item.probeState?.failure !== undefined) {
@@ -63,7 +58,7 @@ export function dueFindings(items: readonly DueItem[], state: DueState, now: num
       } else escalated[key] = last;
     }
     if (!ours(item)) continue;
-    const project = item.project ?? inferProject(item.text) ?? GLOBAL_PROJECT, at = dueMs(item);
+    const project = item.project ?? inferProject(item.text, patterns) ?? GLOBAL_PROJECT, at = dueMs(item);
     if (Number.isFinite(at) && at <= now) {
       const key = `${item.id}@${item.due}`;
       dueSeen.push(key);

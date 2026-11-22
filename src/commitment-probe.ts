@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { readCommitments, recordProbe } from './commitments.ts';
-import { inferProject, type DueFinding } from './commitment-due.ts';
+import { inferProject, type DueFinding, type ProjectPatterns } from './commitment-due.ts';
 import { validateProbe, type Probe } from './probe-policy.ts';
 
 type Execution = { output: string; ok: boolean };
@@ -25,7 +25,7 @@ export const executeProbe = (probe: Probe, timeout = 60_000): Promise<Execution>
 });
 
 /** Runs due probes serially, with no shell and no model call. */
-export async function runProbes(dir: string, now: number, executor: Executor = executeProbe): Promise<DueFinding[]> {
+export async function runProbes(dir: string, now: number, executor: Executor = executeProbe, patterns: ProjectPatterns = {}): Promise<DueFinding[]> {
   if (running) return [];
   running = true;
   const findings: DueFinding[] = [];
@@ -38,7 +38,7 @@ export async function runProbes(dir: string, now: number, executor: Executor = e
       catch (error) { result = { ok: false, output: error instanceof Error ? error.message : String(error) }; }
       const passed = result.ok && new RegExp(probe.expect, 'i').test(result.output);
       const recorded = recordProbe(dir, item.id, probe, result.output, passed, now);
-      if (recorded.signal) findings.push({ id: item.id, project: item.project ?? inferProject(item.text) ?? 'global', kind: 'due', line: `probe failed: ${item.id} ${result.output.slice(-300)}` });
+      if (recorded.signal) findings.push({ id: item.id, project: item.project ?? inferProject(item.text, patterns) ?? 'global', kind: 'due', line: `probe failed: ${item.id} ${result.output.slice(-300)}` });
     }
     return findings;
   } finally { running = false; }

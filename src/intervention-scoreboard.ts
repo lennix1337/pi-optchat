@@ -17,13 +17,13 @@ export function classifyIntervention(text: string): Kind {
   return 'other';
 }
 
-export function tallyScoreboard(sessions: readonly (readonly Event[])[], prs: readonly { mergedAt?: string }[], now: number): InterventionScoreboard {
+export function tallyScoreboard(sessions: readonly (readonly Event[])[], prs: readonly { mergedAt?: string }[], now: number, profile: string): InterventionScoreboard {
   const days: Day[] = Array.from({ length: 7 }, (_, i) => ({ date: date(now - (6 - i) * 86_400_000), interventions: 0, mergedPRs: 0, perPR: null }));
   const byDate = new Map(days.map(d => [d.date, d]));
   const kinds: Record<Kind, number> = { corrections: 0, approvals: 0, questions: 0, other: 0 };
   let earliest = Infinity;
   for (const session of sessions) {
-    if (!session.some(e => e.type === 'custom' && e.customType === 'optchat.profile' && e.data?.name === 'swlucas05')) continue;
+    if (!session.some(e => e.type === 'custom' && e.customType === 'optchat.profile' && e.data?.name === profile)) continue;
     for (const e of session) {
       if (e.type === 'session') { const at = Date.parse(e.timestamp ?? ''); if (Number.isFinite(at)) earliest = Math.min(earliest, at); }
       if (e.type !== 'message' || e.message?.role !== 'user') continue;

@@ -898,6 +898,17 @@ const patrolOf = (handles: string[], { minHours = 6, running = [] as string[], f
   return { patrol, started, running };
 };
 
+test('specialistPatrol uses configured patterns for untagged commitments', async () => {
+  const { patrol, started } = patrolOf(['sample']);
+  const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol,
+    triage: () => triaged({ commitmentProjects: { sample: '\\bwidget\\b' }, commitments: [due('c_one', 5 * MIN, { text: 'widget fix' })] }) });
+  try {
+    h.beat.arm(); await h.advance(15 * MIN);
+    assert.deepEqual(started, [{ project: 'sample', lines: ['commitment due: c_one widget fix'] }]);
+    assert.equal(h.woken.length, 0);
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
 test('specialistPatrol: a due of a specialist starts one patrol and does not wake; a global or manager-owned one still wakes', async () => {
   const { patrol, started } = patrolOf(['dentai']);
   const h = harness({ always: true, minutes: 15, wakes: 100, radar: async () => triageRadar(1), patrol: () => patrol,

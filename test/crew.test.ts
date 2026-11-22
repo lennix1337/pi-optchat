@@ -42,7 +42,7 @@ test('specialistOf maps the operator\'s project folders to their specialist', ()
   assert.equal(specialistOf('C:/projetos/lolidle-save-editor'), 'lolidle-save-editor', 'any other repo is its own specialist');
   assert.equal(specialistOf('C:\\projetos\\My_App.v2\\worktrees\\fix'), 'my-app-v2', 'the repo name as a slug; worktrees inside it belong to it');
   for (const repo of ['ai-memory', 'PiG', 'deepseek-harness', 'optmem']) assert.equal(specialistOf(`C:/projetos/${repo}/src`), 'harness', repo);
-  assert.equal(specialistOf('C:/Users/swluc'), undefined);
+  assert.equal(specialistOf('C:/Users/me'), undefined);
 });
 
 test('a write over its cap says its current and resulting bytes, how many to cut and which lines are longest, and still writes nothing', () => {

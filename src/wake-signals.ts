@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { errorCategory } from './compactor-diagnostics.ts';
-import { dueFindings, type DueItem, type DueState } from './commitment-due.ts';
+import { dueFindings, type DueItem, type DueState, type ProjectPatterns } from './commitment-due.ts';
 import { missionProjects, specialistOf } from './crew.ts';
 import type { RunInfo } from './runs.ts';
 
@@ -18,6 +18,7 @@ export interface Triage {
   lastStop?: string;
   /** The profile's commitments: a due time that passes, and an item overdue for a day, are signals (see commitment-due.ts). Absent: none. */
   commitments?: readonly DueItem[];
+  commitmentProjects?: ProjectPatterns;
 }
 /** One project with something new, and the lines that say what. `lastRun` is the id of its newest worker run, set by whoever knows the runs. */
 export interface Signal { project: string; lines: string[]; lastRun?: string }
