@@ -90,6 +90,13 @@ function retroRecap(calls: Content[], shippedBefore: number): boolean {
   return false;
 }
 
+const PROMISE_ENDING = /^(?:agora\s+|ja\s+)?(?:vou|estou)\s+(?:\w+\s+){0,2}?(?:corrig|investig|resolv|ajust|consert|cri[ao]r?|escrev|rod|verific|ler\b|mexer|implement|fazer|checar|conferir|reproduz|test)/u;
+function endsWithPromise(final: string): boolean {
+  const last = withoutQuotes(final).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().split(/\n+/u).map(l => l.trim()).filter(Boolean).pop() ?? '';
+  const sentence = last.split(/(?<=[.!])\s+/u).pop() ?? '';
+  return !sentence.includes('?') && PROMISE_ENDING.test(sentence);
+}
+
 const PACKAGE_PATH = /[\\/]projetos[\\/](?!dotfiles[\\/]|dentai-mono[\\/])/u;
 const PHONE = /\b55\d{10,11}\b/gu;
 function writesRealPhone(call: Content): boolean {
@@ -131,6 +138,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'wake-silence': return !!pacing.wake && !!final && (memoryShapedReply(final) || reasksPending(final) || nothingNewReply(final));
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
     case 'utc-time': return /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u.test(final);
+    case 'promise-no-action': return endsWithPromise(final);
     case 'abandoned-cause': return ABANDONED_CAUSE.test(withoutQuotes(final));
     case 'unchecked-own-work': return UNCHECKED_ADMISSION.test(withoutQuotes(final));
     case 'cause-claim': return calls.some(c => {
