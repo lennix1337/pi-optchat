@@ -377,6 +377,22 @@ test('Home menus: model and thinking are selects; a pick becomes the modelo/thin
   } finally { c.close(); }
 });
 
+test('HTTP Home accepts a bounded graph and rejects unsafe graph identifiers', async () => {
+  const slack = fakeSlack();
+  const r = relayFixture();
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U123', fetch: slack.fetch, dotPath: '/no/such/dot' });
+  const server = createAssistantServer({ store: r.f.store, token: TOKEN, profileId: PROFILE, slack: { relay: r.relay, poster } });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/slack/home`;
+  const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  const postGraph = (graph: unknown) => fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'Status', graph }) });
+  try {
+    assert.equal((await postGraph({ nodes: [{ id: 'session', label: 'Sessão' }], edges: [] })).status, 200);
+    assert.equal((await postGraph({ nodes: [{ id: 'bad;id', label: 'x' }], edges: [] })).status, 400);
+    assert.equal((await postGraph({ nodes: [{ id: 'session', label: 'x' }], edges: [{ from: 'session', to: 'missing' }] })).status, 400);
+  } finally { await new Promise(done => server.close(done)); r.close(); }
+});
+
 test('long poll: a waiting inbox read ends when a message arrives, not at its deadline', async () => {
   const r = relayFixture();
   try {

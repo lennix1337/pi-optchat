@@ -21,7 +21,7 @@ import { textContent } from './transcript.ts';
 import { transcribeAudio } from './transcribe.ts';
 import { budgetNote, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
-import { homeDashboard } from './home-dashboard.ts';
+import { homeDashboard, homeGraph } from './home-dashboard.ts';
 import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
 
@@ -66,7 +66,8 @@ const PROVIDER_RESUME = /^Provider (?:failover|retry|quota recovery) activated:/
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 
 
-const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, 20_000, cancel);
+export const slackRequestTimeout = (path: string) => path === '/v1/slack/home' ? 120_000 : 20_000;
+const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, slackRequestTimeout(path), cancel);
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
 /** A gated call waiting for the operator, and how to decide it. */
@@ -463,7 +464,7 @@ export class SlackBridge {
 
 
     const old = { text: `${clipWords(text, 2900 - status.length)}${status}`.slice(0, 3000) };
-    this.publishHome(owner, { text: full, working: !!this.work, team, ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}), ...(settings ? { settings } : {}) }, old);
+    this.publishHome(owner, { text: full, working: !!this.work, team, graph: homeGraph(work, this.work ? 'trabalhando' : 'livre'), ...(approval ? { approval } : {}), ...(choices.length ? { choices } : {}), ...(fold ? { fold } : {}), ...(settings ? { settings } : {}) }, old);
   }
 
   /** The Home's menus: model (the account is its provider) and thinking level; each pick comes back as the `modelo`/`thinking` command. */

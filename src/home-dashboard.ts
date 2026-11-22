@@ -18,6 +18,22 @@ export function homeShell(job: { id: string; label?: string; command: string; st
   };
 }
 
+export function homeGraph(work: HomeWork, state: string): import('../assistant/src/channels/home-graph.ts').HomeGraph {
+  const nodes = [{ id: 'session', label: `Sessão · ${state}` }];
+  const edges: { from: string; to: string }[] = [];
+  const prs = work.prs.slice(0, 30);
+  prs.forEach((pr, i) => nodes.push({ id: `pr${i}`, label: `${pr.repo}#${pr.number} · ${pr.title}`.slice(0, 200) }));
+  (work.workers ?? []).slice(0, 30).forEach((worker, i) => {
+    const workerId = `worker${i}`;
+    nodes.push({ id: workerId, label: `${worker.kind} · ${worker.label}`.slice(0, 200) });
+    edges.push({ from: 'session', to: workerId });
+    const matches = prs.flatMap((p, index) => worker.target && (worker.target.pr === undefined || p.number === worker.target.pr) && (p.repo === worker.target.repo || (!worker.target.repo.includes('/') && p.repo.split('/').pop() === worker.target.repo)) ? [index] : []);
+    if (matches.length === 1) edges.push({ from: workerId, to: `pr${matches[0]}` });
+  });
+  prs.forEach((_, i) => { if (!edges.some(e => e.to === `pr${i}`)) edges.push({ from: 'session', to: `pr${i}` }); });
+  return { nodes, edges };
+}
+
 export function homeDashboard(work: HomeWork, waiting: string[], state: string, modelName: string | undefined, now: number) {
   const model = dashboard({ now, pi: { state, model: modelName }, workers: work.workers ?? [], prs: work.prs, waiting, deliveries: [] });
   const team = model.workers.slice(0, 30).map(w => {
