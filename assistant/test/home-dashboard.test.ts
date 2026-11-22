@@ -35,6 +35,26 @@ test('Home publishes an uploaded graph', { skip: spawnSync('dot', ['-V']).status
   assert.deepEqual(image.slack_file, { id: 'F123' });
 });
 
+test('a new Home graph deletes the previous upload once the new view is published', { skip: spawnSync('dot', ['-V']).status !== 0 }, async () => {
+  const calls: { name: string; body: any }[] = [];
+  let uploads = 0;
+  const fetcher: typeof fetch = async (url, init) => {
+    const name = String(url).split('/').pop()!;
+    calls.push({ name, body: typeof init?.body === 'string' && init.body.startsWith('{') ? JSON.parse(init.body) : undefined });
+    if (name === 'files.getUploadURLExternal') return new Response(JSON.stringify({ ok: true, upload_url: 'https://files.slack.com/upload/test', file_id: `F${++uploads}` }));
+    return new Response(JSON.stringify({ ok: true }));
+  };
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U123', fetch: fetcher, dotPath: 'dot' });
+  await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
+  await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
+  assert.ok(!calls.some(c => c.name === 'files.delete'));
+  await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'B' }], edges: [] } });
+  const names = calls.map(c => c.name);
+  assert.equal(names.filter(n => n === 'files.getUploadURLExternal').length, 2);
+  assert.ok(names.lastIndexOf('views.publish') < names.indexOf('files.delete'));
+  assert.deepEqual(calls.find(c => c.name === 'files.delete')!.body, { file: 'F1' });
+});
+
 test('Home keeps unchanged text when dot fails', async () => {
   const failed = await publishGraph('/no/such/dot');
   assert.equal(failed.length, 1);
