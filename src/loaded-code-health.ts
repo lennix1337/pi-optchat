@@ -20,10 +20,10 @@ export function localPackages(settingsFile = join(agentDir(), 'settings.json')):
   } catch { return []; }
 }
 
-/** Commit time of HEAD in seconds, or undefined when the folder is not a repository. */
+/** Commit time in seconds of the newest commit that changes more than documentation (a reload loads nothing from *.md or docs/), or undefined when the folder is not a repository. */
 export function headTime(repo: string): number | undefined {
   try {
-    const seconds = Number(execFileSync('git', ['-C', repo, 'log', '-1', '--format=%ct'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    const seconds = Number(execFileSync('git', ['-C', repo, 'log', '-1', '--format=%ct', '--', '.', ':(exclude)*.md', ':(exclude)docs'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim());
     return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
   } catch { return undefined; }
 }

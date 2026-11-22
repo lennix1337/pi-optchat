@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultMonitors } from '../src/prod-health.ts';
@@ -39,4 +40,13 @@ test('the monitor wakes the agent to reload and posts nothing to Slack', () => {
   assert.equal(monitor.wakes, true);
   assert.equal(monitor.slack, false);
   assert.match(monitor.wakeNote!, /self_reload/);
+});
+
+test('headTime ignores commits that only touch documentation: a reload would load nothing new', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'lcode-git-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (date: string, ...args: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }, stdio: 'ignore' });
+  git('2026-11-20T10:00:00Z', 'init', '-q');
+  writeFileSync(join(dir, 'index.ts'), 'export {};\n'); git('2026-11-20T10:00:00Z', 'add', '.'); git('2026-11-20T10:00:00Z', 'commit', '-qm', 'code');
+  writeFileSync(join(dir, 'README.md'), 'doc\n'); git('2026-11-22T10:00:00Z', 'add', '.'); git('2026-11-22T10:00:00Z', 'commit', '-qm', 'docs');
+  assert.equal(headTime(dir), sec('2026-11-20T10:00:00Z'));
 });
