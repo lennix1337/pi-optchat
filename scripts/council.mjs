@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { assistantConfig, assistantRequest } from '../src/assistant-client.ts';
 import { readQuotaState } from '../src/quota-health.ts';
+import { loadConfig } from '../src/profiles.ts';
 import { ADVISOR_MODEL, AGY_ADVISOR, advisorLine, agyAnswer, askAdvisor, debatePrompt, debateTurns, decisionChanged, offersModel, pickAdvisor } from '../src/council.ts';
 
 const USAGE = 'usage: council.mjs --me "<model · account>" [--reply TS] [--channel wakes] [--profile DIR] < text';
@@ -30,6 +31,7 @@ if (values.reply) {
   process.exit(0);
 }
 
+const context = loadConfig(dir).councilContext;
 const head = await post(`🧭 *Conselho do wake* · *${values.me}* propõe:\n${text}`);
 const models = (() => { try { return readFileSync(join(homedir(), '.pi', 'agent', 'models.json'), 'utf8'); } catch { return undefined; } })();
 const codex = pickAdvisor(readQuotaState(), Date.now(), offersModel(models));
@@ -48,7 +50,7 @@ if (!codex) await post(`Nenhuma conta Codex com ${ADVISOR_MODEL} e cota livre ag
 const transcript = [`🧭 wake: ${text}`];
 const answers = [];
 for (const { advisor, role } of debateTurns([codex, existsSync(agyPc) ? AGY_ADVISOR : undefined].filter(Boolean))) {
-  const answer = await ask(advisor, debatePrompt(text, transcript.slice(1), role));
+  const answer = await ask(advisor, debatePrompt(text, transcript.slice(1), role, context));
   const line = answer.text ? advisorLine(advisor, answer.text) : `🤖 *${advisor.model}* não respondeu: ${answer.error ?? 'resposta vazia'}`;
   await post(line, head.ts);
   if (answer.text) transcript.push(line);

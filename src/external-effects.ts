@@ -1,14 +1,9 @@
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 
-
-
-
-
-
-
-/** The operator's production web hosts: a write there changes live data. Subdomains count. The Stripe API is his
- * live billing account (05/11: a support e-mail saved there with his key). */
-export const PRODUCTION_HOSTS = ['dentai.com.br', 'usdentai.com', 'api.stripe.com'];
+const hostScope = new AsyncLocalStorage<readonly string[]>();
+/** A missing or empty host list conservatively protects every destination. */
+export const withProductionHosts = <T>(hosts: readonly string[] | undefined, fn: () => T): T => hostScope.run(hosts ?? [], fn);
 
 const MESSAGE_HOSTS = ['graph.facebook.com', 'api.whatsapp.com', 'whatsapp.net', 'api.twilio.com', 'api.sendgrid.com', 'api.mailgun.net',
   'api.resend.com', 'api.postmarkapp.com', 'api.brevo.com', 'api.sendinblue.com', 'z-api.io', 'api.telegram.org', 'api.zenvia.com',
@@ -19,7 +14,10 @@ const SENSITIVE_PAGES = ['accounts.google.com', 'myaccount.google.com', 'pay.goo
   'stripe.com', 'paypal.com', 'business.facebook.com', 'checkout.', 'billing.'];
 
 const within = (host: string, domain: string) => host === domain || host.endsWith(`.${domain}`);
-export const productionHost = (host: string) => PRODUCTION_HOSTS.some(domain => within(host, domain));
+export const productionHost = (host: string) => {
+  const hosts = hostScope.getStore();
+  return !hosts?.length || hosts.some(domain => within(host.toLowerCase(), domain));
+};
 const messageHost = (host: string) => MESSAGE_HOSTS.some(domain => within(host, domain));
 
 function parse(url: string): URL | undefined {

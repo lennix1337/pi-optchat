@@ -3,21 +3,10 @@ import { promisify } from 'node:util';
 
 export type IssueReference = { repo: string; number: number };
 
-const aliases: readonly [RegExp, string][] = [
-  [/\b(?:Genexus18MCP|GX18MCP)\b/i, 'lennix1337/Genexus18MCP'],
-  [/\bpi-optchat\b/i, 'lennix1337/pi-optchat'],
-  [/\bpi-multi-account\b/i, 'lennix1337/pi-multi-account'],
-  [/\bdotfiles\b/i, 'lennix1337/dotfiles'],
-  [/\bpi-gitwatch\b/i, 'lennix1337/pi-gitwatch'],
-  [/\bpi-subagents\b/i, 'lennix1337/pi-subagents'],
-  [/\bpi-goal-x\b/i, 'lennix1337/pi-goal-x'],
-  [/\bpi-vault\b/i, 'lennix1337/pi-vault'],
-  [/\bpi-ripwire\b/i, 'lennix1337/pi-ripwire-but-better'],
-  [/\bdentai-mono\b/i, 'tecnologia-ai/dentai'],
-];
+export type IssueAliases = Record<string, string>;
 const ttl = 15 * 60_000;
 
-export function issueReferences(text: string): IssueReference[] | undefined {
+export function issueReferences(text: string, aliases: IssueAliases = {}): IssueReference[] | undefined {
   const refs: IssueReference[] = [];
   const remaining = text.replace(/https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)(?!\d)/gi, (_url, owner: string, repo: string, number: string) => {
     refs.push({ repo: `${owner}/${repo}`, number: Number(number) });
@@ -25,7 +14,7 @@ export function issueReferences(text: string): IssueReference[] | undefined {
   });
   const numbers = [...remaining.matchAll(/#(\d+)\b/g)].map(match => Number(match[1]));
   if (numbers.length) {
-    const repos = new Set(aliases.filter(([pattern]) => pattern.test(remaining)).map(([, repo]) => repo));
+    const repos = new Set(Object.entries(aliases).filter(([pattern]) => new RegExp(pattern, 'i').test(remaining)).map(([, repo]) => repo));
     if (repos.size !== 1) return undefined;
     const repo = [...repos][0];
     refs.push(...numbers.map(number => ({ repo, number })));
@@ -47,10 +36,10 @@ export type LookupFailure = (key: string, error: unknown) => void;
 export class IssueStateCache {
   private entries = new Map<string, { state: 'open' | 'closed' | undefined; at: number }>();
   private pending = new Map<string, Promise<void>>();
-  constructor(private resolve: (ref: IssueReference) => Promise<'open' | 'closed' | undefined> = ghIssueState, private now = Date.now, private failed: LookupFailure = () => {}) {}
+  constructor(private resolve: (ref: IssueReference) => Promise<'open' | 'closed' | undefined> = ghIssueState, private now = Date.now, private failed: LookupFailure = () => {}, private aliases: () => IssueAliases = () => ({})) {}
   private key(ref: IssueReference) { return `${ref.repo.toLowerCase()}#${ref.number}`; }
   async refresh(text: string): Promise<void> {
-    const refs = issueReferences(text);
+    const refs = issueReferences(text, this.aliases());
     if (!refs) return;
     await Promise.all(refs.map(async ref => {
       const key = this.key(ref), entry = this.entries.get(key);
@@ -70,7 +59,7 @@ export class IssueStateCache {
     }));
   }
   hint(text: string): string | undefined {
-    const refs = issueReferences(text);
+    const refs = issueReferences(text, this.aliases());
     if (!refs?.length || !refs.every(ref => {
       const entry = this.entries.get(this.key(ref));
       return entry?.state === 'closed' && this.now() - entry.at < ttl;

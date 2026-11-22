@@ -7,14 +7,16 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { classifyEffects, decide, gitRepo, parseContract, type Effect, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { EffectApprovals } from '../src/authorization.ts';
-import { forgetBrowserPages, observeBrowser, sensitivePage } from '../src/external-effects.ts';
+import { forgetBrowserPages, observeBrowser, sensitivePage, withProductionHosts } from '../src/external-effects.ts';
 import { ciProblem, directMerges, mergeRefusal, type Exec } from '../src/merge-ci-guard.ts';
 
 
 const repo: Repo = { slug: () => 'lennix1337/pi-optchat', branch: () => 'feat/x' };
 const call = (command: string, tool = 'bash') => ({ session: 'owner', cwd: 'C:/projetos/pi-optchat', tool, input: tool === 'codemode' ? { code: command } : { command } });
 const lines = (found: Effect[]) => found.map(({ action, targets }) => [action, targets.join(',')].join(' '));
-const kinds = (command: string) => lines(classifyEffects({ tool: 'bash', input: { command }, cwd: 'C:/projetos/pi-optchat' }, repo));
+const productionHosts = ['dentai.com.br', 'usdentai.com', 'api.stripe.com'];
+const classified = (call: Parameters<typeof classifyEffects>[0], source = repo) => withProductionHosts(productionHosts, () => lines(classifyEffects(call, source)));
+const kinds = (command: string) => classified({ tool: 'bash', input: { command }, cwd: 'C:/projetos/pi-optchat' });
 const riskOf = (gate: EffectApprovals, invocation: { session: string; cwd: string; tool: string; input: unknown }) => {
   const refusal = gate.admit(invocation);
   return refusal ? gate.pendingFor('owner').find(p => p.token === refusal.token)?.kind : undefined;
@@ -49,7 +51,7 @@ test('incidents 05/11: a page script that writes to production and a Stripe API 
   assert.deepEqual(kinds(pagePut.replaceAll("'", '\\"')), ['production-write https:api.dentai.com.br'], 'escaped quotes inside the shell string');
   assert.deepEqual(kinds(`node x.mjs eval $T "axios.delete('https://usdentai.com/api/users/1')"`), ['production-write https:usdentai.com']);
   assert.deepEqual(kinds(`node x.mjs eval $T "const x=new XMLHttpRequest();x.open('POST','https://api.dentai.com.br/leads');x.send(b)"`), ['production-write https:api.dentai.com.br']);
-  const browser = (expression: string, tab = 'P1') => lines(classifyEffects({ tool: 'browser_harness', input: { action: 'evaluate', tab, expression }, cwd: '' }, repo));
+  const browser = (expression: string, tab = 'P1') => classified({ tool: 'browser_harness', input: { action: 'evaluate', tab, expression }, cwd: '' });
   observeBrowser({ action: 'open', url: 'https://dentai.com.br/admin' }, '{"status":"ok","tab":"P1"}');
   observeBrowser({ action: 'open', url: 'http://localhost:3000/' }, '{"status":"ok","tab":"L1"}');
   assert.deepEqual(browser("fetch('https://api.dentai.com.br/x',{method:'PATCH',body:b})"), ['production-write https:api.dentai.com.br']);
@@ -75,7 +77,7 @@ test('incident 06/11: a script file that submits a form on a production page, or
     '/tmp/local.mjs': `${cdp}\nconst page = 'http://localhost:3100/sample-clinic';`,
   };
   const scriptRepo: Repo = { ...repo, script: path => scripts[path] };
-  const run = (command: string) => lines(classifyEffects({ tool: 'bash', input: { command }, cwd: 'C:/projetos/pi-optchat' }, scriptRepo));
+  const run = (command: string) => classified({ tool: 'bash', input: { command }, cwd: 'C:/projetos/pi-optchat' }, scriptRepo);
   observeBrowser({ action: 'navigate', tab: 'B28A5503AB0400E9C87DA330EFA164E1', url: 'https://dentai.com.br/sample-clinic' }, '{"status":"ok"}');
   observeBrowser({ action: 'open', url: 'http://localhost:3100/' }, '{"status":"ok","tab":"LOCAL0001"}');
   assert.deepEqual(run('sleep 3; cd /tmp && timeout 60 node odo-e2e.mjs B28A5503AB0400E9C87DA330EFA164E1; echo rc=$?'), ['production-write https:dentai.com.br'], 'the owned tab it drives is on production');
@@ -178,7 +180,7 @@ test('an exec cell with input on a consent, account or billing page asks; readin
 
 test('a fetch or XHR written inside an exec cell is a production write like the same text in evaluate', () => {
   forgetBrowserPages();
-  const cell = (code: string, tab = 'P1') => lines(classifyEffects({ tool: 'browser_harness', input: { action: 'exec', tab, code }, cwd: '' }, repo));
+  const cell = (code: string, tab = 'P1') => classified({ tool: 'browser_harness', input: { action: 'exec', tab, code }, cwd: '' });
   observeBrowser({ action: 'open', url: 'https://dentai.com.br/admin' }, '{"status":"ok","tab":"P1"}');
   observeBrowser({ action: 'open', url: 'http://localhost:3000/' }, '{"status":"ok","tab":"L1"}');
   assert.deepEqual(cell("js(\"fetch('https://api.dentai.com.br/x',{method:'PATCH',body:b})\")"), ['production-write https:api.dentai.com.br']);

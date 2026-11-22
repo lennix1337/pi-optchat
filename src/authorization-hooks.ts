@@ -10,6 +10,7 @@ import { discardRefusal } from './discard-guard.ts';
 import { pipeStatusRefusal } from './pipe-status-guard.ts';
 import { registerRepeatStop } from './repeat-stop-guard.ts';
 import { winPathRefusal } from './winpath-guard.ts';
+import { withProductionHosts } from './external-effects.ts';
 
 const WIDGET = 'optchat-approval';
 type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
@@ -76,7 +77,7 @@ const RESULTS = { embedded: undefined, invalid: { action: 'handled' }, standing:
 /** The operator's typed order covering an effect (a line for the log), or undefined; see `orderGrantFor`. */
 export type OrderGrant = (effect: Effect) => string | undefined;
 
-interface ContractSource { dir: ContractDir; repo?: AsyncRepo; orderGrant?: OrderGrant }
+interface ContractSource { dir: ContractDir; repo?: AsyncRepo; orderGrant?: OrderGrant; productionHosts?: () => readonly string[] | undefined }
 
 function reportEffect(dir: string, decision: Decision, pending: PendingApproval, ctx: ExtensionContext) {
   const { effect } = decision;
@@ -106,7 +107,7 @@ export function orderHint(action: string | undefined) {
 }
 
 
-async function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): Promise<'run' | { note: string } | undefined> {
+async function contractVerdict({ dir: contractDir, repo, orderGrant, productionHosts }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): Promise<'run' | { note: string } | undefined> {
   if (touchesContract(call, contractDir())) {
     const self = judgeSelfEdit(contractDir(), call);
     if (self?.ok) {
@@ -118,7 +119,7 @@ async function contractVerdict({ dir: contractDir, repo, orderGrant }: ContractS
     }
     return { note: `Only the operator changes autonomy.json here${self ? ` (${self.reason})` : ''}: the contract cannot approve it. An edit/write of the file that leaves the protected rules and the default alone runs by itself. ` };
   }
-  const dir = contractDir(), effects = await classifyEffectsAsync(call, repo);
+  const dir = contractDir(), effects = await withProductionHosts(productionHosts?.(), () => classifyEffectsAsync(call, repo));
   let decision = readProfileEffectPolicy(dir, () => effects);
   if (decision?.level === 'ask' && !decision.problem && orderGrant && dir) {
     const lifted = liftOrdered(dir, effects, orderGrant, pending, ctx);
@@ -144,12 +145,12 @@ function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
   };
   return {
     async admit(call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) {
-      const refusal = gate.admit(call);
+      const refusal = withProductionHosts(contract.productionHosts?.(), () => gate.admit(call));
       const pending = refusal?.token ? gate.pendingFor(call.session).find(p => p.token === refusal.token) : undefined;
       if (!pending || notes.has(pending.token)) return { refusal, note: (pending && notes.get(pending.token)) ?? '' };
       const note = await decide(pending, call, ctx);
 
-      if (note === undefined) return { refusal: gate.admit(call), note: '' };
+      if (note === undefined) return { refusal: withProductionHosts(contract.productionHosts?.(), () => gate.admit(call)), note: '' };
       if (note) notes.set(pending.token, note);
       return { refusal, note };
     },
@@ -185,6 +186,7 @@ function heldUntilRunEnds(gate: EffectApprovals, announce: (pending: PendingAppr
 /** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell,
   contractDir = (() => undefined) as ContractDir, repo = undefined as AsyncRepo | undefined,
+  productionHosts = undefined as (() => readonly string[] | undefined) | undefined,
   /** The operator's typed order that lifts an `ask` rule for one effect (see `orderGrantFor`). */
   orderGrant = undefined as OrderGrant | undefined,
   /** Called once per call that waits for the operator (after the contract), e.g. to ask on Slack. */
@@ -207,7 +209,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), contractDir, onSettled: (token, outcome) => onSettled?.(token, outcome) });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
-  const admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant });
+  const admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant, productionHosts });
   const phone = heldUntilRunEnds(gate, (pending, session) => onPending?.(pending, session, gate), holdMs);
   // external: Pi child SDK prompt and steer calls default to interactive.
   if (grant) pi.on('input', (event, ctx) => {
@@ -225,7 +227,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     if (blocked) return blocked;
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };
-    if (!grant) return gate.admit(call) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
+    if (!grant) return withProductionHosts(productionHosts?.(), () => gate.admit(call)) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
     const { refusal, note } = await admission.admit(call, ctx);
     display.show(ctx);
     if (!refusal) return;

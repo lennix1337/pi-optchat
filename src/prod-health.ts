@@ -31,31 +31,46 @@ export interface Probe { name: string; url: string; slowMs: number; judge(status
 export interface LocalProbe { name: string; check(context?: { dir: string }): ProbeResult | Promise<ProbeResult>; remedy?: Remedy }
 export type Fetcher = (url: string, timeoutMs: number) => Promise<{ status: number; body: string; headersMs?: number; edge?: string }>;
 
-const api: Probe = {
-  name: 'API DentAI', url: 'https://api.dentai.com.br/health', slowMs: 3000,
-  judge(status, body) {
+export type ProbeSpec = { name: string; url: string; slowMs: number; judge: { kind: 'jsonHealth'; okStatus: string } | { kind: 'regex'; pattern: string; flags?: string; buildPattern?: string; problem: string } };
+export interface ProductionHealthConfig { probes: ProbeSpec[]; channel: string | null; wakeNote?: string }
+
+/** Compile only validated configuration; the JSON judge checks every reported subsystem. */
+export function configuredProbes(specs: ProbeSpec[]): Probe[] {
+  return specs.map(({ name, url, slowMs, judge }) => ({ name, url, slowMs, judge(status, body) {
     if (status !== 200) return { problem: `HTTP ${status}` };
-    let report: { status?: string; details?: Record<string, { status?: string }> };
-    try { report = JSON.parse(body); } catch { return { problem: 'resposta não é JSON' }; }
-    const bad = Object.entries(report.details ?? {}).filter(([, d]) => d?.status !== 'ok').map(([name, d]) => `${name}=${d?.status ?? '?'}`);
-    if (report.status !== 'ok' || bad.length) return { problem: `health ${report.status ?? '?'}${bad.length ? ` (${bad.join(', ')})` : ''}` };
-    return {};
-  },
-};
-const web: Probe = {
-  name: 'Site dentai.com.br', url: 'https://dentai.com.br/', slowMs: 4000,
-  judge(status, body) {
-    if (status !== 200) return { problem: `HTTP ${status}` };
-    const build = /data-dpl-id="([0-9a-f]{7,40})"/.exec(body)?.[1];
-    if (!/<html[^>]*lang="pt-BR"/.test(body) || !build) return { problem: 'página sem o conteúdo esperado (html pt-BR com build)' };
-    return { build };
-  },
-};
-const us: Probe = {
-  name: 'Site usdentai.com', url: 'https://usdentai.com/', slowMs: 4000,
-  judge: (status, body) => status !== 200 ? { problem: `HTTP ${status}` } : /<title>[^<]*Dentai/i.test(body) ? {} : { problem: 'página sem o título esperado' },
-};
-export const DEFAULT_PROBES: Probe[] = [api, web, us];
+    if (judge.kind === 'jsonHealth') {
+      let report: { status?: string; details?: Record<string, { status?: string }> };
+      try { report = JSON.parse(body); } catch { return { problem: 'resposta não é JSON' }; }
+      const bad = Object.entries(report.details ?? {}).filter(([, d]) => d?.status !== judge.okStatus).map(([key, d]) => `${key}=${d?.status ?? '?'}`);
+      if (report.status !== judge.okStatus || bad.length) return { problem: `health ${report.status ?? '?'}${bad.length ? ` (${bad.join(', ')})` : ''}` };
+      return {};
+    }
+    const match = new RegExp(judge.pattern, judge.flags).test(body);
+    const build = judge.buildPattern ? new RegExp(judge.buildPattern).exec(body)?.[1] : undefined;
+    if (!match || judge.buildPattern && !build) return { problem: judge.problem };
+    return build ? { build } : {};
+  } }));
+}
+export const DEFAULT_PROBES: Probe[] = [];
+
+export function validProductionHealth(value: unknown): value is ProductionHealthConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (!Array.isArray(v.probes) || !(v.channel === null || typeof v.channel === 'string' && !!v.channel.trim()) || v.wakeNote !== undefined && typeof v.wakeNote !== 'string') return false;
+  const names = new Set<string>();
+  return v.probes.every((raw: unknown) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const p = raw as Record<string, unknown>;
+    if (typeof p.name !== 'string' || !p.name.trim() || names.has(p.name) || typeof p.url !== 'string' || typeof p.slowMs !== 'number' || !Number.isFinite(p.slowMs) || p.slowMs <= 0 || !p.judge || typeof p.judge !== 'object' || Array.isArray(p.judge)) return false;
+    names.add(p.name);
+    try { if (new URL(p.url).protocol !== 'https:') return false; } catch { return false; }
+    const j = p.judge as Record<string, unknown>;
+    if (j.kind === 'jsonHealth') return typeof j.okStatus === 'string' && !!j.okStatus;
+    if (j.kind !== 'regex' || typeof j.pattern !== 'string' || !j.pattern || typeof j.problem !== 'string' || !j.problem || j.flags !== undefined && j.flags !== 'i' || j.buildPattern !== undefined && typeof j.buildPattern !== 'string') return false;
+    try { new RegExp(j.pattern, j.flags as string | undefined); if (j.buildPattern !== undefined) new RegExp(j.buildPattern as string); } catch { return false; }
+    return true;
+  });
+}
 
 const defaultFetch: Fetcher = async (url, timeoutMs) => {
   const started = performance.now();
@@ -212,12 +227,13 @@ export interface Route {
   /** False keeps the monitor off Slack: for a monitor whose outage takes Slack down with it. The wake and the journal carry it. */
   slack?: false;
 }
-const PRODUCTION: Route = { channel: 'dentai', wakes: true };
+const PRODUCTION: Route = { channel: null, wakes: true, slack: false };
 /** A set of probes with its own state file and route. */
 export interface Monitor extends Route { health: ProdHealth }
-/** Production posts to #dentai and wakes on an outage; this PC only posts to the DM (the operator acts on it). */
-export const defaultMonitors = (): Monitor[] => [
-  { health: new ProdHealth(), ...PRODUCTION },
+/** Production is opt-in; local monitors stay enabled independently. */
+export const defaultMonitors = (config?: ProductionHealthConfig): Monitor[] => [
+  ...config ? [{ health: new ProdHealth({ probes: configuredProbes(config.probes) }), channel: config.channel, wakes: true,
+    wakeNote: config.wakeNote ? `${config.wakeNote}\nDo not write to production without the operator's OK.` : undefined }] : [],
   { health: new ProdHealth({ probes: pcProbes(), file: PC_FILE }), channel: null, wakes: false },
   { health: new ProdHealth({ probes: [quotaProbe()], file: QUOTA_HEALTH_FILE }), channel: null, wakes: false },
   { health: new ProdHealth({ probes: [providerLogProbe()], file: PROVIDER_LOG_HEALTH_FILE }), channel: null, wakes: false },
@@ -234,7 +250,7 @@ export async function tellTransitions(transitions: Transition[], post: (text: st
 
     const posted = route.slack === false ? false : await post(text, route.channel).then(() => true, () => false);
     if (t.kind !== 'down' || !route.wakes) continue;
-    const woke = await Promise.resolve(wake(`[OptChat health] ${text}\n${route.wakeNote ?? "Production is failing a read-only health probe. Investigate read-only (logs, recent deploys), report in #dentai, and do not write to production without the operator's OK."}${test ? ' This is a controlled injection test: confirm you received it and stop.' : ''}`)).then(() => true, () => false);
+    const woke = await Promise.resolve(wake(`[OptChat health] ${text}\n${route.wakeNote ?? "Production is failing a read-only health probe. Investigate read-only (logs, recent deploys), and do not write to production without the operator's OK."}${test ? ' This is a controlled injection test: confirm you received it and stop.' : ''}`)).then(() => true, () => false);
     if (!woke && posted) await post(`${text} (não consegui acordar o agente: veja no terminal)`, route.channel).catch(() => undefined);
   }
 }
@@ -258,13 +274,13 @@ export function healthSignals(file: string, transitions: readonly Transition[], 
   }));
 }
 
-export type HealthOwner = { dir: string };
-/** * Every 5 minutes while a profile with the assistant is open: a down transition posts to #dentai and wakes the agent
+export type HealthOwner = { dir: string; prodHealth?: ProductionHealthConfig };
+/** Every 5 minutes while a profile with the assistant is open: a down transition posts to the configured channel and wakes the agent
  * once; a recovery only posts. `/optchat-health` shows the state; `/optchat-health test` runs the alert path on a
  * synthetic probe, marked as a test, to prove the wiring end to end.
  */
 export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | undefined, post: (text: string, channel: string | null) => Promise<unknown>,
-  wake: (text: string) => Promise<unknown> | void, monitors = defaultMonitors(), intervalMs = 5 * 60_000,
+  wake: (text: string) => Promise<unknown> | void, monitors?: Monitor[], intervalMs = 5 * 60_000,
   /** Runs once per round: the quota history rows (src/quota-history.ts) ride this timer instead of a second one. */
   sample: (dir: string, now: number) => unknown = sampleQuotaRound) {
   let timer: ReturnType<typeof setInterval> | undefined, busy = false, lastError: string | undefined;
@@ -275,7 +291,7 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
     busy = true;
     try { await sample(o.dir, Date.now()); } catch {   }
 
-    lastError = await roundAll(monitors, o.dir, tell, (transitions, monitor) => {
+    lastError = await roundAll(monitors ?? defaultMonitors(o.prodHealth), o.dir, tell, (transitions, monitor) => {
       appendSignals(o.dir, healthSignals(monitor.health.file, transitions, monitor.health.now()));
     });
     busy = false;
@@ -295,12 +311,13 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
       if (!o) throw new Error('Open an OptChat profile first.');
       if (args.trim() === 'test') {
         const transitions = await injectedOutage(join(o.dir, 'prod-health-test'));
-        await tell(transitions, true);
+        const route = monitors?.[0] ?? (o.prodHealth ? defaultMonitors(o.prodHealth)[0] : PRODUCTION);
+        await tell(transitions, true, route);
         ctx.ui.notify(`Injected: ${transitions.length} alert(s) sent through the real path.`, 'info');
         return;
       }
       await round();
-      const lines = [...monitors.flatMap(m => healthLines(readHealth(o.dir, m.health.file))), ...lastError ? [`Last round failed: ${lastError}`] : []];
+      const lines = [...(monitors ?? defaultMonitors(o.prodHealth)).flatMap(m => healthLines(readHealth(o.dir, m.health.file))), ...lastError ? [`Last round failed: ${lastError}`] : []];
       ctx.ui.notify(lines.join('\n') || 'No probe has run yet (the assistant service must be configured).', lastError ? 'warning' : 'info');
     },
   });

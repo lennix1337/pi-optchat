@@ -7,6 +7,24 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { classifyEffects, decide, parseContract, type Repo } from '../src/autonomy.ts';
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { touchesContract } from '../src/authorization.ts';
+import * as external from '../src/external-effects.ts';
+
+test('production hosts are profile-scoped and an absent map fails closed', async () => {
+  const withHosts = (external as unknown as { withProductionHosts: <T>(hosts: string[] | undefined, fn: () => T) => T }).withProductionHosts;
+  assert.ok(effects('curl -X POST -d x https://unknown.example/path').some(e => e.startsWith('production-write')));
+  const selected = await withHosts(['fixture.example'], async () => {
+    await Promise.resolve();
+    return [effects('curl -X POST -d x https://sub.fixture.example/path'), effects('curl -X POST -d x https://other.example/path')];
+  });
+  assert.ok(selected[0]!.some(e => e.startsWith('production-write')));
+  assert.deepEqual(selected[1], []);
+  assert.ok(withHosts([], () => effects('curl -X POST -d x https://other.example/path')).some(e => e.startsWith('production-write')));
+  const isolated = await Promise.all(['first.example', 'second.example'].map(host => withHosts([host], async () => {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    return effects(`curl -X POST -d x https://${host}/path`);
+  })));
+  assert.ok(isolated.every(result => result.some(e => e.startsWith('production-write'))));
+});
 
 
 const repos: Record<string, [string, string]> = {
@@ -219,18 +237,27 @@ test('an invalid contract names its problem', () => {
 });
 
 
-function gate(contractText: string | undefined) {
+function gate(contractText: string | undefined, productionHosts?: string[]) {
   const dir = mkdtempSync(join(tmpdir(), 'autonomy-'));
   if (contractText !== undefined) writeFileSync(join(dir, 'autonomy.json'), contractText);
   const hooks = new Map<string, (...args: any[]) => any>();
   const notices: string[] = [];
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
-  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir });
+  registerEffectApprovals(pi, { enabled: true, mode: 'risk', bell: () => {}, repo, contractDir: () => dir, productionHosts: () => productionHosts });
   const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner', getBranch: () => [] },
     ui: { notify: (message: string) => notices.push(message), setWidget: () => {} } };
   const call = (command: string) => hooks.get('tool_call')!({ toolName: 'bash', toolCallId: command, input: { command } }, ctx);
   return { dir, notices, call, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+test('the risk gate uses the same profile hosts as the contract', async () => {
+  const g = gate(JSON.stringify({ version: 1, rules: [] }), ['protected.example']);
+  try {
+    assert.equal(await g.call('curl -X POST -d x https://other.example/path'), undefined);
+    assert.equal(g.notices.some(text => /Ran under autonomy/.test(text)), false);
+    assert.equal((await g.call('curl -X POST -d x https://sub.protected.example/path')).block, true);
+  } finally { g.done(); }
+});
 
 test('the gate follows autonomy.json: ask waits for the operator', async () => {
   const g = gate(JSON.stringify({ version: 1, rules: [{ action: 'merge', scope: ['tecnologia-ai/*'], level: 'ask', note: 'per-PR OK' }] }));
