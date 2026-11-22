@@ -182,5 +182,13 @@
     "scope": "slack_send/whatsapp_send call",
     "detector": "retro-recap",
     "precision": "A message naming 'retro' that cites 2+ distinct #N refs, more than the changes the same run shipped (ship.mjs, gh pr create, git push) before it; resets at each operator message or report. Counts refs, not whether each was a new finding."
+  },
+  {
+    "id": "package-pii",
+    "quote": "pi wacli é público? tu não ta botando esses números pra lá? ... deveria sempre construir pela base e adicionar pra mim como uma configuração, mas deixar o pacote em si como um produto generalizado",
+    "date": "22/11",
+    "scope": "edit/write tool call into a project repo (not dotfiles or dentai-mono)",
+    "detector": "package-pii",
+    "precision": "Written text with a Brazilian phone number or WhatsApp JID (55 + 10-11 digits) that has no run of four zeros; fixtures with such numbers are candidates for review. Names and other personal values are not detected."
   }
 ]

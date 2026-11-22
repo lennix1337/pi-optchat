@@ -90,6 +90,15 @@ function retroRecap(calls: Content[], shippedBefore: number): boolean {
   return false;
 }
 
+const PACKAGE_PATH = /[\\/]projetos[\\/](?!dotfiles[\\/]|dentai-mono[\\/])/u;
+const PHONE = /\b55\d{10,11}\b/gu;
+function writesRealPhone(call: Content): boolean {
+  if ((call.name !== 'edit' && call.name !== 'write') || !PACKAGE_PATH.test(String(call.arguments?.path ?? ''))) return false;
+  const edits = Array.isArray(call.arguments?.edits) ? call.arguments.edits : [call.arguments];
+  return edits.some((e: { newText?: string; content?: string } | undefined) =>
+    (String(e?.newText ?? e?.content ?? '').match(PHONE) ?? []).some(n => !n.includes('0000')));
+}
+
 const isOutbound = (call: Content): boolean => call.name === 'slack_send' || call.name === 'whatsapp_send';
 const outboundText = (call: Content): string => String(call.arguments?.text ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
 
@@ -175,6 +184,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
         return !!a && !!b && Number(b[1]) > Number(a[1]);
       });
     });
+    case 'package-pii': return calls.some(writesRealPhone);
     default: throw new Error(`Unknown correction detector: ${rule.detector}`);
   }
 }
