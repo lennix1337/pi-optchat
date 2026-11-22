@@ -89,14 +89,16 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
     session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['self_reload', 'fixture_effect'] })).session;
     await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} },
       commandContextActions: { reload: async () => {
-        reloads++;
-        if (mode === 'partial') { await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'reload' }); shutdown = true; }
+        reloads++; mark('reload-attempt');
+        if (mode === 'partial') { await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'reload' }); shutdown = true; mark('reload-shutdown'); }
         reloadAttempted();
         if (mode !== 'success') throw new Error(`fixture reload ${mode}`);
         await session!.reload();
       } } as any });
     const reopen = async () => {
+      mark('reopen-start');
       if (!shutdown) await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' });
+      mark('reopen-shutdown');
       session!.dispose(); await loader.reload();
       session = (await pi.createAgentSession({ cwd: dir, modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'), settingsManager, resourceLoader: loader, sessionManager: manager, tools: ['self_reload', 'fixture_effect'] })).session;
       await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} } });
@@ -105,7 +107,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
       assert.ok(after?.type === 'custom'); assert.equal((after.data as { state: string }).state, 'cancelled');
       const saved = JSON.parse(readFileSync(join(profile, 'heartbeat.json'), 'utf8'));
       assert.equal(saved.wakeLog.length, 1); assert.equal(saved.wakeLog[0].at, wakeAt);
-      assert.notEqual(saved.wakeLog[0].outcome, 'running'); assert.equal(saved.wakeLog[0].continuation, 'not-verified');
+      assert.notEqual(saved.wakeLog[0].outcome, 'running', `wake still running after reopen: ${JSON.stringify({ marks, maxLoopLagMs: lag.max(), wake: saved.wakeLog[0], calls, reloads, effects, shutdown, observedContinuation, errors })}`); assert.equal(saved.wakeLog[0].continuation, 'not-verified');
       if (mode === 'partial') assert.equal(saved.wakeLog[0].outcome, 'unsettled');
       assert.equal(manager.getBranch().filter(e => e.type === 'custom_message' && e.customType === 'optchat-reload-resume').length, 0);
       assert.equal(reloads, 1); assert.equal(effects, 1); assert.equal(readFileSync(join(dir, 'receipt.txt'), 'utf8'), '1');
@@ -126,10 +128,10 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
         }
         if (text.includes('This wake is about to end without delivering a change') || text.includes('The self-reload continuation was not observed within its deadline') || message.role === 'custom' && message.customType === 'optchat-reload-resume') {
           events.push({ type: message.role === 'custom' ? message.customType : message.role, text });
-          observedContinuation = true;
+          observedContinuation = true; mark('continuation-observed');
         }
       }
-      if (event.type === 'agent_settled' && observedContinuation) done();
+      if (event.type === 'agent_settled' && observedContinuation) { mark('agent-settled'); done(); }
     });
     await session.prompt('Initialize the synthetic session.'); mark('initialized');
     assert.ok(fire, 'heartbeat must have been armed'); fire();
@@ -145,7 +147,7 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
     if (mode === 'lost') {
       const active = [...recoveryTimers.values()].filter(timer => timer.active);
       assert.equal(active.length, 1, 'one bounded recovery is armed');
-      active[0].active = false; active[0].fire();
+      mark('recovery-fire'); active[0].active = false; active[0].fire();
     }
     mark('fired'); await finished; mark('settled');
     const requested = manager.getBranch().find(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolCallId === 'reload');
