@@ -108,6 +108,7 @@
     "date": "18/11",
     "scope": "bash, whatsapp_send or slack_send tool call",
     "detector": "cause-claim",
+    "guardedAt": "2026-11-23T00:10:00Z",
     "precision": "gh issue/pr comment or close, or a WhatsApp/Slack report (achei o buraco/a causa), whose text says the cause was found (causa achada/encontrada/raiz, root cause found) with no hedge (hipótese, não verificad, unverified, hypothesis); candidates require review."
   },
   {

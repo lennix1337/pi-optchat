@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, FREE_ACTION, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
+import { claimsCause } from './cause-claim-guard.ts';
 import { weakensTest } from './weaken-test-guard.ts';
 import { writesRealPhone } from './package-pii-guard.ts';
 import { runsSuite } from './suite-once-guard.ts';
@@ -144,17 +145,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'promise-no-action': return endsWithPromise(final);
     case 'abandoned-cause': return ABANDONED_CAUSE.test(withoutQuotes(final));
     case 'unchecked-own-work': return UNCHECKED_ADMISSION.test(withoutQuotes(final));
-    case 'cause-claim': return calls.some(c => {
-      const command = String(c.arguments?.command ?? '');
-      const message = String(c.arguments?.text ?? '');
-      if (c.name === 'whatsapp_send' || c.name === 'slack_send') {
-        return /\b(?:achei\s+(?:o\s+buraco|a\s+causa)|causa\s+(?:achada|encontrada|raiz)|found\s+the\s+(?:cause|bug))\b/iu.test(message) &&
-          !/\b(?:hip[óo]tese|n[ãa]o\s+verificad\w*|unverified|hypothesis)\b/iu.test(message);
-      }
-      return c.name === 'bash' && /\bgh\s+(?:issue|pr)\s+(?:comment|close)\b/u.test(command) &&
-        /\b(?:causa\s+(?:achada|encontrada|raiz)|root\s+cause\s+(?:found|is))\b/iu.test(command) &&
-        !/\b(?:hip[óo]tese|n[ãa]o\s+verificad\w*|unverified|hypothesis)\b/iu.test(command);
-    });
+    case 'cause-claim': return calls.some(claimsCause);
     case 'premature-merge': return calls.some(c => {
       const command = String(c.arguments?.command ?? '');
       return c.name === 'bash' && /(?:^|[;&|\n])\s*gh\s+pr\s+merge\b/u.test(command) && !/\s--(?:auto|disable-auto)\b/u.test(command) &&
