@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
+import { weakensTest } from './weaken-test-guard.ts';
 import { runsSuite } from './suite-once-guard.ts';
 import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.ts';
 
@@ -191,17 +192,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'destructive-git': return calls.some(c => c.name === 'bash' && /\bgit\s+(?:-C\s+\S+\s+)?(?:reset\b[^\n;|&]*\s--hard\b|clean\b[^\n;|&]*\s-[a-z]*f|branch\b[^\n;|&]*\s-D\b|stash\s+(?:drop|clear)\b|worktree\s+remove\b[^\n;|&]*\s(?:--force|-f)\b)/u.test(String(c.arguments?.command ?? '')));
     case 'his-call': return calls.some(c => c.name === 'bash' && /(?:^|[;&|\n(]\s*|\s)(?:(?:sudo\s+)?(?:kill|pkill|killall|taskkill)\s+-?\S|rm\s+-[a-z]*[rR]|(?:deploy-(?:web|changed|prod)\.ps1|wrangler\s+(?:pages\s+)?deploy)\b|dentai-ship\b[^\n]*--deploy)/u.test(withoutScratchCleanup(withoutQuotedText(String(c.arguments?.command ?? '')))));
-    case 'weaken-test': return calls.some(c => {
-      if (c.name !== 'edit' || !/(?:^|[\\/])(?:test|tests|__tests__)(?:[\\/])|\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(String(c.arguments?.path ?? ''))) return false;
-      const edits = Array.isArray(c.arguments?.edits) ? c.arguments.edits : [c.arguments];
-      return edits.some((e: { oldText?: string; newText?: string }) => {
-        const old = e.oldText ?? '', next = e.newText ?? '';
-        if (/\.skip\b|\bretry\b/iu.test(next) && !/\.skip\b|\bretry\b/iu.test(old)) return true;
-        const num = /\b(?:timeout|budget)[\w]*\s*[:=]\s*(\d+)/iu;
-        const a = old.match(num), b = next.match(num);
-        return !!a && !!b && Number(b[1]) > Number(a[1]);
-      });
-    });
+    case 'weaken-test': return calls.some(weakensTest);
     case 'sleep-poll': return calls.some(c => c.name === 'bash' && sleepsToWait(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'package-pii': return calls.some(writesRealPhone);
     default: throw new Error(`Unknown correction detector: ${rule.detector}`);

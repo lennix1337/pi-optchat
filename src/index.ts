@@ -71,6 +71,7 @@ import { registerMergeCiGuard } from './merge-ci-guard.ts';
 import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { registerRipwireFirst } from './ripwire-first-guard.ts';
+import { registerWeakenTestGuard } from './weaken-test-guard.ts';
 import { registerSelfBuildGuard } from './self-build-guard.ts';
 import { registerSuiteOnceGuard } from './suite-once-guard.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
@@ -215,6 +216,7 @@ export default function optchat(host: ExtensionAPI) {
   registerRipwireFirst(pi, { perInput: true });
   registerSelfBuildGuard(pi, { perInput: true });
   registerSuiteOnceGuard(pi);
+  registerWeakenTestGuard(pi);
   const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir, productionHosts: () => active?.config.productionHosts,
 
   orderGrant: effect => {
