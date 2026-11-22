@@ -7,6 +7,9 @@ const gh = (value: unknown, code = 0): Exec => async () => ({ code, stdout: JSON
 
 test('green pushes are frozen; red, missing and unreadable PRs pass', async () => {
   assert.match((await freezeGreen('git push origin feature', '/repo', gh(checks('SUCCESS')))).reason!, /passed.*new PR/i);
+  for (const mergeStateStatus of ['DIRTY', 'BEHIND']) {
+    assert.equal((await freezeGreen('git push origin feature', '/repo', gh({ ...checks('SUCCESS'), mergeStateStatus }))).reason, undefined, mergeStateStatus);
+  }
   assert.equal((await freezeGreen('git push origin feature', '/repo', gh(checks('FAILURE')))).reason, undefined);
   assert.equal((await freezeGreen('git push origin feature', '/repo', gh({ state: 'OPEN', statusCheckRollup: [{ name: 'ci', status: 'IN_PROGRESS' }] }))).reason, undefined);
   assert.match((await freezeGreen('git push -u origin HEAD:refs/heads/feature', '/repo', gh(checks('SUCCESS')))).reason!, /passed/i);

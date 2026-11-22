@@ -117,7 +117,7 @@ export async function freezeGreen(command: string, cwd: string, exec: Exec): Pro
       if (out.code !== 0 && /no pull requests found/i.test(out.stderr)) continue;
       if (out.code !== 0 || out.killed) { note = `Freeze-green: could not read PR checks (${(out.stderr || 'gh failed').trim().slice(0, 160)}); allowing push.`; continue; }
       const view = JSON.parse(out.stdout) as Rollup & { state?: string };
-      if (view.state === 'OPEN' && !ciProblem(view)) return { reason: 'Not run: the PR passed its checks. Changes after green need a reported failure (red check or review finding) or an explicit operator order; open a new PR instead.' };
+      if (view.state === 'OPEN' && view.mergeStateStatus !== 'BEHIND' && !ciProblem(view)) return { reason: 'Not run: the PR passed its checks. Changes after green need a reported failure (red check or review finding) or an explicit operator order; open a new PR instead.' };
     } catch (error) {
       note = `Freeze-green: could not read PR checks (${error instanceof Error ? error.message.slice(0, 160) : 'gh failed'}); allowing push.`;
     }
