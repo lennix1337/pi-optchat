@@ -158,6 +158,19 @@ test('premature-merge ignores auto-merge and merges that carry verify evidence',
   for (const c of ['gh pr merge 430 --disable-auto', 'node -e "m.ownMerges(\'gh pr merge 9 --squash\')"', 'git commit -m "gh pr merge --disable-auto nao conta como merge"', 'gh pr diff 40 | grep "gh pr merge"']) assert.equal(detect(rule, call('bash',{command:c})), false, c);
 });
 
+test('premature-merge accepts a merge after a local-verify or checks call earlier in the same turn', () => {
+ const dir = mkdtempSync(join(tmpdir(), 'prior-verify-'));
+ try {
+  const at = '2026-11-14T12:00:00Z';
+  const ev = (command: string, id: string) => ({ type: 'message', timestamp: at, message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id, name: 'bash', arguments: { command } }] } });
+  const user = { type: 'message', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: 'merge' }] } };
+  const lines = [user, ev('node scripts/local-verify.mjs . | tail -2; echo rc=${PIPESTATUS[0]}', 'a'), ev('gh pr merge 22 --squash --delete-branch', 'b'), user, ev('gh pr merge 23 --squash', 'c')];
+  writeFileSync(join(dir, 'a.jsonl'), lines.map(e => JSON.stringify(e)).join('\n') + '\n');
+  const found = scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r => r.id === 'premature-merge')!;
+  assert.equal(found.count, 1); assert.deepEqual(found.examples, [{ file: 'a.jsonl', line: 5 }]);
+ } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
 test('scan reads sessions kept in per-project subdirectories of the sessions root (the VM layout)', () => {
  const root = mkdtempSync(join(tmpdir(), 'rules-root-')); try {
   mkdirSync(join(root, '--home-ubuntu--')); mkdirSync(join(root, '--home-ubuntu-scratch--'));
