@@ -19,7 +19,7 @@ test('deep links name a task only by an encoded identifier, never carry tokens a
 });
 
 test('only chat originals offer a terminal command; other references stay inert text', () => {
-  assert.deepEqual(originalAccess('optchat:swlucas05:76134'), { kind: 'chat', command: '/assistant original optchat:swlucas05:76134' });
+  assert.deepEqual(originalAccess('optchat:example:123'), { kind: 'chat', command: '/assistant original optchat:example:123' });
   for (const reference of ['fixture://original/request', 'https://evil.test/x', 'javascript:alert(1)', 'optchat:p:', 'optchat:p:1 ; rm', 'optchat::1'])
     assert.deepEqual(originalAccess(reference), { kind: 'text' }, reference);
 });
