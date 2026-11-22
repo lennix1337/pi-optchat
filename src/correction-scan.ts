@@ -120,6 +120,11 @@ function withoutScratchCleanup(command: string): string {
   return command.replace(SCRATCH_RM, '').replace(/\bkill\s+-0\b/gu, '');
 }
 
+function sleepsToWait(command: string): boolean {
+  if (/\b(?:while|until|for)\b[^\n]*;\s*do\b[^\n]*\bsleep\s+\d/u.test(command)) return true;
+  return [...command.matchAll(/(?:^|[;&|\n(]\s*)sleep\s+(\d+(?:\.\d+)?)([smhd]?)/gu)].some(m => Number(m[1]) * ({ m: 60, h: 3600, d: 86400 }[m[2]] ?? 1) >= 15);
+}
+
 function withoutQuotedText(command: string): string {
   return command
     .replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/gu, '')
@@ -192,6 +197,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
         return !!a && !!b && Number(b[1]) > Number(a[1]);
       });
     });
+    case 'sleep-poll': return calls.some(c => c.name === 'bash' && sleepsToWait(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'package-pii': return calls.some(writesRealPhone);
     default: throw new Error(`Unknown correction detector: ${rule.detector}`);
   }
