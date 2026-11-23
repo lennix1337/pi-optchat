@@ -50,3 +50,8 @@ test('headTime ignores commits that only touch documentation: a reload would loa
   writeFileSync(join(dir, 'README.md'), 'doc\n'); git('2026-11-22T10:00:00Z', 'add', '.'); git('2026-11-22T10:00:00Z', 'commit', '-qm', 'docs');
   assert.equal(headTime(dir), sec('2026-11-20T10:00:00Z'));
 });
+
+test('a green probe names when the session loaded its code, which is what proves a reload', () => {
+  const result = loadedCodeProbe(() => ['/p/a'], Date.parse('2026-11-22T22:00:00-03:00'), () => sec('2026-11-20T22:00:00Z')).check() as { ok: boolean; detail?: string };
+  assert.match(result.detail ?? '', /Pi carregou às 22\/11 22:00; o HEAD de todos os pacotes locais é anterior/);
+});

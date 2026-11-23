@@ -34,7 +34,7 @@ export function loadedCodeProbe(packages: () => string[] = localPackages, loaded
     name: 'Código carregado no Pi',
     check(): ProbeResult {
       const stale = packages().flatMap(repo => { const at = time(repo); return at !== undefined && at * 1000 > loadedAt ? [{ name: basename(repo), at: at * 1000 }] : []; });
-      if (!stale.length) return { ok: true, ms: 0, detail: 'o Pi carrega o HEAD de todos os pacotes locais' };
+      if (!stale.length) return { ok: true, ms: 0, detail: `Pi carregou às ${brasiliaDayTime(loadedAt)}; o HEAD de todos os pacotes locais é anterior` };
       return { ok: false, ms: 0, problem: `código carregado desatualizado: ${stale.map(s => `${s.name} (commit ${brasiliaDayTime(s.at)})`).join(', ')}; o Pi carregou às ${brasiliaDayTime(loadedAt)} — falta recarregar` };
     },
   };

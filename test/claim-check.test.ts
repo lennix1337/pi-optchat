@@ -127,3 +127,9 @@ test('a reload claim needs the reload-resume notice; pending or negated reloads 
   assert.deepEqual(unbackedClaims('O Pi foi reloaded.', '[optchat-reload-resume] Reload nativo concluído'), []);
   assert.deepEqual(unbackedClaims('Pi ainda não recarregado; o código precisa ser recarregado; reload requested.', ''), []);
 });
+
+test('a green loaded-code probe that names the load time backs a reload claim', () => {
+  const evidence = '{"Código carregado no Pi":{"down":false,"detail":"Pi carregou às 22/11 22:59; o HEAD de todos os pacotes locais é anterior"}}';
+  assert.deepEqual(unbackedClaims('Reload feito, probe verde.', evidence), []);
+  assert.deepEqual(unbackedClaims('Reload feito, probe verde.', '{"Código carregado no Pi":{"down":true}}'), ['reload feito']);
+});

@@ -16,7 +16,7 @@ const LIVE = /\b(?:no ar|est[aá] live|deployed|deployad[oa])\b/iu;
 const LIVE_EVIDENCE = /\b(?:200|healthy|rollouts? done|RESUMO)\b/u;
 const RELOADED = /\b(?:reloaded|recarregad[oa]s?)\b|\breload\s+(?:feito|conclu[ií]do|done|completed?)\b|\brecarga\s+(?:feita|conclu[ií]da)\b/iu;
 const RELOAD_NOT_DONE = /(?:\b(?:n[aã]o|ainda n[aã]o|not|nem|sem|precisa|falta|ser|be|needs?|must|should|deve|para|pra)\b[^.]{0,30}|\bse\s+)$/iu;
-const RELOAD_EVIDENCE = /\[optchat-reload-resume\]|Pi reloaded natively|Reload nativo conclu/iu;
+const RELOAD_EVIDENCE = /\[optchat-reload-resume\]|Pi reloaded natively|Reload nativo conclu|"Código carregado no Pi":\{[^}]*"down":false[^}]*Pi carregou às \d\d\/\d\d \d\d:\d\d; o HEAD/iu;
 
 
 function runnerShows(evidence: string, a: number, b: number): boolean {
