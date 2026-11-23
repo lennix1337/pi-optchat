@@ -30,6 +30,7 @@ import { registerOperationSafety, type OperationJournal } from './operations.ts'
 import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { registerRipwireFirst } from './ripwire-first-guard.ts';
+import { registerConfigProtectGuard } from './config-protect-guard.ts';
 import { OutputStore } from './output-store.ts';
 import { OutputContext, outputReadTool } from './output-context.ts';
 import { PerformanceMetrics, registerPerformance, performanceTool } from './performance.ts';
@@ -740,6 +741,7 @@ export class Children {
         });
         registerEffectApprovals(pi, { grant: false });
         registerRipwireFirst(pi);
+        registerConfigProtectGuard(pi);
         if (o.patrol) pi.on('tool_call', event => {
           const command = event.toolName === 'bash' ? (event.input as { command?: unknown } | undefined)?.command : undefined;
           const reason = event.toolName === 'bash' ? patrolBashRefusal(typeof command === 'string' ? command : '') : undefined;
