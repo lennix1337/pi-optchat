@@ -19,6 +19,9 @@ const RELOAD_NOT_DONE = /(?:\b(?:n[aã]o|ainda n[aã]o|not|nem|sem|precisa|falta
 const RELOAD_EVIDENCE = /\[optchat-reload-resume\]|Pi reloaded natively|Reload nativo conclu|"Código carregado no Pi":\{[^}]*"down":false[^}]*Pi carregou às \d\d\/\d\d \d\d:\d\d; o HEAD/iu;
 
 
+const DIFF_REVIEWED = /\b(?:revisei|revisado|revisada|reviewed)\b[^.;]{0,25}\b(?:diff|patch|PR|pull request)\b|\b(?:diff|patch)\s+(?:revisado|reviewed)\b/iu;
+const DIFF_EVIDENCE = /^diff --git |^@@ .*@@|\b\d+ files? changed\b|^\s*\S+\s+\|\s+\d+\s+[+-]+/mu;
+
 function runnerShows(evidence: string, a: number, b: number): boolean {
   for (const m of evidence.matchAll(new RegExp(`\\bpass(?:ed)?\\s*[:=]?\\s*${a}\\b|\\b${a}\\s+pass(?:ed|ing)?\\b`, 'giu'))) {
 
@@ -74,6 +77,7 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
     for (const w of s.matchAll(new RegExp(RELOADED.source, 'giu'))) {
       if (!RELOAD_NOT_DONE.test(s.slice(Math.max(0, w.index - 40), w.index)) && !RELOAD_EVIDENCE.test(evidence)) out.add('reload feito');
     }
+    if (DIFF_REVIEWED.test(s) && !RELOAD_NOT_DONE.test(s.slice(0, s.search(DIFF_REVIEWED))) && !DIFF_EVIDENCE.test(evidence)) out.add('diff revisado');
     if (LIVE.test(s) && !/\b(?:n[aã]o|ainda n[aã]o|not)\b[^.]{0,30}\b(?:no ar|live|deployed)/iu.test(s) && !LIVE_EVIDENCE.test(evidence)) out.add('no ar');
   }
   return [...out];
