@@ -210,5 +210,13 @@
     "scope": "bash calls",
     "detector": "sleep-poll",
     "precision": "A bash call that sleeps 15 s or more, or sleeps inside a while/until/for loop (quoted text ignored); sleeps under 15 s are allowed. Candidates need review for a bounded wait with no completion notice."
+  },
+  {
+    "id": "look-yourself",
+    "quote": "[Slack] 23/11 11:34: 'vc tbm consegue olhar com a porra do pi-agent-desktop que eu ja te avisei q ta disponivel 100 vezes, vc n sabe as tools que tem disponivel sempre nao?'",
+    "date": "23/11",
+    "scope": "final replies and Slack/WhatsApp messages",
+    "detector": "look-yourself",
+    "precision": "A reply that hands him a screen check ('só você consegue olhar/ver', 'abra a aba', 'dá uma olhada na tela/Home', 'confere na tela') instead of taking it with pi-agent-desktop on the PC (agent-desktop screenshot via pc-task) or browser_harness. Quoted text ignored."
   }
 ]

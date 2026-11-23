@@ -102,6 +102,8 @@ function endsWithPromise(final: string): boolean {
   return !sentence.includes('?') && PROMISE_ENDING.test(sentence);
 }
 
+const LOOK_YOURSELF = /s[óo]\s+voc[êe]\s+(?:consegue|pode)\s+(?:olhar|ver|conferir)|\babr(?:a|indo)\s+a\s+aba\b|\b(?:d[áa]|pode\s+dar)\s+uma\s+olhada\s+n[ao]\s+(?:tela|home|aba|slack)|\bconfere?\s+n[ao]\s+(?:tela|home|aba)\b/iu;
+
 const isOutbound = (call: Content): boolean => call.name === 'slack_send' || call.name === 'whatsapp_send';
 const outboundText = (call: Content): string => String(call.arguments?.text ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
 
@@ -178,6 +180,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'his-call': return calls.some(c => c.name === 'bash' && /(?:^|[;&|\n(]\s*|\s)(?:(?:sudo\s+)?(?:kill|pkill|killall|taskkill)\s+-?\S|rm\s+-[a-z]*[rR]|(?:deploy-(?:web|changed|prod)\.ps1|wrangler\s+(?:pages\s+)?deploy)\b|dentai-ship\b[^\n]*--deploy)/u.test(withoutScratchCleanup(withoutQuotedText(String(c.arguments?.command ?? '')))));
     case 'weaken-test': return calls.some(weakensTest);
     case 'sleep-poll': return calls.some(c => c.name === 'bash' && sleepsToWait(withoutQuotedText(String(c.arguments?.command ?? ''))));
+    case 'look-yourself': return LOOK_YOURSELF.test(withoutQuotes(final)) || calls.some(c => isOutbound(c) && LOOK_YOURSELF.test(withoutQuotes(String(c.arguments?.text ?? ''))));
     case 'package-pii': return calls.some(writesRealPhone);
     default: throw new Error(`Unknown correction detector: ${rule.detector}`);
   }
