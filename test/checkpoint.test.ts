@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkpoint } from '../src/checkpoint.ts';
+import { checkpoint, packingRun } from '../src/checkpoint.ts';
 import { removeDir } from './support.ts';
 
 const tracked = (dir: string) => execFileSync('git', ['-C', dir, 'ls-files'], { encoding: 'utf8' }).trim().split('\n');
@@ -60,5 +60,21 @@ test('a checkpoint whose commit lands resolves even when git cannot pack afterwa
     writeFileSync(join(dir, 'big.bin'), randomBytes(17_000_000));
     await checkpoint(dir);
     assert.equal(execFileSync('git', ['-C', dir, 'log', '--format=%s'], { encoding: 'utf8' }).trim(), 'Save OptChat memory');
+  } finally { removeDir(dir); }
+});
+
+test('a turn checkpoint returns once the commit lands and leaves the pack to finish in the background', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-checkpoint-'));
+  try {
+    execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main']);
+    writeFileSync(join(dir, 'big.bin'), randomBytes(17_000_000));
+    await checkpoint(dir, { background: true });
+    const run = packingRun(dir);
+    assert.ok(run, 'the pack is still running when the turn checkpoint resolves');
+    await run;
+    assert.equal(packingRun(dir), undefined);
+    writeFileSync(join(dir, 'big2.bin'), randomBytes(17_000_000));
+    await checkpoint(dir);
+    assert.equal(packingRun(dir), undefined, 'the shutdown checkpoint waits for the pack');
   } finally { removeDir(dir); }
 });

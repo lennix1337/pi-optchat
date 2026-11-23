@@ -1408,7 +1408,7 @@ export default function optchat(host: ExtensionAPI) {
       const metrics = active.metrics, statusStarted = performance.now();
       void active.sync.now();
       metrics.record('status', performance.now() - statusStarted);
-      checkpoints = checkpoints.then(() => checkpoint(dir)).catch(error => ctx.ui.notify(`Local checkpoint failed: ${errorText(error)}`, 'error'));
+      checkpoints = checkpoints.then(() => checkpoint(dir, { background: true })).catch(error => ctx.ui.notify(`Local checkpoint failed: ${errorText(error)}`, 'error'));
       const checkpointStarted = performance.now();
       await checkpoints;
       metrics.record('checkpoint', performance.now() - checkpointStarted);
