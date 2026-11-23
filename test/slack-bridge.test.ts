@@ -1314,3 +1314,20 @@ test('a wake cut short by a provider error and resumed by the failover prompt is
     assert.equal(sends().length, 3, 'only the idle wake log; a continuation long after is not that wake');
   } finally { f.close(); }
 });
+
+test('a background shell started while answering Slack reports its end back to that Slack conversation', async () => {
+  const f = fixture();
+  const texts = () => f.requests.filter(r => r.path === '/v1/slack/send').map(r => (r.body as { text: string }).text);
+  try {
+    f.bridge.sawUserMessage(`${SLACK_PREFIX}manda pro neon`);
+    await f.bridge.runEnded(replies('Mandei, rodando.'));
+    f.advance(10 * 60_000);
+    f.bridge.sawUserMessage('[shell a6ebe02f] exit 0 after 11m45s');
+    await f.bridge.runEnded(replies('O Neon terminou o item 1.'));
+    assert.equal(texts().at(-1), 'O Neon terminou o item 1.');
+    f.advance(13 * 3_600_000);
+    f.bridge.sawUserMessage('[shell 75c73ade] exit 0');
+    await f.bridge.runEnded(replies('Velho demais.'));
+    assert.notEqual(texts().at(-1), 'Velho demais.', 'a Slack conversation older than the window gets no shell news');
+  } finally { f.close(); }
+});
