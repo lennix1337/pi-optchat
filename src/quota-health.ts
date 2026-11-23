@@ -84,7 +84,7 @@ export function routeBlock(state: unknown, provider: string, model: string, now:
 }
 
 const describe = (a: Account) => a.blockedUntil ? `${a.id} esgotada até ${brasiliaDayTime(a.blockedUntil)}`
-  : `${a.id} ${a.used}% (renova ${brasiliaDayTime(a.resetAt!)})`;
+  : `${a.id} ${a.used}% usado (renova ${brasiliaDayTime(a.resetAt!)})`;
 
 /** Meters refresh every 15 minutes at most; one silent for an hour stopped updating and its cached numbers are no longer news. */
 export const QUOTA_STALE_MS = 60 * 60_000;
@@ -115,7 +115,7 @@ export function quotaProbe(file = QUOTA_FILE, now: () => number = Date.now): Loc
 /** Forecast only; automatic failover remains responsible for keeping work moving. */
 export function quotaRisks(state: unknown, now: number): string[] {
   return accounts(state, now).filter(a => !a.blockedUntil && (a.used ?? 0) >= QUOTA_NEAR_PERCENT)
-    .map(a => `🪫 cota ${a.id} em ${a.used}% (leitura em cache), renova ${brasiliaDayTime(a.resetAt!)}`);
+    .map(a => `🪫 cota ${a.id} em ${a.used}% usado (leitura em cache), renova ${brasiliaDayTime(a.resetAt!)}`);
 }
 
 export const PROVIDER_LOG_FILE = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'provider-failover-debug.log');
