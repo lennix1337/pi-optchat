@@ -67,3 +67,12 @@ test('a refusal is not repeatable once the source written passes a few lines', (
   f.call('spawn', {});
   assert.equal(write(f), undefined); assert.equal(write(f), undefined);
 });
+
+test('shipping or committing code already written is not a source write', () => {
+  for (const command of ['node ~/projetos/pi-optchat/scripts/ship.mjs -m "x" -b "y" --all', 'git add -A && git commit -m "x"']) {
+    const f = fixture(); f.input(wake); write(f); write(f);
+    assert.equal(f.call('bash', { command }), undefined, command);
+  }
+  const f = fixture(); f.input(wake); write(f); write(f);
+  assert.match(f.call('bash', { command: "cat > src/b.ts <<'E'\nx\nE\ngit commit -am x" })?.reason ?? '', /^Não executado/);
+});

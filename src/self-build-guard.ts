@@ -12,6 +12,9 @@ const linesOf = (value: unknown): number =>
   : Array.isArray(value) ? value.reduce<number>((sum, item) => sum + linesOf(item), 0)
   : value && typeof value === 'object' ? Object.values(value).reduce<number>((sum, item) => sum + linesOf(item), 0) : 0;
 
+const withoutShipping = (call: ToolUse): ToolUse => call.name !== 'bash' ? call : { ...call, arguments: { ...call.arguments,
+  command: String(call.arguments?.command ?? '').split(/(?:&&|\|\||[;\n])/u).filter(part => !/\bship\.mjs\b|\bgit\s+commit\b/u.test(part)).join('\n') } };
+
 type Hooks = { on(event: string, handler: (event: any, ctx: any) => unknown): unknown };
 
 export function registerSelfBuildGuard(pi: Hooks, opts: { perInput?: boolean } = {}) {
@@ -36,7 +39,7 @@ export function registerSelfBuildGuard(pi: Hooks, opts: { perInput?: boolean } =
       String(call.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
         /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command)));
     if (delegated) { writes = 0; lines = 0; return undefined; }
-    if (!writesSource(call)) return undefined;
+    if (!writesSource(withoutShipping(call))) return undefined;
     lines += linesOf(call.arguments);
     if (++writes >= 3 && (!refused || lines > FEW_LINES)) {
       refused = true;

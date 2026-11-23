@@ -338,3 +338,14 @@ test('retro-recap flags a retro DM citing more PRs than the run shipped, not one
   assert.equal(ruleCount('retro-recap', [operator, call('bash', { command: 'node scripts/ship.mjs --dry-run -m x' }), dm]), 1, 'a dry run ships nothing');
   assert.equal(ruleCount('retro-recap', [operator, call('slack_send', { text: 'Mesclei #186 e #503.' })]), 0, 'not a retro');
 });
+
+test('the scan script prints bare JSON with --json, so a caller can parse it', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const home = mkdtempSync(join(tmpdir(), 'scan-json-'));
+  mkdirSync(join(home, '.pi', 'agent', 'sessions'), { recursive: true });
+  try {
+    const out = execFileSync(process.execPath, ['--experimental-transform-types', '--no-warnings', 'scripts/correction-scan.mjs', '--since', '1d', '--json'],
+      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } });
+    assert.ok(Array.isArray(JSON.parse(out)));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

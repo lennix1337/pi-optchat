@@ -275,6 +275,9 @@ export function healthSignals(file: string, transitions: readonly Transition[], 
 }
 
 export type HealthOwner = { dir: string; prodHealth?: ProductionHealthConfig };
+/** Soon after start, so the state files a reload continuation reads already describe the code just loaded. */
+export const FIRST_ROUND_MS = 5_000;
+
 /** Every 5 minutes while a profile with the assistant is open: a down transition posts to the configured channel and wakes the agent
  * once; a recovery only posts. `/optchat-health` shows the state; `/optchat-health test` runs the alert path on a
  * synthetic probe, marked as a test, to prove the wiring end to end.
@@ -301,7 +304,7 @@ export function registerProdHealth(pi: ExtensionAPI, owner: () => HealthOwner | 
   pi.on('session_start', () => {
     stop();
     timer = setInterval(() => void round(), intervalMs); timer.unref?.();
-    first = setTimeout(() => void round(), 60_000); first.unref?.();
+    first = setTimeout(() => void round(), FIRST_ROUND_MS); first.unref?.();
   });
   pi.on('session_shutdown', stop);
   pi.registerCommand('optchat-health', {
