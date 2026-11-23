@@ -7,10 +7,27 @@ test('Home shows a bounded team with escaped text and no image', () => {
   const team = Array.from({ length: 200 }, (_, i) => `worker ${i} · model · <repo> · ${'x'.repeat(4000)}`);
   const blocks = homeBlocks('Status', { team }) as any[];
   assert.ok(blocks.length <= 100);
-  assert.ok(blocks.some(b => b.type === 'header' && b.text.text === 'Equipe'));
+  assert.ok(blocks.some(b => b.type === 'header' && b.text.text === 'Rodando agora'));
   assert.ok(blocks.some(b => b.type === 'section' && b.text.text.includes('&lt;repo&gt;')));
   assert.ok(!blocks.some(b => b.type === 'image'));
   for (const block of blocks) if (block.type === 'section') assert.ok(block.text.text.length <= 3000);
+});
+
+test('Home visualiza status, pendências e trabalhos sem expor prompts', () => {
+  const text = '*Trabalhando*\n\n🔀 *PRs abertas* (1)\n• projeto · 🔴 checks vermelhos\n\n🔋 *Cota* (cache):\n• Conta A `▰▰▱▱▱▱▱▱▱▱` 7d 20%';
+  const blocks = homeBlocks(text, { working: true, team: ['code · modelo A · You are a subagent. Do not write memory pages. Analisar testes · há 3 min'] }) as any[];
+  const rendered = JSON.stringify(blocks);
+  assert.match(rendered, /🟢.*Pi.*🔴.*CI.*🟡.*produ[cç][aã]o/i);
+  assert.match(rendered, /Nada esperando você/);
+  assert.match(rendered, /Rodando agora/);
+  assert.doesNotMatch(rendered, /You are a subagent/);
+  assert.ok(blocks.length <= 100);
+});
+
+test('Home limita blocos mesmo com muitas escolhas e trabalhos', () => {
+  const blocks = homeBlocks('Status', { team: Array(200).fill('worker'), choices: Array.from({ length: 200 }, (_, i) => ({ label: `Questão ${i}`, options: ['Sim', 'Não'] })) }) as any[];
+  assert.ok(blocks.length <= 100);
+  assert.match(JSON.stringify(blocks), /Precisa de você/);
 });
 
 async function publishGraph(dotPath: string) {

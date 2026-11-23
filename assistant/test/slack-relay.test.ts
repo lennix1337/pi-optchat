@@ -334,7 +334,7 @@ test('HTTP: the Home carries Status agora, Parar (with confirm) while working an
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/slack/home`;
   const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
-  const ids = (i: number) => ((slack.calls[i].body.view as { blocks: { elements?: { action_id: string; value: string; confirm?: unknown }[] }[] }).blocks[1].elements ?? []);
+  const ids = (i: number) => (slack.calls[i].body.view as { blocks: { elements?: { action_id: string; value: string; confirm?: unknown }[] }[] }).blocks.flatMap(b => b.elements ?? []);
   try {
     assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: 'Livre' }) })).status, 200);
     assert.deepEqual(ids(0).map(e => e.action_id), ['optchat_home_status']);
@@ -464,16 +464,16 @@ test('HTTP: the Home splits a long text into sections, puts each item\'s answers
     const blocks = (slack.calls[0].body.view as { blocks: Block[] }).blocks;
     const sections = blocks.filter(b => b.type === 'section');
     assert.ok(sections.length >= 2 && sections.every(s => s.text!.text.length <= 3000), 'split at lines, each within Slack\'s limit');
-    assert.equal(sections.map(s => s.text!.text).join('\n'), text, 'nothing lost between sections');
+    assert.ok(sections.some(s => s.text!.text.includes('Resumo das 07:00')), 'the actionable question stays visible');
     const answers = blocks.find(b => b.type === 'actions' && b.elements!.some(e => e.action_id?.startsWith('optchat_home_choice_')))!;
     assert.deepEqual(answers.elements!.map(e => [e.text.text, e.value]), [['chegou', 'Sobre "Resumo das 07:00": chegou'], ['não chegou', 'Sobre "Resumo das 07:00": não chegou']]);
     assert.ok(blocks.at(-1)!.elements!.some(e => e.action_id === 'optchat_home_more'), 'Ver tudo with the main buttons');
-    assert.ok(!JSON.stringify(blocks).includes('Responder:'), 'one question needs no caption: its text is in the Home above (03/11)');
+    assert.ok(!JSON.stringify(blocks).includes('linha 79'), 'unrelated long details are omitted');
     const two = { text: 'x', choices: [{ label: 'um dois três quatro cinco seis sete oito nove dez', options: ['a'] }, { label: 'outra', options: ['b'] }] };
     assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(two) })).status, 200);
-    const captions = (slack.calls.at(-1).body.view as { blocks: Block[] }).blocks.filter(b => b.type === 'context').map(b => JSON.stringify(b));
-    assert.equal(captions.length, 2);
-    assert.match(captions[0]!, /Responder: \*um dois três quatro cinco seis sete oito…\*/);
+    const captions = (slack.calls.at(-1).body.view as { blocks: Block[] }).blocks.filter(b => b.type === 'section').map(b => b.text?.text);
+    assert.ok(captions.some(c => c?.includes('um dois três quatro cinco seis sete oito nove dez')));
+    assert.ok(captions.some(c => c?.includes('outra')));
     for (const bad of [{ text: 'x', choices: [{ label: 'a', options: [] }] }, { text: 'x', choices: [{ label: 'a', options: ['y'.repeat(41)] }] }, { text: 'x', choices: [{ label: 'a', options: ['b'], extra: 1 }] }, { text: 'x', fold: 'all' }])
       assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(bad) })).status, 400, JSON.stringify(bad));
   } finally { await new Promise(done => server.close(done)); r.close(); }
