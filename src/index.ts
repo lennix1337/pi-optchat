@@ -11,6 +11,8 @@ import { NO_WORK, readHomeWork, readWatch, runningItem, stillWaiting } from './h
 import { homeShell } from './home-dashboard.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
+import { DEFAULT_SETTINGS } from './settings.ts';
+import { registerSkillStocktake } from './skill-stocktake.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { lazyLoadout, lazySet } from './lazy-tools.ts';
 import { readManyTool } from './read-many.ts';
@@ -75,7 +77,7 @@ import { registerEffectApprovals } from './authorization-hooks.ts';
 import { registerRipwireFirst } from './ripwire-first-guard.ts';
 import { registerCauseClaimGuard } from './cause-claim-guard.ts';
 import { registerSendClaimGuard } from './send-claim-guard.ts';
-import { registerWeakenTestGuard } from './weaken-test-guard.ts';
+import { registerConfigProtectGuard } from './config-protect-guard.ts';
 import { registerPackagePiiGuard } from './package-pii-guard.ts';
 import { registerSelfBuildGuard } from './self-build-guard.ts';
 import { registerSuiteOnceGuard } from './suite-once-guard.ts';
@@ -226,7 +228,7 @@ export default function optchat(host: ExtensionAPI) {
   registerRipwireFirst(pi, { perInput: true });
   registerSelfBuildGuard(pi, { perInput: true });
   registerSuiteOnceGuard(pi);
-  registerWeakenTestGuard(pi);
+  registerConfigProtectGuard(pi);
   registerCauseClaimGuard(pi);
   registerSendClaimGuard(pi);
   registerPackagePiiGuard(pi);
@@ -1447,8 +1449,9 @@ export default function optchat(host: ExtensionAPI) {
     shellJobs: shells.list().length, shellOutputChars: shells.list().reduce((sum, job) => sum + job.output.length, 0),
     receipts: receipts.size, bundles: bundles.size, runMessages: run.length, previousMessages: previous.length, reports: reports.length,
     heldWakeMessages: heldWakeMessages.length, peerCopies: peerCopies.length } }), defaultActive: false });
-  registerToolInventory(pi, lazy);
+  registerToolInventory(pi, lazy, { skillBudgetBytes: () => active?.config.skillBudgetBytes ?? DEFAULT_SETTINGS.skillBudgetBytes });
   registerLiveResources(pi);
+  registerSkillStocktake(pi, { defaultDays: () => active?.config.skillStocktakeDays });
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
     handler: async (args, ctx) => {
       const a = required(), option = args.trim();

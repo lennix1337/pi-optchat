@@ -141,3 +141,35 @@ test('"revisei o diff" with no diff in any output is unbacked; a diff or a stat 
   assert.deepEqual(unbackedClaims('Revisei o diff.', ' lib/fogao.mjs | 40 ++++\n 14 files changed, 900 insertions(+)'), []);
   assert.deepEqual(unbackedClaims('Ainda não revisei o diff.', ''), []);
 });
+
+test('a cited file:line is ok when seen in tool output and flagged when unseen', () => {
+  assert.deepEqual(unbackedClaims('O bug está em src/x.ts:63.', 'src/x.ts:63: const ok = true;'), []);
+  assert.deepEqual(unbackedClaims('Veja `src/x.ts:63` e `test/x.test.ts:12`.', 'src/x.ts:63: return false;'), ['test/x.test.ts:12']);
+  assert.deepEqual(unbackedClaims('Falha em src/x.ts:63.', ''), ['src/x.ts:63']);
+  assert.deepEqual(unbackedClaims('Falha em src/x.ts:63.', 'src/y.ts:63: other\nsrc/x.ts:62: nearby'), ['src/x.ts:63']);
+  assert.deepEqual(unbackedClaims('Falha em src/x.ts:63.', 'src/x.ts:630: prefix collision\nother-src/x.ts:63: path collision'), ['src/x.ts:63']);
+});
+
+test('path:line check accepts standard tool formats and ignores URLs, ports, times and versions', () => {
+  assert.deepEqual(unbackedClaims('Veja ./src/x.ts:63.', 'C:\\repo\\src\\x.ts:63: const v = 1;'), []);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63:12.', 'src/x.ts(63,12): error TS2304'), []);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', 'src/x.ts-63- const ctx = 1;'), []);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', 'src/x.ts:50-70'), []);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', '<b t="fn" l="63" p="src/x.ts" n="check">'), []);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -60,6 +60,8 @@\n+line'), []);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -10,4 +10,5 @@\n+line'), ['src/x.ts:63']);
+  assert.deepEqual(unbackedClaims(
+    'Subiu em http://localhost:3000 e https://example.com:8443/api (127.0.0.1:49374, api.example.com:443), imagem node:22.23.4, optchat-computer-browser:1, às 12:43, README.md: 12 itens, link https://github.com/org/repo/blob/main/src/x.ts:63.',
+    '',
+  ), []);
+});
+
+test('assistant-only file:line mentions do not back a path:line claim', () => {
+  const messages = [
+    { role: 'assistant', content: [{ type: 'text', text: 'Suspeito de src/x.ts:63.' }] },
+    { role: 'toolResult', content: [{ type: 'text', text: 'src/x.ts:10: import fs from "node:fs";' }] },
+  ] as unknown as AgentMessage[];
+  const evidence = evidenceText(messages);
+  assert.deepEqual(unbackedClaims('Confirmado em src/x.ts:10 e src/x.ts:63.', evidence), ['src/x.ts:63']);
+  assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', '<other l="63"> texto p="src/x.ts" </other>'), ['src/x.ts:63']);
+});
