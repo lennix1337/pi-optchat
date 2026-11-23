@@ -3,7 +3,6 @@ import { basename, extname, isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
 import { immediate } from '../store/transaction.ts';
-import { teamBlocks } from './home-blocks.ts';
 import { renderGraph, type HomeGraph } from './home-graph.ts';
 
 
@@ -177,39 +176,84 @@ export type HomeSettings = { model?: string; models: { value: string; label: str
 export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings; team?: string[]; graph?: HomeGraph; imageFile?: string };
 
 
-function sections(text: string): string[] {
-  const out: string[] = [];
-  let current = '';
-  for (const line of text.split('\n')) {
-    const next = current ? `${current}\n${line}` : line;
-    if (next.length <= SECTION_MAX) { current = next; continue; }
-    if (current) out.push(current);
-    current = line.slice(0, SECTION_MAX);
-  }
-  if (current) out.push(current);
-  return out.length ? out : [' '];
+const homeEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const homeSection = (value: string) => ({ type: 'section', text: { type: 'mrkdwn', text: value.slice(0, SECTION_MAX) || ' ' } });
+const homeHeader = (value: string) => ({ type: 'header', text: { type: 'plain_text', text: value } });
+const WAITING = /\*Esperando você\*\n([\s\S]*?)(?=\n\n|$)/;
+const QUOTA = /🔋 \*Cota\* \(cache\):\n([\s\S]*?)(?=\n_|\n\n|$)/;
+
+function statusLine(text: string): string {
+  const ci = /checks vermelhos/i.test(text) ? '🔴' : /checks pendentes|sem checks|mais \d+ \(toque/i.test(text) ? '🟡' : /checks verdes/i.test(text) ? '🟢' : '🟡';
+  return `🟢 Pi (processo ativo) · ${ci} CI · 🟡 Produção (sem leitura)`;
 }
 
-/**
- * The App Home: the text in sections, the answers to tap under each item that waits on him, then Aprovar when a call
- * waits, Status agora, Ver tudo / Ver menos when items were folded, and Parar while working (with a confirm).
- */
-export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
-  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label }, ...extra });
+function runningBlocks(team: string[] | undefined): unknown[] {
+  const blocks: unknown[] = [homeHeader('Rodando agora')];
+  for (const line of (team ?? []).slice(0, 30)) {
+    const parts = line.split(' · ');
+    const elapsed = parts.length > 1 && /^há /.test(parts.at(-1)!) ? parts.pop()! : '';
+    const kind = parts.shift() ?? '';
+    const model = parts.length > 1 ? parts.shift()! : '';
+    let label = parts.join(' · ') || kind;
+    label = /you are a subagent/i.test(label) ? 'Trabalho em andamento' : label.replace(/\s+/g, ' ').trim();
+    label = label.length > 60 ? `${label.slice(0, 59)}…` : label;
+    blocks.push(homeSection(`*${homeEscape(label || 'Trabalho em andamento')}*\n${homeEscape([elapsed, kind, model].filter(Boolean).join(' · '))}`));
+  }
+  if (!team?.length) blocks.push(homeSection('Nenhum worker rodando.'));
+  return blocks;
+}
 
-  const many = (options.choices ?? []).length > 1;
-  const caption = (label: string) => { const words = label.replace(/\s+/g, ' ').trim().split(' '); return words.length > 8 ? `${words.slice(0, 8).join(' ')}\u2026` : words.join(' '); };
-  const choices = (options.choices ?? []).flatMap((choice, i) => [
-    ...many ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `Responder: *${caption(choice.label)}*` }] }] : [],
-    { type: 'actions', elements: choice.options.map((option, j) => button(HOME_CHOICE, option, { action_id: `${HOME_CHOICE}_${i}_${j}`, value: `Sobre "${choice.label}": ${option}` })) },
-  ]);
-  const elements = [
-    ...options.approval ? [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] : [],
-    button('optchat_home_status', 'Status agora'),
-    ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [],
-    ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : [],
-  ];
-  return [...options.team !== undefined ? [{ type: 'header', text: { type: 'plain_text', text: 'OptChat · Painel' } }] : [], ...sections(text).slice(0, 30).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })), ...(options.imageFile ? [{ type: 'image', slack_file: { id: options.imageFile }, alt_text: 'Diagrama dos trabalhos em andamento' }] : []), ...teamBlocks(options.team), ...choices.slice(0, 6), ...settingBlocks(options.settings), { type: 'actions', elements }].slice(0, 100);
+function quotaBlocks(text: string): unknown[] {
+  const quota = QUOTA.exec(text)?.[1];
+  if (!quota) return [];
+  const blocks: unknown[] = [homeHeader('Cota · 7 dias')];
+  for (const line of quota.split('\n').slice(0, 30)) {
+    const seven = /7d (\d+)%/.exec(line);
+    if (seven) {
+      const used = Math.max(0, Math.min(100, Number(seven[1]))), count = Math.round(used / 10);
+      const name = line.replace(/^•\s*/, '').split(/`|5h |7d /)[0]!.trim();
+      blocks.push(homeSection(`${homeEscape(name)}  \`${'▰'.repeat(count)}${'▱'.repeat(10-count)}\` ${used}%`));
+    } else blocks.push(homeSection(homeEscape(line.slice(0, 200))));
+  }
+  return blocks;
+}
+
+function remainingBlocks(text: string): unknown[] {
+  const remaining = text.replace(WAITING, '').replace(QUOTA, '').trim();
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of remaining.split('\n')) {
+    let rest = /you are a subagent/i.test(line) ? '• Trabalho em andamento' : line;
+    while (rest.length > SECTION_MAX) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(rest.slice(0, SECTION_MAX)); rest = rest.slice(SECTION_MAX);
+    }
+    const next = current ? `${current}\n${rest}` : rest;
+    if (next.length > SECTION_MAX) { chunks.push(current); current = rest; } else current = next;
+  }
+  if (current.trim()) chunks.push(current);
+  return chunks.map(homeSection);
+}
+
+/** The existing Home payload, arranged around actions and current work. */
+export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
+  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label.slice(0, 75) }, ...extra });
+  const waiting = WAITING.exec(text)?.[1]?.trim();
+  const blocks: unknown[] = [homeHeader('OptChat · Painel'), homeSection(statusLine(text)), homeHeader('Precisa de você')];
+  if (waiting) blocks.push(homeSection(waiting));
+  if (options.approval) blocks.push({ type: 'actions', elements: [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] });
+  for (const [i, choice] of (options.choices ?? []).slice(0, 3).entries()) {
+    if (!waiting?.split('\n').some(line => line.replace(/^\s*•\s*/, '').trim() === choice.label.trim())) blocks.push(homeSection(homeEscape(choice.label.slice(0, 200))));
+    blocks.push({ type: 'actions', elements: choice.options.slice(0, 5).map((option, j) => button(HOME_CHOICE, option, { action_id: `${HOME_CHOICE}_${i}_${j}`, value: `Sobre "${choice.label}": ${option}`.slice(0, 2000) })) });
+  }
+  if (!waiting && !options.approval && !options.choices?.length) blocks.push(homeSection('Nada esperando você'));
+  blocks.push(...runningBlocks(options.team), ...remainingBlocks(text), ...quotaBlocks(text));
+  blocks.push(...settingBlocks(options.settings));
+  const actions = [button('optchat_home_status', 'Status agora'), ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [], ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : []];
+  blocks.push({ type: 'actions', elements: actions });
+  if (options.imageFile) blocks.push(homeHeader('Equipe'), { type: 'image', slack_file: { id: options.imageFile }, alt_text: 'Diagrama dos trabalhos em andamento' });
+  return blocks.slice(0, 100);
 }
 
 function settingBlocks(settings: HomeSettings | undefined): unknown[] {
