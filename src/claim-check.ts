@@ -2,10 +2,10 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { textContent } from './transcript.ts';
 
 /**
- * A reply's verifiable claims that no output of the run shows: a pass count ("31/31", "105 de 105"), a commit hash, a merged PR
- * or "no ar" with no health check. The operator reads them as observed facts (13-18/11: "31/31", "no ar", "causa encontrada" sent
- * with no output behind them), so the run gets one chance to check them before the reply leaves, and what is still unbacked goes
- * out marked.
+ * A reply's verifiable claims that no output of the run shows: a pass count ("31/31", "105 de 105"), a commit hash, a file:line
+ * reference, a merged PR or "no ar" with no health check. The operator reads them as observed facts (13-18/11: "31/31", "no ar",
+ * "causa encontrada" sent with no output behind them), so the run gets one chance to check them before the reply leaves, and what
+ * is still unbacked goes out marked.
  */
 export const CLAIM_CHECK_PREFIX = '[OptChat claim check]';
 
@@ -21,6 +21,57 @@ const RELOAD_EVIDENCE = /\[optchat-reload-resume\]|Pi reloaded natively|Reload n
 
 const DIFF_REVIEWED = /\b(?:revisei|revisado|revisada|reviewed)\b[^.;]{0,25}\b(?:diff|patch|PR|pull request)\b|\b(?:diff|patch)\s+(?:revisado|reviewed)\b/iu;
 const DIFF_EVIDENCE = /^diff --git |^@@ .*@@|\b\d+ files? changed\b|^\s*\S+\s+\|\s+\d+\s+[+-]+/mu;
+
+const FILE_EXT = 'ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|jsonl|md|mdx|ya?ml|toml|ini|cfg|conf|env|sh|bash|zsh|ps1|psm1|bat|cmd|py|pyi|rs|go|java|kt|kts|rb|php|c|h|cc|cpp|cxx|hh|hpp|cs|fs|swift|sql|css|scss|sass|less|html?|xml|svg|vue|svelte|astro|prisma|graphql|gql|proto|tf|hcl|lua|dart|exs?|erl|zig|scala|groovy|gradle|cmake|mk|txt|csv|log|lock';
+const PATH_LINE = new RegExp(
+  `(?<![\\w/\\\\.-])((?:[A-Za-z]:[/\\\\]|/)?(?:[\\w@.-]+[/\\\\])*\\.?[\\w-][\\w.-]*\\.(?:${FILE_EXT})):([1-9]\\d{0,6})(?!\\.\\d|[\\w/\\\\])`,
+  'giu',
+);
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function pathLineSeen(normEvidence: string, rawPath: string, line: number): boolean {
+  const path = rawPath.replaceAll('\\', '/').replace(/^(?:\.\/)+/u, '').toLowerCase();
+  if (!normEvidence.includes(path)) return false;
+  const escPath = escapeRegex(path);
+  if (new RegExp(`(?<![\\w.-])${escPath}(?:(?::|#l)${line}(?!\\d)|-${line}-|\\(${line}(?:,\\d+)?\\))`, 'u').test(normEvidence)) return true;
+  for (const m of normEvidence.matchAll(new RegExp(`(?<![\\w.-])${escPath}(?::|#l)(\\d+)-l?(\\d+)(?!\\d)`, 'gu'))) {
+    if (Number(m[1]) <= line && line <= Number(m[2])) return true;
+  }
+  if (normEvidence.includes('p="')) {
+    for (const m of normEvidence.matchAll(new RegExp(`(?<![\\w.-])${escPath}"`, 'gu'))) {
+      const open = normEvidence.lastIndexOf('<', m.index);
+      const close = normEvidence.indexOf('>', m.index);
+      if (open < 0 || close < 0 || normEvidence.slice(open, m.index).includes('>') || normEvidence.slice(open, close).includes('\n')) continue;
+      if (!/\bp="[^"]*$/u.test(normEvidence.slice(open, m.index))) continue;
+      const l = /\bl="(\d+)(?:-(\d+))?"/u.exec(normEvidence.slice(open, close));
+      if (l && Number(l[1]) <= line && line <= Number(l[2] ?? l[1])) return true;
+    }
+  }
+  if (normEvidence.includes('@@ -')) {
+    const fileHeader = new RegExp(`^(?:\\+\\+\\+ (?:b/)?|--- (?:a/)?)(?:[^\\n]*\\/)?${escPath}(?:\\t|\\r|$)`, 'u');
+    let inFile = false;
+    for (const row of normEvidence.split('\n')) {
+      if (row.startsWith('diff --git ')) { inFile = false; continue; }
+      if (row.startsWith('--- ')) { inFile = fileHeader.test(row); continue; }
+      if (row.startsWith('+++ ')) {
+        if (fileHeader.test(row)) inFile = true;
+        else if (!row.startsWith('+++ /dev/null')) inFile = false;
+        continue;
+      }
+      if (!inFile) continue;
+      const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(row);
+      if (!hunk) continue;
+      const oldStart = Number(hunk[1]), oldCount = Number(hunk[2] ?? 1);
+      const newStart = Number(hunk[3]), newCount = Number(hunk[4] ?? 1);
+      if ((oldCount > 0 && oldStart <= line && line < oldStart + oldCount) ||
+        (newCount > 0 && newStart <= line && line < newStart + newCount)) return true;
+    }
+  }
+  return false;
+}
 
 function runnerShows(evidence: string, a: number, b: number): boolean {
   for (const m of evidence.matchAll(new RegExp(`\\bpass(?:ed)?\\s*[:=]?\\s*${a}\\b|\\b${a}\\s+pass(?:ed|ing)?\\b`, 'giu'))) {
@@ -52,6 +103,7 @@ export function branchEvidenceMessages(entries: readonly { type: string; message
 export function unbackedClaims(reply: string, evidence: string): string[] {
   const out = new Set<string>();
   let lowercaseEvidence: string | undefined;
+  let normPathEvidence: string | undefined;
   const seen = (token: string) => evidence.includes(token);
   for (const s of sentences(reply)) {
     if (KEYWORD.test(s)) {
@@ -63,6 +115,10 @@ export function unbackedClaims(reply: string, evidence: string): string[] {
     for (const m of s.matchAll(/(?<![\w/.-])([0-9a-f]{7,40})(?![\w/-])/gu)) {
       const sha = m[1]!;
       if (/\d/u.test(sha) && /[a-f]/u.test(sha) && !(lowercaseEvidence ??= evidence.toLowerCase()).includes(sha.slice(0, 7))) out.add(sha);
+    }
+    for (const m of s.matchAll(PATH_LINE)) {
+      normPathEvidence ??= (lowercaseEvidence ??= evidence.toLowerCase()).replaceAll('\\', '/');
+      if (!pathLineSeen(normPathEvidence, m[1]!, Number(m[2]))) out.add(m[0]);
     }
     for (const w of s.matchAll(new RegExp(MERGED.source, 'giu'))) {
 
