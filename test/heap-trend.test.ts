@@ -64,6 +64,8 @@ test('rssLine: names the Pi RSS once the last three samples all sit above the go
   assert.equal(rssLine([at(713, 0), at(720, 1), at(705, 2)]), 'Pi RSS 705 MB, above the 500 MB goal in the last 3 samples');
   const split = { ...at(705, 2), heapTotalMb: 366, externalMb: 30 };
   assert.equal(rssLine([at(713, 0), at(720, 1), split]), 'Pi RSS 705 MB, above the 500 MB goal in the last 3 samples (V8 heap 366 MB, external 30 MB, other native 309 MB)', 'the newest sample splits the RSS into heap, external and other native');
+  assert.equal(rssLine([at(548, 0), at(556, 2), at(551, 4)]), 'Pi RSS 551 MB, above the 500 MB goal in the last 3 samples, flat (within 8 MB over 4 h: a plateau, not a leak)', 'a flat stretch over 3 h or more is named a plateau');
+  assert.equal(rssLine([at(548, 0), at(700, 2), at(900, 4)]), 'Pi RSS 900 MB, above the 500 MB goal in the last 3 samples', 'a rising stretch is not called flat');
   assert.equal(rssLine([at(713, 0), at(480, 1), at(705, 2)]), undefined, 'one sample under the goal breaks the stretch');
   assert.equal(rssLine([at(713, 0), at(720, 1)]), undefined, 'two samples are not enough');
   assert.equal(rssLine([at(undefined, 0), at(undefined, 1), at(undefined, 2)]), undefined, 'samples from before the RSS watch carry no RSS');
