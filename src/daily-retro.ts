@@ -23,7 +23,7 @@ export function markRetro(dir: string, now: number) {
   atomicWrite(join(dir, RETRO_FILE), JSON.stringify({ date: localDate(now), startedAt: now }));
 }
 
-export function retroPrompt(date: string, machine: string[] = [], forge?: ForgeRetroInput) {
+export function retroPrompt(date: string, machine: string[] = [], forge?: ForgeRetroInput, proposals: string[] = []) {
   return [
     `Daily retro (operator 03/11, standing order), ${date}. A retro is action, not a diary (operator 14/11: "é pra analisar o dia e melhorar o que foi ruim, não me contar o que aconteceu").`,
     'Run the `retro` skill (~/.agents/skills/retro/SKILL.md) over today\'s work in this chat and hunt for what went badly, each with its evidence:',
@@ -35,6 +35,7 @@ export function retroPrompt(date: string, machine: string[] = [], forge?: ForgeR
     'Each fix gets a regression test or a measurement where one applies; before shipping a guard or claim-check change, run `npm run replay` to confirm no rule regresses (`npm run replay -- --update` only after reviewing an intentional baseline change); mirror profile changes in dotfiles payload/pi.',
     ...machine.length ? ['Measured cost centres of the last 24 h on this PC (machine ledger; the `machine` tool has the detail). Treat each as a candidate optimisation, and say which you changed:', ...machine.map(line => `- ${line}`)] : [],
     ...(forge ? formatForgeRetroLines(forge) : []),
+    ...proposals.length ? ['Autonomy ladder promotion proposals (earned by clean operator approvals with zero overrides; NEVER apply without explicit operator approval — include them in the DM for his decision):', ...proposals.map(line => `- ${line}`)] : [],
     'Nightly predictions: read today’s operator messages and use `predictions` to score each prediction made yesterday for today as hit (with a short matching quote) or miss; never store full operator messages.',
     'Based on recurring asks, open PRs/issues and dates, predict the three things he is most likely to ask tomorrow. Record all three with status predicted, tomorrow’s date and brief evidence before acting.',
     'Then do only those inside existing authority, and record status done with the PR or commit link. Git, PRs, merges, restarts and publishing his own packages are free; never deploy, write production data, spend money, message third parties or change accounts.',

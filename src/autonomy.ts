@@ -48,6 +48,11 @@ const cache = new Map<string, { mtime: number; value: Contract }>();
 export function loadContract(dir: string): Contract | undefined {
   return parseWhenChanged(cache, join(dir, 'autonomy.json'), text => parseContract(JSON.parse(text)));
 }
+/** Clears cached contract reads so immediate rewrites in the same millisecond take effect right away. */
+export function invalidateContractCache(dir?: string): void {
+  if (dir) cache.delete(join(dir, 'autonomy.json'));
+  else cache.clear();
+}
 
 const glob = (pattern: string) => new RegExp(`^${pattern.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*')}$`);
 const strictness: Record<Level, number> = { free: 0, report: 1, ask: 2 };
