@@ -218,3 +218,20 @@ test('repeated rounds append history without re-reading the history file until t
     assert.equal(prodHealthReadBytes - before, 0, 'appendHistory must not re-read history.jsonl on every round');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('session start runs the first round within seconds, so a reload never leaves a stale health file to read', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const dir = mkdtempSync(join(tmpdir(), 'prod-health-first-'));
+  const hooks = new Map<string, () => void>();
+  let checks = 0;
+  try {
+    appendFileSync(join(dir, 'assistant.json'), '{}');
+    const health = new ProdHealth({ probes: [{ name: 'Local', check: () => { checks++; return { ok: true, ms: 0 }; } }], file: 'first-round.json' });
+    registerProdHealth({ on: (name: string, fn: () => void) => hooks.set(name, fn), registerCommand: () => {} } as never, () => ({ dir }), async () => undefined, () => undefined,
+      [{ health, channel: null, wakes: false }], 300_000, () => undefined);
+    hooks.get('session_start')!();
+    t.mock.timers.tick(10_000);
+    for (let i = 0; i < 20 && !checks; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(checks, 1);
+  } finally { hooks.get('session_shutdown')?.(); rmSync(dir, { recursive: true, force: true }); }
+});
