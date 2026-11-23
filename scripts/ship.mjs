@@ -6,19 +6,21 @@
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { defaultManifestPath, readMetricFromFile, recordChange } from './change-manifest.mjs';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup';
 
 const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
 const SAFE_GH_ARG = /^[A-Za-z0-9._/,:=-]+$/;
+const SAFE_METRIC = /^[A-Za-z0-9._:/-]{1,120}$/;
 const EXIT = { queued: 0, merged: 0, synced: 0, pr_open: 0, pushed: 0, dry_run: 0, failed: 1, refused: 2, not_queued: 3, uncertain: 4 };
 const FORBIDDEN_HINT = {
   '--force': 'ship não força push', '-f': 'ship não força push', '--force-with-lease': 'ship não força push',
   '--no-verify': 'ship não pula hooks', '--admin': 'merge com --admin é decisão do operador',
 };
-const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--title "título da PR"] [--pr N] [--no-auto] [--subscriber RUN] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
+const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--title "título da PR"] [--pr N] [--no-auto] [--subscriber RUN] [--metric NOME (--before NUM | --metrics-file ARQ) [--direction lower|higher] [--manifest ARQ]] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
   --title TEXTO        título da PR (padrão: o assunto do commit, ou o nome da branch com vários commits)
   -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
@@ -28,6 +30,11 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --pr N               só enfileira o auto-merge da PR N (sem commit, push ou PR)
   --no-auto            abre a PR sem enfileirar o auto-merge
   --subscriber RUN     a PR é de um worker: o CI vermelho volta a ele (o gitwatch roteia pelo id)
+  --metric NOME        registra a mudança no manifesto local com a métrica-alvo (fora do controle de versão)
+  --before NUM         valor anterior da métrica-alvo (usado com --metric)
+  --metrics-file ARQ   lê o valor anterior da métrica-alvo de um JSON (usado com --metric)
+  --direction MODO     direção da métrica: lower (padrão) ou higher (inferida de --metrics-file quando disponível)
+  --manifest ARQ       caminho do JSON do manifesto (padrão: perfil ativo fora do git)
   --closes-verified    permite fixes/closes #N na descrição: a falha foi reproduzida e a reprodução passa
   --direct-main        envia a branch padrão direto, sem PR
   --branch NOME        estando na branch padrão, cria a branch NOME com as mudanças atuais e envia por ela
@@ -345,6 +352,31 @@ async function syncAfterMerge(opts, ctx) {
   return emit('synced', { branch: base, head, local_branch: del.code === 0 ? `deleted ${branch}` : `kept ${branch}`, detail: del.code === 0 ? undefined : firstLine(del.err), next: del.code === 0 ? undefined : `a branch ${branch} tem commits fora de ${base}: confira a PR antes de apagar` });
 }
 
+async function recordShippedManifest(opts, ctx, details) {
+  if (!opts.metric) return;
+  try {
+    const subject = (opts.title ?? opts.message ?? (await git(['log', '-1', '--format=%s'])).out.trim()) || details.branch;
+    const commit = ctx.commit ?? ((await git(['rev-parse', '--short', 'HEAD'])).out.trim() || undefined);
+    const targetPath = opts.manifest ?? defaultManifestPath();
+    const recorded = recordChange(targetPath, {
+      change: subject,
+      metric: opts.metric,
+      before: opts.before,
+      direction: opts.direction,
+      unit: opts.unit,
+      branch: details.branch,
+      commit,
+      pr: details.pr,
+      url: details.url,
+    });
+    ctx.manifest = 'recorded';
+    ctx.manifest_entry = recorded.entry.id;
+  } catch (error) {
+    ctx.manifest = 'failed';
+    ctx.manifest_error = firstLine(error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function shipBranch(opts, ctx) {
   const [branchR, headR, stagedR, originR] = await Promise.all([
     git(['symbolic-ref', '--quiet', '--short', 'HEAD']),
@@ -396,6 +428,7 @@ async function shipBranch(opts, ctx) {
       'commit',
       opts.directMain ? `push ${base}` : `push ${branch}`,
       !opts.directMain && (existingOpen ? `reusar PR ${existingOpen.number}` : 'abrir PR'),
+      opts.metric && `manifesto (${opts.metric}=${opts.before})`,
       !opts.directMain && !opts.noAuto && 'auto-merge',
     ].filter(Boolean).join(' > ');
     return emit('dry_run', { ...ctx, base, pr: existingOpen?.number, plan });
@@ -461,22 +494,33 @@ async function shipBranch(opts, ctx) {
     ctx.push = /Everything up-to-date/i.test(`${p.err}${p.out}`) ? 'up_to_date' : 'sent';
   }
 
-  if (opts.directMain) return emit('pushed', { ...ctx, branch: target });
+  if (opts.directMain) {
+    await recordShippedManifest(opts, ctx, { branch: target });
+    return emit('pushed', { ...ctx, branch: target });
+  }
 
   const pr = existingOpen ?? await openPr(branch, base, opts.body, opts.title);
   ctx.pr = pr.number;
   ctx.url = pr.url;
+  await recordShippedManifest(opts, ctx, { branch, pr: pr.number, url: pr.url });
   if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
   return reportAuto(ctx, await autoMerge(pr.number, opts.wait));
 }
 
 
 function parseArgs(argv) {
-  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, title: undefined, body: undefined, closesVerified: false, help: false };
+  const opts = { paths: [], all: false, pr: undefined, noAuto: false, directMain: false, sync: false, branch: undefined, base: undefined, wait: 20, dryRun: false, message: undefined, title: undefined, body: undefined, closesVerified: false, metric: undefined, before: undefined, metricsFile: undefined, direction: undefined, unit: undefined, manifest: undefined, help: false };
   const valueOf = (flag, i) => {
     const value = argv[i + 1];
     if (value === undefined || value.startsWith('-')) throw refuse('missing_value', `${flag} precisa de um valor`);
     return value;
+  };
+  const numericValueOf = (flag, i) => {
+    const value = argv[i + 1];
+    if (value === undefined || (value.startsWith('-') && !/^-\d/.test(value))) throw refuse('missing_value', `${flag} precisa de um número`);
+    const parsed = Number(value.trim());
+    if (!value.trim() || !Number.isFinite(parsed)) throw refuse('invalid_value', `${flag} pede um número finito`);
+    return parsed;
   };
   const digits = (value, flag) => {
     if (!/^\d+$/.test(value)) throw refuse('invalid_value', `${flag} pede um número`);
@@ -503,6 +547,17 @@ function parseArgs(argv) {
       opts.subscriber = valueOf(arg, i); i++;
       if (!/^[A-Za-z0-9._:-]{1,64}$/.test(opts.subscriber)) throw refuse('invalid_value', `${arg} pede até 64 letras, dígitos, ponto, dois-pontos, sublinhado ou hífen`);
     }
+    else if (arg === '--metric') {
+      opts.metric = valueOf(arg, i); i++;
+      if (!SAFE_METRIC.test(opts.metric)) throw refuse('invalid_value', `${arg} pede um nome de métrica válido (sem espaços)`);
+    }
+    else if (arg === '--before') { opts.before = numericValueOf(arg, i); i++; }
+    else if (arg === '--metrics-file') { opts.metricsFile = resolve(valueOf(arg, i)); i++; }
+    else if (arg === '--direction') {
+      opts.direction = valueOf(arg, i); i++;
+      if (opts.direction !== 'lower' && opts.direction !== 'higher') throw refuse('invalid_value', '--direction aceita lower ou higher');
+    }
+    else if (arg === '--manifest') { opts.manifest = resolve(valueOf(arg, i)); i++; }
     else if (arg === '--closes-verified') opts.closesVerified = true;
     else if (arg === '--sync') opts.sync = true;
     else if (arg === '--direct-main') opts.directMain = true;
@@ -521,7 +576,11 @@ function parseArgs(argv) {
     else opts.paths.push(arg);
   }
   if (opts.help) return opts;
-  if (opts.sync && (opts.all || opts.paths.length || opts.pr !== undefined || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined)) {
+  const hasManifestOpts = opts.before !== undefined || opts.metricsFile !== undefined || opts.direction !== undefined || opts.manifest !== undefined;
+  if (!opts.metric && hasManifestOpts) {
+    throw refuse('conflicting_args', '--before, --metrics-file, --direction e --manifest exigem --metric NOME');
+  }
+  if (opts.sync && (opts.all || opts.paths.length || opts.pr !== undefined || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined || opts.metric !== undefined)) {
     throw refuse('conflicting_args', '--sync só sincroniza depois do merge (aceita --base e --dry-run)');
   }
   if (opts.all && opts.paths.length) throw refuse('conflicting_args', '--all e caminhos juntos: escolha um');
@@ -532,11 +591,31 @@ function parseArgs(argv) {
   if (opts.body !== undefined && !opts.closesVerified && CLOSING_KEYWORD.test(opts.body)) {
     throw refuse('closing_keyword', 'a descrição fecha uma issue sozinha (fixes/closes/resolves #N): uma correção ainda não reproduzida usa "refs #N"; com a reprodução vista passar, acrescente --closes-verified');
   }
-  if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined || opts.base !== undefined)) {
+  if (opts.pr !== undefined && (opts.all || opts.paths.length || opts.message !== undefined || opts.body !== undefined || opts.directMain || opts.noAuto || opts.branch !== undefined || opts.base !== undefined || opts.metric !== undefined)) {
     throw refuse('conflicting_args', '--pr só enfileira o auto-merge de uma PR existente');
   }
   if (opts.directMain && opts.branch !== undefined) throw refuse('conflicting_args', '--direct-main e --branch juntos: escolha um');
   if (opts.directMain && opts.noAuto) throw refuse('conflicting_args', '--direct-main não abre PR: --no-auto não se aplica');
+  if (opts.metric !== undefined) {
+    if (opts.before !== undefined && opts.metricsFile !== undefined) {
+      throw refuse('conflicting_args', '--before e --metrics-file juntos: escolha um');
+    }
+    if (opts.before === undefined && opts.metricsFile === undefined) {
+      throw refuse('before_required', '--metric precisa de --before NUM ou --metrics-file ARQ');
+    }
+    if (opts.metricsFile !== undefined) {
+      let sample;
+      try { sample = readMetricFromFile(opts.metricsFile, opts.metric); } catch (error) {
+        throw refuse('metric_unavailable', error instanceof Error ? error.message : String(error));
+      }
+      opts.before = sample.value;
+      opts.unit = sample.unit;
+      if (opts.direction === undefined && sample.lowerIsBetter !== undefined) {
+        opts.direction = sample.lowerIsBetter ? 'lower' : 'higher';
+      }
+    }
+    opts.direction ??= 'lower';
+  }
   return opts;
 }
 
