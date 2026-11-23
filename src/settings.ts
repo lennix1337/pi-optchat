@@ -89,6 +89,9 @@ export const SETTINGS = {
   transcriptKeep: { kind: 'number', label: 'Chat kept in Pi', default: 400, min: 0, unit: 'messages',
     description: 'Once Pi holds more than twice this many messages, everything before the last ones leaves Pi\'s memory and the chat on screen, so a long session stays fast: heap, each request\'s copy of the list and a reload all grow with it. Nothing is lost: the session file and OptChat memory keep every message, and the model reads OptChat\'s own view, which this does not change. No model call. 0: off, Pi keeps everything.',
     applies: 'Applies when the chat next settles.' },
+  speculativeShadow: { kind: 'toggle', label: 'Speculative shadow', default: true,
+    description: 'During an idle heartbeat wake with spare worker quota, stage at most one buildable nightly prediction per day onto a local branch via a worker. Never pushes or merges.',
+    applies: 'Applies to the next idle wake.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

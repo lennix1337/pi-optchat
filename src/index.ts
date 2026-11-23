@@ -1,5 +1,6 @@
 import { ciBackToWorker, SUBSCRIBER_NOTICE_CHANNEL } from './ci-back-to-worker.ts';
 import { predictionsTool } from './predictions.ts';
+import { configuredShadowRepos, reconcileAcceptedShadow, shadowWakeNote, stageNextPrediction, workerRoutesForShadow } from './shadow-execution.ts';
 import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
@@ -572,6 +573,26 @@ export default function optchat(host: ExtensionAPI) {
         return createPatrol({ plan, dir: profile.dir, specialists: () => profile.crew.specialists(), runs: () => profile.children.runs(),
           spawn: (task, cwd) => profile.children.spawn([task], cwd), escalate: (project, line) => heartbeat?.escalate(project, line) });
       },
+      reconcileShadow: () => {
+        const config = own()?.config;
+        if (!config) return Promise.resolve();
+        return reconcileAcceptedShadow(profile.dir, { repos: configuredShadowRepos(config.shadowRepos, ctx.cwd) });
+      },
+      stageShadow: () => {
+        const config = own()?.config;
+        if (!config || config.speculativeShadow === false) return undefined;
+        const model = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
+        const state = readQuotaState(), blocks = heartbeat?.blocks() ?? {};
+        return stageNextPrediction({
+          dir: profile.dir,
+          enabled: config.speculativeShadow,
+          repos: configuredShadowRepos(config.shadowRepos, ctx.cwd),
+          routes: workerRoutesForShadow(config, model, state, blocks),
+          quotaState: state,
+          blocks,
+          published: choice => !!ctx.modelRegistry.find(choice.provider, choice.model),
+        }).staged;
+      },
       wake: (beat, radar, choice) => {
         wakeRetried = {}; clearWakeWorkers();
         const dream = briefDream(ctx);
@@ -579,8 +600,9 @@ export default function optchat(host: ExtensionAPI) {
         const note = beat.signals?.length ? crewWakeNote(profile.crew.missions(), [], [], beat.signals.map(signal => ({ ...signal, lastRun: runs[signal.project]?.id })))
           : profile.config.managerMode ? crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts()) : '';
         const instructions = profile.config.heartbeatInstructions;
+        const shadow = beat.staged ? shadowWakeNote(beat.staged) : undefined;
         const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, shadow) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))

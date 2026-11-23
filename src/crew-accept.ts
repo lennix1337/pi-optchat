@@ -6,6 +6,7 @@ import { prLine } from './accepted-pr.ts';
 import { closed, readCommitments, updateCommitment } from './commitments.ts';
 import { repoRoot, type Proposal } from './crew.ts';
 import type { RunInfo } from './runs.ts';
+import { acceptStagedBranch } from './shadow-execution.ts';
 
 /** What a worker's report carries after its own text, and what the manager's one-call acceptance does (see `acceptRun`). */
 
@@ -186,6 +187,7 @@ export async function acceptRun(deps: AcceptDeps, input: { runId: string; title:
   }
   const url = fields.url, found = url ? PR_URL.exec(url) : null, number = fields.pr ?? found?.[2];
   const ref = found && number ? `${found[1]}#${number}` : undefined;
+  if (status === 'merged') { try { acceptStagedBranch(deps.commitmentsDir, state.branch, url ?? ref); } catch {   } }
   const progress = progressOf(number ?? '?', status, fields.reason);
   let linked = 'no open commitment is linked to this run';
   try {

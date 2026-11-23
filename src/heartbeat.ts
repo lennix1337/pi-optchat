@@ -19,12 +19,15 @@ import { readCommitments } from './commitments.ts';
 import { divert, type Patrol } from './patrol-divert.ts';
 import { heapGrowth, heapGrowthLine, recordHeapSample, rssLine, type HeapSample } from './heap-trend.ts';
 import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type PreTriageResult, type Signal, type Triage } from './wake-signals.ts';
+import type { StagedEntry } from './predictions.ts';
 
 /** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
 export interface Beat {
   wake: boolean; text: string; model?: string; unchanged?: boolean;
   /** Set by a profile's wakeTriage: `signal` when projects have news (listed in `signals`), `build` when only the cadence woke it. */
   trigger?: 'signal' | 'build'; signals?: Signal[];
+  /** Speculative shadow prediction staged during this idle wake. */
+  staged?: StagedEntry;
 }
 
 
@@ -213,7 +216,7 @@ export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false,
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
-export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}) {
+export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}, shadow?: string) {
   const opening = task
     ? `A cheap check (${model}) woke you and suggests: ${task}
 The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first; it is a candidate, not a selection or permission.`
@@ -222,7 +225,7 @@ The check only wakes you; you do the work yourself, with your own judgment and t
   const backlog = queue?.item && `Work queue candidate: ${queue.path} is the operator's backlog, not a priority order. One open item is:
 ${queue.item}
 Read the backlog to inspect other open items before choosing, within the limits below. Mark an item \`- [x]\` only after delivery, or \`- [!]\` with a concrete blocker; not being selected is not a blocker. Never take an item marked \`- [!]\` or described as blocked. Do not drain the backlog automatically.`;
-  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}
+  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}${shadow ? `\n${shadow}\n` : ''}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
 Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance. ${instructions.delivery ?? DELIVERY_RULE}
 ${(instructions.brainstorm ?? BRAINSTORM_NOTE).replaceAll('{{councilScript}}', COUNCIL_SCRIPT)}
@@ -277,6 +280,10 @@ export interface HeartbeatDeps {
   heapMb?: () => number;
   /** The Pi process RSS in MB, sampled with the heap for the native-memory watch. Default: this process's rss. */
   rssMb?: () => number;
+  /** Reconciles any previously staged shadow branches that have since been merged. */
+  reconcileShadow?: () => Promise<unknown>;
+  /** Stages at most one buildable nightly prediction on an idle wake when worker quota allows. */
+  stageShadow?: () => StagedEntry | undefined;
   wake: (beat: Beat, radar?: string, choice?: ModelChoice) => void;
   note: (text: string) => void;
   setTimer: (run: () => void, ms: number) => unknown;
@@ -521,6 +528,11 @@ export class Heartbeat {
     await runProbes(this.deps.dir, this.deps.now());
     if (spoke()) return;
     if (this.deps.busy() !== undefined) { this.arm(); return; }
+    if (this.deps.reconcileShadow) {
+      await this.deps.reconcileShadow().catch(() => undefined);
+      if (spoke()) return;
+      if (this.deps.busy() !== undefined) { this.arm(); return; }
+    }
     const route = this.deps.route?.(this.blocks());
     if (route && !route.choice && route.until !== undefined) {
       const text = `quota: every route out until ${brasiliaTime(route.until)} (UTC-3)`;
@@ -590,7 +602,9 @@ export class Heartbeat {
     const digest = radarDigest(radar), last = this.saved().radarDigest;
     this.keep({ radarDigest: digest, ...seen });
     this.open = at;
-    this.deps.wake(digest !== undefined && digest === last && beat.trigger !== 'signal' ? { ...beat, unchanged: true } : beat, radar, route?.choice);
+    const staged = beat.trigger !== 'signal' ? this.deps.stageShadow?.() : undefined;
+    const finalBeat: Beat = { ...beat, ...(staged ? { staged } : {}), ...(digest !== undefined && digest === last && beat.trigger !== 'signal' ? { unchanged: true } : {}) };
+    this.deps.wake(finalBeat, radar, route?.choice);
   }
   /** What a wakeTriage tick decides: the beat (a signal wake, or the build wake once its cadence has run), or none for a quiet tick; and what the tick saw,
    * which is recorded only once the tick is settled (a wake started, or nothing to wake for), so a signal a full day's cap held back is still one next tick.

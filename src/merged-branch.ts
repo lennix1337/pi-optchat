@@ -16,8 +16,10 @@ const run: Runner = async (command, args, cwd) => {
 
 
 async function defaultRef(path: string, runner: Runner) {
-  const head = await runner('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], path);
-  if (head) return head;
+  try {
+    const head = await runner('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], path);
+    if (head) return head;
+  } catch {   }
   for (const name of ['main', 'master']) {
     try { if (await runner('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${name}`], path)) return `origin/${name}`; } catch {   }
   }
