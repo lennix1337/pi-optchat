@@ -110,7 +110,11 @@ test('loopback API: react, fetch, home and download go through the poster; bad s
     assert.equal((await post('/v1/slack/react', { channel: 'D0OWNER', ts: '1793000000.000100', name: 'eyes', remove: false })).status, 200);
     assert.equal((await post('/v1/slack/react', { channel: 'D0OWNER', ts: '1793000000.000100', name: 'eyes; drop' , remove: false })).status, 400);
     assert.deepEqual(await (await post('/v1/slack/fetch', { channel: 'C0OTHER', ts: '1793000000.123456', thread: '1793000000.123456' })).json(), { user: 'U0ALICE', text: 'oi', files: [] });
-    assert.equal((await post('/v1/slack/home', { text: 'livre' })).status, 200);
+    assert.equal((await post('/v1/slack/home', { text: 'livre', ci: 'none', production: { level: 'green', detail: '2/2 ok, p50 150 ms' } })).status, 200);
+    const published = JSON.stringify(slack.calls.at(-1)!.body);
+    assert.match(published, /🟢 CI \(sem PRs abertos\)/);
+    assert.match(published, /🟢 Produção \(2\/2 ok, p50 150 ms\)/);
+    assert.equal((await post('/v1/slack/home', { text: 'livre', ci: 'invalid' })).status, 400);
     const saved = await (await post('/v1/slack/download', { url: FILE.url_private_download, name: 'tela.png' })).json() as { path: string };
     assert.ok(existsSync(saved.path));
     assert.equal((await post('/v1/slack/download', { url: 'https://evil.example/a', name: 'a' })).status, 502);

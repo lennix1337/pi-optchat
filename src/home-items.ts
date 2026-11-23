@@ -14,7 +14,7 @@ export type CommitmentItem = { text: string; status: string; url?: string };
 /** A speculative shadow item staged on a local branch for the Home display. */
 export type StagedItem = { id: string; text: string; repo: string; branch: string; status: 'staged' | 'accepted' | 'dropped' };
 /** `jobs`: background shells running now; `agents`: subagents running now. Either one means the agent is not idle. */
-export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[]; workers?: import('./dashboard-model.ts').DashboardWorker[]; staged?: StagedItem[] };
+export type HomeWork = { prs: PrItem[]; prsKnown?: boolean; commitments: CommitmentItem[]; jobs: string[]; agents?: string[]; workers?: import('./dashboard-model.ts').DashboardWorker[]; staged?: StagedItem[] };
 export const NO_WORK: HomeWork = { prs: [], commitments: [], jobs: [], agents: [] };
 
 // external: Slack views impose section and view size limits.
@@ -54,7 +54,8 @@ export function commitmentItems(items: readonly Commitment[], now: number): Comm
 /** Everything the Home shows as work, read from the profile's files; `jobs` are the background shells running now. */
 export function readHomeWork(dir: string, jobs: readonly string[], now: number, agents: readonly string[] = []): HomeWork {
   const staged = readStaged(dir, { status: 'staged' }).map(s => ({ id: s.id, text: s.text, repo: s.repo, branch: s.branch, status: s.status }));
-  return { prs: readPrItems(dir), commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs], agents: [...agents], ...(staged.length ? { staged } : {}) };
+  const prs = readPrItems(dir);
+  return { prs, prsKnown: watchCache.get(join(dir, PRS))?.valid === true, commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs], agents: [...agents], ...(staged.length ? { staged } : {}) };
 }
 
 /** A worker or job as the Home lists it: what it is doing and for how long ("agy Neon: 3 candidatos · há 12 min"). */
@@ -162,7 +163,7 @@ export function stillWaiting<T extends { text: string; ask?: string }>(items: re
 }
 
 export let watchReadBytes = 0;
-const watchCache = new Map<string, { stamp: string; value: Record<string, PrSeen> }>();
+const watchCache = new Map<string, { stamp: string; value: Record<string, PrSeen>; valid: boolean }>();
 
 export function readWatch(dir: string): Record<string, PrSeen> {
   const file = join(dir, PRS);
@@ -170,9 +171,13 @@ export function readWatch(dir: string): Record<string, PrSeen> {
   try { const s = statSync(file); stamp = `${s.size}:${s.mtimeMs}`; } catch { watchCache.delete(file); return {}; }
   const hit = watchCache.get(file);
   if (hit?.stamp === stamp) return hit.value;
-  let value: Record<string, PrSeen> = {};
-  try { const raw = readFileSync(file, 'utf8'); watchReadBytes += Buffer.byteLength(raw); value = JSON.parse(raw) ?? {}; } catch { value = {}; }
+  let value: Record<string, PrSeen> = {}, valid = false;
+  try {
+    const raw = readFileSync(file, 'utf8'); watchReadBytes += Buffer.byteLength(raw);
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) { value = parsed; valid = true; }
+  } catch { valid = false; }
   if (watchCache.size >= 16) watchCache.delete(watchCache.keys().next().value!);
-  watchCache.set(file, { stamp, value });
+  watchCache.set(file, { stamp, value, valid });
   return value;
 }
