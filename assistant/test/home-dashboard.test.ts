@@ -30,6 +30,21 @@ test('Home limita blocos mesmo com muitas escolhas e trabalhos', () => {
   assert.match(JSON.stringify(blocks), /Precisa de você/);
 });
 
+test('Home preserva PRs e alertas e não repete a pergunta com botões', () => {
+  const text = '*Trabalhando*\n\n*Esperando você*\n• Autorizar atualização?\n\n🔀 *PRs abertas*\n• projeto #42: corrigir testes\n\n⚠️ Alerta importante';
+  const blocks = homeBlocks(text, { choices: [{ label: 'Autorizar atualização?', options: ['Sim', 'Não'] }], fold: 'less' }) as any[];
+  const sections = blocks.filter(b => b.type === 'section').map(b => b.text.text).join('\n');
+  assert.match(sections, /projeto #42: corrigir testes/);
+  assert.match(sections, /Alerta importante/);
+});
+
+test('Home não duplica a pergunta e distingue processo ativo de saúde', () => {
+  const blocks = homeBlocks('*Esperando você*\n• Autorizar atualização?', { choices: [{ label: 'Autorizar atualização?', options: ['Sim', 'Não'] }] }) as any[];
+  const sections = blocks.filter(b => b.type === 'section').map(b => b.text.text).join('\n');
+  assert.equal(sections.split('Autorizar atualização?').length - 1, 1);
+  assert.match(sections, /Pi \(processo ativo\)/);
+});
+
 async function publishGraph(dotPath: string) {
   const graph = { nodes: [{ id: 'session', label: 'Sessão' }], edges: [] };
   const calls: { url: string; body: any }[] = [];

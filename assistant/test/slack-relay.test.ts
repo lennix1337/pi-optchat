@@ -468,7 +468,7 @@ test('HTTP: the Home splits a long text into sections, puts each item\'s answers
     const answers = blocks.find(b => b.type === 'actions' && b.elements!.some(e => e.action_id?.startsWith('optchat_home_choice_')))!;
     assert.deepEqual(answers.elements!.map(e => [e.text.text, e.value]), [['chegou', 'Sobre "Resumo das 07:00": chegou'], ['não chegou', 'Sobre "Resumo das 07:00": não chegou']]);
     assert.ok(blocks.at(-1)!.elements!.some(e => e.action_id === 'optchat_home_more'), 'Ver tudo with the main buttons');
-    assert.ok(!JSON.stringify(blocks).includes('linha 79'), 'unrelated long details are omitted');
+    assert.ok(JSON.stringify(blocks).includes('linha 79'), 'remaining details are preserved');
     const two = { text: 'x', choices: [{ label: 'um dois três quatro cinco seis sete oito nove dez', options: ['a'] }, { label: 'outra', options: ['b'] }] };
     assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(two) })).status, 200);
     const captions = (slack.calls.at(-1).body.view as { blocks: Block[] }).blocks.filter(b => b.type === 'section').map(b => b.text?.text);

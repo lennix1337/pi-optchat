@@ -178,23 +178,19 @@ export type HomeOptions = { working?: boolean; approval?: string; choices?: Home
 
 const homeEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/** Render only the actionable and current information from the existing Home payload. */
-export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
-  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label.slice(0, 75) }, ...extra });
-  const section = (value: string) => ({ type: 'section', text: { type: 'mrkdwn', text: value.slice(0, SECTION_MAX) || ' ' } });
-  const header = (value: string) => ({ type: 'header', text: { type: 'plain_text', text: value } });
+const homeSection = (value: string) => ({ type: 'section', text: { type: 'mrkdwn', text: value.slice(0, SECTION_MAX) || ' ' } });
+const homeHeader = (value: string) => ({ type: 'header', text: { type: 'plain_text', text: value } });
+const WAITING = /\*Esperando você\*\n([\s\S]*?)(?=\n\n|$)/;
+const QUOTA = /🔋 \*Cota\* \(cache\):\n([\s\S]*?)(?=\n_|\n\n|$)/;
+
+function statusLine(text: string): string {
   const ci = /checks vermelhos/i.test(text) ? '🔴' : /checks pendentes|sem checks|mais \d+ \(toque/i.test(text) ? '🟡' : /checks verdes/i.test(text) ? '🟢' : '🟡';
-  const waiting = /\*Esperando você\*\n([\s\S]*?)(?:\n\n|$)/.exec(text)?.[1]?.trim();
-  const blocks: unknown[] = [header('OptChat · Painel'), section(`🟢 Pi · ${ci} CI · 🟡 Produção (sem leitura)`), header('Precisa de você')];
-  if (waiting) blocks.push(section(waiting));
-  if (options.approval) blocks.push({ type: 'actions', elements: [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] });
-  for (const [i, choice] of (options.choices ?? []).slice(0, 3).entries()) {
-    blocks.push(section(homeEscape(choice.label.slice(0, 200))));
-    blocks.push({ type: 'actions', elements: choice.options.slice(0, 5).map((option, j) => button(HOME_CHOICE, option, { action_id: `${HOME_CHOICE}_${i}_${j}`, value: `Sobre "${choice.label}": ${option}`.slice(0, 2000) })) });
-  }
-  if (!waiting && !options.approval && !options.choices?.length) blocks.push(section('Nada esperando você'));
-  blocks.push(header('Rodando agora'));
-  for (const line of (options.team ?? []).slice(0, 30)) {
+  return `🟢 Pi (processo ativo) · ${ci} CI · 🟡 Produção (sem leitura)`;
+}
+
+function runningBlocks(team: string[] | undefined): unknown[] {
+  const blocks: unknown[] = [homeHeader('Rodando agora')];
+  for (const line of (team ?? []).slice(0, 30)) {
     const parts = line.split(' · ');
     const elapsed = parts.length > 1 && /^há /.test(parts.at(-1)!) ? parts.pop()! : '';
     const kind = parts.shift() ?? '';
@@ -202,25 +198,61 @@ export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
     let label = parts.join(' · ') || kind;
     label = /you are a subagent/i.test(label) ? 'Trabalho em andamento' : label.replace(/\s+/g, ' ').trim();
     label = label.length > 60 ? `${label.slice(0, 59)}…` : label;
-    blocks.push(section(`*${homeEscape(label || 'Trabalho em andamento')}*\n${homeEscape([elapsed, kind, model].filter(Boolean).join(' · '))}`));
+    blocks.push(homeSection(`*${homeEscape(label || 'Trabalho em andamento')}*\n${homeEscape([elapsed, kind, model].filter(Boolean).join(' · '))}`));
   }
-  if (!options.team?.length) blocks.push(section('Nenhum worker rodando.'));
-  const quota = /🔋 \*Cota\* \(cache\):\n([\s\S]*?)(?:\n_|\n\n|$)/.exec(text)?.[1];
-  if (quota) {
-    blocks.push(header('Cota · 7 dias'));
-    for (const line of quota.split('\n').slice(0, 30)) {
-      const seven = /7d (\d+)%/.exec(line);
-      if (seven) {
-        const used = Math.max(0, Math.min(100, Number(seven[1]))), count = Math.round(used / 10);
-        const name = line.replace(/^•\s*/, '').split(/`|5h |7d /)[0]!.trim();
-        blocks.push(section(`${homeEscape(name)}  \`${'▰'.repeat(count)}${'▱'.repeat(10-count)}\` ${used}%`));
-      } else blocks.push(section(homeEscape(line.slice(0, 200))));
+  if (!team?.length) blocks.push(homeSection('Nenhum worker rodando.'));
+  return blocks;
+}
+
+function quotaBlocks(text: string): unknown[] {
+  const quota = QUOTA.exec(text)?.[1];
+  if (!quota) return [];
+  const blocks: unknown[] = [homeHeader('Cota · 7 dias')];
+  for (const line of quota.split('\n').slice(0, 30)) {
+    const seven = /7d (\d+)%/.exec(line);
+    if (seven) {
+      const used = Math.max(0, Math.min(100, Number(seven[1]))), count = Math.round(used / 10);
+      const name = line.replace(/^•\s*/, '').split(/`|5h |7d /)[0]!.trim();
+      blocks.push(homeSection(`${homeEscape(name)}  \`${'▰'.repeat(count)}${'▱'.repeat(10-count)}\` ${used}%`));
+    } else blocks.push(homeSection(homeEscape(line.slice(0, 200))));
+  }
+  return blocks;
+}
+
+function remainingBlocks(text: string): unknown[] {
+  const remaining = text.replace(WAITING, '').replace(QUOTA, '').trim();
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of remaining.split('\n')) {
+    let rest = /you are a subagent/i.test(line) ? '• Trabalho em andamento' : line;
+    while (rest.length > SECTION_MAX) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(rest.slice(0, SECTION_MAX)); rest = rest.slice(SECTION_MAX);
     }
+    const next = current ? `${current}\n${rest}` : rest;
+    if (next.length > SECTION_MAX) { chunks.push(current); current = rest; } else current = next;
   }
+  if (current.trim()) chunks.push(current);
+  return chunks.map(homeSection);
+}
+
+/** The existing Home payload, arranged around actions and current work. */
+export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
+  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label.slice(0, 75) }, ...extra });
+  const waiting = WAITING.exec(text)?.[1]?.trim();
+  const blocks: unknown[] = [homeHeader('OptChat · Painel'), homeSection(statusLine(text)), homeHeader('Precisa de você')];
+  if (waiting) blocks.push(homeSection(waiting));
+  if (options.approval) blocks.push({ type: 'actions', elements: [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] });
+  for (const [i, choice] of (options.choices ?? []).slice(0, 3).entries()) {
+    if (!waiting?.split('\n').some(line => line.replace(/^\s*•\s*/, '').trim() === choice.label.trim())) blocks.push(homeSection(homeEscape(choice.label.slice(0, 200))));
+    blocks.push({ type: 'actions', elements: choice.options.slice(0, 5).map((option, j) => button(HOME_CHOICE, option, { action_id: `${HOME_CHOICE}_${i}_${j}`, value: `Sobre "${choice.label}": ${option}`.slice(0, 2000) })) });
+  }
+  if (!waiting && !options.approval && !options.choices?.length) blocks.push(homeSection('Nada esperando você'));
+  blocks.push(...runningBlocks(options.team), ...remainingBlocks(text), ...quotaBlocks(text));
   blocks.push(...settingBlocks(options.settings));
   const actions = [button('optchat_home_status', 'Status agora'), ...options.fold === 'more' ? [button('optchat_home_more', 'Ver tudo')] : options.fold === 'less' ? [button('optchat_home_less', 'Ver menos')] : [], ...options.working ? [button('optchat_home_stop', 'Parar', { style: 'danger', confirm: { title: { type: 'plain_text', text: 'Parar o trabalho?' }, text: { type: 'plain_text', text: 'Interrompe o que estou fazendo agora, como Esc no terminal.' }, confirm: { type: 'plain_text', text: 'Parar' }, deny: { type: 'plain_text', text: 'Continuar' } } })] : []];
   blocks.push({ type: 'actions', elements: actions });
-  if (options.imageFile) blocks.push(header('Equipe'), { type: 'image', slack_file: { id: options.imageFile }, alt_text: 'Diagrama dos trabalhos em andamento' });
+  if (options.imageFile) blocks.push(homeHeader('Equipe'), { type: 'image', slack_file: { id: options.imageFile }, alt_text: 'Diagrama dos trabalhos em andamento' });
   return blocks.slice(0, 100);
 }
 
