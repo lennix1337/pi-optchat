@@ -8,7 +8,7 @@ const nested = basename(tmpdir()).startsWith('optchat-test-');
 const root = mkdtempSync(join(process.platform === 'darwin' && !nested ? '/tmp' : tmpdir(), 'optchat-test-'));
 for (const name of ['TMPDIR', 'TEMP']) process.env[name] = root;
 // external: Git Bash shares the /tmp mount chosen by the first running shell; Node tmpdir reads TEMP.
-process.env.TMP = nested && process.env.TMP ? process.env.TMP : root;
+process.env.TMP = process.env.TMP || root;
 // external: Node os.homedir reads HOME on POSIX and USERPROFILE on Windows.
 for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR']) process.env[name] = mkdtempSync(join(root, `optchat-${name.toLowerCase()}-`));
 
