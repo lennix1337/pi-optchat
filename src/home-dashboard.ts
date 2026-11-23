@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { dashboard } from './dashboard-model.ts';
+import type { HomeProduction } from '../assistant/src/channels/slack-relay.ts';
 import { runningItem, type HomeWork } from './home-items.ts';
 
 export function shellTarget(label: string, command: string): { repo: string; pr?: number } | undefined {
@@ -34,6 +37,31 @@ export function homeGraph(work: HomeWork, state: string): import('../assistant/s
   return { nodes, edges };
 }
 
+export function homeProduction(dir: string, now: number): HomeProduction {
+  let content: string;
+  try { content = readFileSync(join(dir, 'prod-health.history.jsonl'), 'utf8'); }
+  catch { return { level: 'unknown', detail: 'sem leitura' }; }
+  const rows: { at: number; probe: string; ms: number; ok: boolean }[] = [];
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      if (!row || typeof row.at !== 'number' || !Number.isFinite(row.at) || typeof row.probe !== 'string' || !row.probe.length || typeof row.ms !== 'number' || !Number.isFinite(row.ms) || typeof row.ok !== 'boolean') return { level: 'unknown', detail: 'sem leitura' };
+      rows.push(row);
+    } catch { return { level: 'unknown', detail: 'sem leitura' }; }
+  }
+  if (!rows.length) return { level: 'unknown', detail: 'sem leitura' };
+  const latest = Math.max(...rows.map(row => row.at));
+  const age = Math.max(0, Math.floor((now - latest) / 60_000));
+  if (now - latest > 15 * 60_000 || latest > now + 60_000) return { level: 'unknown', detail: `sem leitura há ${age}min` };
+  const round = rows.filter(row => row.at === latest);
+  const failed = round.find(row => !row.ok);
+  if (failed) return { level: 'red', detail: `${failed.probe.slice(0, 100)} com falha` };
+  const times = round.map(row => row.ms).sort((a, b) => a - b), middle = Math.floor(times.length / 2);
+  const p50 = times.length % 2 ? times[middle]! : (times[middle - 1]! + times[middle]!) / 2;
+  return { level: 'green', detail: `${round.length}/${round.length} ok, p50 ${Math.round(p50)} ms` };
+}
+
 export function homeDashboard(work: HomeWork, waiting: string[], state: string, modelName: string | undefined, now: number) {
   const model = dashboard({ now, pi: { state, model: modelName }, workers: work.workers ?? [], prs: work.prs, waiting, deliveries: [] });
   const team = model.workers.slice(0, 30).map(w => {
@@ -41,5 +69,6 @@ export function homeDashboard(work: HomeWork, waiting: string[], state: string, 
     const target = w.target ? ` → ${w.target.repo.slice(0, 100)}${w.target.pr === undefined ? '' : `#${w.target.pr}`}` : '';
     return runningItem(label + target, w.started, now);
   });
-  return { team };
+  const ci = work.prsKnown === false ? 'unknown' : !work.prs.length ? 'none' : work.prs.some(pr => pr.checks === 'vermelhos') ? 'red' : work.prs.some(pr => pr.checks === 'pendentes') ? 'pending' : 'green';
+  return { team, ci } as const;
 }

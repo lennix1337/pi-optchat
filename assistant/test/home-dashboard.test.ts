@@ -15,7 +15,7 @@ test('Home shows a bounded team with escaped text and no image', () => {
 
 test('Home visualiza status, pendências e trabalhos sem expor prompts', () => {
   const text = '*Trabalhando*\n\n🔀 *PRs abertas* (1)\n• projeto · 🔴 checks vermelhos\n\n🔋 *Cota* (cache):\n• Conta A `▰▰▱▱▱▱▱▱▱▱` 7d 20%';
-  const blocks = homeBlocks(text, { working: true, team: ['code · modelo A · You are a subagent. Do not write memory pages. Analisar testes · há 3 min'] }) as any[];
+  const blocks = homeBlocks(text, { working: true, ci: 'red', team: ['code · modelo A · You are a subagent. Do not write memory pages. Analisar testes · há 3 min'] }) as any[];
   const rendered = JSON.stringify(blocks);
   assert.match(rendered, /🟢.*Pi.*🔴.*CI.*🟡.*produ[cç][aã]o/i);
   assert.match(rendered, /Nada esperando você/);

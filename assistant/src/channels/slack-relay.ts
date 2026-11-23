@@ -173,7 +173,8 @@ export type HomeChoice = { label: string; options: string[] };
 export const HOME_SETTINGS: Readonly<Record<string, 'modelo' | 'thinking'>> = { optchat_home_model: 'modelo', optchat_home_thinking: 'thinking' };
 export const SETTING_VALUE = /^[\w./:-]{1,80}$/;
 export type HomeSettings = { model?: string; models: { value: string; label: string }[]; level?: string; levels?: string[] };
-export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings; team?: string[]; graph?: HomeGraph; imageFile?: string };
+export type HomeProduction = { level: 'green' | 'red' | 'unknown'; detail: string };
+export type HomeOptions = { working?: boolean; approval?: string; choices?: HomeChoice[]; fold?: 'more' | 'less'; settings?: HomeSettings; team?: string[]; graph?: HomeGraph; imageFile?: string; ci?: 'none' | 'green' | 'red' | 'pending' | 'unknown'; production?: HomeProduction };
 
 
 const homeEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -183,9 +184,11 @@ const homeHeader = (value: string) => ({ type: 'header', text: { type: 'plain_te
 const WAITING = /\*Esperando você\*\n([\s\S]*?)(?=\n\n|$)/;
 const QUOTA = /🔋 \*Cota\* \(cache\):\n([\s\S]*?)(?=\n_|\n\n|$)/;
 
-function statusLine(text: string): string {
-  const ci = /checks vermelhos/i.test(text) ? '🔴' : /checks pendentes|sem checks|mais \d+ \(toque/i.test(text) ? '🟡' : /checks verdes/i.test(text) ? '🟢' : '🟡';
-  return `🟢 Pi (processo ativo) · ${ci} CI · 🟡 Produção (sem leitura)`;
+function statusLine(options: HomeOptions): string {
+  const ci = options.ci === 'red' ? '🔴 CI' : options.ci === 'pending' ? '🟡 CI' : options.ci === 'none' ? '🟢 CI (sem PRs abertos)' : options.ci === 'green' ? '🟢 CI' : '🟡 CI (sem leitura)';
+  const production = options.production ?? { level: 'unknown', detail: 'sem leitura' };
+  const color = production.level === 'green' ? '🟢' : production.level === 'red' ? '🔴' : '🟡';
+  return `🟢 Pi (processo ativo) · ${ci} · ${color} Produção (${homeEscape(production.detail)})`;
 }
 
 function runningBlocks(team: string[] | undefined): unknown[] {
@@ -240,7 +243,7 @@ function remainingBlocks(text: string): unknown[] {
 export function homeBlocks(text: string, options: HomeOptions = {}): unknown[] {
   const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: { type: 'plain_text', text: label.slice(0, 75) }, ...extra });
   const waiting = WAITING.exec(text)?.[1]?.trim();
-  const blocks: unknown[] = [homeHeader('OptChat · Painel'), homeSection(statusLine(text)), homeHeader('Precisa de você')];
+  const blocks: unknown[] = [homeHeader('OptChat · Painel'), homeSection(statusLine(options)), homeHeader('Precisa de você')];
   if (waiting) blocks.push(homeSection(waiting));
   if (options.approval) blocks.push({ type: 'actions', elements: [button('optchat_home_approve', 'Aprovar pendente', { style: 'primary', value: options.approval })] });
   for (const [i, choice] of (options.choices ?? []).slice(0, 3).entries()) {
