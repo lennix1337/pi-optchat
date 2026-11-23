@@ -179,6 +179,8 @@ function failure(messages: readonly AgentMessage[]): string {
 }
 
 const WORKER_PROGRESS = /^\[[\w-]+\] Message from subagent \(still running\)/;
+const SHELL_END = /^\[shell [\w-]+\]/;
+const SHELL_FOLLOW_UP_MS = 12 * 3_600_000;
 
 export class SlackBridge {
   private generation = 0;
@@ -243,6 +245,9 @@ export class SlackBridge {
   private workTimer: ReturnType<typeof setTimeout> | undefined;
   /** The wake whose run a provider error cut short: pi-multi-account resumes it with a user message that is no wake prompt. */
   private cutWake: { since: number; endedAt: number } | undefined;
+  /** The Slack conversation the last answered run came from: the end of a shell that run left running is news for it. */
+  private lastSlack: { origin: Origin; at: number } | undefined;
+  private shellEnd = false;
   private waiting: () => readonly (string | WaitingItem)[] = () => [];
   private homeText = '';
   /** The Home's Ver tudo: every PR, commitment and job instead of the first few; Ver menos folds them again. */
@@ -553,6 +558,7 @@ export class SlackBridge {
 
     if (text.startsWith(CLAIM_CHECK_PREFIX)) return;
     if (FROM_WHATSAPP.test(text)) this.whatsapp = true;
+    if (SHELL_END.test(text)) this.shellEnd = true;
     this.progressOnly = (this.progressOnly ?? true) && !match && WORKER_PROGRESS.test(text);
     if (!match) {
 
@@ -607,8 +613,8 @@ export class SlackBridge {
 
   /** `quiet`: a wake that delivered nothing (heartbeat-report silentWake): its effects reach the wake log, its text reaches nobody; an `unverified` warning still does. */
   async runEnded(messages: readonly AgentMessage[], unverified?: string, quiet = false): Promise<void> {
-    const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp, progressOnly = this.progressOnly === true;
-    this.progressOnly = undefined;
+    const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp, progressOnly = this.progressOnly === true, shellEnd = this.shellEnd;
+    this.progressOnly = undefined; this.shellEnd = false;
     this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
     clearTimeout(this.workTimer); this.workTimer = undefined;
@@ -620,11 +626,14 @@ export class SlackBridge {
     const last = hushed ? '' : unverified ? `${unverified}${finalText(messages) ? `\n\n${finalText(messages)}` : ''}` : finalText(messages);
     this.home(`\u2705 *Livre* desde ${clock(this.options.now())}${steps ? ` · último trabalho: ${steps} passo${steps === 1 ? '' : 's'}` : ''}${last ? `\n\u00daltima resposta: ${replyLead(last)}` : ''}`);
     if (answering) {
+      this.lastSlack = { origin: { ...answering, threaded: false }, at: this.options.now() };
 
       if (last && last === delivered) return;
       await this.answer(answering, last || failure(messages) || EMPTY_RUN, true);
       return;
     }
+    const followUp = this.lastSlack && this.options.now() - this.lastSlack.at <= SHELL_FOLLOW_UP_MS ? this.lastSlack.origin : undefined;
+    if (!waking && shellEnd && !whatsapp && followUp && last) { await this.answer(followUp, last, false); return; }
     if (!waking) {
       const text = whatsapp || !this.options.everyAnswer?.() ? '' : progressOnly ? failure(messages) : last || failure(messages);
       if (text) try { await this.publish(text, null, null); this.answered(null); }
