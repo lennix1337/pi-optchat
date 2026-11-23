@@ -108,11 +108,8 @@ test('night-shift digest lists only last night log entries, capped at 5 lines, a
       digestAt: '08:30',
     };
 
-    // Two nights ago (should be excluded)
     recordNightShiftAttempt(dir, { item: 'acme/alpha#10: old issue', branch: 'ns/10', prUrl: 'https://github.com/acme/alpha/pull/10' }, at(9, 2, 0));
-    // Yesterday afternoon (outside window, should be excluded)
     recordNightShiftAttempt(dir, { item: 'acme/alpha#11: daytime', branch: 'ns/11', reason: 'outside window' }, at(9, 15, 0));
-    // Last night (should be included)
     recordNightShiftAttempt(dir, { item: 'acme/alpha#21: null pointer', branch: 'ns/21', prUrl: 'https://github.com/acme/alpha/pull/21' }, at(10, 1, 30));
     recordNightShiftAttempt(dir, { item: 'sentry:ALPHA-7', branch: 'ns/alpha-7', reason: 'could not reproduce locally' }, at(10, 2, 45));
     recordNightShiftAttempt(dir, { item: 'acme/alpha#22: timeout', branch: 'ns/22', prUrl: 'https://github.com/acme/alpha/pull/22' }, at(10, 3, 15));
@@ -136,7 +133,6 @@ test('night-shift digest lists only last night log entries, capped at 5 lines, a
     assert.match(summary, /\*Turno da madrugada\*/);
     assert.match(summary, /https:\/\/github\.com\/acme\/alpha\/pull\/21/);
 
-    // DailySummary respects digestAt when nightShift is enabled
     const posted: string[] = [];
     const prs = new PrWatch(() => ({ dir, name: 'fixture' }), async () => {});
     const dailyEarly = new DailySummary(
