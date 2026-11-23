@@ -415,7 +415,7 @@ function listText(dir: string, all: boolean, now: number) {
 
 type Owner = { dir: string; issueAliases?: Record<string, string>; sourceExists(id: string): boolean; latestSource?(): string | undefined };
 
-export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}) {
+export function commitmentsTool(owner: () => Owner, onProgress: () => void = () => {}, onChange: () => void = () => {}) {
   return {
     name: 'commitments', label: 'Commitments',
     description: 'Promises: source is a message id or latest; done needs evidence. Attach a read-only probe to each commitment that verifies its own effect. links: prs owner/repo#N; all includes closed; project "" and choices [] clear.',
@@ -432,6 +432,7 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
         if (!source || !sourceExists(source)) throw new Error(`add needs source: the exact memory message id the commitment comes from, or "latest"${latest ? ` (now ${latest})` : ''}`);
         const item = addCommitment(dir, { ...args, text: args.text, source }, now);
         onProgress();
+        onChange();
         return result(`Added ${describe(item, now)}`);
       }
       if (!args.id) throw new Error('update needs id');
@@ -440,13 +441,14 @@ export function commitmentsTool(owner: () => Owner, onProgress: () => void = () 
       if (refusal) throw new Error(refusal);
       const item = updateCommitment(dir, { ...args, id: args.id }, now);
       if (args.progress || args.evidence || args.status) onProgress();
+      onChange();
       return result(`Updated ${describe(item, now)}`);
     },
   };
 }
 
 /** Registers the tool and the presence nudges of a running turn. */
-export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undefined, now: () => number = Date.now) {
+export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undefined, now: () => number = Date.now, onChange: () => void = () => {}) {
   const presence = new Presence();
   const issues = new IssueStateCache(ghIssueState, Date.now, (key, error) => logBackgroundFailure(owner()?.dir, `commitment issues ${key}`, error), () => owner()?.issueAliases ?? {});
   const issueText = (c: Commitment) => `${c.text} ${c.next ?? ''}`;
@@ -455,7 +457,7 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
     if (!o) throw new Error('Open an OptChat profile first.');
     return o;
   };
-  pi.registerTool(commitmentsTool(required, () => presence.progressed(now())));
+  pi.registerTool(commitmentsTool(required, () => presence.progressed(now()), onChange));
   /** An event the extension saw: linked commitments get their progress line (no model call), and the running turn counts it as progress. */
   const linked = (event: LinkEvent) => {
     const dir = owner()?.dir;
@@ -464,6 +466,7 @@ export function registerCommitments(pi: ExtensionAPI, owner: () => Owner | undef
       const changed = recordLinkEvent(dir, event, now());
       if (!changed.length) return;
       presence.progressed(now());
+      onChange();
 
       const note = linkNote(event);
       for (const c of note?.ends ? changed.filter(c => c.links?.next) : [])

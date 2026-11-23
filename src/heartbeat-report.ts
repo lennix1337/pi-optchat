@@ -1,4 +1,5 @@
 import { acceptedPr } from './accepted-pr.ts';
+import { ladderProposalLines } from './autonomy-ladder.ts';
 import { readHeartbeat, type WakeRecord, type WakeSummary } from './heartbeat.ts';
 import { addQueueItem, renderQueue } from './heartbeat-queue.ts';
 import { memoryShapedReply } from './wake-noise.ts';
@@ -82,7 +83,7 @@ export function silentWake(summary: WakeSummary): boolean {
   return !summary.commits.length || memoryShapedReply(summary.reply);
 }
 
-export interface ReportContext { now: number; cap: number; minutes: number;   wakes?: number[] }
+export interface ReportContext { now: number; cap: number; minutes: number; wakes?: number[]; proposals?: string[] }
 
 const DAY = 24 * 60 * 60_000, SHOWN_REPLY = 100;
 const clock = (at: number) => { const d = new Date(at); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
@@ -102,12 +103,12 @@ function wakeLine(wake: WakeRecord) {
 }
 
 /** Today's wakes (local calendar day), oldest first, and what is left of the rolling 24-hour wake budget. */
-export function renderReport(log: WakeRecord[], { now, cap, minutes, wakes }: ReportContext) {
+export function renderReport(log: WakeRecord[], { now, cap, minutes, wakes, proposals }: ReportContext) {
   const today = log.filter(wake => new Date(wake.at).toDateString() === new Date(now).toDateString());
   const todayWakes = today.filter(wake => wake.outcome !== 'dropped');
   const used = (wakes ?? log.filter(wake => wake.outcome !== 'dropped').map(wake => wake.at)).filter(at => now - at < DAY).length;
   const head = `${minutes > 0 ? `Heartbeat every ${minutes} min` : 'Heartbeat is off (see Heartbeat in /optchat settings)'}: ${todayWakes.length ? `${plural(todayWakes.length, 'wake')} today` : 'no wakes today'} · ${Math.max(0, cap - used)} of ${cap} wakes left in 24 h`;
-  return [head, ...today.flatMap(wakeLine)].join('\n');
+  return [head, ...today.flatMap(wakeLine), ...proposals?.length ? ['', ...proposals] : []].join('\n');
 }
 
 /** `/heartbeat [report | queue | add <text>]`: the text to show. */
@@ -115,6 +116,6 @@ export function heartbeatCommand(args: string, { dir, ...context }: ReportContex
   const text = args.trim(), add = /^add(?:\s+([^]*))?$/.exec(text);
   if (add) { addQueueItem(dir, add[1] ?? ''); return `Added to the heartbeat work queue: ${oneLine(add[1] ?? '')}`; }
   if (text === 'queue') return renderQueue(dir);
-  if (text === '' || text === 'report') { const saved = readHeartbeat(dir); return renderReport(saved.wakeLog, { ...context, wakes: saved.wakes }); }
+  if (text === '' || text === 'report') { const saved = readHeartbeat(dir); return renderReport(saved.wakeLog, { ...context, wakes: saved.wakes, proposals: context.proposals ?? ladderProposalLines(dir, context.now) }); }
   throw new Error('Usage: /heartbeat [report | queue | add <text>]');
 }

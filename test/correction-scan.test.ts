@@ -223,7 +223,7 @@ test('a pipe-status call the guard refused ("Not run:") is not a violation after
  try {
   writeFileSync(join(dir, 'session.jsonl'), [bad, refused].map(e => JSON.stringify(e)).join('\n'));
   const row = scanCorrections(dir, Date.parse('2026-11-19'), Date.parse('2026-11-21')).find(r => r.id === 'pipe-status')!;
-  assert.deepEqual([row.count, row.afterGuard], [0, 0]);
+  assert.deepEqual([row.count, row.afterGuard, row.caught], [0, 0, 1]);
  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

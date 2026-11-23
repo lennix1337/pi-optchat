@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { openCommitments, readCommitments, type Commitment } from './commitments.ts';
+import { readStaged } from './predictions.ts';
 import { PRS, type PrSeen } from './slack-reports.ts';
 
 /**
@@ -10,8 +11,10 @@ import { PRS, type PrSeen } from './slack-reports.ts';
  */
 export type PrItem = { repo: string; number: number; title: string; url: string; checks: 'verdes' | 'vermelhos' | 'pendentes' | 'sem checks' };
 export type CommitmentItem = { text: string; status: string; url?: string };
+/** A speculative shadow item staged on a local branch for the Home display. */
+export type StagedItem = { id: string; text: string; repo: string; branch: string; status: 'staged' | 'accepted' | 'dropped' };
 /** `jobs`: background shells running now; `agents`: subagents running now. Either one means the agent is not idle. */
-export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[]; workers?: import('./dashboard-model.ts').DashboardWorker[] };
+export type HomeWork = { prs: PrItem[]; commitments: CommitmentItem[]; jobs: string[]; agents?: string[]; workers?: import('./dashboard-model.ts').DashboardWorker[]; staged?: StagedItem[] };
 export const NO_WORK: HomeWork = { prs: [], commitments: [], jobs: [], agents: [] };
 
 // external: Slack views impose section and view size limits.
@@ -50,7 +53,8 @@ export function commitmentItems(items: readonly Commitment[], now: number): Comm
 
 /** Everything the Home shows as work, read from the profile's files; `jobs` are the background shells running now. */
 export function readHomeWork(dir: string, jobs: readonly string[], now: number, agents: readonly string[] = []): HomeWork {
-  return { prs: readPrItems(dir), commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs], agents: [...agents] };
+  const staged = readStaged(dir, { status: 'staged' }).map(s => ({ id: s.id, text: s.text, repo: s.repo, branch: s.branch, status: s.status }));
+  return { prs: readPrItems(dir), commitments: commitmentItems(readCommitments(dir), now), jobs: [...jobs], agents: [...agents], ...(staged.length ? { staged } : {}) };
 }
 
 /** A worker or job as the Home lists it: what it is doing and for how long ("agy Neon: 3 candidatos · há 12 min"). */
@@ -84,6 +88,7 @@ const CHECK_DOT: Record<PrItem['checks'], string> = { vermelhos: '\ud83d\udd34',
 const prLine = (p: PrItem) => `\u2022 <${p.url}|${escape(`${p.repo.split('/').pop()}#${p.number} ${headline(p.title)}`)}> \u00b7 ${CHECK_DOT[p.checks]} checks ${p.checks}`;
 const commitLine = (c: CommitmentItem) => `\u2022 ${c.url ? `<${c.url}|${escape(headline(c.text))}>` : escape(headline(c.text))} \u00b7 ${c.status}`;
 const jobLine = (j: string) => `\u2022 ${escape(clip(j, 120))}`;
+const stagedLine = (s: StagedItem) => `\u2022 ${escape(`${s.repo} (${s.branch}): ${headline(s.text)}`)}`;
 
 
 const EXPANDED = { limit: 30, chars: 3_000 };
@@ -110,6 +115,7 @@ export function renderWorkParts(work: HomeWork, expanded = false): { text: strin
     ...running.length ? [section(`\u2699\ufe0f *Rodando agora* (${running.length})`, running.map(jobLine), expanded)] : [],
     ...work.prs.length ? [section(`\ud83d\udd00 *PRs abertas* (${work.prs.length})`, work.prs.map(prLine), expanded)] : [],
     ...work.commitments.length ? [section(`\ud83d\udccc *Compromissos abertos* (${work.commitments.length})`, work.commitments.map(commitLine), expanded)] : [],
+    ...work.staged?.length ? [section(`\ud83c\udf31 *Preparado em branch* (${work.staged.length})`, work.staged.map(stagedLine), expanded)] : [],
   ];
   return { text: parts.map(p => p.text).join('\n\n'), hidden: parts.reduce((n, p) => n + p.hidden, 0) };
 }

@@ -1,10 +1,10 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 /** What happened to one execution, in words the operator can read in the log. */
 export type ExecClass = 'ok' | 'exit_nonzero' | 'timeout' | 'not_found' | 'refused' | 'aborted' | 'network' | 'rate_limited' | 'error';
-export type ExecEntry = { at: string; source: 'tool' | 'background'; name: string; target?: string; class: ExecClass; ms?: number; code?: number; detail?: string };
+export type ExecEntry = { at: string; source: 'tool' | 'background'; name: string; target?: string; class: ExecClass; ms?: number; code?: number; detail?: string; run?: string };
 
 export const EXEC_LOG = 'exec-log.jsonl';
 /** One live file plus one rotated `.1`: at most about 2 MB on disk. */
@@ -63,6 +63,25 @@ export function appendExecLog(dir: string, entry: ExecEntry, maxBytes = EXEC_LOG
   } catch {   }
 }
 
+/** Reads the rotated and live exec-log files in chronological order, skipping malformed lines. */
+export function readExecLog(dir: string): ExecEntry[] {
+  const rows: ExecEntry[] = [];
+  for (const name of [`${EXEC_LOG}.1`, EXEC_LOG]) {
+    const file = join(dir, name);
+    if (!existsSync(file)) continue;
+    let text: string;
+    try { text = readFileSync(file, 'utf8'); } catch { continue; }
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as ExecEntry;
+        if (parsed && typeof parsed.at === 'string' && typeof parsed.name === 'string') rows.push(parsed);
+      } catch { }
+    }
+  }
+  return rows;
+}
+
 const resultText = (result: unknown): string => {
   const content = (result as { content?: { type: string; text?: string }[] } | undefined)?.content;
   return Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n') : typeof result === 'string' ? result : '';
@@ -78,6 +97,9 @@ const targetOf = (args: unknown): { raw: string; target: string } | undefined =>
 /** One entry per tool call: everything the agent runs, its outcome class and, on failure, the reason. */
 export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined) {
   const started = new Map<string, { raw: string; target: string } | undefined>();
+  let runSeq = 0;
+  let currentRun: string | undefined;
+  pi.on('agent_start', () => { currentRun = `${Date.now().toString(36)}-${++runSeq}`; });
   pi.on('tool_execution_start', event => { started.set(event.toolCallId, targetOf(event.args)); });
   pi.on('tool_execution_end', event => {
     const where = dir(); const call = started.get(event.toolCallId), target = call?.target, raw = call?.raw; started.delete(event.toolCallId);
@@ -89,9 +111,9 @@ export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined)
     const kind = classify(!answered && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
       ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
-      ...(kind === 'ok' ? {} : { detail: clipTail(text, 300) }) });
+      ...(kind === 'ok' ? {} : { detail: clipTail(text, 300) }), ...(currentRun ? { run: currentRun } : {}) });
   });
-  pi.on('agent_settled', () => started.clear());
+  pi.on('agent_settled', () => { started.clear(); currentRun = undefined; });
 }
 
 /** Background jobs (PR watch, summaries): logs the failure with the program's own reason, e.g. gh's stderr. */

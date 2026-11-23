@@ -50,3 +50,80 @@ export function replayAsks(
   options: { contract: Contract; contractDir?: string; repo?: Repo },
 ): ReplayedAsk[];
 export function summarizeReplay(replayed: ReplayedAsk[]): ReplaySummary;
+
+export interface RuleReplayEntry {
+  caught: number;
+  detected: number;
+  falseFlags: number;
+}
+
+export interface RuleReplayBaseline {
+  version: 1;
+  updatedAt: string;
+  windowDays: number;
+  rules: Record<string, RuleReplayEntry>;
+}
+
+export interface RuleReplayRegression {
+  id: string;
+  kind: 'caught-dropped' | 'detected-dropped' | 'false-flags-rose';
+  baseline: number;
+  current: number;
+}
+
+export interface RuleReplayImprovement {
+  id: string;
+  kind: 'caught-rose' | 'detected-rose' | 'false-flags-dropped';
+  baseline: number;
+  current: number;
+}
+
+export interface RuleReplayComparison {
+  passed: boolean;
+  hasBaseline: boolean;
+  sessionsMissing: boolean;
+  windowDays: number;
+  rules: Record<string, RuleReplayEntry>;
+  regressions: RuleReplayRegression[];
+  improvements: RuleReplayImprovement[];
+}
+
+export interface RunRuleReplayOptions {
+  sessionsDir?: string;
+  goodSample?: string;
+  baselinePath?: string;
+  windowDays?: number;
+  now?: number;
+  update?: boolean;
+  scan?: (dir: string, since: number, until: number) => Array<{ id: string; count: number; afterGuard?: number; caught?: number; detected?: number }>;
+}
+
+export interface RunRuleReplayResult {
+  passed: boolean;
+  updated: boolean;
+  baselinePath: string;
+  sessionsMissing: boolean;
+  goodMissing: boolean;
+  comparison: RuleReplayComparison;
+}
+
+export const DEFAULT_WINDOW_DAYS: number;
+export const DEFAULT_GOOD_SAMPLE: string;
+export function defaultBaselinePath(root?: string): string;
+export function buildRuleSnapshot(
+  sessionRows: ReadonlyArray<{ id: string; count: number; caught?: number; detected?: number }>,
+  goodRows: ReadonlyArray<{ id: string; count: number; caught?: number; detected?: number }>,
+): Record<string, RuleReplayEntry>;
+export function readRuleBaseline(baselinePath: string): RuleReplayBaseline | undefined;
+export function writeRuleBaseline(
+  baselinePath: string,
+  rulesMap: Record<string, RuleReplayEntry>,
+  options?: { windowDays?: number; now?: number },
+): RuleReplayBaseline;
+export function compareRuleReplay(
+  current: Record<string, RuleReplayEntry>,
+  baseline: RuleReplayBaseline | undefined,
+  options?: { sessionsMissing?: boolean; windowDays?: number },
+): RuleReplayComparison;
+export function runRuleReplay(options?: RunRuleReplayOptions): RunRuleReplayResult;
+export function formatRuleReplay(result: RunRuleReplayResult): string;

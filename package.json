@@ -29,7 +29,8 @@
     "test:reliability": "tsx --import ./test/support.ts --test test/reliability-performance.test.ts test/operations.test.ts test/operation-diagnostics.test.ts test/output-context.test.ts test/performance-lazy.test.ts",
     "benchmark:reliability": "tsx test/reliability-benchmark.ts",
     "benchmark:summaries": "tsx test/summary-ab-benchmark.ts",
-    "bench:gate": "node --experimental-transform-types --no-warnings scripts/bench-gate.ts"
+    "bench:gate": "node --experimental-transform-types --no-warnings scripts/bench-gate.ts",
+    "replay": "node --experimental-transform-types --no-warnings scripts/gate-replay.mjs --rules"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.2.0",

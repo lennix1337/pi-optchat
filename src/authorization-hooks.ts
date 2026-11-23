@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, InputEventResult } from '@earendil-works/pi-coding-agent';
 import { EffectApprovals, touchesContract, type ApprovalMode, type PendingApproval, type Settled } from './authorization.ts';
-import { classifyEffectsAsync, describeDecision, logReported, type AsyncRepo, type Decision, type Effect } from './autonomy.ts';
+import { classifyEffectsAsync, describeDecision, logReported, type Action, type AsyncRepo, type Decision, type Effect } from './autonomy.ts';
+import { recordAutonomyOutcome } from './autonomy-ladder.ts';
 import { readProfileEffectPolicy } from './effect-policy.ts';
 import { judgeSelfEdit } from './autonomy-self-edit.ts';
 import { appendFileSync } from 'node:fs';
@@ -107,7 +108,10 @@ export function orderHint(action: string | undefined) {
 }
 
 
-async function contractVerdict({ dir: contractDir, repo, orderGrant, productionHosts }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): Promise<'run' | { note: string } | undefined> {
+type PendingEffect = { action: Action; targets: string[]; summary: string; rule?: string; notify?: (message: string, type: 'info' | 'warning') => void };
+type ContractVerdictResult = 'run' | { note: string; effect?: Effect; rule?: string } | undefined;
+
+async function contractVerdict({ dir: contractDir, repo, orderGrant, productionHosts }: ContractSource, pending: PendingApproval, call: { tool: string; input: unknown; cwd: string }, ctx: ExtensionContext): Promise<ContractVerdictResult> {
   if (touchesContract(call, contractDir())) {
     const self = judgeSelfEdit(contractDir(), call);
     if (self?.ok) {
@@ -127,8 +131,11 @@ async function contractVerdict({ dir: contractDir, repo, orderGrant, productionH
     decision = lifted ?? decision;
   }
   if (!decision) return undefined;
-  if (decision.level === 'ask') return { note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
-    : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ${orderHint(decision.effect?.action)}` };
+  if (decision.level === 'ask') return {
+    note: decision.problem ? `autonomy.json is unreadable (${decision.problem}), so every high-impact call waits for the operator. `
+      : `autonomy.json says this waits for the operator: ${describeDecision(decision)}. ${orderHint(decision.effect?.action)}`,
+    ...(!decision.problem && decision.effect ? { effect: decision.effect, rule: decision.rule?.note } : {}),
+  };
 
   if (decision.level === 'report' && dir && (decision.effect || pending.kind)) reportEffect(dir, decision, pending, ctx);
   return 'run';
@@ -137,10 +144,20 @@ async function contractVerdict({ dir: contractDir, repo, orderGrant, productionH
 
 function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
   const notes = new Map<string, string>();
+  const pendingEffects = new Map<string, PendingEffect>();
 
   const decide = async (pending: PendingApproval, call: { session: string; cwd: string; tool: string; input: unknown }, ctx: ExtensionContext) => {
     const verdict = await contractVerdict(contract, pending, call, ctx);
     if (verdict === 'run') { gate.approveByContract(call.session, pending.token); return undefined; }
+    if (verdict?.effect) {
+      pendingEffects.set(pending.token, {
+        action: verdict.effect.action,
+        targets: verdict.effect.targets,
+        summary: pending.summary,
+        ...(verdict.rule ? { rule: verdict.rule } : {}),
+        notify: (message, type) => ctx.ui.notify(message, type),
+      });
+    }
     return verdict ? verdict.note : '';
   };
   return {
@@ -154,7 +171,8 @@ function contractAdmission(gate: EffectApprovals, contract: ContractSource) {
       if (note) notes.set(pending.token, note);
       return { refusal, note };
     },
-    clear: () => notes.clear(),
+    take: (token: string) => { const entry = pendingEffects.get(token); pendingEffects.delete(token); return entry; },
+    clear: () => { notes.clear(); pendingEffects.clear(); },
   };
 }
 
@@ -206,10 +224,34 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     pi.on('tool_call', (event, ctx) => guard(event, ctx.cwd, ctx.sessionManager.getSessionId()));
     return;
   }
-  const gate = new EffectApprovals({ mode: mode ?? (env === 'risk' ? 'risk' : 'all'), contractDir, onSettled: (token, outcome) => onSettled?.(token, outcome) });
+  let admission: ReturnType<typeof contractAdmission> | undefined;
+  const gate = new EffectApprovals({
+    mode: mode ?? (env === 'risk' ? 'risk' : 'all'),
+    contractDir,
+    onSettled: (token, outcome) => {
+      const meta = admission?.take(token);
+      const dir = contractDir();
+      if (meta && dir && (outcome === 'approved' || outcome === 'denied')) {
+        try {
+          const result = recordAutonomyOutcome(dir, {
+            action: meta.action,
+            targets: meta.targets,
+            summary: meta.summary,
+            outcome,
+            rule: meta.rule,
+          });
+          if (result.demoted) meta.notify?.(`Auto-demoted ${meta.action} (${result.from} -> ${result.to}) in autonomy.json after operator denial.`, 'info');
+          else if (result.error) meta.notify?.(`Could not update autonomy.json on denial: ${result.error}`, 'warning');
+        } catch (error) {
+          meta.notify?.(`Could not record autonomy outcome: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+        }
+      }
+      onSettled?.(token, outcome);
+    },
+  });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
-  const admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant, productionHosts });
+  admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant, productionHosts });
   const phone = heldUntilRunEnds(gate, (pending, session) => onPending?.(pending, session, gate), holdMs);
   // external: Pi child SDK prompt and steer calls default to interactive.
   if (grant) pi.on('input', (event, ctx) => {

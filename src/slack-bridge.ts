@@ -232,6 +232,8 @@ export class SlackBridge {
     abort: () => boolean;
     /** When the heartbeat next checks for a wake, if armed. */
     nextWake: () => number | undefined;
+    /** Notifies listeners when an inbound operator message is recorded, so timers can adjust without polling. */
+    onInbound?: (channel: string | null, at: number) => void;
     /** A voice note he sent, as text (src/transcribe.ts). */
     transcribe: (path: string) => Promise<string> };
   /** First line of the App Home: what the agent is doing now. */
@@ -393,7 +395,9 @@ export class SlackBridge {
         this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel, ...(id ? { id, ts: m.ts } : {}) });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
-        this.measure(dir => recordInbound(dir, channel, m.text, this.options.now()));
+        const inboundAt = this.options.now();
+        this.measure(dir => recordInbound(dir, channel, m.text, inboundAt));
+        this.options.onInbound?.(channel, inboundAt);
         delivered++;
       }
       return delivered;
@@ -805,7 +809,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; onInbound?: (channel: string | null, at: number) => void } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
