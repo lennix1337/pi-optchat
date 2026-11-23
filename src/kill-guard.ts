@@ -27,8 +27,8 @@ export async function killRefusal(command: string, cwd = '/'): Promise<string | 
     if (name !== 'kill' && name !== 'pkill' && name !== 'killall') continue;
     if (name === 'kill' && args.length === 1 && ['-l', '-L', '--list', '--help'].includes(args[0])) continue;
     if (name === 'kill' && args[0] === '-0' && args.slice(1).every(arg => /^-?\d+$/.test(arg))) continue;
-    // Name matching and process groups can change between inspection and execution.
-    if (name !== 'kill') return refusal;
+    const targetsByNameRaceInspection = name !== 'kill';
+    if (targetsByNameRaceInspection) return refusal;
     const operands = [...args];
     if (/^-(?:\d+|[A-Za-z][A-Za-z0-9]*)$/.test(operands[0] ?? '') && !['-s', '-n'].includes(operands[0])) operands.shift();
     else if (['-s', '-n', '--signal'].includes(operands[0])) operands.splice(0, 2);
