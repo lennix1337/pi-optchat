@@ -29,15 +29,35 @@ test('heap report injects Linux native readers and accounts for native memory', 
   const report = await heapReport({}, {}, { platform: 'linux', readProc: path => { if (!(path in files)) throw new Error('ENOENT'); return files[path]; },
     memoryUsage: () => ({ rss: 100 * 1048576, heapTotal: 40 * 1048576, heapUsed: 30 * 1048576, external: 10 * 1048576, arrayBuffers: 5 * 1048576 }) });
   const native = report.native as { unaccountedMb: number; children: unknown[]; mappings: unknown[]; rssMb: number };
-  assert.equal(native.rssMb, 100); assert.equal(native.unaccountedMb, 45);
-  assert.equal((report.summary as { unaccountedMb: number }).unaccountedMb, 45);
+  assert.equal(native.rssMb, 100); assert.equal(native.unaccountedMb, 42);
+  assert.equal((report.summary as { unaccountedMb: number }).unaccountedMb, 42);
   assert.equal(native.mappings.length, 8);
   assert.deepEqual(native.children, [{ pid: 123, comm: 'worker', rssMb: 4 }]);
-  const floor = await heapReport({}, {}, { platform: 'win32', memoryUsage: () => ({ rss: 1, heapTotal: 2, heapUsed: 1, external: 3, arrayBuffers: 4 }) });
+  const floor = await heapReport({}, {}, { platform: 'linux', readProc: path => files[path], memoryUsage: () => ({ rss: 1, heapTotal: 2, heapUsed: 1, external: 3, arrayBuffers: 4 }) });
   assert.equal((floor.summary as { unaccountedMb: number }).unaccountedMb, 0);
+});
+
+test('native breakdown totals all heap and binary mappings without double-counting array buffers', async () => {
+  const big = Array.from({ length: 8 }, (_, i) => mapping(i + 1, '', 80 * 1024)).join('');
+  const maps = big + mapping(9, '[heap]', 72 * 1024) + mapping(10, '/fake/bin/node', 40 * 1024)
+    + mapping(11, '/fake/bin/node', 18 * 1024);
+  const files: Record<string, string> = { '/proc/self/smaps_rollup': rollup, '/proc/self/smaps': maps,
+    [`/proc/self/task/${process.pid}/children`]: '' };
+  const report = await heapReport({}, {}, { platform: 'linux', executableName: 'node', readProc: path => files[path],
+    memoryUsage: () => ({ rss: 580 * 1048576, heapTotal: 300 * 1048576, heapUsed: 276 * 1048576, external: 100 * 1048576, arrayBuffers: 80 * 1048576 }) });
+  const native = report.native as { breakdown: unknown; mappings: { kind: string }[]; unaccountedMb: number };
+  assert.equal(native.mappings.length, 8);
+  assert.ok(native.mappings.every(item => item.kind === 'heap-anon'));
+  assert.deepEqual(native.breakdown, { v8HeapMb: 300, mallocHeapMb: 72, binaryMb: 58, externalMb: 100, residualMb: 50 });
+  assert.equal(native.unaccountedMb, 50);
+  assert.equal((report.summary as { unaccountedMb: number }).unaccountedMb, 50);
 });
 
 test('native is null outside Linux or when proc is unavailable', async () => {
   const readProc = () => { throw new Error('ENOENT'); };
-  for (const platform of ['win32', 'linux'] as const) assert.equal((await heapReport({}, {}, { platform, readProc })).native, null);
+  for (const platform of ['win32', 'linux'] as const) {
+    const report = await heapReport({}, {}, { platform, readProc });
+    assert.equal(report.native, null);
+    assert.equal((report.summary as { unaccountedMb: number | null }).unaccountedMb, null);
+  }
 });
