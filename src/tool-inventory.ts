@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionContext, SourceInfo, ToolInfo } from '@earendil-works/pi-coding-agent';
+import { measureLoadedSkills, renderSkillBudget, skillBudget, skillLocations, type LoadedSkillEntry, type RegisteredSkill, type SkillBudgetReport } from './skill-budget.ts';
 
 
 
@@ -80,7 +81,7 @@ export function onDemandIndex(rows: readonly ToolRow[]): string {
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
 
-export function renderTools(rows: readonly ToolRow[]): string {
+export function renderTools(rows: readonly ToolRow[], skills?: SkillBudgetReport): string {
   const declared = rows.filter(r => r.declared), total = declared.reduce((sum, r) => sum + r.bytes, 0);
   const lines = [`Tools: ${rows.length} registered, ${declared.length} declared to the model (${kb(total)}, about ${Math.round(total / 4 / 100) / 10}k tokens per request), ${rows.length - declared.length} callable on demand.`];
   const sources = [...new Set(rows.map(r => r.source))];
@@ -94,22 +95,50 @@ export function renderTools(rows: readonly ToolRow[]): string {
   lines.push(missing.length
     ? `* Not named in the instructions (${missing.length}): ${missing.join(', ')}. Add them to the profile's Tool routing so the model knows when to use them.`
     : 'Every declared tool is named in the instructions.');
+  if (skills) lines.push(renderSkillBudget(skills));
   return lines.join('\n');
 }
 
-export function registerToolInventory(pi: ExtensionAPI, lazy: () => ReadonlySet<string> = () => new Set()) {
+export interface ToolInventoryOptions {
+  /** Byte budget for skills list + loaded SKILL.md files (`0` disables flagging). */
+  skillBudgetBytes?: () => number;
+}
+
+const registeredSkills = (pi: ExtensionAPI): RegisteredSkill[] => {
+  if (typeof pi.getCommands !== 'function') return [];
+  return pi.getCommands()
+    .filter(command => command.source === 'skill')
+    .map(command => ({
+      name: command.name.replace(/^skill:/, ''),
+      ...(command.sourceInfo?.path ? { location: command.sourceInfo.path } : {}),
+    }));
+};
+
+export function registerToolInventory(pi: ExtensionAPI, lazy: () => ReadonlySet<string> = () => new Set(), options: ToolInventoryOptions = {}) {
   const rows = (ctx: ExtensionContext) => inventory(pi.getAllTools(), pi.getActiveTools(), ctx.getSystemPrompt(), lazy());
+  let loadedSkills: LoadedSkillEntry[] = [];
+  const skills = (ctx: ExtensionContext) => skillBudget({
+    systemPrompt: ctx.getSystemPrompt(),
+    loadedSkills,
+    registeredSkills: registeredSkills(pi),
+    budgetBytes: options.skillBudgetBytes?.(),
+  });
+  pi.on('context_with_system', (event, ctx) => {
+    loadedSkills = measureLoadedSkills(event.messages, skillLocations(ctx.getSystemPrompt(), registeredSkills(pi)));
+  });
+  pi.on('session_start', () => { loadedSkills = []; });
+  pi.on('session_shutdown', () => { loadedSkills = []; });
   pi.registerCommand('tools', {
-    description: 'List the tools the model can reach by package, their declaration size, and which ones the instructions never name',
-    handler: async (_args, ctx) => ctx.ui.notify(renderTools(rows(ctx)), 'info'),
+    description: 'List the tools the model can reach by package, their declaration size, which ones the instructions never name, and skill prompt budget',
+    handler: async (_args, ctx) => ctx.ui.notify(renderTools(rows(ctx), skills(ctx)), 'info'),
   });
   pi.registerTool({
     name: 'tool_inventory', label: 'Tool inventory', exposure: 'deferred', annotations: { readOnlyHint: true },
-    description: 'Tools registered in this session: source package, exposure, declared or not, declaration bytes, and whether the instructions name them. Read-only, local.',
+    description: 'Tools registered in this session (source, exposure, declaration bytes, unnamed) plus skill prompt bytes/tokens vs configured budget. Read-only, local.',
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_id, _args, _signal, _update, ctx) {
       const list = rows(ctx);
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ tools: list, unnamed: unnamed(list) }) }], details: {} };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ tools: list, unnamed: unnamed(list), skills: skills(ctx) }) }], details: {} };
     },
   });
 

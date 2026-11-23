@@ -11,6 +11,7 @@ import { NO_WORK, readHomeWork, readWatch, runningItem, stillWaiting } from './h
 import { homeShell } from './home-dashboard.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
+import { DEFAULT_SETTINGS } from './settings.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { lazyLoadout, lazySet } from './lazy-tools.ts';
 import { readManyTool } from './read-many.ts';
@@ -1447,7 +1448,7 @@ export default function optchat(host: ExtensionAPI) {
     shellJobs: shells.list().length, shellOutputChars: shells.list().reduce((sum, job) => sum + job.output.length, 0),
     receipts: receipts.size, bundles: bundles.size, runMessages: run.length, previousMessages: previous.length, reports: reports.length,
     heldWakeMessages: heldWakeMessages.length, peerCopies: peerCopies.length } }), defaultActive: false });
-  registerToolInventory(pi, lazy);
+  registerToolInventory(pi, lazy, { skillBudgetBytes: () => active?.config.skillBudgetBytes ?? DEFAULT_SETTINGS.skillBudgetBytes });
   registerLiveResources(pi);
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
     handler: async (args, ctx) => {

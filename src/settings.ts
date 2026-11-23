@@ -1,4 +1,5 @@
 import { NODE } from './memory.ts';
+import { DEFAULT_SKILL_BUDGET_BYTES } from './skill-budget.ts';
 
 /** Per-profile choices where OptChat departs from Victor's recipe. Each default is the recipe's behaviour unless noted. */
 export const SETTINGS = {
@@ -95,6 +96,9 @@ export const SETTINGS = {
   unansweredMinutes: { kind: 'number', label: 'Unanswered message wait', default: 15, min: 0, unit: 'min',
     description: 'An operator Slack message without an answer this long becomes an urgent live obligation and wakes the heartbeat. 0: off.',
     applies: 'Applies to the next heartbeat check or event.' },
+  skillBudgetBytes: { kind: 'number', label: 'Skill prompt budget', default: DEFAULT_SKILL_BUDGET_BYTES, min: 0, unit: 'bytes',
+    description: 'Byte ceiling for the skills list and loaded SKILL.md files in the prompt; tool_inventory and /tools flag when exceeded. 0: off.',
+    applies: 'Applies immediately to inventory reports.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
