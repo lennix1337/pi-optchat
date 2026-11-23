@@ -121,6 +121,7 @@ import { housekeepingBoundary } from './housekeeping.ts';
 import { loadedCodeProbe } from './loaded-code-health.ts';
 import { HOLD_MAX_MS, RELOAD_RESUME, registerSelfReload, reloadLease } from './self-reload.ts';
 import { markRetro, retroDue, retroPrompt } from './daily-retro.ts';
+import { analyzeToolForge, resolveToolDir } from './tool-forge.ts';
 import { MachineService, machineService, machineTool } from './machine-service.ts';
 import { Collector, Situation } from './situation.ts';
 import { realSources } from './situation-sources.ts';
@@ -596,7 +597,9 @@ export default function optchat(host: ExtensionAPI) {
       const now = Date.now();
       if (!retroDue(profile.dir, now, at)) return;
       try { markRetro(profile.dir, now); } catch (error) { ctx.ui.notify(`Daily retro could not be recorded: ${errorText(error)}`, 'warning'); return; }
-      void deliverReport(retroPrompt(new Date(now).toLocaleDateString('sv-SE'), machineService()?.insights(24 * 3_600_000, now))).catch(error => ctx.ui.notify(`Daily retro could not start: ${errorText(error)}`, 'error'));
+      const toolDir = resolveToolDir(own()?.config.forgeToolDir, getAgentDir());
+      const forge = analyzeToolForge(profile.dir, { toolDir: toolDir.path, displayToolDir: toolDir.display, now });
+      void deliverReport(retroPrompt(new Date(now).toLocaleDateString('sv-SE'), machineService()?.insights(24 * 3_600_000, now), forge)).catch(error => ctx.ui.notify(`Daily retro could not start: ${errorText(error)}`, 'error'));
     }, 60_000);
     retroTimer.unref?.();
   };
