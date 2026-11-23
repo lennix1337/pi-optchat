@@ -19,8 +19,8 @@ test('cached quota uses the fullest unexpired window, cooldowns, and Brasília r
     { id: 'near', used: 94, resetAt: NOW + 2 * HOUR, blockedUntil: undefined },
     { id: 'spent', used: 100, resetAt: NOW + 3 * HOUR, blockedUntil: NOW + 3 * HOUR },
   ]);
-  assert.deepEqual(quotaRisks(fixture, NOW), ['🪫 cota near em 94% (leitura em cache), renova 30/10 22:00']);
-  assert.deepEqual(quotaRisks({ usageByProvider: { boundary: { primary: window(90) }, below: { primary: window(89) } } }, NOW), ['🪫 cota boundary em 90% (leitura em cache), renova 30/10 21:00']);
+  assert.deepEqual(quotaRisks(fixture, NOW), ['🪫 cota near em 94% usado (leitura em cache), renova 30/10 22:00']);
+  assert.deepEqual(quotaRisks({ usageByProvider: { boundary: { primary: window(90) }, below: { primary: window(89) } } }, NOW), ['🪫 cota boundary em 90% usado (leitura em cache), renova 30/10 21:00']);
   assert.deepEqual(accounts(fixture, NOW + 3 * HOUR), []);
   assert.deepEqual(accounts({ usageByProvider: { '<!channel>': { primary: window(100) }, 'api_key-leak': { primary: window(100) }, invalidDate: { primary: { usedPercent: 100, resetAt: 1e30 } } }, exhaustedUntilByProvider: { invalidDate: 1e30 } }, NOW), [], 'unsafe labels and invalid dates must not reach Slack');
 });
@@ -71,7 +71,7 @@ test('registered quota monitor persists, alerts once without model wake, and rea
   const summary = posts.at(-1)!;
   assert.match(summary, /\*Cotas dos modelos\*/);
   assert.match(summary, /cota near em 94%/);
-  assert.match(summary, /leitura em cache: healthy 10%/);
+  assert.match(summary, /leitura em cache: healthy 10% usado/);
   const registered = defaultMonitors().find(m => m.health.file === QUOTA_HEALTH_FILE);
   assert.ok(registered, 'default registered monitor must include quota');
   assert.equal(registered.channel, null);
