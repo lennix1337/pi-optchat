@@ -404,7 +404,7 @@ export class SlackPoster {
       }
     }
     if (!imageFile) await publish();
-    if (options.graph) console.info(`App Home published, diagram ${imageFile ? 'attached' : 'missing'}`);
+    if (options.graph) console.info(`${new Date().toISOString()} App Home published, diagram ${imageFile ? 'attached' : 'missing'}`);
     if (replaced) await this.call(`${API}files.delete`, { file: replaced }).catch(() => console.warn('App Home: previous diagram not deleted'));
   }
 

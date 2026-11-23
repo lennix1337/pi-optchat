@@ -138,3 +138,12 @@ test('Home falls back to the text view when Slack never accepts the image', { sk
   await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
   assert.equal(publishes.at(-1), false);
 });
+
+test('Home publish log line carries a timestamp so a restart can be told apart from an old publish', async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, 'info', (line: string) => { lines.push(String(line)); });
+  const fetcher: typeof fetch = async () => new Response(JSON.stringify({ ok: true }));
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U123', fetch: fetcher, dotPath: 'dot', imageRetryMs: 0 });
+  await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
+  assert.match(lines.join('\n'), /^\d{4}-\d{2}-\d{2}T[\d:.]+Z App Home published/m);
+});
