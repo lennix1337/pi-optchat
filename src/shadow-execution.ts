@@ -20,8 +20,8 @@ import { knownProviders } from './wake-route.ts';
 
 /** Default daily cap for speculative shadow staging. */
 export const SHADOW_MAX_PER_DAY = 1;
-/** Maximum cached quota usage percent allowed for speculative shadow work; never looser than QUOTA_NEAR_PERCENT. */
-export const SHADOW_QUOTA_MAX_USED = QUOTA_NEAR_PERCENT;
+/** Maximum cached quota usage percent allowed for speculative shadow work; never looser than QUOTA_NEAR_PERCENT (literal: import cycle with quota-health). */
+export const SHADOW_QUOTA_MAX_USED = 90;
 
 /** A local git repository eligible for speculative shadow execution. */
 export interface RepoTarget { name: string; path: string }

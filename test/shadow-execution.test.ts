@@ -200,7 +200,7 @@ test('wake prompt text and idle heartbeat wake include staged worker instruction
     assert.match(note, /local branch/i);
     assert.match(note, /never push|do not push/i);
 
-    const prompt = wakeText('check idle', 'compactor', 30, DEFAULT_HEARTBEAT, undefined, undefined, {}, note);
+    const prompt = wakeText('check idle', 'compactor', 30, DEFAULT_HEARTBEAT, undefined, undefined, {}, undefined, note);
     assert.equal(wakeTask(prompt), 'check idle', 'wakeTask still parses wakeText with shadow section');
     assert.ok(prompt.includes(stagedRes.staged.branch));
     assert.ok(prompt.includes(stagedRes.staged.id));
