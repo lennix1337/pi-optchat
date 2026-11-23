@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { freemem, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +54,9 @@ export interface SnapshotSummary { nodes?: number; selfBytes?: number; byType?: 
 /** Everything that touches the machine, so tests can inject a heap that is too big or a snapshot that is never written. */
 export interface HeapDeps {
   heapStats(): v8.HeapInfo;
+  platform: NodeJS.Platform;
+  readProc(path: string): string;
+  memoryUsage(): NodeJS.MemoryUsage;
   freeMemory(): number;
   rssBytes(): number;
   collect(): void;
@@ -82,9 +85,56 @@ function summarize(file: string): Promise<SnapshotSummary> {
     });
   });
 }
-const realDeps: HeapDeps = { heapStats: () => v8.getHeapStatistics(), freeMemory: freemem, rssBytes: () => process.memoryUsage.rss(), collect, summarize,
+const realDeps: HeapDeps = { heapStats: () => v8.getHeapStatistics(), platform: process.platform, readProc: path => readFileSync(path, 'utf8'),
+  memoryUsage: () => process.memoryUsage(), freeMemory: freemem, rssBytes: () => process.memoryUsage.rss(), collect, summarize,
   writeSnapshot: file => v8.writeHeapSnapshot(file) };
 
+
+export function parseSmapsRollup(text: string) {
+  const fields = new Map(Array.from(text.matchAll(/^(Rss|Pss_Anon|Pss_File|Pss_Shmem|Swap):\s+(\d+)\s+kB$/gm), m => [m[1], Number(m[2])]));
+  const value = (key: string) => fields.has(key) ? mb(fields.get(key)! * 1024) : null;
+  return { rssMb: value('Rss'), pssAnonMb: value('Pss_Anon'), pssFileMb: value('Pss_File'), pssShmemMb: value('Pss_Shmem'), swapMb: value('Swap') };
+}
+
+export function parseSmaps(text: string) {
+  const mappings: { sizeKb: number; rssKb: number; perm: string; kind: string }[] = [];
+  let current: { sizeKb: number; rssKb: number; perm: string; kind: string } | undefined;
+  for (const line of text.split('\n')) {
+    const header = line.match(/^[\da-f]+-[\da-f]+\s+(\S+)\s+\S+\s+\S+\s+\d+\s*(.*)$/i);
+    if (header) {
+      const name = header[2].trim();
+      const kind = !name ? 'heap-anon' : name === '[heap]' || name === '[stack]' ? name : name.startsWith('[') ? '[anon]' : basename(name);
+      current = { sizeKb: 0, rssKb: 0, perm: header[1], kind }; mappings.push(current);
+    } else if (current) {
+      const field = line.match(/^(Size|Rss):\s+(\d+)\s+kB$/);
+      if (field) current[field[1] === 'Size' ? 'sizeKb' : 'rssKb'] = Number(field[2]);
+    }
+  }
+  return mappings.sort((a, b) => b.rssKb - a.rssKb).slice(0, 8)
+    .map(({ sizeKb, rssKb, perm, kind }) => ({ sizeMb: mb(sizeKb * 1024), rssMb: mb(rssKb * 1024), perm, kind }));
+}
+
+export function parseChildren(text: string) {
+  return text.trim().split(/\s+/).filter(word => /^\d+$/.test(word) && Number(word) > 0).map(Number);
+}
+
+export function parseChildStatus(text: string) {
+  const comm = text.match(/^Name:\s*(\S+)/m)?.[1], rss = text.match(/^VmRSS:\s*(\d+)\s+kB$/m)?.[1];
+  return comm && rss !== undefined ? { comm, rssMb: mb(Number(rss) * 1024) } : null;
+}
+
+function nativeMemory(deps: HeapDeps, unaccountedMb: number) {
+  if (deps.platform !== 'linux') return null;
+  try {
+    const rollup = parseSmapsRollup(deps.readProc('/proc/self/smaps_rollup'));
+    const mappings = parseSmaps(deps.readProc('/proc/self/smaps'));
+    const children = parseChildren(deps.readProc(`/proc/self/task/${process.pid}/children`)).flatMap(pid => {
+      try { const child = parseChildStatus(deps.readProc(`/proc/${pid}/status`)); return child ? [{ pid, ...child }] : []; }
+      catch { return []; }
+    });
+    return { ...rollup, unaccountedMb, mappings, children };
+  } catch { return null; }
+}
 
 function piSide(session: SessionLike) {
   const attempt = <T>(read: () => T | undefined): T | null => { try { return read() ?? null; } catch { return null; } };
@@ -122,10 +172,12 @@ export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, so
     deps.collect();
     gc = { pauseMs: round(performance.now() - started, 2), heapUsedBefore, heapUsedAfter: process.memoryUsage().heapUsed };
   }
-  const heap = deps.heapStats(), usage = process.memoryUsage();
-  result.summary = { rssMb: mb(usage.rss), heapUsedMb: mb(heap.used_heap_size), heapLimitMb: mb(heap.heap_size_limit),
+  const heap = deps.heapStats(), usage = deps.memoryUsage();
+  const unaccountedMb = mb(Math.max(0, usage.rss - usage.heapTotal - usage.external - usage.arrayBuffers));
+  result.summary = { rssMb: mb(usage.rss), unaccountedMb, heapUsedMb: mb(heap.used_heap_size), heapLimitMb: mb(heap.heap_size_limit),
     heapUsedPercentOfLimit: round(heap.used_heap_size / heap.heap_size_limit * 100), afterGc: Boolean(gc) };
   if (input.snapshot) result.snapshot = await snapshot(heap, deps);
+  result.native = nativeMemory(deps, unaccountedMb);
   result.memoryUsage = usage;
   result.v8 = { heap, spaces: spaces() };
   result.eventLoop = { ...eventLoop(), stalls: stallWatch().stalls() };
@@ -152,7 +204,7 @@ async function snapshot(heap: v8.HeapInfo, deps: HeapDeps) {
 
 export const heapReportTool = (optchat: () => OptChatSide | undefined) => ({
   name: 'heap_report', label: 'Heap report', exposure: 'deferred' as const, annotations: { readOnlyHint: true },
-  description: 'Memory and event-loop numbers of this Pi process, its session and OptChat memory: process.memoryUsage, V8 heap and space statistics, event-loop delay p50/p99/max since the last report plus the last stalls over 200 ms (time, blocked ms, and the garbage collection that overlapped it), exit listeners and active resources, session entry counts and file size, OptChat memory rows, live texts and caches. Counts and sizes only, no text. '
+  description: 'Memory and event-loop numbers of this Pi process, its session and OptChat memory: process.memoryUsage, V8 heap and space statistics, event-loop delay p50/p99/max since the last report plus the last stalls over 200 ms (time, blocked ms, and the garbage collection that overlapped it), exit listeners and active resources, session entry counts and file size, OptChat memory rows, live texts and caches. Linux native RSS breakdown, largest mappings (basenames only), and direct children (first comm word and RSS). Counts and sizes only, no contents or paths. '
     + 'gc:true forces a collection first (reports the pause and heap after it). snapshot:true writes a .heapsnapshot in this process, which can inflate RSS and may not return memory until restart; it summarizes the file in a child process and is refused when the heap is over 25% of V8\'s limit or free memory is under twice the heap. Never attach the V8 inspector to a live Pi: use this.',
   parameters: Type.Object({
     gc: Type.Optional(Type.Boolean({ description: 'Force a garbage collection first and report the heap after it, with the pause.' })),
