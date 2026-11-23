@@ -58,7 +58,9 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   /** Local repository paths eligible for speculative shadow execution (default: current checkout when available). */
   shadowRepos?: string[];
   /** Opt-in night-shift autonomous issue-to-draft-PR mode (see src/night-shift.ts). */
-  nightShift?: NightShiftConfig }
+  nightShift?: NightShiftConfig;
+  /** Default lookback window in days for `/skill-stocktake` (default 30). */
+  skillStocktakeDays?: number }
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
@@ -160,7 +162,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'skillStocktakeDays', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
 function validRegex(pattern: unknown): boolean {
   if (typeof pattern !== 'string' || !pattern.trim()) return false;
   try { new RegExp(pattern, 'i'); return true; } catch { return false; }
@@ -194,6 +196,7 @@ export function loadConfig(dir: string): ProfileConfig {
     || value.lazyTools !== undefined && !(Array.isArray(value.lazyTools) && value.lazyTools.every(entry => typeof entry === 'string' && entry.trim() !== ''))
     || value.deployCommands !== undefined && !(Array.isArray(value.deployCommands) && value.deployCommands.every(entry => typeof entry === 'string' && entry.trim() !== ''))
     || value.forgeToolDir !== undefined && !(typeof value.forgeToolDir === 'string' && value.forgeToolDir.trim() !== '')
+    || value.skillStocktakeDays !== undefined && !(Number.isSafeInteger(value.skillStocktakeDays) && Number(value.skillStocktakeDays) >= 1)
     || value.shadowRepos !== undefined && !(Array.isArray(value.shadowRepos) && value.shadowRepos.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol) ?? invalidAutonomyLadder(value.autonomyLadder) ?? invalidNightShift(value.nightShift);

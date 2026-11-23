@@ -11,6 +11,7 @@ import { NO_WORK, readHomeWork, readWatch, runningItem, stillWaiting } from './h
 import { homeShell } from './home-dashboard.ts';
 import { registerWorkTracker } from './work-tracker.ts';
 import { registerLiveResources } from './live-resources.ts';
+import { registerSkillStocktake } from './skill-stocktake.ts';
 import { registerToolInventory } from './tool-inventory.ts';
 import { lazyLoadout, lazySet } from './lazy-tools.ts';
 import { readManyTool } from './read-many.ts';
@@ -1449,6 +1450,7 @@ export default function optchat(host: ExtensionAPI) {
     heldWakeMessages: heldWakeMessages.length, peerCopies: peerCopies.length } }), defaultActive: false });
   registerToolInventory(pi, lazy);
   registerLiveResources(pi);
+  registerSkillStocktake(pi, { defaultDays: () => active?.config.skillStocktakeDays });
   pi.registerCommand('optchat-perf', { description: 'Show numeric diagnostics; payload on/off enables optional actual-payload byte measurements (no model call)',
     handler: async (args, ctx) => {
       const a = required(), option = args.trim();
