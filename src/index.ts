@@ -78,6 +78,8 @@ import { registerPackagePiiGuard } from './package-pii-guard.ts';
 import { registerSelfBuildGuard } from './self-build-guard.ts';
 import { registerSuiteOnceGuard } from './suite-once-guard.ts';
 import { Heartbeat, beatSnapshot, checkBeat, heartbeatPlan, previousWake, runRadarFresh, signalWakeText, wakeText, wakeTurn } from './heartbeat.ts';
+import { liveObligations } from './obligations.ts';
+import { readUnansweredMessages } from './slack-metrics.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
 import { heartbeatCommand, MEMORY_REPLY_RETRY, silentWake, summarizeTurn, wakeRetry, type WakeRetried } from './heartbeat-report.ts';
@@ -367,6 +369,12 @@ export default function optchat(host: ExtensionAPI) {
     const message = last?.type === 'message' && last.message.role === 'assistant' ? last.message : undefined;
     return message && message.stopReason !== 'stop' ? `${message.stopReason}${message.errorMessage ? `: ${oneLine(message.errorMessage).slice(0, 300)}` : ''}` : undefined;
   };
+  const obligationSource = (a: Active) => ({
+    commitments: readCommitments(a.dir),
+    messages: readUnansweredMessages(a.dir),
+    unansweredMinutes: a.config.unansweredMinutes,
+    commitmentProjects: a.config.commitmentProjects,
+  });
   /** What the heartbeat's cheap model reads: why the chat stopped, what still runs, the state and the newest memory lines. */
   const beatState = (ctx: ExtensionContext, a: Active, radar?: string) => {
     const now = Date.now(), age = (since: number) => { const m = Math.round((now - since) / 60_000); return m < 120 ? `${m} min` : `${Math.round(m / 60)} h`; };
@@ -374,7 +382,8 @@ export default function optchat(host: ExtensionAPI) {
     const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
-      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir), radar });
+      idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir), radar,
+      obligations: liveObligations({ ...obligationSource(a), now }) });
   };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
@@ -593,6 +602,7 @@ export default function optchat(host: ExtensionAPI) {
           published: choice => !!ctx.modelRegistry.find(choice.provider, choice.model),
         }).staged;
       },
+      obligations: () => { const a = own(); return a ? obligationSource(a) : {}; },
       wake: (beat, radar, choice) => {
         wakeRetried = {}; clearWakeWorkers();
         const dream = briefDream(ctx);
@@ -601,8 +611,9 @@ export default function optchat(host: ExtensionAPI) {
           : profile.config.managerMode ? crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts()) : '';
         const instructions = profile.config.heartbeatInstructions;
         const shadow = beat.staged ? shadowWakeNote(beat.staged) : undefined;
-        const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, shadow) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
+        const top = beat.obligations ?? liveObligations({ ...obligationSource(profile), now: Date.now() });
+        const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions, top)
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
@@ -988,7 +999,7 @@ export default function optchat(host: ExtensionAPI) {
 
 
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch {   } },
-    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
+    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, onInbound: () => heartbeat?.notifyObligations(), deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
       everyAnswer: () => active?.config.slackEveryAnswer === true,
 
       items: () => {
@@ -1030,7 +1041,7 @@ export default function optchat(host: ExtensionAPI) {
       sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; },
       latestSource: () => { flush(); const latest = latestOperatorMessage(a.memory.root); return latest ? String(latest.i) : undefined; },
     } : undefined;
-  });
+  }, Date.now, () => heartbeat?.notifyObligations());
 
   registerCorrections(pi, () => active && inPhase('open', 'closing', 'import-paused') ? { dir: active.dir } : undefined);
   pi.on('input', async (event, ctx) => {

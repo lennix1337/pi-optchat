@@ -1,4 +1,6 @@
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { UnansweredMessage } from './obligations.ts';
 import { appendRecent, readJsonl } from './store.ts';
 
 /**
@@ -15,13 +17,44 @@ type Entry = { at: number; kind: 'in' | 'out'; channel: string | null; nudge?: t
 const NUDGE = /^(?:e\s+a[ií]|cad[eê]|como\s+(?:t[aá]|est[aá]|anda|ficou)|(?:alguma\s+)?novidades?|status|e\s+ent[aã]o)(?![\p{L}\p{N}])/iu;
 export const isNudge = (text: string) => { const t = text.trim(); return t.length <= 60 && NUDGE.test(t); };
 
-const append = (dir: string, entry: Entry) => appendRecent(join(dir, SLACK_METRICS), entry, 256 * 1024, KEEP_MS);
+const unansweredCache = new Map<string, { stamp: string; items: UnansweredMessage[] }>();
+
+const append = (dir: string, entry: Entry) => {
+  const file = join(dir, SLACK_METRICS);
+  unansweredCache.delete(file);
+  appendRecent(file, entry, 256 * 1024, KEEP_MS);
+};
 export const recordInbound = (dir: string, channel: string | null, text: string, now = Date.now()) =>
   append(dir, { at: now, kind: 'in', channel, ...isNudge(text) ? { nudge: true as const } : {} });
 export const recordAnswer = (dir: string, channel: string | null, now = Date.now()) => append(dir, { at: now, kind: 'out', channel });
 
 const readEntries = (dir: string, since: number) =>
   readJsonl<Entry>(join(dir, SLACK_METRICS), e => Number.isFinite(e.at) && e.at >= since && (e.kind === 'in' || e.kind === 'out'));
+
+/** Currently unanswered operator messages per channel from `slack-metrics.jsonl`, cached by file size and mtime. */
+export function readUnansweredMessages(dir: string): UnansweredMessage[] {
+  const file = join(dir, SLACK_METRICS);
+  let stamp: string;
+  try { const s = statSync(file); stamp = `${s.size}:${s.mtimeMs}`; } catch { unansweredCache.delete(file); return []; }
+  const hit = unansweredCache.get(file);
+  if (hit?.stamp === stamp) return hit.items.map(item => ({ ...item }));
+  const pending = new Map<string, UnansweredMessage>();
+  for (const e of readEntries(dir, 0).sort((a, b) => a.at - b.at)) {
+    const key = e.channel ?? '';
+    if (e.kind === 'in') {
+      const prev = pending.get(key);
+      pending.set(key, prev
+        ? { channel: prev.channel, at: prev.at, count: (prev.count ?? 1) + 1, ...(prev.nudge || e.nudge ? { nudge: true } : {}) }
+        : { channel: e.channel, at: e.at, count: 1, ...(e.nudge ? { nudge: true } : {}) });
+    } else {
+      pending.delete(key);
+    }
+  }
+  const items = [...pending.values()].sort((a, b) => a.at - b.at);
+  if (unansweredCache.size >= 16) unansweredCache.delete(unansweredCache.keys().next().value!);
+  unansweredCache.set(file, { stamp, items });
+  return items.map(item => ({ ...item }));
+}
 
 /**
  * The week's numbers: each message pairs with the first answer in the same channel after it. `recordingSince` is the

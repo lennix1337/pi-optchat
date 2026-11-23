@@ -92,6 +92,9 @@ export const SETTINGS = {
   speculativeShadow: { kind: 'toggle', label: 'Speculative shadow', default: true,
     description: 'During an idle heartbeat wake with spare worker quota, stage at most one buildable nightly prediction per day onto a local branch via a worker. Never pushes or merges.',
     applies: 'Applies to the next idle wake.' },
+  unansweredMinutes: { kind: 'number', label: 'Unanswered message wait', default: 15, min: 0, unit: 'min',
+    description: 'An operator Slack message without an answer this long becomes an urgent live obligation and wakes the heartbeat. 0: off.',
+    applies: 'Applies to the next heartbeat check or event.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
