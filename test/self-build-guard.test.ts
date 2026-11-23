@@ -56,3 +56,14 @@ test('non-source calls and agy help do not reset', () => {
   f.call('write', { path: '/tmp/a.ts' }); f.call('bash', { command: 'node agy-pc.mjs --help' });
   assert.match(write(f)?.reason ?? '', /^Não executado:/);
 });
+
+test('a refusal is not repeatable once the source written passes a few lines', () => {
+  const f = fixture(); f.input(wake); write(f); write(f);
+  assert.match(f.call('write', { path: '/repo/a.ts', content: 'x' })?.reason ?? '', /poucas linhas/);
+  assert.equal(write(f), undefined);
+  const big = Array.from({ length: 70 }, (_, i) => `line ${i}`).join('\n');
+  assert.match(f.call('write', { path: '/repo/b.ts', content: big })?.reason ?? '', /mais de 60 linhas/);
+  assert.match(write(f)?.reason ?? '', /mais de 60 linhas/);
+  f.call('spawn', {});
+  assert.equal(write(f), undefined); assert.equal(write(f), undefined);
+});
