@@ -55,3 +55,10 @@ test('a green probe names when the session loaded its code, which is what proves
   const result = loadedCodeProbe(() => ['/p/a'], Date.parse('2026-11-22T22:00:00-03:00'), () => sec('2026-11-20T22:00:00Z')).check() as { ok: boolean; detail?: string };
   assert.match(result.detail ?? '', /Pi carregou às 22\/11 22:00; o HEAD de todos os pacotes locais é anterior/);
 });
+
+test('a checkout parked on a feature branch says so, so the alert is not read as an unreloaded merge', () => {
+  const run = (branch: string | undefined) => loadedCodeProbe(() => ['/p/pi-optchat'], LOADED, () => sec('2026-11-20T23:51:00Z'), () => branch).check() as { problem?: string };
+  assert.match(run('fix/x').problem!, /checkout no branch fix\/x: volte a main/);
+  assert.doesNotMatch(run('main').problem!, /checkout no branch/);
+  assert.doesNotMatch(run(undefined).problem!, /checkout no branch/);
+});
