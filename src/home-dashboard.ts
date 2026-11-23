@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { dashboard } from './dashboard-model.ts';
 import type { HomeProduction } from '../assistant/src/channels/slack-relay.ts';
@@ -37,18 +37,31 @@ export function homeGraph(work: HomeWork, state: string): import('../assistant/s
   return { nodes, edges };
 }
 
+function healthTail(dir: string): string {
+  const fd = openSync(join(dir, 'prod-health.history.jsonl'), 'r');
+  try {
+    const size = fstatSync(fd).size, start = Math.max(0, size - 16_384);
+    const buffer = Buffer.alloc(size - start);
+    const length = readSync(fd, buffer, 0, buffer.length, start);
+    const content = buffer.subarray(0, length).toString('utf8');
+    if (start === 0) return content;
+    const newline = content.indexOf('\n');
+    return newline < 0 ? '' : content.slice(newline + 1);
+  } finally { closeSync(fd); }
+}
+
 export function homeProduction(dir: string, now: number): HomeProduction {
   let content: string;
-  try { content = readFileSync(join(dir, 'prod-health.history.jsonl'), 'utf8'); }
+  try { content = healthTail(dir); }
   catch { return { level: 'unknown', detail: 'sem leitura' }; }
   const rows: { at: number; probe: string; ms: number; ok: boolean }[] = [];
   for (const line of content.split('\n')) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
-      if (!row || typeof row.at !== 'number' || !Number.isFinite(row.at) || typeof row.probe !== 'string' || !row.probe.length || typeof row.ms !== 'number' || !Number.isFinite(row.ms) || typeof row.ok !== 'boolean') return { level: 'unknown', detail: 'sem leitura' };
+      if (!row || typeof row.at !== 'number' || !Number.isFinite(row.at) || typeof row.probe !== 'string' || !row.probe.length || typeof row.ms !== 'number' || !Number.isFinite(row.ms) || typeof row.ok !== 'boolean') continue;
       rows.push(row);
-    } catch { return { level: 'unknown', detail: 'sem leitura' }; }
+    } catch { continue; }
   }
   if (!rows.length) return { level: 'unknown', detail: 'sem leitura' };
   const latest = Math.max(...rows.map(row => row.at));
