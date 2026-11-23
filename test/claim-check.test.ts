@@ -133,3 +133,11 @@ test('a green loaded-code probe that names the load time backs a reload claim', 
   assert.deepEqual(unbackedClaims('Reload feito, probe verde.', evidence), []);
   assert.deepEqual(unbackedClaims('Reload feito, probe verde.', '{"Código carregado no Pi":{"down":true}}'), ['reload feito']);
 });
+
+test('"revisei o diff" with no diff in any output is unbacked; a diff or a stat backs it', () => {
+  assert.deepEqual(unbackedClaims('Revisei o diff e publiquei.', 'tests 34 pass'), ['diff revisado']);
+  assert.deepEqual(unbackedClaims('Diff revisado: sem achados.', ''), ['diff revisado']);
+  assert.deepEqual(unbackedClaims('Revisei o diff.', 'diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b'), []);
+  assert.deepEqual(unbackedClaims('Revisei o diff.', ' lib/fogao.mjs | 40 ++++\n 14 files changed, 900 insertions(+)'), []);
+  assert.deepEqual(unbackedClaims('Ainda não revisei o diff.', ''), []);
+});
