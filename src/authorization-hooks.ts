@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { worktreeRemovalRefusal } from './worktree-guard.ts';
 import { discardRefusal } from './discard-guard.ts';
 import { pipeStatusRefusal } from './pipe-status-guard.ts';
+import { killRefusal } from './kill-guard.ts';
 import { registerRepeatStop } from './repeat-stop-guard.ts';
 import { winPathRefusal } from './winpath-guard.ts';
 import { withProductionHosts } from './external-effects.ts';
@@ -217,7 +218,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   const repeatStop = registerRepeatStop(pi);
   const guard = async (event: { toolName: string; input: unknown }, cwd: string, session: string) => {
     if (event.toolName !== 'bash' || !event.input || typeof event.input !== 'object' || !('command' in event.input) || typeof event.input.command !== 'string') return;
-    const reason = repeatStop(session, event.input.command) ?? pipeStatusRefusal(event.input.command) ?? (process.env.OPTCHAT_WINPATH_GUARD === 'off' ? undefined : winPathRefusal(event.input.command)) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd);
+    const reason = repeatStop(session, event.input.command) ?? pipeStatusRefusal(event.input.command) ?? (process.env.OPTCHAT_WINPATH_GUARD === 'off' ? undefined : winPathRefusal(event.input.command)) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd) ?? await killRefusal(event.input.command, cwd);
     if (reason) return { block: true as const, reason };
   };
   if (!(enabled ?? (env === '1' || env === 'risk'))) {
