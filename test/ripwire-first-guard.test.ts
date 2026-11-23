@@ -29,6 +29,21 @@ test('sed -i on a scratch file under /tmp is not a source write; on a repo file 
   assert.match(ripwireFirstGuard().check({ name: 'bash', arguments: { command: "sed -i 's/a/b/' /tmp/x.ts src/a.ts" } }) ?? '', /^Não executado/);
 });
 
+test('scratch scripts in /tmp and system config are not source writes; repo files still are', () => {
+  const pass = [
+    "cd /tmp && python3 - <<'EOF'\ns=open('/tmp/tab.mjs').read()\nopen('/tmp/tab.mjs','w').write(s)\nEOF",
+    "cd /tmp && cat > ga.py <<'EOF'\nprint(1)\nEOF\npython3 ga.py; rm -f ga.py",
+    "sudo sed -i 's#a#b#' /etc/apparmor.d/playwright-chrome && sudo apparmor_parser -r /etc/apparmor.d/playwright-chrome",
+  ];
+  for (const command of pass) assert.equal(ripwireFirstGuard().check({ name: 'bash', arguments: { command } }), undefined, command);
+  const block = [
+    "python3 - <<'EOF'\np='src/a.json'\nopen(p,'w').write('x')\nEOF",
+    "cd /tmp && cat > /home/u/repo/src/a.ts <<'EOF'\nx\nEOF",
+    "cat > src/a.py <<'EOF'\nx\nEOF",
+  ];
+  for (const command of block) assert.match(ripwireFirstGuard().check({ name: 'bash', arguments: { command } }) ?? '', /^Não executado/, command);
+});
+
 test('the tool_call hook refuses the first edit of a run and a new input starts a new run', async () => {
   const hooks = new Map<string, (...args: any[]) => any>();
   registerRipwireFirst({ on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } }, { perInput: true });

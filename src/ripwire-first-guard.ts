@@ -8,13 +8,16 @@ export function writesSource(call: ToolUse): boolean {
   if (call.name === 'edit' || call.name === 'write') return !/^(?:\/tmp\/|.*[\\/]\.optchat[\\/])|\.(?:md|txt)$/u.test(String(call.arguments?.path ?? ''));
   if (call.name !== 'bash') return false;
   const command = String(call.arguments?.command ?? '');
-  return /(?:>>?\s*(?!\/tmp\/)[^\s&|;<>]+\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b|\bgit\s+(?:apply|commit)\b|\bship\.mjs\b[^\n]*\s-m\s|open\([^)]*,\s*['"]w)/u.test(command) || sedInPlaceOutsideTmp(command);
+  const redirect = /^\s*cd\s+\/tmp(?:\/\S*)?\s*(?:&&|;|\n)/u.test(command)
+    ? />>?\s*(?!\/tmp\/)[/~][^\s&|;<>]*\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b/u
+    : />>?\s*(?!\/tmp\/)[^\s&|;<>]+\.(?:ts|tsx|js|mjs|json|md|py|cs|ps1|ya?ml)\b/u;
+  return redirect.test(command) || /\bgit\s+(?:apply|commit)\b|\bship\.mjs\b[^\n]*\s-m\s|open\(\s*(?!['"]\/tmp\/)[^)]*,\s*['"]w/u.test(command) || sedInPlaceOutsideTmp(command);
 }
 
 function sedInPlaceOutsideTmp(command: string): boolean {
   return [...command.matchAll(/\bsed\s+-i\b([^\n;&|]*)/gu)].some(([, rest]) => {
     const files = rest.replace(/'[^']*'|"[^"]*"/gu, ' ').trim().split(/\s+/u).filter(arg => arg && !arg.startsWith('-') && /[\\/.]/u.test(arg));
-    return !files.length || files.some(file => !file.startsWith('/tmp/'));
+    return !files.length || files.some(file => !/^\/(?:tmp|etc)\//u.test(file));
   });
 }
 

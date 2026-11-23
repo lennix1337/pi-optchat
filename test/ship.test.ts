@@ -255,6 +255,18 @@ test('a description that closes an issue by keyword is refused: a fix not yet re
   assert.notEqual(proven.out.error, 'closing_keyword', '--closes-verified acknowledges the reproduction');
 });
 
+test('a failing npm check script is refused before staging, committing or pushing', t => {
+  const fx = fixture(); t.after(fx.close);
+  writeFileSync(join(fx.work, 'package.json'), JSON.stringify({ scripts: { check: 'node -e "console.error(\'lint: comment at a.ts:1\'); process.exit(1)"' } }));
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, ['-m', 'feat: a', ...BODY, 'a.txt']);
+  assert.equal(r.code, 1, r.raw);
+  assert.equal(r.out.stage, 'check');
+  assert.match(r.out.detail ?? '', /lint: comment at a\.ts:1/);
+  assert.equal(git(fx.work, ['diff', '--cached', '--name-only']), '');
+  assert.equal(git(fx.work, ['ls-remote', 'origin', 'refs/heads/feat/x']), '');
+});
+
 test('a new PR without a description is refused before staging, committing or pushing', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');

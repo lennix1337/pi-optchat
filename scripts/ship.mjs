@@ -96,6 +96,10 @@ function run(file, args, kind, shell = false) {
   });
 }
 const git = (args, kind = 'local') => run('git', args, kind);
+
+function hasCheckScript() {
+  try { return typeof JSON.parse(readFileSync('package.json', 'utf8')).scripts?.check === 'string'; } catch { return false; }
+}
 // external: Windows .cmd/.bat shims require a shell; Node warns about shell arguments in DEP0190.
 let ghFound;
 function findGh() {
@@ -395,6 +399,11 @@ async function shipBranch(opts, ctx) {
       !opts.directMain && !opts.noAuto && 'auto-merge',
     ].filter(Boolean).join(' > ');
     return emit('dry_run', { ...ctx, base, pr: existingOpen?.number, plan });
+  }
+
+  if (hasCheckScript()) {
+    const check = await run('npm', ['run', '-s', 'check'], 'commit', process.platform === 'win32');
+    if (check.code) throw failed('check', check, 'npm run check falhou (lint/tipos): corrija antes do push; nada foi commitado');
   }
 
   if (creating) {
