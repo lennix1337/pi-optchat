@@ -36,7 +36,9 @@ export function heapGrowthLine(growth: HeapGrowth | undefined, { thresholdMbPerH
 export function rssLine(samples: readonly HeapSample[], { limitMb = 500, minPoints = 3 } = {}): string | undefined {
   const withRss = samples.filter(sample => sample.rssMb !== undefined), recent = withRss.slice(-minPoints);
   if (recent.length < minPoints || !recent.every(sample => sample.rssMb! > limitMb)) return undefined;
-  const last = recent.at(-1)!, line = `Pi RSS ${Math.round(last.rssMb!)} MB, above the ${limitMb} MB goal in the last ${minPoints} samples`;
+  const last = recent.at(-1)!, mbs = recent.map(sample => sample.rssMb!), spreadMb = Math.max(...mbs) - Math.min(...mbs), spanH = (last.at - recent[0]!.at) / HOUR;
+  const plateau = spanH >= 3 && spreadMb <= 40 ? `, flat (within ${Math.round(spreadMb)} MB over ${Math.round(spanH)} h: a plateau, not a leak)` : '';
+  const line = `Pi RSS ${Math.round(last.rssMb!)} MB, above the ${limitMb} MB goal in the last ${minPoints} samples${plateau}`;
   if (last.heapTotalMb === undefined || last.externalMb === undefined) return line;
   return `${line} (V8 heap ${Math.round(last.heapTotalMb)} MB, external ${Math.round(last.externalMb)} MB, other native ${Math.round(last.rssMb! - last.heapTotalMb - last.externalMb)} MB)`;
 }
