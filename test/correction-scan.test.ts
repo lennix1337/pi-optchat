@@ -28,6 +28,7 @@ const cases: [string, object, object][] = [
  ['package-pii', call('edit',{path:'/home/u/projetos/pi-wacli/README.md',edits:[{oldText:'x',newText:'"jid": "5511997429889@s.whatsapp.net"'}]}), call('write',{path:'/home/u/projetos/pi-wacli/README.md',content:'"jid": "5511900000001@s.whatsapp.net"'})],
  ['promise-no-action', text('Li o log. Vou corrigir o supervisor agora.'), text('Corrigi o supervisor; vou revisar o diff depois do reload?')],
  ['sleep-poll', call('bash',{command:'for i in 1 2 3; do ps -p 12; sleep 30; done'}), call('bash',{command:'sleep 2; echo "sleep 60 later"; ps -ef | grep node'})],
+ ['look-yourself', text('A Home não foi vista: isso só você consegue olhar, abrindo a aba Home.'), text('Tirei o print da Home pelo agent-desktop: layout novo no ar.')],
  ['abandoned-cause', text('Stalls were 3132 ms; cause NOT found. Vou cuidar dos PRs.'), text('A causa foi encontrada no carregamento.')],
 ];
 for (const [id, yes, no] of cases) test(`detector ${id} distinguishes fixtures`, () => {
