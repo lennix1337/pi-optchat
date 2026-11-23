@@ -16,6 +16,7 @@ import { accountGroup } from './account.ts';
 import type { ProjectPatterns } from './commitment-due.ts';
 import { validProductionHealth, type ProductionHealthConfig } from './prod-health.ts';
 import { invalidAutonomyLadder, type AutonomyLadderConfig } from './autonomy-ladder.ts';
+import { invalidNightShift, type NightShiftConfig } from './night-shift.ts';
 
 export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
@@ -55,7 +56,9 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   /** Adaptive autonomy ladder thresholds (see src/autonomy-ladder.ts). */
   autonomyLadder?: AutonomyLadderConfig;
   /** Local repository paths eligible for speculative shadow execution (default: current checkout when available). */
-  shadowRepos?: string[] }
+  shadowRepos?: string[];
+  /** Opt-in night-shift autonomous issue-to-draft-PR mode (see src/night-shift.ts). */
+  nightShift?: NightShiftConfig }
 /** The main model the roles follow, as Pi's model_select reports it. */
 export interface MainModel { provider: string; model: string }
 export const defaults: ProfileConfig = {
@@ -157,7 +160,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
 function validRegex(pattern: unknown): boolean {
   if (typeof pattern !== 'string' || !pattern.trim()) return false;
   try { new RegExp(pattern, 'i'); return true; } catch { return false; }
@@ -193,7 +196,7 @@ export function loadConfig(dir: string): ProfileConfig {
     || value.forgeToolDir !== undefined && !(typeof value.forgeToolDir === 'string' && value.forgeToolDir.trim() !== '')
     || value.shadowRepos !== undefined && !(Array.isArray(value.shadowRepos) && value.shadowRepos.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
-    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol) ?? invalidAutonomyLadder(value.autonomyLadder);
+    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol) ?? invalidAutonomyLadder(value.autonomyLadder) ?? invalidNightShift(value.nightShift);
     if (problem) throw new Error(problem);
 
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;

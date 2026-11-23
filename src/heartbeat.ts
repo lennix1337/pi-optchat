@@ -222,7 +222,7 @@ export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false,
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
-export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}, obligations?: readonly Obligation[], shadow?: string) {
+export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}, obligations?: readonly Obligation[], shadow?: string, nightShift?: string) {
   const opening = task
     ? `A cheap check (${model}) woke you and suggests: ${task}
 The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first; it is a candidate, not a selection or permission.`
@@ -232,7 +232,7 @@ The check only wakes you; you do the work yourself, with your own judgment and t
 ${queue.item}
 Read the backlog to inspect other open items before choosing, within the limits below. Mark an item \`- [x]\` only after delivery, or \`- [!]\` with a concrete blocker; not being selected is not a blocker. Never take an item marked \`- [!]\` or described as blocked. Do not drain the backlog automatically.`;
   const obligationsBlock = obligations?.length ? formatObligations(obligations) : '';
-  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}${obligationsBlock ? `\n${obligationsBlock}\n` : ''}${shadow ? `\n${shadow}\n` : ''}
+  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}${obligationsBlock ? `\n${obligationsBlock}\n` : ''}${shadow ? `\n${shadow}\n` : ''}${nightShift ? `\n${nightShift}\n` : ''}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
 Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance. ${instructions.delivery ?? DELIVERY_RULE}
 ${(instructions.brainstorm ?? BRAINSTORM_NOTE).replaceAll('{{councilScript}}', COUNCIL_SCRIPT)}
