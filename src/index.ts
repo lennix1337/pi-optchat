@@ -74,6 +74,7 @@ import { registerBrowserPages } from './external-effects.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
 import { registerRipwireFirst } from './ripwire-first-guard.ts';
 import { registerCauseClaimGuard } from './cause-claim-guard.ts';
+import { registerSendClaimGuard } from './send-claim-guard.ts';
 import { registerWeakenTestGuard } from './weaken-test-guard.ts';
 import { registerPackagePiiGuard } from './package-pii-guard.ts';
 import { registerSelfBuildGuard } from './self-build-guard.ts';
@@ -227,6 +228,7 @@ export default function optchat(host: ExtensionAPI) {
   registerSuiteOnceGuard(pi);
   registerWeakenTestGuard(pi);
   registerCauseClaimGuard(pi);
+  registerSendClaimGuard(pi);
   registerPackagePiiGuard(pi);
   const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir, productionHosts: () => active?.config.productionHosts,
 
