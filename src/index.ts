@@ -1,6 +1,7 @@
 import { ciBackToWorker, SUBSCRIBER_NOTICE_CHANNEL } from './ci-back-to-worker.ts';
 import { predictionsTool } from './predictions.ts';
 import { configuredShadowRepos, reconcileAcceptedShadow, shadowWakeNote, stageNextPrediction, workerRoutesForShadow } from './shadow-execution.ts';
+import { nightShiftConfig, nightShiftLogPath, nightShiftWakeNote } from './night-shift.ts';
 import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
@@ -611,9 +612,10 @@ export default function optchat(host: ExtensionAPI) {
           : profile.config.managerMode ? crewWakeNote(profile.crew.missions(), profile.crew.auditReasons(), profile.crew.pendingCounts()) : '';
         const instructions = profile.config.heartbeatInstructions;
         const shadow = beat.staged ? shadowWakeNote(beat.staged) : undefined;
+        const nightShift = nightShiftWakeNote(nightShiftConfig(profile.config), nightShiftLogPath(profile.dir), Date.now());
         const top = beat.obligations ?? liveObligations({ ...obligationSource(profile), now: Date.now() });
         const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions, top)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
@@ -1023,7 +1025,7 @@ export default function optchat(host: ExtensionAPI) {
 
   registerWhatsAppBridge(pi, () => active && inPhase('open') ? active.dir : undefined, () => slack.commandState(), () => inPhase('open'));
 
-  registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0);
+  registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0, () => active ? nightShiftConfig(active.config) : undefined);
 
   registerQuotaCommand(pi, () => slackOwner()?.dir);
   registerProdHealth(pi, () => { const owner = slackOwner(); return owner ? { ...owner, prodHealth: active?.config.prodHealth } : undefined; }, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
