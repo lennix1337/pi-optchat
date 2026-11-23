@@ -13,6 +13,7 @@ import type { Memory } from './memory.ts';
 
 // external: V8 heap snapshots need roughly as much memory as the heap.
 const SNAPSHOT_HEAP_SHARE = 0.25;
+const SNAPSHOT_RSS_FACTOR_MEASURED_ON_LIVE_PI = 2.3, SNAPSHOT_RSS_CEILING = 1000 * 1024 * 1024;
 const SUMMARY_TIMEOUT_MS = 180_000, SUMMARY_TOP = 30;
 const MB = 1024 * 1024;
 const round = (n: number, digits = 1) => Math.round(n * 10 ** digits) / 10 ** digits;
@@ -176,7 +177,7 @@ function eventLoop() {
 }
 const spaces = () => v8.getHeapSpaceStatistics().map(space => ({ name: space.space_name, sizeMb: mb(space.space_size), usedMb: mb(space.space_used_size), availableMb: mb(space.space_available_size) }));
 
-export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, sources: HeapSources, overrides: Partial<HeapDeps> = {}) {
+export async function heapReport(input: { gc?: boolean; snapshot?: boolean; allowRssInflation?: boolean }, sources: HeapSources, overrides: Partial<HeapDeps> = {}) {
   const deps = { ...realDeps, ...overrides };
   const result: Record<string, unknown> = { at: new Date().toISOString(), pid: process.pid, node: process.version, uptimeS: round(process.uptime(), 0) };
   let gc: Record<string, number> | undefined;
@@ -189,7 +190,7 @@ export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, so
   const native = nativeMemory(deps, usage), unaccountedMb = native?.breakdown.residualMb ?? null;
   result.summary = { rssMb: mb(usage.rss), unaccountedMb, heapUsedMb: mb(heap.used_heap_size), heapLimitMb: mb(heap.heap_size_limit),
     heapUsedPercentOfLimit: round(heap.used_heap_size / heap.heap_size_limit * 100), afterGc: Boolean(gc) };
-  if (input.snapshot) result.snapshot = await snapshot(heap, deps);
+  if (input.snapshot) result.snapshot = await snapshot(heap, deps, Boolean(input.allowRssInflation));
   result.native = native;
   result.memoryUsage = usage;
   result.v8 = { heap, spaces: spaces() };
@@ -200,9 +201,10 @@ export async function heapReport(input: { gc?: boolean; snapshot?: boolean }, so
   if (gc) result.gc = gc;
   return result;
 }
-async function snapshot(heap: v8.HeapInfo, deps: HeapDeps) {
+async function snapshot(heap: v8.HeapInfo, deps: HeapDeps, allowInflation: boolean) {
   const free = deps.freeMemory(), used = heap.used_heap_size, limit = heap.heap_size_limit;
   const refusal = used > limit * SNAPSHOT_HEAP_SHARE ? `the heap is ${mb(used)} MB, over 25% of its ${mb(limit)} MB limit: a snapshot needs about as much memory again`
+    : !allowInflation && deps.rssBytes() + SNAPSHOT_RSS_FACTOR_MEASURED_ON_LIVE_PI * used > SNAPSHOT_RSS_CEILING ? `RSS is ${mb(deps.rssBytes())} MB and a snapshot of this ${mb(used)} MB heap would push it to about ${mb(deps.rssBytes() + SNAPSHOT_RSS_FACTOR_MEASURED_ON_LIVE_PI * used)} MB, kept until restart; pass allowRssInflation:true to accept that`
     : free < 2 * used ? `free memory is ${mb(free)} MB, under twice the heap (${mb(used)} MB)` : undefined;
   if (refusal) return { refused: true, reason: refusal, heapUsedBytes: used, heapLimitBytes: limit, freeMemoryBytes: free };
   const started = performance.now(), file = join(tmpdir(), `pi-optchat-heap-${process.pid}-${Date.now()}.heapsnapshot`);
@@ -221,9 +223,10 @@ export const heapReportTool = (optchat: () => OptChatSide | undefined) => ({
     + 'gc:true forces a collection first (reports the pause and heap after it). snapshot:true writes a .heapsnapshot in this process, which can inflate RSS and may not return memory until restart; it summarizes the file in a child process and is refused when the heap is over 25% of V8\'s limit or free memory is under twice the heap. Never attach the V8 inspector to a live Pi: use this.',
   parameters: Type.Object({
     gc: Type.Optional(Type.Boolean({ description: 'Force a garbage collection first and report the heap after it, with the pause.' })),
+    allowRssInflation: Type.Optional(Type.Boolean({ description: 'Take the snapshot even when it would push RSS past 1 GB (it is refused by default: the memory stays until restart).' })),
     snapshot: Type.Optional(Type.Boolean({ description: 'Write a heap snapshot to the temp folder and summarize its top constructors; refused when the heap is large or memory is short.' })),
   }, { additionalProperties: false }),
-  async execute(_id: string, args: { gc?: boolean; snapshot?: boolean }, _signal: AbortSignal | undefined, _update: unknown, ctx: { sessionManager?: SessionLike }) {
+  async execute(_id: string, args: { gc?: boolean; snapshot?: boolean; allowRssInflation?: boolean }, _signal: AbortSignal | undefined, _update: unknown, ctx: { sessionManager?: SessionLike }) {
     const report = await heapReport(args, { session: ctx.sessionManager, optchat: optchat() });
     return { content: [{ type: 'text' as const, text: JSON.stringify(report, null, 2) }], details: {} };
   },

@@ -97,11 +97,23 @@ test('the event-loop delay is measured from load and reset after each report', a
   assert.ok(second.maxMs < first.maxMs, 'the next report starts from a reset histogram');
 });
 
+test('a snapshot that would push RSS past 1 GB is refused unless allowRssInflation, and nothing is written', async () => {
+  const live = () => injected({ heapStats: () => stats(237 * MB, 4096 * MB), rssBytes: () => 533 * MB });
+  const refused = live();
+  const report = await heapReport({ snapshot: true }, {}, refused);
+  assert.equal((report.snapshot as { refused: boolean }).refused, true);
+  assert.match((report.snapshot as { reason: string }).reason, /RSS is 533.*allowRssInflation/);
+  assert.deepEqual(refused.written, []);
+  const accepted = live();
+  await heapReport({ snapshot: true, allowRssInflation: true }, {}, accepted);
+  assert.equal(accepted.written.length, 1);
+});
+
 test('snapshot reports its RSS before and after the write and warns only above 100 MiB', async () => {
   for (const delta of [100 * MB, 100 * MB + 1, 240 * MB]) {
     let rss = 600 * MB;
     const deps = injected({ rssBytes: () => rss, writeSnapshot: file => { rss += delta; return file; } });
-    const report = await heapReport({ snapshot: true }, {}, deps);
+    const report = await heapReport({ snapshot: true, allowRssInflation: true }, {}, deps);
     const snapshot = report.snapshot as { rssBeforeMb: number; rssAfterMb: number; warning?: string };
     assert.equal(snapshot.rssBeforeMb, 600);
     assert.equal(snapshot.rssAfterMb, Math.round((600 * MB + delta) / MB * 10) / 10);
@@ -112,16 +124,16 @@ test('snapshot reports its RSS before and after the write and warns only above 1
 
 test('a snapshot is refused when the heap is over a quarter of its limit or memory is short, and nothing is written', async () => {
   const big = injected({ heapStats: () => stats(1100 * MB, 4096 * MB) });
-  const refused = await heapReport({ snapshot: true }, {}, big);
+  const refused = await heapReport({ snapshot: true, allowRssInflation: true }, {}, big);
   assert.equal((refused.snapshot as { refused: boolean }).refused, true);
   assert.match((refused.snapshot as { reason: string }).reason, /25%/);
   const short = injected({ freeMemory: () => 500 * MB });
-  const lowMemory = await heapReport({ snapshot: true }, {}, short);
+  const lowMemory = await heapReport({ snapshot: true, allowRssInflation: true }, {}, short);
   assert.equal((lowMemory.snapshot as { refused: boolean }).refused, true);
   assert.match((lowMemory.snapshot as { reason: string }).reason, /free memory/);
   assert.deepEqual([...big.written, ...short.written], []);
   const fine = injected();
-  const taken = await heapReport({ snapshot: true }, {}, fine);
+  const taken = await heapReport({ snapshot: true, allowRssInflation: true }, {}, fine);
   assert.equal(fine.written.length, 1);
   assert.match(fine.written[0], /\.heapsnapshot$/);
   assert.equal((taken.snapshot as { refused?: boolean }).refused, undefined);
