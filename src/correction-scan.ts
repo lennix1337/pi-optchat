@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, FREE_ACTION, UNCHECKED_ADMISSION, withoutQuotes } from './claim-check.ts';
+import { basename, join } from 'node:path';
+import { ABANDONED_CAUSE, CLAIM_CHECK_PREFIX, FREE_ACTION, UNCHECKED_ADMISSION, UTC_CLOCK, withoutQuotes } from './claim-check.ts';
 import { usesRipwire, writesSource } from './ripwire-first-guard.ts';
 import { claimsCause } from './cause-claim-guard.ts';
 import { weakensTest } from './weaken-test-guard.ts';
@@ -11,20 +11,21 @@ import { memoryShapedReply, nothingNewReply, reasksPending } from './wake-noise.
 
 /** `guardedAt` (ISO) is when a live guard started refusing or retrying the behaviour: hits after it got past the guard. */
 export type Rule = { id: string; guardedAt?: string; quote: string; date: string; scope: string; detector: string; precision: string };
-export type ScanResult = { id: string; count: number; afterGuard?: number; caught?: number; examples: { file: string; line: number }[] };
+export type ScanResult = { id: string; count: number; afterGuard?: number; caught?: number; detected?: number; examples: { file: string; line: number }[] };
 export const rules = JSON.parse(readFileSync(new URL('./correction-rules.json', import.meta.url), 'utf8')) as Rule[];
 /** The sessions root: the PC keeps one project folder in it, the VM several, so the scan reads every subdirectory. */
 export const sessionsDir = () => join(homedir(), '.pi', 'agent', 'sessions');
 
 
-function sessionFiles(dir: string, since: number): string[] {
-  const out: string[] = [];
+function sessionFiles(dir: string, since: number): { label: string; full: string }[] {
+  if (statSync(dir).isFile()) return [{ label: basename(dir), full: dir }];
+  const out: { label: string; full: string }[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...readdirSync(path).filter(f => f.endsWith('.jsonl')).map(f => join(entry.name, f)));
-    else if (entry.name.endsWith('.jsonl')) out.push(entry.name);
+    if (entry.isDirectory()) out.push(...readdirSync(path).filter(f => f.endsWith('.jsonl')).map(f => ({ label: join(entry.name, f), full: join(path, f) })));
+    else if (entry.name.endsWith('.jsonl')) out.push({ label: entry.name, full: path });
   }
-  return out.filter(f => statSync(join(dir, f)).mtimeMs >= since);
+  return out.filter(f => statSync(f.full).mtimeMs >= since);
 }
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
@@ -141,7 +142,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'ending-offer': return /se quiser\s*,?\s*(?:é|e) só (?:dizer|avisar|falar)[.!]?\s*$/iu.test(final);
     case 'wake-silence': return !!pacing.wake && !!final && (memoryShapedReply(final) || reasksPending(final) || nothingNewReply(final));
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
-    case 'utc-time': return /\b\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z\b/u.test(final);
+    case 'utc-time': return UTC_CLOCK.test(final);
     case 'promise-no-action': return endsWithPromise(final);
     case 'abandoned-cause': return ABANDONED_CAUSE.test(withoutQuotes(final));
     case 'unchecked-own-work': return UNCHECKED_ADMISSION.test(withoutQuotes(final));
@@ -184,9 +185,9 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
 
 export function scanCorrections(dir: string, since: number, until: number): ScanResult[] {
   if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) throw new Error('Invalid scan interval');
-  const results: ScanResult[] = rules.map(r => ({ id: r.id, count: 0, ...r.guardedAt ? { afterGuard: 0 } : {}, examples: [] }));
-  for (const file of sessionFiles(dir, since)) {
-    const lines = readFileSync(join(dir, file), 'utf8').split('\n');
+  const results: ScanResult[] = rules.map(r => ({ id: r.id, count: 0, detected: 0, ...r.guardedAt ? { afterGuard: 0 } : {}, examples: [] }));
+  for (const { label: file, full } of sessionFiles(dir, since)) {
+    const lines = readFileSync(full, 'utf8').split('\n');
     let pacing = noPacing();
     const drafts: { result: number; line: number; at: number }[] = [];
     const calls = new Map<string, { result: number; at: number; example?: { file: string; line: number } }[]>();
@@ -198,13 +199,14 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
       if (!Number.isFinite(at) || at >= until) continue;
       rules.forEach((rule, n) => { if (at >= since && detect(rule, event, pacing)) {
         results[n].count++;
+        results[n].detected = (results[n].detected ?? 0) + 1;
         if (rule.guardedAt && at >= Date.parse(rule.guardedAt)) results[n].afterGuard!++;
-        drafts.push({ result: n, line: i, at });
+        if (event.message?.stopReason === 'stop') drafts.push({ result: n, line: i, at });
         const example = results[n].examples.length < 3 ? { file, line: i + 1 } : undefined;
         if (example) results[n].examples.push(example);
         for (const c of toolCalls(event)) if (c.id) calls.set(c.id, [...calls.get(c.id) ?? [], { result: n, at, example }]);
       } });
-      if (event.type === 'custom_message' && typeof event.content === 'string' && event.content.startsWith(CLAIM_CHECK_PREFIX)) {
+      if (at >= since && event.type === 'custom_message' && typeof event.content === 'string' && event.content.startsWith(CLAIM_CHECK_PREFIX)) {
         for (const d of drafts) if (i - d.line <= 6 && results[d.result].afterGuard !== undefined && d.at >= Date.parse(rules[d.result].guardedAt!)) {
           results[d.result].afterGuard!--;
           results[d.result].caught = (results[d.result].caught ?? 0) + 1;
@@ -215,7 +217,10 @@ export function scanCorrections(dir: string, since: number, until: number): Scan
       if (reply?.role === 'toolResult' && reply.toolCallId && calls.has(reply.toolCallId) && Array.isArray(reply.content) && reply.content.some(c => c.type === 'text' && /^(?:Not run|Não executado):/u.test(c.text ?? ''))) {
         for (const hit of calls.get(reply.toolCallId)!) {
           results[hit.result].count--;
-          if (results[hit.result].afterGuard !== undefined && hit.at >= Date.parse(rules[hit.result].guardedAt!)) results[hit.result].afterGuard!--;
+          if (results[hit.result].afterGuard !== undefined && hit.at >= Date.parse(rules[hit.result].guardedAt!)) {
+            results[hit.result].afterGuard!--;
+            results[hit.result].caught = (results[hit.result].caught ?? 0) + 1;
+          }
           if (hit.example) results[hit.result].examples = results[hit.result].examples.filter(e => e !== hit.example);
         }
         calls.delete(reply.toolCallId);

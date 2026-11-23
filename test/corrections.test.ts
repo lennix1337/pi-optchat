@@ -75,3 +75,7 @@ test('a correction belongs to the profile open when it arrived: none before it o
   open = true;
   assert.equal(result(), undefined, 'a closed profile dropped the pending reminder');
 }));
+
+test('correction notice reminds the agent to run npm run replay before shipping guard or rule changes', () => {
+  assert.match(CORRECTION_NOTICE, /npm run replay/);
+});

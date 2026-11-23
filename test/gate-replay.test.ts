@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseContract } from '../src/autonomy.ts';
-import { extractGateAsks, labelReplayItem, redactSecrets, replayAsks, summarizeReplay, type ExtractedGateAsk } from '../scripts/gate-replay.mjs';
+import {
+  DEFAULT_GOOD_SAMPLE,
+  compareRuleReplay,
+  extractGateAsks,
+  labelReplayItem,
+  readRuleBaseline,
+  redactSecrets,
+  replayAsks,
+  runRuleReplay,
+  summarizeReplay,
+  type ExtractedGateAsk,
+} from '../scripts/gate-replay.mjs';
 
 const contract = parseContract({
   version: 1,
@@ -148,4 +160,226 @@ test('redactSecrets masks bearer tokens, API keys, and query tokens', () => {
   const clean = redactSecrets(raw);
   assert.doesNotMatch(clean, /abcdef1234567890|secret123|sk-1234567890abcdef1234/);
   assert.match(clean, /\[REDACTED\]/);
+});
+
+const NOW = Date.parse('2026-11-22T22:00:00Z');
+const RECENT = '2026-11-21T12:00:00Z';
+const OLD_OUTSIDE_30D = '2026-10-10T12:00:00Z';
+
+function writeJsonl(filePath: string, events: object[]) {
+  writeFileSync(filePath, events.map(e => JSON.stringify(e)).join('\n') + '\n');
+}
+
+function caughtAdmissionEvents(timestamp: string) {
+  return [
+    {
+      type: 'message',
+      timestamp,
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Não confirmei que o worker começou.' }] },
+    },
+    {
+      type: 'custom_message',
+      customType: 'optchat-report',
+      timestamp,
+      content: '[OptChat claim check] Your reply admits not having checked.',
+    },
+  ];
+}
+
+function caughtPipeEvents(timestamp: string, id: string) {
+  return [
+    {
+      type: 'message',
+      timestamp,
+      message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id, name: 'bash', arguments: { command: 'npm test | tail -3; echo rc=' + '$' + '?' } }] },
+    },
+    {
+      type: 'message',
+      timestamp,
+      message: { role: 'toolResult', toolCallId: id, content: [{ type: 'text', text: 'Não executado: use PIPESTATUS.' }] },
+    },
+  ];
+}
+
+function cleanTurnEvents(timestamp: string) {
+  return [
+    { type: 'message', timestamp, message: { role: 'user', content: [{ type: 'text', text: 'Conclui o ajuste do módulo.' }] } },
+    { type: 'message', timestamp, message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Ajuste aplicado e validado nos testes focados.' }] } },
+  ];
+}
+
+test('rule replay writes baseline with --update, passes when equal or better, and fails when a rule regresses', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rule-replay-'));
+  try {
+    const sessions = join(root, 'sessions');
+    mkdirSync(sessions, { recursive: true });
+    const good = join(root, 'known-good.jsonl');
+    const baseline = join(root, 'profile', 'replay-baseline.json');
+
+    writeJsonl(join(sessions, 's1.jsonl'), [
+      ...caughtAdmissionEvents(RECENT),
+      ...caughtPipeEvents(RECENT, 'p1'),
+      ...caughtAdmissionEvents(OLD_OUTSIDE_30D),
+    ]);
+    writeJsonl(good, cleanTurnEvents(RECENT));
+
+    const updated = runRuleReplay({ sessionsDir: sessions, goodSample: good, baselinePath: baseline, now: NOW, update: true });
+    assert.equal(updated.updated, true);
+    assert.equal(updated.passed, true);
+    assert.equal(existsSync(baseline), true);
+
+    const saved = readRuleBaseline(baseline);
+    assert.ok(saved);
+    assert.equal(saved.windowDays, 30);
+    assert.equal(saved.rules['unchecked-own-work']?.caught, 1);
+    assert.equal(saved.rules['pipe-status']?.caught, 1);
+    assert.equal(saved.rules['unchecked-own-work']?.falseFlags, 0);
+
+    const equalRun = runRuleReplay({ sessionsDir: sessions, goodSample: good, baselinePath: baseline, now: NOW });
+    assert.equal(equalRun.passed, true);
+    assert.deepEqual(equalRun.comparison.regressions, []);
+
+    writeJsonl(join(sessions, 's2.jsonl'), caughtAdmissionEvents(RECENT));
+    const betterRun = runRuleReplay({ sessionsDir: sessions, goodSample: good, baselinePath: baseline, now: NOW });
+    assert.equal(betterRun.passed, true);
+    assert.ok(betterRun.comparison.improvements.some(i => i.id === 'unchecked-own-work' && i.kind === 'caught-rose'));
+
+    rmSync(join(sessions, 's2.jsonl'));
+    writeJsonl(join(sessions, 's1.jsonl'), caughtAdmissionEvents(RECENT));
+    const droppedRun = runRuleReplay({ sessionsDir: sessions, goodSample: good, baselinePath: baseline, now: NOW });
+    assert.equal(droppedRun.passed, false);
+    assert.ok(droppedRun.comparison.regressions.some(r => r.id === 'pipe-status' && r.kind === 'caught-dropped'));
+
+    writeJsonl(join(sessions, 's1.jsonl'), [
+      ...caughtAdmissionEvents(RECENT),
+      ...caughtPipeEvents(RECENT, 'p1'),
+    ]);
+    writeJsonl(good, [
+      ...cleanTurnEvents(RECENT),
+      { type: 'message', timestamp: RECENT, message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Se quiser, é só dizer.' }] } },
+    ]);
+    const falseFlagRun = runRuleReplay({ sessionsDir: sessions, goodSample: good, baselinePath: baseline, now: NOW });
+    assert.equal(falseFlagRun.passed, false);
+    assert.ok(falseFlagRun.comparison.regressions.some(r => r.id === 'ending-offer' && r.kind === 'false-flags-rose'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rule replay handles missing sessions dir without crashing and still checks known-good sample', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rule-replay-missing-'));
+  try {
+    const missingSessions = join(root, 'does-not-exist');
+    const good = join(root, 'known-good.jsonl');
+    const baseline = join(root, 'replay-baseline.json');
+
+    writeJsonl(good, cleanTurnEvents(RECENT));
+    writeFileSync(baseline, JSON.stringify({
+      version: 1,
+      updatedAt: RECENT,
+      windowDays: 30,
+      rules: { 'pipe-status': { caught: 3, detected: 3, falseFlags: 0 } },
+    }));
+
+    const okRun = runRuleReplay({ sessionsDir: missingSessions, goodSample: good, baselinePath: baseline, now: NOW });
+    assert.equal(okRun.sessionsMissing, true);
+    assert.equal(okRun.passed, true);
+    assert.deepEqual(okRun.comparison.regressions, []);
+
+    const updateWhileMissing = runRuleReplay({ sessionsDir: missingSessions, goodSample: good, baselinePath: baseline, now: NOW, update: true });
+    assert.equal(updateWhileMissing.sessionsMissing, true);
+    assert.equal(updateWhileMissing.updated, false);
+    assert.equal(readRuleBaseline(baseline)?.rules['pipe-status']?.caught, 3);
+
+    writeJsonl(good, [
+      { type: 'message', timestamp: RECENT, message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Posso mergear agora?' }] } },
+    ]);
+    const badGoodRun = runRuleReplay({ sessionsDir: missingSessions, goodSample: good, baselinePath: baseline, now: NOW });
+    assert.equal(badGoodRun.sessionsMissing, true);
+    assert.equal(badGoodRun.passed, false);
+    assert.ok(badGoodRun.comparison.regressions.some(r => r.id === 'free-action' && r.kind === 'false-flags-rose'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('shipped known-good fixture produces zero false flags across all correction rules', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rule-replay-good-'));
+  try {
+    const result = runRuleReplay({
+      sessionsDir: join(root, 'missing-sessions'),
+      goodSample: DEFAULT_GOOD_SAMPLE,
+      baselinePath: join(root, 'no-baseline.json'),
+      now: NOW,
+    });
+    assert.equal(result.goodMissing, false);
+    assert.equal(result.passed, true);
+    const flagged = Object.entries(result.comparison.rules).filter(([, v]) => v.falseFlags > 0);
+    assert.deepEqual(flagged, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('compareRuleReplay treats improved falseFlags and new rules as passing and flags missing baseline rules', () => {
+  const baseline = {
+    version: 1 as const,
+    updatedAt: RECENT,
+    windowDays: 30,
+    rules: {
+      'pipe-status': { caught: 2, detected: 2, falseFlags: 1 },
+      'removed-rule': { caught: 1, detected: 1, falseFlags: 0 },
+    },
+  };
+  const improved = compareRuleReplay(
+    {
+      'pipe-status': { caught: 2, detected: 2, falseFlags: 0 },
+      'removed-rule': { caught: 1, detected: 1, falseFlags: 0 },
+      'new-rule': { caught: 1, detected: 1, falseFlags: 0 },
+    },
+    baseline,
+  );
+  assert.equal(improved.passed, true);
+  assert.ok(improved.improvements.some(i => i.id === 'pipe-status' && i.kind === 'false-flags-dropped'));
+
+  const missing = compareRuleReplay({ 'pipe-status': { caught: 2, detected: 2, falseFlags: 0 } }, baseline);
+  assert.equal(missing.passed, false);
+  assert.ok(missing.regressions.some(r => r.id === 'removed-rule' && r.kind === 'caught-dropped'));
+});
+
+test('gate-replay CLI writes baseline with --update into profile dir and exits non-zero on regression', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rule-replay-cli-'));
+  try {
+    const sessions = join(root, 'sessions');
+    const optchatHome = join(root, 'optchat-home');
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(join(optchatHome, 'profiles', 'demo'), { recursive: true });
+    writeFileSync(join(optchatHome, 'last-profile'), 'demo\n');
+    const good = join(root, 'good.jsonl');
+    const nowIso = new Date().toISOString();
+    writeJsonl(join(sessions, 's1.jsonl'), caughtAdmissionEvents(nowIso));
+    writeJsonl(good, cleanTurnEvents(nowIso));
+
+    const env = { ...process.env, OPTCHAT_HOME: optchatHome };
+    const cli = ['--experimental-transform-types', '--no-warnings', 'scripts/gate-replay.mjs'];
+
+    const outUpdate = execFileSync(process.execPath, [...cli, '--rules', '--update', '--sessions', sessions, '--good', good, '--json'], { encoding: 'utf8', env });
+    const parsedUpdate = JSON.parse(outUpdate);
+    assert.equal(parsedUpdate.updated, true);
+    assert.equal(parsedUpdate.passed, true);
+    const expectedBaseline = join(optchatHome, 'profiles', 'demo', 'replay-baseline.json');
+    assert.equal(existsSync(expectedBaseline), true);
+    assert.equal(JSON.parse(readFileSync(expectedBaseline, 'utf8')).rules['unchecked-own-work'].caught, 1);
+
+    const outPass = execFileSync(process.execPath, [...cli, '--rules', '--sessions', sessions, '--good', good, '--json'], { encoding: 'utf8', env });
+    assert.equal(JSON.parse(outPass).passed, true);
+
+    writeJsonl(join(sessions, 's1.jsonl'), cleanTurnEvents(nowIso));
+    assert.throws(
+      () => execFileSync(process.execPath, [...cli, '--rules', '--sessions', sessions, '--good', good], { encoding: 'utf8', env }),
+      (err: { status?: number }) => err.status === 1,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

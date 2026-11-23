@@ -85,4 +85,5 @@ test('the retro prompt asks for new measured findings, not the day\'s shipped fi
   assert.match(p, /at least three NEW problems/);
   assert.match(p, /already shipped during the day are not retro findings/);
   assert.match(p, /order -> merge time/);
+  assert.match(p, /npm run replay/);
 });

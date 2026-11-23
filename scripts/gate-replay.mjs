@@ -3,18 +3,31 @@
 
 
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { classifyEffects, decide, gitRepo, parseContract } from '../src/autonomy.ts';
 import { judgeSelfEdit } from '../src/autonomy-self-edit.ts';
 import { touchesContract } from '../src/authorization.ts';
+import { rules as correctionRules, scanCorrections } from '../src/correction-scan.ts';
+import { atomicWrite } from '../src/store.ts';
 import { selectedProfileDir } from './selected-profile.mjs';
 
 const DEFAULT_SESSIONS = join(homedir(), '.pi', 'agent', 'sessions');
-const DEFAULT_AUTONOMY = join(selectedProfileDir(), 'autonomy.json');
+const DAY_MS = 86_400_000;
+
+/** Default rolling window in days for rule replay scans. */
+export const DEFAULT_WINDOW_DAYS = 30;
+
+/** Default synthetic known-good transcript sample used to guard against false flags. */
+export const DEFAULT_GOOD_SAMPLE = fileURLToPath(new URL('../test/fixtures/replay-known-good.jsonl', import.meta.url));
+
+/** Default local baseline path inside the active profile directory (never committed to git). */
+export function defaultBaselinePath(root) {
+  return join(selectedProfileDir(root), 'replay-baseline.json');
+}
 
 const OUTCOME_RANK = { unanswered: 0, denied: 1, approved: 2 };
 
@@ -394,23 +407,230 @@ function formatTextSummary(summary) {
   return lines.join('\n');
 }
 
+/** Builds a per-rule snapshot from rolling-window session scan rows and known-good scan rows. */
+export function buildRuleSnapshot(sessionRows, goodRows) {
+  const bySession = new Map((sessionRows ?? []).map(r => [r.id, r]));
+  const byGood = new Map((goodRows ?? []).map(r => [r.id, r]));
+  const ids = [...new Set([
+    ...correctionRules.map(r => r.id),
+    ...bySession.keys(),
+    ...byGood.keys(),
+  ])].sort();
+  const out = Object.create(null);
+  for (const id of ids) {
+    const s = bySession.get(id);
+    const g = byGood.get(id);
+    out[id] = {
+      caught: s?.caught ?? 0,
+      detected: s?.detected ?? s?.count ?? 0,
+      falseFlags: g?.detected ?? g?.count ?? 0,
+    };
+  }
+  return out;
+}
+
+/** Reads a stored rule-replay baseline file, returning undefined when absent. */
+export function readRuleBaseline(baselinePath) {
+  if (!existsSync(baselinePath)) return undefined;
+  const parsed = JSON.parse(readFileSync(baselinePath, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || parsed.version !== 1 || !parsed.rules || typeof parsed.rules !== 'object') {
+    throw new Error(`Invalid replay baseline format: ${baselinePath}`);
+  }
+  return parsed;
+}
+
+/** Writes the rule-replay baseline atomically to `baselinePath`. */
+export function writeRuleBaseline(baselinePath, rulesMap, { windowDays = DEFAULT_WINDOW_DAYS, now = Date.now() } = {}) {
+  mkdirSync(dirname(baselinePath), { recursive: true });
+  const baseline = {
+    version: 1,
+    updatedAt: new Date(now).toISOString(),
+    windowDays,
+    rules: rulesMap,
+  };
+  atomicWrite(baselinePath, JSON.stringify(baseline, null, 2) + '\n');
+  return baseline;
+}
+
+/** Compares current per-rule caught/detected counts and known-good false flags against a stored baseline. */
+export function compareRuleReplay(current, baseline, { sessionsMissing = false, windowDays = DEFAULT_WINDOW_DAYS } = {}) {
+  const regressions = [];
+  const improvements = [];
+  const baseRules = baseline?.rules;
+  const ids = [...new Set([
+    ...Object.keys(current),
+    ...(baseRules ? Object.keys(baseRules) : []),
+  ])].sort();
+
+  for (const id of ids) {
+    const cur = Object.hasOwn(current, id) ? current[id] : { caught: 0, detected: 0, falseFlags: 0 };
+    const base = baseRules && Object.hasOwn(baseRules, id) ? baseRules[id] : undefined;
+
+    if (!sessionsMissing && base) {
+      if (cur.caught < base.caught) {
+        regressions.push({ id, kind: 'caught-dropped', baseline: base.caught, current: cur.caught });
+      } else if (cur.caught > base.caught) {
+        improvements.push({ id, kind: 'caught-rose', baseline: base.caught, current: cur.caught });
+      }
+      const baseDetected = base.detected ?? 0;
+      if (cur.detected < baseDetected) {
+        regressions.push({ id, kind: 'detected-dropped', baseline: baseDetected, current: cur.detected });
+      } else if (cur.detected > baseDetected) {
+        improvements.push({ id, kind: 'detected-rose', baseline: baseDetected, current: cur.detected });
+      }
+    }
+
+    const baseFalse = base ? (base.falseFlags ?? 0) : 0;
+    if (cur.falseFlags > baseFalse) {
+      regressions.push({ id, kind: 'false-flags-rose', baseline: baseFalse, current: cur.falseFlags });
+    } else if (base && cur.falseFlags < baseFalse) {
+      improvements.push({ id, kind: 'false-flags-dropped', baseline: baseFalse, current: cur.falseFlags });
+    }
+  }
+
+  return {
+    passed: regressions.length === 0,
+    hasBaseline: !!baseline,
+    sessionsMissing,
+    windowDays,
+    rules: current,
+    regressions,
+    improvements,
+  };
+}
+
+/** Runs the rolling-window correction replay gate and optionally rewrites the baseline with `update: true`. */
+export function runRuleReplay({
+  sessionsDir = DEFAULT_SESSIONS,
+  goodSample = DEFAULT_GOOD_SAMPLE,
+  baselinePath = defaultBaselinePath(),
+  windowDays = DEFAULT_WINDOW_DAYS,
+  now = Date.now(),
+  update = false,
+  scan = scanCorrections,
+} = {}) {
+  if (!Number.isInteger(windowDays) || windowDays <= 0) {
+    throw new Error(`Invalid windowDays: ${windowDays}`);
+  }
+  const sessionsMissing = !existsSync(sessionsDir);
+  const goodMissing = !goodSample || !existsSync(goodSample);
+
+  const sessionRows = sessionsMissing ? [] : scan(sessionsDir, now - windowDays * DAY_MS, now);
+  const goodRows = goodMissing ? [] : scan(goodSample, 0, Number.MAX_SAFE_INTEGER);
+  const current = buildRuleSnapshot(sessionRows, goodRows);
+  const existing = readRuleBaseline(baselinePath);
+  const comparison = compareRuleReplay(current, existing, { sessionsMissing, windowDays });
+
+  if (update) {
+    if (sessionsMissing) {
+      return {
+        passed: comparison.passed,
+        updated: false,
+        baselinePath,
+        sessionsMissing,
+        goodMissing,
+        comparison,
+      };
+    }
+    writeRuleBaseline(baselinePath, current, { windowDays, now });
+    return {
+      passed: true,
+      updated: true,
+      baselinePath,
+      sessionsMissing,
+      goodMissing,
+      comparison,
+    };
+  }
+
+  return {
+    passed: comparison.passed,
+    updated: false,
+    baselinePath,
+    sessionsMissing,
+    goodMissing,
+    comparison,
+  };
+}
+
+/** Formats a human-readable summary of a rule replay gate run. */
+export function formatRuleReplay(result) {
+  const { comparison } = result;
+  const entries = Object.values(comparison.rules);
+  const totalCaught = entries.reduce((sum, r) => sum + r.caught, 0);
+  const totalDetected = entries.reduce((sum, r) => sum + r.detected, 0);
+  const totalFalse = entries.reduce((sum, r) => sum + r.falseFlags, 0);
+  const status = result.updated ? 'UPDATED' : result.passed ? 'PASSED' : 'FAILED';
+  const lines = [
+    `Rule Replay Gate ${status} (${comparison.windowDays}d window, ${entries.length} rules, caught=${totalCaught}, detected=${totalDetected}, falseFlags=${totalFalse})`,
+    `Baseline: ${result.baselinePath}`,
+  ];
+  if (result.sessionsMissing) {
+    lines.push(`Sessions directory not found; skipped ${comparison.windowDays}-day transcript scan.`);
+  }
+  if (result.goodMissing) {
+    lines.push('Known-good sample not found; skipped false-flag check.');
+  }
+  if (!comparison.hasBaseline && !result.updated) {
+    lines.push('No baseline found yet. Run `npm run replay -- --update` to save one.');
+  }
+  if (comparison.improvements.length) {
+    lines.push('Improvements:');
+    for (const imp of comparison.improvements) {
+      lines.push(`  [IMPROVED]  ${imp.id} (${imp.kind}): ${imp.baseline} -> ${imp.current}`);
+    }
+  }
+  if (comparison.regressions.length) {
+    lines.push('Regressions:');
+    for (const reg of comparison.regressions) {
+      lines.push(`  [REGRESSED] ${reg.id} (${reg.kind}): ${reg.baseline} -> ${reg.current}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function main() {
   const { values } = parseArgs({
     args: process.argv.slice(2),
     options: {
+      rules: { type: 'boolean', default: false },
+      update: { type: 'boolean', default: false },
+      baseline: { type: 'string' },
+      good: { type: 'string' },
+      days: { type: 'string' },
       sessions: { type: 'string', default: DEFAULT_SESSIONS },
-      autonomy: { type: 'string', default: DEFAULT_AUTONOMY },
+      autonomy: { type: 'string' },
       json: { type: 'boolean', default: false },
       out: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
   if (values.help) {
-    console.log('usage: node --import tsx scripts/gate-replay.mjs [--sessions DIR] [--autonomy FILE] [--json] [--out FILE]');
+    console.log('usage: node --experimental-transform-types scripts/gate-replay.mjs [--rules] [--update] [--days N] [--sessions DIR] [--good FILE] [--baseline FILE] [--json]');
+    console.log('       node --experimental-transform-types scripts/gate-replay.mjs --autonomy FILE [--sessions DIR] [--json] [--out FILE]');
     return;
   }
 
-  const autonomyPath = resolve(values.autonomy);
+  const ruleMode = values.rules || values.update || Boolean(values.baseline) || Boolean(values.good) || Boolean(values.days);
+  if (ruleMode) {
+    const windowDays = values.days ? Number(values.days) : DEFAULT_WINDOW_DAYS;
+    const result = runRuleReplay({
+      sessionsDir: values.sessions,
+      goodSample: values.good ?? DEFAULT_GOOD_SAMPLE,
+      baselinePath: values.baseline ? resolve(values.baseline) : defaultBaselinePath(),
+      windowDays,
+      update: values.update,
+    });
+    if (values.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(formatRuleReplay(result));
+    }
+    if (!result.passed) process.exitCode = 1;
+    return;
+  }
+
+  const autonomyPath = resolve(values.autonomy ?? join(selectedProfileDir(), 'autonomy.json'));
   const contract = parseContract(JSON.parse(readFileSync(autonomyPath, 'utf8')));
   const contractDir = resolve(autonomyPath, '..');
   const asks = extractGateAsks(values.sessions);

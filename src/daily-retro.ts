@@ -31,7 +31,7 @@ export function retroPrompt(date: string, machine: string[] = []) {
     'Find at least three NEW problems in speed, quality and precision. Fixes already shipped during the day are not retro findings and never go in the DM; a retro that only lists them failed.',
     'For each one, find why it happened and ship the fix now, without asking: harness code (PR + auto-merge), the active profile AGENTS.md, skills, and autonomy.json',
     '(edit/write of the file; rules for deploy, production writes, paid runs, messages, consent, publish, force-push, installs, `*` and the default stay his and need his tap).',
-    'Each fix gets a regression test or a measurement where one applies; mirror profile changes in dotfiles payload/pi.',
+    'Each fix gets a regression test or a measurement where one applies; before shipping a guard or claim-check change, run `npm run replay` to confirm no rule regresses (`npm run replay -- --update` only after reviewing an intentional baseline change); mirror profile changes in dotfiles payload/pi.',
     ...machine.length ? ['Measured cost centres of the last 24 h on this PC (machine ledger; the `machine` tool has the detail). Treat each as a candidate optimisation, and say which you changed:', ...machine.map(line => `- ${line}`)] : [],
     'Nightly predictions: read today’s operator messages and use `predictions` to score each prediction made yesterday for today as hit (with a short matching quote) or miss; never store full operator messages.',
     'Based on recurring asks, open PRs/issues and dates, predict the three things he is most likely to ask tomorrow. Record all three with status predicted, tomorrow’s date and brief evidence before acting.',
