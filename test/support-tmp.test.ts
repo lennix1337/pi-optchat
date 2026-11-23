@@ -2,7 +2,7 @@ import './support.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,4 +19,15 @@ test('a test process keeps tmpdir() on its own root and TMP on the outermost roo
   assert.ok(seen.temp.startsWith(tmpdir()) && seen.temp !== tmpdir(), 'the child root is nested in its parent\'s');
   assert.equal(existsSync(seen.temp), false, 'the child removed its own root when it ended');
   assert.equal(existsSync(seen.tmp), true, 'the shared TMP is still there for the files that run after it');
+});
+
+test('a test process started by a runner that does not load support.ts keeps the TMP it inherited', () => {
+  const inherited = mkdtempSync(join(tmpdir(), 'inherited-tmp-'));
+  const code = `console.log(process.env.TMP)`;
+  const child = spawnSync(process.execPath, ['--experimental-transform-types', '--no-warnings', '--import', pathToFileURL(join(import.meta.dirname, 'support.ts')).href, '-e', code], { encoding: 'utf8', env: { ...process.env, TMP: inherited, TEMP: inherited, TMPDIR: inherited } });
+  try {
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout.trim(), inherited, 'a TMP that outlives the file is not replaced by one the file deletes at exit');
+    assert.equal(existsSync(inherited), true);
+  } finally { rmSync(inherited, { recursive: true, force: true }); }
 });
