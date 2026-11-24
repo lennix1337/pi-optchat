@@ -210,14 +210,17 @@ function runningBlocks(team: string[] | undefined): unknown[] {
 function quotaBlocks(text: string): unknown[] {
   const quota = QUOTA.exec(text)?.[1];
   if (!quota) return [];
-  const blocks: unknown[] = [homeHeader('Cota · 7 dias')];
+  const blocks: unknown[] = [homeHeader('Cotas das contas')];
+  const gauge = (title: string, match: RegExpExecArray | null) => {
+    if (!match) return undefined;
+    const used = Math.max(0, Math.min(100, Number(match[1]))), count = Math.round(used / 10);
+    const color = used >= 80 ? '🔴' : used >= 50 ? '🟡' : '🟢';
+    return { type: 'mrkdwn', text: `*${title}*\n${color} \`${'▰'.repeat(count)}${'▱'.repeat(10 - count)}\` ${used}%\n_${homeEscape(match[2] ?? '')}_` };
+  };
   for (const line of quota.split('\n').slice(0, 30)) {
-    const seven = /7d (\d+)%/.exec(line);
-    if (seven) {
-      const used = Math.max(0, Math.min(100, Number(seven[1]))), count = Math.round(used / 10);
-      const name = line.replace(/^•\s*/, '').split(/`|5h |7d /)[0]!.trim();
-      blocks.push(homeSection(`${homeEscape(name)}  \`${'▰'.repeat(count)}${'▱'.repeat(10-count)}\` ${used}%`));
-    } else blocks.push(homeSection(homeEscape(line.slice(0, 200))));
+    const fields = [gauge('5 horas', /5h (\d+)% \(([^)]*)\)/.exec(line)), gauge('Semana', /7d (\d+)% \(([^)]*)\)/.exec(line))].filter(Boolean);
+    const name = line.replace(/^•\s*/, '').split(/`|5h |7d /)[0]!.trim(), stale = /_leitura de [^_]+_/.exec(line)?.[0];
+    blocks.push(fields.length ? { type: 'section', text: { type: 'mrkdwn', text: `*${homeEscape(name)}*${stale ? ` · ${stale}` : ''}` }, fields } : homeSection(homeEscape(line.slice(0, 200))));
   }
   return blocks;
 }
