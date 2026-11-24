@@ -72,14 +72,31 @@ export function validProductionHealth(value: unknown): value is ProductionHealth
   });
 }
 
-const defaultFetch: Fetcher = async (url, timeoutMs) => {
+/** Judges look at the top of a page (html tag, build id, title): reading past this only measures the probing machine's download. */
+export const PROBE_BODY_LIMIT = 64 * 1024;
+
+export const defaultFetch: Fetcher = async (url, timeoutMs) => {
   const started = performance.now();
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'follow', headers: { 'user-agent': 'optchat-health/1' } });
   const headersMs = Math.round(performance.now() - started);
   const colo = /-([A-Z]{3})$/.exec(response.headers.get('cf-ray') ?? '')?.[1], cache = response.headers.get('cf-cache-status') ?? undefined;
   const edge = [colo, cache].filter(Boolean).join(' ') || undefined;
-  return { status: response.status, body: (await response.text()).slice(0, 1_000_000), headersMs, ...(edge ? { edge } : {}) };
+  return { status: response.status, body: await readHead(response), headersMs, ...(edge ? { edge } : {}) };
 };
+
+async function readHead(response: Response): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let body = '';
+  try {
+    while (body.length < PROBE_BODY_LIMIT) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      body += decoder.decode(value, { stream: true });
+    }
+  } finally { await reader.cancel().catch(() => {}); }
+  return body.slice(0, PROBE_BODY_LIMIT);
+}
 
 const reason = (error: unknown) => {
   if (!(error instanceof Error)) return String(error);
@@ -102,7 +119,8 @@ async function runRemote(probe: Probe, fetcher: Fetcher, now: () => number): Pro
     const ms = now() - started, { problem, build } = probe.judge(status, body);
     const seconds = (n: number) => (n / 1000).toFixed(1);
     const split = headersMs === undefined ? '' : ` (${seconds(headersMs)}s até o servidor responder, ${seconds(Math.max(0, ms - headersMs))}s lendo a página)`;
-    const slow = !problem && ms > probe.slowMs ? `lento: ${seconds(ms)}s${split}` : undefined;
+    const serverMs = headersMs ?? ms;
+    const slow = !problem && serverMs > probe.slowMs ? `lento: ${seconds(ms)}s${split}` : undefined;
     return { ok: !problem && !slow, ms, ...(problem ?? slow ? { problem: problem ?? slow } : {}), ...(build ? { build } : {}), ...(headersMs === undefined ? {} : { waitMs: headersMs }), ...(edge ? { edge } : {}) };
   } catch (error) {
     return { ok: false, ms: now() - started, problem: error instanceof Error && error.name === 'TimeoutError' ? 'sem resposta em 15s' : `falha de rede: ${reason(error)}` };
