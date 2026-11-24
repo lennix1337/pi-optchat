@@ -213,3 +213,10 @@ test('wake minutes: the switch turns it off, and the floor and ceiling come from
   assert.equal(paceWakeMinutes(5, pacing, 'acct', slowState, slow, NOW), 5, 'a base below the floor is never raised by a surplus');
   assert.equal(paceWakeMinutes(30, { ...pacing, heartbeatPaceCeilMin: 40 }, 'acct', stateFor('acct', 44), hourly('acct', 20, 1), NOW), 40);
 });
+
+test('wake minutes do not replace newer history with a stale cached reading', () => {
+  const rows = hourly('acct', 20, 1);
+  const stale = stateFor('acct', 20);
+  stale.usageByProvider.acct.fetchedAt = NOW - DAY;
+  assert.equal(paceWakeMinutes(30, pacing, 'acct', stale, rows, NOW), paceWakeMinutes(30, pacing, 'acct', stateFor('acct', 44), rows, NOW));
+});
