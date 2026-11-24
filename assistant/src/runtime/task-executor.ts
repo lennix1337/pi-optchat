@@ -6,7 +6,8 @@ import { WorkerRuntime, type Job } from './worker.ts';
 import { ToolTask } from './tool-task.ts';
 import type { EffectRequest } from '../policy/gateway.ts';
 
-export type DraftInput = { title: string; response: string | null };
+/** `context` is the origin note of a task a routine created (an event's quoted data); the draft treats it as untrusted data. */
+export type DraftInput = { title: string; response: string | null; context?: string };
 /** `options`: up to four short answers the operator may pick for this one question, instead of typing. */
 export type DraftResult = { kind: 'input' | 'draft'; text: string; options?: string[] };
 /** The question a waiting task asks now; its options answer only this task revision and input request. */
@@ -156,7 +157,11 @@ export class TaskExecutor {
       }
     }
     const id = job?.id ?? this.id(task, attempt);
-    if (!job) this.runtime.enqueue(id, 'draft', { title: task.title, response: this.options.store.getResponse(task.taskId, task.inputRevision) });
+    if (!job) {
+      const origin = this.options.store.creation(task.taskId)?.event;
+      const fromRoutine = origin?.source.sourceKind === 'worker' && origin.source.actorId.startsWith('routine:');
+      this.runtime.enqueue(id, 'draft', { title: task.title, response: this.options.store.getResponse(task.taskId, task.inputRevision), ...(fromRoutine ? { context: origin.evidence.reference } : {}) });
+    }
     return { task, id };
   }
   /** One task that cannot be prepared fails on its own, before any generation, so it never blocks the others. */

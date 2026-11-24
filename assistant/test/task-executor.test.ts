@@ -47,6 +47,20 @@ async function fixture(fn: (f: { store: TaskStore; dir: string; create(id: strin
   }
 }
 
+test('a routine task hands the draft its origin note, which carries the event data; a panel task gets none', async () => fixture(async f => {
+  const calls: DraftInput[] = [];
+  const executor = new TaskExecutor({ store: f.store, profileId: PROFILE, databasePath: join(f.dir, 'routine-executor.sqlite'), channels: [CHANNEL],
+    admit: origin => origin.source.actorId.startsWith('routine:'), run: async input => { calls.push(input); return { kind: 'draft', text: 'ok' }; } });
+  assert.equal(await executor.acquire(), true);
+  f.create('ev', 'Revisar evento', CHANNEL, { actorId: 'routine:pr-review', sourceKind: 'worker' });
+  f.create('panel', 'Escrever convite');
+  for (let i = 0; i < 4; i++) await executor.tick();
+  const byTitle = Object.fromEntries(calls.map(call => [call.title, call]));
+  assert.equal(byTitle['Revisar evento'].context, 'web-panel');
+  assert.equal('context' in byTitle['Escrever convite'], false);
+  await executor.close();
+}));
+
 test('a panel task runs once, asks for input, consumes the persisted answer and ends ready for review', async () => fixture(async f => {
   const calls: DraftInput[] = [];
   const executor = await f.executor(async input => {
