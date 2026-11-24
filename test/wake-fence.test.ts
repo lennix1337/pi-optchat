@@ -134,7 +134,7 @@ test('direct human guidance disarms a wake child, but wake guidance does not', a
     running: new Map([['child', live]]), history: { records: new Map([['child', info]]) },
     options: { unattendedWake: () => wake }, memory: { append() {} }, save() {} };
   info.model = 'openai/gpt-6';
-  await assert.rejects(Children.prototype.tell.call(fake as never, 'child', 'continue', 'manager'), /outside the plan/);
+  await assert.rejects(Children.prototype.tell.call(fake as never, 'child', 'continue', 'manager', undefined, false, { model: 'openai/gpt-6' }), /outside the plan/);
   info.model = 'openai-codex/gpt-6';
   await Children.prototype.tell.call(fake as never, 'child', 'continue', 'manager');
   assert.equal(info.unattendedWake, true);

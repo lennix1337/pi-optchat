@@ -677,7 +677,7 @@ export class Children {
         const id = ids?.[index] ?? randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
         const unattendedWake = !!(this.options.unattendedWake?.() || (parentId && this.history.records.get(parentId)?.unattendedWake));
-        if (unattendedWake && !planModel(`${selected.provider}/${selected.model}`) && !this.options.orderGrant?.({ action: 'paid', targets: ['subagent'] })) throw new Error('Unattended wake: a model outside the plan needs an operator grant.');
+        if (unattendedWake && task.model !== undefined && !planModel(`${selected.provider}/${selected.model}`) && !this.options.orderGrant?.({ action: 'paid', targets: ['subagent'] })) throw new Error('Unattended wake: a model outside the plan needs an operator grant.');
         const session = await this.open({ id, directory, depth, parentId, connected, unattendedWake, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined, patrol: task.patrol, mcp: task.mcp,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
@@ -1185,7 +1185,7 @@ export class Children {
     const live = this.running.get(id);
     const run = live?.info ?? this.history.records.get(id);
     const human = !this.options.unattendedWake?.() && !caller && !notice && (source === 'user' || source === 'manager' && this.options.operatorTurn?.() === true);
-    if (run && !human && (run.unattendedWake || this.options.unattendedWake?.()) && !planModel(route?.model ?? run.model) && !this.options.orderGrant?.({ action: 'paid', targets: ['subagent'] })) throw new Error('Unattended wake: a model outside the plan needs an operator grant.');
+    if (run && !human && (run.unattendedWake || this.options.unattendedWake?.()) && route?.model !== undefined && !planModel(route.model) && !this.options.orderGrant?.({ action: 'paid', targets: ['subagent'] })) throw new Error('Unattended wake: a model outside the plan needs an operator grant.');
     if (route && (live || source !== 'manager' || !this.history.records.has(id))) throw new Error(`${id} is active or unavailable; routing can only change on a settled worker.`);
     if (!live && source === 'manager' && run) return this.track(this.resume(id, message, caller, route, undefined, human));
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) throw new Error(`${id} is finishing. Its report will arrive on its own${live.info.connected || source === 'user' ? '' : '; tell it again after that to resume it'}.`);
