@@ -82,6 +82,8 @@ for (const enabled of [false, true]) test(`a wake may spawn a worker on the plan
   assert.equal(await call('spawn', { tasks: [{ task: 'review' }] }), undefined);
   assert.equal(await call('spawn', { tasks: [{ task: 'review', model: 'openai-codex/gpt-6' }] }), undefined);
   assert.equal(await call('spawn', { tasks: [{ task: 'review', model: 'anthropic-account-2/claude' }] }), undefined);
+  assert.equal(await call('spawn', { tasks: [{ task: 'review', model: 'anthropic/claude' }] }), undefined);
+  assert.equal(await call('spawn', { tasks: [{ task: 'review', model: 'openai-codex-account-2/gpt-6:low' }] }), undefined);
   assert.equal((await call('spawn', { tasks: [{ task: 'review', model: 'openai/gpt-6' }] }))?.block, true);
   assert.equal((await call('bash', { command: 'pi -p test' }))?.block, true);
 });

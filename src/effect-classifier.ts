@@ -420,7 +420,7 @@ export const runsDeploy = (text: string) => segments(text, '').some(({ command, 
 export const externalEffectsOf = (text: string) => segments(text, '').flatMap(({ command }) => commandExternalEffects(commandWords(command)));
 
 const paidTools = new Set(['subagent', 'tell']);
-export const planModel = (model: string) => /^(?:openai-codex|anthropic-account-\d+|agy)\//i.test(model);
+export const planModel = (model: string) => /^(?:openai-codex(?:-account-\d+)?|anthropic(?:-account-\d+)?|agy)\//i.test(model);
 export const planSpawn = (input: unknown) => record(input) && Array.isArray(input.tasks) && input.tasks.length > 0 && input.tasks.every((task: unknown) => record(task) && (task.model === undefined || typeof task.model === 'string' && planModel(task.model)));
 /** Only literal task calls can be proved here; dynamic spawn expressions remain paid. */
 export function paidDelegationCode(code: string) {
