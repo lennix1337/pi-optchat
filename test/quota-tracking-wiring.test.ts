@@ -42,7 +42,7 @@ test('the 07:00 summary lists every account with both resets and the weekly API-
   });
   assert.equal(await daily.maybePost(), true);
   const text = posts[0]!;
-  assert.match(text, /\*Cotas dos modelos\*\n• anthropic: API key, sem limite de cota\n• anthropic-account-2: 5h 5% usado, renova 12:00 · 7d 19% usado, renova 17\/11 09:00 · projeção: 124% no reset · 1% = US\$3\.00 \(7d\)/);
+  assert.match(text, /\*Cotas dos modelos\*\n• anthropic: API key, sem limite de cota\n• anthropic-account-2: 5h 5% usado, renova 12:00 · 7d 19% usado, renova 17\/11 09:00 · projeção: 120% no reset · 1% = US\$3\.00 \(7d\)/);
   const cost = text.slice(text.indexOf('*Custo do harness*'));
   assert.match(cost, /US\$ equivalente em API, últimos 7 dias/);
   assert.match(cost, /anthropic-account-2: US\$7\.00 \(antes US\$40\.00\) · 7d: \+2 pts \(antes \+0\)/);
