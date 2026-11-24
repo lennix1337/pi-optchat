@@ -270,6 +270,7 @@ export interface HeartbeatDeps {
   maxWakes: () => number;
   /** Wake the main agent every interval without asking the cheap model first. */
   always: () => boolean;
+  paused?: () => boolean;
   /** Why a check would be pointless right now (the main agent is working, reports are queued), or undefined. */
   busy: () => string | undefined;
   /** The operator's radar snapshot, taken before each check or scheduled wake; absent when no radar is configured. */
@@ -451,7 +452,7 @@ export class Heartbeat {
   arm() {
     this.disarm();
     const configured = this.deps.minutes();
-    if (configured <= 0) return;
+    if (configured <= 0 || this.deps.paused?.()) return;
     const minutes = this.pacedMinutes(configured);
     this.armedMinutes = minutes;
 
@@ -474,9 +475,10 @@ export class Heartbeat {
     } catch { return configured; }
   }
   disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; this.nextAt = undefined; }
+  pause() { this.disarm(); this.epoch++; }
   /** Event trigger between heartbeats: requests a wake immediately for a new urgent obligation, or moves the existing timer up for a sooner deadline. */
   notifyObligations(): boolean {
-    if (!this.deps.obligations || this.deps.minutes() <= 0 || this.firing || this.deps.busy() !== undefined) return false;
+    if (!this.deps.obligations || this.deps.minutes() <= 0 || this.deps.paused?.() || this.firing || this.deps.busy() !== undefined) return false;
     const at = this.deps.now(), saved = this.saved();
     const live = this.readObligations(at);
     const { fresh } = urgentObligations(live, saved.obligationSeen ?? [], saved.dueSeen ?? []);
@@ -579,10 +581,11 @@ export class Heartbeat {
   }
 
   private async fire() {
+    if (this.deps.paused?.()) return;
     const reason = this.deps.busy();
     if (reason !== undefined) { this.arm(); return; }
 
-    const epoch = this.epoch, spoke = () => epoch !== this.epoch;
+    const epoch = this.epoch, spoke = () => epoch !== this.epoch || !!this.deps.paused?.();
     const radar = this.deps.radar ? await this.deps.radar() : undefined;
     if (spoke()) return;
     if (this.deps.busy() !== undefined) { this.arm(); return; }

@@ -53,6 +53,19 @@ async function children(dir: string, settings?: () => Partial<ProfileConfig>) {
   return { children: made, releases, close: async () => { for (const release of releases.values()) release(); await made.close(); await memory.close(); } };
 }
 
+test('heartbeat pause persists without changing its schedule', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-pause-'));
+  try {
+    const config = { ...defaults, heartbeatMinutes: 30, heartbeatWakes: 4, heartbeatPaused: true };
+    saveConfig(dir, config);
+    assert.equal(loadConfig(dir).heartbeatPaused, true);
+    assert.equal(loadConfig(dir).heartbeatMinutes, 30);
+    assert.equal(loadConfig(dir).heartbeatWakes, 4);
+    saveConfig(dir, { ...loadConfig(dir), heartbeatPaused: false });
+    assert.equal(loadConfig(dir).heartbeatPaused, false);
+  } finally { removeDir(dir); }
+});
+
 test('a config.json from before settings existed loads with the defaults, and settings round-trip', () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-config-'));
   try {

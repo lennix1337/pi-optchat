@@ -227,7 +227,7 @@ export class SlackBridge {
     /** The quota economy (US$ per 1%) the `cota` command adds to each account, when there is one. */
     economy?: () => Economy | undefined;
     /** The thinking level as `/thinking` sees it, and setting it: the `thinking` command and the Home's menu. */
-    thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking'];
+    thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking']; proactivityPaused?: CommandState['proactivityPaused'];
     /** On (setting `slackEveryAnswer`, for a Pi nobody watches at a terminal): the final answer of every run, not only of Slack and wakes, goes to the DM. */
     everyAnswer?: () => boolean;
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
@@ -522,8 +522,8 @@ export class SlackBridge {
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
-    const { model, failover, now, models, select, abort, economy, thinking, setThinking } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking };
+    const { model, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused } = this.options;
+    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused };
   }
 
   /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
@@ -819,7 +819,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; onInbound?: (channel: string | null, at: number) => void } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;

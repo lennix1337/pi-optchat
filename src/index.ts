@@ -538,6 +538,7 @@ export default function optchat(host: ExtensionAPI) {
         return config && paceWakeMinutes(base, config, provider, readQuotaState(), readQuotaHistory(profile.dir), Date.now());
       },
       maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
+      paused: () => own()?.config.heartbeatPaused ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       queued: () => nextQueueItem(profile.dir) !== undefined,
 
@@ -1015,7 +1016,7 @@ export default function optchat(host: ExtensionAPI) {
 
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch {   } },
     { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, onInbound: () => heartbeat?.notifyObligations(), deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
-      everyAnswer: () => active?.config.slackEveryAnswer === true,
+      everyAnswer: () => active?.config.slackEveryAnswer === true, proactivityPaused: () => active?.config.heartbeatPaused === true,
 
       items: () => {
         const a = active;
@@ -1510,7 +1511,7 @@ export default function optchat(host: ExtensionAPI) {
   /** The settings page's options: every model Pi is logged in to, with the thinking levels it takes, sorted so each provider's models sit together. */
   const settingsOptions = (ctx: ExtensionContext, a: Active) => ({ profile: a.name, config: a.config, main,
     models: ctx.modelRegistry.getAvailable().map(m => ({ name: `${m.provider}/${m.id}`, thinking: getSupportedThinkingLevels(m) })).sort((x, y) => x.name.localeCompare(y.name)),
-    save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); syncRouterTools(pi, config.routerMode); setImmediate(() => a.sync.schedule()); } });
+    save: (config: ProfileConfig) => { saveConfig(a.dir, config); syncSearch(config); syncRouterTools(pi, config.routerMode); if (config.heartbeatPaused && !a.config.heartbeatPaused) heartbeat?.pause(); setImmediate(() => { if (!a.config.heartbeatPaused && idle() && heartbeat?.nextAt === undefined) heartbeat?.arm(); a.sync.schedule(); }); } });
   const pickModel = async (ctx: ExtensionContext, role: 'compactor' | 'subagent') => {
     const a = required();
     if (ctx.mode !== 'tui') throw new Error('Choosing a model requires interactive Pi. Edit config.json in the profile directory instead.');
