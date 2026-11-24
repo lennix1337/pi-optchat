@@ -5,10 +5,13 @@
  * a stable slot key (local date and time, or the instant for intervals), so a
  * repeated or rewound clock maps to the same slot instead of a new run.
  */
-export type Schedule =
+export type TimedSchedule =
   | { kind: 'daily'; at: string; timeZone: string }
   | { kind: 'weekly'; days: readonly number[]; at: string; timeZone: string }
   | { kind: 'interval'; minutes: number; anchor: number };
+/** An event trigger has no occurrences: an inbound event from the named source fires it, keyed by the delivery id. */
+export type EventTrigger = { kind: 'event'; source: string };
+export type Schedule = TimedSchedule | EventTrigger;
 export type Occurrence = { at: number; slot: string };
 
 const MINUTE = 60_000;
@@ -69,6 +72,8 @@ function validateWallClock(input: Record<string, unknown>): { at: string; timeZo
   return { at, timeZone };
 }
 
+const SOURCE = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+
 /** Throws `invalid_schedule` for anything the scheduler cannot honour exactly. Returns a normalized copy. */
 export function validateSchedule(value: unknown): Schedule {
   const input = value as Record<string, unknown> | null;
@@ -78,6 +83,10 @@ export function validateSchedule(value: unknown): Schedule {
       const { minutes, anchor } = input!;
       check(isInt(minutes, 1, 366 * 24 * 60) && isInt(anchor, 0, Number.MAX_SAFE_INTEGER));
       return { kind: 'interval', minutes: minutes as number, anchor: anchor as number };
+    }
+    case 'event': {
+      check(typeof input!.source === 'string' && SOURCE.test(input!.source));
+      return { kind: 'event', source: input!.source as string };
     }
     case 'daily': return { kind: 'daily', ...validateWallClock(input!) };
     case 'weekly': {
@@ -90,7 +99,7 @@ export function validateSchedule(value: unknown): Schedule {
 }
 
 /** The first occurrence strictly after `after`. */
-export function nextOccurrence(schedule: Schedule, after: number): Occurrence {
+export function nextOccurrence(schedule: TimedSchedule, after: number): Occurrence {
   if (schedule.kind === 'interval') {
     const step = schedule.minutes * MINUTE;
     const k = after < schedule.anchor ? 0 : Math.floor((after - schedule.anchor) / step) + 1;
@@ -111,7 +120,7 @@ export function nextOccurrence(schedule: Schedule, after: number): Occurrence {
 }
 
 /** Occurrences in (from, to], counted up to `cap`; the last one is the newest due slot. */
-export function dueOccurrences(schedule: Schedule, from: number, to: number, cap = 1000): { count: number; capped: boolean; latest: Occurrence | null } {
+export function dueOccurrences(schedule: TimedSchedule, from: number, to: number, cap = 1000): { count: number; capped: boolean; latest: Occurrence | null } {
   let count = 0; let latest: Occurrence | null = null; let cursor = from;
   while (count < cap) {
     const next = nextOccurrence(schedule, cursor);

@@ -13,6 +13,7 @@ import { securityHeaders, WebChannel, type PromptSource } from '../channels/web.
 import type { SetupComponent } from '../setup.ts';
 import type { InspectionSource } from '../channels/inspection.ts';
 import { authenticate } from './auth.ts';
+import { hookRoute, type EventIntake } from './hooks.ts';
 import { BadRequest, Conflict, mutation, numberParam, query, readBody, send, shape, taskIdParam } from './io.ts';
 
 
@@ -136,8 +137,8 @@ const SLACK_EXTRA: Record<string, { shape: Record<string, (v: unknown) => boolea
   },
 };
 
-type OptionalRoutes = { briefings?: BriefingProvider | undefined; slack?: SlackBridge | undefined; executor?: (() => ExecutorStatus) | undefined; journal?: JournalApi | undefined };
-async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, { briefings, slack, executor, journal }: OptionalRoutes): Promise<void> {
+type OptionalRoutes = { briefings?: BriefingProvider | undefined; slack?: SlackBridge | undefined; executor?: (() => ExecutorStatus) | undefined; journal?: JournalApi | undefined; events?: EventIntake | undefined };
+async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStore, token: string, profileId: string, onError: ErrorObserver, web: WebChannel | null, { briefings, slack, executor, journal, events }: OptionalRoutes): Promise<void> {
   try {
     if (!isAllowedRemote(req.socket.remoteAddress)) { send(res, 403, { error: 'Forbidden' }); return; }
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -146,6 +147,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
       await web.handle(req, res, url); return;
     }
     if (req.headers.origin !== undefined) { send(res, 403, { error: 'Forbidden' }); return; }
+    if (events && url.pathname.startsWith('/v1/hooks/')) { await hookRoute(req, res, url, events); return; }
     if (!authenticate(req.headers.authorization, token)) { send(res, 401, { error: 'Unauthorized' }); return; }
     if (url.pathname === '/v1/briefing' && briefings && (req.method === 'GET' || req.method === 'POST')) {
       query(url, []);
@@ -231,10 +233,10 @@ export type AssistantServerOptions = OptionalRoutes & {
   setup?: () => SetupComponent[]; artifacts?: ArtifactRegistry; voice?: VoiceProvider; prompt?: PromptSource; inspection?: InspectionSource; journal?: JournalApi; onError?: ErrorObserver;
 };
 
-export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, voice, prompt, inspection, journal, briefings, slack, executor, onError = diagnostic => safeLog(diagnostic.cause ? `assistant HTTP internal request failure (${diagnostic.cause})` : 'assistant HTTP internal request failure') }: AssistantServerOptions): Server {
+export function createAssistantServer({ store, token, profileId, web = false, webOrigins, setup, artifacts, voice, prompt, inspection, journal, briefings, slack, executor, events, onError = diagnostic => safeLog(diagnostic.cause ? `assistant HTTP internal request failure (${diagnostic.cause})` : 'assistant HTTP internal request failure') }: AssistantServerOptions): Server {
   if (!text(token) || !text(profileId) || !store.matchesProfile(profileId) || (artifacts && !artifacts.matchesProfile(profileId))) throw new TypeError('Invalid server binding');
   const channel = web ? new WebChannel({ store, token, profileId, setup, origins: webOrigins, artifacts, voice, prompt, briefings, inspection }) : null;
-  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal }).catch(error => { reportError(onError, error); res.destroy(); }); });
+  const server = createServer((req, res) => { void handle(req, res, store, token, profileId, onError, channel, { briefings, slack, executor, journal, events }).catch(error => { reportError(onError, error); res.destroy(); }); });
   server.requestTimeout = 15_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 10_000; // external: Node's default 5-second timeout can cause ECONNRESET for stalled clients.
