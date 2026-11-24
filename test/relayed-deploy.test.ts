@@ -27,3 +27,8 @@ test('a codemode script handing the relayed deploy to vault_run is classified as
   const effects = classifyEffects({ tool: 'codemode', input: { code }, cwd: '/home/ubuntu' }, noRepo);
   assert.ok(effects.some(effect => effect.action === 'deploy'), JSON.stringify(effects));
 });
+
+test('a package-manager deploy script is a deploy whatever its name suffix or flags before the script', () => {
+  for (const command of ['npm run deploy:prod', 'npm run deploy-web', 'npm --prefix web run deploy', 'npm run -s deploy', 'pnpm -C web run deploy', 'pnpm run deploy:web', 'yarn deploy', 'yarn run deploy:prod']) assert.equal(runsDeploy(command), true, command);
+  for (const command of ['npm run deployment-docs', 'npm run build', 'npm run deploy:prod --dry-run', 'npm run test -- deploy', 'npm install deploy', 'pnpm deploy', 'yarn build deploy']) assert.equal(runsDeploy(command), false, command);
+});
