@@ -30,8 +30,9 @@ export interface PaceForecast {
   /** Room left at the reset, in points (negative: by how much the limit is overshot); 0 when already exhausted. */
   headroomPct: number;
   suggestion: string;
-  /** `recent`: the last 24 hours; `window`: the average since the window opened (too few recent readings); `exhausted`. */
-  basis: 'recent' | 'window' | 'exhausted';
+  /** `recent`: the last 24 hours; `window`: the average since the window opened (too few recent readings); `since-reset`: the
+   * window is less than a day old, so what was used since the reset is spread over a full day; `exhausted`. */
+  basis: 'recent' | 'window' | 'since-reset' | 'exhausted';
   /** Points per hour the projection assumes, and hours from the latest reading to the reset. */
   ratePerHour: number;
   hoursLeft: number;
@@ -53,16 +54,15 @@ export function forecastPace(rows: readonly QuotaRow[], now: number): PaceForeca
   const hoursLeft = Math.max(0, (window.resetAt - latest.fetchedAt) / HOUR_MS);
   if (window.used >= 100) return { ...base, projectedAtReset: 100, verdict: 'over', headroomPct: 0, suggestion: PACE_OVER_SUGGESTION, basis: 'exhausted', ratePerHour: 0, hoursLeft };
 
+  const elapsed = latest.fetchedAt - (window.resetAt - WEEK_MS);
+  if (elapsed < PACE_MIN_SPAN_MS) return undefined;
   const period = weekly.filter(r => Math.abs(r.w7d!.resetAt - window.resetAt) < SAME_PERIOD_MS);
   const first = period.find(r => r.fetchedAt >= latest.fetchedAt - PACE_RECENT_MS)!;
   const span = latest.fetchedAt - first.fetchedAt;
-  let ratePerHour: number, basis: 'recent' | 'window';
-  if (span >= PACE_MIN_SPAN_MS) { ratePerHour = (window.used - first.w7d!.used) / (span / HOUR_MS); basis = 'recent'; }
-  else {
-    const elapsed = latest.fetchedAt - (window.resetAt - WEEK_MS);
-    if (elapsed < PACE_MIN_SPAN_MS) return undefined;
-    ratePerHour = window.used / (elapsed / HOUR_MS); basis = 'window';
-  }
+  let ratePerHour: number, basis: PaceForecast['basis'];
+  if (elapsed < PACE_RECENT_MS) { ratePerHour = window.used / (PACE_RECENT_MS / HOUR_MS); basis = 'since-reset'; }
+  else if (span >= PACE_MIN_SPAN_MS) { ratePerHour = (window.used - first.w7d!.used) / (span / HOUR_MS); basis = 'recent'; }
+  else { ratePerHour = window.used / (elapsed / HOUR_MS); basis = 'window'; }
   ratePerHour = Math.max(0, ratePerHour);
   const projectedAtReset = round1(window.used + ratePerHour * hoursLeft);
   const verdict: PaceVerdict = projectedAtReset >= 100 ? 'over' : projectedAtReset >= PACE_TARGET_PCT ? 'on-track' : 'under';
