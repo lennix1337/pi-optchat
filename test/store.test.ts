@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Memory, type Entry, type Summary } from '../src/memory.ts';
-import { appendRecent, FileStore, localDay, readJsonl, type Lease, type Saved, type Store } from '../src/store.ts';
+import { appendRecent, atomicWrite, FileStore, localDay, readJsonl, type Lease, type Saved, type Store } from '../src/store.ts';
 import { holdProfile, HEARTBEAT_MS, isWindows, ProfileBusyError, profileSocket } from '../src/profiles.ts';
 import { removeDir, withTempDir } from './support.ts';
 
@@ -213,4 +213,16 @@ test('a past day of the log is parsed once: later opens take its records from a 
     appendFileSync(past, JSON.stringify(entry(3, 'late')) + '\n');
     assert.deepEqual(new FileStore(dir, () => {}).load(1).entries[0], cold);
   } finally { removeDir(dir); }
+});
+
+test('atomicWrite targeting an existing directory fails immediately without blocking on lock retries or leaving a temp file', () => {
+  withTempDir('optchat-atomic-dir-', dir => {
+    const target = join(dir, 'occupied');
+    mkdirSync(target);
+    const started = performance.now();
+    assert.throws(() => atomicWrite(target, 'payload'));
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 500, `atomicWrite over a directory took ${Math.round(elapsed)} ms instead of failing immediately`);
+    assert.equal(existsSync(`${target}.${process.pid}.tmp`), false, 'temp file is removed after failure');
+  });
 });

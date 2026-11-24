@@ -14,6 +14,7 @@ for (const name of ['HOME', 'USERPROFILE', 'OPTCHAT_HOME', 'PI_CODING_AGENT_DIR'
 
 
 process.env.OPTCHAT_WINPATH_GUARD = 'off';
+process.env.OPTCHAT_HOST_PROBES = 'off';
 for (const name of ['OPTCHAT_PROFILE', 'OPTCHAT_REFRESH_AT', 'OPTCHAT_EFFECT_APPROVALS']) delete process.env[name];
 
 /** Removes a test's temp dir. On Windows a process that just exited can hold its cwd a moment longer than `process.kill(pid, 0)` admits, so rmdir fails with EBUSY (#164). rmSync's own `maxRetries` doesn't cover that: it retries only after ENOTEMPTY, not a first rmdir that fails EBUSY. Under the full suite's load the hold outlasted ten 100 ms waits (headless.test.ts EPERM, 2026-10-25), so each wait grows: 5.5 s in all. */

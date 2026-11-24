@@ -35,7 +35,7 @@ export type FactKey = keyof Facts;
 
 
 
-export interface SourceSpec<T> { ttlMs: number; timeoutMs: number; read: () => T | Promise<T> }
+export interface SourceSpec<T> { ttlMs: number; timeoutMs: number; read: (signal?: AbortSignal) => T | Promise<T> }
 export type Sources = { [K in FactKey]?: SourceSpec<Facts[K]> };
 interface Entry { value?: unknown; loaded?: number; tried?: number; error?: string; inflight?: Promise<void> }
 
@@ -51,12 +51,16 @@ const afterTurns = (turns: number, fn: () => void) => {
 
 export class Collector {
   private readonly entries = new Map<FactKey, Entry>();
+  private readonly abort = new AbortController();
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  private closed = false;
   private burst = 0;
   constructor(private readonly sources: Sources, private readonly now: () => number = Date.now) {}
 
   private entry(key: FactKey) { return this.entries.get(key) ?? this.entries.set(key, {}).get(key)!; }
 
   private kick(key: FactKey) {
+    if (this.closed) return;
     const spec = this.sources[key] as SourceSpec<unknown> | undefined;
     if (!spec) return;
     const entry = this.entry(key), now = this.now();
@@ -65,15 +69,28 @@ export class Collector {
     const turn = this.burst++;
     if (turn === 0) setImmediate(() => { this.burst = 0; });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${spec.timeoutMs} ms`)), spec.timeoutMs); timer.unref?.(); });
-    const run = () => Promise.resolve().then(() => spec.read());
+    const limit = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${spec.timeoutMs} ms`)), spec.timeoutMs);
+      timer.unref?.();
+      this.timers.add(timer);
+    });
+    const run = () => this.closed ? Promise.reject(new Error('closed')) : Promise.resolve().then(() => spec.read(this.abort.signal));
     const read = turn > 0
       ? new Promise<unknown>((resolve, reject) => afterTurns(turn, () => { run().then(resolve, reject); }))
       : run();
 
-    read.then(value => { entry.value = value; entry.loaded = this.now(); entry.error = undefined; }, () => undefined);
-    entry.inflight = Promise.race([read, limit]).then(() => undefined, error => { entry.error = error instanceof Error ? error.message : String(error); })
-      .finally(() => { if (timer) clearTimeout(timer); entry.inflight = undefined; });
+    read.then(value => { if (this.closed) return; entry.value = value; entry.loaded = this.now(); entry.error = undefined; }, () => undefined);
+    entry.inflight = Promise.race([read, limit]).then(() => undefined, error => { if (!this.closed) entry.error = error instanceof Error ? error.message : String(error); })
+      .finally(() => { if (timer) { clearTimeout(timer); this.timers.delete(timer); } entry.inflight = undefined; });
+  }
+
+  /** Aborts in-flight probes and stops pending timers so shutdown never waits on background OS queries. */
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.abort.abort();
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
   }
 
   /** The cached facts, immediately. */
@@ -92,12 +109,23 @@ export class Collector {
    * loop alive (with only unref'd timers pending, a process with nothing else to do would exit on this await); `hold: false` is for
    * a background warm-up that must not delay shutdown.
    */
-  async refresh(maxWaitMs = 8_000, hold = true): Promise<Facts> {
-    for (const key of Object.keys(this.sources) as FactKey[]) { const entry = this.entry(key); entry.tried = undefined; this.kick(key); }
+  async refresh(maxWaitMs = 8_000, hold = true, force = true): Promise<Facts> {
+    if (this.closed) return this.snapshot();
+    for (const key of Object.keys(this.sources) as FactKey[]) {
+      const entry = this.entry(key);
+      if (force) entry.tried = undefined;
+      this.kick(key);
+    }
     const pending = [...this.entries.values()].map(e => e.inflight).filter((p): p is Promise<void> => p !== undefined);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([Promise.all(pending), new Promise<void>(resolve => { timer = setTimeout(resolve, maxWaitMs); if (!hold) timer.unref?.(); })]);
-    if (timer) clearTimeout(timer);
+    if (pending.length) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(pending), new Promise<void>(resolve => {
+        timer = setTimeout(resolve, maxWaitMs);
+        if (!hold) timer.unref?.();
+        this.timers.add(timer);
+      })]);
+      if (timer) { clearTimeout(timer); this.timers.delete(timer); }
+    }
     return this.snapshot();
   }
 
@@ -255,7 +283,10 @@ export class Situation {
   }
 
   /** Warms the cache so the first turn already has facts; bounded. */
-  warm(maxWaitMs = 8_000) { return this.options.collector.refresh(maxWaitMs, false).then(() => undefined, () => undefined); }
+  warm(maxWaitMs = 8_000) { return this.options.collector.refresh(maxWaitMs, false, false).then(() => undefined, () => undefined); }
+
+  /** Stops in-flight probes when the session shuts down. */
+  close() { this.options.collector.close(); }
 
   /**
    * The digest for the run `id`, or undefined when nothing material changed. Asked again for the same run it answers the same,

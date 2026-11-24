@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { open, readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -100,7 +100,9 @@ function renameRetryingWindowsLocks(temporary: string, file: string) {
   const started = Date.now();
   for (let wait = 10; ; wait = Math.min(wait * 2, 200)) {
     try { renameSync(temporary, file); return; } catch (error) {
-      if (!WINDOWS_LOCKS.has((error as NodeJS.ErrnoException).code ?? '') || Date.now() - started >= RENAME_RETRY_MS) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      const occupiedDir = code === 'EPERM' && (() => { try { return lstatSync(file).isDirectory(); } catch { return false; } })();
+      if (occupiedDir || !WINDOWS_LOCKS.has(code) || Date.now() - started >= RENAME_RETRY_MS) {
         try { rmSync(temporary, { force: true }); } catch {   }
         throw error;
       }

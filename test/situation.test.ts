@@ -356,3 +356,33 @@ test('the on-demand snapshot lists every fact, normal or not, and what could not
   assert.match(text, /^trabalho do OptChat: 1 agentes, 2 shells$/m);
   assert.match(text, /leituras com erro: memory: timed out after 1000 ms/);
 });
+
+test('warm does not re-run sources already kicked within their ttl', async () => {
+  let reads = 0;
+  const collector = new Collector({ docker: { ttlMs: 60_000, timeoutMs: 1_000, read: async () => { reads++; return 'up' as const; } } });
+  const situation = new Situation({ collector });
+  situation.forRun(1);
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  await situation.warm(1_000);
+  assert.equal(reads, 1, 'warm reuses the fresh read instead of spawning a second round');
+});
+
+test('closing a situation aborts in-flight child probes so the process exits at once', async () => {
+  const situationMod = pathToFileURL(join(import.meta.dirname, '../src/situation.ts')).href;
+  const sourcesMod = pathToFileURL(join(import.meta.dirname, '../src/situation-sources.ts')).href;
+  const script = `import { Collector, Situation } from '${situationMod}';
+    import { run } from '${sourcesMod}';
+    const collector = new Collector({
+      docker: { ttlMs: 60_000, timeoutMs: 30_000, read: async (signal) => { await run(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], 30_000, signal); return 'up'; } },
+    });
+    const situation = new Situation({ collector });
+    situation.forRun(1);
+    setTimeout(() => { situation.close(); }, 50);`;
+  const started = performance.now();
+  const ran = await new Promise<{ code: number | null; stderr: string }>(resolve => execFile(process.execPath, ['--experimental-transform-types', '--no-warnings', '--input-type=module', '-e', script], { timeout: 5_000 },
+    (error, _stdout, stderr) => resolve({ code: error ? (error as { code?: number }).code ?? 1 : 0, stderr: String(stderr ?? '') })));
+  const elapsed = performance.now() - started;
+  assert.equal(ran.code, 0, ran.stderr);
+  assert.ok(elapsed < 3_000, `process exited in ${Math.round(elapsed)} ms instead of waiting on the aborted probe`);
+});

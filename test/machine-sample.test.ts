@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { HELPER_SOURCE } from '../src/machine-helper-source.ts';
 import { spawn } from 'node:child_process';
-import { HelperSampler, parseSampleLine, type Sample } from '../src/machine-sample.ts';
+import { ensureHelper, HelperSampler, parseSampleLine, type Sample } from '../src/machine-sample.ts';
 import { tempDir } from './support.ts';
 
 
@@ -91,4 +92,23 @@ test('the real helper gives the command line of a fresh process whose parent is 
     assert.ok(mine?.cmd?.includes('orphan-probe'), 'an orphan carries its command line on its first sample');
     assert.ok(!samples.at(-1)!.procs.some(p => p.pid === launcher.pid), 'the launcher is gone, as in the incident');
   } finally { sampler.stop(); if (orphan) try { process.kill(orphan); } catch {   } close(); }
+});
+
+test('stopping a sampler during helper compilation aborts the build and leaves no status flip or temp exe', async () => {
+  const { dir, close } = tempDir('optchat-machine-abort-');
+  try {
+    await assert.rejects((ensureHelper as (dir: string, signal?: AbortSignal) => Promise<string>)(dir, AbortSignal.abort()), /abort/i);
+    if (process.platform === 'win32') {
+      const statuses: string[] = [];
+      const sampler = new HelperSampler({ dir, rootPid: process.pid, intervalMs: 500, onSample: () => {}, onStatus: s => statuses.push(s.state) });
+      const starting = sampler.start();
+      sampler.stop();
+      await starting;
+      assert.equal(sampler.status.state, 'stopped');
+      assert.equal(statuses.at(-1), 'stopped', `statuses after stop: ${JSON.stringify(statuses)}`);
+      const bin = join(dir, 'bin');
+      const temps = existsSync(bin) ? readdirSync(bin).filter(f => f.endsWith('.tmp.exe')) : [];
+      assert.deepEqual(temps, [], 'aborted compilation leaves no temporary exe');
+    }
+  } finally { close(); }
 });

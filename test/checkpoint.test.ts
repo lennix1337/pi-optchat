@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { ChildProcess, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
@@ -76,5 +76,28 @@ test('a turn checkpoint returns once the commit lands and leaves the pack to fin
     writeFileSync(join(dir, 'big2.bin'), randomBytes(17_000_000));
     await checkpoint(dir);
     assert.equal(packingRun(dir), undefined, 'the shutdown checkpoint waits for the pack');
+  } finally { removeDir(dir); }
+});
+
+test('an incremental checkpoint spawns only add and commit, and a no-op checkpoint makes no empty commit', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-checkpoint-fast-'));
+  try {
+    writeFileSync(join(dir, 'note.txt'), 'first\n');
+    await checkpoint(dir);
+    writeFileSync(join(dir, 'note.txt'), 'second\n');
+    let gitSpawns = 0;
+    const proto = ChildProcess.prototype as unknown as { spawn(options?: { file?: string }): unknown };
+    const origSpawn = proto.spawn;
+    t.mock.method(proto, 'spawn', function (this: ChildProcess, options?: { file?: string }) {
+      if (String(options?.file ?? '').toLowerCase().includes('git')) gitSpawns++;
+      return origSpawn.call(this, options);
+    });
+    await checkpoint(dir, { background: true });
+    assert.ok(gitSpawns <= 2, `incremental checkpoint spawned ${gitSpawns} git processes (expected <= 2)`);
+    assert.equal(execFileSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim(), '2');
+    gitSpawns = 0;
+    await checkpoint(dir, { background: true });
+    assert.ok(gitSpawns <= 2, `no-op checkpoint spawned ${gitSpawns} git processes (expected <= 2)`);
+    assert.equal(execFileSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim(), '2', 'no-op checkpoint creates no extra commit');
   } finally { removeDir(dir); }
 });

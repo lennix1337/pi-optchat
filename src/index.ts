@@ -657,7 +657,7 @@ export default function optchat(host: ExtensionAPI) {
   };
   /** The machine sampler: one per main session, never in workers (they do not load this extension). Alerts reach the main agent like a shell's. */
   const startMachineSense = (ctx: ExtensionContext, memory: unknown) => {
-    if (ctx.mode === 'print' || ctx.mode === 'json' || process.platform !== 'win32') return;
+    if (ctx.mode === 'print' || ctx.mode === 'json' || process.platform !== 'win32' || process.env.OPTCHAT_HOST_PROBES === 'off') return;
     const service = MachineService.start({ agentDir: getAgentDir(), lowerOwn: () => active?.config.machineLower ?? true,
       notify: text => { if (!stopping && active?.memory === memory) void deliverReport(text).catch(error => ctx.ui.notify(`Machine alert could not be delivered: ${errorText(error)}`, 'error')); },
       runs: () => active?.children.runs().map(run => ({ id: run.id, started: run.started })) ?? [] });
@@ -669,8 +669,9 @@ export default function optchat(host: ExtensionAPI) {
   };
   /** What changed on the PC and in the harness, said at the start of a turn (the `situationDigest` setting); one per main session. */
   const startSituation = (ctx: ExtensionContext, dir: string) => {
-    if (ctx.mode === 'print' || ctx.mode === 'json') return;
+    if (ctx.mode === 'print' || ctx.mode === 'json' || process.env.OPTCHAT_HOST_PROBES === 'off') return;
     if (situationWarmTimer) clearTimeout(situationWarmTimer);
+    situation?.close();
     const current = situation = new Situation({ stateFile: join(dir, 'situation-state.json'), logFile: join(dir, 'situation-digest.jsonl'),
       collector: new Collector(realSources({ agentDir: getAgentDir(), machine: () => machineService()?.sense.now(),
         work: () => ({ agents: active?.children.working.length ?? 0, shells: runningShells(shells).length }) })) });
@@ -679,7 +680,7 @@ export default function optchat(host: ExtensionAPI) {
   };
   const stop = async (reason?: string) => {
     if (situationWarmTimer) clearTimeout(situationWarmTimer); situationWarmTimer = undefined;
-    situation = undefined;
+    situation?.close(); situation = undefined;
     machineService()?.stop(); shells.setLifecycleObserver(undefined);
     heartbeat?.disarm(); heartbeat = undefined; clearWakeWorkers();
     outage?.close(); outage = undefined;
