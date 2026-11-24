@@ -196,3 +196,15 @@ test('homeStatus: every account shows both windows by name, a renewed window as 
   assert.match(text, /• Claude conta 2 `▰▰▰▰▱▱▱▱▱▱` 5h 40% \(renova \d\d:\d\d\) · 7d 6% \(renova \d\d\/\d\d \d\d:\d\d\)\n/);
   assert.match(text, /• agy conta 1 `▰▰▰▰▱▱▱▱▱▱` 5h 0% \(renovou\) · 7d 38% \(renova \d\d\/\d\d \d\d:\d\d\) · _leitura de \d\d\/\d\d \d\d:\d\d_/);
 });
+
+test('homeStatus: the 7-day window carries the pace projection when the economy has one, and only that window', () => {
+  const HOUR = 3_600_000, failover = { usageByProvider: {
+    'anthropic-account-2': { fetchedAt: NOW - 60_000,
+      primary: { usedPercent: 40, resetAt: NOW + HOUR, windowSeconds: 18_000 },
+      secondary: { usedPercent: 26, resetAt: NOW + 96 * HOUR, windowSeconds: 604_800 } },
+  } };
+  const pace = { provider: 'anthropic-account-2', used: 26, resetAt: NOW + 96 * HOUR, projectedAtReset: 50, verdict: 'under' as const, headroomPct: 50, suggestion: 'x', basis: 'recent' as const, ratePerHour: 0.25, hoursLeft: 96 };
+  const economy = { now: NOW, accounts: [{ provider: 'anthropic-account-2', pace }], weeks: [] };
+  assert.match(homeStatus(state({ failover: () => failover, economy: () => economy }), true), /5h 40% \(renova \d\d:\d\d\) · 7d 26% \(renova \d\d\/\d\d \d\d:\d\d · projeção: 50% no reset\)/);
+  assert.doesNotMatch(homeStatus(state({ failover: () => failover }), true), /projeção/);
+});

@@ -1,6 +1,7 @@
 import { QUOTA_FILE } from './quota-health.ts';
 import { QUOTA_HISTORY_FILE, readQuotaHistory, sampleQuotaFromCache } from './quota-history.ts';
 import { analyzeQuota, type Economy } from './quota-economy.ts';
+import { paceForecasts } from './quota-pace.ts';
 import { aggregateCalls, readUsageAggregate, updateUsageAggregate, type UsageAggregate } from './usage-aggregate.ts';
 import { readJsonOr } from './store.ts';
 
@@ -18,8 +19,11 @@ export interface EconomyFiles {
 export function loadEconomy({ dir, now = Date.now(), weeks = 2, cacheFile = QUOTA_FILE, aggregate = readUsageAggregate(dir) }: EconomyFiles): Economy {
   const cached = Object.keys(record(record(readJsonOr<unknown>(cacheFile, {})).usageByProvider));
 
-  const history = readQuotaHistory(dir, QUOTA_HISTORY_FILE).filter(row => !aggregate || row.fetchedAt >= aggregate.from);
-  const economy = analyzeQuota(history, aggregate ? aggregateCalls(aggregate) : [], now, weeks, cached);
+  const all = readQuotaHistory(dir, QUOTA_HISTORY_FILE);
+  const history = all.filter(row => !aggregate || row.fetchedAt >= aggregate.from);
+  const base = analyzeQuota(history, aggregate ? aggregateCalls(aggregate) : [], now, weeks, cached);
+  const pace = new Map(paceForecasts(all, now).map(f => [f.provider, f] as const));
+  const economy = { ...base, accounts: base.accounts.map(a => pace.has(a.provider) ? { ...a, pace: pace.get(a.provider)! } : a) };
   return aggregate ? economy : { ...economy, usageMissing: true };
 }
 

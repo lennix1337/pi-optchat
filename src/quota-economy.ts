@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { QuotaRow } from './quota-history.ts';
+import type { PaceForecast } from './quota-pace.ts';
 import { nonnegative } from './diagnostic-metadata.ts';
 import { readJsonOr } from './store.ts';
 
@@ -98,7 +99,8 @@ export interface WindowEconomy {
   /** API-equivalent of a whole window: 100 x usdPerPoint. */
   fullWindowUsd?: number;
 }
-export interface AccountEconomy { provider: string; plan?: string; w5h?: WindowEconomy; w7d?: WindowEconomy }
+export interface AccountEconomy { provider: string; plan?: string; w5h?: WindowEconomy; w7d?: WindowEconomy;
+  /** Where the 7-day meter will be at its reset at the recent burn rate (quota-pace.ts); set by `loadEconomy`. */ pace?: PaceForecast }
 export interface WeekAccount { spend: Spend; byRole: Record<RoleKey, Spend>; points7d: number; points5h: number }
 export interface Week {
   /** Exclusive start and inclusive end, ms; `index` 0 is the latest seven days. */

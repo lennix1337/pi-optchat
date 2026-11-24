@@ -2,6 +2,8 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { brasiliaDayTime } from './pc-health.ts';
+import { readQuotaHistory } from './quota-history.ts';
+import { paceForecasts, paceText } from './quota-pace.ts';
 import type { LocalProbe, ProbeResult } from './prod-health.ts';
 import { nonnegative, safeIdentifier } from './diagnostic-metadata.ts';
 
@@ -100,11 +102,12 @@ export function staleReadings(state: unknown, now: number) {
 export function quotaProbe(file = QUOTA_FILE, now: () => number = Date.now): LocalProbe {
   return {
     name: 'Cota dos modelos',
-    check(): ProbeResult {
+    check(context?: { dir: string }): ProbeResult {
       const state = readQuotaState(file), at = now();
       const all = accounts(state, at), stale = staleReadings(state, at);
       if (!all.length && !stale.length) return { ok: true, ms: 0, detail: 'sem medição válida; disponibilidade desconhecida' };
-      const detail = `leitura em cache: ${all.map(describe).join('; ')}`;
+      const pace = context ? paceForecasts(readQuotaHistory(context.dir), at).filter(f => all.some(a => a.id === f.provider)) : [];
+      const detail = `leitura em cache: ${all.map(describe).join('; ')}${pace.length ? ` · ritmo semanal: ${pace.map(f => `${f.provider} ${paceText(f)} (${f.suggestion})`).join('; ')}` : ''}`;
       if (stale.length) return { ok: false, ms: 0, detail, problem: `leitura de cota parada: ${stale.map(s => `${s.id} desde ${brasiliaDayTime(s.fetchedAt)}`).join('; ')}` };
       if (all.some(a => !a.blockedUntil)) return { ok: true, ms: 0, detail };
       return { ok: false, ms: 0, detail, problem: `contas monitoradas esgotadas; a primeira volta ${brasiliaDayTime(Math.min(...all.map(a => a.blockedUntil!)))}` };
