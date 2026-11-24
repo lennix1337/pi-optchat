@@ -11,7 +11,9 @@ const usage = `Usage: node assistant/scripts/routine.mjs <command> --config <abs
   delete --id <id>                      its run history stays
   history --id <id> [--limit <n>]
 Schedules: {"kind":"daily","at":"HH:MM","timeZone":"<IANA>"}, {"kind":"weekly","days":[0..6],"at":"HH:MM","timeZone":"<IANA>"},
-{"kind":"interval","minutes":<n>,"anchor":<epoch ms>}. A new routine is paused; it runs only after resume, in a service
+{"kind":"interval","minutes":<n>,"anchor":<epoch ms>}, or an inbound event source named in the service's "events" config:
+{"kind":"event","source":"<name>"} (one task per delivery; the event text is data on the task's origin, never instructions).
+A new routine is paused; it runs only after resume, in a service
 started with "routines":true. Each due slot becomes one queued task in the channel; the draft executor takes it only
 when that channel is one of its own. Running this command is the operator's authority; the service needs no restart.`;
 

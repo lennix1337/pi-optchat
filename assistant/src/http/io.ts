@@ -22,9 +22,9 @@ export function send(res: ServerResponse, status: number, value: unknown, header
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(value));
 }
-export async function readBody(req: IncomingMessage, limit = maxBody): Promise<unknown> {
-  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) throw new BadRequest();
-  const bytes = await new Promise<Buffer>((resolve, reject) => {
+/** The request body exactly as sent (a signature covers these bytes), with the same size and stall limits as `readBody`. */
+export async function readRaw(req: IncomingMessage, limit = maxBody): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
     let idle: NodeJS.Timeout;
@@ -45,6 +45,10 @@ export async function readBody(req: IncomingMessage, limit = maxBody): Promise<u
     req.on('data', data); req.once('end', end); req.once('error', interrupted); req.once('aborted', interrupted);
     resetIdle();
   });
+}
+export async function readBody(req: IncomingMessage, limit = maxBody): Promise<unknown> {
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) throw new BadRequest();
+  const bytes = await readRaw(req, limit);
   try { return JSON.parse(bytes.toString('utf8')); } catch (error) { if (error instanceof SyntaxError) throw new BadRequest(); throw error; }
 }
 export function query(url: URL, allowed: string[]): void {

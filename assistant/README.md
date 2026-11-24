@@ -166,6 +166,14 @@ Manage them with `node assistant/scripts/routine.mjs <list|create|resume|pause|d
 - No overlap: a slot due while the previous job is unfinished records `skipped_overlap`. A full worker queue keeps the claim and retries. `maxFailures` consecutive failures pause it (`consecutive_failures`); an `effect_uncertain` job pauses it at once (`effect_uncertain`) for reconciliation. `get`/`list` show state, reason, `nextRunAt` and failures; `history` lists runs newest first.
 - `adopt()` imports an existing wake or dream as a paused routine with no capabilities and no authorization: its old permissions do not carry over, and it does not run until an operator re-grants and activates it. The existing OptChat wakes and `optchat-dream` task are not changed by this library.
 
+### Event routines (opt-in)
+
+A routine whose schedule is `{"kind":"event","source":"<name>"}` runs on an inbound event instead of the clock. The server config needs `"routines":true` plus `"events":{"sources":{"<name>":{"format":"github"|"shared","secret":"<16-200 printable characters>"}}}` (off when omitted; `events` without `routines` is refused). That opens `POST /v1/hooks/<name>` on the existing loopback listener; the service never exposes a port, and reaching it from outside is the operator's own proxy decision.
+
+- Authentication is per source and replaces the bearer token on this route only. `github` checks `X-Hub-Signature-256` (`sha256=` + HMAC-SHA256 of the raw body) and reads `X-GitHub-Delivery` / `X-GitHub-Event`; `shared` compares `X-Webhook-Secret` and reads `X-Delivery-Id` / optional `X-Event-Type`. A missing or wrong signature is `401` and records nothing; a signed event without a usable delivery id is `400`; an unknown source is `404`.
+- The delivery id is the slot key (`event:<id>`), so the job id is `routine:<id>:event:<delivery>` and a retried delivery is answered `{"ok":true,"created":0,"duplicate":1}` without a second task. Each active routine of the source gets exactly one task per delivery; paused routines ignore events. An event routine never fires on the clock and ignores overlap.
+- The event body is untrusted data: cut to 2,500 characters, kept as one JSON string literal after a fixed label in the task's origin event (`GET /v1/events`), and never merged into the routine's title, channel, capabilities or authorization. The draft executor reads only the task title and response, so the event text does not reach the model today.
+
 ## Secret vault (T05, library + operator command)
 
 `src/secrets/vault.ts` stores secrets that can be injected but never read back. There is no method that returns a value.

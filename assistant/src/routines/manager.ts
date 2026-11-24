@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { WorkerRuntime, Job } from '../runtime/worker.ts';
 import { boundedInteger as bounded } from '../limits.ts';
 import { immediate } from '../store/transaction.ts';
-import { dueOccurrences, nextOccurrence, validateSchedule, type Schedule } from './schedule.ts';
+import { dueOccurrences, nextOccurrence, validateSchedule, type Schedule, type TimedSchedule } from './schedule.ts';
 
 /**
  * Routines enqueue jobs on the T03 worker; they never run work or effects
@@ -15,6 +15,10 @@ import { dueOccurrences, nextOccurrence, validateSchedule, type Schedule } from 
  * Ticks never replay every missed slot. A clock that moves backwards fires
  * nothing, and every job id is derived from its slot, so the same occurrence
  * is enqueued at most once no matter how many schedulers tick.
+ *
+ * An event routine (`schedule.kind === 'event'`) has no slots and never ticks: `fireEvent` records one claimed
+ * run per active routine of the event's source, keyed by the delivery id, so a redelivery maps to the same slot.
+ * The event body is stored as a bounded string next to the routine's own input and never merged into it.
  */
 export type MissedPolicy = 'once' | 'skip';
 export type RoutineState = 'active' | 'paused' | 'deleted';
@@ -28,6 +32,9 @@ export type Routine = {
   missed: MissedPolicy; graceMs: number; maxFailures: number; source: string;
   state: RoutineState; pausedReason: string | null; activatedBy: string | null; nextRunAt: number | null; failures: number;
 };
+/** An inbound event as the routine receives it: `body` is untrusted text, cut to `EVENT_BODY_MAX` characters. */
+export type RoutineEvent = { source: string; deliveryId: string; type: string | null; body: string };
+export const EVENT_BODY_MAX = 2500;
 export type RunStatus = 'claimed' | 'enqueued' | 'done' | 'failed' | 'skipped_overlap' | 'skipped_missed' | 'queue_full' | 'clock_skew';
 export type RunRecord = { routineId: string; slot: string; at: number; status: RunStatus; jobId: string | null; missed: number; detail: string | null };
 export type RoutineOptions = {
@@ -45,6 +52,7 @@ type RunRow = { routine_id: string; slot: string; at: number; status: RunStatus;
 
 const MAX_INPUT = 16 * 1024;
 const terminalFailure = new Set(['failed', 'blocked', 'cancelled', 'effect_uncertain']);
+const nextRun = (schedule: Schedule, after: number): number | null => schedule.kind === 'event' ? null : nextOccurrence(schedule, after).at;
 
 function identifier(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 120 || !/^[A-Za-z0-9._:-]+$/u.test(value)) throw new Error('invalid_id');
@@ -122,8 +130,8 @@ export class RoutineManager {
     this.transaction(() => {
       const row = this.row(id);
       if (row.state === 'active') return;
-      const next = nextOccurrence(JSON.parse(row.schedule) as Schedule, this.now());
-      this.db.prepare("UPDATE routines SET state = 'active', paused_reason = NULL, activated_by = ?, next_run = ?, failures = 0 WHERE id = ?").run(activatedBy, next.at, id);
+      const next = nextRun(JSON.parse(row.schedule) as Schedule, this.now());
+      this.db.prepare("UPDATE routines SET state = 'active', paused_reason = NULL, activated_by = ?, next_run = ?, failures = 0 WHERE id = ?").run(activatedBy, next, id);
     });
     return this.get(id);
   }
@@ -149,7 +157,7 @@ export class RoutineManager {
       const broadened = capabilities !== row.capabilities || authorization !== row.authorization || kind !== row.kind || profile !== row.profile_id;
       const state = broadened && row.state === 'active' ? 'paused' : row.state;
       const reason = state === 'paused' && row.state === 'active' ? 'needs_reactivation' : row.paused_reason;
-      const next = state === 'active' ? nextOccurrence(schedule, this.now()).at : null;
+      const next = state === 'active' ? nextRun(schedule, this.now()) : null;
       this.db.prepare(`UPDATE routines SET profile_id = ?, kind = ?, input = ?, schedule = ?, capabilities = ?, authorization = ?, missed = ?, grace_ms = ?, max_failures = ?,
         state = ?, paused_reason = ?, next_run = ? WHERE id = ?`).run(profile, kind, patch.input === undefined ? row.input : encode(patch.input), JSON.stringify(schedule),
         capabilities, authorization, missed, bounded(patch.graceMs, row.grace_ms, 0, 86_400_000), bounded(patch.maxFailures, row.max_failures, 1, 100), state, reason, next, id);
@@ -203,7 +211,7 @@ export class RoutineManager {
       }
       this.db.prepare('UPDATE routines SET last_tick = ? WHERE id = ?').run(now, id);
       if (row.next_run > now) return null;
-      const schedule = JSON.parse(row.schedule) as Schedule;
+      const schedule = JSON.parse(row.schedule) as TimedSchedule;
       const due = dueOccurrences(schedule, row.next_run - 1, now);
       const latest = due.latest!;
       const missed = due.count - 1;
@@ -226,6 +234,27 @@ export class RoutineManager {
       this.db.prepare('UPDATE routines SET current_job = ? WHERE id = ?').run(jobId, id);
       return jobId;
     });
+  }
+  /**
+   * Records one claimed run for each active routine listening to `event.source`; the next tick enqueues it. A delivery
+   * already recorded for a routine is counted as a duplicate and changes nothing. Paused routines ignore events.
+   */
+  fireEvent(event: RoutineEvent): { created: number; duplicate: number } {
+    const slot = `event:${identifier(event.deliveryId)}`;
+    const body = event.body.length > EVENT_BODY_MAX ? event.body.slice(0, EVENT_BODY_MAX) : event.body;
+    const data = { source: event.source, deliveryId: event.deliveryId, type: event.type, body, truncated: body.length < event.body.length };
+    const now = this.now();
+    const result = { created: 0, duplicate: 0 };
+    const listening = (this.db.prepare("SELECT * FROM routines WHERE state = 'active' ORDER BY id").all() as Row[])
+      .filter(row => { const schedule = JSON.parse(row.schedule) as Schedule; return schedule.kind === 'event' && schedule.source === event.source; });
+    for (const row of listening) {
+      const jobId = `routine:${row.id}:${slot}`;
+      const input = encode({ routineId: row.id, profileId: row.profile_id, slot, scheduledAt: now, missed: 0, capabilities: JSON.parse(row.capabilities),
+        authorization: row.authorization, input: JSON.parse(row.input), event: data });
+      const recorded = this.transaction(() => this.record({ routineId: row.id, slot, at: now, status: 'claimed', jobId, input }));
+      if (recorded) { result.created++; this.boundary('claimed', jobId); } else result.duplicate++;
+    }
+    return result;
   }
   /** Inserts a run record once per (routine, slot); returns false when the slot was already recorded. */
   private record(run: { routineId: string; slot: string; at: number; status: RunStatus; jobId?: string; missed?: number; detail?: string | null; input?: string }): boolean {

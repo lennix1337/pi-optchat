@@ -53,6 +53,13 @@ Optional routines (off when omitted): "routines":true
 Runs the routines managed with assistant/scripts/routine.mjs. A routine starts paused; only an operator's
 resume activates it. Each due slot becomes one queued task in the routine's channel (missed slots are
 consolidated into one); the draft executor takes it when that channel is one of its channels.
+Optional event routines (off when omitted; needs "routines":true):
+"events":{"sources":{"<name>":{"format":"github"|"shared","secret":"<16-200 printable characters, no spaces>"}}}
+Opens POST /v1/hooks/<name> on the same loopback endpoint. "github" checks X-Hub-Signature-256 (HMAC-SHA256 of the body)
+with X-GitHub-Delivery and X-GitHub-Event; "shared" compares the X-Webhook-Secret header and takes X-Delivery-Id and an
+optional X-Event-Type. The delivery id makes a retry harmless. Each event queues one task per active routine created
+with --schedule '{"kind":"event","source":"<name>"}'; the body is kept as quoted data on the task's origin event
+and never as instructions. Only the operator's own proxy can expose the port; the service never does.
 Optional reviewed display learning: "learning":true opens only a local read-only panel view.
 Propose/measure/review/apply/revert use assistant/scripts/display-learning.mjs and explicit terminal confirmation.
 The retained dataset is synthetic; its score is not personal-learning efficacy. It never changes instructions or permissions.
@@ -77,10 +84,11 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 /** `channels` maps project names to channel ids; the bot reads the operator's messages there and posts reports by name. */
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
+export type EventsConfig = { sources: Record<string, import('./http/hooks.ts').HookSource> };
 export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
-export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; learning?: true; signals?: true };
+export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; events?: EventsConfig; learning?: true; signals?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
-const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'learning', 'signals'];
+const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'events', 'learning', 'signals'];
 
 function validWebOrigins(value: unknown): value is string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4 || !value.every(origin => typeof origin === 'string')) return false;
@@ -97,12 +105,22 @@ function validGoogle(value: unknown): value is GoogleConfig {
   try { new Intl.DateTimeFormat('en-US', { timeZone: g.timeZone }); return true; } catch { return false; }
 }
 
+function validEvents(value: unknown): value is EventsConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).join(',') !== 'sources') return false;
+  const sources = (value as { sources: unknown }).sources;
+  if (!sources || typeof sources !== 'object' || Array.isArray(sources)) return false;
+  const entries = Object.entries(sources);
+  return entries.length >= 1 && entries.length <= 10 && entries.every(([name, source]) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) && !!source && typeof source === 'object' && !Array.isArray(source)
+    && Object.keys(source).sort().join(',') === 'format,secret' && ['github', 'shared'].includes((source as Record<string, unknown>).format as string)
+    && typeof (source as Record<string, unknown>).secret === 'string' && /^[\x21-\x7e]{16,200}$/.test((source as Record<string, string>).secret));
+}
+
 function validNotifications(value: unknown): value is NotificationsConfig {
   return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).join(',') === 'local' &&
     typeof (value as Record<string, unknown>).local === 'boolean';
 }
 
-const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins, voice: validVoiceConfig, executor: validExecutorConfig, routines: value => value === true, learning: value => value === true, signals: value => value === true };
+const OPTIONAL_CHECKS: Record<string, (value: unknown) => boolean> = { slack: validSlack, notifications: validNotifications, google: validGoogle, webOrigins: validWebOrigins, voice: validVoiceConfig, executor: validExecutorConfig, routines: value => value === true, events: validEvents, learning: value => value === true, signals: value => value === true };
 
 function validSlack(value: unknown): value is SlackConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -148,7 +166,7 @@ export function readConfig(path: string): Config {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid configuration');
   const v = value as Record<string, unknown>;
   const keys = Object.keys(v).filter(key => !OPTIONAL_KEYS.includes(key)).sort().join(',');
-  if (keys !== BASE_KEYS || OPTIONAL_KEYS.some(key => key in v && !OPTIONAL_CHECKS[key](v[key])) || v.version !== 1 ||
+  if (keys !== BASE_KEYS || OPTIONAL_KEYS.some(key => key in v && !OPTIONAL_CHECKS[key](v[key])) || v.version !== 1 || ('events' in v && v.routines !== true) ||
       typeof v.profileId !== 'string' || !v.profileId.trim() || typeof v.databasePath !== 'string' ||
       !isAbsolute(v.databasePath) || v.databasePath.includes('\0') || v.databasePath === ':memory:' ||
       typeof v.token !== 'string' || !/^[\x21-\x7e]+$/.test(v.token) || typeof v.endpoint !== 'string' ||
@@ -208,7 +226,7 @@ async function main(): Promise<void> {
   serve(server, { async close() { await running.close(); artifacts?.close(); learning?.close(); extras.stop(); store.close(); } }, config);
 }
 
-type Workers = { server: { executor?: () => import('./runtime/task-executor.ts').ExecutorStatus; prompt?: import('./channels/web.ts').PromptSource }; start(): void; close(): Promise<void> };
+type Workers = { server: { executor?: () => import('./runtime/task-executor.ts').ExecutorStatus; prompt?: import('./channels/web.ts').PromptSource; events?: import('./http/hooks.ts').EventIntake }; start(): void; close(): Promise<void> };
 
 
 async function openWorkers(config: Config, store: import('./store/db.ts').TaskStore): Promise<Workers> {
@@ -233,7 +251,10 @@ async function openWorkers(config: Config, store: import('./store/db.ts').TaskSt
   } catch (error) { await close(); throw error; }
   const drafts = executor;
   return {
-    server: drafts ? { executor: () => drafts.status(), prompt: task => drafts.prompt(task) } : {},
+    server: {
+      ...(drafts ? { executor: () => drafts.status(), prompt: (task: import('./contracts/tasks.ts').Task) => drafts.prompt(task) } : {}),
+      ...(routines && config.events ? { events: { sources: config.events.sources, accept: (event: import('./routines/manager.ts').RoutineEvent) => routines!.acceptEvent(event) } } : {}),
+    },
 
     start() {
       routines?.start(() => console.error('Routine pass failed; it keeps retrying.'));
