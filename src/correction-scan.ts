@@ -30,7 +30,7 @@ function sessionFiles(dir: string, since: number): { label: string; full: string
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
-type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; verified?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number };
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; verified?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number; clicked?: boolean };
 
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
@@ -47,8 +47,8 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
-    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, verified: false, suites: heartbeat ? 0 : state.suites, ripwired: heartbeat ? false : state.ripwired, sent: [], shipped: 0 };
-  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0 };
+    state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, verified: false, suites: heartbeat ? 0 : state.suites, ripwired: heartbeat ? false : state.ripwired, sent: [], shipped: 0, clicked: false };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0, clicked: false };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const content = Array.isArray(msg.content) ? msg.content : [];
     const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -61,6 +61,7 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   const calls = toolCalls(event);
   if (calls.some(verifiesLive)) state = { ...state, checked: true };
   if (calls.some(verifiesMerge)) state = { ...state, verified: true };
+  if (calls.some(clicksThrough)) state = { ...state, clicked: true };
   const sent = [...(state.sent ?? []), ...calls.filter(isOutbound).map(outboundText)];
   if (sent.length) state = { ...state, sent };
   const shipped = (state.shipped ?? 0) + calls.filter(shipsChange).length;
@@ -72,9 +73,9 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, clicked: state.clicked, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
   const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
-  return { wake: state.wake, wakeEdits, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  return { wake: state.wake, wakeEdits, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, clicked: state.clicked, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
 
@@ -116,6 +117,13 @@ function verifiesLive(call: Content): boolean {
   return call.name === 'bash' && /\b(?:curl|gh\s+(?:run|pr|api)|git\s+log|dentai-ship|verify-release|release-verif\w*)\b|\/health\b/u.test(String(call.arguments?.command ?? ''));
 }
 
+const callText = (call: Content): string => String(call.arguments?.command ?? call.arguments?.code ?? '');
+function clicksThrough(call: Content): boolean {
+  if (call.name === 'browser_harness') return /\bclick\s*\(/u.test(String(call.arguments?.code ?? ''));
+  return (call.name === 'bash' || call.name === 'shell_start') && /\bplaywright\s+test\b|\btest:e2e\b/u.test(callText(call));
+}
+const DEPLOYS = /\bdentai-ship(?:\.mjs)?\b[^\n]*\s--deploy\b|\bdeploy-(?:web|changed|prod)\.ps1\b|\bwrangler\s+(?:pages\s+)?deploy\b/u;
+const deploys = (call: Content): boolean => ['bash', 'shell_start', 'vault_run', 'codemode'].includes(call.name ?? '') && DEPLOYS.test(callText(call));
 
 const SCRATCH_RM = /\brm\s+(?:-\S+\s+)+(?:(?:\/tmp\/|~\/\.cache\/|\$HOME\/\.cache\/)[^\s;&|]*\s*)+(?=[;&|\n]|$)/gu;
 function withoutScratchCleanup(command: string): string {
@@ -174,6 +182,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
       /^\W*(?:j[áa]\s+(?:est[áa]|est[ãa]o)\s+no\s+ar|no\s+ar\b|(?:est[áa]|est[ãa]o)\s+no\s+ar|ao\s+vivo\b)/iu.test(String(c.arguments?.text ?? '')) &&
       !/\b(?:hip[óo]tese|n[ãa]o\s+verific\w*|n[ãa]o\s+confirm\w*|n[ãa]o\s+testei|unverified)\b/iu.test(String(c.arguments?.text ?? '')));
     case 'retro-recap': return retroRecap(calls, pacing.shipped ?? 0);
+    case 'deploy-unclicked': return !pacing.clicked && !calls.some(clicksThrough) && calls.some(deploys);
     case 'pipe-status': return calls.some(c => c.name === 'bash' && /\|\s*(?:tail|head|grep)\b(?:[^;\n|&]|&(?!&))*(?:;|&&)\s*(?:echo|printf)\s+["']?rc=\$\?/u.test(withoutQuotedText(String(c.arguments?.command ?? ''))));
     case 'force-action': return calls.some(c => c.name === 'bash' && /(?:\bgh\s+pr\s+merge\b[^\n]*\s--admin\b|\bgit\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?:\s|$))/u.test(String(c.arguments?.command ?? '')));
     case 'destructive-git': return calls.some(c => c.name === 'bash' && /\bgit\s+(?:-C\s+\S+\s+)?(?:reset\b[^\n;|&]*\s--hard\b|clean\b[^\n;|&]*\s-[a-z]*f|branch\b[^\n;|&]*\s-D\b|stash\s+(?:drop|clear)\b|worktree\s+remove\b[^\n;|&]*\s(?:--force|-f)\b)/u.test(String(c.arguments?.command ?? '')));
