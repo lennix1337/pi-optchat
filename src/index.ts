@@ -51,7 +51,7 @@ import { machineWakeOn, wakeOff, wakeOn, type WakeHost } from './wake-model.ts';
 import { quietGhTelemetry } from './gh-quiet.ts';
 import { basicPythonRepl } from './python-repl.ts';
 import { reportsBlockReload } from './pending-reports.ts';
-import { asUser, boundedMessage, atWork, budgetContext, buildContext, coldBudget, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, textContent, typedText } from './transcript.ts';
+import { asUser, boundedMessage, atWork, budgetContext, buildContext, coldBudget, logMessage, messageChars, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, refreshTokens, lastStep, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, stateless, stripTruncationContent, textContent, typedText } from './transcript.ts';
 import { assertContextFits, inputTokenBudget } from './run-context.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
@@ -1163,7 +1163,7 @@ export default function optchat(host: ExtensionAPI) {
     if (!active || !runStarted) return;
 
     const shell = event.message.role === 'toolResult' && ['bash', 'powershell'].includes(event.message.toolName);
-    const bounded = active.config.recoverableOutput && (shell || active.outputs.preserveOriginal(event.message)) ? event.message : boundedMessage(event.message);
+    const bounded = active.config.recoverableOutput && (shell || active.outputs.preserveOriginal(event.message)) ? stripTruncationContent(event.message) : boundedMessage(event.message);
     const message = asUser(bounded);
     if (event.message.role === 'toolResult') fullToolResults.set(message, event.message);
 

@@ -82,11 +82,22 @@ export function logMessage(memory: Memory, message: AgentMessage, receipt?: stri
     memory.append('echo', `${result.toolName}: ${textContent(result.content, result.toolName !== 'zoom')}`, date);
   }
 }
+/** Pi's built-in tools attach the full TruncationResult (including a duplicate up-to-50 KB `content` string) to
+ * `details.truncation`, though renderers read only its metadata. Dropping `content` preserves all metadata while
+ * avoiding a second retained copy in SessionManager and on disk. */
+export function stripTruncationContent<T extends AgentMessage>(message: T): T {
+  if (message.role !== 'toolResult' || !record(message.details) || !record(message.details.truncation)) return message;
+  const truncation = message.details.truncation;
+  if (typeof truncation.content !== 'string' || !truncation.content.length) return message;
+  const { content: _content, ...rest } = truncation;
+  return { ...message, details: { ...message.details, truncation: rest } };
+}
 export function boundedMessage(message: AgentMessage): AgentMessage {
   if (message.role !== 'toolResult') return message;
-  const text = message.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
-  if (text.length <= CAP) return message;
-  return { ...message, content: [{ type: 'text', text: cap(text) }, ...message.content.filter(c => c.type === 'image')] };
+  const cleaned = stripTruncationContent(message);
+  const text = cleaned.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+  if (text.length <= CAP) return cleaned;
+  return { ...cleaned, content: [{ type: 'text', text: cap(text) }, ...cleaned.content.filter(c => c.type === 'image')] };
 }
 
 function completedExchange(history: readonly AgentMessage[]) {

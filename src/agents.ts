@@ -18,7 +18,7 @@ import { CUT_OFF, WORKTREES_KEPT, RunHistory, isRunning, orderRuns, transition, 
 import { ExternalRuns, SubagentRpc, type SubagentEvents } from './external-runs.ts';
 import { requestInterrupt, requestSteer, requestStop } from './external-control.ts';
 import { UsageLedger } from './usage.ts';
-import { fullChat, refreshFraction, runTranscript, textContent } from './transcript.ts';
+import { fullChat, refreshFraction, runTranscript, stripTruncationContent, textContent } from './transcript.ts';
 import { result } from './tools.ts';
 import type { HandoffEvidence } from './handoff.ts';
 import { recordSubagentSignal } from './journal-spool.ts';
@@ -736,6 +736,10 @@ export class Children {
         pi.on('thinking_level_select', event => {
           const live = this.running.get(id);
           if (live) { live.info.thinking = event.level; this.save(live.info); }
+        });
+        pi.on('message_end', event => {
+          const cleaned = stripTruncationContent(event.message);
+          if (cleaned !== event.message) return { message: cleaned };
         });
         pi.on('context_with_system', event => {
           const started = performance.now();
