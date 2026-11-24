@@ -147,3 +147,19 @@ test('Home publish log line carries a timestamp so a restart can be told apart f
   await poster.publishHome('Status', { graph: { nodes: [{ id: 'session', label: 'A' }], edges: [] } });
   assert.match(lines.join('\n'), /^\d{4}-\d{2}-\d{2}T[\d:.]+Z App Home published/m);
 });
+
+test('Home mostra a cota em cartões por conta, com 5 horas, semana, cor e renovação', () => {
+  const text = '🔋 *Cota* (cache):\n• Claude conta 2 `▰▰▰▰▱▱▱▱▱▱` 5h 40% (renova 13:00) · 7d 86% (renova 26/11 00:17)\n• agy conta 1 `▰▱▱▱▱▱▱▱▱▱` 5h 0% (renovou) · 7d 63% (renova 27/11 03:04)\n• Codex *esgotado* até 26/11 00:23';
+  const blocks = homeBlocks(text) as any[];
+  assert.ok(blocks.some(b => b.type === 'header' && b.text.text === 'Cotas das contas'));
+  const cards = blocks.filter(b => b.type === 'section' && Array.isArray(b.fields));
+  assert.equal(cards.length, 2);
+  const [claude, agy] = cards.map(c => c.fields.map((f: any) => f.text));
+  assert.match(claude[0], /\*5 horas\*\n🟢 `▰▰▰▰▱▱▱▱▱▱` 40%\n_renova 13:00_/);
+  assert.match(claude[1], /\*Semana\*\n🔴 `▰▰▰▰▰▰▰▰▰▱` 86%\n_renova 26\/11 00:17_/);
+  assert.match(agy[0], /🟢 `▱▱▱▱▱▱▱▱▱▱` 0%\n_renovou_/);
+  assert.match(agy[1], /🟡 .* 63%/);
+  const rendered = JSON.stringify(blocks);
+  assert.match(rendered, /\*Claude conta 2\*/);
+  assert.match(rendered, /Codex \*esgotado\* até 26\/11 00:23/);
+});
