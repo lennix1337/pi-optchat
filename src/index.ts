@@ -19,6 +19,8 @@ import { readManyTool } from './read-many.ts';
 import { logSent, registerSlackReports } from './slack-reports.ts';
 import { registerProdHealth } from './prod-health.ts';
 import { cachedEconomy } from './quota-load.ts';
+import { readQuotaHistory } from './quota-history.ts';
+import { paceForecasts, paceWakeMinutes, paceWakeNote } from './quota-pace.ts';
 import { registerQuotaCommand } from './quota-command.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
@@ -529,7 +531,13 @@ export default function optchat(host: ExtensionAPI) {
     const own = () => active === profile ? profile : undefined;
     const reloadTicket = reloadLease(ctx, profile.name);
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
-      minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
+      minutes: () => own()?.config.heartbeatMinutes ?? 0,
+      pace: base => {
+        const config = own()?.config, current = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
+        const provider = config && (wakeModelFor(config, current) ?? current)?.provider;
+        return config && paceWakeMinutes(base, config, provider, readQuotaState(), readQuotaHistory(profile.dir), Date.now());
+      },
+      maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       queued: () => nextQueueItem(profile.dir) !== undefined,
 
@@ -618,8 +626,9 @@ export default function optchat(host: ExtensionAPI) {
         const shadow = beat.staged ? shadowWakeNote(beat.staged) : undefined;
         const nightShift = nightShiftWakeNote(nightShiftConfig(profile.config), nightShiftLogPath(profile.dir), Date.now());
         const top = beat.obligations ?? liveObligations({ ...obligationSource(profile), now: Date.now() });
+        const pace = paceWakeNote(paceForecasts(readQuotaHistory(profile.dir), Date.now()));
         const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions, top)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift) + (note ? `\n${note}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift) + (note ? `\n${note}` : '') + (pace ? `\n${pace}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))

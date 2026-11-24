@@ -3,6 +3,7 @@ import { accounts, readQuotaState } from './quota-health.ts';
 import { accountLines, resetText } from './quota-format.ts';
 import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import type { Economy } from './quota-economy.ts';
+import { paceText, type PaceForecast } from './quota-pace.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
 
 /**
@@ -168,11 +169,12 @@ export function modelName(ref: string | undefined): string {
 function homeQuota(state: CommandState): string[] {
   const all = accounts(record(state.failover()), state.now()).filter(a => safeIdentifier(a.id));
   if (!all.length) return ['• sem leitura de cota ainda'];
+  const economy = state.economy?.();
   const families = new Map<string, typeof all>();
   for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
   return [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
     ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
-    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(record(state.failover()).usageByProvider)[a.id], state.now())}`));
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(record(state.failover()).usageByProvider)[a.id], state.now(), economy?.accounts.find(e => e.provider === a.id)?.pace)}`));
 }
 
 
@@ -182,10 +184,10 @@ const STALE_READING_MS = 3_600_000;
 
 
 
-function homeWindows(usage: unknown, now: number): string {
+function homeWindows(usage: unknown, now: number, pace?: PaceForecast): string {
   const { w5h, w7d } = quotaWindows(usage), fetchedAt = record(usage).fetchedAt;
   const live = (w?: QuotaWindowRow) => w && w.resetAt > now ? w : undefined;
-  const text = (name: string, w?: QuotaWindowRow) => w ? live(w) ? `${name} ${Math.round(w.used)}% (renova ${resetText(w.resetAt, now, name === '7d')})` : `${name} 0% (renovou)` : undefined;
+  const text = (name: string, w?: QuotaWindowRow) => w ? live(w) ? `${name} ${Math.round(w.used)}% (renova ${resetText(w.resetAt, now, name === '7d')}${name === '7d' && pace ? ` \u00b7 ${paceText(pace)}` : ''})` : `${name} 0% (renovou)` : undefined;
   const fullest = Math.max(live(w5h)?.used ?? 0, live(w7d)?.used ?? 0);
   const old = typeof fetchedAt === 'number' && now - fetchedAt > STALE_READING_MS ? ` \u00b7 _leitura de ${brasiliaDayTime(fetchedAt)}_` : '';
   return `${usageBar(fullest)} ${[text('5h', w5h), text('7d', w7d)].filter(Boolean).join(' \u00b7 ')}${old}`;

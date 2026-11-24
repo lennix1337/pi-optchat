@@ -2,6 +2,7 @@ import { brasiliaDayTime } from './pc-health.ts';
 import { routeBlock } from './quota-health.ts';
 import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import { ROLE_KEYS, type AccountEconomy, type Economy, type RoleKey, type Spend, type WindowEconomy } from './quota-economy.ts';
+import { paceText } from './quota-pace.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
 
 
@@ -41,6 +42,7 @@ export function accountText(id: string, state: unknown, now: number, economy?: A
   if (!parts.length) parts.push(until ? 'sem medição de cota' : 'sem medição');
   if (until) parts.push(`*esgotada até ${resetText(until, now, true)}*`);
   else if (usage.serviceable === false && typeof usage.fetchedAt === 'number') parts.push(`*sem acesso na última leitura* (${brasiliaDayTime(usage.fetchedAt)})`);
+  if (!until && economy?.pace) parts.push(paceText(economy.pace));
   const worth = economyText(economy);
   return [...parts, ...worth ? [worth] : []].join(' · ');
 }

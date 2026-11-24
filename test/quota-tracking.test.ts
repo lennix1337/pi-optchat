@@ -232,7 +232,7 @@ test('the report and the terminal /cota print every cached account with the same
   await updateUsageAggregate({ dir, now: NOW, ratesFile: join(dir, 'none.json') });
   const text = quotaCommandText(dir, NOW, cacheFile);
   assert.match(text, /• anthropic: API key, sem limite de cota/);
-  assert.match(text, /• anthropic-account-2: 5h 5% usado, renova 12:00 · 7d 19% usado, renova 17\/11 09:00 · 1% = US\$2\.00 \(7d\)/);
+  assert.match(text, /• anthropic-account-2: 5h 5% usado, renova 12:00 · 7d 19% usado, renova 17\/11 09:00 · projeção: 102% no reset · 1% = US\$2\.00 \(7d\)/);
   assert.match(text, /7d: \+4 pts em 1 leituras · 10 tokens · US\$2\.00 por 1% → janela cheia US\$200\.00/);
   assert.match(text, /Semana mais recente/);
   assert.match(text, /• anthropic-account-2: US\$8\.00 · 10 tokens · 1 chamadas · cota 7d \+4 pts, 5h \+0 pts · main US\$8\.00/);

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { accounts, providerLogProbe, quotaProbe, quotaReadBytes, quotaRisks, readQuotaState, routeBlock, QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { defaultMonitors, ProdHealth, readHealth, registerProdHealth } from '../src/prod-health.ts';
+import { QUOTA_HISTORY_FILE } from '../src/quota-history.ts';
 import { DailySummary, localDate } from '../src/slack-reports.ts';
 
 const NOW = Date.parse('2026-10-30T23:00:00Z');
@@ -139,4 +140,18 @@ test('a provider failure that repeats in the Pi log is a problem the radar names
     assert.doesNotMatch(result.problem!, /other_failed/);
     assert.equal((providerLogProbe(join(dir, 'missing.log'), () => NOW).check() as { ok: boolean }).ok, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the quota probe adds the weekly pace forecast to its detail when it knows the profile dir', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'quota-pace-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const reset = NOW + 4 * 24 * HOUR;
+  const rows = Array.from({ length: 25 }, (_, i) => ({ at: NOW - (24 - i) * HOUR, provider: 'healthy', fetchedAt: NOW - (24 - i) * HOUR, w7d: { used: 20 + i * 0.25, resetAt: reset } }));
+  writeFileSync(join(dir, QUOTA_HISTORY_FILE), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+  const file = join(dir, 'cache.json');
+  writeFileSync(file, JSON.stringify({ usageByProvider: { healthy: { fetchedAt: NOW, primary: window(10), secondary: { usedPercent: 26, resetAt: reset } } } }));
+  const result = quotaProbe(file, () => NOW).check({ dir }) as { ok: boolean; detail: string };
+  assert.equal(result.ok, true);
+  assert.match(result.detail, /healthy 26% usado.* · ritmo semanal: healthy projeção: 50% no reset \(sobra cota: aumente thinking \/ spawn mais\)/);
+  assert.doesNotMatch((quotaProbe(file, () => NOW).check() as { detail: string }).detail, /ritmo semanal/);
 });

@@ -163,3 +163,10 @@ test('Home mostra a cota em cartões por conta, com 5 horas, semana, cor e renov
   assert.match(rendered, /\*Claude conta 2\*/);
   assert.match(rendered, /Codex \*esgotado\* até 26\/11 00:23/);
 });
+
+test('Home mostra a projeção da semana no cartão quando a linha da conta a traz', () => {
+  const text = '🔋 *Cota* (cache):\n• Claude conta 2 `▰▰▰▱▱▱▱▱▱▱` 5h 40% (renova 13:00) · 7d 26% (renova 26/11 00:17 · projeção: 50% no reset)\n_Mande *comandos*_';
+  const blocks = homeBlocks(text) as any[];
+  const card = blocks.find(b => b.type === 'section' && Array.isArray(b.fields));
+  assert.match(card.fields[1].text, /\*Semana\*\n🟢 `▰▰▰▱▱▱▱▱▱▱` 26%\n_renova 26\/11 00:17 · projeção: 50% no reset_/);
+});
