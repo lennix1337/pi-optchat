@@ -105,6 +105,8 @@ export const SETTINGS = {
   unansweredMinutes: { kind: 'number', label: 'Unanswered message wait', default: 15, min: 0, unit: 'min',
     description: 'An operator Slack message without an answer this long becomes an urgent live obligation and wakes the heartbeat. 0: off.',
     applies: 'Applies to the next heartbeat check or event.' },
+  heartbeatPaused: { kind: 'toggle', label: 'Pause proactivity', default: false,
+    description: 'Pause heartbeat wakes without changing their schedule.', applies: 'Applies immediately.' },
   skillBudgetBytes: { kind: 'number', label: 'Skill prompt budget', default: DEFAULT_SKILL_BUDGET_BYTES, min: 0, unit: 'bytes',
     description: 'Byte ceiling for the skills list and loaded SKILL.md files in the prompt; tool_inventory and /tools flag when exceeded. 0: off.',
     applies: 'Applies immediately to inventory reports.' },

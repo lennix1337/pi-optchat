@@ -26,6 +26,11 @@ const state = (over: Partial<CommandState> = {}): CommandState => ({
 });
 const run = async (text: string, s = state()) => { const c = remoteCommand(text)!; return c.command.run(s, c.arg); };
 
+test('Home mostra quando a proatividade está pausada', () => {
+  assert.match(homeStatus(state({ proactivityPaused: () => true })), /proatividade pausada/i);
+  assert.doesNotMatch(homeStatus(state({ proactivityPaused: () => false })), /proatividade pausada/i);
+});
+
 test('only a whole-word message is a command; a question or a sentence stays with the agent', () => {
   for (const text of ['status', 'Status', ' /cota ', '!modelo', 'Jarvis status', 'jarvis, comandos', 'ajuda', 'modelo opus', 'modelos']) assert.ok(remoteCommand(text), text);
   for (const text of ['status?', 'qual o status do deploy', 'cota da openai', 'status agora', '', 'statuss']) assert.equal(remoteCommand(text), undefined, text);

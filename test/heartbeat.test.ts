@@ -21,7 +21,7 @@ test('wake instructions come from the profile rather than personal defaults', ()
 });
 
 
-function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
+function harness({ minutes = 30, wakes = 2, always = false, paused = () => false as boolean, verdicts = [] as (Beat | Error)[], busy = () => undefined as string | undefined, dir = mkdtempSync(join(tmpdir(), 'beat-')),
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
   route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
   triage = undefined as ((at: number) => Triage | undefined) | undefined, patrol = undefined as ((at: number) => Patrol | undefined) | undefined,
@@ -30,7 +30,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
   let now = 0, timer: { at: number; run: () => void } | undefined;
   const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [], beats: Beat[] = [];
   const beat = new Heartbeat({
-    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, busy, radar, queued,
+    dir, now: () => now, minutes: () => minutes, maxWakes: () => wakes, always: () => always, paused, busy, radar, queued,
     ...route ? { route: (blocks: Record<string, number>) => route(now, blocks) } : {},
     ...triage ? { triage: () => triage(now) } : {},
     ...patrol ? { patrol: () => patrol(now) } : {},
@@ -50,6 +50,50 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
   };
   return { beat, checks, woken, notes, choices, beats, checkRadars, wakeRadars, unchanged, advance, dir, pending: () => timer && timer.at - now, setMinutes: (m: number) => { minutes = m; } };
 }
+
+test('pausing blocks a pending heartbeat and resuming restores its schedule', async () => {
+  let paused = false;
+  const h = harness({ always: true, paused: () => paused });
+  h.beat.arm();
+  paused = true;
+  await h.advance(30 * MIN);
+  assert.deepEqual(h.woken, []);
+  h.beat.arm();
+  assert.equal(h.pending(), undefined);
+  paused = false;
+  h.beat.arm();
+  await h.advance(30 * MIN);
+  assert.equal(h.woken.length, 1);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('pausing during an in-flight radar prevents the wake', async () => {
+  let paused = false, release!: (text: string) => void;
+  const h = harness({ always: true, paused: () => paused, radar: () => new Promise<string>(resolve => { release = resolve; }) });
+  h.beat.arm();
+  const fired = h.advance(30 * MIN);
+  await new Promise(done => setImmediate(done));
+  paused = true;
+  release('radar');
+  await fired;
+  assert.deepEqual(h.woken, []);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a pause and resume while radar runs cancels the old wake', async () => {
+  let paused = false, release!: (text: string) => void;
+  const h = harness({ always: true, paused: () => paused, radar: () => new Promise<string>(resolve => { release = resolve; }) });
+  h.beat.arm();
+  const fired = h.advance(30 * MIN);
+  await new Promise(done => setImmediate(done));
+  paused = true;
+  h.beat.pause();
+  paused = false;
+  release('radar');
+  await fired;
+  assert.deepEqual(h.woken, []);
+  rmSync(h.dir, { recursive: true, force: true });
+});
 
 test('the radar runs before each check, and its snapshot reaches both the check and the woken turn', async () => {
   let runs = 0;

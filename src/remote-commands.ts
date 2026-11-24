@@ -33,6 +33,8 @@ export interface CommandState {
   thinking?(): { level: string; levels: readonly string[] } | undefined;
   /** Sets it through Pi and answers the level now in force. */
   setThinking?(level: string): string;
+  proactivityPaused?(): boolean;
+  wakeRefusals?(ts: string): string;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
@@ -100,6 +102,7 @@ function changeThinking(state: CommandState, arg: string): CommandResult {
 }
 
 export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
+  { name: 'recusas', aliases: [], summary: 'lista os assuntos recusados; *recusas ID* libera um', run: (state, arg) => ({ text: state.wakeRefusals?.(arg) ?? 'Não consigo ler as recusas nesta sessão.' }) },
   { name: 'status', aliases: ['estado'], summary: 'o que estou fazendo, modelo e conta atuais', run: state => ({ text: withSwitch(state, [state.activity(), modelLine(state)]) }) },
   {
     name: 'parar', aliases: ['pare', 'stop'], summary: 'interrompe o trabalho em andamento (como Esc no terminal)',
@@ -129,7 +132,7 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
 ];
 
 
-const TAKES_ARG = new Set(['modelo', 'thinking']);
+const TAKES_ARG = new Set(['modelo', 'thinking', 'recusas']);
 
 /**
  * The command a whole message names (`status`, `/cota`, `Jarvis modelo`, `modelo sonnet`), or undefined for anything
@@ -204,7 +207,7 @@ export function usageBar(used: number): string {
  * the model line only repeated what the menu right below shows (17/11), so it goes out only without them.
  */
 export function homeStatus(state: CommandState, menus = false): string {
-  return [...menus ? [] : [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`], '\ud83d\udd0b *Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
+  return [...state.proactivityPaused?.() ? ['⏸️ Proatividade pausada'] : [], ...menus ? [] : [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`], '\ud83d\udd0b *Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
 }
 
 export function failoverReader(file: string): () => unknown { return () => readQuotaState(file); }
