@@ -130,7 +130,12 @@ export interface HeartbeatPaceSettings { heartbeatPace: boolean; heartbeatPaceFl
 export function paceWakeMinutes(base: number, settings: HeartbeatPaceSettings, provider: string | undefined, state: unknown, history: readonly QuotaRow[], now: number): number | undefined {
   if (!settings.heartbeatPace || !provider || base <= 0) return undefined;
   const usage = (state as { usageByProvider?: Record<string, unknown> } | null | undefined)?.usageByProvider?.[provider];
-  const control = paceControl(quotaWindows(usage), history.filter(row => row.provider === provider), now,
+  const fetchedAt = (usage as { fetchedAt?: unknown } | null | undefined)?.fetchedAt;
+  const rows = history.filter(row => row.provider === provider);
+  if (typeof fetchedAt === 'number' && Number.isFinite(fetchedAt) && fetchedAt >= 0 && fetchedAt <= now) {
+    rows.push({ at: now, provider, fetchedAt, ...quotaWindows(usage) });
+  }
+  const control = paceControl({}, rows, now,
     { baseMin: base, floorMin: settings.heartbeatPaceFloorMin, ceilMin: settings.heartbeatPaceCeilMin });
   return control?.wakeIntervalMin;
 }
