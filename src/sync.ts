@@ -27,7 +27,7 @@ const LOG_TAIL_BYTES = 64 * 1024;
 
 export interface StatusInput { profile: string; model?: string; memory: Memory; operationalFile?: string; now?: Date }
 
-const viewLine = (memory: Memory, part: Part) => `${start(part)}+${2 ** part.l}|${flat(memory.node(part)?.text ?? '(not summarized yet)')}`;
+const viewLine = (memory: Memory, part: Part) => `${start(part)}+${2 ** part.l}|${flat(memory.viewNode(part)?.text ?? '(not summarized yet)')}`;
 
 export function renderStatus({ profile, model, memory, operationalFile, now = new Date() }: StatusInput, limit = STATUS_BYTES) {
   let operational = '';
