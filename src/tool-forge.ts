@@ -58,13 +58,14 @@ export interface ForgedScriptUsage extends ForgedScript {
   prune: boolean;
 }
 
-/** Full tool-forging report consumed by the daily retro prompt. */
+/** A dry-run skill draft for a command shape that succeeded in several distinct runs. */
 export interface SkillProposal {
   shape: string;
   runs: number;
   draft: string;
 }
 
+/** Full tool-forging report consumed by the daily retro prompt. */
 export interface ForgeReport {
   candidates: ForgeCandidate[];
   skillProposals: SkillProposal[];
