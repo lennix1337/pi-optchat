@@ -116,8 +116,8 @@ export function atomicWrite(file: string, text: string | Uint8Array) {
   // external: Windows cannot fsync read-only handles or open a directory for fsync.
   const fd = openSync(temporary, 'w+', 0o600);
   try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
-  if (process.platform !== 'win32') renameSync(temporary, file);
-  else { renameRetryingWindowsLocks(temporary, file); return; }
+  if (process.platform === 'win32') { renameRetryingWindowsLocks(temporary, file); return; }
+  try { renameSync(temporary, file); } catch (error) { rmSync(temporary, { force: true }); throw error; }
   const parent = openSync(resolve(file, '..'), 'r');
   try { fsyncSync(parent); } finally { closeSync(parent); }
 }
