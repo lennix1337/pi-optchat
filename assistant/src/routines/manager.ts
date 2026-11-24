@@ -17,7 +17,7 @@ import { dueOccurrences, nextOccurrence, validateSchedule, type Schedule, type T
  * is enqueued at most once no matter how many schedulers tick.
  *
  * An event routine (`schedule.kind === 'event'`) has no slots and never ticks: `fireEvent` records one claimed
- * run per active routine of the event's source, keyed by the delivery id, so a redelivery maps to the same slot.
+ * run per active routine of the event's source, keyed by its deduplication key or delivery id.
  * The event body is stored as a bounded string next to the routine's own input and never merged into it.
  */
 export type MissedPolicy = 'once' | 'skip';
@@ -33,7 +33,7 @@ export type Routine = {
   state: RoutineState; pausedReason: string | null; activatedBy: string | null; nextRunAt: number | null; failures: number;
 };
 /** An inbound event as the routine receives it: `body` is untrusted text, cut to `EVENT_BODY_MAX` characters. */
-export type RoutineEvent = { source: string; deliveryId: string; type: string | null; body: string };
+export type RoutineEvent = { source: string; deliveryId: string; type: string | null; body: string; dedupKey?: string };
 export const EVENT_BODY_MAX = 2500;
 export type RunStatus = 'claimed' | 'enqueued' | 'done' | 'failed' | 'skipped_overlap' | 'skipped_missed' | 'queue_full' | 'clock_skew';
 export type RunRecord = { routineId: string; slot: string; at: number; status: RunStatus; jobId: string | null; missed: number; detail: string | null };
@@ -236,11 +236,11 @@ export class RoutineManager {
     });
   }
   /**
-   * Records one claimed run for each active routine listening to `event.source`; the next tick enqueues it. A delivery
-   * already recorded for a routine is counted as a duplicate and changes nothing. Paused routines ignore events.
+   * Records one claimed run for each active routine listening to `event.source`; the next tick enqueues it. An event
+   * with an already recorded key is counted as a duplicate and changes nothing. Paused routines ignore events.
    */
   fireEvent(event: RoutineEvent): { created: number; duplicate: number } {
-    const slot = `event:${identifier(event.deliveryId)}`;
+    const slot = `event:${identifier(event.dedupKey ?? event.deliveryId)}`;
     const body = event.body.length > EVENT_BODY_MAX ? event.body.slice(0, EVENT_BODY_MAX) : event.body;
     const data = { source: event.source, deliveryId: event.deliveryId, type: event.type, body, truncated: body.length < event.body.length };
     const now = this.now();
