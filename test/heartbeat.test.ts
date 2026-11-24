@@ -25,7 +25,8 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
   radar = undefined as (() => Promise<string | undefined>) | undefined, queued = () => false as boolean,
   route = undefined as ((at: number, blocks: Record<string, number>) => { choice?: ModelChoice; until?: number; why?: string } | undefined) | undefined,
   triage = undefined as ((at: number) => Triage | undefined) | undefined, patrol = undefined as ((at: number) => Patrol | undefined) | undefined,
-  heap = undefined as ((at: number) => number) | undefined, rss = undefined as ((at: number) => number) | undefined } = {}) {
+  heap = undefined as ((at: number) => number) | undefined, rss = undefined as ((at: number) => number) | undefined,
+  pace = undefined as ((base: number) => number | undefined) | undefined } = {}) {
   let now = 0, timer: { at: number; run: () => void } | undefined;
   const checks: number[] = [], woken: string[] = [], notes: string[] = [], checkRadars: (string | undefined)[] = [], wakeRadars: (string | undefined)[] = [], unchanged: boolean[] = [], choices: (ModelChoice | undefined)[] = [], beats: Beat[] = [];
   const beat = new Heartbeat({
@@ -35,6 +36,7 @@ function harness({ minutes = 30, wakes = 2, always = false, verdicts = [] as (Be
     ...patrol ? { patrol: () => patrol(now) } : {},
     ...heap ? { heapMb: () => heap(now) } : {},
     ...rss ? { rssMb: () => rss(now) } : {},
+    ...pace ? { pace } : {},
     setTimer: (run, ms) => { timer = { at: now + ms, run }; return timer; },
     clearTimer: handle => { if (timer === handle) timer = undefined; },
     check: async seen => { checks.push(now); checkRadars.push(seen); const v = verdicts.shift() ?? { wake: false, text: 'nothing to do' }; if (v instanceof Error) throw v; return v; },
@@ -1105,5 +1107,40 @@ test('without wakeTriage every armed check may wake, so nextWakeAt is the next c
   assert.equal(h.beat.nextWakeAt, 30 * MIN);
   h.beat.disarm();
   assert.equal(h.beat.nextWakeAt, undefined);
+  rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the quota pace sets the idle interval: less quota used than the pace shortens it, an overshoot lengthens it, no forecast leaves it alone', async () => {
+  const seen: number[] = [];
+  const at = (verdict: number | undefined) => { const h = harness({ pace: base => { seen.push(base); return verdict; } }); h.beat.arm(); return h; };
+  const surplus = at(10);
+  assert.equal(surplus.pending(), 10 * MIN);
+  await surplus.advance(10 * MIN); assert.deepEqual(surplus.checks, [10 * MIN], 'the check comes at the shortened interval');
+  const over = at(90);
+  assert.equal(over.pending(), 90 * MIN);
+  const none = at(undefined);
+  assert.equal(none.pending(), 30 * MIN, 'no forecast: the configured heartbeat, as before');
+  assert.deepEqual(seen.slice(0, 3), [30, 30, 30], 'the pace is asked with the configured minutes as its base');
+  for (const h of [surplus, over, none]) rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the quota pace never revives a disabled heartbeat and cannot go below a minute; a throwing pace falls back to the configured interval', () => {
+  const off = harness({ minutes: 0, pace: () => 10 }); off.beat.arm();
+  assert.equal(off.pending(), undefined);
+  const tiny = harness({ pace: () => 0 }); tiny.beat.arm();
+  assert.equal(tiny.pending(), 1 * MIN);
+  const broken = harness({ pace: () => { throw new Error('cache unreadable'); } }); broken.beat.arm();
+  assert.equal(broken.pending(), 30 * MIN);
+  for (const h of [off, tiny, broken]) rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('the daily wake cap still holds with a shortened interval', async () => {
+  const wake = { wake: true, text: 'do it' };
+  const h = harness({ wakes: 1, verdicts: [wake, wake, wake], pace: () => 10 });
+  h.beat.arm(); await h.advance(10 * MIN);
+  h.beat.arm(); await h.advance(10 * MIN);
+  h.beat.arm(); await h.advance(10 * MIN);
+  assert.equal(h.woken.length, 1);
+  assert.match(h.notes.join('\n'), /1 wake.*24 h/);
   rmSync(h.dir, { recursive: true, force: true });
 });

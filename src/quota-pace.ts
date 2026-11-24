@@ -1,5 +1,5 @@
 import { SAME_PERIOD_MS, WEEK_MS } from './quota-economy.ts';
-import type { QuotaRow, QuotaWindowRow } from './quota-history.ts';
+import { quotaWindows, type QuotaRow, type QuotaWindowRow } from './quota-history.ts';
 
 /**
  * Weekly-quota pacing: will an account reach its 7-day reset with quota unused? A week's quota that is not spent is wasted, so
@@ -117,4 +117,20 @@ export function paceControl(windows: { w7d?: QuotaWindowRow }, history: readonly
   const pace = f.verdict === 'on-track' ? 'on' : f.verdict;
   const wakeIntervalMin = pace === 'on' ? baseMin : pace === 'under' ? Math.max(floorMin, Math.min(baseMin, scaled)) : Math.min(ceilMin, Math.max(baseMin, scaled));
   return { projectedPct: f.projectedAtReset, pace, wakeIntervalMin, thinkingHint: pace === 'under' ? 'raise' : pace === 'over' ? 'lower' : 'keep' };
+}
+
+/** The profile settings the heartbeat's quota pace reads. */
+export interface HeartbeatPaceSettings { heartbeatPace: boolean; heartbeatPaceFloorMin: number; heartbeatPaceCeilMin: number }
+
+/**
+ * The heartbeat's idle interval in minutes for the account the wake runs on (`provider`), from the quota cache `state` (the live
+ * weekly window) and the history rows; `base` is the configured heartbeat. Undefined, which keeps the configured interval, when the
+ * switch is off, the account is unknown, or there is no usable weekly forecast for it.
+ */
+export function paceWakeMinutes(base: number, settings: HeartbeatPaceSettings, provider: string | undefined, state: unknown, history: readonly QuotaRow[], now: number): number | undefined {
+  if (!settings.heartbeatPace || !provider || base <= 0) return undefined;
+  const usage = (state as { usageByProvider?: Record<string, unknown> } | null | undefined)?.usageByProvider?.[provider];
+  const control = paceControl(quotaWindows(usage), history.filter(row => row.provider === provider), now,
+    { baseMin: base, floorMin: settings.heartbeatPaceFloorMin, ceilMin: settings.heartbeatPaceCeilMin });
+  return control?.wakeIntervalMin;
 }

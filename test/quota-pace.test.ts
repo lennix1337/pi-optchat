@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { forecastPace, PACE_DEFAULTS, paceControl, paceForecasts, paceText, paceWakeNote, PACE_OVER_SUGGESTION, PACE_UNDER_SUGGESTION } from '../src/quota-pace.ts';
+import { forecastPace, PACE_DEFAULTS, paceControl, paceWakeMinutes, paceForecasts, paceText, paceWakeNote, PACE_OVER_SUGGESTION, PACE_UNDER_SUGGESTION } from '../src/quota-pace.ts';
 import { QUOTA_HISTORY_FILE, type QuotaRow } from '../src/quota-history.ts';
 import { loadEconomy } from '../src/quota-load.ts';
 import { accountText } from '../src/quota-format.ts';
@@ -12,14 +12,12 @@ const HOUR = 3_600_000, DAY = 24 * HOUR;
 const NOW = Date.UTC(2026, 10, 20, 12, 0);
 const RESET = NOW + 4 * DAY;
 
-/** One reading per hour, ending at `NOW`, whose 7-day meter starts at `from` and gains `perHour` points an hour. */
 function hourly(provider: string, from: number, perHour: number, hours = 24, resetAt = RESET): QuotaRow[] {
   return Array.from({ length: hours + 1 }, (_, i) => {
     const fetchedAt = NOW - (hours - i) * HOUR;
     return { at: fetchedAt, provider, fetchedAt, w7d: { used: from + perHour * i, resetAt } };
   });
 }
-/** The live window as the cache would report it: the last reading of `rows`. */
 const windowOf = (rows: QuotaRow[]) => ({ w7d: rows.at(-1)!.w7d });
 
 test('a rising burn is projected linearly to the reset and judged against 95%', () => {
@@ -139,7 +137,6 @@ test('the economy carries each account\'s forecast from the history file, and th
   assert.doesNotMatch(accountText('anthropic-account-2', state, NOW, { provider: 'anthropic-account-2' }), /projeção/);
 });
 
-// The pacing control: how often the heartbeat should wake given the weekly forecast.
 const BASE = { baseMin: 30, floorMin: 10, ceilMin: 120 };
 
 test('pace control: a big surplus close to the reset wakes at the floor, and the closer the reset the shorter the interval', () => {
@@ -191,4 +188,28 @@ test('pace control: the live window from the cache is the latest reading, not th
   const live = paceControl({ w7d: { used: 80, resetAt: RESET } }, rows, NOW, BASE)!;
   assert.equal(live.pace, 'over', '80% used already, with the recent rate carried forward');
   assert.equal(paceControl(windowOf(rows), rows, NOW, BASE)!.pace, 'under', 'the history alone says under');
+});
+
+const stateFor = (provider: string, used: number, resetAt = RESET) => ({ usageByProvider: { [provider]: { fetchedAt: NOW, secondary: { usedPercent: used, resetAt, windowSeconds: 604_800 } } } });
+const pacing = { heartbeatPace: true, heartbeatPaceFloorMin: 10, heartbeatPaceCeilMin: 120 };
+
+test('wake minutes: the base moves with the account\'s pace, and stays the base when there is nothing to forecast from', () => {
+  const slow = hourly('acct', 20, 0.25, 24, NOW + 6 * HOUR), slowState = stateFor('acct', 26, NOW + 6 * HOUR);
+  assert.equal(paceWakeMinutes(30, pacing, 'acct', slowState, slow, NOW), 10, 'surplus near the reset: the floor');
+  const blown = hourly('acct', 20, 1);
+  const longer = paceWakeMinutes(30, pacing, 'acct', stateFor('acct', 44), blown, NOW)!;
+  assert.ok(longer > 30 && longer <= 120, String(longer));
+  assert.equal(paceWakeMinutes(30, pacing, 'acct', stateFor('acct', 44), blown, NOW), Math.round(30 / ((95 - 44) / 96)));
+  assert.equal(paceWakeMinutes(30, pacing, 'acct', {}, [], NOW), undefined, 'no cache, no history');
+  assert.equal(paceWakeMinutes(30, pacing, 'other', slowState, slow, NOW), undefined, 'another account\'s rows say nothing about this one');
+  assert.equal(paceWakeMinutes(30, pacing, 'acct', stateFor('acct', 26, NOW - HOUR), slow, NOW), undefined, 'a window that already ended');
+  assert.equal(paceWakeMinutes(30, pacing, undefined, slowState, slow, NOW), undefined, 'no account known');
+});
+
+test('wake minutes: the switch turns it off, and the floor and ceiling come from the settings, clamped around the base', () => {
+  const slow = hourly('acct', 20, 0.25, 24, NOW + 6 * HOUR), slowState = stateFor('acct', 26, NOW + 6 * HOUR);
+  assert.equal(paceWakeMinutes(30, { ...pacing, heartbeatPace: false }, 'acct', slowState, slow, NOW), undefined);
+  assert.equal(paceWakeMinutes(30, { ...pacing, heartbeatPaceFloorMin: 20 }, 'acct', slowState, slow, NOW), 20);
+  assert.equal(paceWakeMinutes(5, pacing, 'acct', slowState, slow, NOW), 5, 'a base below the floor is never raised by a surplus');
+  assert.equal(paceWakeMinutes(30, { ...pacing, heartbeatPaceCeilMin: 40 }, 'acct', stateFor('acct', 44), hourly('acct', 20, 1), NOW), 40);
 });

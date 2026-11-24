@@ -20,7 +20,7 @@ import { logSent, registerSlackReports } from './slack-reports.ts';
 import { registerProdHealth } from './prod-health.ts';
 import { cachedEconomy } from './quota-load.ts';
 import { readQuotaHistory } from './quota-history.ts';
-import { paceForecasts, paceWakeNote } from './quota-pace.ts';
+import { paceForecasts, paceWakeMinutes, paceWakeNote } from './quota-pace.ts';
 import { registerQuotaCommand } from './quota-command.ts';
 import { projectLocalInbox } from './assistant-projection.ts';
 import { execFile } from 'node:child_process';
@@ -531,7 +531,13 @@ export default function optchat(host: ExtensionAPI) {
     const own = () => active === profile ? profile : undefined;
     const reloadTicket = reloadLease(ctx, profile.name);
     heartbeat = new Heartbeat({ dir: profile.dir, now: Date.now,
-      minutes: () => own()?.config.heartbeatMinutes ?? 0, maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
+      minutes: () => own()?.config.heartbeatMinutes ?? 0,
+      pace: base => {
+        const config = own()?.config, current = main ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id });
+        const provider = config && (wakeModelFor(config, current) ?? current)?.provider;
+        return config && paceWakeMinutes(base, config, provider, readQuotaState(), readQuotaHistory(profile.dir), Date.now());
+      },
+      maxWakes: () => own()?.config.heartbeatWakes ?? 0, always: () => own()?.config.heartbeatAlways ?? false,
       busy: () => stopping || !own() ? 'closed' : working || !idle() ? 'working' : reports.length ? 'reports queued' : importing || pendingImport(profile.dir) ? 'importing' : undefined,
       queued: () => nextQueueItem(profile.dir) !== undefined,
 

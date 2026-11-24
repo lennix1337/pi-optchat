@@ -264,6 +264,9 @@ export interface HeartbeatDeps {
   dir: string;
   now: () => number;
   minutes: () => number;
+  /** The idle interval the weekly quota pace asks for, given the configured minutes (quota-pace.ts `paceWakeMinutes`); undefined keeps
+   * the configured interval. Only shapes how soon the next check is armed: the daily wake cap, a busy chat and the rest still apply. */
+  pace?: (baseMinutes: number) => number | undefined;
   maxWakes: () => number;
   /** Wake the main agent every interval without asking the cheap model first. */
   always: () => boolean;
@@ -396,6 +399,8 @@ export class Heartbeat {
   private running = Promise.resolve();
   private firing = false;
   private failed = false;
+  /** The interval the timer was last armed with, in minutes (the configured one unless the quota pace moved it). */
+  private armedMinutes: number | undefined;
   /** Set while the last tick found every route out of quota, so the note is made once per blocked stretch. */
   private quotaOut = false;
   private readonly file: string;
@@ -445,8 +450,10 @@ export class Heartbeat {
 
   arm() {
     this.disarm();
-    const minutes = this.deps.minutes();
-    if (minutes <= 0) return;
+    const configured = this.deps.minutes();
+    if (configured <= 0) return;
+    const minutes = this.pacedMinutes(configured);
+    this.armedMinutes = minutes;
 
     const at = this.deps.now(), due = nextDue(this.deps.triage?.()?.commitments ?? [], at);
     const obligationAt = this.nextObligation(at);
@@ -458,6 +465,13 @@ export class Heartbeat {
     const wait = Math.max(1, Math.min(...soonest) - at);
     this.nextAt = at + wait;
     this.timer = this.deps.setTimer(() => { this.timer = undefined; this.nextAt = undefined; this.running = this.fireOnce(); }, wait);
+  }
+  /** The quota pace's interval, at least a minute; any failure of the pace (an unreadable cache) leaves the configured one. */
+  private pacedMinutes(configured: number): number {
+    try {
+      const paced = this.deps.pace?.(configured);
+      return paced !== undefined && Number.isFinite(paced) ? Math.max(1, paced) : configured;
+    } catch { return configured; }
   }
   disarm() { if (this.timer !== undefined) this.deps.clearTimer(this.timer); this.timer = undefined; this.nextAt = undefined; }
   /** Event trigger between heartbeats: requests a wake immediately for a new urgent obligation, or moves the existing timer up for a sooner deadline. */
@@ -483,7 +497,7 @@ export class Heartbeat {
    */
   get nextWakeAt(): number | undefined {
     if (this.nextAt === undefined) return undefined;
-    const triage = this.deps.triage?.(), step = this.deps.minutes() * 60_000;
+    const triage = this.deps.triage?.(), step = (this.armedMinutes ?? this.deps.minutes()) * 60_000;
     if (!triage || step <= 0) return this.nextAt;
     const build = (this.saved().wakes.at(-1) ?? this.startedAt) + triage.buildMinutes * 60_000;
     return build <= this.nextAt ? this.nextAt : this.nextAt + Math.ceil((build - this.nextAt) / step) * step;
