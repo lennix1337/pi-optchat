@@ -38,7 +38,7 @@ test('an operator DM in relay mode is queued for the chat, not turned into a tas
     assert.equal(r.f.store.list(null, 10).tasks.length, 0, 'a chat message is not a suggested task');
     const page = r.relay.after(0, 10);
     assert.equal(page.length, 1);
-    assert.deepEqual({ ...page[0], receivedAt: undefined }, { seq: 1, sender: 'U0OWNER', channel: 'D0OWNER', ts: '1793000000.000100', thread: null, text: 'como ta o deploy?', receivedAt: undefined });
+    assert.deepEqual({ ...page[0], receivedAt: undefined }, { seq: 1, sender: 'U0OWNER', channel: 'D0OWNER', ts: '1793000000.000100', thread: null, text: 'como ta o deploy?', receivedAt: undefined, operatorText: { text: 'como ta o deploy?', ts: '1793000000.000100' } });
     assert.equal(r.relay.after(1, 10).length, 0);
   } finally { r.close(); }
 });

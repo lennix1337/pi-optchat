@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { SlackChannel } from '../src/channels/slack.ts';
 import { FORWARD_CHANNEL, SlackPoster, SlackRelay } from '../src/channels/slack-relay.ts';
 import { channelFixture, PROFILE, slackEnvelope } from './channel-support.ts';
+import { SlackBridge } from '../../src/slack-bridge.ts';
+import { DEFAULT_HEARTBEAT, wakeText } from '../../src/heartbeat.ts';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 const TEAM = 'T0TEST'; const APP = 'A0TEST';
 
@@ -60,6 +63,18 @@ test('the "Mandar pro Jarvis" shortcut forwards any message with author, place, 
   } finally { r.close(); }
 });
 
+test('only a direct authorized human message carries the original operator words and timestamp', () => {
+  const r = fixture();
+  try {
+    assert.equal(r.channel.accept(slackEnvelope('EvDirect', 'não', { ts: '123.456', thread_ts: '100.1', subtype: 'file_share', files: [FILE] })).outcome, 'relayed');
+    assert.deepEqual((r.relay.after(0, 10)[0] as any).operatorText, { text: 'não', ts: '123.456' });
+    assert.equal(r.channel.accept(shortcut()).outcome, 'relayed');
+    assert.equal((r.relay.after(1, 10)[0] as any).operatorText, undefined);
+    assert.equal(r.channel.accept(slackEnvelope('EvStranger', 'não', { user: 'U0STRANGER', ts: '124.0' })).outcome, 'unauthorized_sender');
+    assert.equal(r.relay.after(0, 10).length, 2);
+  } finally { r.close(); }
+});
+
 function fakeSlack(reply: (url: string, body: unknown) => unknown = () => ({ ok: true })) {
   const calls: { url: string; body: any }[] = [];
   const fetch = (async (url: string, init: RequestInit = {}) => {
@@ -70,6 +85,33 @@ function fakeSlack(reply: (url: string, body: unknown) => unknown = () => ({ ok:
   }) as typeof globalThis.fetch;
   return { calls, fetch };
 }
+
+test('authorized Slack reply reaches the bridge with its original refusal and creates a rule for the posted wake', async () => {
+  const r = fixture();
+  try {
+    const bridge = new SlackBridge({ sendUserMessage: (() => {}) as never }, () => ({ dir: r.f.dir, name: PROFILE }), {
+      now: () => 2_000_000,
+      request: async (_owner, path) => path.startsWith('/v1/slack/inbox')
+        ? { messages: r.relay.after(0, 10).map(m => ({ ...m, channelName: 'wakes' })) }
+        : { parts: 1, ts: '100.1', channel: 'C0HARNESS' },
+    });
+    bridge.sawUserMessage(wakeText('revisar alertas do projeto mercurio', 'fixture', 30, DEFAULT_HEARTBEAT));
+    await bridge.runEnded([{ role: 'assistant', content: [{ type: 'text', text: 'Proponho revisar alertas do projeto mercurio.' }] }] as unknown as AgentMessage[]);
+    assert.equal(r.channel.accept(slackEnvelope('EvReply', '  não quero  ', { channel: 'C0HARNESS', thread_ts: '100.1', ts: '101.2', subtype: 'file_share', files: [FILE] })).outcome, 'relayed');
+    await bridge.poll();
+    const state = JSON.parse(readFileSync(join(r.f.dir, 'wake-suppressions.json'), 'utf8'));
+    assert.deepEqual(state.rules.map((rule: any) => [rule.text, rule.origin, rule.ts]), [['  não quero  ', 'slack', '101.2']]);
+  } finally { r.close(); }
+});
+
+test('multipart posts expose each message timestamp so replies can be attributed', async () => {
+  let n = 0;
+  const slack = fakeSlack(() => ({ ok: true, ts: `${++n}.0`, channel: 'C0HARNESS' }));
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U0OWNER', channels: { harness: 'C0HARNESS' }, fetch: slack.fetch });
+  const sent = await poster.send('word '.repeat(1200), undefined, 'harness');
+  assert.ok(sent.parts > 1);
+  assert.deepEqual((sent as any).timestamps, Array.from({ length: sent.parts }, (_, i) => `${i + 1}.0`));
+});
 
 test('poster: reactions, reading a linked message, the home tab, broadcast replies and file downloads', async () => {
   const r = fixture();

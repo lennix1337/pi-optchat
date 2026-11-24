@@ -146,7 +146,7 @@ export class SlackChannel {
     const files = slackFiles(event.files);
     if (!text && !files.length) return { outcome: 'ignored' };
     const thread = typeof event.thread_ts === 'string' && event.thread_ts !== event.ts ? { thread: event.thread_ts } : {};
-    return { outcome: relay.enqueue({ delivery, sender: event.user, channel: event.channel, ts: event.ts, ...thread, text, ...(files.length ? { files } : {}) }) };
+    return { outcome: relay.enqueue({ delivery, sender: event.user, channel: event.channel, ts: event.ts, ...thread, text, operatorText: typeof event.text === 'string' ? event.text : '', ...(files.length ? { files } : {}) }) };
   }
 
   /**

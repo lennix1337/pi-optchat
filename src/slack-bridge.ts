@@ -25,6 +25,7 @@ import { homeDashboard, homeGraph, homeProduction } from './home-dashboard.ts';
 import { memoryShapedReply } from './wake-noise.ts';
 import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
+import { activeRefusals, recordRefusal, rememberWake, revokeRefusal } from './wake-refusal.ts';
 
 /**
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
@@ -44,7 +45,7 @@ export const FROM_SLACK = /^\[Slack(?: #([a-z0-9][a-z0-9_-]{0,79}))?\] /;
 const FROM_WHATSAPP = /^\[WhatsApp\] /;
 export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
-type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[] };
+type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string } };
 
 type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
@@ -245,6 +246,7 @@ export class SlackBridge {
   private workTimer: ReturnType<typeof setTimeout> | undefined;
   /** The wake whose run a provider error cut short: pi-multi-account resumes it with a user message that is no wake prompt. */
   private cutWake: { since: number; endedAt: number } | undefined;
+  private wakeTopic = '';
   /** The Slack conversation the last answered run came from: the end of a shell that run left running is news for it. */
   private lastSlack: { origin: Origin; at: number } | undefined;
   private shellEnd = false;
@@ -394,6 +396,10 @@ export class SlackBridge {
           continue;
         }
         const id = typeof m.channel === 'string' && REAL_CHANNEL.test(m.channel) ? m.channel : undefined;
+        if (id && typeof m.thread === 'string' && typeof m.operatorText?.text === 'string' && m.operatorText.ts === m.ts) {
+          try { recordRefusal(owner.dir, id, m.thread, m.operatorText, this.options.now()); }
+          catch (error) { this.options.warn(`Wake refusal not recorded: ${error instanceof Error ? error.message : String(error)}`); }
+        }
         if (id) this.react(owner, id, m.ts, SEEN);
         const extras = await this.enrich(owner, m);
         const text = `${slackPrefix(channel)}${m.text}${extras}\n\n${budgetNote(wordBudget(channel, this.options.wordBudgets))}${this.running ? MID_RUN : ''}`;
@@ -523,7 +529,13 @@ export class SlackBridge {
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
     const { model, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused };
+    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused, wakeRefusals: ts => {
+      const owner = this.owner();
+      if (!owner) return 'Perfil indisponível.';
+      if (ts) return revokeRefusal(owner.dir, ts) ? 'Assunto liberado.' : 'Recusa não encontrada.';
+      const rules = activeRefusals(owner.dir, now());
+      return rules.length ? `*Assuntos recusados:*\n${rules.map(r => `• ${r.channel}:${r.ts}: ${r.topic}`).join('\n')}\nPara liberar: *recusas ID*.` : 'Nenhum assunto recusado ativo.';
+    } };
   }
 
   /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
@@ -554,7 +566,7 @@ export class SlackBridge {
       this.work = { since: this.work?.since ?? resumed?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: this.work?.step ?? '', stepSince: this.work?.stepSince ?? this.options.now(), steps: this.work?.steps ?? 0, shown: 0, thoughts: this.work?.thoughts ?? [] };
       this.showWork();
     }
-    if (wake) { this.waking = true; return; }
+    if (wake) { this.waking = true; if (!resumed) this.wakeTopic = wakeTask(text) ?? ''; return; }
 
     if (text.startsWith(CLAIM_CHECK_PREFIX)) return;
     if (FROM_WHATSAPP.test(text)) this.whatsapp = true;
@@ -643,15 +655,24 @@ export class SlackBridge {
     const text = last;
 
 
-    const council = councilThread(messages);
-    try { await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), council ?? null, WAKE_LOG_CHANNEL, council ? { broadcast: true } : {}); return; }
+    const council = councilThread(messages), topic = text.trim().replace(/^(?:proponho|sugiro)\s+/i, '').replace(/[.!?]+$/, '') || this.wakeTopic;
+    this.wakeTopic = '';
+    try {
+      const post = await this.publish(wakeLogPost({ start: work?.since ?? this.options.now(), end: this.options.now(), steps, messages, report: text }), council ?? null, WAKE_LOG_CHANNEL, council ? { broadcast: true } : {});
+      if (owner && !council && post.channel) try { for (const ts of post.timestamps ?? [post.ts]) rememberWake(owner.dir, post.channel, ts, topic, this.options.now()); }
+      catch (error) { this.options.warn(`Wake post not recorded: ${error instanceof Error ? error.message : String(error)}`); }
+      return;
+    }
     catch (error) {
       if (!(error instanceof Error && error.message.startsWith('Unknown Slack channel'))) { this.options.warn(`Wake log not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); return; }
     }
     const channel = text ? wakeChannel(messages) : undefined;
     if (!text || channel === undefined) return;
-    try { await this.publish(`*Wake* · ${text}`, null, channel); }
-    catch (error) { this.options.warn(`Wake report not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
+    try {
+      const post = await this.publish(`*Wake* · ${text}`, null, channel);
+      if (owner && post.channel) try { for (const ts of post.timestamps ?? [post.ts]) rememberWake(owner.dir, post.channel, ts, topic, this.options.now()); }
+      catch (error) { this.options.warn(`Wake post not recorded: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) { this.options.warn(`Wake report not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /**
@@ -783,16 +804,16 @@ export class SlackBridge {
   }
 
   /** A post the agent wants to make (a final answer, a wake report, slack_send): always one whole message. */
-  private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
+  private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     return this.send(text, threadTs, channel, options);
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
-  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true; broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
+  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true; broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
     try {
-      const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}), ...options }) as { parts: number; ts: string; channel?: string };
+      const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}), ...options }) as { parts: number; ts: string; channel?: string; timestamps?: string[] };
       this.options.sent(channel, text);
       return result;
     }

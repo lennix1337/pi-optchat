@@ -62,6 +62,7 @@ import { isActiveRun, type RunInfo } from './runs.ts';
 import { exportBrowser } from './browser.ts';
 import { registerWhatsAppBridge } from './whatsapp-bridge.ts';
 import { Inbox } from './inbox.ts';
+import { activeRefusals } from './wake-refusal.ts';
 import { OperationJournal, registerOperationSafety } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { DeployWatch, registerDeployGuard, workerHooks } from './deploy.ts';
@@ -390,7 +391,7 @@ export default function optchat(host: ExtensionAPI) {
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
       idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir), radar,
-      obligations: liveObligations({ ...obligationSource(a), now }) });
+      obligations: liveObligations({ ...obligationSource(a), now }), refusals: activeRefusals(a.dir, now).map(rule => rule.topic) });
   };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
@@ -628,13 +629,16 @@ export default function optchat(host: ExtensionAPI) {
         const nightShift = nightShiftWakeNote(nightShiftConfig(profile.config), nightShiftLogPath(profile.dir), Date.now());
         const top = beat.obligations ?? liveObligations({ ...obligationSource(profile), now: Date.now() });
         const pace = paceWakeNote(paceForecasts(readQuotaHistory(profile.dir), Date.now()));
+        const refused = activeRefusals(profile.dir, Date.now()).map(rule => rule.topic);
         const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions, top)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift) + (note ? `\n${note}` : '') + (pace ? `\n${pace}` : ''), previousWake(profile.dir), beat.unchanged, instructions);
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift) + (note ? `\n${note}` : '') + (pace ? `\n${pace}` : ''), previousWake(profile.dir), beat.unchanged, instructions)
+          + (refused.length ? `\nOperator refused these wake topics; do not propose them:\n${refused.map(topic => `- ${topic}`).join('\n')}` : '');
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
           .then(() => deliverReport(dream ? `${text}\nLast night's dream, to pass on in your report as these three lines:\n${dream}` : text))
           .catch(error => { void wakeOff(profile.dir, wakeHost(ctx)).catch(() => undefined); ctx.ui.notify(`Heartbeat could not wake the agent: ${errorText(error)}`, 'error'); }); },
       note: text => ctx.ui.notify(text, 'warning'),
+      onSuppressed: reason => { if (own()) void slack.send(`Wake suprimido: ${reason}`, null, 'wakes').catch(error => ctx.ui.notify(`Wake suppression log failed: ${errorText(error)}`, 'warning')); },
       setTimer: (run, ms) => setTimeout(run, ms).unref(),
       clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) }, reloadTicket);
     if (reloadTicket && heartbeat.waking) watchWakeReload(reloadTicket, ctx, profile);

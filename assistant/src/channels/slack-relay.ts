@@ -13,8 +13,8 @@ import { renderGraph, type HomeGraph } from './home-graph.ts';
 
 /** A Slack file the operator sent: only Slack's own file host is a trusted download. */
 export type SlackFile = { id: string; name: string; mimetype: string; url: string };
-export type RelayMessage = { seq: number; sender: string; channel: string; ts: string; thread: string | null; text: string; receivedAt: string; files?: SlackFile[] };
-export type QueuedMessage = { delivery: string; sender: string; channel: string; ts: string; thread?: string; text: string; files?: SlackFile[] };
+export type RelayMessage = { seq: number; sender: string; channel: string; ts: string; thread: string | null; text: string; receivedAt: string; files?: SlackFile[]; operatorText?: { text: string; ts: string } };
+export type QueuedMessage = { delivery: string; sender: string; channel: string; ts: string; thread?: string; text: string; files?: SlackFile[]; operatorText?: string };
 /** The relay's channel for a message the operator forwarded with the shortcut: answered in the DM, never in the source channel. */
 export const FORWARD_CHANNEL = 'forward';
 /** The relay's channel for a tap on an App Home button: answered in the DM. */
@@ -64,6 +64,7 @@ export class SlackRelay {
       CREATE TABLE IF NOT EXISTS slack_relay (seq INTEGER PRIMARY KEY AUTOINCREMENT, profile TEXT NOT NULL, delivery TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, ts TEXT NOT NULL, thread TEXT, text TEXT NOT NULL, received_at TEXT NOT NULL, UNIQUE(profile, delivery));`);
     const columns = this.db.prepare('PRAGMA table_info(slack_relay)').all() as { name: string }[];
     if (!columns.some(c => c.name === 'files')) this.db.exec('ALTER TABLE slack_relay ADD COLUMN files TEXT');
+    if (!columns.some(c => c.name === 'operator_text')) this.db.exec('ALTER TABLE slack_relay ADD COLUMN operator_text TEXT');
     this.outbox = new Outbox(this.db, options.profileId, { now: this.now, ...options.outbox });
 
     this.outbox.recover();
@@ -79,8 +80,8 @@ export class SlackRelay {
   enqueue(message: QueuedMessage, retire?: RetireRequest): 'relayed' | 'duplicate' {
     const files = message.files?.length ? JSON.stringify(message.files) : null;
     const relayed = immediate(this.db, () => {
-      const result = this.db.prepare('INSERT OR IGNORE INTO slack_relay (profile, delivery, sender, channel, ts, thread, text, received_at, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(this.profileId, message.delivery, message.sender, message.channel, message.ts, message.thread ?? null, message.text.slice(0, MAX_TEXT), new Date(this.now()).toISOString(), files);
+      const result = this.db.prepare('INSERT OR IGNORE INTO slack_relay (profile, delivery, sender, channel, ts, thread, text, received_at, files, operator_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(this.profileId, message.delivery, message.sender, message.channel, message.ts, message.thread ?? null, message.text.slice(0, MAX_TEXT), new Date(this.now()).toISOString(), files, message.operatorText ?? null);
       if (!result.changes) return false;
       this.stageReceipt(message);
       if (retire && this.poster) this.outbox.stage({ id: `retire:${message.delivery}`, channel: 'slack', kind: 'retire', payload: retire });
@@ -140,8 +141,8 @@ export class SlackRelay {
   /** Messages after `seq`, oldest first. Reading marks a reader as present. */
   after(seq: number, limit: number): RelayMessage[] {
     this.lastRead = this.now();
-    const rows = this.db.prepare('SELECT seq, sender, channel, ts, thread, text, received_at, files FROM slack_relay WHERE profile = ? AND seq > ? ORDER BY seq LIMIT ?').all(this.profileId, seq, limit) as Record<string, string | number | null>[];
-    return rows.map(row => ({ seq: Number(row.seq), sender: String(row.sender), channel: String(row.channel), ts: String(row.ts), thread: row.thread === null ? null : String(row.thread), text: String(row.text), receivedAt: String(row.received_at), ...(row.files ? { files: JSON.parse(String(row.files)) as SlackFile[] } : {}) }));
+    const rows = this.db.prepare('SELECT seq, sender, channel, ts, thread, text, received_at, files, operator_text FROM slack_relay WHERE profile = ? AND seq > ? ORDER BY seq LIMIT ?').all(this.profileId, seq, limit) as Record<string, string | number | null>[];
+    return rows.map(row => ({ seq: Number(row.seq), sender: String(row.sender), channel: String(row.channel), ts: String(row.ts), thread: row.thread === null ? null : String(row.thread), text: String(row.text), receivedAt: String(row.received_at), ...(row.files ? { files: JSON.parse(String(row.files)) as SlackFile[] } : {}), ...(row.operator_text !== null ? { operatorText: { text: String(row.operator_text), ts: String(row.ts) } } : {}) }));
   }
 
   /** Settles the running dispatch pass (tests, shutdown). */
@@ -321,22 +322,24 @@ export class SlackPoster {
 
   /** With `approval`, a one-part post also carries Aprovar/Negar buttons. */
   /** Also returns the conversation id Slack posted to (the DM's `D…` id), which `update` needs. */
-  async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean } = {}): Promise<{ parts: number; ts: string; channel?: string }> {
+  async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const destination = channel === undefined ? this.options.operator : Object.hasOwn(this.options.channels, channel) ? this.options.channels[channel] : undefined;
     if (!destination) throw new OutboxRefused('unknown_channel');
     const chunks = parts(slackText(text));
     if (!chunks.length) throw new OutboxRefused('empty_message');
     const buttons = options.approval && chunks.length === 1 && chunks[0]!.length <= SECTION_MAX;
     let ts = '', posted: string | undefined;
+    const timestamps: string[] = [];
     for (const [index, chunk] of chunks.entries()) {
       let body: { ts?: unknown; channel?: unknown };
       try { body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
 
       catch (error) { throw index === 0 ? error : new Error('slack_partial_post'); }
       ts = typeof body.ts === 'string' ? body.ts : ts;
+      if (typeof body.ts === 'string') timestamps.push(body.ts);
       posted = typeof body.channel === 'string' ? body.channel : posted;
     }
-    return { parts: chunks.length, ts, ...(posted ? { channel: posted } : {}) };
+    return { parts: chunks.length, ts, ...(posted ? { channel: posted } : {}), ...(chunks.length > 1 ? { timestamps } : {}) };
   }
 
   /** Attaches a local picture or PDF to the operator's DM or a configured channel (Slack's external upload flow; needs `files:write`). */

@@ -34,6 +34,7 @@ export interface CommandState {
   /** Sets it through Pi and answers the level now in force. */
   setThinking?(level: string): string;
   proactivityPaused?(): boolean;
+  wakeRefusals?(ts: string): string;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
@@ -101,6 +102,7 @@ function changeThinking(state: CommandState, arg: string): CommandResult {
 }
 
 export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
+  { name: 'recusas', aliases: [], summary: 'lista os assuntos recusados; *recusas ID* libera um', run: (state, arg) => ({ text: state.wakeRefusals?.(arg) ?? 'Não consigo ler as recusas nesta sessão.' }) },
   { name: 'status', aliases: ['estado'], summary: 'o que estou fazendo, modelo e conta atuais', run: state => ({ text: withSwitch(state, [state.activity(), modelLine(state)]) }) },
   {
     name: 'parar', aliases: ['pare', 'stop'], summary: 'interrompe o trabalho em andamento (como Esc no terminal)',
@@ -130,7 +132,7 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
 ];
 
 
-const TAKES_ARG = new Set(['modelo', 'thinking']);
+const TAKES_ARG = new Set(['modelo', 'thinking', 'recusas']);
 
 /**
  * The command a whole message names (`status`, `/cota`, `Jarvis modelo`, `modelo sonnet`), or undefined for anything

@@ -21,6 +21,7 @@ import { heapGrowth, heapGrowthLine, recordHeapSample, rssLine, type HeapSample 
 import { formatObligations, liveObligations, nextObligationAt, urgentObligations, type Obligation, type ObligationsInput } from './obligations.ts';
 import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type PreTriageResult, type Signal, type Triage } from './wake-signals.ts';
 import type { StagedEntry } from './predictions.ts';
+import { suppressedWake } from './wake-refusal.ts';
 
 /** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
 export interface Beat {
@@ -134,11 +135,11 @@ export function radarDigest(radar: string | undefined): string | undefined {
 
 const list = (items: string[]) => items.length ? items.map(item => `- ${item}`).join('\n') : '(none)';
 
-export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan; queueItem?: string; radar?: string; obligations?: readonly Obligation[] }
+export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan; queueItem?: string; radar?: string; obligations?: readonly Obligation[]; refusals?: readonly string[] }
 
 const tail = (text: string, max: number) => text.length > max ? `[older lines omitted]\n${text.slice(text.indexOf('\n', text.length - max) + 1)}` : text;
 
-export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shells, plan = DEFAULT_HEARTBEAT, queueItem, radar, obligations }: Snapshot) {
+export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shells, plan = DEFAULT_HEARTBEAT, queueItem, radar, obligations, refusals }: Snapshot) {
   const obligationsBlock = obligations?.length ? formatObligations(obligations) : '';
   return [
     `Idle for ${idleMinutes} min since the last turn ended.`,
@@ -147,6 +148,7 @@ export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shell
     `Running shells: ${shells.length ? `\n${shells.map(s => `- ${s}`).join('\n')}` : 'none'}`,
     ...obligationsBlock ? [obligationsBlock] : [],
     ...queueItem ? [`Operator's work queue candidate (not a priority order): ${queueItem}`] : [],
+    ...refusals?.length ? [`Operator refused these wake topics; do not propose them:\n${refusals.map(topic => `- ${topic}`).join('\n')}`] : [],
     ...radar ? [`${RADAR_NOTE}\n${radar}`] : [],
     `Operator's jobs for idle time (candidates, not a priority order):\n${list(plan.jobs)}`,
     'Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers. Neither queue position nor the previous suggestion decides the next delivery.',
@@ -300,6 +302,7 @@ export interface HeartbeatDeps {
   obligations?: () => Omit<ObligationsInput, 'now'>;
   wake: (beat: Beat, radar?: string, choice?: ModelChoice) => void;
   note: (text: string) => void;
+  onSuppressed?: (reason: string) => void;
   setTimer: (run: () => void, ms: number) => unknown;
   clearTimer: (handle: unknown) => void;
 }
@@ -662,7 +665,21 @@ export class Heartbeat {
       if (pre?.radarDigest !== undefined || seen) this.keep({ ...pre?.radarDigest !== undefined ? { radarDigest: pre.radarDigest } : {}, ...seen });
       this.arm(); return;
     }
-    const at = this.deps.now(), recent = this.saved().wakes.filter(wake => at - wake < DAY), cap = this.deps.maxWakes();
+    const at = this.deps.now();
+    try {
+      const refusal = suppressedWake(this.deps.dir, beat.text, at);
+      if (refusal) {
+        const reason = `suppressed by Slack refusal ${refusal.ts}: ${refusal.topic}`;
+        this.deps.note(`Heartbeat ${reason}`);
+        this.deps.onSuppressed?.(reason);
+        this.save({ verdict: 'SLEEP', text: reason }, undefined, undefined, 'skippedIdle');
+        this.arm(); return;
+      }
+    } catch (error) {
+      this.deps.note(`Heartbeat could not read wake refusals: ${error instanceof Error ? error.message : String(error)}`);
+      this.arm(); return;
+    }
+    const recent = this.saved().wakes.filter(wake => at - wake < DAY), cap = this.deps.maxWakes();
     if (recent.length >= cap) {
       this.deps.note(`Heartbeat would wake the agent (${beat.text}) but already used ${cap} wake${cap === 1 ? '' : 's'} in 24 h.`);
       this.save({ verdict: 'WAKE', text: `${beat.text} (not woken: ${cap} wakes in 24 h)` }); this.arm(); return;
