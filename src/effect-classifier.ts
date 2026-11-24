@@ -324,6 +324,7 @@ function* toolEffects(w: string[], lower: string, dir: string, repo: AsyncRepo):
   if (/^(?:npm|pnpm|yarn|cargo|vsce)$/.test(lower)) {
     const effects: Effect[] = [];
     if (args[0] === 'publish' && !dryRunFlag(args)) effects.push({ action: 'publish', targets: yield* repoTargets(dir, repo, w) });
+    if (/^(?:npm|pnpm|yarn)$/.test(lower) && args[0] === 'run' && args[1] === 'deploy' && !dryRunFlag(args)) effects.push({ action: 'deploy', targets: yield* repoTargets(dir, repo, w) });
     if (/^(?:i|install|add|link)$/.test(args[0] ?? '') && args.some(arg => arg === '-g' || arg === '--global') || (lower === 'cargo' && args[0] === 'install'))
       effects.push({ action: 'global-install', targets: ['machine'] });
     return effects;
@@ -418,7 +419,19 @@ export const runsDeploy = (text: string) => segments(text, '').some(({ command, 
 /** Messages to third parties and production HTTP writes in shell text (see external-effects.ts). */
 export const externalEffectsOf = (text: string) => segments(text, '').flatMap(({ command }) => commandExternalEffects(commandWords(command)));
 
-const paidTools = new Set(['subagent', 'spawn', 'tell']);
+const paidTools = new Set(['subagent', 'tell']);
+export const planModel = (model: string) => /^(?:openai-codex(?:-account-\d+)?|anthropic(?:-account-\d+)?|agy)\//i.test(model);
+export const planSpawn = (input: unknown) => record(input) && Array.isArray(input.tasks) && input.tasks.length > 0 && input.tasks.every((task: unknown) => record(task) && (task.model === undefined || typeof task.model === 'string' && planModel(task.model)));
+/** Only literal task calls can be proved here; dynamic spawn expressions remain paid. */
+export function paidDelegationCode(code: string) {
+  const literal = /\btools\.spawn\s*\(\s*\{\s*tasks\s*:\s*\[([^\[\]]*)\]\s*\}\s*\)/g;
+  const task = /^\s*\{\s*task\s*:\s*(["'])[^"'\\]*\1(?:\s*,\s*model\s*:\s*(["'])([^"'\\]*)\2)?\s*\}\s*$/;
+  const remaining = code.replace(literal, (whole, body: string) => {
+    const tasks = body.split(/(?<=\})\s*,/).map(part => task.exec(part));
+    return tasks.length && tasks.every(match => match && (match[3] === undefined || planModel(match[3]))) ? '' : whole;
+  });
+  return /\btools\.(?:subagent|spawn)\s*\(/.test(remaining);
+}
 const subagentInspection = new Set(['list', 'models', 'guide', 'status', 'validate']);
 /** Commands a codemode script hands to shell tools: the `command: "..."` string literals. */
 export const scriptCommands = (code: string) => [...code.matchAll(/\bcommand\s*:\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(m => m[2].replace(/\\n/g, '\n').replace(/\\(["'`\\])/g, '$1'));
@@ -431,6 +444,8 @@ export const classifyEffectsAsync = (call: EffectCall, repo: AsyncRepo): Promise
 
 function* evaluateEffects({ tool, input, cwd }: EffectCall, repo: AsyncRepo): Evaluation<Effect[]> {
 
+  if (tool === 'spawn') return planSpawn(input) ? [] : [{ action: 'paid', targets: ['subagent'] }];
+  if (tool === 'tell' && record(input) && typeof input.id === 'string' && typeof input.message === 'string') return [];
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? [] : [{ action: 'paid', targets: ['subagent'] }];
   if (tool === 'browser_harness') { const consent = browserConsentEffect(input); return [...(consent ? [consent] : []), ...browserScriptEffects(input)]; }
   const shell = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? [input.command] : undefined;
@@ -438,7 +453,7 @@ function* evaluateEffects({ tool, input, cwd }: EffectCall, repo: AsyncRepo): Ev
   const texts = shell ?? (code !== undefined ? scriptCommands(code) : []);
   const effects: Effect[] = [];
   if (code !== undefined) {
-    if (/\btools\.(?:subagent|spawn|tell)\s*\(/.test(code)) effects.push({ action: 'paid', targets: ['subagent'] });
+    if (paidDelegationCode(code)) effects.push({ action: 'paid', targets: ['subagent'] });
     if (/\bmodels\.(?:classify|generateImages)\s*\(/.test(code)) effects.push({ action: 'paid', targets: ['model-run'] });
   }
   for (const raw of texts) {

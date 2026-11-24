@@ -17,6 +17,8 @@ export interface RunInfo {
   parentId?: string; depth: number;
   state: RunState; report?: string;
   connected?: boolean;
+  /** A wake's descendants retain the unattended fence even after their parent turn settles. */
+  unattendedWake?: boolean;
   /** A contract worker's kind and project (manager mode); absent for a plain subagent. */
   kind?: string; project?: string;
   /** A specialist patrol (see patrol.ts): a read-only worker whose report is recorded, not delivered, unless it fails. */

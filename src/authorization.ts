@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
-import { databaseDestructive, externalEffectsOf, productionWriteHost, scriptCommands, runsDeploy, segments } from './effect-classifier.ts';
+import { databaseDestructive, externalEffectsOf, productionWriteHost, scriptCommands, runsDeploy, segments, planSpawn, paidDelegationCode } from './effect-classifier.ts';
 import { browserConsentEffect } from './external-effects.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
@@ -67,7 +67,7 @@ const riskClasses: [string, RegExp][] = [
   ['publish', /\b(?:npm|pnpm|yarn|cargo|vsce)\s+publish\b|\bgh\s+(?:release\s+create|pr\s+merge|repo\s+(?:create|delete))\b/],
   ['global install', /\b(?:npm|pnpm|yarn)\s+(?:i|install|add|link)\b[^;&|\n]*\s(?:-g|--global)\b|\b(?:cargo|winget|choco|scoop)\s+install\b/],
   ['discard', /\bgit\b[^;&|\n]*\s(?:reset\s+--hard|clean\s+-[a-zA-Z]*f[a-zA-Z]*|worktree\s+remove\b[^;&|\n]*--force|branch\s+-D|stash\s+(?:drop|clear))\b/],
-  ['paid model call', /\bpi\b[^;&|\n]*\s(?:-p|--print)\b|\bbench\.mjs\s+run\b|\bmodels\.(?:classify|generateImages)\b|\btools\.(?:subagent|spawn|tell)\b/],
+  ['paid model call', /\bpi\b[^;&|\n]*\s(?:-p|--print)\b|\bbench\.mjs\s+run\b|\bmodels\.(?:classify|generateImages)\b/],
 ];
 const paidTools = new Set(['subagent', 'spawn', 'tell']);
 /** Risk class of a call that touches the operator's autonomy contract; only the operator may approve it. */
@@ -216,6 +216,9 @@ function recursiveDelete(command: string) {
 function riskClass({ tool, input }: Invocation, contractDir?: string) {
 
   if (touchesContract({ tool, input }, contractDir)) return CONTRACT_CHANGE;
+  if (tool === 'spawn' && planSpawn(input)) return undefined;
+  if (tool === 'tell' && record(input) && typeof input.id === 'string' && typeof input.message === 'string') return undefined;
+  if (tool === 'codemode' && record(input) && typeof input.code === 'string' && paidDelegationCode(input.code)) return 'paid model call';
   if (paidTools.has(tool)) return record(input) && typeof input.action === 'string' && subagentInspection.has(input.action) ? undefined : 'paid model call';
   if (tool === 'browser_harness') return browserConsentEffect(input) ? 'consent click' : undefined;
   const text = record(input) && typeof input.command === 'string' && (tool === 'bash' || tool === 'shell_start') ? input.command

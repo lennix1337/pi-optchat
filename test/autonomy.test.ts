@@ -168,7 +168,9 @@ test('a codemode script is judged by the shell commands it hands to tools and th
   const code = (source: string) => classifyEffects({ tool: 'codemode', input: { code: source }, cwd: 'C:/projetos/pi-optchat' }, repo).map(e => `${e.action} ${e.targets.join(',')}`);
   assert.deepEqual(code('await tools.bash({ command: "git push origin main", timeout: 30 });'), ['push-main c:/projetos/pi-optchat,lennix1337/pi-optchat']);
   assert.deepEqual(code('const r = await tools.read({ path: "README.md" }); // mentions git push'), []);
-  assert.deepEqual(code('await tools.spawn({ tasks: [{ task: "x" }] });'), ['paid subagent']);
+  assert.deepEqual(code('await tools.spawn({ tasks: [{ task: "x" }] });'), []);
+  assert.deepEqual(code('await tools.spawn({ tasks: [{ task: "x", model: "openai/gpt-6" }] });'), ['paid subagent']);
+  assert.deepEqual(code('await tools.spawn(taskFromToolOutput);'), ['paid subagent']);
 });
 
 const contract = parseContract({

@@ -29,6 +29,7 @@ import { registerShellTools, type ShellJobs } from './shells.ts';
 import { registerOperationSafety, type OperationJournal } from './operations.ts';
 import { registerBashHints } from './bash-hints.ts';
 import { registerEffectApprovals } from './authorization-hooks.ts';
+import { planModel } from './effect-classifier.ts';
 import { registerRipwireFirst } from './ripwire-first-guard.ts';
 import { registerConfigProtectGuard } from './config-protect-guard.ts';
 import { OutputStore } from './output-store.ts';
@@ -79,6 +80,7 @@ export interface AgentTiming {
   atMs: number; runId?: string; durationMs?: number; promptChars?: number;
 }
 interface Options { parentSession?: string; usage?: UsageLedger; operations?: OperationJournal;
+  unattendedWake?: () => boolean; operatorTurn?: () => boolean; orderGrant?: (effect: import('./autonomy.ts').Effect) => string | undefined; productionHosts?: () => readonly string[] | undefined;
   recoveryEvent?: (event: unknown) => void; recoveryIncident?: (sessionId: string) => string | undefined; createSession?: typeof createAgentSession; shells?: ShellJobs;
 
   onTiming?: (event: AgentTiming) => void;
@@ -674,12 +676,14 @@ export class Children {
         if (cancelled()) throw new Error('Parent or profile is stopping.');
         const id = ids?.[index] ?? randomUUID().slice(0, 8), directory = taskDirectory(cwd, task.cwd), project = task.kind ? task.project ?? specialistOf(directory) : undefined;
         const openingAt = performance.now();
-        const session = await this.open({ id, directory, depth, parentId, connected, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined, patrol: task.patrol, mcp: task.mcp,
+        const unattendedWake = !!(this.options.unattendedWake?.() || (parentId && this.history.records.get(parentId)?.unattendedWake));
+        if (unattendedWake && task.model !== undefined && !planModel(`${selected.provider}/${selected.model}`) && !this.options.orderGrant?.({ action: 'paid', targets: ['subagent'] })) throw new Error('Unattended wake: a model outside the plan needs an operator grant.');
+        const session = await this.open({ id, directory, depth, parentId, connected, unattendedWake, provider: selected.provider, model, thinking: selected.thinking, project, peer: task.peer !== undefined, kind: task.kind, contract: task.kind !== undefined, patrol: task.patrol, mcp: task.mcp,
           sessionManager: SessionManager.create(directory, join(this.profileDirectory, 'runs')) });
         this.timed('open', id, openingAt);
         const info: RunInfo = { id, task: task.task, cwd: directory, model: `${selected.provider}/${selected.model}`, thinking: session.thinkingLevel,
           parentSession: this.options.parentSession ?? '', parentId, depth, sessionFile: session.sessionFile, started: Date.now(), state: 'running', guidance: [], ...(connected ? { connected: true } : {}),
-          ...(task.kind ? { kind: task.kind, project } : {}), ...(task.patrol ? { patrol: true } : {}), ...(task.mcp !== undefined ? { mcp: task.mcp } : {}), ...(task.peer ? { peer: { id: task.peer, sent: 0 } } : {}) };
+          ...(unattendedWake ? { unattendedWake: true } : {}), ...(task.kind ? { kind: task.kind, project } : {}), ...(task.patrol ? { patrol: true } : {}), ...(task.mcp !== undefined ? { mcp: task.mcp } : {}), ...(task.peer ? { peer: { id: task.peer, sent: 0 } } : {}) };
         const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
         launched.push(live); this.save(info); this.running.set(id, live);
         this.launching--; reserved--;
@@ -704,7 +708,7 @@ export class Children {
   /** `project`: a contract worker's specialist, whose memory tree it may read with specialist_memory. `peer`: it is paired, so it gets tell_peer now;
    * an unpaired worker gets it when a later spawn pairs it (peerTools). `contract`: the child has a worker kind. */
   private async open(o: { id: string; directory: string; depth: number; parentId?: string; connected: boolean; provider: string; model: Model<Api>;
-    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind; contract?: boolean; patrol?: boolean; mcp?: boolean }) {
+    thinking?: ModelChoice['thinking']; sessionManager: SessionManager; project?: Specialist; peer?: boolean; kind?: WorkerKind; contract?: boolean; patrol?: boolean; mcp?: boolean; unattendedWake?: boolean }) {
     const { id, directory, depth, parentId, connected, kind } = o;
     const crew = this.options.crew;
     const specialist = crew && o.project ? [specialistMemoryTool(() => crew, o.project, run => this.transcript(run))] : [];
@@ -739,7 +743,7 @@ export class Children {
           metrics.record('projection', performance.now() - started); metrics.context(messages);
           return { messages };
         });
-        registerEffectApprovals(pi, { grant: false });
+        registerEffectApprovals(pi, { grant: false, unattendedWake: () => this.history.records.get(id)?.unattendedWake ?? !!o.unattendedWake, orderGrant: this.options.orderGrant, productionHosts: this.options.productionHosts });
         registerRipwireFirst(pi);
         registerConfigProtectGuard(pi);
         if (o.patrol) pi.on('tool_call', event => {
@@ -1179,13 +1183,17 @@ export class Children {
       return 'Message sent to pi-subagents.';
     }
     const live = this.running.get(id);
+    const run = live?.info ?? this.history.records.get(id);
+    const human = !this.options.unattendedWake?.() && !caller && !notice && (source === 'user' || source === 'manager' && this.options.operatorTurn?.() === true);
+    if (run && !human && (run.unattendedWake || this.options.unattendedWake?.()) && route?.model !== undefined && !planModel(route.model) && !this.options.orderGrant?.({ action: 'paid', targets: ['subagent'] })) throw new Error('Unattended wake: a model outside the plan needs an operator grant.');
     if (route && (live || source !== 'manager' || !this.history.records.has(id))) throw new Error(`${id} is active or unavailable; routing can only change on a settled worker.`);
-    if (!live && source === 'manager' && this.history.records.has(id)) return this.track(this.resume(id, message, caller, route));
+    if (!live && source === 'manager' && run) return this.track(this.resume(id, message, caller, route, undefined, human));
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) throw new Error(`${id} is finishing. Its report will arrive on its own${live.info.connected || source === 'user' ? '' : '; tell it again after that to resume it'}.`);
     if (!live) throw new Error(`No running subagent ${id}.`);
     const text = live.info.connected && source === 'manager' ? `[Main agent guidance]\n${message.trim()}` : message.trim(); if (!message.trim()) throw new Error('Message is empty.');
     if (source === 'user') this.memory.append('user', `Direct guidance to subagent [${id}]: ${text}`);
     const guidance: RunInfo['guidance'][number] = { text, date: Date.now(), state: 'queued', from: source };
+    if (human) live.info.unattendedWake = false;
     live.info.guidance.push(guidance); this.save(live.info);
     try {
       await live.requeueing;
@@ -1354,14 +1362,15 @@ export class Children {
       && (!run.parentId || !!parent && ['running', 'waiting', 'paused'].includes(parent.info.state));
   }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
-  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number): Promise<string> {
+  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number, human = false): Promise<string> {
     const { run, text, automatic, manager, provider, model, thinking } = this.prepareResume(id, message, caller, route);
     if (automatic) return this.preemptParkResume(id, run, automatic, message, caller, route!);
     const snapshot = { generation: this.parkGeneration.get(id), state: run.state, parked: run.parked, provider, model: model.id, thinking };
     this.launching++; this.resuming.add(id);
     let reserved = true;
     try {
-      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol, mcp: run.mcp });
+      const unattendedWake = !human && !!(run.unattendedWake || this.options.unattendedWake?.() || (run.parentId && this.history.records.get(run.parentId)?.unattendedWake));
+      const session = await this.open({ id, directory: run.cwd, depth: run.depth, parentId: run.parentId, connected: false, unattendedWake, provider, model, thinking, sessionManager: manager, project: run.kind ? run.project : undefined, peer: run.peer !== undefined, kind: (WORKER_KINDS as readonly string[]).includes(run.kind ?? '') ? run.kind as WorkerKind : undefined, contract: run.kind !== undefined, patrol: run.patrol, mcp: run.mcp });
 
       if (!this.resumeOpenValid(id, run, session, snapshot, route, automaticGeneration)) {
         await this.shutdown(session); this.dispose(session); throw new Error('Parent or profile is stopping, or the worker or route changed while opening; nothing was started.');
@@ -1370,7 +1379,7 @@ export class Children {
       const { ended: _ended, cutOff: _cutOff, parked: _parked, ...rest } = run;
       const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
       const prompt = cutOffChildren(text, cut);
-      const info: RunInfo = { ...rest, ...(route ? { explicitRecovery: true } : {}), model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
+      const info: RunInfo = { ...rest, unattendedWake, ...(route ? { explicitRecovery: true } : {}), model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
         guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
       const saveFailure = this.saveResume(info, run, session);
       if (saveFailure) await saveFailure;
