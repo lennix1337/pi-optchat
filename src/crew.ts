@@ -465,6 +465,7 @@ const CREW_PARAMS = Type.Object({
   text: Type.Optional(Type.String()),
   edits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }))),
   append: Type.Optional(Type.String()),
+  shrink: Type.Optional(Type.Boolean()),
   id: Type.Optional(Type.Integer({ minimum: 0 })),
   n: Type.Optional(Type.Integer({ minimum: 1 })),
   findText: Type.Optional(Type.String({ minLength: 1 })),
@@ -492,6 +493,12 @@ function listCrew(c: Crew) {
     pending.length ? `proposals pending: ${counts(pending)}` : '', stale.length ? `stale proposals (over ${STALE_PROPOSAL_DAYS} days): ${stale.join(', ')}` : ''].filter(Boolean).join('\n');
 }
 
+const SHRINK_FLOOR_BYTES = 1024;
+function refuseShrink(current: string, next: string, label: string) {
+  const had = Buffer.byteLength(current), will = Buffer.byteLength(next);
+  if (had >= SHRINK_FLOOR_BYTES && will < had / 2) throw new Error(`write would drop ${had - will} B of ${had} B in ${label} (to ${will} B). Nothing was written. Read it first and send the whole content, use action edit to change a few lines, or pass shrink: true if the cut is intended.`);
+}
+
 function proposalsText(c: Crew, project: string | undefined) {
   const list = c.pending().filter(p => !project || p.specialist === project);
   return list.map(p => `[${p.specialist}] run ${p.runId}, ${p.date}\n${p.text}`).join('\n\n') || '(none pending)';
@@ -508,10 +515,10 @@ function readCrewTree(c: Crew, args: { action: 'view' | 'zoom'; project?: Specia
 /** The manager's tool over the crew's disk state: project charters, capped memories and the missions that span wakes. */
 export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew'>) => ({
   name: 'crew', label: 'Crew memory',
-  description: `Crew by project slug (new slugs create). list: sizes and proposals. Parts: memory (${MEMORY_BYTES} B), charter (${CHARTER_BYTES} B), missions (no project), proposals (read-only). write replaces; edit matches each oldText once, '' deletes, append adds a line; atomic. audit marks audited; view/zoom: tree (id, n). accept: run, title, text (PR body) ships worker branch.`,
+  description: `Crew by project slug (new slugs create). list: sizes and proposals. Parts: memory (${MEMORY_BYTES} B), charter (${CHARTER_BYTES} B), missions (no project), proposals (read-only). write replaces (shrink: true permits a major reduction); edit matches each oldText once, '' deletes, append adds a line; atomic. audit marks audited; view/zoom: tree (id, n). accept: run, title, text (PR body) ships worker branch.`,
   parameters: CREW_PARAMS,
   async execute(_id: string, args: { action: 'list' | 'read' | 'write' | 'edit' | 'audit' | 'view' | 'zoom' | 'accept'; project?: Specialist; part?: 'charter' | 'memory' | 'missions' | 'proposals'; text?: string;
-    edits?: TextEdit[]; append?: string; id?: number; n?: number; findText?: string; run?: string; title?: string }) {
+    edits?: TextEdit[]; append?: string; shrink?: boolean; id?: number; n?: number; findText?: string; run?: string; title?: string }) {
     const c = crew();
     if (args.action === 'list') return result(listCrew(c));
     if (args.action === 'accept') {
@@ -535,6 +542,7 @@ export const crewTool = (crew: () => Crew, accept?: () => Omit<AcceptDeps, 'crew
     if (part !== 'missions' && !args.project) throw new Error(`${args.action} of a ${part} needs project (a slug; existing: ${c.specialists().join(', ')}).`);
     if (args.action === 'read') return result((part === 'missions' ? c.missions() : c.read(args.project!, part).trim()) || '(empty)');
     if (args.action === 'write' && args.text === undefined) throw new Error('write needs text: the whole new content.');
+    if (args.action === 'write' && part !== 'missions' && !args.shrink) refuseShrink(c.stored(args.project!, part), args.text!, `${args.project} ${part}`);
     const text = args.action === 'edit' ? editText(part === 'missions' ? c.storedMissions() : c.stored(args.project!, part), args.edits ?? [], args.append) : args.text!;
     const size = part === 'missions' ? c.writeMissions(text) : c.write(args.project!, part, text);
     return result(`Wrote ${part === 'missions' ? 'missions.md' : `${args.project} ${part}`}: ${size}/${part === 'charter' ? CHARTER_BYTES : MEMORY_BYTES} B.`);
