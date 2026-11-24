@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { advance, configuredProbes, healthSignals, prodHealthReadBytes, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState, type ProductionHealthConfig } from '../src/prod-health.ts';
+import { advance, configuredProbes, defaultFetch, PROBE_BODY_LIMIT, healthSignals, prodHealthReadBytes, registerProdHealth, tellTransitions, FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, runProbe, type Fetcher, type HealthState, type ProductionHealthConfig } from '../src/prod-health.ts';
 import { QUOTA_HEALTH_FILE } from '../src/quota-health.ts';
 import { composeSummary } from '../src/slack-reports.ts';
 import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
@@ -171,7 +172,9 @@ test('a slow probe says where the time went: waiting for the server to answer, o
   const server = await runProbe(web, slowServer, now), body = await runProbe(web, slowBody, now);
   assert.equal(server.waitMs, 4300);
   assert.equal(server.problem, 'lento: 4.5s (4.3s até o servidor responder, 0.2s lendo a página)');
-  assert.equal(body.problem, 'lento: 4.5s (0.3s até o servidor responder, 4.2s lendo a página)');
+  assert.equal(body.ok, true, 'a slow body read is the probing machine (busy event loop, its network), not production');
+  assert.equal(body.problem, undefined);
+  assert.equal(body.ms, 4500, 'the total time stays in the result and the history');
   const dir = mkdtempSync(join(tmpdir(), 'health-'));
   try {
     await new ProdHealth({ fetcher: async () => ({ status: 200, body: API_OK, headersMs: 90 }), now: () => clock, probes: [api] }).round(dir);
@@ -234,4 +237,18 @@ test('session start runs the first round within seconds, so a reload never leave
     for (let i = 0; i < 20 && !checks; i++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(checks, 1);
   } finally { hooks.get('session_shutdown')?.(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the default fetcher reads only the head of the page: a probe never downloads the whole site', async () => {
+  let sent = 0;
+  const server = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); const chunk = 'y'.repeat(16_384); const write = () => { while (sent < 2_000_000) { sent += chunk.length; if (!res.write(chunk)) return void res.once('drain', write); } res.end(); }; res.write(WEB_OK); write(); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const result = await defaultFetch(`http://127.0.0.1:${port}/`, 5000);
+    assert.equal(result.status, 200);
+    assert.ok(result.body.startsWith(WEB_OK));
+    assert.ok(result.body.length <= PROBE_BODY_LIMIT, `body ${result.body.length} > ${PROBE_BODY_LIMIT}`);
+    assert.equal((await runProbe(web, async () => result, () => T0)).build, '9781524fc90c09a4acfe8f92dc28a6862d548360');
+  } finally { server.closeAllConnections(); server.close(); }
 });
