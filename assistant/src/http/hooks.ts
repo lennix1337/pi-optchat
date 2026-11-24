@@ -5,8 +5,8 @@ import { BadRequest, query, readRaw, send } from './io.ts';
 
 /**
  * Inbound events for event routines. A source authenticates itself; the service bearer token never does. `github`
- * checks `X-Hub-Signature-256` (HMAC-SHA256 of the raw body); `shared` compares a secret header. The delivery id is
- * the idempotency key, so a source that retries is safe. The route lives on the loopback listener only: reaching it
+ * checks `X-Hub-Signature-256` (HMAC-SHA256 of the raw body); `shared` compares a secret header. Authenticated bodies
+ * are deduplicated per source. The route lives on the loopback listener only: reaching it
  * from outside is the operator's own proxy decision.
  */
 export type HookSource = { format: 'github' | 'shared'; secret: string };
@@ -43,5 +43,6 @@ export async function hookRoute(req: IncomingMessage, res: ServerResponse, url: 
   const deliveryId = header(req, names.delivery);
   const type = header(req, names.type);
   if (!DELIVERY.test(deliveryId) || (type !== '' && !EVENT_TYPE.test(type))) throw new BadRequest();
-  send(res, 200, { ok: true, ...intake.accept({ source: name, deliveryId, type: type || null, body: raw.toString('utf8') }) });
+  const dedupKey = source.secret ? `body:${createHash('sha256').update(name).update('\0').update(raw).digest('hex')}` : undefined;
+  send(res, 200, { ok: true, ...intake.accept({ source: name, deliveryId, type: type || null, body: raw.toString('utf8'), dedupKey }) });
 }
