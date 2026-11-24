@@ -1,5 +1,3 @@
-// Offline retained-heap deltas; source data is copied before either loader can write.
-// node --expose-gc --experimental-transform-types scripts/heap-owners.ts --source <profile> --session <session.jsonl>
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
