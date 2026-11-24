@@ -101,6 +101,20 @@ test('with too few recent readings the whole window\'s average is used, and with
   assert.equal(forecastPace([], NOW), undefined);
 });
 
+test('in the first day after a reset the burn is spread over a full day, so a busy afternoon is not projected over the whole week', () => {
+  const resetAt = NOW + 7 * DAY - 2.5 * HOUR;
+  const rows: QuotaRow[] = [0, 1, 2].map(i => ({ at: NOW - (2 - i) * HOUR, provider: 'a', fetchedAt: NOW - (2 - i) * HOUR, w7d: { used: i, resetAt } }));
+  const f = forecastPace(rows, NOW);
+  const hoursLeft = (resetAt - NOW) / HOUR;
+  assert.equal(f?.basis, 'since-reset');
+  assert.equal(f?.projectedAtReset, Math.round((2 + 2 / 24 * hoursLeft) * 10) / 10);
+  assert.equal(f?.verdict, 'under');
+
+  const dayOld = NOW + 7 * DAY - 25 * HOUR;
+  const steady = hourly('a', 0, 0.5, 24, dayOld);
+  assert.equal(forecastPace(steady, NOW)?.basis, 'recent', 'after a full day the last 24 hours set the rate again');
+});
+
 test('the meter dropping inside one window (a provider correction) counts as no burn, never a negative rate', () => {
   const down = forecastPace(hourly('a', 50, -0.5, 10), NOW);
   assert.equal(down?.projectedAtReset, 45);
