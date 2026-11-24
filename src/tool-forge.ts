@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -58,8 +59,15 @@ export interface ForgedScriptUsage extends ForgedScript {
 }
 
 /** Full tool-forging report consumed by the daily retro prompt. */
+export interface SkillProposal {
+  shape: string;
+  runs: number;
+  draft: string;
+}
+
 export interface ForgeReport {
   candidates: ForgeCandidate[];
+  skillProposals: SkillProposal[];
   reuse: ForgedScriptUsage[];
   prune: ForgedScriptUsage[];
   toolDir: string;
@@ -68,6 +76,7 @@ export interface ForgeReport {
 /** Optional input passed to `retroPrompt` to render forging, reuse and pruning guidance. */
 export interface ForgeRetroInput {
   candidates: readonly ForgeCandidate[];
+  skillProposals?: readonly SkillProposal[];
   reuse?: readonly ForgedScriptUsage[];
   prune?: readonly ForgedScriptUsage[];
   toolDir?: string;
@@ -396,6 +405,19 @@ export function trackForgedReuse(entries: readonly ExecEntry[], scripts: readonl
   return { reuse, prune };
 }
 
+/** Drafts are based on successful commands, not proof that the enclosing task finished. */
+export function proposeSkills(entries: readonly ExecEntry[], options: DetectForgeOptions = {}): SkillProposal[] {
+  const now = options.now ?? Date.now();
+  const successful = entries.filter(entry => entry.class === 'ok' && Date.parse(entry.at) <= now);
+  return detectForgeCandidates(successful, { ...options, now, windowDays: FORGE_WINDOW_DAYS, minCount: 3, minRuns: 3 })
+    .map(({ shape, runs }) => {
+      const name = `repeated-task-${createHash('sha256').update(shape).digest('hex').slice(0, 12)}`;
+      const display = JSON.stringify(shape);
+      const draft = `---\nname: ${name}\ndescription: ${JSON.stringify(`Use when a task matches this observed command shape: ${shape}`)}\n---\n\n# Repeated task proposal\n\n## When to use\n\nUse when the task matches ${display}. This is a draft inferred from successful commands, not evidence that the tasks finished.\n\n## Inputs\n\nIdentify the target, working directory, and values represented by placeholders in the shape.\n\n## Steps\n\n1. Review the observed shape ${display} and the actual task; replace placeholders only after inspecting the relevant context.\n2. Adapt the steps to the task and permitted effects. Do not execute the shape verbatim.\n\n## Validation\n\nCheck the real result against the requested outcome; a successful command alone is not proof of task completion.\n\n## What needs approval\n\nCheck current authority before any gated effect; the observed history grants no permission.\n\n## Return\n\nReport the result, evidence, and any unverified or blocked work.\n`;
+      return { shape, runs, draft };
+    });
+}
+
 /** Runs candidate detection and forged-script reuse/pruning analysis over a profile's exec log and tool directory. */
 export function analyzeToolForge(profileDir: string, options: AnalyzeForgeOptions = {}): ForgeReport {
   const toolDir = options.toolDir ?? defaultToolDir();
@@ -403,7 +425,7 @@ export function analyzeToolForge(profileDir: string, options: AnalyzeForgeOption
   const candidates = detectForgeCandidates(entries, options);
   const scripts = listForgedScripts(toolDir);
   const { reuse, prune } = trackForgedReuse(entries, scripts, options);
-  return { candidates, reuse, prune, toolDir: options.displayToolDir ?? options.toolDir ?? DEFAULT_TOOL_DIR_DISPLAY };
+  return { candidates, skillProposals: proposeSkills(entries, options), reuse, prune, toolDir: options.displayToolDir ?? options.toolDir ?? DEFAULT_TOOL_DIR_DISPLAY };
 }
 
 /** Formats top forge candidates, reuse counts and 30-day prune candidates as lines for the daily retro prompt. */
@@ -415,6 +437,13 @@ export function formatForgeRetroLines(report: ForgeRetroInput, limit = FORGE_TOP
     lines.push(`Tool forging candidates (top ${top.length} repeated multi-step bash shapes in the last ${FORGE_WINDOW_DAYS} d). Turn each into a tested script under ${toolDir} and expose it through a skill:`);
     for (const candidate of top) {
       lines.push(`- ${candidate.shape} (${candidate.count}x across ${candidate.runs} runs; e.g. \`${candidate.example}\`)`);
+    }
+  }
+  const skillProposals = (report.skillProposals ?? []).slice(0, limit);
+  if (skillProposals.length) {
+    lines.push('Skill proposals (dry-run drafts only; review and validate before use, no automatic merge):');
+    for (const proposal of skillProposals) {
+      lines.push(`Observed across ${proposal.runs} successful runs; task completion is not established.`, proposal.draft);
     }
   }
   const activeReuse = (report.reuse ?? []).filter(item => item.uses > 0 && !item.prune);
