@@ -18,6 +18,33 @@ import type { ToolResultMessage } from '@earendil-works/pi-ai';
 import type { AssistantMessage, SystemMessage, UserMessage } from '@earendil-works/pi-ai';
 import { removeDir } from './support.ts';
 
+test('a newly visible cold summary is read once across unchanged renders', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-visible-cold-'));
+  const compress = async ({ part }: Compression) => `summary ${part.l} ${part.i} ${'word '.repeat(12)}`;
+  let memory = new Memory(dir, compress, () => {}, 3000);
+  try {
+    for (let i = 0; i < 300; i++) memory.append('user', `message ${i} ${'some text '.repeat(22)}`);
+    await memory.settle(undefined, 'tree');
+    await memory.close();
+    memory = await Memory.open(dir, compress, () => {}, 3000);
+    const store = memory.store as FileStore;
+    let found = false;
+    for (let i = 0; i < 200; i++) {
+      memory.append('user', `next ${i} ${'more text '.repeat(22)}`);
+      await memory.settle(undefined, 'tree');
+      const before = store.readBytes;
+      const first = memory.render();
+      if (store.readBytes === before) continue;
+      const after = store.readBytes;
+      assert.equal(memory.render(), first);
+      assert.equal(store.readBytes, after, 'unchanged visible summaries should not be re-read from disk');
+      found = true;
+      break;
+    }
+    assert.ok(found, 'fixture must expose a previously cold summary');
+  } finally { await memory.close(); removeDir(dir); }
+});
+
 test('startup does not activate a summary whose source children are missing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-incomplete-tree-')), warnings: string[] = [];
   const store = new FileStore(dir, text => warnings.push(text));

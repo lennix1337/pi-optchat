@@ -65,6 +65,34 @@ test('the status keeps the oldest and newest lines within its budget, names what
   } finally { await memory.close(); }
 }));
 
+test('status keeps newly visible summaries warm across unchanged renders', withDir(async dir => {
+  const compress = async ({ part }: import('../src/memory.ts').Compression) => `summary ${part.l} ${part.i} ${'word '.repeat(12)}`;
+  const path = join(dir, 'memory');
+  let memory = new Memory(path, compress, () => {}, 3000);
+  try {
+    for (let i = 0; i < 300; i++) memory.append('user', `message ${i} ${'some text '.repeat(22)}`);
+    await memory.settle(undefined, 'tree');
+    await memory.close();
+    memory = await Memory.open(path, compress, () => {}, 3000);
+    const store = memory.store as import('../src/store.ts').FileStore;
+    let found = false;
+    for (let i = 0; i < 200; i++) {
+      memory.append('user', `next ${i} ${'more text '.repeat(22)}`);
+      await memory.settle(undefined, 'tree');
+      const before = store.readBytes;
+      const status = () => renderStatus({ profile: 'p', memory, now: new Date('2026-01-01T00:00:00Z') });
+      const first = status();
+      if (store.readBytes === before) continue;
+      const after = store.readBytes;
+      assert.equal(status(), first);
+      assert.equal(store.readBytes, after, 'unchanged status should not reread visible summaries');
+      found = true;
+      break;
+    }
+    assert.ok(found, 'fixture must expose a previously cold summary');
+  } finally { await memory.close(); }
+}));
+
 test('an unreadable operational state is reported in the status instead of failing it', withDir(async dir => {
   const memory = await memoryWith(dir, 3);
   try {

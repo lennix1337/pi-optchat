@@ -644,7 +644,15 @@ export class Memory {
     if (!this.node(part)) this.unbuilt.add(i);
   }
   get view(): readonly Part[] { return this.chat.parts; }
-  render() { return `${VIEW_OPEN}${this.view.map(p => `${start(p)}+${2 ** p.l}|${flat(this.text(p))}`).join('\n')}\n</chat>`; }
+  /** Cache a displayed summary so repeated renders do not reread it from disk. */
+  viewNode(part: Part) {
+    const node = this.node(part);
+    if (!(node instanceof ColdSummary)) return node;
+    const warm = { l: node.l, i: node.i, size: node.size, text: node.text };
+    this.tree.set(key(part), warm);
+    return warm;
+  }
+  render() { return `${VIEW_OPEN}${this.view.map(p => `${start(p)}+${2 ** p.l}|${flat(this.viewNode(p)?.text ?? (p.l === 0 ? this.unbuiltText(p.i) : UNBUILT))}`).join('\n')}\n</chat>`; }
   get ready() { return this.view.every(p => this.node(p)); }
   get pending() { return this.unbuilt.size; }
   get active() { return this.busy.size; }
