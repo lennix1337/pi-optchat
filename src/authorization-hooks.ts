@@ -202,12 +202,14 @@ function heldUntilRunEnds(gate: EffectApprovals, announce: (pending: PendingAppr
   };
 }
 
-/** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. */
+/** All grants are user-input provenance checked; no model-callable grant tool exists. `OPTCHAT_EFFECT_APPROVALS=1` gates every effect, `=risk` only the high-impact classes. The wake fence is a second line over the existing classifier, not a sandbox: arbitrary code can hide effects from it. */
 export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined as boolean | undefined, grant = true, mode = undefined as ApprovalMode | undefined, bell = terminalBell,
   contractDir = (() => undefined) as ContractDir, repo = undefined as AsyncRepo | undefined,
   productionHosts = undefined as (() => readonly string[] | undefined) | undefined,
   /** The operator's typed order that lifts an `ask` rule for one effect (see `orderGrantFor`). */
   orderGrant = undefined as OrderGrant | undefined,
+  unattendedWake = (() => false) as () => boolean,
+  wakeOrderGrant = undefined as OrderGrant | undefined,
   /** Called once per call that waits for the operator (after the contract), e.g. to ask on Slack. */
   onPending = undefined as ((pending: PendingApproval, session: string, gate: EffectApprovals) => void) | undefined,
   /** Called when such a call stops waiting (approved, denied, superseded or expired), wherever it was decided. */
@@ -221,8 +223,17 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     const reason = repeatStop(session, event.input.command) ?? pipeStatusRefusal(event.input.command) ?? (process.env.OPTCHAT_WINPATH_GUARD === 'off' ? undefined : winPathRefusal(event.input.command)) ?? await worktreeRemovalRefusal(event.input.command, cwd) ?? await discardRefusal(event.input.command, cwd) ?? await killRefusal(event.input.command, cwd);
     if (reason) return { block: true as const, reason };
   };
+  const wakeVerdict = async (event: { toolName: string; input: unknown }, cwd: string) => {
+    if (!unattendedWake()) return undefined;
+    const effects = await withProductionHosts(productionHosts?.(), () => classifyEffectsAsync({ tool: event.toolName, input: event.input, cwd }, repo));
+    const risky = effects.filter(effect => ['deploy', 'publish', 'paid', 'production-write', 'message', 'consent'].includes(effect.action));
+    const wakeGrant = wakeOrderGrant ?? orderGrant;
+    const refused = risky.find(effect => ['production-write', 'message', 'consent'].includes(effect.action) || !wakeGrant?.(effect));
+    return { refusal: refused ? { block: true as const, reason: `Unattended wake: ${refused.action} is blocked without a valid operator grant (production writes, messages and account changes are always blocked).` } : undefined,
+      granted: effects.length > 0 && effects.every(effect => ['deploy', 'publish', 'paid'].includes(effect.action) && !!wakeGrant?.(effect)) };
+  };
   if (!(enabled ?? (env === '1' || env === 'risk'))) {
-    pi.on('tool_call', (event, ctx) => guard(event, ctx.cwd, ctx.sessionManager.getSessionId()));
+    pi.on('tool_call', async (event, ctx) => await guard(event, ctx.cwd, ctx.sessionManager.getSessionId()) ?? (await wakeVerdict(event, ctx.cwd))?.refusal);
     return;
   }
   let admission: ReturnType<typeof contractAdmission> | undefined;
@@ -252,7 +263,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   });
   const display = pendingDisplay(gate);
   const alerted = new Set<string>();
-  admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant, productionHosts });
+  admission = contractAdmission(gate, { dir: contractDir, repo, orderGrant: effect => unattendedWake() ? (wakeOrderGrant ?? orderGrant)?.(effect) : orderGrant?.(effect), productionHosts });
   const phone = heldUntilRunEnds(gate, (pending, session) => onPending?.(pending, session, gate), holdMs);
   // external: Pi child SDK prompt and steer calls default to interactive.
   if (grant) pi.on('input', (event, ctx) => {
@@ -268,9 +279,15 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
   pi.on('tool_call', async (event, ctx) => {
     const blocked = await guard(event, ctx.cwd, ctx.sessionManager.getSessionId());
     if (blocked) return blocked;
+    const wakeBlock = await wakeVerdict(event, ctx.cwd);
+    if (wakeBlock?.refusal) return wakeBlock.refusal;
     const session = ctx.sessionManager.getSessionId();
     const call = { session, cwd: ctx.cwd, tool: event.toolName, input: event.input };
-    if (!grant) return withProductionHosts(productionHosts?.(), () => gate.admit(call)) && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
+    if (!grant) {
+      const refusal = withProductionHosts(productionHosts?.(), () => gate.admit(call));
+      if (refusal && wakeBlock?.granted && refusal.token) { gate.approveByContract(session, refusal.token); return withProductionHosts(productionHosts?.(), () => gate.admit(call)) && { block: true, reason: 'Not executed: delegated session approval could not be verified.' }; }
+      return refusal && { block: true, reason: 'Not executed: delegated sessions cannot grant effect approvals. Ask the operator to perform this action in the owning interactive session; do not relay approval tokens through agents.' };
+    }
     const { refusal, note } = await admission.admit(call, ctx);
     display.show(ctx);
     if (!refusal) return;

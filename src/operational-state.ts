@@ -413,16 +413,17 @@ const specificScope = (scope: string) => !scope.includes('*') && (/^[^/:]+\/[^/]
  * e deploy") covers each action it names. A misread "sim", a model-widened scope, or a later "não o deploy" lifts nothing.
  * A folder scope covers the GitHub repository its checkout's origin names (`slugOf`, read locally).
  */
-export function orderGrantFor(state: OperationalState, effect: { action: string; targets: string[] }, sourceText: (id: string) => string | undefined, now = Date.now(), slugOf: FolderSlug = checkoutSlug) {
-  const action = effect.action as GrantAction, word = ORDER_WORDS[action];
+export function orderGrantFor(state: OperationalState, effect: { action: string; targets: string[] }, sourceText: (id: string) => string | undefined, now = Date.now(), slugOf: FolderSlug = checkoutSlug, allowPaid = false) {
+  const action = effect.action as GrantAction, word = action === 'paid' && allowPaid ? /\b(?:paid|pay|spend|pago|pagar|gastar)\b/i : ORDER_WORDS[action];
   if (!word) return undefined;
   const found = activeGrants(state, now)
-    .filter(({ entry, grant }) => (grant.action === action || (Object.hasOwn(ORDER_WORDS, grant.action) && word.test(entry.text)))
+    .filter(({ entry, grant }) => (grant.action === action || (action !== 'paid' && Object.hasOwn(ORDER_WORDS, grant.action) && word.test(entry.text)))
       && effect.targets.some(t => grantCovers(grant.scope, t, slugOf)))
     .at(-1);
-  if (!found?.grant.allow || !specificScope(found.grant.scope)) return undefined;
+  if (!found?.grant.allow || !(specificScope(found.grant.scope) || (action === 'paid' && allowPaid && ['model-run', 'subagent'].includes(found.grant.scope)))) return undefined;
   const { entry } = found, age = now - Date.parse(entry.createdAt);
-  if (!(age >= 0 && age <= ORDER_GRANT_TTL_MS) || sourceText(entry.sourceMessageId) !== entry.text || !namesAction(entry.text, action)) return undefined;
+  const names = action === 'paid' && allowPaid ? entry.text.split(/[.;,!?\n]/).filter(clause => word.test(clause)).every(clause => !NEGATION.test(clause.slice(0, word.exec(clause)!.index))) && word.test(entry.text) : namesAction(entry.text, action);
+  if (!(age >= 0 && age <= ORDER_GRANT_TTL_MS) || sourceText(entry.sourceMessageId) !== entry.text || !names) return undefined;
   return `operator order ${entry.sourceMessageId} (record ${entry.id}): "${entry.text.length > 160 ? `${entry.text.slice(0, 159)}\u2026` : entry.text}"`;
 }
 

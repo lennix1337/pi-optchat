@@ -191,6 +191,7 @@ export default function optchat(host: ExtensionAPI) {
   registerReapingBash(pi, longCommandMover(shells, shellSettings, () => active !== undefined && !stopping));
   registerShells(pi, shells, canStartShell, shellSettings);
   let active: Active | undefined;
+  let operatorTurn = false, pendingOperatorInput: string | undefined;
 
 
   shells.setEndObserver(job => { const current = active; if (!current || stopping) return; recordShellOutcome(current.dir, current.sessionId, job); });
@@ -234,21 +235,18 @@ export default function optchat(host: ExtensionAPI) {
   registerCauseClaimGuard(pi);
   registerSendClaimGuard(pi);
   registerPackagePiiGuard(pi);
-  const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir, productionHosts: () => active?.config.productionHosts,
-
-  orderGrant: effect => {
+  const grantFor = (effect: import('./autonomy.ts').Effect, allowPaid = false) => {
     const profile = active;
     if (!profile) return undefined;
     const said = (id: string) => {
       const source = /^(0|[1-9]\d*)$/.test(id) ? profile.memory.root[Number(id)] : undefined;
       return source?.kind === 'user' && !source.origin ? source.text : undefined;
     };
-    try { return orderGrantFor(readOperationalState(join(profile.dir, 'operational-state.json')), effect, said); }
+    try { return orderGrantFor(readOperationalState(join(profile.dir, 'operational-state.json')), effect, said, Date.now(), undefined, allowPaid); }
     catch { return undefined;   }
-  },
-
-
-
+  };
+  const approvals = registerEffectApprovals(pi, { contractDir: () => active?.dir, productionHosts: () => active?.config.productionHosts,
+    unattendedWake: () => !!heartbeat?.waking, orderGrant: effect => grantFor(effect), wakeOrderGrant: effect => grantFor(effect, true),
   onPending: (pending, session, gate) => {
     const request = { token: pending.token, summary: pending.summary, detail: pending.detail, label: pending.kind ?? pending.tool, expires: pending.expires };
     void slack.askApproval({ ...request, decide: approve => gate.decideFromPhone(session, pending.token, approve) });
@@ -768,6 +766,7 @@ export default function optchat(host: ExtensionAPI) {
         warn: text => ctx.ui.notify(text, 'warning'), note: text => ctx.ui.notify(text, 'info') }));
       const children = spanned('open:children', () => new Children(memory, ctx.modelRegistry, () => modelFor(config, 'subagent', main), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}\n\n${renderOperationalContext(readOperationalState(join(dir, 'operational-state.json')))}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, operations, recoveryEvent, recoveryIncident: sessionId => recoveryIncidents.get(sessionId), shells, events: pi.events,
+          unattendedWake: () => !!heartbeat?.waking, operatorTurn: () => operatorTurn, orderGrant: effect => grantFor(effect, true), productionHosts: () => config.productionHosts,
           onTiming: event => { if (event.durationMs !== undefined && (event.phase === 'open' || event.phase === 'settle')) metrics.record(event.phase === 'open' ? 'child_open' : 'settle', event.durationMs); }, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports, profileInstructions: () => instructions(dir),
           summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => modelFor(config, 'compactor', main), message => usage.compression(message, 'compactor', sessionId)),
           route: kind => routeFor(kind, main, config.workerModels), crew, onRunEnd: run => commitments.runEnded(run),
@@ -1084,7 +1083,7 @@ export default function optchat(host: ExtensionAPI) {
       heartbeat?.operatorSpoke();
       if (!wakeWorkers.holding) clearWakeWorkers();
       const journaled = performance.now();
-      try { active.inbox.record(event.text, event.streamingBehavior !== undefined); }
+      try { active.inbox.record(event.text, event.streamingBehavior !== undefined); operatorTurn = true; pendingOperatorInput = event.text; }
       catch (error) { ctx.ui.notify(`Could not save input: ${errorText(error)}`, 'error'); return { action: 'handled' }; }
       finally { active.metrics.record('input', performance.now() - journaled); }
     }
@@ -1102,6 +1101,8 @@ export default function optchat(host: ExtensionAPI) {
     if (active && !runStarted) startRun(ctx);
   });
   pi.on('before_agent_start', async (event, ctx) => {
+    operatorTurn = event.messageType === 'user' && pendingOperatorInput !== undefined && event.prompt === pendingOperatorInput;
+    pendingOperatorInput = undefined;
     if (!active) return;
     await machineWakeOn(active.dir, active.config, event, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'));
     if (event.messageType === 'custom' && event.message.customType === RELOAD_RESUME) {
@@ -1359,6 +1360,7 @@ export default function optchat(host: ExtensionAPI) {
     wakeWorkerTimer.unref?.();
   };
   pi.on('agent_settled', async (_event, ctx) => {
+    operatorTurn = false; pendingOperatorInput = undefined;
     const settledStarted = performance.now();
     collectUsage(ctx);
     const persistenceStarted = performance.now();
