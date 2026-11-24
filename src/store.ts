@@ -39,8 +39,8 @@ export interface Lease {
  * in a profile (runs, recovery journals, the active-memory pointer and imports, usage, settings, AGENTS.md) stays on the machine.
  * Memory loads once when it opens, then works in RAM and issues every write in order. */
 export interface Store {
-  /** With `hot`, a store that can read texts back (`reader`) may return older summarized messages without text, with their `size`. */
-  load(hot?: number): Maybe<Saved>;
+  /** With `hot` and `hotBytes`, a store that can read texts back (`reader`) may return older summarized messages without text, with their `size`. */
+  load(hot?: number, hotBytes?: number): Maybe<Saved>;
   /** Appends a message. Throws, writing nothing, if someone else appended since this store loaded. */
   append(entry: Entry): Write;
   /** Appends a summary node. */
@@ -325,10 +325,49 @@ export class FileStore implements Store {
     }
     return this.extraNodes?.get(l * 2 ** 40 + i);
   }
+  private trackTailHot(entries: unknown[], slim: Set<number>, value: unknown, hot: number, hotBytes: number, state: { bytes: number; cursor: number }) {
+    const text = (value as { text?: unknown } | null)?.text;
+    if (typeof text === 'string') state.bytes += Buffer.byteLength(text);
+    const old = entries.push(value) - 1 - hot;
+    if (old >= 0 && !slim.has(old)) {
+      const before = (entries[old] as { text?: unknown } | null)?.text;
+      const chilled = this.cold(entries[old]);
+      if (chilled !== entries[old] && typeof before === 'string') state.bytes = Math.max(0, state.bytes - Buffer.byteLength(before));
+      entries[old] = chilled;
+      if (old >= state.cursor) state.cursor = old + 1;
+    }
+    while (state.bytes > hotBytes && state.cursor < entries.length) {
+      const candidate = entries[state.cursor], raw = (candidate as { text?: unknown } | null)?.text;
+      const chilled = this.cold(candidate);
+      if (chilled !== candidate && typeof raw === 'string') {
+        state.bytes = Math.max(0, state.bytes - Buffer.byteLength(raw));
+        entries[state.cursor] = chilled;
+      }
+      state.cursor++;
+    }
+  }
+  private hydrateSlim(entries: unknown[], slim: Set<number>, hot: number, hotBytes: number, state: { bytes: number }) {
+    const indexes = [...slim];
+    let budgetFull = false;
+    for (let idx = indexes.length - 1; idx >= 0; idx--) {
+      const k = indexes[idx], value = entries[k] as { i: number; kind?: string; size?: number }, line = this.getLine(value.i);
+      if (!line) continue;
+      const unbuilt = !this.hasNode(0, value.i);
+      const estimated = typeof value.size === 'number' && typeof value.kind === 'string' ? Math.max(0, value.size - value.kind.length - 2) : 0;
+      const fitsBudget = !budgetFull && k >= entries.length - hot && state.bytes + estimated <= hotBytes;
+      if (!unbuilt && !fitsBudget) {
+        if (k >= entries.length - hot && state.bytes + estimated > hotBytes) budgetFull = true;
+        continue;
+      }
+      const hydrated = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length)) as { text?: unknown };
+      entries[k] = hydrated;
+      if (typeof hydrated.text === 'string') state.bytes += Buffer.byteLength(hydrated.text);
+    }
+  }
   /** Every record as saved, except that with `hot` set only the newest `hot` messages keep their text: an older one whose level-0
    * summary exists comes back as `{ ...fields, size }` without it, read later through `reader`. Parsing a long log into texts first
    * and dropping them after held them all at once (~280 MB of log: ~1 GB of RSS and seconds of frozen loop on each reload). */
-  load(hot = Infinity): Saved {
+  load(hot = Infinity, hotBytes = Infinity): Saved {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
     this.clearIndex();
 
@@ -348,16 +387,13 @@ export class FileStore implements Store {
       if (textlessRow) slim.add(entries.length);
       entries.push(value);
     }
+    const tailHot = { bytes: 0, cursor: entries.length };
     if (names.length) fileRecords(join(main, names[names.length - 1]), this.warn, (value, file, offset, length) => {
       const i = (value as { i?: unknown } | null)?.i;
       if (Number.isSafeInteger(i)) this.setLine(i as number, file, offset, length);
-      const old = entries.push(value) - 1 - hot;
-      if (old >= 0 && !slim.has(old)) entries[old] = this.cold(entries[old]);
+      this.trackTailHot(entries, slim, value, hot, hotBytes, tailHot);
     });
-    for (const k of slim) {
-      const value = entries[k] as { i: number }, line = this.getLine(value.i);
-      if (line && (k >= entries.length - hot || !this.hasNode(0, value.i))) entries[k] = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length));
-    }
+    this.hydrateSlim(entries, slim, hot, hotBytes, tailHot);
     this.drop();
     for (const name of readdirSync(main).filter(n => n.endsWith('.jsonl'))) this.lastSeenBytes.set(join(main, name), statSync(join(main, name)).size);
     const view = join(this.directory, 'view.json');
@@ -367,7 +403,7 @@ export class FileStore implements Store {
     return { entries, tree, view: saved };
   }
   /** Load without holding the event loop while parsing history. Logs remain authoritative, including damaged tails. */
-  async loadAsync(hot = Infinity): Promise<Saved> {
+  async loadAsync(hot = Infinity, hotBytes = Infinity): Promise<Saved> {
     for (const sub of ['main', 'tree']) mkdirSync(join(this.directory, sub), { recursive: true, mode: 0o700 });
     this.clearIndex();
     const tree: unknown[] = [], entries: unknown[] = [];
@@ -401,19 +437,16 @@ export class FileStore implements Store {
       }
     }
     const tailNames = hot < Infinity ? mainNames.slice(-1) : mainNames;
+    const tailHot = { bytes: 0, cursor: entries.length };
     for (const name of tailNames) {
       const file = join(main, name);
       await scan(file, (value, _file, offset, length) => {
         const i = (value as { i?: unknown } | null)?.i;
         if (Number.isSafeInteger(i)) this.setLine(i as number, file, offset, length);
-        const old = entries.push(value) - 1 - hot;
-        if (old >= 0 && !slim.has(old)) entries[old] = this.cold(entries[old]);
+        this.trackTailHot(entries, slim, value, hot, hotBytes, tailHot);
       });
     }
-    for (const k of slim) {
-      const value = entries[k] as { i: number }, line = this.getLine(value.i);
-      if (line && (k >= entries.length - hot || !this.hasNode(0, value.i))) entries[k] = JSON.parse(this.read(line.file).toString('utf8', line.offset, line.offset + line.length));
-    }
+    this.hydrateSlim(entries, slim, hot, hotBytes, tailHot);
     this.drop();
     const view = join(this.directory, 'view.json');
     let saved: string | undefined;

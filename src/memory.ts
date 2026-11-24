@@ -37,8 +37,9 @@ export const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
 
 const RESULT = 12_000;
 
-/** The newest messages keep their text in RAM; older summarized ones are read back from the store when asked for. */
+/** The newest messages keep their text in RAM, bounded by both count and UTF-8 bytes; older summarized ones are read back from the store when asked for. */
 export const HOT_TEXTS = 2048;
+export const HOT_TEXT_BYTES = 2 * 1024 * 1024;
 const SEARCH_CACHE_QUERIES = 8;
 const SEARCH_CACHE_HITS = 20_000;
 const SEARCH_CACHE_QUERY_CHARS = 256;
@@ -393,11 +394,14 @@ export class Memory {
   readonly directory: string;
   readonly store: Store;
   private readonly cold: ColdIndex;
+  private hotBytes = 0;
+  private unbuiltHotBytes = 0;
+  private hotCursor = 0;
   lastError?: string;
 
   /** Resolves only when the complete memory is ready for use. */
   static async open(directory: string, compress: Compressor, warn: (s: string) => void = console.error, budget = VIEW, jobs = 8, retryMs?: number, defer = 1) {
-    const store = new FileStore(directory, warn), saved = await store.loadAsync(HOT_TEXTS);
+    const store = new FileStore(directory, warn), saved = await store.loadAsync(HOT_TEXTS, HOT_TEXT_BYTES);
     const memory = new Memory({ directory, store, saved }, compress, warn, budget, jobs, retryMs, defer, true);
     await runSliced(memory.initialize(saved));
     return memory;
@@ -410,7 +414,7 @@ export class Memory {
     this.chat = new Sawtooth(budget, budget / 2, part => this.node(part), i => this.unbuiltText(i), budget * Math.max(1, defer));
     this.compaction = new Sawtooth(budget / 4, budget / 8, part => this.node(part), i => this.unbuiltText(i));
     let saved: Saved;
-    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; this.tree = new ColdTreeMap(store); saved = store.load(HOT_TEXTS); }
+    if (typeof source === 'string') { const store = new FileStore(source, warn); this.directory = source; this.store = store; this.tree = new ColdTreeMap(store); saved = store.load(HOT_TEXTS, HOT_TEXT_BYTES); }
     else { ({ directory: this.directory, store: this.store, saved } = source); this.tree = new ColdTreeMap(this.store); }
     this.cold = new ColdIndex(this.store);
     if (!initializeLater) runSync(this.initialize(saved));
@@ -420,18 +424,29 @@ export class Memory {
     for (const value of entries) { if (!isEntry(value) && !isColdRecord(value)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.'); yield; }
     yield* sortSteps(entries, (a, b) => a.i - b.i);
     for (let i = 0; i < entries.length; i++) { if (entries[i].i !== i) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.'); yield; }
-    this.cold.reserve(Math.max(0, entries.length - HOT_TEXTS));
+    this.cold.reserve(entries.length);
     for (const value of entries) {
       if (isColdRecord(value)) { this.cold.set(value); this.root.push(new ColdEntry(value.i, this.cold)); }
-      else { this.root.push({ ...value, size: bytes(`${value.kind}: ${value.text}`) }); }
+      else {
+        const textBytes = bytes(value.text);
+        this.root.push({ ...value, size: textBytes + value.kind.length + 2 });
+        this.hotBytes += textBytes;
+      }
       yield;
     }
     entries.length = 0;
     yield* this.loadTree(saved.tree);
     saved.tree.length = 0;
     for (const node of this.tree.values()) { this.queueParent(node); yield; }
-    for (let i = 0; i < this.root.length; i++) { if (!this.node({ l: 0, i })) this.unbuilt.add(i); yield; }
-    for (let i = 0; i < this.root.length - HOT_TEXTS; i++) { this.chill(i); yield; }
+    for (let i = 0; i < this.root.length; i++) {
+      if (!this.node({ l: 0, i })) {
+        this.unbuilt.add(i);
+        const entry = this.root[i];
+        if (Object.getOwnPropertyDescriptor(entry, 'text')?.writable) this.unbuiltHotBytes += bytes(entry.text);
+      }
+      yield;
+    }
+    this.chillHot();
 
     const loaded = this.load(saved.view);
     for (const part of this.view) this.compaction.push(part);
@@ -517,24 +532,41 @@ export class Memory {
     if (this.stopped) throw new Error('Memory is closed.');
     if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
     const clean = kind === 'echo' ? scrubSecrets(text) : text;
-    const entry: Entry = { i: this.root.length, kind, text: clean, date, size: bytes(`${kind}: ${clean}`), ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
+    const textBytes = bytes(clean);
+    const entry: Entry = { i: this.root.length, kind, text: clean, date, size: textBytes + kind.length + 2, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
 
     this.retryAt.clear();
     void this.enqueue(() => this.store.append(entry), error => {
       this.failed ??= error instanceof Error ? error.message : String(error);
       this.warn(`Memory could not be saved: ${this.failed}`);
     });
-    this.root.push(entry); this.push(entry.i); this.chill(entry.i - HOT_TEXTS); if (this.fit()) this.save(); this.schedule();
+    this.root.push(entry); this.hotBytes += textBytes; this.unbuiltHotBytes += textBytes; this.push(entry.i); this.chillHot(); if (this.fit()) this.save(); this.schedule();
     return entry;
   }
   /** Drops a summarized message's text from RAM when the store can read it back: the entry keeps a `text` that reads it. */
   private chill(i: number) {
     const entry = this.root[i];
-    if (!entry || !this.node({ l: 0, i }) || !Object.getOwnPropertyDescriptor(entry, 'text')?.writable) return;
-    if (this.store.reader?.(i)) {
-      this.cold.set(entry);
-      this.root[i] = new ColdEntry(i, this.cold);
+    if (!entry || !this.node({ l: 0, i }) || !Object.getOwnPropertyDescriptor(entry, 'text')?.writable) return false;
+    if (!this.store.reader?.(i)) return false;
+    this.hotBytes = Math.max(0, this.hotBytes - bytes(entry.text));
+    this.cold.set(entry);
+    this.root[i] = new ColdEntry(i, this.cold);
+    return true;
+  }
+  private chillHot() {
+    if (!this.store.reader) return;
+    const countLimit = Math.max(0, this.root.length - HOT_TEXTS);
+    let firstHot = -1;
+    for (let i = this.hotCursor; i < this.root.length; i++) {
+      const overCount = i < countLimit;
+      const overBytes = this.hotBytes > HOT_TEXT_BYTES && this.hotBytes > this.unbuiltHotBytes;
+      if (!overCount && !overBytes) break;
+      const entry = this.root[i];
+      if (!Object.getOwnPropertyDescriptor(entry, 'text')?.writable) continue;
+      if (!this.chill(i) && firstHot < 0) firstHot = i;
     }
+    if (firstHot >= 0) this.hotCursor = firstHot;
+    else while (this.hotCursor < this.root.length && !Object.getOwnPropertyDescriptor(this.root[this.hotCursor], 'text')?.writable) this.hotCursor++;
   }
   node(part: Part) { return this.tree.get(key(part)); }
   /** Explicitly reset a policy-refused node; normal appends never clear this terminal block. */
@@ -756,7 +788,13 @@ export class Memory {
     const written = this.enqueue(() => this.store.appendNode(node), error => { throw error; });
     if (written) await written;
     this.tree.set(key(part), node); this.retryAt.delete(key(part)); this.merges.delete(key(part)); this.queueParent(part);
-    if (!part.l) { this.unbuilt.delete(part.i); this.chat.built(part.i); this.compaction.built(part.i); }
+    if (!part.l) {
+      const wasUnbuilt = this.unbuilt.delete(part.i); this.chat.built(part.i); this.compaction.built(part.i);
+      const leafEntry = this.root[part.i];
+      if (wasUnbuilt && Object.getOwnPropertyDescriptor(leafEntry, 'text')?.writable)
+        this.unbuiltHotBytes = Math.max(0, this.unbuiltHotBytes - bytes(leafEntry.text));
+      this.chillHot();
+    }
     if (!this.retryAt.size && !this.terminal.size) this.lastError = undefined;
     if (this.fit()) this.save();
     this.chillUnshownTree();
