@@ -104,6 +104,22 @@ test('the crew keeps charters and memories under their caps, briefs workers from
   } finally { removeDir(dir); }
 });
 
+test('a crew write that would drop most of an existing memory is refused unless shrink is set', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-shrink-'));
+  try {
+    const crew = new Crew(dir), tool = crewTool(() => crew);
+    const run = (args: Parameters<typeof tool.execute>[1]) => tool.execute('id', args);
+    const old = Array.from({ length: 60 }, (_, i) => `- line ${i} with some durable detail`).join('\n');
+    crew.write('harness', 'memory', old);
+    await assert.rejects(run({ action: 'write', project: 'harness', part: 'memory', text: '- one new line' }), /would drop .* of .* B.*Read it first.*edit.*shrink/s);
+    assert.equal(crew.read('harness', 'memory').trim(), old, 'a refused write leaves the old memory');
+    await run({ action: 'write', project: 'harness', part: 'memory', text: '- trimmed on purpose', shrink: true });
+    assert.equal(crew.read('harness', 'memory').trim(), '- trimmed on purpose');
+    await run({ action: 'write', project: 'tiny', part: 'memory', text: '- a' });
+    await run({ action: 'write', project: 'tiny', part: 'memory', text: '- b' });
+  } finally { removeDir(dir); }
+});
+
 test('the crew tool lists, reads and replaces parts, and refuses a write without its project', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-crew-tool-'));
   try {
