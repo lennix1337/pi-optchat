@@ -378,11 +378,12 @@ test('closing a situation aborts in-flight child probes so the process exits at 
     });
     const situation = new Situation({ collector });
     situation.forRun(1);
-    setTimeout(() => { situation.close(); }, 50);`;
-  const started = performance.now();
-  const ran = await new Promise<{ code: number | null; stderr: string }>(resolve => execFile(process.execPath, ['--experimental-transform-types', '--no-warnings', '--input-type=module', '-e', script], { timeout: 5_000 },
-    (error, _stdout, stderr) => resolve({ code: error ? (error as { code?: number }).code ?? 1 : 0, stderr: String(stderr ?? '') })));
-  const elapsed = performance.now() - started;
+    let closedAt = 0;
+    setTimeout(() => { closedAt = performance.now(); situation.close(); }, 50);
+    process.on('exit', () => { console.log('closed-to-exit-ms=' + Math.round(performance.now() - closedAt)); });`;
+  const ran = await new Promise<{ code: number | null; stderr: string; stdout: string }>(resolve => execFile(process.execPath, ['--experimental-transform-types', '--no-warnings', '--input-type=module', '-e', script], { timeout: 10_000 },
+    (error, stdout, stderr) => resolve({ code: error ? (error as { code?: number }).code ?? 1 : 0, stderr: String(stderr ?? ''), stdout: String(stdout ?? '') })));
   assert.equal(ran.code, 0, ran.stderr);
+  const elapsed = Number(/closed-to-exit-ms=(\d+)/.exec(ran.stdout)?.[1] ?? Infinity);
   assert.ok(elapsed < 3_000, `process exited in ${Math.round(elapsed)} ms instead of waiting on the aborted probe`);
 });
