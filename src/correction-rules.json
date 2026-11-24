@@ -121,6 +121,15 @@
     "precision": "manual `gh pr merge` (no --auto) whose command shows no CI or local-verify evidence (gh pr checks, statusCheckRollup, mergeStateStatus, gh run view/watch, npm run verify, dentai-ship); a green gitwatch notice earlier in the turn is not visible here, so candidates require review."
   },
   {
+    "id": "deploy-unclicked",
+    "guardedAt": "2026-11-24T20:45:00Z",
+    "quote": "dentro do site ao clicar em ver oferta nada acontece... como que tu deixa uma dessas passar, melhore",
+    "date": "24/11",
+    "scope": "deploy tool call (dentai-ship --deploy, deploy-*.ps1, wrangler deploy; bash, shell_start, vault_run or codemode)",
+    "detector": "deploy-unclicked",
+    "precision": "A deploy with no browser_harness click() and no Playwright test/e2e run since the last user or wake message; a screenshot alone does not count. Candidates require review: backend-only deploys also match."
+  },
+  {
     "id": "live-claim",
     "quote": "nao pode ser entregue algo que nao foi validado (17/11); DMs \"no ar\" sem conferir erradas (18/11)",
     "date": "17/11, 18/11",

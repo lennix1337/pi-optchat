@@ -297,6 +297,19 @@ test('live-claim is cleared by a live check since the last user message, and res
   assert.equal(scanCorrections(dir, Date.parse('2026-11-13'), Date.parse('2026-11-15')).find(r=>r.id==='live-claim')!.count, 1);
  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+test('deploy-unclicked flags a web deploy with no click-through since the last user message', () => {
+ const deploy = call('codemode', { code: 'await tools.vault_run({command: "nohup node ~/.pi/agent/bin/dentai-ship.mjs 196 --deploy \\"Slack: pode fazer deploy\\" &"})' });
+ const click = call('browser_harness', { action: 'exec', tab: 't1', code: 'goto("https://dentai.com.br"); click(12)' });
+ const shot = call('bash', { command: 'npx -y playwright@1 screenshot https://dentai.com.br/ /tmp/a.png' });
+ const e2e = call('bash', { command: 'cd apps/web && npx playwright test e2e/promo-bar.spec.ts' });
+ assert.equal(ruleCount('deploy-unclicked', [operator, deploy]), 1);
+ assert.equal(ruleCount('deploy-unclicked', [operator, shot, deploy]), 1, 'a screenshot does not click the CTA');
+ assert.equal(ruleCount('deploy-unclicked', [operator, click, deploy]), 0);
+ assert.equal(ruleCount('deploy-unclicked', [operator, e2e, deploy]), 0);
+ assert.equal(ruleCount('deploy-unclicked', [operator, click, operator, deploy]), 1, 'a new order needs a new click-through');
+ assert.equal(ruleCount('deploy-unclicked', [operator, call('bash', { command: 'node ~/.pi/agent/bin/dentai-ship.mjs 196' })]), 0, 'merge without deploy');
+ assert.equal(ruleCount('deploy-unclicked', [operator, call('bash', { command: 'pwsh -File scripts/release/deploy-web.ps1 -Commit abc' })]), 1);
+});
 test('suite-repeat flags a second full suite in one run, not focused tests or a new run', () => {
  const suite = call('bash', { command: 'cd ~/projetos/pi-optchat && npm test 2>&1 | tail -5' });
  const verify = call('bash', { command: 'npm run verify > /tmp/v.log 2>&1; echo rc=$?' });
