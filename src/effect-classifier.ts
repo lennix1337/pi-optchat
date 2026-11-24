@@ -319,12 +319,20 @@ function* ghEffects(w: string[], dir: string, repo: AsyncRepo): Evaluation<Effec
 }
 
 
+function packageScript(manager: string, args: string[]) {
+  let at = 0;
+  while (args[at]?.startsWith('-')) at += /^(?:--prefix|--cwd|--dir|--workspace|-C|-w)$/.test(args[at]) ? 2 : 1;
+  if (manager === 'yarn' && !/^run(?:-script)?$/.test(args[at] ?? '')) return args[at];
+  if (!/^run(?:-script)?$/.test(args[at] ?? '')) return undefined;
+  return args.slice(at + 1).find(arg => !arg.startsWith('-'));
+}
+
 function* toolEffects(w: string[], lower: string, dir: string, repo: AsyncRepo): Evaluation<Effect[]> {
   const args = w.slice(1).map(unquote);
   if (/^(?:npm|pnpm|yarn|cargo|vsce)$/.test(lower)) {
     const effects: Effect[] = [];
     if (args[0] === 'publish' && !dryRunFlag(args)) effects.push({ action: 'publish', targets: yield* repoTargets(dir, repo, w) });
-    if (/^(?:npm|pnpm|yarn)$/.test(lower) && args[0] === 'run' && args[1] === 'deploy' && !dryRunFlag(args)) effects.push({ action: 'deploy', targets: yield* repoTargets(dir, repo, w) });
+    if (/^(?:deploy|deploy[:_-][\w:-]+)$/i.test(packageScript(lower, args) ?? '') && !dryRunFlag(args)) effects.push({ action: 'deploy', targets: yield* repoTargets(dir, repo, w) });
     if (/^(?:i|install|add|link)$/.test(args[0] ?? '') && args.some(arg => arg === '-g' || arg === '--global') || (lower === 'cargo' && args[0] === 'install'))
       effects.push({ action: 'global-install', targets: ['machine'] });
     return effects;
