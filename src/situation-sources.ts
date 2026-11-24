@@ -105,7 +105,7 @@ export interface SourceDeps {
   platform?: NodeJS.Platform;
   now?: () => number;
   /** Runs a program, never rejects: a missing program or a timeout is a non-zero code. */
-  run?: (file: string, args: string[], timeoutMs: number) => Promise<Ran>;
+  run?: (file: string, args: string[], timeoutMs: number, signal?: AbortSignal) => Promise<Ran>;
   read?: (file: string) => string;
   hasDocker?: () => boolean;
   disk?: (drive: string) => { free: number; total: number };
@@ -113,15 +113,17 @@ export interface SourceDeps {
   work?: () => { agents: number; shells: number };
 }
 
-export const run = (file: string, args: string[], timeoutMs: number): Promise<Ran> =>
-  new Promise(resolve => {
+export const run = (file: string, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<Ran> => {
+  if (signal?.aborted) return Promise.resolve({ code: 1, stdout: '' });
+  return new Promise(resolve => {
     try {
-      execFile(file, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 2_000_000 }, (error, stdout) => {
+      execFile(file, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 2_000_000, signal }, (error, stdout) => {
         const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0;
         resolve({ code, stdout: String(stdout ?? '') });
       });
     } catch { resolve({ code: 1, stdout: '' }); }
   });
+};
 
 const onPath = (name: string) => (process.env.PATH ?? '').split(delimiter).some(dir => dir && (existsSync(join(dir, `${name}.exe`)) || existsSync(join(dir, name))));
 const REBOOT_KEYS = [
@@ -143,14 +145,14 @@ export function realSources(deps: SourceDeps): Sources {
   if (deps.machine) sources.load = { ttlMs: 5_000, timeoutMs: 500, read: () => loadFrom(deps.machine!()) };
   if (deps.work) sources.work = { ttlMs: 5_000, timeoutMs: 500, read: () => deps.work!() };
   if (windows) {
-    sources.reboots = { ttlMs: 5 * MIN, timeoutMs: 20_000, read: async () => {
-      const ran = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(EVENT_SCRIPT)], 15_000);
+    sources.reboots = { ttlMs: 5 * MIN, timeoutMs: 20_000, read: async signal => {
+      const ran = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(EVENT_SCRIPT)], 15_000, signal);
       if (ran.code !== 0) throw new Error(`event log read failed (code ${ran.code})`);
       return parseReboots(ran.stdout.trim(), now());
     } };
     sources.bootAt = { ttlMs: 5 * MIN, timeoutMs: 500, read: () => now() - uptime() * 1000 };
-    sources.rebootPending = { ttlMs: 5 * MIN, timeoutMs: 6_000, read: async () => (await Promise.all(REBOOT_KEYS.map(key => exec('reg.exe', ['query', key], 3_000)))).some(r => r.code === 0) };
-    sources.docker = { ttlMs: MIN, timeoutMs: 5_000, read: async () => (deps.hasDocker ?? (() => onPath('docker')))() ? ((await exec('docker', ['info', '--format', '{{.ServerVersion}}'], 3_000)).code === 0 ? 'up' : 'down') : 'absent' };
+    sources.rebootPending = { ttlMs: 5 * MIN, timeoutMs: 6_000, read: async signal => (await Promise.all(REBOOT_KEYS.map(key => exec('reg.exe', ['query', key], 3_000, signal)))).some(r => r.code === 0) };
+    sources.docker = { ttlMs: MIN, timeoutMs: 5_000, read: async signal => (deps.hasDocker ?? (() => onPath('docker')))() ? ((await exec('docker', ['info', '--format', '{{.ServerVersion}}'], 3_000, signal)).code === 0 ? 'up' : 'down') : 'absent' };
   }
   return sources;
 }

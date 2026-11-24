@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as osConstants, setPriority } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -55,17 +55,24 @@ export interface SamplerOptions {
 const csc = () => [join(process.env.windir ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'), join(process.env.windir ?? 'C:\\Windows', 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe')].find(existsSync);
 
 /** The compiled helper, built once from HELPER_SOURCE by the .NET Framework compiler every Windows has, and named by the source's hash so an update rebuilds it. */
-export function ensureHelper(dir: string): Promise<string> {
+export function ensureHelper(dir: string, signal?: AbortSignal): Promise<string> {
   const bin = join(dir, 'bin'), name = `sampler-${createHash('sha256').update(HELPER_SOURCE).digest('hex').slice(0, 10)}`, exe = join(bin, `${name}.exe`);
   if (existsSync(exe)) return Promise.resolve(exe);
+  if (signal?.aborted) return Promise.reject(new Error('aborted'));
   const compiler = csc();
   if (!compiler) return Promise.reject(new Error('the .NET Framework compiler (csc.exe) was not found'));
   mkdirSync(bin, { recursive: true });
   const source = join(bin, `${name}.cs`), tmp = join(bin, `${name}.${process.pid}.tmp.exe`);
   writeFileSync(source, HELPER_SOURCE);
-  return new Promise((resolve, reject) => execFile(compiler, ['-nologo', '-optimize', '-platform:x64', `-out:${tmp}`, source], { windowsHide: true, timeout: 60_000 }, (error, stdout) => {
-    if (error) return reject(new Error(`the helper did not compile: ${(stdout || error.message).trim().split('\n')[0]}`));
-    try { renameSync(tmp, exe); } catch (renameError) { if (!existsSync(exe)) return reject(renameError instanceof Error ? renameError : new Error(String(renameError))); }
+  return new Promise((resolve, reject) => execFile(compiler, ['-nologo', '-optimize', '-platform:x64', `-out:${tmp}`, source], { windowsHide: true, timeout: 60_000, signal }, (error, stdout) => {
+    if (error || signal?.aborted) {
+      try { rmSync(tmp, { force: true }); } catch {   }
+      return reject(signal?.aborted ? new Error('aborted') : new Error(`the helper did not compile: ${(stdout || error!.message).trim().split('\n')[0]}`));
+    }
+    try { renameSync(tmp, exe); } catch (renameError) {
+      try { rmSync(tmp, { force: true }); } catch {   }
+      if (!existsSync(exe)) return reject(renameError instanceof Error ? renameError : new Error(String(renameError)));
+    }
     resolve(exe);
   }));
 }
@@ -76,6 +83,8 @@ export function ensureHelper(dir: string): Promise<string> {
  */
 export class HelperSampler {
   private child?: ChildProcess;
+  private compileAbort?: AbortController;
+  private retryTimer?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private restarts = 0;
   status: SamplerStatus = { state: 'starting' };
@@ -83,7 +92,11 @@ export class HelperSampler {
   private set(status: SamplerStatus) { this.status = status; this.options.onStatus?.(status); }
   async start() {
     if (process.platform !== 'win32') return this.set({ state: 'unsupported', detail: `only Windows has a sampler (platform ${process.platform})` });
-    try { this.launch(await ensureHelper(this.options.dir)); } catch (error) { this.set({ state: 'failed', detail: error instanceof Error ? error.message : String(error) }); }
+    if (this.stopped) return;
+    const abort = this.compileAbort = new AbortController();
+    try { this.launch(await ensureHelper(this.options.dir, abort.signal)); }
+    catch (error) { if (!this.stopped) this.set({ state: 'failed', detail: error instanceof Error ? error.message : String(error) }); }
+    finally { if (this.compileAbort === abort) this.compileAbort = undefined; }
   }
   private launch(exe: string) {
     if (this.stopped) return;
@@ -97,19 +110,21 @@ export class HelperSampler {
       if (this.status.state !== 'running') { this.restarts = 0; this.set({ state: 'running' }); }
       try { this.options.onSample(sample); } catch (error) { this.set({ state: 'running', detail: `a sample was not processed: ${error instanceof Error ? error.message : String(error)}` }); }
     });
-    child.once('error', error => this.set({ state: 'failed', detail: error.message }));
+    child.once('error', error => { if (!this.stopped) this.set({ state: 'failed', detail: error.message }); });
     child.once('exit', code => {
       if (this.child === child) this.child = undefined;
       if (this.stopped) return;
       if (this.restarts >= 3) return this.set({ state: 'failed', detail: `the helper exited (code ${code}) ${this.restarts + 1} times in a row` });
       this.restarts++;
-      const retry = setTimeout(() => this.launch(exe), 2_000 * this.restarts); retry.unref?.();
+      this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.launch(exe); }, 2_000 * this.restarts); this.retryTimer.unref?.();
     });
   }
   stop() {
     this.stopped = true;
+    this.compileAbort?.abort(); this.compileAbort = undefined;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
     const child = this.child; this.child = undefined;
-    if (child) { try { child.stdin?.end(); child.kill(); } catch {   } }
+    if (child) { try { child.stdin?.end(); child.stdout?.destroy(); child.kill(); child.unref(); } catch {   } }
     this.set({ state: 'stopped' });
   }
 }

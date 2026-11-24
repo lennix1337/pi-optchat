@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { packReports, BUNDLE_SEPARATOR, type Bundleable } from '../src/report-bundle.ts';
 import { ReportDispatcher } from '../src/report-dispatch.ts';
-import { alertReport, foldAlerts, shellReporter, type ShellJob } from '../src/shells.ts';
+import { alertReport, foldAlerts, ShellJobs, shellReporter, type ShellJob } from '../src/shells.ts';
 import type { ShellAlert } from '../src/shell-alerts.ts';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -142,4 +142,24 @@ test('foldAlerts adds the counts and spans the lines; a lone alert reads as befo
   assert.equal(merged.lastLine, 40);
   const one = alert(1, 7);
   assert.equal(alertReport('x', 'p', foldAlerts([one])), alertReport('x', 'p', one));
+});
+
+test('a background shell with silent end (notify none or completed failure-only) flushes its folded alert immediately on exit without touching other shells', () => {
+  const { clock, sent, reporter: r } = reporter();
+  const jobs = new ShellJobs();
+  jobs.setReporter(r);
+  jobs.begin('shell-none', 'cmd-a', '.', 'background', 'main', { notify: 'none', alert: 'MATCH' });
+  jobs.begin('shell-other', 'cmd-b', '.', 'background', 'main', { notify: 'none', alert: 'MATCH' });
+  jobs.alerted('shell-none', alert(1, 2, 'row 2 MATCH'));
+  jobs.alerted('shell-other', alert(1, 5, 'other MATCH'));
+  assert.equal(sent.length, 0, 'both alerts are still folding while shells run');
+
+  jobs.end('shell-none', 'row 2 MATCH', false, { exitCode: 0 });
+  assert.equal(sent.length, 1, 'the ended shell flushes its folded alert immediately without waiting for foldMs');
+  assert.match(sent[0].text, /^\[shell shell-none\] alert:/);
+  assert.doesNotMatch(sent[0].text, /completed · exit 0/, 'notify none still sends no end notice');
+
+  clock.advance(8_000);
+  assert.equal(sent.length, 2, 'the other still-running shell keeps its own fold timer and fires when due');
+  assert.match(sent[1].text, /^\[shell shell-other\] alert:/);
 });

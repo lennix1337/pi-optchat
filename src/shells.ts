@@ -37,8 +37,8 @@ export interface ShellJob {
 export interface ShellReporter {
   finished(job: ShellJob): void;
   alerted(job: ShellJob, text: string, alert: ShellAlert): void;
-  /** Sends what is still waiting to go out together; called when another reporter replaces this one. */
-  flush?(): void;
+  /** Sends what is still waiting to go out together; pass `id` to flush one ended shell, or omit to flush all. */
+  flush?(id?: string): void;
 }
 export interface ShellOptions { notify?: ShellNotify; alert?: string; agent?: string; label?: string;   id?: string; started?: number }
 const outputLimit = 32_000;
@@ -128,7 +128,10 @@ export class ShellJobs {
     }
     const waiter = this.waiters.get(id);
     if (waiter) { this.waiters.delete(id); waiter(job); return; }
-    if (job.mode === 'background' && endNoticeWanted(job.notify, job.state)) void (this.reporter ? this.reporter.finished(job) : this.unreported.push(job));
+    if (job.mode === 'background') {
+      if (endNoticeWanted(job.notify, job.state)) void (this.reporter ? this.reporter.finished(job) : this.unreported.push(job));
+      else this.reporter?.flush?.(job.id);
+    }
   }
   /**
    * Waits up to `ms` for a running job: resolves to the job when it ends in time, and its end then sends no notice, since
@@ -300,7 +303,10 @@ Started by subagent ${job.agent}, which could not take it.`, once));
       fold.cancel = setTimer(() => release(job.id), Math.max(0, Math.min(foldMs, fold.since + maxHoldMs - now())));
       folding.set(job.id, fold);
     },
-    flush: () => { for (const id of [...folding.keys()]) release(id); },
+    flush: (id?: string) => {
+      if (id !== undefined) { release(id); return; }
+      for (const key of [...folding.keys()]) release(key);
+    },
   };
 }
 
