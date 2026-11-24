@@ -413,7 +413,9 @@ export class SlackPoster {
       }
     }
     if (!imageFile) await publish();
-    if (options.graph) console.info(`${new Date().toISOString()} App Home published, diagram ${imageFile ? 'attached' : 'missing'}`);
+    const blocks = homeBlocks(text, options) as Array<{ fields?: unknown }>;
+    const cards = blocks.filter(block => Array.isArray(block.fields)).length;
+    console.info(`${new Date().toISOString()} App Home published, ${options.graph ? `diagram ${imageFile ? 'attached' : 'missing'}, ` : ''}${blocks.length} blocks, ${cards} quota cards`);
     if (replaced) await this.call(`${API}files.delete`, { file: replaced }).catch(() => console.warn('App Home: previous diagram not deleted'));
   }
 
