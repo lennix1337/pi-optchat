@@ -170,3 +170,12 @@ test('Home mostra a projeção da semana no cartão quando a linha da conta a tr
   const card = blocks.find(b => b.type === 'section' && Array.isArray(b.fields));
   assert.match(card.fields[1].text, /\*Semana\*\n🟢 `▰▰▰▱▱▱▱▱▱▱` 26%\n_renova 26\/11 00:17 · projeção: 50% no reset_/);
 });
+
+test('Home publish without a diagram still logs its block and quota card counts', async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, 'info', (line: string) => { lines.push(String(line)); });
+  const fetcher: typeof fetch = async () => new Response(JSON.stringify({ ok: true }));
+  const poster = new SlackPoster({ botToken: 'xoxb-test', operator: 'U123', fetch: fetcher, dotPath: 'dot', imageRetryMs: 0 });
+  await poster.publishHome('🔋 *Cota* (cache):\n• Claude `▰▰▱▱▱▱▱▱▱▱` 5h 20% (renova 13:00) · 7d 30% (renova 26/11 00:17)');
+  assert.match(lines.join('\n'), /^\d{4}-\d{2}-\d{2}T[\d:.]+Z App Home published, \d+ blocks, 1 quota cards$/m);
+});
