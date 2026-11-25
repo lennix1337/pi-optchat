@@ -4,3 +4,4 @@ scratchpad/
 bench/latest.json
 bench/baseline.local.json
 worktrees/
+.worktrees/
