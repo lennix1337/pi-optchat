@@ -110,6 +110,7 @@ for (const criterion of ['second spawn', 'Slack final', 'Home idle', 'empty retr
     await wakeFinished;
     assert.ok(observed.some(text => text.includes('Worker report processed.')));
     assert.equal(manager.getBranch().filter(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolCallId === 'spawn-two').length, 0);
+    for (let waited = 0; waited < 5000 && !requests.some(r => r.path === '/v1/slack/send' && r.body?.channel === 'wakes'); waited += 25) await new Promise(resolve => timer(resolve, 25));
     assert.equal(requests.filter(r => r.path === '/v1/slack/send' && r.body?.channel === 'wakes').length, 1);
     if (criterion === 'lost report') assert.match(JSON.stringify(requests), /Continuação do worker não verificada/);
   } finally {
