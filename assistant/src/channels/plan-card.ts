@@ -93,14 +93,14 @@ export function planPreview(plan: string): string {
 export function planBlocks(parts: Plan, options: { actions: boolean }): unknown[] {
   const progress = planProgress(parts.plan);
   const button = (action_id: string, label: string, value: string, style?: string) => ({ type: 'button', action_id, value, text: { type: 'plain_text', text: label }, ...(style ? { style } : {}) });
-  const value = `plano:${planId(parts.plan)}:${planTitle(parts.plan)}`;
+  const value = `plano:${planShape(parts.plan)}:${planTitle(parts.plan)}`;
+  const actions = options.actions ? [{ type: 'actions', elements: [button(PLAN_IMPLEMENT, 'Implementar', value, 'primary'), button(PLAN_ADJUST, 'Ajustar plano', value)] }] : [];
   return [
     { type: 'header', text: { type: 'plain_text', text: `Plano proposto${progress.total ? ` \u00b7 ${progress.done}/${progress.total}` : ''}` } },
     ...parts.before ? sections(parts.before) : [],
     ...sections(body(parts.plan)),
     ...parts.after ? sections(parts.after) : [],
-    ...options.actions ? [{ type: 'actions', elements: [button(PLAN_IMPLEMENT, 'Implementar', value, 'primary'), button(PLAN_ADJUST, 'Ajustar plano', value)] }] : [],
-  ].slice(0, 50);
+  ].slice(0, 50 - actions.length).concat(actions);
 }
 
 /** The card's blocks after a tap: the plan stays, the buttons give way to a line saying what the operator chose. */

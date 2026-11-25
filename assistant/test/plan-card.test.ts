@@ -66,6 +66,15 @@ test('the checklist shows done, current and next steps, with the N/M count', () 
   assert.equal(planPreview(plan.plan), 'Plano proposto: Ler \u00b7 1/3');
 });
 
+test('the buttons name the plan the same way however many boxes are ticked, and a long card keeps them', () => {
+  const value = (text: string) => (planBlocks(extractPlan(text)!, { actions: true }) as Block[]).at(-1)!.elements![0]!.value;
+  assert.equal(value('<proposed_plan>\n- [x] Ler\n- [ ] Escrever\n</proposed_plan>'), value('<proposed_plan>\n- [ ] Ler\n- [ ] Escrever\n</proposed_plan>'));
+  const long = `<proposed_plan>\n# Longo\n- [ ] A\n</proposed_plan>\n${Array.from({ length: 60 }, (_, i) => `${i} ${'x'.repeat(2900)}`).join('\n\n')}`;
+  const blocks = planBlocks(extractPlan(long)!, { actions: true }) as Block[];
+  assert.ok(blocks.length <= 50);
+  assert.equal(blocks.at(-1)!.type, 'actions');
+});
+
 test('the lock-screen text of a post with blocks opens with its first line, short', () => {
   assert.equal(preview('\u23f8 *Aprovação pendente* \u00b7 bash: rm\nmais detalhes\ne mais'), '\u23f8 *Aprovação pendente* \u00b7 bash: rm');
   assert.equal(preview('<https://github.com/x/y/pull/1|PR #1> mergeado'), 'PR #1 mergeado');
