@@ -22,6 +22,7 @@ import { formatObligations, liveObligations, nextObligationAt, urgentObligations
 import { projectDigests, signals as findSignals, stalledMissions, steadyLine, type PreTriageResult, type Signal, type Triage } from './wake-signals.ts';
 import type { StagedEntry } from './predictions.ts';
 import { suppressedWake } from './wake-refusal.ts';
+import { ideasWakeReasons, readIdeas, type IdeasConfig } from './ideas.ts';
 
 /** `unchanged`: the radar reads as at the last wake, so nothing pending moved and the wake must start something new. */
 export interface Beat {
@@ -46,6 +47,9 @@ WAKE when one of these is true and nothing in it waits on the operator:
 - there is a concrete, useful job in the operator's idle-time jobs below, allowed by their limits, that the memory shows is still open;
 - the operator's work queue below names an open item that their limits allow;
 - a live obligation below is overdue or an operator message has waited without an answer;
+- an approved idea on the ideas board below has not been dispatched yet;
+- a doing idea on the ideas board below has gone stale (worker silent past its threshold: resume it);
+- the ideas board below has fewer proposals than today's daily target between 08:00 and 22:00;
 - the agent ended its turn asking the operator something their earlier words already answer (a broad order like "merge all the PRs" covers fixing what blocks those merges): that question does not wait on the operator.
 SLEEP when everything open waits on the operator (a decision, an approval, credentials, payment, a reload), when the only work left is something the limits forbid, when the newest lines show the agent was already woken for the same thing and got nowhere, or when you cannot name one concrete next step.
 You only wake the main agent; it decides and does the work itself.
@@ -135,11 +139,11 @@ export function radarDigest(radar: string | undefined): string | undefined {
 
 const list = (items: string[]) => items.length ? items.map(item => `- ${item}`).join('\n') : '(none)';
 
-export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan; queueItem?: string; radar?: string; obligations?: readonly Obligation[]; refusals?: readonly string[] }
+export interface Snapshot { view: string; state: string; idleMinutes: number; lastStop?: string; agents: string[]; shells: string[]; plan?: HeartbeatPlan; queueItem?: string; radar?: string; obligations?: readonly Obligation[]; refusals?: readonly string[]; ideas?: string }
 
 const tail = (text: string, max: number) => text.length > max ? `[older lines omitted]\n${text.slice(text.indexOf('\n', text.length - max) + 1)}` : text;
 
-export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shells, plan = DEFAULT_HEARTBEAT, queueItem, radar, obligations, refusals }: Snapshot) {
+export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shells, plan = DEFAULT_HEARTBEAT, queueItem, radar, obligations, refusals, ideas }: Snapshot) {
   const obligationsBlock = obligations?.length ? formatObligations(obligations) : '';
   return [
     `Idle for ${idleMinutes} min since the last turn ended.`,
@@ -147,6 +151,7 @@ export function beatSnapshot({ view, state, idleMinutes, lastStop, agents, shell
     `Running agents: ${agents.length ? `\n${agents.map(a => `- ${a}`).join('\n')}` : 'none'}`,
     `Running shells: ${shells.length ? `\n${shells.map(s => `- ${s}`).join('\n')}` : 'none'}`,
     ...obligationsBlock ? [obligationsBlock] : [],
+    ...ideas ? [ideas] : [],
     ...queueItem ? [`Operator's work queue candidate (not a priority order): ${queueItem}`] : [],
     ...refusals?.length ? [`Operator refused these wake topics; do not propose them:\n${refusals.map(topic => `- ${topic}`).join('\n')}`] : [],
     ...radar ? [`${RADAR_NOTE}\n${radar}`] : [],
@@ -224,7 +229,7 @@ export function wakeTurn(wake: string, previous?: WakeRecord, unchanged = false,
 }
 
 /** What the woken main agent reads: the suggestion, the operator's configured jobs, and the limits of a turn nobody is watching. */
-export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}, obligations?: readonly Obligation[], shadow?: string, nightShift?: string) {
+export function wakeText(task: string, model: string, idleMinutes: number, plan: HeartbeatPlan, queue?: { path: string; item?: string }, radar?: string, instructions: HeartbeatInstructions = {}, obligations?: readonly Obligation[], shadow?: string, nightShift?: string, ideas?: string) {
   const opening = task
     ? `A cheap check (${model}) woke you and suggests: ${task}
 The check only wakes you; you do the work yourself, with your own judgment and tools. Confirm the suggestion against the view first; it is a candidate, not a selection or permission.`
@@ -234,7 +239,7 @@ The check only wakes you; you do the work yourself, with your own judgment and t
 ${queue.item}
 Read the backlog to inspect other open items before choosing, within the limits below. Mark an item \`- [x]\` only after delivery, or \`- [!]\` with a concrete blocker; not being selected is not a blocker. Never take an item marked \`- [!]\` or described as blocked. Do not drain the backlog automatically.`;
   const obligationsBlock = obligations?.length ? formatObligations(obligations) : '';
-  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}${obligationsBlock ? `\n${obligationsBlock}\n` : ''}${shadow ? `\n${shadow}\n` : ''}${nightShift ? `\n${nightShift}\n` : ''}
+  return `${backlog ? `${intro}\n${backlog}\n${opening}` : `${intro} ${opening}`}${radar ? `\n${RADAR_NOTE}\n${radar}\n` : ''}${obligationsBlock ? `\n${obligationsBlock}\n` : ''}${shadow ? `\n${shadow}\n` : ''}${nightShift ? `\n${nightShift}\n` : ''}${ideas ? `\n${ideas}\n` : ''}
 A question you left for the operator does not wait on them when their earlier words already answer it: a broad order ("merge all the PRs", "fix everything") covers fixing whatever blocks it, within the limits below. Answer it from the view and do the work; ask only what no earlier word of theirs settles.
 Reassess candidates on every wake using current impact, urgency, evidence, effort and blockers, including recent outcomes and new information. Explicit current operator priorities prevail; list order, a queued item, the cheap suggestion or category rotation do not decide the result. Choose one useful, feasible delivery and state why it wins now, its user-visible result and acceptance evidence before tools. Tests validate that delivery, not a default agenda. Stop at acceptance. ${instructions.delivery ?? DELIVERY_RULE}
 ${(instructions.brainstorm ?? BRAINSTORM_NOTE).replaceAll('{{councilScript}}', COUNCIL_SCRIPT)}
@@ -300,6 +305,8 @@ export interface HeartbeatDeps {
   stageShadow?: () => StagedEntry | undefined;
   /** Live obligations inputs (commitments and unanswered operator messages) merged on each tick and event. */
   obligations?: () => Omit<ObligationsInput, 'now'>;
+  /** Ideas board configuration for deterministic WAKE triggers (dailyTarget 0 = off). */
+  ideas?: () => IdeasConfig | undefined;
   wake: (beat: Beat, radar?: string, choice?: ModelChoice) => void;
   note: (text: string) => void;
   onSuppressed?: (reason: string) => void;
@@ -583,6 +590,12 @@ export class Heartbeat {
     return nextObligationAt({ ...this.deps.obligations(), now: at });
   }
 
+  private readIdeaReasons(at: number): string[] {
+    const cfg = this.deps.ideas?.();
+    if (!cfg || cfg.dailyTarget <= 0) return [];
+    return ideasWakeReasons(readIdeas(this.deps.dir), cfg, at);
+  }
+
   private async fire() {
     if (this.deps.paused?.()) return;
     const reason = this.deps.busy();
@@ -618,17 +631,22 @@ export class Heartbeat {
     }
     if (!triage) {
       const saved = this.saved();
-      const checked = dueFindings(readCommitments(this.deps.dir).filter(c => c.probeState?.failure !== undefined).map(c => ({ ...c, due: undefined })), { dueSeen: saved.dueSeen ?? [], escalated: saved.escalated ?? {} }, this.deps.now());
+      const now = this.deps.now();
+      const checked = dueFindings(readCommitments(this.deps.dir).filter(c => c.probeState?.failure !== undefined).map(c => ({ ...c, due: undefined })), { dueSeen: saved.dueSeen ?? [], escalated: saved.escalated ?? {} }, now);
       const obChecked = this.deps.obligations ? urgentObligations(live, saved.obligationSeen ?? [], saved.dueSeen ?? []) : undefined;
       const obligationFindings: DueFinding[] = (obChecked?.fresh ?? []).map(o => ({ id: o.commitmentId ?? o.key, project: o.project, kind: 'due', line: o.summary }));
-      const findings = [...checked.findings, ...obligationFindings];
+      const ideaFindings: DueFinding[] = this.readIdeaReasons(now).map((line, i) => ({ id: `idea-wake-${i}`, project: 'global', kind: 'due', line }));
+      const findings = [...checked.findings, ...obligationFindings, ...ideaFindings];
       if (findings.length) {
         seen = {
           ...checked.findings.length ? checked.state : {},
           ...obChecked && (obChecked.seen.length || saved.obligationSeen?.length) ? { obligationSeen: obChecked.seen } : {},
         };
         const signals = withCommitments([], findings);
-        beat = { wake: true, trigger: 'signal', signals, text: `signal: ${signals.map(signal => signal.project).join(', ')}`, ...live.length ? { obligations: live } : {} };
+        const text = ideaFindings.length && !checked.findings.length && !obligationFindings.length
+          ? ideaFindings[0]!.line
+          : `signal: ${signals.map(signal => signal.project).join(', ')}`;
+        beat = { wake: true, trigger: 'signal', signals, text, ...live.length ? { obligations: live } : {} };
       } else if (obChecked && saved.obligationSeen?.length && obChecked.seen.length < saved.obligationSeen.length) {
         seen = { obligationSeen: obChecked.seen };
       }
@@ -724,6 +742,7 @@ export class Heartbeat {
     if (heapLine && !saved.heapAlarm) asked.push({ id: '', project: 'global', kind: 'due', line: heapLine });
     const rssText = rssLine(heap);
     if (rssText && !saved.rssAlarm) asked.push({ id: '', project: 'global', kind: 'due', line: rssText });
+    for (const line of this.readIdeaReasons(at)) asked.push({ id: '', project: 'global', kind: 'due', line });
     const seen: Seen = { projectDigests: digests, stalled: stalledMissions({ missions, lastRuns, now: at, stallHours }), ...due ? { ...due.state, ...diverted ? { patrolAt: diverted.patrolAt, patrolled: diverted.patrolled } : {} } : {}, ...patrol ? { escalations: [] } : {}, ...obChecked && (obChecked.seen.length || saved.obligationSeen?.length) ? { obligationSeen: obChecked.seen } : {}, heap, heapAlarm: heapLine !== undefined, rssAlarm: rssText !== undefined };
     const found = withCommitments(findSignals({ radar: readable ? radar : undefined, previous: first && readable ? radarOnly : saved.projectDigests ?? {}, missions, lastRuns, now: at, stallHours, stalled: saved.stalled ?? [], lastStop }), [...due?.findings ?? [], ...asked]);
     if (found.length) return { seen, beat: { wake: true, trigger: 'signal', signals: found, text: `signal: ${found.map(signal => signal.project).join(', ')}`, ...live.length ? { obligations: [...live] } : {} } };

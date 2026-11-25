@@ -182,6 +182,26 @@ The dream itself runs outside Pi (dotfiles `payload/tools/dream`, a 03:00 schedu
 - `~/.optchat/dreams/active-lessons.md` (at most 2 KB) is added after the profile's instructions as **Active lessons**, read once per local day so the system prompt and its cache stay stable all day. Lessons grant no permission; standing instructions and the operator's newest words prevail. A missing, empty or oversized file adds nothing.
 - From 07:00, the first turn shows a three-line summary of that night's dream (outcome, lessons and whether they are active, citation problems, scoreboard and open-item counts, file path): as a notice when the operator types, or inside the heartbeat report when a wake comes first. It is shown once per day (`briefed.json`).
 
+## Ideas board
+
+The `ideas` tool keeps an append-only `ideas.jsonl` board in the profile directory (latest row per `id` wins, deduplicated by `day` + `title`). Actions:
+
+- `add`: record a proposed idea (`title` <= 120 chars, measurable `why` <= 300 chars, `repo` as `owner/name` or `""`, `effort` `S`/`M`/`L`).
+- `list`: list ideas with stable per-day `#N` numbers, optionally filtered by `status` or `day`.
+- `approve`: approve a day's numbered proposals (`day` + `numbers`, e.g. `[1, 4, 7]`) as picked from the morning DM.
+- `update`: transition an idea by `id` (`proposed`, `approved`, `doing`, `done`, `dropped`) with optional `worker`, `pr`, and `note`; `doing` requires `worker` and `done` requires a GitHub PR or commit URL in `pr`.
+
+When enabled in the profile's `config.json`, the morning DM includes **Ideias de ontem** (yesterday's proposed ideas capped at 30, plus active/done/stale counts) and the heartbeat receives the board state with WAKE triggers for approved ideas not yet dispatched, `doing` ideas silent past `staleHours`, and days below `dailyTarget` between 08:00 and 22:00 local time:
+
+```json
+"ideas": {
+  "dailyTarget": 30,
+  "staleHours": 2
+}
+```
+
+Defaults are neutral (`dailyTarget: 0`, feature off; `staleHours: 2`).
+
 ## Zoom in Code Mode
 
 Prefer direct `zoom` for a single read or tree navigation: the next branch usually depends on the previous result. `n > 1` opens two child summaries; `n = 1` reads a message. Do not batch guesses at deeper nodes before reading their parent.

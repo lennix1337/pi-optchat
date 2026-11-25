@@ -22,6 +22,7 @@ const validInputs: Record<string, Record<string, unknown>> = {
   tell: { id: 'fixture', message: 'not sent' }, retarget: { id: 'fixture', message: 'not sent', model: 'provider/model' }, catchup_report: {}, self_reload: { checkpoint: 'Verified fixture; next inspect receipt.' },
   slack_send: { text: 'not sent' }, tool_inventory: {}, skills_on_disk: { name: 'fixture' }, commitments: { action: 'list' },
   crew: { action: 'read', project: 'harness', part: 'memory' }, predictions: { day: '2026-11-16', text: 'fixture', status: 'predicted', evidence: 'recurring' },
+  ideas: { action: 'list' },
 };
 test('spawn accepts a worker kind and a project specialist', () => {
   const args = { tasks: [{ task: 'not launched', cwd: '.', kind: 'code', project: 'dentai' }] };
