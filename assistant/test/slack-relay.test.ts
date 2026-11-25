@@ -139,6 +139,13 @@ test('slack text converts Markdown emphasis, headings and links to mrkdwn', () =
   assert.equal(slackText('## Feito\n**PR #13** pronto: [link](https://x.test/a)'), '*Feito*\n*PR #13* pronto: <https://x.test/a|link>');
 });
 
+test('slack text turns Markdown tables into key/value records a phone can read', () => {
+  const table = '| PR | Estado | CI |\n| --- | :---: | ---: |\n| #13 | merged | verde |\n| #14 | aberta | `red` |';
+  assert.equal(slackText(table), '*#13*\nEstado: merged\nCI: verde\n\n*#14*\nEstado: aberta\nCI: `red`');
+  assert.equal(slackText('antes\n\n' + table + '\n\ndepois'), 'antes\n\n*#13*\nEstado: merged\nCI: verde\n\n*#14*\nEstado: aberta\nCI: `red`\n\ndepois');
+  assert.equal(slackText('a | b\nsem separador'), 'a | b\nsem separador');
+});
+
 test('when nobody polled recently, a new DM gets one automatic receipt', async () => {
   let now = 1_793_000_000_000;
   const slack = fakeSlack();
