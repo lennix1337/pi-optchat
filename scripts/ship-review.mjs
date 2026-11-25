@@ -4,7 +4,13 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { scrubSecrets } from '../src/secret-scrub.ts';
 
-const DEFAULT_REVIEW_MODEL = 'openai-codex-account-2/gpt-6.2-sol';
+const DEFAULT_REVIEW_MODELS = [
+  'openai-codex-account-2/gpt-6.2-sol',
+  'openai-codex/gpt-6.2-sol',
+  'anthropic-account-2/claude-sonnet-5-5',
+  'google/gemini-4-hydrogen',
+];
+const PI_REVIEW_FLAGS = ['--no-session', '--no-tools', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-approve'];
 const DEFAULT_RULE_PATH = /(?:^|\/)(?:agents\.md|claude\.md|gemini\.md|autonomy\.json|closed-conflicts\.json)$|(?:^|\/)\.pi(?:\/|$)/i;
 const DEFAULT_SECRET_PATH = /(?:^|\/)(?:\.env(?!\.example$)(?:\.[^/]+)?|\.(?:netrc|npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|(?:secrets?|credentials?|tokens?|passw(?:or)?ds?)(?:[._-][^/]+)?|[^/]+\.(?:pem|key|p12|pfx))$|(?:^|\/)\.pi-vault(?:\/|$)/i;
 const ENV_EXAMPLE = /(?:^|\/)\.env\.example$/i;
@@ -192,6 +198,7 @@ export function remotePaths(diff, names) {
 
 export function reviewBody(body, result) {
   const lines = [];
+  if (result.model) lines.push(`Modelo do Revisor: ${result.model}`);
   if (result.reason) lines.push(`Revisão de modelo pulada: ${scrub(result.reason)}`);
   if (result.findings.length) lines.push(...result.findings.map(f => `- ${findingLine(f)}`));
   else if (result.verdict === 'changes') lines.push('O revisor pediu mudanças sem detalhar.');
@@ -237,7 +244,7 @@ function promptFor({ title, body, head, ciGreen, trimmed, history, commitMessage
   ].join('\n');
 }
 
-class ReviewerUnavailable extends Error {}
+export class ReviewerUnavailable extends Error {}
 
 async function loadReviewerCore(source) {
   const sourceUrl = pathToFileURL(source).href;
@@ -290,6 +297,37 @@ function sanitizeModel(model, knownFiles, patterns) {
   return { verdict: verdictFor(findings), findings };
 }
 
+function reviewAttempt(result, parse) {
+  if (!result.error && result.status === 0) {
+    let answer;
+    try { answer = parse(result.stdout); } catch { answer = undefined; }
+    if (['approve', 'changes', 'block'].includes(answer?.verdict) && Array.isArray(answer.findings)) return { answer };
+  }
+  if (result.error?.code === 'ETIMEDOUT') return { failure: 'tempo limite' };
+  if (result.error) return { failure: 'erro do worker' };
+  if (/\b429\b|\bquota\b|rate[_ -]?limit|resource[_ -]exhausted|usage limit/i.test(`${result.stderr}\n${result.stdout}`)) return { failure: 'cota/429' };
+  return { failure: result.signal ? `sinal ${result.signal}` : result.status ? `rc=${result.status}` : 'resposta inválida' };
+}
+
+function runReviewer(core, source, prompt, env) {
+  const worker = env.SHIP_REVIEW_WORKER && resolve(env.SHIP_REVIEW_WORKER);
+  const models = env.SHIP_REVIEW_MODEL?.trim() ? env.SHIP_REVIEW_MODEL.split(',').map(id => id.trim()) : DEFAULT_REVIEW_MODELS;
+  // external: Pi ships as a .cmd on Windows, where the model IDs pass through the shell.
+  if (models.some(id => !/^[a-z0-9][a-z0-9_.:/+-]*$/i.test(id))) throw new ReviewerUnavailable('SHIP_REVIEW_MODEL inválido; use IDs como provider/modelo separados por vírgula.');
+  const failures = [];
+  for (const model of new Set(models)) {
+    const args = ['--model', model];
+    const result = spawnSync(worker ? process.execPath : 'pi', worker ? [worker, ...args] : ['--print', ...args, ...PI_REVIEW_FLAGS], {
+      input: prompt, env, cwd: dirname(worker || source), encoding: 'utf8', windowsHide: true,
+      shell: !worker && process.platform === 'win32', timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+    });
+    const { answer, failure } = reviewAttempt(result, core.parseReviewAnswer);
+    if (answer) return { model, answer };
+    failures.push(`${model} (${failure})`);
+  }
+  throw new ReviewerUnavailable(`Revisor indisponível: ${failures.join('; ')}.`);
+}
+
 export async function reviewChange({ diff = '', history = '', paths = [], title = '', body = '', commitMessage = '', commitMessages = [], checks, head, checksHead, merged, localCheck, dryRun, fullDiff, skipReason, allowRules, env = process.env }) {
   const meta = [title, body, commitMessage, skipReason].filter(Boolean).join('\n');
   body = originalBody(body);
@@ -319,21 +357,11 @@ export async function reviewChange({ diff = '', history = '', paths = [], title 
   if (skipReason && !unique.some(f => f.severity === 'major')) return { verdict: 'skipped', reason: skipReason, findings: unique };
   if (dryRun || skipReason) return { ...core.mergeReview(unique, undefined), reason: skipReason };
 
-  const worker = env.SHIP_REVIEW_WORKER && resolve(env.SHIP_REVIEW_WORKER);
-  const modelRef = env.SHIP_REVIEW_MODEL?.trim() || DEFAULT_REVIEW_MODEL;
-  // external: Pi ships as a .cmd on Windows, where modelRef is passed through the shell.
-  if (!worker && !/^[a-z0-9][a-z0-9_.:/+-]*$/i.test(modelRef)) throw new ReviewerUnavailable('SHIP_REVIEW_MODEL inválido; use um ID como provider/modelo.');
-  const piArgs = ['--print', '--model', modelRef, '--no-session', '--no-tools', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-approve'];
   const trimmed = fullDiff ? { diff, skipped: [], cut: [] } : core.trimDiff(diff);
   const historyForModel = history ? core.trimDiff(history, 30_000) : undefined;
-  const result = spawnSync(worker ? process.execPath : 'pi', worker ? [worker] : piArgs, {
-    input: promptFor({ title, body, head, ciGreen: greenOnHead(head, checksHead, checks), trimmed, history: historyForModel, commitMessage, commitMessages, localCheck }), env, cwd: dirname(worker || source), encoding: 'utf8', windowsHide: true,
-    shell: !worker && process.platform === 'win32', timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) throw new ReviewerUnavailable('O worker do Revisor falhou; não houve aprovação.');
-  let model;
-  try { model = core.parseReviewAnswer(result.stdout); } catch { model = undefined; }
+  const prompt = promptFor({ title, body, head, ciGreen: greenOnHead(head, checksHead, checks), trimmed, history: historyForModel, commitMessage, commitMessages, localCheck });
+  const { model, answer } = runReviewer(core, source, prompt, env);
   const knownFiles = new Set([...paths, ...rows, ...historyRows].map(row => row.file));
-  const final = core.mergeReview(unique, sanitizeModel(model, knownFiles, patterns));
-  return { ...final, findings: distinctFindings(final.findings.map(f => ({ ...f, code: f.code ?? 'model_review' })), patterns) };
+  const final = core.mergeReview(unique, sanitizeModel(answer, knownFiles, patterns));
+  return { ...final, model, findings: distinctFindings(final.findings.map(f => ({ ...f, code: f.code ?? 'model_review' })), patterns) };
 }

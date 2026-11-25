@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { defaultManifestPath, readMetricFromFile, recordChange } from './change-manifest.mjs';
 
-import { findingLine, remotePaths, reviewBody, reviewChange } from './ship-review.mjs';
+import { findingLine, remotePaths, reviewBody, reviewChange, ReviewerUnavailable } from './ship-review.mjs';
 import { IncompletePrHistory, hasBinaryPatch, isCommitSha, remoteHistory } from './ship-pr-history.mjs';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName';
@@ -318,9 +318,10 @@ async function review(opts, ctx, input, pr) {
   try { result = await reviewChange({ ...input, dryRun: opts.dryRun && !opts.reviewModel, fullDiff: opts.reviewModel, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
   catch (e) {
     await cancelQueuedReview(opts, ctx, pr);
-    throw refuse('review_unavailable', firstLine(e.message));
+    throw refuse('review_unavailable', e instanceof ReviewerUnavailable ? e.message : firstLine(e.message));
   }
   ctx.review = result.verdict;
+  if (result.model) ctx.review_model = result.model;
   if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
   if (['changes', 'block'].includes(result.verdict)) await cancelQueuedReview(opts, ctx, pr);
   if (result.verdict === 'block') throw new Stop('refused', {

@@ -190,6 +190,52 @@ test('Revisor passes the default or configured model to Pi with extension discov
   }
 });
 
+const reviewFallbackModels = [
+  'openai-codex-account-2/gpt-6.2-sol', 'openai-codex/gpt-6.2-sol',
+  'anthropic-account-2/claude-sonnet-5-5', 'google/gemini-4-hydrogen',
+];
+
+for (const scenario of ['second approves', 'all fail', 'veto stops fallback'] as const) test(`Revisor fallback: ${scenario}`, t => {
+  const fx = fixture(); t.after(fx.close);
+  const log = join(fx.dir, 'models.log');
+  const models = scenario === 'second approves' ? ['account-1/model', 'account-2/model', 'account-3/model'] : reviewFallbackModels;
+  const outcomes: Record<string, object> = { [models[0]]: { code: 1, stderr: 'HTTP 429 quota exceeded; do not repeat this detail' } };
+  if (scenario === 'all fail') {
+    outcomes[models[1]] = { stdout: 'not a review' };
+    outcomes[models[2]] = { code: 12 };
+    outcomes[models[3]] = { stdout: '{}' };
+    fx.setGh({ prs: [openFixturePr(fx, { autoMergeRequest: { enabledAt: '2026-01-31T12:00:00Z' } })] });
+  } else if (scenario === 'veto stops fallback') {
+    outcomes[models[1]] = { stdout: JSON.stringify({ verdict: 'block', findings: [{ severity: 'blocker', text: '[secret] dado sensível' }] }) };
+  }
+  if (scenario !== 'all fail') commitFile(fx, 'a.txt');
+  const r = ship(fx, scenario === 'all fail' ? ['--pr', '7'] : [...BODY, '-m', 'fixture', 'a.txt', '--no-auto'], {
+    SHIP_REVIEW_MODEL: scenario === 'second approves' ? models.join(', ') : '',
+    FAKE_REVISOR_OUTCOMES: JSON.stringify(outcomes), FAKE_REVISOR_ARGS: log,
+  });
+  const calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]);
+  assert.deepEqual(calls, models.slice(0, scenario === 'all fail' ? models.length : 2).map(model => ['--model', model]));
+  if (scenario === 'all fail') {
+    assert.equal(r.code, 2, r.raw + r.err);
+    assert.equal(r.out.error, 'review_unavailable');
+    assert.equal(r.out.previous_auto_merge, 'disabled');
+    assert.equal(JSON.parse(r.out.hint), `Revisor indisponível: ${models[0]} (cota/429); ${models[1]} (resposta inválida); ${models[2]} (rc=12); ${models[3]} (resposta inválida).`);
+    assert.doesNotMatch(r.raw + r.err, /do not repeat this detail|not a review/);
+  } else {
+    assert.equal(r.out.review_model, models[1]);
+    if (scenario === 'veto stops fallback') {
+      assert.equal(r.code, 2, r.raw + r.err);
+      assert.equal(r.out.review, 'block');
+      assert.equal(remoteSha(fx, 'feat/x'), '');
+    } else {
+      assert.equal(r.code, 0, r.raw + r.err);
+      assert.equal(r.out.review, 'approve');
+      const body = JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].body;
+      assert.ok(body.includes(`Modelo do Revisor: ${models[1]}`), body);
+    }
+  }
+});
+
 test('Revisor refuses a missing shared script and names what to install', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt');
@@ -1077,7 +1123,7 @@ test('--pr queues auto-merge of an existing PR without git or PR creation', t =>
     ['api', `repos/acme/app/commits/${sha}`, '--header=Accept:application/vnd.github.diff'],
     ['api', `repos/acme/app/commits/${sha}`],
   ]);
-  assert.deepEqual(calls.filter(args => args[0] === 'pr').map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr diff', 'pr diff', 'pr view', 'pr view', 'pr merge', 'pr view']);
+  assert.deepEqual(calls.filter(args => args[0] === 'pr').map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr diff', 'pr diff', 'pr view', 'pr edit', 'pr view', 'pr view', 'pr merge', 'pr view']);
 });
 
 test('checks not reported yet, and a merge that would land at once: reported, not queued', t => {
