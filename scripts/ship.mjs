@@ -310,7 +310,10 @@ async function review(opts, ctx, input) {
   catch (e) { throw refuse('review_unavailable', firstLine(e.message)); }
   ctx.review = result.verdict;
   if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
-  if (result.verdict === 'block') throw refuse('review_blocked', 'Revisor bloqueou: remova o problema e revise novamente.');
+  if (result.verdict === 'block') throw new Stop('refused', {
+    error: 'review_blocked', review: result.verdict, review_findings: ctx.review_findings,
+    hint: 'Revisor bloqueou: remova o problema e revise novamente.',
+  });
   return result;
 }
 
@@ -332,18 +335,46 @@ async function autoMergeOnly(opts, ctx) {
   if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `Revisor (prévia determinística) > ${result.verdict === 'changes' ? 'não enfileirar' : 'ver checks para auto-merge'}` });
   if (result.verdict === 'changes' && pr.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
   const same = await viewPr(ctx.pr);
-  if (same.pr?.headRefOid !== pr.headRefOid || same.pr.body !== pr.body) throw refuse('review_head_changed', 'a PR mudou durante a revisão; revise novamente');
+  if (same.pr?.headRefOid !== pr.headRefOid || same.pr.body !== pr.body || same.pr.title !== pr.title) throw refuse('review_head_changed', 'a PR mudou durante a revisão; revise novamente');
   await updatePrReview(pr, result);
   if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
   return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait, pr.headRefOid));
 }
 
 
+const isCommitSha = sha => typeof sha === 'string' && /^[0-9a-f]{40}$/i.test(sha);
+
+async function remoteHistory(pr) {
+  const repo = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/.exec(pr.url ?? '')?.[1];
+  if (!repo) throw refuse('review_history_unavailable', 'não consegui identificar o repositório para ler os commits da PR');
+  const root = `repos/${repo}`;
+  const list = await gh(['api', '--paginate', '--slurp', `${root}/pulls/${pr.number}/commits`]);
+  let commits;
+  try { if (!list.code) commits = JSON.parse(list.out).flat(); } catch (error) {
+    if (!(error instanceof SyntaxError || error instanceof TypeError)) throw error;
+  }
+  // external: The GitHub pull-commits endpoint caps results at 250 even when paginated.
+  if (!commits?.length || commits.length >= 250 || commits.at(-1)?.sha !== pr.headRefOid
+    || commits.some(c => !isCommitSha(c?.sha) || typeof c.commit?.message !== 'string')) {
+    throw refuse('review_history_unavailable', 'não consegui confirmar o intervalo completo da PR; se o histórico exceder o limite do GitHub, revise a partir da branch local');
+  }
+  const patches = [];
+  let bytes = 0;
+  for (const { sha } of commits) {
+    const patch = await gh(['api', `${root}/commits/${sha}`, '--header=Accept:application/vnd.github.diff']);
+    bytes += Buffer.byteLength(patch.out);
+    if (patch.code || bytes > 16 * 1024 * 1024) throw refuse('review_history_unavailable', 'não consegui ler todos os patches do intervalo da PR; nada foi enviado');
+    patches.push(patch.out);
+  }
+  return { history: patches.join('\n'), commitMessages: commits.map(({ sha, commit }) => ({ sha, message: commit.message })) };
+}
+
 async function reviewRemotePr(opts, ctx, pr) {
-  if (!/^[0-9a-f]{40}$/i.test(pr.headRefOid ?? '')) throw refuse('review_head_unknown', 'não consegui identificar o commit da PR');
-  const [patch, names] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only'])]);
+  if (!isCommitSha(pr.headRefOid)) throw refuse('review_head_unknown', 'não consegui identificar o commit da PR');
+  const [patch, names, range] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only']), remoteHistory(pr)]);
   if (patch.code || names.code) throw failed('review_diff', patch.code ? patch : names, 'não consegui ler o diff da PR');
-  return review(opts, ctx, { diff: patch.out, paths: remotePaths(patch.out, names.out), body: pr.body, title: pr.title, checks: pr.statusCheckRollup });
+  const paths = [...remotePaths(patch.out, names.out), ...remotePaths(range.history, '')];
+  return review(opts, ctx, { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup });
 }
 
 async function mainCheckoutOf() {
@@ -450,20 +481,24 @@ async function reviewSnapshot(opts, ctx, { base, head, existing }) {
   const tree = await previewTree(opts, head);
   const range = `${mergeBase}..${head}`;
   const status = ['--no-renames', '--no-relative', '--name-status', '-z'];
-  const [diff, pending, history, names, stagedNames, pastNames] = await Promise.all([
+  const [diff, pending, history, names, stagedNames, pastNames, messages] = await Promise.all([
     reviewGit(['diff', ...PATCH_FLAGS, mergeBase, tree, '--']),
     reviewGit(['diff', ...PATCH_FLAGS, head, tree, '--']),
     reviewGit(['log', '--format=', '--diff-merges=first-parent', '-p', ...PATCH_FLAGS, range, '--']),
     reviewGit(['diff', ...status, mergeBase, tree, '--']),
     reviewGit(['diff', ...status, head, tree, '--']),
     reviewGit(['log', '--format=', '--diff-merges=first-parent', '--no-renames', '--no-relative', '--name-only', '--diff-filter=ACMRTUXB', '-z', range, '--']),
+    reviewGit(['log', '-z', '--format=%H%x00%B', range, '--']),
   ]);
   const paths = pastNames.split('\0').filter(Boolean).map(file => ({ file }));
   for (const data of [names, stagedNames]) {
     const parts = data.split('\0');
     for (let i = 0; i + 1 < parts.length; i += 2) paths.push({ file: parts[i + 1], deleted: parts[i] === 'D' });
   }
-  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, title: opts.title ?? existing?.title ?? opts.message, body: existing?.body ?? opts.body, checks: existing?.statusCheckRollup, commitMessage: `${opts.message ?? ''}\n${opts.body ?? ''}` });
+  const commitMessages = [];
+  const parts = messages.split('\0');
+  for (let i = 0; i + 1 < parts.length; i += 2) commitMessages.push({ sha: parts[i], message: parts[i + 1] });
+  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, title: opts.title ?? existing?.title ?? opts.message, body: existing?.body ?? opts.body, head: tree === (await reviewGit(['rev-parse', `${head}^{tree}`])).trim() ? head : undefined, checksHead: existing?.headRefOid, checks: existing?.statusCheckRollup, commitMessage: `${opts.message ?? ''}\n${opts.body ?? ''}`, commitMessages });
   return { tree, result };
 }
 
@@ -579,6 +614,14 @@ async function shipBranch(opts, ctx) {
   const [actualTree, parents] = (await reviewGit(['show', '-s', '--format=%T %P', reviewedHead])).trim().split(/ (?=[0-9a-f])/);
   if (actualTree !== tree || (commitNeeded ? parents !== head : reviewedHead !== head)) {
     throw refuse('review_snapshot_changed', 'o commit mudou após a revisão (por exemplo, um hook): nada foi enviado; revise novamente');
+  }
+  if (commitNeeded) {
+    const message = await reviewGit(['show', '-s', '--format=%B', reviewedHead]);
+    try { await review({ ...opts, dryRun: true }, {}, { commitMessages: [{ sha: reviewedHead, message }] }); }
+    catch (error) {
+      if (!(error instanceof Stop) || error.fields.error !== 'review_blocked') throw error;
+      throw new Stop('refused', { ...error.fields, hint: 'A mensagem gravada pelo Git contém um segredo; corrija o commit local. Nada foi enviado.' });
+    }
   }
   const target = opts.directMain ? base : branch;
   const p = await git(['push', 'origin', `${reviewedHead}:refs/heads/${target}`], 'push');
@@ -747,9 +790,11 @@ async function main(argv) {
   try {
     if (opts.title !== undefined && (opts.sync || opts.pr !== undefined || opts.directMain)) throw refuse('conflicting_args', '--title só vale ao abrir uma PR nova');
     if (opts.sync) return await syncAfterMerge(opts, ctx);
-    return opts.pr !== undefined
-      ? await autoMergeOnly(opts, { pr: Number(opts.pr) })
-      : await shipBranch(opts, ctx);
+    if (opts.pr !== undefined) {
+      ctx.pr = Number(opts.pr);
+      return await autoMergeOnly(opts, ctx);
+    }
+    return await shipBranch(opts, ctx);
   } catch (error) {
     if (error instanceof Stop) return emit(error.status, { ...ctx, ...error.fields });
     return emit('failed', { ...ctx, stage: 'internal', detail: firstLine(error instanceof Error ? error.message : String(error)) });

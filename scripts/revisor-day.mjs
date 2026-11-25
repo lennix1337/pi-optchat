@@ -23,7 +23,7 @@ function gh(args) {
 }
 
 try {
-  const prs = JSON.parse(gh(['pr', 'list', '--state', 'merged', '--search', `merged:${day}`, '--limit', '1000', '--json', 'number,title,body,mergedAt,statusCheckRollup']));
+  const prs = JSON.parse(gh(['pr', 'list', '--state', 'merged', '--search', `merged:${day}`, '--limit', '1000', '--json', 'number,title,body,mergedAt,headRefOid,statusCheckRollup']));
   let reviewed = 0, count = 0, errors = 0;
   console.log(`Revisor — ${day} UTC (${model ? 'pré-checagem + modelo' : 'pré-checagem sem modelo'})`);
   for (const pr of prs) {
@@ -31,7 +31,7 @@ try {
     try {
       const diff = gh(['pr', 'diff', String(pr.number)]);
       const paths = remotePaths(diff, gh(['pr', 'diff', String(pr.number), '--name-only']));
-      const result = await reviewChange({ diff, paths, title: pr.title, body: pr.body, checks: pr.statusCheckRollup, merged: true, dryRun: !model });
+      const result = await reviewChange({ diff, paths, title: pr.title, body: pr.body, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup, merged: true, dryRun: !model });
       reviewed++;
       for (const finding of result.findings) {
         console.log(`- PR #${pr.number}: ${findingLine(finding)}`);

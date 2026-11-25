@@ -17,6 +17,25 @@ const find = ref => /^\d+$/.test(ref) ? state.prs.find(p => p.number === Number(
 const headOf = pr => pr.headRefOid ?? spawnSync('git', ['rev-parse', '--verify', pr.headRefName ? `origin/${pr.headRefName}` : 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 
 const [group, verb, ...rest] = args;
+const commitsOf = pr => pr.commits ?? [{ sha: headOf(pr), patch: pr.diff ?? '' }];
+if (group === 'api') {
+  const endpoint = args.find(arg => arg.startsWith('repos/acme/app/')) ?? '';
+  const listing = /^repos\/acme\/app\/pulls\/(\d+)\/commits$/.exec(endpoint);
+  const commit = /^repos\/acme\/app\/commits\/([a-f\d]{40})$/.exec(endpoint);
+  if (listing && args.includes('--paginate') && args.includes('--slurp')) {
+    const pr = find(listing[1]);
+    if (pr) {
+      const entries = commitsOf(pr).map(c => ({ sha: c.sha, commit: { message: c.message ?? 'fixture' } }));
+      process.stdout.write(JSON.stringify([entries.slice(0, 1), entries.slice(1)]));
+      process.exit(0);
+    }
+  }
+  if (commit && args.includes('--header=Accept:application/vnd.github.diff')) {
+    const entry = state.prs.flatMap(commitsOf).find(c => c.sha === commit[1]);
+    if (entry) { process.stdout.write(entry.patch); process.exit(0); }
+  }
+  fail(`fake gh: unsupported ${args.join(' ')}`, 2);
+}
 if (group !== 'pr') fail(`fake gh: unsupported ${args.join(' ')}`, 2);
 
 if (verb === 'view') {

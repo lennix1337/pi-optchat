@@ -102,7 +102,7 @@ for (const name of ['AGENTS.md', 'docs/CLAUDE.md', 'GEMINI.md', '.pi/config.json
 
 const CTA = '<a href="/oferta">Ver oferta</a>\n';
 for (const [name, file, text, body, rule, expected] of [
-  ['CTA only unit tested', 'offer.html', CTA, 'Evidência: testes unitários passaram.', 'click_evidence_missing', 3],
+  ['CTA only unit tested', 'offer.html', CTA, 'Evidência: testes unitários passaram.', 'click_evidence_missing', 0],
   ['false tsc success', 'app.ts', 'export const item = true;\n', 'tsc limpo\napp.ts(1,2): error TS2322: fixture', 'tsc_claim_failed', 3],
   ['plaintext password written to a file', 'account.txt', 'password: test-pass-42\n', 'Arquivo de teste.', 'plaintext_password', 2],
   ['deploy before the click', 'offer.html', CTA, 'Deploy: 2026-01-31T12:00:00Z\nClique /oferta: 2026-01-31T12:05:00Z rc=0', 'deploy_before_click', 3],
@@ -110,7 +110,7 @@ for (const [name, file, text, body, rule, expected] of [
   test(`Revisor regression: ${name}`, t => {
     const fx = fixture(); t.after(fx.close);
     commitFile(fx, file, text);
-    const r = ship(fx, ['-b', body, '-m', 'fixture', file, '--wait', '0']);
+    const r = ship(fx, ['-b', body, '-m', 'fixture', file, '--wait', '0', ...(expected === 0 ? ['--no-auto'] : [])]);
     assert.equal(r.code, expected, r.raw + r.err);
     assert.match(r.raw, new RegExp(rule));
     assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
@@ -130,7 +130,7 @@ test('Revisor sees the actual diff and description; block stops the commit and p
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, 'a.txt', 'texto da mudança\n');
   const log = join(fx.dir, 'reviewer.log');
-  const answer = { verdict: 'block', findings: [{ severity: 'blocker', file: 'a.txt', line: 1, text: 'Falha simulada' }] };
+  const answer = { verdict: 'block', findings: [{ severity: 'blocker', file: 'a.txt', line: 1, text: '[behavior] Falha simulada' }] };
   const r = ship(fx, [...BODY, '-m', 'fixture', '--title', 'Título teste', 'a.txt'], { FAKE_REVISOR_LOG: log, FAKE_REVISOR_ANSWER: JSON.stringify(answer) });
   assert.equal(r.code, 2, r.raw + r.err);
   assert.match(r.raw, /model_review:blocker.*Falha simulada/);
@@ -214,15 +214,106 @@ test('Revisor scans committed history even if a secret file was removed in a lat
   assert.match(r.raw, /secret_path/);
 });
 
+const historicalValue = ['fixture', 'private', 'value', '42'].join('-');
+const syntheticPassword = `password: ${historicalValue}`;
+
+for (const viaHook of [false, true]) test(`Dogfood: refuses a secret in ${viaHook ? 'the final hook-written message' : 'an earlier commit message'}`, { skip: viaHook && process.platform === 'win32' }, t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'history.txt', 'start\n');
+  if (viaHook) {
+    const hook = join(fx.work, '.git', 'hooks', 'commit-msg');
+    writeFileSync(hook, `#!/bin/sh\nprintf '\\n%s\\n' '${syntheticPassword}' >> "$1"\n`);
+    chmodSync(hook, 0o755);
+  } else {
+    git(fx.work, ['add', 'history.txt']);
+    git(fx.work, ['commit', '-qm', 'neutral subject', '-m', syntheticPassword]);
+  }
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'neutral', 'a.txt']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /plaintext_password.*[Cc]ommit/);
+  assert.ok(!r.raw.includes(historicalValue) && !r.err.includes(historicalValue));
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+});
+
+function openFixturePr(fx: Fixture, extra: Record<string, unknown> = {}) {
+  return { number: 7, state: 'OPEN', url: 'https://github.com/acme/app/pull/7', headRefOid: localSha(fx), title: 'Revisado', body: 'Descrição neutra', mergeStateStatus: 'BLOCKED', ...extra };
+}
+
+test('Dogfood: --pr reviews intermediate patches even though the final diff is clean', t => {
+  const fx = fixture(); t.after(fx.close);
+  const sha = 'a'.repeat(40);
+  fx.setGh({ prs: [openFixturePr(fx, { commits: [
+    { sha, patch: `diff --git a/transient.txt b/transient.txt\n--- /dev/null\n+++ b/transient.txt\n@@ -0,0 +1 @@\n+${syntheticPassword}\n` },
+    { sha: localSha(fx), patch: 'diff --git a/transient.txt b/transient.txt\n--- a/transient.txt\n+++ /dev/null\n' },
+  ] })] });
+  const r = ship(fx, ['--pr', '7']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /plaintext_password.*transient\.txt/);
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
+});
+
+test('Dogfood: --pr refuses a title change after review', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [openFixturePr(fx)], settleAfterViews: { count: 1, patch: { title: 'Título diferente' } } });
+  const r = ship(fx, ['--pr', '7']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_head_changed');
+  assert.ok(!fx.ghCalls().some(args => ['edit', 'merge'].includes(args[1])));
+});
+
+test('Dogfood: model secret and PII are replaced before printing and saving the finding', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt', 'neutral change\n');
+  const email = ['modelo', 'example.invalid'].join('@');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt'], { FAKE_REVISOR_ANSWER: JSON.stringify({ verdict: 'changes', findings: [
+    { kind: 'verification', severity: 'major', file: 'a.txt', line: 1, text: `Anotação: ${email}`, fix: syntheticPassword },
+  ] }) });
+  assert.equal(r.code, 3, r.raw + r.err);
+  const prBody = JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].body;
+  for (const output of [r.raw, prBody]) {
+    assert.match(output, /a\.txt:1.*conteúdo sensível omitido/i);
+    assert.ok(!output.includes(historicalValue) && !output.includes(email) && !output.includes('example.invalid'));
+  }
+});
+
+test('Dogfood: a hypothetical write after review is minor, not a model veto', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt', 'neutral change\n');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--no-auto'], { FAKE_REVISOR_ANSWER: JSON.stringify({ verdict: 'block', findings: [
+    { kind: 'hypothetical', severity: 'blocker', file: 'a.txt', line: 1, text: '[hypothetical] Alguém com escrita poderia trocar o head mais tarde.' },
+  ] }) });
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.out.review, 'approve');
+  assert.match(r.raw, /model_review:minor/);
+});
+
+test('Dogfood: ongoing or stale CI cannot prove an all-green head, while a missing click is advisory', t => {
+  const fx = fixture(); t.after(fx.close);
+  const current = localSha(fx), stale = 'a'.repeat(40);
+  const good = { status: 'COMPLETED', conclusion: 'SUCCESS' };
+  fx.setGh({ prs: [
+    { number: 1, headRefOid: current, mergedAt: '2026-01-31T12:00:00Z', statusCheckRollup: [good, ...PENDING_CI] },
+    { number: 2, headRefOid: current, mergedAt: '2026-01-31T12:00:00Z', statusCheckRollup: [{ ...good, headSha: stale }] },
+    { number: 3, headRefOid: current, mergedAt: '2026-01-31T12:00:00Z', statusCheckRollup: [good, { state: 'SUCCESS' }], diff: OFFER_DIFF, names: 'offer.html' },
+  ] });
+  const r = spawnSync(process.execPath, [REVISOR_DAY, '2026-01-31'], { cwd: fx.work, encoding: 'utf8', env: envFor(fx) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /PR #1: \[merge_without_evidence:major\]/);
+  assert.match(r.stdout, /PR #2: \[merge_without_evidence:major\]/);
+  assert.doesNotMatch(r.stdout, /PR #3: \[merge_without_evidence:/);
+  assert.match(r.stdout, /PR #3: \[click_evidence_missing:minor\]/);
+});
+
 const OFFER_DIFF = `diff --git a/offer.html b/offer.html\n--- /dev/null\n+++ b/offer.html\n@@ -0,0 +1 @@\n+${CTA}`;
 
 test('Revisor prevents --pr from bypassing findings, updates the body and follows the PR', t => {
   const fx = fixture(); t.after(fx.close);
-  fx.setGh({ prs: [{ number: 1, headRefOid: localSha(fx), state: 'OPEN', url: 'https://github.com/acme/app/pull/1', mergeStateStatus: 'BLOCKED', body: 'Evidência: testes unitários', diff: OFFER_DIFF, names: 'offer.html' }] });
+  fx.setGh({ prs: [{ number: 1, headRefOid: localSha(fx), state: 'OPEN', url: 'https://github.com/acme/app/pull/1', mergeStateStatus: 'BLOCKED', body: 'Deploy: 2026-01-31T12:00:00Z\nClique /oferta: 2026-01-31T12:05:00Z rc=0', diff: OFFER_DIFF, names: 'offer.html' }] });
   const r = ship(fx, ['--pr', '1']);
   assert.equal(r.code, 3, r.raw + r.err);
   assert.equal(r.out.gitwatch, 'requested');
-  assert.match(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].body, /## Revisor[\s\S]*click_evidence_missing/);
+  assert.match(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].body, /## Revisor[\s\S]*deploy_before_click/);
   assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
 });
 
@@ -246,7 +337,7 @@ test('Revisor daily report reads only the selected UTC day and prints fix sugges
   ] });
   const r = spawnSync(process.execPath, [REVISOR_DAY, '2026-01-31'], { cwd: fx.work, encoding: 'utf8', env: envFor(fx) });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /PR #1: \[click_evidence_missing:major\].* → Clique/);
+  assert.match(r.stdout, /PR #1: \[click_evidence_missing:minor\].* → Clique/);
   assert.match(r.stdout, /PR #1: \[merge_without_evidence:major\]/);
   assert.doesNotMatch(r.stdout, /PR #2/);
   assert.ok(fx.ghCalls().every(args => ['list', 'diff'].includes(args[1])));
@@ -499,7 +590,9 @@ test('--pr queues auto-merge of an existing PR without git or PR creation', t =>
   const r = ship(fx, ['--pr', '9']);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.status, 'queued');
-  assert.deepEqual(fx.ghCalls().map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr diff', 'pr diff', 'pr view', 'pr view', 'pr merge', 'pr view']);
+  const calls = fx.ghCalls();
+  assert.equal(calls.filter(args => args[0] === 'api').length, 2);
+  assert.deepEqual(calls.filter(args => args[0] === 'pr').map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr diff', 'pr diff', 'pr view', 'pr view', 'pr merge', 'pr view']);
 });
 
 test('checks not reported yet, and a merge that would land at once: reported, not queued', t => {
