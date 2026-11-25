@@ -391,3 +391,10 @@ test('readIdeas skips a torn line and keeps the other rows', () => {
   writeFileSync(join(dir, 'ideas.jsonl'), `${JSON.stringify(good)}\n{"id":"idea_0000\n${JSON.stringify({ ...good, id: 'idea_00000002' })}\n`);
   assert.deepEqual(readIdeas(dir).map(row => row.id), ['idea_00000001', 'idea_00000002']);
 });
+
+test('readIdeas ignores lines that parse but are not rows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ideas-shape-'));
+  const good = { id: 'idea_00000001', day: '2026-04-10', title: 'A', status: 'proposed', effort: 'S', at: 1 };
+  writeFileSync(join(dir, 'ideas.jsonl'), `null\n42\n[]\n{"title":"sem id"}\n${JSON.stringify(good)}\n`);
+  assert.deepEqual(readIdeas(dir).map(row => row.id), ['idea_00000001']);
+});
