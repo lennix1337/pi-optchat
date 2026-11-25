@@ -46,7 +46,8 @@ if (verb === 'view') {
   state.viewTimes = [...(state.viewTimes ?? []), Date.now()];
   if (state.settleAfterViews && state.viewTimes.length > state.settleAfterViews.count) Object.assign(pr, state.settleAfterViews.patch); // GitHub settles the PR (checks appear, BLOCKED) some views after it opens
   save();
-  process.stdout.write(JSON.stringify(Object.fromEntries(fields.map(f => [f, f === 'headRefOid' ? headOf(pr) : pr[f] ?? null]))) + '\n');
+  const snapshot = { baseRefName: 'main', ...pr, headRefOid: headOf(pr) };
+  process.stdout.write(JSON.stringify(Object.fromEntries(fields.map(f => [f, snapshot[f] ?? null]))) + '\n');
 } else if (verb === 'diff') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for ${rest[0]}`);

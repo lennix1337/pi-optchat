@@ -359,7 +359,7 @@ test('Revisor final: filtered commit messages reach the model verbatim as untrus
 
 for (const concurrentEdit of [false, true]) test(`Revisor final: ${concurrentEdit ? 'refuses a concurrent PR metadata change' : 'applies and verifies the reviewed PR title and description'}`, t => {
   const fx = fixture(); t.after(fx.close);
-  fx.setGh({ prs: [openFixturePr(fx, { headRefName: 'feat/x' })], ...(concurrentEdit ? { settleAfterViews: { count: 1, patch: { body: 'Alteração alheia' } } } : {}) });
+  fx.setGh({ prs: [openFixturePr(fx, { headRefName: 'feat/x', headRefOid: undefined })], ...(concurrentEdit ? { settleAfterViews: { count: 1, patch: { body: 'Alteração alheia' } } } : {}) });
   commitFile(fx, 'a.txt');
   const log = join(fx.dir, 'reviewer.log');
   const r = ship(fx, ['--title', 'Atualizado', '-b', 'Descrição atualizada', '-m', 'fixture', 'a.txt', '--no-auto'], { FAKE_REVISOR_LOG: log });
@@ -379,15 +379,66 @@ for (const concurrentEdit of [false, true]) test(`Revisor final: ${concurrentEdi
   }
 });
 
-test('Revisor final: a real local check supplies the command and rc before model review', t => {
+for (const retargeted of [false, true]) test(`Revisor entrega: refuses ${retargeted ? 'a PR retargeted during review' : 'a reused PR on a different base'} before push`, t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh(retargeted ? { prs: [openFixturePr(fx, { headRefName: 'feat/x', baseRefName: 'main' })], settleAfterViews: { count: 1, patch: { baseRefName: 'maintenance' } } }
+    : { prs: [openFixturePr(fx, { headRefName: 'feat/x', baseRefName: 'maintenance' })] });
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, retargeted ? 'review_head_changed' : 'review_base_mismatch');
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+  assert.ok(!fx.ghCalls().some(args => ['edit', 'merge'].includes(args[1])));
+});
+
+test('Revisor entrega: a rejected push does not edit the existing PR', t => {
+  const fx = fixture(); t.after(fx.close);
+  const pr = openFixturePr(fx, { headRefName: 'feat/x', baseRefName: 'main' });
+  fx.setGh({ prs: [pr] });
+  git(fx.origin, ['config', 'receive.denyNonFastForwards', 'true']);
+  git(fx.work, ['push', '-q', 'origin', 'main:refs/heads/feat/x']);
+  git(fx.work, ['switch', '-qc', 'other']);
+  git(fx.work, ['commit', '-q', '--allow-empty', '-m', 'concurrent']);
+  git(fx.work, ['push', '-q', 'origin', 'other:refs/heads/feat/x']);
+  git(fx.work, ['switch', '-q', 'feat/x']);
+  const before = remoteSha(fx, 'feat/x');
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--title', 'Título novo']);
+  assert.equal(r.code, 1, r.raw + r.err);
+  assert.equal(r.out.stage, 'push');
+  assert.equal(remoteSha(fx, 'feat/x'), before);
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'edit'));
+  assert.deepEqual(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0], pr);
+});
+
+for (const scenario of ['matching', 'tsc', 'stale', 'other-command', 'uncommitted'] as const) test(`Revisor entrega: typecheck receipt ${scenario}`, t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', 'a.txt']);
+  git(fx.work, ['commit', '-qm', 'fixture']);
+  const head = localSha(fx);
+  const receipt = scenario === 'stale' ? `npm run check\nhead: ${'a'.repeat(40)}\nrc: 0`
+    : `${scenario === 'other-command' ? 'npm run typecheck' : scenario === 'tsc' ? 'tsc --noEmit' : 'npm run check'} rc=0 sha=${head}`;
+  const args = ['-b', `Typecheck passou.\n${receipt}`, '--no-auto'];
+  if (scenario === 'uncommitted') {
+    commitFile(fx, 'b.txt');
+    args.push('-m', 'changes', 'b.txt');
+  }
+  const r = ship(fx, args);
+  const valid = scenario === 'matching' || scenario === 'tsc';
+  assert.equal(r.code, valid ? 0 : 3, r.raw + r.err);
+  assert.equal(r.raw.includes('tsc_evidence_missing'), !valid, r.raw);
+});
+
+test('Revisor entrega: a local check without reviewed SHA does not satisfy a typecheck claim', t => {
   const fx = fixture(); t.after(fx.close);
   writeFileSync(join(fx.work, 'package.json'), JSON.stringify({ scripts: { check: 'node --version' } }));
   const log = join(fx.dir, 'reviewer.log');
   commitFile(fx, 'a.txt');
   const r = ship(fx, ['-b', 'Typecheck passou.', '-m', 'fixture', 'a.txt', '--no-auto'], { FAKE_REVISOR_LOG: log });
-  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.code, 3, r.raw + r.err);
   assert.match(readReviewPrompt(log).payload.checkReceipt, /^npm run check\nrc: 0$/);
-  assert.doesNotMatch(r.raw, /tsc_evidence_missing/);
+  assert.match(r.raw, /tsc_evidence_missing/);
 });
 
 test('a full local model dry-run neither consults GitHub nor changes Git state', t => {
@@ -651,14 +702,14 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   assert.equal(git(fx.work, ['diff', '--cached', '--name-only']), 'b.txt', 'an unrelated staged file stays staged');
   assert.equal(remoteSha(fx, 'feat/x'), localSha(fx));
   const calls = fx.ghCalls().map(args => args.join(' '));
-  assert.equal(calls[0], 'pr view feat/x --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body');
+  assert.equal(calls[0], 'pr view feat/x --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName');
   const create = fx.ghCalls()[1];
   assert.deepEqual(create, ['pr', 'create', '--title', 'feat: a', '--body-file', create[5], '--base', 'main', '--head', 'feat/x']);
   const state = JSON.parse(readFileSync(fx.statePath, 'utf8'));
   assert.equal(state.prs[0].body, 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.\n', 'the PR carries the description');
   assert.equal(existsSync(create[5]), false, 'the description file is removed');
   assert.match(git(fx.work, ['log', '-1', '--format=%b']), /Problema: a.txt faltava/, 'the commit carries it too');
-  assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body');
+  assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName');
   assert.ok(calls.includes(`pr merge 1 --squash --auto --match-head-commit ${localSha(fx)}`));
   assert.equal(r.out.gitwatch, 'requested');
   const follow = join(fx.dir, 'gitwatch', 'follow', 'acme__app#1.json');

@@ -12,7 +12,7 @@ import { defaultManifestPath, readMetricFromFile, recordChange } from './change-
 
 import { findingLine, remotePaths, reviewBody, reviewChange } from './ship-review.mjs';
 
-const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body';
+const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName';
 
 const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
@@ -231,7 +231,7 @@ async function autoMerge(number, waitSeconds, head, metadata) {
   const settled = await settle(number, waitSeconds);
   if (settled.error) return { auto: 'not_queued', reason: 'pr_unreadable', detail: tail(settled.error.err) };
   if (settled.none) return { auto: 'not_queued', reason: 'pr_not_found' };
-  if (settled.pr.headRefOid !== head || (metadata && !samePrText(settled.pr, metadata))) {
+  if (settled.pr.headRefOid !== head || (metadata && (settled.pr.baseRefName !== metadata.baseRefName || !samePrText(settled.pr, metadata)))) {
     return { auto: 'not_queued', reason: 'review_head_changed', pr: settled.pr };
   }
   const decision = decide(settled.pr);
@@ -326,9 +326,10 @@ const samePrText = (actual, expected) => actual.title === expected.title && (act
 
 async function confirmPrSnapshot(pr, message) {
   const same = await viewPr(pr.number);
-  if (same.pr?.state !== 'OPEN' || same.pr.headRefOid !== pr.headRefOid || !samePrText(same.pr, pr)) {
+  if (same.pr?.state !== 'OPEN' || same.pr.headRefOid !== pr.headRefOid || same.pr.baseRefName !== pr.baseRefName || !samePrText(same.pr, pr)) {
     throw refuse('review_head_changed', message);
   }
+  return same.pr;
 }
 
 async function updatePrReview(pr, result, metadata = pr) {
@@ -336,12 +337,13 @@ async function updatePrReview(pr, result, metadata = pr) {
   const title = metadata.title;
   const changeTitle = title != null && title !== pr.title;
   const changeBody = body !== (pr.body ?? '').trim();
-  if (!changeTitle && !changeBody) return { title, body };
+  const published = { title, body, baseRefName: pr.baseRefName };
+  if (!changeTitle && !changeBody) return published;
   const r = await gh(['pr', 'edit', String(pr.number), ...(changeTitle ? ['--title', title] : []), ...(changeBody ? ['--body-file', '-'] : [])], 'gh', title, changeBody ? `${body}\n` : undefined);
   if (r.killed) throw uncertain('pr_edit', `gh pr view ${pr.number} --json title,body para reconciliar; não repita a edição`);
   if (r.code) throw failed('pr_edit', r, 'não consegui registrar a revisão na PR; auto-merge não foi solicitado');
   await confirmPrSnapshot({ ...pr, title, body }, 'o título ou a descrição publicados não conferem com a revisão; revise novamente');
-  return { title, body };
+  return published;
 }
 
 async function disableAutoMerge(pr, ctx) {
@@ -603,6 +605,9 @@ async function shipBranch(opts, ctx) {
   if (existing?.error) throw failed('pr_lookup', existing.error, 'gh pr view falhou antes do push: confira a conexão e rode de novo');
   const aheadCount = ahead.code === 0 ? Number(ahead.out) : null;
   const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
+  if (existingOpen && existingOpen.baseRefName !== base) {
+    throw refuse('review_base_mismatch', 'a base da PR não confere com a do diff; indique a base da PR com --base. Nada foi enviado.');
+  }
   const head = headR.out.trim();
   if (!head) throw refuse('review_head_unknown', 'não consegui identificar o commit local para revisão');
   const commitMessage = await reviewedCommitMessage(opts);
@@ -629,7 +634,6 @@ async function shipBranch(opts, ctx) {
     return emit('dry_run', { ...ctx, base, pr: existingOpen?.number, plan });
   }
 
-  if (existingOpen) await confirmPrSnapshot(existingOpen, 'a PR mudou durante a revisão; revise novamente');
 
   if (creating) {
     const sw = await git(['switch', '-c', opts.branch]);
@@ -683,7 +687,12 @@ async function shipBranch(opts, ctx) {
     }
     if (message !== commitMessage) throw refuse('review_commit_message_changed', 'a mensagem gravada pelo Git difere da revisada; revise o commit local antes de enviar. Nada foi enviado.');
   }
-  const updated = existingOpen ? await updatePrReview(existingOpen, result, metadata) : undefined;
+  if (existingOpen) {
+    const current = await confirmPrSnapshot(existingOpen, 'a PR mudou durante a revisão; revise novamente');
+    if (current.autoMergeRequest && (current.headRefOid !== reviewedHead || !samePrText(current, { ...metadata, body: reviewBody(metadata.body, result) }))) {
+      throw refuse('review_already_queued', 'a PR tem auto-merge ativo; desative-o antes de enviar um novo head ou alterar os metadados. Nada foi enviado.');
+    }
+  }
   const target = opts.directMain ? base : branch;
   const p = await git(['push', 'origin', `${reviewedHead}:refs/heads/${target}`], 'push');
   if (p.killed) {
@@ -703,7 +712,14 @@ async function shipBranch(opts, ctx) {
     return emit('pushed', { ...ctx, branch: target });
   }
 
-  const published = updated ?? { title: metadata.title, body: reviewBody(metadata.body, result) };
+  let updated;
+  if (existingOpen) {
+    ctx.pr = existingOpen.number;
+    ctx.url = existingOpen.url;
+    const current = await confirmPrSnapshot({ ...existingOpen, headRefOid: reviewedHead }, 'push aceito, mas a PR não mostra o commit revisado ou seus metadados mudaram; nenhuma edição foi enviada');
+    updated = await updatePrReview(current, result, metadata);
+  }
+  const published = updated ?? { title: metadata.title, body: reviewBody(metadata.body, result), baseRefName: base };
   const pr = existingOpen ?? await openPr(branch, base, published.body, published.title);
   ctx.pr = pr.number;
   ctx.url = pr.url;
