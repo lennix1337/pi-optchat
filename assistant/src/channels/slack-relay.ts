@@ -285,9 +285,30 @@ function approvalBlocks(text: string): unknown[] {
   ];
 }
 
-/** Markdown from the agent to Slack mrkdwn: bold, headings and links; everything else passes through. */
+const tableCells = (line: string): string[] => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+const tableRow = (line: string | undefined): boolean => line !== undefined && /^\s*\|.*\|\s*$/.test(line);
+const tableRule = (line: string | undefined): boolean => tableRow(line) && tableCells(line!).every(cell => /^:?-{3,}:?$/.test(cell));
+
+function tablesToRecords(markdown: string): string {
+  const lines = markdown.split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!tableRow(lines[i]) || !tableRule(lines[i + 1])) { out.push(lines[i]!); continue; }
+    const heads = tableCells(lines[i]!);
+    const records: string[] = [];
+    for (i += 2; tableRow(lines[i]); i++) {
+      const cells = tableCells(lines[i]!);
+      records.push([`*${cells[0] ?? ''}*`, ...heads.slice(1).map((head, at) => `${head}: ${cells[at + 1] ?? ''}`)].join('\n'));
+    }
+    i--;
+    out.push(records.join('\n\n'));
+  }
+  return out.join('\n');
+}
+
+/** Markdown from the agent to Slack mrkdwn: bold, headings, links and tables as records; everything else passes through. */
 export function slackText(markdown: string): string {
-  return markdown
+  return tablesToRecords(markdown)
     .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
     .replace(/\*\*(.+?)\*\*/g, '*$1*')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>');
