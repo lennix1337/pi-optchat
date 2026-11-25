@@ -401,7 +401,7 @@ export class SlackPoster {
   async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean; sessionAllow?: string; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const destination = channel === undefined ? this.options.operator : Object.hasOwn(this.options.channels, channel) ? this.options.channels[channel] : undefined;
     if (!destination) throw new OutboxRefused('unknown_channel');
-    const plan = extractPlan(text);
+    const plan = options.approval || options.choices ? undefined : extractPlan(text);
     if (plan && canCard(plan)) {
       const body = await this.call(POST_URL, { channel: destination, text: planPreview(plan.plan), blocks: planBlocks(plan, { actions: channel === undefined }), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }) as { ts?: unknown; channel?: unknown };
       const ts = typeof body.ts === 'string' ? body.ts : '';

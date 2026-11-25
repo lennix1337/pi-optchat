@@ -50,6 +50,8 @@ test('a plan posted to a project channel is a card without buttons; a message wi
   assert.equal(slack.calls[1]!.body.blocks, undefined);
   await p.send('<proposed_plan>sem passos</proposed_plan>', undefined, undefined, { approval: true });
   assert.doesNotMatch(String(slack.calls[2]!.body.text), /proposed_plan/);
+  const approvalActions = (slack.calls[2]!.body.blocks as Block[]).find(b => b.type === 'actions') as unknown as { elements: { action_id: string }[] };
+  assert.deepEqual(approvalActions.elements.map(e => e.action_id), ['optchat_approve', 'optchat_deny'], 'an approval keeps its buttons even when it quotes a plan');
 });
 
 test('the checklist shows done, current and next steps, with the N/M count', () => {
