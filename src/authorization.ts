@@ -8,10 +8,14 @@ import { browserConsentEffect } from './external-effects.ts';
 
 interface Invocation { session: string; cwd: string; tool: string; input: unknown }
 interface Refusal { block: true; reason: string; token?: string }
-interface Pending { session: string; fingerprint: string; expires: number; approved: boolean; tool: string; kind?: string; summary: string; detail: string; created: number }
+interface Pending { session: string; fingerprint: string; expires: number; approved: boolean; tool: string; kind?: string; summary: string; detail: string; created: number; reason: string; targets: string[]; standing?: string }
 
-/** `summary` is one line for lists; `detail` is the whole invocation, which the operator reads before approving. */
-export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; detail: string; expires: number }
+/**
+ * `summary` is one line for lists; `detail` is the whole invocation, which the operator reads before approving.
+ * `reason` says in words why it needs him and `targets` what it touches. `sessionAllow` is set only when the call
+ * is eligible for a session allow (an exact `git -C <root> push origin main`) and names that exact scope.
+ */
+export interface PendingApproval { token: string; tool: string; kind?: string; summary: string; detail: string; expires: number; reason?: string; targets?: string[]; sessionAllow?: string }
 /** `all`: every non-diagnostic call needs approval. `risk`: only the high-impact classes below do. */
 export type ApprovalMode = 'all' | 'risk';
 /** How a call that waited for the operator stopped waiting. */
@@ -264,6 +268,20 @@ export function describeInvocation({ tool, input, cwd }: Invocation) {
   return `${tool}${cwd ? ` (em ${cwd.replaceAll('\\', '/')})` : ''}:\n${body}`;
 }
 
+const REASONS: Record<string, string> = {
+  push: 'publica commits no remoto', publish: 'publica um pacote ou mescla um PR', 'global install': 'instala algo na máquina inteira', discard: 'descarta trabalho que não volta',
+  'paid model call': 'gasta cota ou dinheiro com modelos', 'recursive delete': 'apaga uma árvore de arquivos', 'production write': 'escreve em produção', 'database destructive': 'altera ou apaga dados de um banco',
+  'third-party message': 'manda mensagem para outra pessoa', 'merge bypassing CI': 'mescla sem esperar o CI', deploy: 'faz deploy em produção', 'consent click': 'dá consentimento em uma página', [CONTRACT_CHANGE]: 'muda o contrato de autonomia',
+};
+const reasonOf = (tool: string, kind?: string) => (kind && REASONS[kind]) || `a chamada de ${tool} exige aprovação`;
+
+function targetsOf({ tool, input }: Invocation): string[] {
+  if (!record(input)) return [];
+  if ((tool === 'edit' || tool === 'write') && typeof input.path === 'string') return [input.path.replaceAll('\\', '/')];
+  const root = typeof input.command === 'string' ? /\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/.exec(input.command)?.[1]?.replace(/^['"]|['"]$/g, '') : undefined;
+  return root ? [root.replaceAll('\\', '/')] : [];
+}
+
 const pushMain = /^git -C (\S+) push origin main$/;
 
 
@@ -287,6 +305,11 @@ function standingKey(call: Invocation) {
   return root && `push:${root}`;
 }
 
+
+function sessionAllowKey(call: Invocation) {
+  const root = standingPushRoot(call);
+  return root && `push:${root}`;
+}
 
 function standingKeys(text: string) {
   if (text === 'approve-standing paid-subagents') return ['paid-subagents'];
@@ -344,7 +367,7 @@ export class EffectApprovals {
     if (this.pending.size >= this.maxPending) return { block: true, reason: 'Not executed: effect approval capacity reached. Wait for expiry or session reset; do not dispatch a substitute action.' };
     const token = randomBytes(12).toString('hex');
     const now = this.now();
-    this.pending.set(token, { session: call.session, fingerprint, expires: now + this.ttlMs, approved: false, tool: call.tool, kind, summary: summarize(call), detail: describeInvocation(call), created: now });
+    this.pending.set(token, { session: call.session, fingerprint, expires: now + this.ttlMs, approved: false, tool: call.tool, kind, summary: summarize(call), detail: describeInvocation(call), created: now, reason: reasonOf(call.tool, kind), targets: targetsOf(call), ...(kind === 'push' ? { standing: sessionAllowKey(call) } : {}) });
     return this.refusal(call.tool, token, kind);
   }
   private refusal(tool: string, token: string, kind?: string): Refusal {
@@ -355,7 +378,7 @@ export class EffectApprovals {
     this.expire();
     return [...this.pending].filter(([, entry]) => entry.session === session && !entry.approved)
       .sort(([, a], [, b]) => b.created - a.created)
-      .map(([token, { tool, kind, summary, detail, expires }]) => ({ token, tool, kind, summary, detail, expires }));
+      .map(([token, { tool, kind, summary, detail, expires, reason, targets, standing }]) => ({ token, tool, kind, summary, detail, expires, reason, ...(targets.length ? { targets } : {}), ...(standing ? { sessionAllow: `git -C ${standing.slice('push:'.length)} push origin main` } : {}) }));
   }
   /** Approves one call and drops the older calls it superseded: the model was told to wait, so they were abandoned. */
   private grant(token: string) {
@@ -388,6 +411,18 @@ export class EffectApprovals {
     const entry = this.pending.get(token);
     if (!entry || entry.session !== session || entry.approved) return false;
     if (approve) this.grant(token); else this.drop(token, 'denied');
+    return true;
+  }
+  /**
+   * The operator's phone tap on "Aprovar nesta sessão": approves this call and allows that exact push command for the
+   * rest of the session. Refused (nothing approved, nothing allowed) for any call that is not an exact push to main.
+   */
+  allowSessionFromPhone(session: string, token: string): boolean {
+    this.expire();
+    const entry = this.pending.get(token);
+    if (!entry || entry.session !== session || entry.approved || !entry.standing) return false;
+    this.standing.set(session, new Set([...(this.standing.get(session) ?? []), entry.standing]));
+    this.grant(token);
     return true;
   }
   /** Operator `/deny`: drops every pending call of this session. */

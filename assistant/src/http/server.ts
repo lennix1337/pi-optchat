@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from 'node:crypto';
 import { parseTask, type TaskResponse, type TaskStatus } from '../contracts/tasks.ts';
 import { boundedText, oneOf, optionalFields, positive, text, version } from '../contracts/validation.ts';
-import { HOME_MAX, SETTING_VALUE, type SlackPoster, type SlackRelay } from '../channels/slack-relay.ts';
+import { CHOICE_LABEL_MAX, CHOICE_MAX, CHOICE_MIN, HOME_MAX, SESSION_ALLOW_MAX, SETTING_VALUE, type SlackPoster, type SlackRelay } from '../channels/slack-relay.ts';
 import { validHomeGraph } from '../channels/home-graph.ts';
 import type { Event } from '../contracts/events.ts';
 import { TaskStore } from '../store/db.ts';
@@ -63,6 +63,8 @@ export type JournalApi = {
 };
 const threadTs = (value: unknown) => value === null || typeof value === 'string' && /^\d{1,12}\.\d{1,8}$/.test(value);
 
+const sendChoices = (v: unknown) => Array.isArray(v) && v.length >= CHOICE_MIN && v.length <= CHOICE_MAX && v.every(c => boundedText(CHOICE_LABEL_MAX)(c)) && new Set(v).size === v.length;
+
 async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, slack: SlackBridge): Promise<void> {
   if (req.method === 'GET' && url.pathname === '/v1/slack/inbox') {
     query(url, ['after', 'limit', 'wait']);
@@ -76,11 +78,11 @@ async function slackRoute(req: IncomingMessage, res: ServerResponse, url: URL, s
     const body = await readBody(req);
 
     const known = (value: unknown) => typeof value === 'string' && Object.hasOwn(slack.channels ?? {}, value);
-    shape(body, { text: boundedText(40_000), threadTs, ...optionalFields(body, { channel: known, approval: (v: unknown) => typeof v === 'boolean', broadcast: (v: unknown) => typeof v === 'boolean' }) });
+    shape(body, { text: boundedText(40_000), threadTs, ...optionalFields(body, { channel: known, approval: (v: unknown) => typeof v === 'boolean', broadcast: (v: unknown) => typeof v === 'boolean', sessionAllow: boundedText(SESSION_ALLOW_MAX), choices: sendChoices }) });
     if (!slack.poster) { send(res, 503, { error: 'Slack bot token not configured' }); return; }
-    const input = body as { text: string; threadTs: string | null; channel?: string; approval?: boolean; broadcast?: boolean };
+    const input = body as { text: string; threadTs: string | null; channel?: string; approval?: boolean; broadcast?: boolean; sessionAllow?: string; choices?: string[] };
     const destination = input.channel ?? 'dm';
-    try { send(res, 200, await slack.relay.record('send', { destination, text: input.text, thread: input.threadTs }, () => slack.poster!.send(input.text, input.threadTs ?? undefined, input.channel, { approval: input.approval === true, ...(input.broadcast === true ? { broadcast: true } : {}) }))); }
+    try { send(res, 200, await slack.relay.record('send', { destination, text: input.text, thread: input.threadTs }, () => slack.poster!.send(input.text, input.threadTs ?? undefined, input.channel, { approval: input.approval === true, ...(input.broadcast === true ? { broadcast: true } : {}), ...(input.sessionAllow ? { sessionAllow: input.sessionAllow } : {}), ...(input.choices ? { choices: input.choices } : {}) }))); }
     catch (error) { send(res, 502, { error: error instanceof Error && /^[a-z][\w.-]{0,80}$/.test(error.message) ? error.message : 'slack_failed' }); }
     return;
   }

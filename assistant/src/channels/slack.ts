@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
-import { APPROVAL_ACTIONS, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, HOME_CHOICE, HOME_SETTINGS, SETTING_VALUE, slackFiles, type SlackRelay } from './slack-relay.ts';
+import { APPROVAL_ACTIONS, CHOICE_ACTION, CHOICE_LABEL_MAX, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, HOME_CHOICE, HOME_SETTINGS, SETTING_VALUE, slackFiles, type ApprovalAnswer, type SlackRelay } from './slack-relay.ts';
 
 /** The message shortcut ("Mandar pro Jarvis") the app manifest declares. */
 export const FORWARD_CALLBACK = 'optchat_forward';
@@ -56,6 +56,7 @@ export class SlackChannel {
       if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
       const answer = APPROVAL_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && answer) return this.approvalClick(o.relay, body, answer);
+      if (o.relay && /^optchat_choice_\d$/.test(String(body.actions?.[0]?.action_id))) return this.choiceClick(o.relay, body);
       const home = HOME_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && home) return this.homeClick(o.relay, body, home);
       const setting = HOME_SETTINGS[body.actions?.[0]?.action_id];
@@ -91,15 +92,33 @@ export class SlackChannel {
    * `aprovar`/`negar` in that post's thread, so it is queued as exactly that reply. The OptChat session still checks
    * that the thread is a pending approval it posted; the post loses its buttons so it cannot be tapped twice.
    */
-  private approvalClick(relay: SlackRelay, body: Record<string, any>, answer: 'aprovar' | 'negar'): Received {
+  private approvalClick(relay: SlackRelay, body: Record<string, any>, answer: ApprovalAnswer): Received {
     const user = body.user?.id, channel = body.channel?.id ?? body.container?.channel_id, post = body.container?.message_ts, at = body.actions[0].action_ts;
     if (typeof user !== 'string' || typeof channel !== 'string' || typeof post !== 'string' || typeof at !== 'string') return { outcome: 'ignored' };
     if (!channel.startsWith('D')) return { outcome: 'ignored' };
     if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
     const original = typeof body.message?.text === 'string' ? body.message.text : 'Aprovação';
 
-    const retire = { channel, ts: post, text: `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : 'Negar'}*; o resultado vem nesta thread.` };
+    const retire = { channel, ts: post, text: `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : answer === 'negar' ? 'Negar' : 'Aprovar nesta sessão'}*; o resultado vem nesta thread.` };
     return { outcome: relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text: answer }, retire) };
+  }
+
+  /**
+   * A tap on an answer button under a question the bot posted (DM or project channel): the operator's reply, queued as a
+   * plain message that names the question, never a command and never an approval. One answer per question post (a second
+   * tap is a duplicate); the post loses its buttons and says which one was chosen.
+   */
+  private choiceClick(relay: SlackRelay, body: Record<string, any>): Received {
+    const action = body.actions[0], user = body.user?.id, channel = body.channel?.id ?? body.container?.channel_id, post = body.container?.message_ts, at = action.action_ts, label = action.value;
+    if (typeof user !== 'string' || typeof channel !== 'string' || typeof post !== 'string' || typeof at !== 'string') return { outcome: 'ignored' };
+    if (typeof label !== 'string' || !label.trim() || label.length > CHOICE_LABEL_MAX) return { outcome: 'ignored' };
+    if (!channel.startsWith('D') && !this.options.relayChannels?.has(channel)) return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    const question = typeof body.message?.text === 'string' ? body.message.text : '';
+    const lead = question.trim().split('\n')[0]!.slice(0, 120);
+    const thread = typeof body.container?.thread_ts === 'string' ? body.container.thread_ts : undefined;
+    const retire = { channel, ts: post, text: `${question}\n→ Escolhido: *${label}*` };
+    return { outcome: relay.enqueue({ delivery: `${CHOICE_ACTION}:${channel}:${post}`, sender: user, channel, ts: at, ...(thread ? { thread } : {}), text: `Sobre "${lead}": ${label}` }, retire) };
   }
 
   /**
