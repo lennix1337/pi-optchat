@@ -39,6 +39,9 @@ export function planSteps(plan: string): { text: string; ticked: boolean }[] {
   return plan.split('\n').flatMap(line => { const m = STEP.exec(line); return m ? [{ text: m[2]!, ticked: m[1] === 'x' || m[1] === 'X' }] : []; });
 }
 
+/** Names a plan by its title and the text of its steps, ignoring which boxes are ticked: the same plan keeps one shape as it progresses. */
+export const planShape = (plan: string): string => planId(`${planTitle(plan)}\n${planSteps(plan).map(step => step.text).join('\n')}`);
+
 export const canCard = (plan: Plan): boolean => plan.plan.length <= CARD_MAX;
 
 function body(plan: string): string {
@@ -86,7 +89,7 @@ export function planPreview(plan: string): string {
   return `Plano proposto: ${planTitle(plan)}${total ? ` \u00b7 ${done}/${total}` : ''}`.slice(0, 120);
 }
 
-/** The card. In the DM it carries the two buttons until the first step is ticked; then the progress replaces them. */
+/** The card. A new card in the DM carries the two buttons; a redraw of its progress (actions: false) never brings them back. */
 export function planBlocks(parts: Plan, options: { actions: boolean }): unknown[] {
   const progress = planProgress(parts.plan);
   const button = (action_id: string, label: string, value: string, style?: string) => ({ type: 'button', action_id, value, text: { type: 'plain_text', text: label }, ...(style ? { style } : {}) });
@@ -96,7 +99,7 @@ export function planBlocks(parts: Plan, options: { actions: boolean }): unknown[
     ...parts.before ? sections(parts.before) : [],
     ...sections(body(parts.plan)),
     ...parts.after ? sections(parts.after) : [],
-    ...options.actions && progress.done === 0 ? [{ type: 'actions', elements: [button(PLAN_IMPLEMENT, 'Implementar', value, 'primary'), button(PLAN_ADJUST, 'Ajustar plano', value)] }] : [],
+    ...options.actions ? [{ type: 'actions', elements: [button(PLAN_IMPLEMENT, 'Implementar', value, 'primary'), button(PLAN_ADJUST, 'Ajustar plano', value)] }] : [],
   ].slice(0, 50);
 }
 

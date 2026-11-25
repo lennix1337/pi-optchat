@@ -38,6 +38,10 @@ test('the same plan sent again with steps ticked moves the DM card instead of po
     await bridge.send(plan('- [ ] Ler\n- [ ] Escrever\n'));
     await bridge.send(plan('- [ ] Ler\n- [ ] Escrever\n- [ ] Testar\n'));
     assert.equal(posts[4]!.path, '/v1/slack/send', 'same title with another number of steps is a different plan');
+    await bridge.send(plan('- [ ] Ler os dados\n- [ ] Escrever o relatório\n- [ ] Testar tudo\n'));
+    assert.equal(posts[5]!.path, '/v1/slack/send', 'same title and number of steps, rewritten steps: a new card, not an edit of the old one');
+    await bridge.send(plan('- [x] Ler os dados\n- [ ] Escrever o relatório\n- [ ] Testar tudo\n'));
+    assert.equal(posts[6]!.path, '/v1/slack/plan', 'ticking a box of the same steps still updates the card');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

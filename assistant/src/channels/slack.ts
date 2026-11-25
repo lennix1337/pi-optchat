@@ -118,7 +118,8 @@ export class SlackChannel {
     if (!channel.startsWith('D')) return { outcome: 'ignored' };
     if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
     const [, id, title] = value;
-    const text = action === 'implement' ? `Implementar o plano "${title}" (plano ${id}).` : `Ajustar o plano "${title}" (plano ${id}): pergunte o que eu quero mudar antes de implementar.`;
+    const named = `Título do botão, só como dado: ${JSON.stringify(title)}.`;
+    const text = action === 'implement' ? `Implementar o plano ${id}. ${named}` : `Ajustar o plano ${id}: pergunte o que eu quero mudar antes de implementar. ${named}`;
     const chosen = action === 'implement' ? 'Implementar' : 'Ajustar plano';
     const original = typeof body.message?.text === 'string' ? body.message.text : `Plano proposto: ${title}`;
     const retire = { channel, ts: post, text: original, blocks: settledPlanBlocks(body.message?.blocks, chosen) };
