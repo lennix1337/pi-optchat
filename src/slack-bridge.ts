@@ -472,9 +472,10 @@ export class SlackBridge {
   /** A reply in a thread is about that thread: the message that opened it is quoted, so the answer keeps that subject. */
   private async threadParent(owner: SlackOwner, channel: string, thread: string): Promise<string> {
     try {
-      const found = await this.options.request(owner, '/v1/slack/fetch', { channel, ts: thread, thread }) as { user: string; text: string };
-      const text = found.text.length > 1500 ? `${found.text.slice(0, 1500)}…` : found.text;
-      return `\n\nEm resposta à thread que começa com (<@${found.user}>); o assunto dele é este:\n${text.split('\n').map(line => `> ${line}`).join('\n')}`;
+      const found = await this.options.request(owner, '/v1/slack/fetch', { channel, ts: thread, thread }) as { user?: unknown; text?: unknown };
+      const raw = typeof found.text === 'string' && found.text.trim() ? found.text : '(sem texto: só anexo ou bloco)';
+      const text = raw.length > 1500 ? `${raw.slice(0, 1500)}…` : raw;
+      return `\n\nEm resposta à thread que começa com (<@${typeof found.user === 'string' ? found.user : '?'}>); o assunto dele é este:\n${text.split('\n').map(line => `> ${line}`).join('\n')}`;
     } catch (error) { return `\n\nEm resposta a uma thread; não consegui ler a mensagem que a abriu (${error instanceof Error ? error.message : String(error)}).`; }
   }
 
