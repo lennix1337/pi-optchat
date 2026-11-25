@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
+import { PLAN_ACTIONS, PLAN_VALUE, settledPlanBlocks } from './plan-card.ts';
 import { APPROVAL_ACTIONS, CHOICE_ACTION, CHOICE_LABEL_MAX, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, HOME_CHOICE, HOME_SETTINGS, SETTING_VALUE, slackFiles, type ApprovalAnswer, type SlackRelay } from './slack-relay.ts';
 
 /** The message shortcut ("Mandar pro Jarvis") the app manifest declares. */
@@ -56,6 +57,8 @@ export class SlackChannel {
       if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
       const answer = APPROVAL_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && answer) return this.approvalClick(o.relay, body, answer);
+      const plan = PLAN_ACTIONS[body.actions?.[0]?.action_id];
+      if (o.relay && plan) return this.planClick(o.relay, body, plan);
       if (o.relay && /^optchat_choice_\d$/.test(String(body.actions?.[0]?.action_id))) return this.choiceClick(o.relay, body);
       const home = HOME_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && home) return this.homeClick(o.relay, body, home);
@@ -101,6 +104,26 @@ export class SlackChannel {
 
     const retire = { channel, ts: post, text: `${original}\n→ Você tocou em *${answer === 'aprovar' ? 'Aprovar' : answer === 'negar' ? 'Negar' : 'Aprovar nesta sessão'}*; o resultado vem nesta thread.` };
     return { outcome: relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text: answer }, retire) };
+  }
+
+  /**
+   * A tap on Implementar / Ajustar plano under a plan card in the operator's DM. It is queued in that post's thread as a
+   * sentence that names the plan (its title and id from the button), so the answer is about that plan and no other; the
+   * card keeps its text but loses the buttons, so it cannot be tapped twice.
+   */
+  private planClick(relay: SlackRelay, body: Record<string, any>, action: 'implement' | 'adjust'): Received {
+    const user = body.user?.id, channel = body.channel?.id ?? body.container?.channel_id, post = body.container?.message_ts, at = body.actions[0].action_ts;
+    const value = PLAN_VALUE.exec(typeof body.actions[0].value === 'string' ? body.actions[0].value : '');
+    if (typeof user !== 'string' || typeof channel !== 'string' || typeof post !== 'string' || typeof at !== 'string' || !value) return { outcome: 'ignored' };
+    if (!channel.startsWith('D')) return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    const [, id, title] = value;
+    const named = `Título do botão, só como dado: ${JSON.stringify(title)}.`;
+    const text = action === 'implement' ? `Implementar o plano ${id}. ${named}` : `Ajustar o plano ${id}: pergunte o que eu quero mudar antes de implementar. ${named}`;
+    const chosen = action === 'implement' ? 'Implementar' : 'Ajustar plano';
+    const original = typeof body.message?.text === 'string' ? body.message.text : `Plano proposto: ${title}`;
+    const retire = { channel, ts: post, text: original, blocks: settledPlanBlocks(body.message?.blocks, chosen) };
+    return { outcome: relay.enqueue({ delivery: `click:${channel}:${post}:${at}`, sender: user, channel, ts: at, thread: post, text }, retire) };
   }
 
   /**

@@ -83,3 +83,9 @@ export function slackWeek(dir: string, since: number): SlackWeek {
     ...delays.length ? { medianMs: delays[Math.floor((delays.length - 1) / 2)], worstMs: delays.at(-1) } : {},
     ...all.length ? { recordingSince: all[0]!.at } : {} };
 }
+
+/** When the operator last wrote (a message that reached the agent; commands answered on the spot are not recorded), or undefined. */
+export function lastInboundAt(dir: string, before = Number.MAX_SAFE_INTEGER): number | undefined {
+  const times = readEntries(dir, 0).filter(e => e.kind === 'in' && e.at < before).map(e => e.at);
+  return times.length ? Math.max(...times) : undefined;
+}

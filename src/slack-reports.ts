@@ -93,6 +93,32 @@ export function prChange(before: string | undefined, pr: { state: string; ci: st
   return undefined;
 }
 
+export type PrChange = { channel: string; key: string; change: string; line: string };
+const URGENT = /^❌/u;
+/** At least this many low-priority changes in one channel in one pass become a single post. */
+export const COALESCE_FROM = 3;
+
+/**
+ * What one pass posts, as `[channel, text, topic]`: an urgent change is its own post in its PR's thread; a burst of
+ * low-priority changes in one channel is one post whose first line says how many and what (that is what the phone
+ * shows), the details under it.
+ */
+export function coalescePrChanges(changes: readonly PrChange[]): [string, string, string][] {
+  const out: [string, string, string][] = [];
+  const low = new Map<string, PrChange[]>();
+  for (const c of changes) {
+    if (URGENT.test(c.change)) { out.push([c.channel, c.line, `pr:${c.key}`]); continue; }
+    low.set(c.channel, [...low.get(c.channel) ?? [], c]);
+  }
+  for (const [channel, list] of low) {
+    if (list.length < COALESCE_FROM) { for (const c of list) out.push([channel, c.line, `pr:${c.key}`]); continue; }
+    const counts = new Map<string, number>();
+    for (const c of list) counts.set(c.change, (counts.get(c.change) ?? 0) + 1);
+    out.push([channel, [`*${list.length} PRs mudaram* · ${[...counts].map(([change, n]) => `${n}× ${change}`).join(' · ')}`, ...list.map(c => c.line)].join('\n'), 'prs']);
+  }
+  return out;
+}
+
 /** The forecast's view of a recorded PR. */
 export const outlook = (p: PrSeen): PrOutlook => ({ title: p.title, url: p.url, ci: p.sig.split(':')[1] ?? 'NONE', since: p.since ?? p.seen, flips: p.flips ?? 0, ...(p.updated ? { updated: p.updated } : {}) });
 
@@ -135,6 +161,7 @@ export class PrWatch {
     const next: Record<string, PrSeen> = Object.fromEntries(Object.entries(known ?? {})
       .filter(([key, p]) => now - p.seen < PR_KEEP_MS && (byKey.has(key) || !p.sig.startsWith('OPEN:'))));
     let posted = 0;
+    const changes: PrChange[] = [];
     for (const pr of nodes) {
       const channel = projectOfRepo(pr.repository.name);
       if (!channel) continue;
@@ -144,7 +171,10 @@ export class PrWatch {
       const change = known && prChange(known[key]?.sig, { state: pr.state, ci, createdAt: Date.parse(pr.createdAt) }, now);
       next[key] = { sig, seen: now, title: one(pr.title, 120), url: pr.url, channel, ...nextSeen(known?.[key], sig, now), ...(pr.updatedAt ? { updated: Date.parse(pr.updatedAt) } : {}) };
       if (!change) continue;
-      try { await this.post(`${change} · <${pr.url}|${pr.repository.name}#${pr.number}> ${one(pr.title, 120)}${pr.isDraft && pr.state === 'OPEN' ? ' (draft)' : ''}`, channel, `pr:${key}`); posted++; }
+      changes.push({ channel, key, change, line: `${change} · <${pr.url}|${pr.repository.name}#${pr.number}> ${one(pr.title, 120)}${pr.isDraft && pr.state === 'OPEN' ? ' (draft)' : ''}` });
+    }
+    for (const [channel, line, topic] of coalescePrChanges(changes)) {
+      try { await this.post(line, channel, topic); posted++; }
       catch {   }
     }
     atomicWrite(join(owner.dir, PRS), JSON.stringify(next));
