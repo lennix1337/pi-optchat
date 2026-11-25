@@ -8,7 +8,9 @@ const bash = (command: string) => ({ name: 'bash', arguments: { command } });
 test('an unhedged "achei a causa" report is refused once; the identical retry passes', () => {
   const guard = causeClaimGuard();
   const call = slack('Achei o buraco: o lock fica preso.');
-  assert.match(guard.check(call) ?? '', /^Não executado:.*causa/);
+  const refusal = guard.check(call) ?? '';
+  assert.match(refusal, /^Não executado:.*causa.*faça isso agora/);
+  assert.doesNotMatch(refusal, /escreva "hipótese" ou "não verificado"/);
   assert.equal(guard.check(call), undefined);
 });
 

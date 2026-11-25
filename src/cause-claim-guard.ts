@@ -14,7 +14,7 @@ export function claimsCause(call: ToolUse): boolean {
   return call.name === 'bash' && /\bgh\s+(?:issue|pr)\s+(?:comment|close)\b/u.test(command) && GH_CLAIM.test(command) && !HEDGE.test(command);
 }
 
-const REFUSAL = 'Não executado: o texto diz que a causa foi achada, sem prova e sem ressalva. Reproduza a falha e mostre que a correção a elimina; enquanto isso, escreva "hipótese" ou "não verificado". Repita a mesma chamada só se a causa foi de fato provada neste run.';
+const REFUSAL = 'Não executado: o texto diz que a causa foi achada, sem prova e sem ressalva. Reproduza a falha e mostre que a correção a elimina; faça isso agora, neste run; "hipótese" só se a reprodução depender de algo que só o operador tem. Repita a mesma chamada só se a causa foi de fato provada neste run.';
 
 /** Refuses an unhedged cause claim once per identical call. */
 export function causeClaimGuard() {
