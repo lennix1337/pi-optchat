@@ -31,7 +31,8 @@
     "benchmark:summaries": "tsx test/summary-ab-benchmark.ts",
     "bench:gate": "node --experimental-transform-types --no-warnings scripts/bench-gate.ts",
     "manifest": "node scripts/change-manifest.mjs",
-    "replay": "node --experimental-transform-types --no-warnings scripts/gate-replay.mjs --rules"
+    "replay": "node --experimental-transform-types --no-warnings scripts/gate-replay.mjs --rules",
+    "corrections": "node --experimental-transform-types --no-warnings scripts/correction-scan.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.2.0",

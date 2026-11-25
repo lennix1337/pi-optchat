@@ -132,9 +132,10 @@ export async function fetchBusiness(track: BusinessTrack, get: (url: string) => 
 }
 
 /** Candidate rule violations of the last 7 days, scanned in a child process: the sessions are hundreds of MB. */
-export function scanRuleViolations(): Promise<number | undefined> {
+export function scanRuleViolations(env: NodeJS.ProcessEnv = process.env): Promise<number | undefined> {
   const script = fileURLToPath(new URL('../scripts/correction-scan.mjs', import.meta.url));
-  return new Promise(resolve => execFile(process.execPath, [script, '--since', '7d'], { timeout: 120_000, maxBuffer: 1 << 20, windowsHide: true }, (error, stdout) => {
+  const args = ['--experimental-transform-types', '--no-warnings', script, '--since', '7d'];
+  return new Promise(resolve => execFile(process.execPath, args, { env, timeout: 120_000, maxBuffer: 1 << 20, windowsHide: true }, (error, stdout) => {
     if (error) { console.error('Correction rules scan failed:', error.message); return resolve(undefined); }
     try { resolve((JSON.parse(stdout.trim().split('\n').at(-1)!) as { count: number; afterGuard?: number }[]).reduce((sum, rule) => sum + (rule.afterGuard ?? rule.count), 0)); }
     catch { resolve(undefined); }

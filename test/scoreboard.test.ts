@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { registerSlackBridge, SlackBridge } from '../src/slack-bridge.ts';
 import { isNudge, recordAnswer, recordInbound, SLACK_METRICS, slackWeek } from '../src/slack-metrics.ts';
-import { composeScoreboard, fetchBusiness, WeeklyScoreboard, weekInputs } from '../src/scoreboard.ts';
+import { composeScoreboard, fetchBusiness, scanRuleViolations, WeeklyScoreboard, weekInputs } from '../src/scoreboard.ts';
 import { recordCorrection } from '../src/corrections.ts';
 import { withTempDir } from './support.ts';
 
@@ -208,4 +208,10 @@ test('the council line counts decisions the debate changed this week from counci
   const empty = { received: 0, answered: 0, waiting: 0, nudges: 0 };
   assert.match(composeScoreboard(inputs), /Conselho do wake \(7d\): mudou minha decisão em \*1\* de \*3\*/);
   assert.match(composeScoreboard({ from: 0, to: DAY, slack: empty, corrections: { count: 0 }, merged: { green: 0, other: 0 } }), /Conselho do wake \(7d\): não medido/);
+}));
+
+test('the weekly rule-violation scan runs its TypeScript script instead of reporting "não medido"', () => withTempDir('scan-', async home => {
+  const { mkdirSync } = await import('node:fs');
+  mkdirSync(join(home, '.pi', 'agent', 'sessions'), { recursive: true });
+  assert.equal(await scanRuleViolations({ ...process.env, HOME: home, USERPROFILE: home }), 0);
 }));
