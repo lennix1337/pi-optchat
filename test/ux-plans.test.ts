@@ -35,6 +35,9 @@ test('the same plan sent again with steps ticked moves the DM card instead of po
     assert.deepEqual([posts[1]!.body.channel, posts[1]!.body.ts], ['D1', '9.1']);
     await bridge.send(`<proposed_plan>\n# Outro plano\n- [ ] A\n</proposed_plan>`);
     assert.equal(posts[2]!.path, '/v1/slack/send', 'a different plan is a new card');
+    await bridge.send(plan('- [ ] Ler\n- [ ] Escrever\n'));
+    await bridge.send(plan('- [ ] Ler\n- [ ] Escrever\n- [ ] Testar\n'));
+    assert.equal(posts[4]!.path, '/v1/slack/send', 'same title with another number of steps is a different plan');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
