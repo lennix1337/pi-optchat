@@ -103,6 +103,8 @@ function endsWithPromise(final: string): boolean {
   return !sentence.includes('?') && PROMISE_ENDING.test(sentence);
 }
 
+const OVERDUE_LEFT = /\bc_[0-9a-f]{6}\b[^\n]{0,80}\b(?:atrasad[oa]|overdue|segue\s+pendente)|\b(?:atrasad[oa]|overdue)\b[^\n]{0,80}\bc_[0-9a-f]{6}\b/iu;
+const CLOSED = /\b(?:fechei|fechad[oa]|closed|conclu[íi]d[oa])\b/iu;
 const LOOK_YOURSELF = /s[óo]\s+voc[êe]\s+(?:consegue|pode)\s+(?:olhar|ver|conferir)|\babr(?:a|indo)\s+a\s+aba\b|\b(?:d[áa]|pode\s+dar)\s+uma\s+olhada\s+n[ao]\s+(?:tela|home|aba|slack)|\bconfere?\s+n[ao]\s+(?:tela|home|aba)\b/iu;
 
 const isOutbound = (call: Content): boolean => call.name === 'slack_send' || call.name === 'whatsapp_send';
@@ -150,6 +152,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
   switch (rule.detector) {
     case 'free-action': return FREE_ACTION.test(withoutQuotes(final));
     case 'ending-offer': return /se quiser\s*,?\s*(?:é|e) só (?:dizer|avisar|falar)[.!]?\s*$/iu.test(final);
+    case 'overdue-in-wake': return !!pacing.wake && OVERDUE_LEFT.test(final) && !CLOSED.test(final);
     case 'wake-silence': return !!pacing.wake && !!final && (memoryShapedReply(final) || reasksPending(final) || nothingNewReply(final));
     case 'memory-format': return /\bid\+n\||\bUNRESOLVED\b|^(?:user|talk):/mu.test(final);
     case 'utc-time': return UTC_CLOCK.test(final);

@@ -363,3 +363,17 @@ test('the scan script prints bare JSON with --json, so a caller can parse it', a
     assert.ok(Array.isArray(JSON.parse(out)));
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+test('overdue-in-wake flags a wake that ends with an overdue commitment still open, not one that closed or narrowed it (24/11 22:24)', () => {
+ const rule = rules.find(r => r.id === 'overdue-in-wake')!; assert.ok(rule);
+ const count = (events: object[]) => {
+  const dir = mkdtempSync(join(tmpdir(), 'overdue-'));
+  try {
+   writeFileSync(join(dir, 'session.jsonl'), events.map(e => JSON.stringify(e)).join(String.fromCharCode(10)));
+   return scanCorrections(dir, Date.parse('2026-11-14'), Date.parse('2026-11-15')).find(r => r.id === 'overdue-in-wake')!.count;
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+ };
+ for (const bad of ['Abri a PR #97. Pendente: c_3fcb54 segue atrasado.', 'Merged #585. Open: c_3fcb54 overdue.', 'Feito o radar; a entrega da manhã continua atrasada (c_3fcb54).'])
+  assert.equal(count([wakePrompt, text(bad)]), 1, bad);
+ assert.equal(count([wakePrompt, text('Fechei o c_3fcb54 com o print da Home e o reload verificados.')]), 0, 'closed');
+ assert.equal(count([operator, text('c_3fcb54 segue atrasado.')]), 0, 'not a wake');
+});
