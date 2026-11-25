@@ -41,6 +41,7 @@ import { HANDOFF_MAX_BYTES, checkHandoffSummary } from './handoff-envelope.ts';
 import { reportAppendix, workCheckout, worktreeOf } from './crew-accept.ts';
 import { routerReport } from './router-mode.ts';
 import { PARK_MARGIN_MS, PARK_MAX, parkUntil, quotaError, untilText } from './quota-hold.ts';
+import { quotaAlternates } from './quota-health.ts';
 import { PEER_MESSAGES, WORKER_KINDS, WRITER_KINDS, checkContract, goalOf, projectOf, proposalOf, readTree, repoRoot, specialistOf, type Crew, type Specialist, type WorkerKind } from './crew.ts';
 export { CWD_DOC } from './child-resources.ts';
 export { PEER_MESSAGES } from './crew.ts';
@@ -109,6 +110,7 @@ interface Options { parentSession?: string; usage?: UsageLedger; operations?: Op
   appendix?: (cwd: string) => Promise<string>;
 
   quotaBlock?: (provider: string, model: string) => number | undefined;
+  quotaState?: () => unknown;
 
   clock?: { now(): number; setTimer(run: () => void, ms: number): unknown; clearTimer(handle: unknown): void };
 
@@ -987,7 +989,7 @@ export class Children {
 
       this.dispose(session); this.running.delete(info.id);
     }
-    if (parking) { this.park(live, parking); return; }
+    if (parking) { await this.park(live, parking); return; }
     delete info.parks;
     if (info.cutOff) {
 
@@ -1036,15 +1038,41 @@ export class Children {
     const slash = info.model.indexOf('/');
     return slash > 0 ? this.options.quotaBlock?.(info.model.slice(0, slash), info.model.slice(slash + 1)) : undefined;
   }
-  /** The run ends here without a report: it keeps its record and transcript, and tries again once its account's quota is back. */
-  private park(live: LiveRun, hit: QuotaHit) {
+  private quotaRoutes(run: RunInfo) {
+    const slash = run.model.indexOf('/'), id = run.model.slice(slash + 1);
+    return slash <= 0 ? [] : quotaAlternates(this.options.quotaState?.(), run.model.slice(0, slash), id, this.now()).flatMap(provider => {
+      const model = this.registry.find(provider, id), route = `${provider}/${id}`;
+      return model?.provider === provider && model.id === id && planModel(route) && this.registry.isUsingOAuth(model)
+        && this.registry.hasConfiguredAuth(model) && (getSupportedThinkingLevels(model) as readonly string[]).includes(run.thinking) ? [route] : [];
+    });
+  }
+  private savePark(run: RunInfo) {
+    const parked = run.parked!;
+    const at = `${untilText(parked.until, this.now())} (Brasília)`;
+    run.report = parked.queued ? `Queued: ${parked.provider} is out of quota. It starts by itself at ${at}.`
+      : `Waiting for the quota of ${parked.provider} (${parked.reason}). It resumes by itself at ${at}, with its conversation.`;
+    try { this.save(run); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
+  }
+  /** Resume on an equivalent account if possible; otherwise hold the original route until its reset. */
+  private async park(live: LiveRun, hit: QuotaHit) {
     const { info } = live, now = this.now(), attempts = (info.parks ?? 0) + 1, provider = info.model.slice(0, Math.max(0, info.model.indexOf('/')));
     const until = parkUntil(now, attempts - 1, this.resetOf(info), hit.retryAt);
+    const [model] = this.quotaRoutes(info);
     info.parks = attempts;
     info.parked = { until, reason: hit.message, provider, attempts };
     transition(info, 'interrupted');
-    info.report = `Waiting for the quota of ${provider} (${hit.message}). It resumes by itself at ${untilText(until, now)} (Brasília), with its conversation.`;
-    try { this.save(info); } catch (error) { this.warn(`Could not save run metadata: ${String(error)}`); }
+    this.savePark(info);
+    let mayPark = true;
+    if (model) {
+      this.cancelPark(info.id);
+      const generation = this.parkGeneration.get(info.id)!;
+      const message = 'Your previous model account ran out of quota. Continue your task from where you stopped; do not start over.';
+      try { await this.track(this.resume(info.id, message, undefined, { model }, generation, false, live.batch)); return; }
+      catch (error) {
+        mayPark = this.parkGeneration.get(info.id) === generation && !this.closing && !this.uncertainRuns.has(info.id);
+        if (mayPark) this.warn(`Could not move ${info.id} to ${model} after it ran out of quota: ${String(error)}`);
+      }
+    }
 
     const batch = live.batch;
     live.batch = undefined;
@@ -1054,6 +1082,7 @@ export class Children {
       if (first !== batch.ids[0] && !info.parentId) this.options.hold?.(first, []);
       void this.deliver(info, batch, undefined).catch(error => this.warn(`Could not release the grouped reports of ${info.id}'s spawn: ${String(error)}`));
     }
+    if (!mayPark) return;
     this.arm(info.id);
     this.noteParked(info);
     this.options.onPark?.([info.id]);
@@ -1104,7 +1133,10 @@ export class Children {
     const run = this.history.records.get(id);
     if (this.parkGeneration.get(id) !== generation || !run?.parked || this.closing || this.uncertainRuns.has(id) || this.running.has(id) || this.resuming.has(id)) return;
     const block = this.resetOf(run);
-    if (block !== undefined && block > this.now()) { run.parked.until = block + PARK_MARGIN_MS; this.save(run); this.arm(id); return; }
+    if (block !== undefined && block > this.now()) {
+      run.parked.until = block + PARK_MARGIN_MS;
+      this.savePark(run); this.arm(id); this.changed(); return;
+    }
     try {
 
       if (run.parked.queued || !this.transcribed(run)) {
@@ -1128,8 +1160,7 @@ export class Children {
       const attempts = run.parked.attempts + 1;
       if (attempts < PARK_MAX) {
         run.parked = { ...run.parked, attempts, until: parkUntil(this.now(), attempts), reason: oneLine(why) };
-        try { this.save(run); } catch (saveError) { this.warn(`Could not save run metadata: ${String(saveError)}`); }
-        this.arm(id);
+        this.savePark(run); this.arm(id); this.changed();
         return;
       }
       delete run.parked;
@@ -1371,10 +1402,20 @@ export class Children {
     const parent = run.parentId ? this.running.get(run.parentId) : undefined;
     return !this.closing && (automaticGeneration === undefined || this.parkGeneration.get(id) === automaticGeneration)
       && (!route || this.retargetUnchanged(id, run, snapshot) && session.model?.provider === snapshot.provider && session.model?.id === snapshot.model && session.thinkingLevel === snapshot.thinking)
-      && (!run.parentId || !!parent && ['running', 'waiting', 'paused'].includes(parent.info.state));
+      && (!run.parentId || !!parent && ['running', 'waiting', 'paused'].includes(parent.info.state))
+      && (automaticGeneration === undefined || !route?.model || this.quotaRoutes(run).includes(route.model));
+  }
+  private resumedRoute(run: RunInfo, provider: string, route?: RouteOverride, automaticGeneration?: number): Partial<RunInfo> {
+    if (!route) return {};
+    return automaticGeneration === undefined ? { explicitRecovery: true }
+      : { report: `Moved to ${provider} after ${run.parked!.provider} ran out of quota` };
+  }
+  private restoreParkAfterManualOpen(id: string, run: RunInfo, reserved: boolean, automaticGeneration?: number) {
+    if (automaticGeneration === undefined && reserved && this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id)
+      && !this.closing && !this.uncertainRuns.has(id) && !this.deleting.has(id)) this.arm(id);
   }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
-  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number, human = false): Promise<string> {
+  private async resume(id: string, message: string, caller: string | undefined, route?: RouteOverride, automaticGeneration?: number, human = false, batch?: LiveRun['batch']): Promise<string> {
     const { run, text, automatic, manager, provider, model, thinking } = this.prepareResume(id, message, caller, route);
     if (automatic) return this.preemptParkResume(id, run, automatic, message, caller, route!);
     const snapshot = { generation: this.parkGeneration.get(id), state: run.state, parked: run.parked, provider, model: model.id, thinking };
@@ -1391,12 +1432,12 @@ export class Children {
       const { ended: _ended, cutOff: _cutOff, parked: _parked, ...rest } = run;
       const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
       const prompt = cutOffChildren(text, cut);
-      const info: RunInfo = { ...rest, unattendedWake, ...(route ? { explicitRecovery: true } : {}), model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
+      const info: RunInfo = { ...rest, ...this.resumedRoute(run, provider, route, automaticGeneration), unattendedWake, model: `${provider}/${model.id}`, thinking: session.thinkingLevel, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
         guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
       const saveFailure = this.saveResume(info, run, session);
       if (saveFailure) await saveFailure;
       this.cancelPark(id);
-      const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
+      const live: LiveRun = { session, info, batch, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [] };
       this.running.set(id, live);
       this.launching--; reserved = false;
       session.subscribe(event => this.observe(live, event));
@@ -1407,7 +1448,7 @@ export class Children {
     } finally {
       if (reserved) this.launching--;
       this.resuming.delete(id);
-      if (route && reserved && this.history.records.get(id) === run && run.parked && !this.parkTimers.has(id) && !this.closing && !this.uncertainRuns.has(id)) this.arm(id);
+      this.restoreParkAfterManualOpen(id, run, reserved, automaticGeneration);
     }
     this.changed();
     const effective = this.history.records.get(id)!;

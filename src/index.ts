@@ -780,6 +780,7 @@ export default function optchat(host: ExtensionAPI) {
           route: kind => routeFor(kind, main, config.workerModels), crew, onRunEnd: run => commitments.runEnded(run),
           escalated: (project, id) => { const item = readCommitments(dir).find(found => found.id === id); if (item) heartbeat?.escalate(project, escalationNote(item, project)); },
           quotaBlock: (provider, model) => routeBlock(readQuotaState(), provider, model, Date.now()),
+          quotaState: readQuotaState,
           onPark: ids => wakeWorkers.release(ids),
 
           peerCopy: text => { if (active?.memory === memory && !idle()) peerCopies.push(text); else memory.append('work', text); },
