@@ -20,6 +20,7 @@ import { scrubSecrets } from './secret-scrub.ts';
 import { textContent } from './transcript.ts';
 import { transcribeAudio } from './transcribe.ts';
 import { budgetNote, MID_RUN, wordBudget, type WordBudgets } from './slack-policy.ts';
+import { phaseOf } from './waiting-board.ts';
 import { idleLine, NO_WORK, renderWorkParts, type HomeWork } from './home-items.ts';
 import { homeDashboard, homeGraph, homeProduction } from './home-dashboard.ts';
 import { memoryShapedReply } from './wake-noise.ts';
@@ -121,15 +122,44 @@ function withoutCompactionBlocks(text: string): string {
   return memoryShapedReply(clean) ? '' : clean;
 }
 
-function recentThoughts(previous: string[], content: unknown): string[] {
+/** One short line for a thinking block: its first `**bold**` heading, else its first sentence, at most 90 characters. */
+export function thoughtHeadline(thinking: string): string {
+  const text = scrubSecrets(thinking).replace(/\s+/g, ' ').trim();
+  const heading = /\*\*(.+?)\*\*/.exec(text)?.[1]?.trim();
+  return clipWords(heading || /^.+?(?:[.!?](?=\s|$)|$)/.exec(text)?.[0] || '', 90);
+}
+
+/** The headline of the last thinking block in a message, or the previous one when it holds none. */
+function latestHeadline(previous: string, content: unknown): string {
   if (!Array.isArray(content)) return previous;
-  const thoughts = [...previous];
+  let headline = previous;
   for (const part of content) {
     if (part?.type !== 'thinking' || part.redacted || typeof part.thinking !== 'string') continue;
-    const text = clipWords(scrubSecrets(part.thinking).replace(/\s+/g, ' ').trim(), 220);
-    if (text) thoughts.push(text);
+    headline = thoughtHeadline(part.thinking) || headline;
   }
-  return thoughts.slice(-3);
+  return headline;
+}
+
+/** The steps of a run counted by what they were for, so the Home reads "explorou 7 · editou 2" instead of 14 raw steps. */
+interface StepCounts { explored: number; edited: Set<string>; tests: number; git: number }
+const noCounts = (): StepCounts => ({ explored: 0, edited: new Set(), tests: 0, git: 0 });
+
+function countStep(counts: StepCounts, tool: string, args: unknown): void {
+  const phase = phaseOf(tool, args);
+  if (phase === 'lendo código') counts.explored++;
+  else if (phase === 'editando') counts.edited.add(base((args as { path?: unknown } | undefined)?.path) || String(counts.edited.size));
+  else if (phase === 'testes') counts.tests++;
+  else if (phase === 'git') counts.git++;
+}
+
+/** The counts as one line of emoji dots (Slack has no text colour); empty while nothing was counted. */
+export function countsLine(counts: StepCounts): string {
+  return [
+    counts.explored && `\u{1f50d} Explorou ${counts.explored}`,
+    counts.edited.size && `\u270f\ufe0f editou ${counts.edited.size} arquivo${counts.edited.size === 1 ? '' : 's'}`,
+    counts.tests && `\u{1f9ea} ${counts.tests} teste${counts.tests === 1 ? '' : 's'}`,
+    counts.git && `\u{1f33f} git ${counts.git}`,
+  ].filter(Boolean).join(' \u00b7 ');
 }
 const base = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).pop() ?? path : '';
 
@@ -242,7 +272,7 @@ export class SlackBridge {
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
-  private work: { since: number; origin: string; about: string; step: string; stepSince: number; steps: number; shown: number; thoughts: string[] } | undefined;
+  private work: { since: number; origin: string; about: string; step: string; stepSince: number; steps: number; shown: number; headline: string; counts: StepCounts } | undefined;
   private workTimer: ReturnType<typeof setTimeout> | undefined;
   /** The wake whose run a provider error cut short: pi-multi-account resumes it with a user message that is no wake prompt. */
   private cutWake: { since: number; endedAt: number } | undefined;
@@ -301,6 +331,7 @@ export class SlackBridge {
     if (this.touched.length < 400) { try { this.touched.push(JSON.stringify(args ?? null).slice(0, 2000)); } catch {   } }
     if (!this.work) return;
     this.work.steps++;
+    countStep(this.work.counts, tool, args);
     this.work.step = stepLabel(tool, args);
     this.work.stepSince = this.options.now();
     if (this.work.steps === 1 || this.options.now() - this.work.shown >= HOME_STEP_MS) this.showWork();
@@ -325,7 +356,8 @@ export class SlackBridge {
     const seconds = Math.max(0, Math.floor((now - w.stepSince) / 1000));
     const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}min ${seconds % 60}s`;
     this.home([`\u{1f504} *Trabalhando* há ${minutes} min (desde ${clock(w.since)}, ${w.origin})`, `> ${w.about}`,
-      ...w.thoughts.length ? ['*Pensando*', ...w.thoughts.map(thought => `> ${thought}`)] : [],
+      ...w.headline ? [`*Pensando:* ${w.headline}`] : [],
+      ...countsLine(w.counts) ? [countsLine(w.counts)] : [],
       ...w.steps ? [`Agora: ${w.step} · rodando há ${elapsed} · ${w.steps} passo${w.steps === 1 ? '' : 's'}`] : []].join('\n'));
   }
 
@@ -563,7 +595,7 @@ export class SlackBridge {
     const about = wake ? 'turno automático (wake)' : text.replace(FROM_SLACK, '').replace(MID_RUN, '').split('\n')[0]!.slice(0, 300);
 
     if (!this.work || match) {
-      this.work = { since: this.work?.since ?? resumed?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: this.work?.step ?? '', stepSince: this.work?.stepSince ?? this.options.now(), steps: this.work?.steps ?? 0, shown: 0, thoughts: this.work?.thoughts ?? [] };
+      this.work = { since: this.work?.since ?? resumed?.since ?? this.options.now(), origin: wake ? 'wake' : match ? 'Slack' : 'terminal', about, step: this.work?.step ?? '', stepSince: this.work?.stepSince ?? this.options.now(), steps: this.work?.steps ?? 0, shown: 0, headline: this.work?.headline ?? '', counts: this.work?.counts ?? noCounts() };
       this.showWork();
     }
     if (wake) { this.waking = true; if (!resumed) this.wakeTopic = wakeTask(text) ?? ''; return; }
@@ -598,7 +630,7 @@ export class SlackBridge {
   assistantSaid(message: AgentMessage): void {
     if (message.role !== 'assistant') return;
     const content = (message as { content?: unknown }).content;
-    if (this.running && this.work) this.work.thoughts = recentThoughts(this.work.thoughts, content);
+    if (this.running && this.work) this.work.headline = latestHeadline(this.work.headline, content);
     if (!this.answering) return;
     if (Array.isArray(content) && content.some(part => (part as { type?: string })?.type === 'toolCall')) return;
     const text = withoutCompactionBlocks(textContent(message.content, false));
