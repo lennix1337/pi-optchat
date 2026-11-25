@@ -177,7 +177,7 @@ export function claimRetryText(claims: readonly string[], admissions: readonly s
   if (utc.length) parts.push(`Your reply gives a time in UTC: ${utc.map(a => `"${a}"`).join(' ')} The operator reads Brasília time (UTC-3): convert every time and write it as HH:MM, without Z.`);
   if (freeActions.length) parts.push(`Your reply asks permission for a free action: ${freeActions.map(a => `"${a}"`).join(' ')} Do the action now (it is free) or drop the question. Ask permission only for the operator's reserved actions: production deploy, spending, messages to third parties, account or credential changes, force-push, destructive data deletion, or stopping processes that are not yours or are in use by someone else.`);
   if (claims.length || admissions.length || causes.length || utc.length) parts.push('Before it reaches the operator, check each one with a read-only tool (test run, gh, curl, git log) and correct the reply' +
-    (admissions.length ? '. Then give the final reply again, in Portuguese.' : ', or say plainly which ones are not verified. Then give the final reply again, in Portuguese.'));
+    '. Make the checking call now, in this round; "not verified" is kept only for what needs something only the operator holds, naming that thing. Then give the final reply again, in Portuguese.');
   else parts.push('Then give the final reply again, in Portuguese.');
   return parts.join(' ');
 }

@@ -17,7 +17,7 @@ export function sendClaimGuard() {
       const claims = unbackedClaims(text, evidenceText(branchEvidenceMessages(branch().slice(-HISTORY))));
       if (!claims.length) return undefined;
       refused.add(text);
-      return `Não enviado: a mensagem afirma ${claims.map(c => `"${c}"`).join(', ')} sem saída de ferramenta que mostre isso nesta sessão. Leia a evidência (log, gh, curl) antes, ou escreva "não verificado"; repetir o mesmo texto envia.`;
+      return `Não enviado: a mensagem afirma ${claims.map(c => `"${c}"`).join(', ')} sem saída de ferramenta que mostre isso nesta sessão. Faça agora a checagem (log, gh, curl, teste) e mande o resultado; "não verificado" só para o que depende de algo que só o operador tem, dizendo o quê. Repetir o mesmo texto envia.`;
     },
   };
 }
