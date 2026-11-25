@@ -635,6 +635,64 @@ test('Revisor dogfood: rejects tsc --version as typecheck evidence on the review
   assert.match(r.raw, /tsc_evidence_missing:major/);
 });
 
+test('Revisor dogfood 4: refuses a binary added and removed in local history', t => {
+  const fx = fixture(); t.after(fx.close);
+  writeFileSync(join(fx.work, 'cache.bin'), Buffer.from([0, 0xff, 0x81, ...Buffer.from('fixture payload')]));
+  git(fx.work, ['add', 'cache.bin']);
+  git(fx.work, ['commit', '-qm', 'add binary']);
+  assert.match(git(fx.work, ['show', '--format=', 'HEAD']), /^Binary files .* differ$/m);
+  git(fx.work, ['rm', 'cache.bin']);
+  git(fx.work, ['commit', '-qm', 'remove binary']);
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, [...BODY, '--no-auto'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_history_unavailable');
+  assert.ok(!existsSync(log));
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+});
+
+for (const format of ['plain', 'markdown'] as const) test(`Revisor dogfood 4: daily report scans ${format} credentials inside the generated section`, t => {
+  const fx = fixture(); t.after(fx.close);
+  const credential = format === 'markdown' ? `- \`${syntheticPassword}\`` : syntheticPassword;
+  fx.setGh({ prs: [openFixturePr(fx, { state: 'MERGED', mergedAt: '2026-01-31T12:00:00Z', body: [
+    'Descrição.', '<!-- ship:revisor:start -->', '## Revisor', credential, '<!-- ship:revisor:end -->',
+  ].join('\n') })] });
+  const r = spawnSync(process.execPath, [REVISOR_DAY, '2026-01-31'], { cwd: fx.work, encoding: 'utf8', env: envFor(fx) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /PR #7: \[plaintext_password:blocker\]/);
+  assert.ok(!r.stdout.includes(syntheticPassword));
+});
+
+test('Revisor dogfood 4: never includes a reserved path in findings', t => {
+  const fx = fixture(); t.after(fx.close);
+  const path = 'internal-account-fixture.txt';
+  commitFile(fx, path, `${syntheticPassword}\n`);
+  const r = ship(fx, [...BODY, '-m', 'fixture', path, '--dry-run'], { SHIP_REVIEW_POLICY: JSON.stringify({ secretPaths: ['^internal-account-fixture[.]txt$'] }) });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /\[secret_path:blocker\]:/);
+  assert.match(r.raw, /\[plaintext_password:blocker\]:/);
+  assert.doesNotMatch(r.raw + r.err, /internal-account-fixture/);
+});
+
+for (const scenario of ['markdown', 'wrong-sha', 'past-prefix', 'past-suffix', 'mixed'] as const) test(`Revisor dogfood 4: typecheck evidence ${scenario}`, t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', 'a.txt']);
+  git(fx.work, ['commit', '-qm', 'fixture']);
+  const receipt = `- \`npm run check rc=0 sha=${scenario === 'wrong-sha' ? 'ba'.repeat(20) : localSha(fx)}\``;
+  const bodies = {
+    markdown: `Typecheck passou.\n${receipt}`,
+    'wrong-sha': `Typecheck passou.\n${receipt}`,
+    'past-prefix': 'Na tentativa anterior, o typecheck passou. Ainda não validei este HEAD.',
+    'past-suffix': 'O tsc ficou limpo na versão anterior.',
+    mixed: 'Na tentativa anterior o typecheck passou; neste HEAD o typecheck passou também.',
+  };
+  const r = ship(fx, ['-b', bodies[scenario], '--no-auto']);
+  const missing = scenario === 'wrong-sha' || scenario === 'mixed';
+  assert.equal(r.code, missing ? 3 : 0, r.raw + r.err);
+  assert.equal(r.raw.includes('tsc_evidence_missing'), missing, r.raw);
+});
+
 const firstHistorySha = '42'.repeat(20);
 for (const source of ['patch', 'message', 'incomplete'] as const) test(`Revisor dogfood: daily report detects ${source} in intermediate history`, t => {
   const fx = fixture(); t.after(fx.close);

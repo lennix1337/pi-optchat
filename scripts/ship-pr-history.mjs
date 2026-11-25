@@ -1,4 +1,5 @@
 export const isCommitSha = sha => typeof sha === 'string' && /^[0-9a-f]{40}$/i.test(sha);
+export const hasBinaryPatch = patch => /^(?:Binary files .+ differ|GIT binary patch)\r?$/m.test(patch);
 
 export class IncompletePrHistory extends Error {
   constructor(options) { super('Não consegui confirmar o histórico completo da PR.', options); }
@@ -26,7 +27,7 @@ export async function remoteHistory(pr, read) {
   for (const { sha } of commits) {
     const patch = await read(['api', `${root}/commits/${sha}`, '--header=Accept:application/vnd.github.diff']);
     bytes += Buffer.byteLength(patch);
-    if (bytes > 16 * 1024 * 1024 || /^(?:Binary files .+ differ|GIT binary patch)\r?$/m.test(patch)) throw new IncompletePrHistory();
+    if (bytes > 16 * 1024 * 1024 || hasBinaryPatch(patch)) throw new IncompletePrHistory();
     patches.push(patch);
   }
   return { history: patches.join('\n'), commitMessages: commits.map(({ sha, commit }) => ({ sha, message: commit.message })) };

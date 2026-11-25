@@ -11,7 +11,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { defaultManifestPath, readMetricFromFile, recordChange } from './change-manifest.mjs';
 
 import { findingLine, remotePaths, reviewBody, reviewChange } from './ship-review.mjs';
-import { IncompletePrHistory, isCommitSha, remoteHistory } from './ship-pr-history.mjs';
+import { IncompletePrHistory, hasBinaryPatch, isCommitSha, remoteHistory } from './ship-pr-history.mjs';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName';
 
@@ -481,7 +481,7 @@ async function recordShippedManifest(opts, ctx, details) {
   }
 }
 
-const PATCH_FLAGS = ['--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative', '--ignore-submodules=none', '--text', '-U0'];
+const PATCH_FLAGS = ['--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative', '--ignore-submodules=none', '-U0'];
 
 async function reviewGit(args, env = process.env) {
   const r = await run('git', args, 'local', { env });
@@ -543,6 +543,10 @@ async function reviewSnapshot(opts, ctx, { base, head, existing, metadata, local
     reviewGit(['log', '--format=', '--diff-merges=first-parent', '--no-renames', '--no-relative', '--name-only', '--diff-filter=ACMRTUXB', '-z', range, '--']),
     reviewGit(['log', '-z', '--format=%H%x00%B', range, '--']),
   ]);
+  if ([diff, pending, history].some(hasBinaryPatch)) {
+    await cancelQueuedReview(opts, ctx, existing);
+    throw refuse('review_history_unavailable', 'o histórico ou a árvore proposta contém um patch binário não revisável; nada foi enviado');
+  }
   const paths = pastNames.split('\0').filter(Boolean).map(file => ({ file }));
   for (const data of [names, stagedNames]) {
     const parts = data.split('\0');
