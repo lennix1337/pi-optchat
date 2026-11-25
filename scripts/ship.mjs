@@ -4,12 +4,14 @@
 
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { defaultManifestPath, readMetricFromFile, recordChange } from './change-manifest.mjs';
 
-const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup';
+import { findingLine, remotePaths, reviewBody, reviewChange } from './ship-review.mjs';
+
+const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body';
 
 const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
@@ -29,6 +31,8 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --all                git add -A antes do commit
   --pr N               só enfileira o auto-merge da PR N (sem commit, push ou PR)
   --no-auto            abre a PR sem enfileirar o auto-merge
+  --skip-review MOTIVO pula só o revisor de modelo e registra o motivo na PR
+  --allow-rules        permite mudanças em arquivos de regras, mas nunca em segredos
   --subscriber RUN     a PR é de um worker: o CI vermelho volta a ele (o gitwatch roteia pelo id)
   --metric NOME        registra a mudança no manifesto local com a métrica-alvo (fora do controle de versão)
   --before NUM         valor anterior da métrica-alvo (usado com --metric)
@@ -40,7 +44,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --branch NOME        estando na branch padrão, cria a branch NOME com as mudanças atuais e envia por ela
   --base BRANCH        base da PR (padrão: branch padrão do origin)
   --wait S             espera até S segundos pelos checks (padrão 20)
-  --dry-run            mostra o plano, sem efeitos
+  --dry-run            roda a revisão determinística e mostra o plano; não chama o modelo nem altera a branch ou o index
   --sync               depois do merge: vai para a branch padrão, puxa só com fast-forward e apaga a branch local anterior se o git a considera mesclada; num worktree, atualiza o checkout principal e deixa o worktree
 saída: "status" final. exit 0 feito · 1 falhou · 2 recusado antes de qualquer efeito · 3 PR aberta sem auto-merge · 4 efeito incerto: reconcilie, não repita`;
 
@@ -87,10 +91,10 @@ function emit(status, fields) {
 }
 
 
-function run(file, args, kind, shell = false) {
+function run(file, args, kind, { shell = false, env = process.env, input } = {}) {
   return new Promise(resolve => {
     const began = Date.now();
-    execFile(file, args, { cwd: process.cwd(), shell, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: timeoutFor(kind) }, (error, stdout, stderr) => {
+    const child = execFile(file, args, { cwd: process.cwd(), shell, env, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: timeoutFor(kind) }, (error, stdout, stderr) => {
       const bucket = kind === 'commit' || kind === 'push' ? kind : file === 'git' ? undefined : 'gh';
       if (bucket) spent[bucket] += Date.now() - began;
       resolve({
@@ -100,6 +104,10 @@ function run(file, args, kind, shell = false) {
         err: String(stderr || error?.message || ''),
       });
     });
+    if (input !== undefined) {
+      child.stdin.on('error', () => {}); // external: gh's exit status reports an early exit even if stdin gets EPIPE.
+      child.stdin.end(input);
+    }
   });
 }
 const git = (args, kind = 'local') => run('git', args, kind);
@@ -123,10 +131,10 @@ function findGh() {
   return (ghFound = { file: 'gh', shell: win });
 }
 
-function gh(args, kind = 'gh', free) {
+function gh(args, kind = 'gh', free, input) {
   const found = findGh();
   if (!args.every(arg => SAFE_GH_ARG.test(arg) || (arg === free && !found.shell))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
-  return run(found.file, args, kind, found.shell);
+  return run(found.file, args, kind, { shell: found.shell, input });
 }
 
 
@@ -144,9 +152,10 @@ async function viewPr(ref) {
 }
 
 const PASSED = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
-function summarizeChecks(rollup = []) {
-  const summary = { total: rollup.length, pass: 0, pending: 0, failed: [] };
-  for (const check of rollup) {
+function summarizeChecks(rollup) {
+  const checks = rollup ?? [];
+  const summary = { total: checks.length, pass: 0, pending: 0, failed: [] };
+  for (const check of checks) {
     const name = check.name ?? check.context ?? '?';
     if (check.__typename === 'StatusContext' || (check.state !== undefined && check.status === undefined)) {
       if (['FAILURE', 'ERROR'].includes(check.state)) summary.failed.push(name);
@@ -199,8 +208,8 @@ function classifyEnqueueError(text) {
   return 'auto_merge_refused';
 }
 
-async function enqueue(number) {
-  const q = await gh(['pr', 'merge', String(number), '--squash', '--auto']);
+async function enqueue(number, head) {
+  const q = await gh(['pr', 'merge', String(number), '--squash', '--auto', '--match-head-commit', head]);
   if (!q.killed && q.code !== 0) return { reason: classifyEnqueueError(q.err), detail: firstLine(q.err) };
   const after = await viewPr(number);
   if (after.pr && (after.pr.state === 'MERGED' || after.pr.autoMergeRequest)) return { pr: after.pr };
@@ -208,24 +217,25 @@ async function enqueue(number) {
   return { reason: 'auto_merge_unverified', detail: after.error ? firstLine(after.error.err) : 'gh aceitou, mas a PR não mostra auto-merge', pr: after.pr };
 }
 
-async function mergeNow(number) {
-  const m = await gh(['pr', 'merge', String(number), '--squash', '--delete-branch']);
+async function mergeNow(number, head) {
+  const m = await gh(['pr', 'merge', String(number), '--squash', '--delete-branch', '--match-head-commit', head]);
   const after = await viewPr(number);
   if (after.pr?.state === 'MERGED') return { auto: 'merged', pr: after.pr };
   if (m.killed) return { auto: 'uncertain' };
   return { auto: 'not_queued', reason: 'merge_refused', detail: firstLine(m.err), pr: after.pr };
 }
 
-async function autoMerge(number, waitSeconds) {
+async function autoMerge(number, waitSeconds, head) {
   const settled = await settle(number, waitSeconds);
   if (settled.error) return { auto: 'not_queued', reason: 'pr_unreadable', detail: tail(settled.error.err) };
   if (settled.none) return { auto: 'not_queued', reason: 'pr_not_found' };
+  if (settled.pr.headRefOid !== head) return { auto: 'not_queued', reason: 'review_head_changed', pr: settled.pr };
   const decision = decide(settled.pr);
   if (decision.action === 'merged') return { auto: 'merged', pr: settled.pr };
   if (decision.action === 'queued') return { auto: 'queued', pr: settled.pr };
   if (decision.action === 'stop') return { auto: 'not_queued', reason: decision.reason, detail: decision.detail, pr: settled.pr };
-  if (decision.action === 'merge_now') return mergeNow(number);
-  const queued = await enqueue(number);
+  if (decision.action === 'merge_now') return mergeNow(number, head);
+  const queued = await enqueue(number, head);
   if (queued.uncertain) return { auto: 'uncertain' };
   if (queued.reason) return { auto: 'not_queued', reason: queued.reason, detail: queued.detail, pr: queued.pr };
   return { auto: queued.pr.state === 'MERGED' ? 'merged' : 'queued', pr: queued.pr };
@@ -235,6 +245,7 @@ function nextFor(reason, number) {
   switch (reason) {
     case 'checks_not_reported': return `quando os checks aparecerem: node scripts/ship.mjs --pr ${number}`;
     case 'checks_failed': return `corrija o CI da PR ${number} e rode: node scripts/ship.mjs --pr ${number}`;
+    case 'review_changes': return `corrija os pontos do Revisor e rode: node scripts/ship.mjs --pr ${number}`;
     case 'merge_would_be_immediate':
     case 'merge_state_unstable': return `sem check obrigatório o GitHub não enfileira o auto-merge (repetir --pr não muda isso): espere os checks ficarem verdes (o gitwatch avisa) e mescle com: gh pr merge ${number} --squash --delete-branch`;
     case 'auto_merge_disabled': return 'o repositório desligou o auto-merge: decida com o operador';
@@ -293,11 +304,47 @@ async function openPr(branch, base, body, title) {
 }
 
 
-async function autoMergeOnly(opts, ctx) {
-  if (opts.dryRun) return emit('dry_run', { ...ctx, plan: 'ver checks > enfileirar auto-merge se o GitHub esperar os checks' });
-  return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait));
+async function review(opts, ctx, input) {
+  let result;
+  try { result = await reviewChange({ ...input, dryRun: opts.dryRun, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
+  catch (e) { throw refuse('review_unavailable', firstLine(e.message)); }
+  ctx.review = result.verdict;
+  if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
+  if (result.verdict === 'block') throw refuse('review_blocked', 'Revisor bloqueou: remova o problema e revise novamente.');
+  return result;
 }
 
+async function updatePrReview(pr, result) {
+  const body = reviewBody(pr.body, result);
+  if (body === (pr.body ?? '').trim()) return;
+  const r = await gh(['pr', 'edit', String(pr.number), '--body-file', '-'], 'gh', undefined, `${body}\n`);
+  if (r.killed) throw uncertain('pr_edit', `gh pr view ${pr.number} --json body para reconciliar; não repita a edição`);
+  if (r.code) throw failed('pr_edit', r, 'não consegui registrar a revisão na PR; auto-merge não foi solicitado');
+}
+
+async function autoMergeOnly(opts, ctx) {
+  const view = await viewPr(ctx.pr);
+  if (view.error) throw failed('pr_lookup', view.error, 'gh pr view falhou antes da revisão');
+  if (!view.pr) throw refuse('pr_not_found', 'não encontrei a PR para revisar');
+  const pr = view.pr;
+  if (pr.state !== 'OPEN') return reportAuto(ctx, pr.state === 'MERGED' ? { auto: 'merged', pr } : { auto: 'not_queued', reason: 'pr_closed', pr });
+  const result = await reviewRemotePr(opts, ctx, pr);
+  if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `Revisor (prévia determinística) > ${result.verdict === 'changes' ? 'não enfileirar' : 'ver checks para auto-merge'}` });
+  if (result.verdict === 'changes' && pr.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
+  const same = await viewPr(ctx.pr);
+  if (same.pr?.headRefOid !== pr.headRefOid || same.pr.body !== pr.body) throw refuse('review_head_changed', 'a PR mudou durante a revisão; revise novamente');
+  await updatePrReview(pr, result);
+  if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
+  return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait, pr.headRefOid));
+}
+
+
+async function reviewRemotePr(opts, ctx, pr) {
+  if (!/^[0-9a-f]{40}$/i.test(pr.headRefOid ?? '')) throw refuse('review_head_unknown', 'não consegui identificar o commit da PR');
+  const [patch, names] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only'])]);
+  if (patch.code || names.code) throw failed('review_diff', patch.code ? patch : names, 'não consegui ler o diff da PR');
+  return review(opts, ctx, { diff: patch.out, paths: remotePaths(patch.out, names.out), body: pr.body, title: pr.title, checks: pr.statusCheckRollup });
+}
 
 async function mainCheckoutOf() {
   const [dir, common, list] = await Promise.all([
@@ -377,6 +424,49 @@ async function recordShippedManifest(opts, ctx, details) {
   }
 }
 
+const PATCH_FLAGS = ['--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative', '--ignore-submodules=none', '--text', '-U0'];
+
+async function reviewGit(args, env = process.env) {
+  const r = await run('git', args, 'local', { env });
+  if (r.code) throw failed('review_diff', r, 'não consegui preparar o diff completo do Revisor; nada foi enviado');
+  return r.out;
+}
+
+async function previewTree(opts, head) {
+  const original = (await reviewGit(['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
+  const dir = mkdtempSync(join(tmpdir(), 'ship-index-'));
+  const index = join(dir, 'index');
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  try {
+    if (!opts.paths.length && existsSync(original)) copyFileSync(original, index);
+    else await reviewGit(['read-tree', head], env);
+    if (opts.all || opts.paths.length) await reviewGit(opts.all ? ['add', '-A'] : ['add', '--', ...opts.paths], env);
+    return (await reviewGit(['write-tree'], env)).trim();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function reviewSnapshot(opts, ctx, { base, head, existing }) {
+  const mergeBase = (await reviewGit(['merge-base', `refs/remotes/origin/${base}`, head])).trim();
+  const tree = await previewTree(opts, head);
+  const range = `${mergeBase}..${head}`;
+  const status = ['--no-renames', '--no-relative', '--name-status', '-z'];
+  const [diff, pending, history, names, stagedNames, pastNames] = await Promise.all([
+    reviewGit(['diff', ...PATCH_FLAGS, mergeBase, tree, '--']),
+    reviewGit(['diff', ...PATCH_FLAGS, head, tree, '--']),
+    reviewGit(['log', '--format=', '--diff-merges=first-parent', '-p', ...PATCH_FLAGS, range, '--']),
+    reviewGit(['diff', ...status, mergeBase, tree, '--']),
+    reviewGit(['diff', ...status, head, tree, '--']),
+    reviewGit(['log', '--format=', '--diff-merges=first-parent', '--no-renames', '--no-relative', '--name-only', '--diff-filter=ACMRTUXB', '-z', range, '--']),
+  ]);
+  const paths = pastNames.split('\0').filter(Boolean).map(file => ({ file }));
+  for (const data of [names, stagedNames]) {
+    const parts = data.split('\0');
+    for (let i = 0; i + 1 < parts.length; i += 2) paths.push({ file: parts[i + 1], deleted: parts[i] === 'D' });
+  }
+  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, title: opts.title ?? existing?.title ?? opts.message, body: existing?.body ?? opts.body, checks: existing?.statusCheckRollup, commitMessage: `${opts.message ?? ''}\n${opts.body ?? ''}` });
+  return { tree, result };
+}
+
 async function shipBranch(opts, ctx) {
   const [branchR, headR, stagedR, originR] = await Promise.all([
     git(['symbolic-ref', '--quiet', '--short', 'HEAD']),
@@ -418,24 +508,32 @@ async function shipBranch(opts, ctx) {
     }
   }
 
+  const [ahead, existing] = await Promise.all([aheadP, existingP]);
+  if (existing?.error) throw failed('pr_lookup', existing.error, 'gh pr view falhou antes do push: confira a conexão e rode de novo');
+  const aheadCount = ahead.code === 0 ? Number(ahead.out) : null;
+  const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
+  const head = headR.out.trim();
+  if (!head) throw refuse('review_head_unknown', 'não consegui identificar o commit local para revisão');
+  const { tree, result } = await reviewSnapshot(opts, ctx, { base, head, existing: existingOpen });
+  if (result.verdict === 'changes' && opts.directMain) throw refuse('review_changes_requires_pr', 'Revisor pediu mudanças: abra uma PR, não envie direto à base');
+  // external: GitHub can merge a newly pushed head if auto-merge is already enabled.
+  if (result.verdict === 'changes' && existingOpen?.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
   if (opts.dryRun) {
-    const [, existing] = await Promise.all([aheadP, existingP]);
-    if (existing?.error) throw failed('pr_lookup', existing.error, 'gh pr view falhou: confira a conexão e rode de novo');
-    const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
     const plan = [
+      'Revisor (prévia determinística)',
       creating && `criar branch ${branch}`,
       selecting && (opts.all ? 'stage --all' : `stage ${opts.paths.join(' ')}`),
       'commit',
       opts.directMain ? `push ${base}` : `push ${branch}`,
       !opts.directMain && (existingOpen ? `reusar PR ${existingOpen.number}` : 'abrir PR'),
       opts.metric && `manifesto (${opts.metric}=${opts.before})`,
-      !opts.directMain && !opts.noAuto && 'auto-merge',
+      !opts.directMain && !opts.noAuto && (result.verdict === 'changes' ? 'não enfileirar' : 'auto-merge'),
     ].filter(Boolean).join(' > ');
     return emit('dry_run', { ...ctx, base, pr: existingOpen?.number, plan });
   }
 
   if (hasCheckScript()) {
-    const check = await run('npm', ['run', '-s', 'check'], 'commit', process.platform === 'win32');
+    const check = await run('npm', ['run', '-s', 'check'], 'commit', { shell: process.platform === 'win32' });
     if (check.code) throw failed('check', check, 'npm run check falhou (lint/tipos): corrija antes do push; nada foi commitado');
   }
 
@@ -472,21 +570,21 @@ async function shipBranch(opts, ctx) {
     ctx.commit = commit;
   }
 
-  const [ahead, existing] = await Promise.all([aheadP, existingP]);
-  if (existing?.error) throw failed('pr_lookup', existing.error, 'gh pr view falhou antes do push: confira a conexão e rode de novo');
-  const aheadCount = ahead.code === 0 ? Number(ahead.out) : null;
-  const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
   if (!commitNeeded && aheadCount === 0 && !existingOpen) {
     if (creating) { await git(['switch', base]); await git(['branch', '-d', branch]); }
     throw refuse('nothing_to_ship', 'nada para commitar, nada à frente da base e nenhuma PR aberta para esta branch');
   }
 
+  const reviewedHead = (await reviewGit(['rev-parse', '--verify', 'HEAD'])).trim();
+  const [actualTree, parents] = (await reviewGit(['show', '-s', '--format=%T %P', reviewedHead])).trim().split(/ (?=[0-9a-f])/);
+  if (actualTree !== tree || (commitNeeded ? parents !== head : reviewedHead !== head)) {
+    throw refuse('review_snapshot_changed', 'o commit mudou após a revisão (por exemplo, um hook): nada foi enviado; revise novamente');
+  }
   const target = opts.directMain ? base : branch;
-  const p = await git(['push', '-u', 'origin', `HEAD:refs/heads/${target}`], 'push');
+  const p = await git(['push', 'origin', `${reviewedHead}:refs/heads/${target}`], 'push');
   if (p.killed) {
     const remote = (await git(['ls-remote', 'origin', `refs/heads/${target}`])).out.split(/\s/)[0];
-    const local = (await git(['rev-parse', '--verify', '--quiet', 'HEAD'])).out.trim();
-    if (!remote || remote !== local) throw uncertain('push', `git ls-remote origin refs/heads/${target} para reconciliar; não repita o push`);
+    if (!remote || remote !== reviewedHead) throw uncertain('push', `git ls-remote origin refs/heads/${target} para reconciliar; não repita o push`);
     ctx.push = 'sent';
   } else if (p.code) {
     throw failed('push', p, 'o remoto recusou a branch (não forcei): git pull --rebase e rode de novo');
@@ -494,17 +592,21 @@ async function shipBranch(opts, ctx) {
     ctx.push = /Everything up-to-date/i.test(`${p.err}${p.out}`) ? 'up_to_date' : 'sent';
   }
 
+  const upstream = await git(['branch', `--set-upstream-to=origin/${target}`, branch]);
+  if (upstream.code) ctx.upstream = 'not_set';
   if (opts.directMain) {
     await recordShippedManifest(opts, ctx, { branch: target });
     return emit('pushed', { ...ctx, branch: target });
   }
 
-  const pr = existingOpen ?? await openPr(branch, base, opts.body, opts.title);
+  const pr = existingOpen ?? await openPr(branch, base, reviewBody(opts.body, result), opts.title);
+  if (existingOpen) await updatePrReview(existingOpen, result);
   ctx.pr = pr.number;
   ctx.url = pr.url;
   await recordShippedManifest(opts, ctx, { branch, pr: pr.number, url: pr.url });
+  if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
   if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
-  return reportAuto(ctx, await autoMerge(pr.number, opts.wait));
+  return reportAuto(ctx, await autoMerge(pr.number, opts.wait, reviewedHead));
 }
 
 
@@ -543,6 +645,11 @@ function parseArgs(argv) {
     else if (arg === '--all') opts.all = true;
     else if (arg === '--pr') { opts.pr = digits(valueOf(arg, i), arg); i++; }
     else if (arg === '--no-auto') opts.noAuto = true;
+    else if (arg === '--allow-rules') opts.allowRules = true;
+    else if (arg === '--skip-review') {
+      opts.skipReview = valueOf(arg, i++).trim();
+      if (!opts.skipReview) throw refuse('missing_value', '--skip-review exige um motivo explícito');
+    }
     else if (arg === '--subscriber') {
       opts.subscriber = valueOf(arg, i); i++;
       if (!/^[A-Za-z0-9._:-]{1,64}$/.test(opts.subscriber)) throw refuse('invalid_value', `${arg} pede até 64 letras, dígitos, ponto, dois-pontos, sublinhado ou hífen`);
@@ -576,6 +683,9 @@ function parseArgs(argv) {
     else opts.paths.push(arg);
   }
   if (opts.help) return opts;
+  if ((opts.sync && (opts.skipReview || opts.allowRules)) || (opts.directMain && opts.skipReview)) {
+    throw refuse('conflicting_args', '--skip-review exige uma PR para registrar o motivo; --sync não faz revisão');
+  }
   const hasManifestOpts = opts.before !== undefined || opts.metricsFile !== undefined || opts.direction !== undefined || opts.manifest !== undefined;
   if (!opts.metric && hasManifestOpts) {
     throw refuse('conflicting_args', '--before, --metrics-file, --direction e --manifest exigem --metric NOME');

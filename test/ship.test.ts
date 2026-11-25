@@ -10,6 +10,8 @@ import { tempDir } from './support.ts';
 
 const SHIP = fileURLToPath(new URL('../scripts/ship.mjs', import.meta.url));
 const FAKE_GH = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
+const FAKE_REVISOR = fileURLToPath(new URL('./fixtures/fake-revisor.mjs', import.meta.url));
+const REVISOR_DAY = fileURLToPath(new URL('../scripts/revisor-day.mjs', import.meta.url));
 const IDENTITY = { GIT_AUTHOR_NAME: 'Ship Test', GIT_AUTHOR_EMAIL: 'ship@test.invalid', GIT_COMMITTER_NAME: 'Ship Test', GIT_COMMITTER_EMAIL: 'ship@test.invalid' };
 const BODY = ['-b', 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.'];
 const PENDING_CI = [{ __typename: 'CheckRun', name: 'ci', status: 'IN_PROGRESS', conclusion: null }];
@@ -53,7 +55,7 @@ function fixture(): Fixture {
 }
 
 function envFor(fx: Fixture, extra: Record<string, string> = {}) {
-  const env: Record<string, string> = { ...process.env, ...IDENTITY, FAKE_GH_STATE: fx.statePath, FAKE_GH_LOG: fx.logPath, PI_GITWATCH_DIR: join(fx.dir, 'gitwatch'), ...extra } as Record<string, string>;
+  const env: Record<string, string> = { ...process.env, ...IDENTITY, FAKE_GH_STATE: fx.statePath, FAKE_GH_LOG: fx.logPath, PI_GITWATCH_DIR: join(fx.dir, 'gitwatch'), SHIP_REVIEW_SCRIPT: FAKE_REVISOR, SHIP_REVIEW_WORKER: FAKE_REVISOR, ...extra } as Record<string, string>;
   const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
   env[pathKey] = fx.bin + delimiter + (env[pathKey] ?? '');
   return env;
@@ -68,6 +70,149 @@ function ship(fx: Fixture, args: string[], extra: Record<string, string> = {}, c
 const commitFile = (fx: Fixture, name: string, text = `${name}\n`) => { writeFileSync(join(fx.work, name), text); };
 const remoteSha = (fx: Fixture, branch: string) => git(fx.work, ['ls-remote', 'origin', `refs/heads/${branch}`]).split(/\s/)[0];
 const localSha = (fx: Fixture) => git(fx.work, ['rev-parse', 'HEAD']);
+
+for (const name of ['.env', 'local/.pi-vault/secrets.json', 'keys/id_ed25519', 'tokens.txt']) {
+  test(`Revisor blocks secret path ${name} even with both overrides`, t => {
+    const fx = fixture(); t.after(fx.close);
+    const folder = name.split('/').slice(0, -1).join('/');
+    mkdirSync(join(fx.work, folder), { recursive: true });
+    commitFile(fx, name, 'fixture\n');
+    const r = ship(fx, [...BODY, '-m', 'fixture', '--allow-rules', '--skip-review', 'test only', '--dry-run', name]);
+    assert.equal(r.code, 2, r.raw + r.err);
+    assert.match(r.raw, /secret_path/);
+    assert.equal(git(fx.work, ['diff', '--cached', '--name-only']), '');
+    assert.equal(remoteSha(fx, 'feat/x'), '');
+  });
+}
+
+for (const name of ['AGENTS.md', 'docs/CLAUDE.md', 'GEMINI.md', '.pi/config.json', 'autonomy.json', 'closed-conflicts.json']) {
+  test(`Revisor protects rule path ${name}; only --allow-rules admits it`, t => {
+    const fx = fixture(); t.after(fx.close);
+    mkdirSync(join(fx.work, name.split('/').slice(0, -1).join('/')), { recursive: true });
+    commitFile(fx, name, 'fixture\n');
+    const args = [...BODY, '-m', 'fixture', '--dry-run', name];
+    const blocked = ship(fx, args);
+    assert.equal(blocked.code, 2, blocked.raw + blocked.err);
+    assert.match(blocked.raw, /rule_path/);
+    const admitted = ship(fx, [...args, '--allow-rules']);
+    assert.equal(admitted.code, 0, admitted.raw + admitted.err);
+    assert.match(admitted.raw, /Revisor/);
+  });
+}
+
+const CTA = '<a href="/oferta">Ver oferta</a>\n';
+for (const [name, file, text, body, rule, expected] of [
+  ['CTA only unit tested', 'offer.html', CTA, 'Evidência: testes unitários passaram.', 'click_evidence_missing', 3],
+  ['false tsc success', 'app.ts', 'export const item = true;\n', 'tsc limpo\napp.ts(1,2): error TS2322: fixture', 'tsc_claim_failed', 3],
+  ['plaintext password written to a file', 'account.txt', 'password: test-pass-42\n', 'Arquivo de teste.', 'plaintext_password', 2],
+  ['deploy before the click', 'offer.html', CTA, 'Deploy: 2026-01-31T12:00:00Z\nClique /oferta: 2026-01-31T12:05:00Z rc=0', 'deploy_before_click', 3],
+] as const) {
+  test(`Revisor regression: ${name}`, t => {
+    const fx = fixture(); t.after(fx.close);
+    commitFile(fx, file, text);
+    const r = ship(fx, ['-b', body, '-m', 'fixture', file, '--wait', '0']);
+    assert.equal(r.code, expected, r.raw + r.err);
+    assert.match(r.raw, new RegExp(rule));
+    assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
+    if (expected === 2) {
+      assert.doesNotMatch(r.raw + r.err, /test-pass-42/);
+      assert.equal(localSha(fx), git(fx.work, ['rev-parse', 'origin/main']));
+      assert.equal(remoteSha(fx, 'feat/x'), '');
+    } else {
+      const state = JSON.parse(readFileSync(fx.statePath, 'utf8'));
+      assert.match(state.prs[0].body, new RegExp(`## Revisor[\\s\\S]*${rule}`));
+      assert.equal(r.out.gitwatch, 'requested');
+    }
+  });
+}
+
+test('Revisor sees the actual diff and description; block stops the commit and push', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt', 'texto da mudança\n');
+  const log = join(fx.dir, 'reviewer.log');
+  const answer = { verdict: 'block', findings: [{ severity: 'blocker', file: 'a.txt', line: 1, text: 'Falha simulada' }] };
+  const r = ship(fx, [...BODY, '-m', 'fixture', '--title', 'Título teste', 'a.txt'], { FAKE_REVISOR_LOG: log, FAKE_REVISOR_ANSWER: JSON.stringify(answer) });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /model_review:blocker.*Falha simulada/);
+  const prompt = readFileSync(log, 'utf8');
+  assert.match(prompt, /Você é o Revisor.*encontrar problemas/);
+  assert.match(prompt, /Título teste.*Problema: a.txt faltava.*texto da mudança/);
+  assert.equal(localSha(fx), git(fx.work, ['rev-parse', 'origin/main']));
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+});
+
+test('Revisor requires a skip reason, records it and does not call the worker', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const log = join(fx.dir, 'reviewer.log');
+  assert.equal(ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--skip-review', '  ']).out.error, 'missing_value');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--skip-review', 'revisão humana prévia'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.out.review, 'skipped');
+  assert.equal(existsSync(log), false);
+  assert.match(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].body, /## Revisor[\s\S]*revisão humana prévia/);
+});
+
+test('Revisor refuses an unavailable model and supports additive path policy', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const args = [...BODY, '-m', 'fixture', 'a.txt'];
+  const unavailable = ship(fx, args, { SHIP_REVIEW_WORKER: join(fx.dir, 'missing.mjs') });
+  assert.equal(unavailable.code, 2);
+  assert.equal(unavailable.out.error, 'review_unavailable');
+  const custom = ship(fx, [...args, '--dry-run'], { SHIP_REVIEW_POLICY: JSON.stringify({ secretPaths: ['^a[.]txt$'] }) });
+  assert.equal(custom.code, 2);
+  assert.match(custom.raw, /secret_path/);
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+});
+
+test('Revisor scans committed history even if a secret file was removed in a later commit', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, '.env', 'fixture\n');
+  git(fx.work, ['add', '.env']); git(fx.work, ['commit', '-q', '-m', 'first']);
+  git(fx.work, ['rm', '.env']); git(fx.work, ['commit', '-q', '-m', 'second']);
+  const r = ship(fx, [...BODY, '--dry-run']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /secret_path/);
+});
+
+const OFFER_DIFF = `diff --git a/offer.html b/offer.html\n--- /dev/null\n+++ b/offer.html\n@@ -0,0 +1 @@\n+${CTA}`;
+
+test('Revisor prevents --pr from bypassing findings, updates the body and follows the PR', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [{ number: 1, headRefOid: localSha(fx), state: 'OPEN', url: 'https://github.com/acme/app/pull/1', mergeStateStatus: 'BLOCKED', body: 'Evidência: testes unitários', diff: OFFER_DIFF, names: 'offer.html' }] });
+  const r = ship(fx, ['--pr', '1']);
+  assert.equal(r.code, 3, r.raw + r.err);
+  assert.equal(r.out.gitwatch, 'requested');
+  assert.match(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].body, /## Revisor[\s\S]*click_evidence_missing/);
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'merge'));
+});
+
+test('Revisor blocks git-hook changes after review instead of pushing an unreviewed commit', { skip: process.platform === 'win32' }, t => {
+  const fx = fixture(); t.after(fx.close);
+  const hook = join(fx.work, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\nprintf changed > a.txt\ngit add a.txt\n');
+  chmodSync(hook, 0o755);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'fixture', '--all']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_snapshot_changed');
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+});
+
+test('Revisor daily report reads only the selected UTC day and prints fix suggestions', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [
+    { number: 1, mergedAt: '2026-01-31T12:00:00Z', body: 'Unitários OK', diff: OFFER_DIFF, names: 'offer.html' },
+    { number: 2, mergedAt: '2026-02-01T00:00:00Z', body: 'Unitários OK', diff: OFFER_DIFF, names: 'offer.html' },
+  ] });
+  const r = spawnSync(process.execPath, [REVISOR_DAY, '2026-01-31'], { cwd: fx.work, encoding: 'utf8', env: envFor(fx) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /PR #1: \[click_evidence_missing:major\].* → Clique/);
+  assert.match(r.stdout, /PR #1: \[merge_without_evidence:major\]/);
+  assert.doesNotMatch(r.stdout, /PR #2/);
+  assert.ok(fx.ghCalls().every(args => ['list', 'diff'].includes(args[1])));
+});
 
 test('refuses the default branch without --direct-main, before any effect', t => {
   const fx = fixture(); t.after(fx.close);
@@ -206,14 +351,14 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   assert.equal(git(fx.work, ['diff', '--cached', '--name-only']), 'b.txt', 'an unrelated staged file stays staged');
   assert.equal(remoteSha(fx, 'feat/x'), localSha(fx));
   const calls = fx.ghCalls().map(args => args.join(' '));
-  assert.equal(calls[0], 'pr view feat/x --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup');
+  assert.equal(calls[0], 'pr view feat/x --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body');
   assert.equal(calls[1], 'pr create --fill --body-file ' + calls[1].split(' ')[4] + ' --base main --head feat/x');
   const state = JSON.parse(readFileSync(fx.statePath, 'utf8'));
   assert.equal(state.prs[0].body, 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.\n', 'the PR carries the description');
   assert.equal(existsSync(calls[1].split(' ')[4]), false, 'the description file is removed');
   assert.match(git(fx.work, ['log', '-1', '--format=%b']), /Problema: a.txt faltava/, 'the commit carries it too');
-  assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup');
-  assert.ok(calls.includes('pr merge 1 --squash --auto'));
+  assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body');
+  assert.ok(calls.includes(`pr merge 1 --squash --auto --match-head-commit ${localSha(fx)}`));
   assert.equal(r.out.gitwatch, 'requested');
   const follow = join(fx.dir, 'gitwatch', 'follow', 'acme__app#1.json');
   assert.deepEqual(JSON.parse(readFileSync(follow, 'utf8')), { repo: 'acme/app', pr: 1 }, 'the poller is asked to follow the PR, so its merge wakes the agent');
@@ -312,11 +457,11 @@ test('a re-run reuses the open PR and creates nothing', t => {
 
 test('--pr queues auto-merge of an existing PR without git or PR creation', t => {
   const fx = fixture(); t.after(fx.close);
-  fx.setGh({ prs: [{ number: 9, url: 'https://github.com/acme/app/pull/9', state: 'OPEN', headRefName: 'feat/y', mergeStateStatus: 'BLOCKED', autoMergeRequest: null, statusCheckRollup: PENDING_CI }] });
+  fx.setGh({ prs: [{ number: 9, url: 'https://github.com/acme/app/pull/9', state: 'OPEN', headRefName: 'feat/y', headRefOid: localSha(fx), mergeStateStatus: 'BLOCKED', autoMergeRequest: null, statusCheckRollup: PENDING_CI }] });
   const r = ship(fx, ['--pr', '9']);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.status, 'queued');
-  assert.deepEqual(fx.ghCalls().map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr merge', 'pr view']);
+  assert.deepEqual(fx.ghCalls().map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr diff', 'pr diff', 'pr view', 'pr view', 'pr merge', 'pr view']);
 });
 
 test('checks not reported yet, and a merge that would land at once: reported, not queued', t => {
@@ -547,7 +692,7 @@ test('--branch dry-run plans the branch and creates nothing', t => {
   commitFile(fx, 'a.txt');
   const r = ship(fx, [...BODY, '-m', 'feat: a', 'a.txt', '--branch', 'feat/novo', '--dry-run']);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out.plan, /^criar branch feat\/novo > stage a\.txt/);
+  assert.match(r.out.plan, /^Revisor \(prévia determinística\) > criar branch feat\/novo > stage a\.txt/);
   assert.equal(git(fx.work, ['branch', '--show-current']), 'main');
 });
 

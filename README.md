@@ -2,6 +2,16 @@
 
 # pi-optchat
 
+### Ship review
+
+`node scripts/ship.mjs --dry-run -m "subject" -b "description" path` scans the proposed staged diff and prints the plan without calling a model or changing the checkout or its index. Normal shipping reviews before committing or pushing, including already committed changes. `--pr N` reviews an existing PR before requesting a merge. A blocker refuses the operation (`2`); requested changes appear under **Revisor** in the PR, which remains open and watched without auto-merge (`3`). Fix the findings and review again before merging.
+
+The adapter reuses `pr-review.mjs` from `~/.pi/agent/bin/` (or the path in `SHIP_REVIEW_SCRIPT`). The model runs in a separate, tool-disabled Pi invocation; a trusted `SHIP_REVIEW_WORKER` can instead be a Node script that reads the prompt on stdin and emits the review JSON on stdout. An unavailable or malformed review never counts as approval. `--skip-review "reason"` skips only the model and records why in the PR. `--allow-rules` overrides the instruction-file guard, never the secret guard. `SHIP_REVIEW_POLICY` accepts a JSON object with additive regex arrays `secretPaths`, `rulePaths`, and `secretContent`.
+
+To make verification inspectable, include the command, relevant output and exit code (e.g. a line `rc: 0`) in the description. For a changed user flow, record the clicked target and actual result, e.g. `Clique /offer: <ISO timestamp> rc=0`; log `Deploy: <ISO timestamp>` separately. This checks the reported evidence, not the authenticity of a pasted receipt.
+
+`node scripts/revisor-day.mjs YYYY-MM-DD [--repo OWNER/REPO]` reads merged PRs for a UTC date and prints issue → fix in Portuguese. It uses the deterministic checks unless `--model` is supplied. The remote audit is limited to the diffs and metadata exposed by GitHub.
+
 **An always-on engineering agent for [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) that remembers everything, works through the night and ships on its own.**
 
 pi-optchat turns Pi into a long-running teammate. It lives on a small VM, keeps one endless conversation with its operator (about 174,000 messages so far, all still reachable), takes orders from Slack on the phone, and carries each one to done: code, tests, pull request, CI, merge and, when the operator says so, a production deploy with a live check at the end.
