@@ -511,6 +511,73 @@ for (const verdict of ['changes', 'block'] as const) test(`Ship hardening: --pr 
   assert.equal(pr.state, 'OPEN');
 });
 
+test('Revisor dogfood: cancels and confirms active auto-merge when the worker is unavailable', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [openFixturePr(fx, { autoMergeRequest: { enabledAt: '2026-01-31T12:00:00Z' } })] });
+  const r = ship(fx, ['--pr', '7'], { SHIP_REVIEW_WORKER: join(fx.dir, 'missing.mjs') });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_unavailable');
+  assert.equal(r.out.previous_auto_merge, 'disabled');
+  assert.deepEqual(fx.ghCalls().slice(-2).map(args => args.slice(0, 4)), [['pr', 'merge', '7', '--disable-auto'], ['pr', 'view', '7', '--json']]);
+  assert.equal(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].autoMergeRequest, null);
+});
+
+const privateFolder = 'private-fixture-user@example.invalid';
+
+test('Revisor dogfood: deterministic blockers omit personal folders from the terminal', t => {
+  const fx = fixture(); t.after(fx.close);
+  mkdirSync(join(fx.work, privateFolder));
+  const path = `${privateFolder}/.env`;
+  commitFile(fx, path, `${syntheticPassword}\n`);
+  const r = ship(fx, [...BODY, '-m', 'fixture', path, '--dry-run']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /secret_path:blocker/);
+  assert.match(r.raw, /plaintext_password:blocker/);
+  assert.doesNotMatch(r.raw + r.err, /private-fixture-user|example\.invalid/);
+});
+
+test('Revisor dogfood: deterministic advisories omit personal folders from the PR body', t => {
+  const fx = fixture(); t.after(fx.close);
+  mkdirSync(join(fx.work, privateFolder));
+  const path = `${privateFolder}/offer.html`;
+  commitFile(fx, path, '<button>Comprar</button>\n');
+  const r = ship(fx, [...BODY, '-m', 'fixture', path, '--no-auto']);
+  assert.equal(r.code, 0, r.raw + r.err);
+  const { body } = JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0];
+  assert.match(body, /click_evidence_missing:minor/);
+  assert.doesNotMatch(body, /private-fixture-user|example\.invalid/);
+});
+
+test('Revisor dogfood: rejects tsc --version as typecheck evidence on the reviewed SHA', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', 'a.txt']);
+  git(fx.work, ['commit', '-qm', 'fixture']);
+  const r = ship(fx, ['-b', `Typecheck passou.\ntsc --version rc=0 sha=${localSha(fx)}`, '--no-auto']);
+  assert.equal(r.code, 3, r.raw + r.err);
+  assert.match(r.raw, /tsc_evidence_missing:major/);
+});
+
+const firstHistorySha = '42'.repeat(20);
+for (const source of ['patch', 'message', 'incomplete'] as const) test(`Revisor dogfood: daily report detects ${source} in intermediate history`, t => {
+  const fx = fixture(); t.after(fx.close);
+  const first = { sha: firstHistorySha, message: source === 'message' ? syntheticPassword : 'fixture', patch: source === 'patch'
+    ? `diff --git a/settings.txt b/settings.txt\n--- /dev/null\n+++ b/settings.txt\n@@ -0,0 +1 @@\n+${syntheticPassword}\n` : '' };
+  const commit = { sha: localSha(fx), patch: source === 'patch'
+    ? `diff --git a/settings.txt b/settings.txt\n--- a/settings.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-${syntheticPassword}\n` : '' };
+  fx.setGh({ prs: [openFixturePr(fx, { state: 'MERGED', mergedAt: '2026-01-31T12:00:00Z', commits: source === 'incomplete' ? [first] : [first, commit] })] });
+  const r = spawnSync(process.execPath, [REVISOR_DAY, '2026-01-31', '--repo', 'acme/app'], { cwd: fx.work, encoding: 'utf8', env: envFor(fx) });
+  assert.equal(r.status, source === 'incomplete' ? 1 : 0, r.stderr);
+  if (source === 'incomplete') {
+    assert.match(r.stderr, /PR #7:.*histórico incompleto/i);
+    assert.match(r.stdout, /0 PR\(s\) revisada\(s\)/);
+  } else {
+    assert.match(r.stdout, source === 'patch' ? /PR #7: \[plaintext_password:blocker\] settings\.txt:/ : /PR #7: \[plaintext_password:blocker\] Commit /);
+  }
+  assert.doesNotMatch(r.stdout + r.stderr, new RegExp(historicalValue));
+  assert.ok(fx.ghCalls().every(args => args[0] === 'api' ? !args.includes('--repo') : ['list', 'diff'].includes(args[1])));
+});
+
 test('Ship hardening: a hook-rewritten neutral message is not pushed', { skip: process.platform === 'win32' }, t => {
   const fx = fixture(); t.after(fx.close);
   const hook = join(fx.work, '.git', 'hooks', 'commit-msg');
@@ -562,7 +629,7 @@ test('Revisor daily report reads only the selected UTC day and prints fix sugges
   assert.match(r.stdout, /PR #1: \[click_evidence_missing:minor\].* → Clique/);
   assert.match(r.stdout, /PR #1: \[merge_without_evidence:major\]/);
   assert.doesNotMatch(r.stdout, /PR #2/);
-  assert.ok(fx.ghCalls().every(args => ['list', 'diff'].includes(args[1])));
+  assert.ok(fx.ghCalls().every(args => args[0] === 'api' || ['list', 'diff'].includes(args[1])));
 });
 
 test('refuses the default branch without --direct-main, before any effect', t => {

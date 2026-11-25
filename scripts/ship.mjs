@@ -11,6 +11,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { defaultManifestPath, readMetricFromFile, recordChange } from './change-manifest.mjs';
 
 import { findingLine, remotePaths, reviewBody, reviewChange } from './ship-review.mjs';
+import { IncompletePrHistory, isCommitSha, remoteHistory } from './ship-pr-history.mjs';
 
 const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName';
 
@@ -311,7 +312,10 @@ async function openPr(branch, base, body, title) {
 async function review(opts, ctx, input, pr) {
   let result;
   try { result = await reviewChange({ ...input, dryRun: opts.dryRun && !opts.reviewModel, fullDiff: opts.reviewModel, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
-  catch (e) { throw refuse('review_unavailable', firstLine(e.message)); }
+  catch (e) {
+    if (pr?.autoMergeRequest && !opts.dryRun) await disableAutoMerge(pr, ctx);
+    throw refuse('review_unavailable', firstLine(e.message));
+  }
   ctx.review = result.verdict;
   if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
   if (pr?.autoMergeRequest && !opts.dryRun && ['changes', 'block'].includes(result.verdict)) await disableAutoMerge(pr, ctx);
@@ -373,36 +377,17 @@ async function autoMergeOnly(opts, ctx) {
 }
 
 
-const isCommitSha = sha => typeof sha === 'string' && /^[0-9a-f]{40}$/i.test(sha);
-
-async function remoteHistory(pr) {
-  const repo = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/.exec(pr.url ?? '')?.[1];
-  if (!repo) throw refuse('review_history_unavailable', 'não consegui identificar o repositório para ler os commits da PR');
-  const root = `repos/${repo}`;
-  const list = await gh(['api', '--paginate', '--slurp', `${root}/pulls/${pr.number}/commits`]);
-  let commits;
-  try { if (!list.code) commits = JSON.parse(list.out).flat(); } catch (error) {
-    if (!(error instanceof SyntaxError || error instanceof TypeError)) throw error;
-  }
-  // external: The GitHub pull-commits endpoint caps results at 250 even when paginated.
-  if (!commits?.length || commits.length >= 250 || commits.at(-1)?.sha !== pr.headRefOid
-    || commits.some(c => !isCommitSha(c?.sha) || typeof c.commit?.message !== 'string')) {
-    throw refuse('review_history_unavailable', 'não consegui confirmar o intervalo completo da PR; se o histórico exceder o limite do GitHub, revise a partir da branch local');
-  }
-  const patches = [];
-  let bytes = 0;
-  for (const { sha } of commits) {
-    const patch = await gh(['api', `${root}/commits/${sha}`, '--header=Accept:application/vnd.github.diff']);
-    bytes += Buffer.byteLength(patch.out);
-    if (patch.code || bytes > 16 * 1024 * 1024) throw refuse('review_history_unavailable', 'não consegui ler todos os patches do intervalo da PR; nada foi enviado');
-    patches.push(patch.out);
-  }
-  return { history: patches.join('\n'), commitMessages: commits.map(({ sha, commit }) => ({ sha, message: commit.message })) };
-}
-
 async function reviewRemotePr(opts, ctx, pr) {
   if (!isCommitSha(pr.headRefOid)) throw refuse('review_head_unknown', 'não consegui identificar o commit da PR');
-  const [patch, names, range] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only']), remoteHistory(pr)]);
+  const history = remoteHistory(pr, async args => {
+    const r = await gh(args);
+    if (r.code) throw new IncompletePrHistory();
+    return r.out;
+  }).catch(error => {
+    if (!(error instanceof IncompletePrHistory)) throw error;
+    throw refuse('review_history_unavailable', 'histórico da PR incompleto; revise a partir da branch local');
+  });
+  const [patch, names, range] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only']), history]);
   if (patch.code || names.code) throw failed('review_diff', patch.code ? patch : names, 'não consegui ler o diff da PR');
   const paths = [...remotePaths(patch.out, names.out), ...remotePaths(range.history, '')];
   return review(opts, ctx, { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup }, pr);

@@ -53,7 +53,7 @@ if (verb === 'view') {
   if (!pr) fail(`no pull requests found for ${rest[0]}`);
   process.stdout.write((rest.includes('--name-only') ? pr.names : pr.diff) ?? '');
 } else if (verb === 'list') {
-  process.stdout.write(JSON.stringify(state.prs));
+  process.stdout.write(JSON.stringify(state.prs.map(pr => ({ url: `https://github.com/acme/app/pull/${pr.number}`, ...pr, headRefOid: headOf(pr) }))));
 } else if (verb === 'edit') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for ${rest[0]}`);
