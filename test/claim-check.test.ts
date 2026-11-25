@@ -94,6 +94,7 @@ test('"não confirmei" in the reply is an admission the run must check before se
   assert.doesNotMatch(claimRetryText([], ['Não confirmei X.']), /say plainly which ones are not verified/);
   assert.doesNotMatch(claimRetryText(['#5 mesclado']), /say plainly which ones are not verified/);
   assert.match(claimRetryText(['#5 mesclado']), /Make the checking call now/);
+  assert.doesNotMatch(claimRetryText([], ['Não confirmei X.']), /"not verified" is kept only.*"not verified" is kept only/s);
 
   assert.deepEqual(uncheckedAdmissions('Quando uma resposta diz "não confirmei" ou \u201cI did not verify\u201d, ela volta uma vez.'), []);
 });

@@ -8,7 +8,9 @@ test('a DM claiming a deploy is live with no output showing it is refused once, 
   const guard = sendClaimGuard();
   const branch = () => [toolResult('web rollout FAILED; ROLLED_BACK')] as never;
   const text = 'Deploy da landing no ar desde 16:07.';
-  assert.match(guard.check('slack_send', { text }, branch) ?? '', /^Não enviado: .*"no ar"/);
+  const refusal = guard.check('slack_send', { text }, branch) ?? '';
+  assert.match(refusal, /^Não enviado: .*"no ar".*Faça agora a checagem/);
+  assert.doesNotMatch(refusal, /ou escreva "não verificado"/);
   assert.equal(guard.check('slack_send', { text }, branch), undefined);
 });
 
