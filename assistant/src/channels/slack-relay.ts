@@ -306,12 +306,34 @@ function tablesToRecords(markdown: string): string {
   return out.join('\n');
 }
 
-/** Markdown from the agent to Slack mrkdwn: bold, headings, links and tables as records; everything else passes through. */
-export function slackText(markdown: string): string {
-  return tablesToRecords(markdown)
+/** A file link as inline code: the path with a leading line number (`#L10-L20` keeps `:10`), the drive colon of `file:///C:/x` kept. */
+function fileLink(url: string): string {
+  const [location = '', fragment] = url.slice('file://'.length).split('#');
+  let path = location;
+  try { path = decodeURIComponent(location); } catch {   }
+  const line = /^L(\d+)/.exec(fragment ?? '')?.[1];
+  return `\`${path.replace(/^\/(?=[A-Za-z]:)/, '')}${line ? `:${line}` : ''}\``;
+}
+
+function inlineMrkdwn(text: string): string {
+  return text
+    .replace(/^(\s*)[-*] \[( |x|X)\] /gm, (_, indent: string, mark: string) => `${indent}${mark === ' ' ? '\u2610' : '\u2611'} `)
     .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
     .replace(/\*\*(.+?)\*\*/g, '*$1*')
+    .replace(/~~(.+?)~~/g, '~$1~')
+    .replace(/\[([^\]\n]+)\]\((file:\/\/[^)\s]+)\)/g, (_, _label: string, url: string) => fileLink(url))
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>');
+}
+
+/** The text outside inline `code` spans, rewritten; the spans themselves pass through. */
+const outsideInlineCode = (text: string): string => text.split(/(`[^`\n]+`)/).map((piece, at) => at % 2 ? piece : inlineMrkdwn(piece)).join('');
+
+/**
+ * Markdown from the agent to Slack mrkdwn: bold, headings, links, strikethrough, task lists, file links and tables as
+ * records; fenced and inline code pass through untouched.
+ */
+export function slackText(markdown: string): string {
+  return markdown.split(/(^```[^\n]*\n[\s\S]*?(?:^```[ \t]*$|$(?![\s\S])))/m).map((piece, at) => at % 2 ? piece : outsideInlineCode(tablesToRecords(piece))).join('');
 }
 
 function parts(text: string): string[] {
