@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+const DEFAULT_REVIEW_MODEL = 'openai-codex-account-2/gpt-6.2-sol';
 const DEFAULT_RULE_PATH = /(?:^|\/)(?:agents\.md|claude\.md|gemini\.md|autonomy\.json|closed-conflicts\.json)$|(?:^|\/)\.pi(?:\/|$)/i;
 const DEFAULT_SECRET_PATH = /(?:^|\/)(?:\.env(?:\.[^/]+)?|\.(?:netrc|npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|(?:secrets?|credentials?|tokens?|passw(?:or)?ds?)(?:[._-][^/]+)?|[^/]+\.(?:pem|key|p12|pfx))$|(?:^|\/)\.pi-vault(?:\/|$)/i;
 const PASSWORD = /^\s*(?:export\s+)?["']?(?:(?:[\w.-]+[_-])?(?:password|passwd)|senha)["']?\s*[:=]\s*["']?([^\s"'`,;#}]+)/i;
@@ -133,7 +134,7 @@ function localPrepass(core, diff, history, body, title) {
   const meta = `diff --git a/description.txt b/description.txt\n+++ b/description.txt\n@@ -0,0 +1 @@\n${[title, body].join('\n').split(/\r?\n/).map(line => '+' + line).join('\n')}\n`;
   const normalize = f => ({ ...f, code: /secret/i.test(f.text) ? 'secret_content' : 'upstream_prepass' });
   const findings = [diff, history, meta].flatMap(data => data ? core.runDeterministicPrePass(data).map(normalize) : []);
-  // The upstream reviewer ignores lockfiles; scan added lockfile lines as text for secrets only.
+  // external: The dotfiles reviewer ignores lockfiles.
   const lockLines = addedLines([diff, history].join('\n')).filter(row => /(?:\.lock|\.lockb|(?:^|\/)(?:go\.sum|package-lock\.json|pnpm-lock\.yaml|packages\.lock\.json))$/i.test(row.file));
   if (lockLines.length) {
     const added = lockLines.map(row => '+' + row.text).join('\n');
@@ -162,6 +163,21 @@ function promptFor({ title, body, checks, trimmed }) {
 
 class ReviewerUnavailable extends Error {}
 
+async function loadReviewerCore(source) {
+  const sourceUrl = pathToFileURL(source).href;
+  let core;
+  try { core = await import(sourceUrl); } catch (error) {
+    if (error.code === 'ERR_MODULE_NOT_FOUND' && error.url === sourceUrl) {
+      throw new ReviewerUnavailable('Falta pr-review.mjs. Copie dotfiles/payload/pi/agent/bin/pr-review.mjs para ~/.pi/agent/bin/pr-review.mjs, ou aponte SHIP_REVIEW_SCRIPT para a cópia dos dotfiles.');
+    }
+    throw new ReviewerUnavailable(`Não foi possível carregar ${source}; confira se é uma cópia válida e atualizada de pr-review.mjs dos dotfiles.`);
+  }
+  if (['runDeterministicPrePass', 'trimDiff', 'parseReviewAnswer', 'mergeReview'].some(key => typeof core[key] !== 'function')) {
+    throw new ReviewerUnavailable('A versão configurada de pr-review.mjs não exporta a API esperada.');
+  }
+  return core;
+}
+
 export async function reviewChange({ diff = '', history = '', paths = [], title = '', body = '', commitMessage = '', checks, merged, dryRun, skipReason, allowRules, env = process.env }) {
   body = originalBody(body);
   const patterns = policyPatterns(env);
@@ -175,11 +191,7 @@ export async function reviewChange({ diff = '', history = '', paths = [], title 
   if (local.some(f => f.severity === 'blocker')) return { verdict: 'block', findings: [...new Map(local.map(f => [JSON.stringify(f), f])).values()] };
 
   const source = resolve(env.SHIP_REVIEW_SCRIPT || join(homedir(), '.pi', 'agent', 'bin', 'pr-review.mjs'));
-  let core;
-  try { core = await import(pathToFileURL(source).href); } catch { throw new ReviewerUnavailable('pr-review.mjs indisponível; configure SHIP_REVIEW_SCRIPT.'); }
-  if (['runDeterministicPrePass', 'trimDiff', 'parseReviewAnswer', 'mergeReview'].some(key => typeof core[key] !== 'function')) {
-    throw new ReviewerUnavailable('A versão configurada de pr-review.mjs não exporta a API esperada.');
-  }
+  const core = await loadReviewerCore(source);
   const pre = [...local, ...localPrepass(core, diff, history, meta, '')];
   const unique = [...new Map(pre.map(f => [JSON.stringify(f), f])).values()];
   if (unique.some(f => f.severity === 'blocker')) return { verdict: 'block', findings: unique };
@@ -187,7 +199,10 @@ export async function reviewChange({ diff = '', history = '', paths = [], title 
   if (dryRun || skipReason) return { ...core.mergeReview(unique, undefined), reason: skipReason };
 
   const worker = env.SHIP_REVIEW_WORKER && resolve(env.SHIP_REVIEW_WORKER);
-  const piArgs = ['--print', '--no-session', '--no-tools', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-approve'];
+  const modelRef = env.SHIP_REVIEW_MODEL?.trim() || DEFAULT_REVIEW_MODEL;
+  // external: Pi ships as a .cmd on Windows, where modelRef is passed through the shell.
+  if (!worker && !/^[a-z0-9][a-z0-9_.:/+-]*$/i.test(modelRef)) throw new ReviewerUnavailable('SHIP_REVIEW_MODEL inválido; use um ID como provider/modelo.');
+  const piArgs = ['--print', '--model', modelRef, '--no-session', '--no-tools', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-approve'];
   const trimmed = core.trimDiff(diff);
   const result = spawnSync(worker ? process.execPath : 'pi', worker ? [worker] : piArgs, {
     input: promptFor({ title, body, checks, trimmed }), env, cwd: dirname(worker || source), encoding: 'utf8', windowsHide: true,
@@ -201,6 +216,5 @@ export async function reviewChange({ diff = '', history = '', paths = [], title 
     throw new ReviewerUnavailable('O Revisor não devolveu um veredito válido.');
   }
   const final = core.mergeReview(unique, model);
-  // The shared verdict merger deduplicates findings by location and text.
   return { ...final, findings: final.findings.map(f => ({ ...f, code: f.code ?? 'model_review' })) };
 }

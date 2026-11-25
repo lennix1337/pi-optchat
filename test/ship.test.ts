@@ -166,6 +166,44 @@ test('Revisor refuses an unavailable model and supports additive path policy', t
   assert.equal(remoteSha(fx, 'feat/x'), '');
 });
 
+test('Revisor passes the default or configured model to Pi with extension discovery disabled', t => {
+  const fx = fixture(); t.after(fx.close);
+  const shim = `${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_REVISOR)}`;
+  writeFileSync(join(fx.bin, 'pi'), `#!/bin/sh\nexec ${shim} "$@"\n`);
+  chmodSync(join(fx.bin, 'pi'), 0o755);
+  writeFileSync(join(fx.bin, 'pi.cmd'), `@${shim.replace(/\//g, '\\')} %*\r\n`);
+  fx.setGh({ prs: [{ number: 7, url: 'https://github.com/acme/app/pull/7', state: 'OPEN', headRefName: 'feat/x', headRefOid: localSha(fx), mergeStateStatus: 'BLOCKED', statusCheckRollup: PENDING_CI }] });
+  const log = join(fx.dir, 'pi-args.log');
+  const models = ['', 'other-account/other-model'];
+  for (const model of models) {
+    const r = ship(fx, ['--pr', '7'], { FAKE_REVISOR_ARGS: log, SHIP_REVIEW_MODEL: model, SHIP_REVIEW_WORKER: '' });
+    assert.equal(r.out.review, 'approve', r.raw + r.err);
+  }
+  const invalid = ship(fx, ['--pr', '7'], { FAKE_REVISOR_ARGS: log, SHIP_REVIEW_MODEL: 'account/model & echo invalid', SHIP_REVIEW_WORKER: '' });
+  assert.equal(invalid.code, 2, invalid.raw + invalid.err);
+  assert.equal(invalid.out.error, 'review_unavailable');
+  const calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]);
+  assert.equal(calls.length, 2);
+  for (const [i, args] of calls.entries()) {
+    assert.equal(args[args.indexOf('--model') + 1], models[i] || 'openai-codex-account-2/gpt-6.2-sol');
+    assert.ok(args.includes('--no-extensions') && args.includes('--no-tools'));
+  }
+});
+
+test('Revisor refuses a missing shared script and names what to install', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const log = join(fx.dir, 'reviewer.log');
+  const missing = join(fx.dir, 'missing.mjs');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt'], { SHIP_REVIEW_SCRIPT: missing, FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 2);
+  assert.equal(r.out.error, 'review_unavailable');
+  assert.match(r.out.hint, /dotfiles\/payload\/pi\/agent\/bin\/pr-review\.mjs.*~\/\.pi\/agent\/bin\/pr-review\.mjs.*SHIP_REVIEW_SCRIPT/);
+  assert.equal(existsSync(log), false);
+  assert.equal(localSha(fx), git(fx.work, ['rev-parse', 'origin/main']));
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+});
+
 test('Revisor scans committed history even if a secret file was removed in a later commit', t => {
   const fx = fixture(); t.after(fx.close);
   commitFile(fx, '.env', 'fixture\n');
