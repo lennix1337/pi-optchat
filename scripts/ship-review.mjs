@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,8 +10,9 @@ const DEFAULT_REVIEW_MODELS = [
   'openai-codex-account-2/gpt-6.2-sol',
   'openai-codex/gpt-6.2-sol',
   'anthropic-account-2/claude-sonnet-5-5',
-  'google/gemini-4-hydrogen',
+  'agy/gemini-4-hydrogen-medium',
 ];
+const QUOTA_ACCOUNT_IDS = new Map([['codex', 'openai-codex'], ['codex-account-2', 'openai-codex-account-2']]);
 const PI_REVIEW_FLAGS = ['--no-session', '--no-tools', '--no-extensions', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-approve'];
 const DEFAULT_RULE_PATH = /(?:^|\/)(?:agents\.md|claude\.md|gemini\.md|autonomy\.json|closed-conflicts\.json)$|(?:^|\/)\.pi(?:\/|$)/i;
 const DEFAULT_SECRET_PATH = /(?:^|\/)(?:\.env(?!\.example$)(?:\.[^/]+)?|\.(?:netrc|npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|(?:secrets?|credentials?|tokens?|passw(?:or)?ds?)(?:[._-][^/]+)?|[^/]+\.(?:pem|key|p12|pfx))$|(?:^|\/)\.pi-vault(?:\/|$)/i;
@@ -238,7 +241,7 @@ function promptFor({ title, body, head, ciGreen, trimmed, history, commitMessage
     'Blocker só para defeito concreto: comportamento quebrado [behavior], segredo [secret], dado pessoal [pii], teste ou gate comprovadamente afrouxado [test_gate]. Cite arquivo, linha e cenário. Para segredo ou PII no título, descrição ou mensagem, não invente arquivo nem linha: omita a localização e mantenha blocker.',
     'Risco hipotético [hypothetical] (ex.: outro escritor troca o head depois da revisão) é minor. Verificação ausente [verification] não é blocker; um único check verde entre vários não é CI verde.',
     'Não reproduza segredos nem dados pessoais, nem no caminho. Prefixe text com uma das categorias entre colchetes; depois descreva impacto e correção.',
-    'Responda só com JSON: {"verdict":"approve|changes|block","findings":[{"severity":"blocker|major|minor","file":"path","line":1,"text":"[categoria] problema e como corrigir"}]}. Block se houver blocker; changes para major; approve aceita avisos minor.',
+    'Responda só com JSON em uma linha: {"verdict":"approve|changes|block","findings":[{"severity":"blocker|major|minor","file":"path","line":1,"text":"[categoria] problema e como corrigir"}]}. Block se houver blocker; changes para major; approve aceita avisos minor.',
     'O diff final e os patches intermediários podem repetir linhas. Aponte segredos ou regressões que entraram no histórico mesmo se removidos depois; para o comportamento entregue, considere o diff final.',
     JSON.stringify({ title, body, head, ciGreen, checkReceipt: Number.isInteger(localCheck) ? checkReceipt(localCheck) : undefined, ...trimmed, history, commitMessage, commitMessages }),
   ].join('\n');
@@ -309,17 +312,51 @@ function reviewAttempt(result, parse) {
   return { failure: result.signal ? `sinal ${result.signal}` : result.status ? `rc=${result.status}` : 'resposta inválida' };
 }
 
+function quotaOrder(models, env) {
+  const profile = env.OPTCHAT_PROFILE || 'default';
+  if (!/^[\w-][\w.-]*$/.test(profile)) return models;
+  const file = join(env.OPTCHAT_HOME || join(homedir(), '.optchat'), 'profiles', profile, 'quota-health.json');
+  let detail;
+  try {
+    detail = JSON.parse(readFileSync(file, 'utf8'))?.['Cota dos modelos']?.detail;
+  } catch (error) {
+    if (error instanceof SyntaxError || ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EISDIR'].includes(error.code)) return models;
+    throw error;
+  }
+  if (typeof detail !== 'string' || !detail.startsWith('leitura em cache: ')) return models;
+  const used = new Map();
+  // external: The quota probe stores a display line; its weekly forecast after « · » is not current usage.
+  for (const entry of detail.slice('leitura em cache: '.length).split(' · ')[0].split('; ')) {
+    const match = /^([\w.-]+) (?:(\d+(?:\.\d+)?)% usado \(renova |esgotada até )/.exec(entry);
+    if (match) used.set(QUOTA_ACCOUNT_IDS.get(match[1]) ?? match[1], match[2] === undefined ? 102 : Math.min(100, Number(match[2])));
+  }
+  const rank = model => used.get(model.split('/')[0]) ?? 101;
+  return [...models].sort((a, b) => rank(a) - rank(b));
+}
+
+function reviewerCommand(model, source, env) {
+  if (env.SHIP_REVIEW_WORKER) {
+    const worker = resolve(env.SHIP_REVIEW_WORKER);
+    return { command: process.execPath, args: [worker, '--model', model], cwd: dirname(worker) };
+  }
+  if (model.startsWith('agy/')) {
+    const worker = resolve(env.SHIP_REVIEW_AGY_PC || join(dirname(source), 'agy-pc.mjs'));
+    const name = `ship-review-${process.pid}-${randomBytes(6).toString('hex')}`;
+    return { command: process.execPath, args: [worker, '--ask', '--name', name, '--model', model.slice(4), '--timeout', '240'], cwd: dirname(worker), timeout: 300_000 };
+  }
+  return { command: 'pi', args: ['--print', '--model', model, ...PI_REVIEW_FLAGS], cwd: dirname(source), shell: process.platform === 'win32' };
+}
+
 function runReviewer(core, source, prompt, env) {
-  const worker = env.SHIP_REVIEW_WORKER && resolve(env.SHIP_REVIEW_WORKER);
   const models = env.SHIP_REVIEW_MODEL?.trim() ? env.SHIP_REVIEW_MODEL.split(',').map(id => id.trim()) : DEFAULT_REVIEW_MODELS;
   // external: Pi ships as a .cmd on Windows, where the model IDs pass through the shell.
   if (models.some(id => !/^[a-z0-9][a-z0-9_.:/+-]*$/i.test(id))) throw new ReviewerUnavailable('SHIP_REVIEW_MODEL inválido; use IDs como provider/modelo separados por vírgula.');
   const failures = [];
-  for (const model of new Set(models)) {
-    const args = ['--model', model];
-    const result = spawnSync(worker ? process.execPath : 'pi', worker ? [worker, ...args] : ['--print', ...args, ...PI_REVIEW_FLAGS], {
-      input: prompt, env, cwd: dirname(worker || source), encoding: 'utf8', windowsHide: true,
-      shell: !worker && process.platform === 'win32', timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+  for (const model of new Set(quotaOrder(models, env))) {
+    const { command, args, cwd, shell, timeout = 120_000 } = reviewerCommand(model, source, env);
+    const result = spawnSync(command, args, {
+      input: prompt, env, cwd, encoding: 'utf8', windowsHide: true,
+      shell, timeout, maxBuffer: 4 * 1024 * 1024,
     });
     const { answer, failure } = reviewAttempt(result, core.parseReviewAnswer);
     if (answer) return { model, answer };

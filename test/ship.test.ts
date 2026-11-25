@@ -55,7 +55,7 @@ function fixture(): Fixture {
 }
 
 function envFor(fx: Fixture, extra: Record<string, string> = {}) {
-  const env: Record<string, string> = { ...process.env, ...IDENTITY, FAKE_GH_STATE: fx.statePath, FAKE_GH_LOG: fx.logPath, PI_GITWATCH_DIR: join(fx.dir, 'gitwatch'), SHIP_REVIEW_SCRIPT: FAKE_REVISOR, SHIP_REVIEW_WORKER: FAKE_REVISOR, ...extra } as Record<string, string>;
+  const env: Record<string, string> = { ...process.env, ...IDENTITY, FAKE_GH_STATE: fx.statePath, FAKE_GH_LOG: fx.logPath, PI_GITWATCH_DIR: join(fx.dir, 'gitwatch'), OPTCHAT_HOME: join(fx.dir, 'optchat'), OPTCHAT_PROFILE: 'ship-test', SHIP_REVIEW_SCRIPT: FAKE_REVISOR, SHIP_REVIEW_WORKER: FAKE_REVISOR, ...extra } as Record<string, string>;
   const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
   env[pathKey] = fx.bin + delimiter + (env[pathKey] ?? '');
   return env;
@@ -192,7 +192,7 @@ test('Revisor passes the default or configured model to Pi with extension discov
 
 const reviewFallbackModels = [
   'openai-codex-account-2/gpt-6.2-sol', 'openai-codex/gpt-6.2-sol',
-  'anthropic-account-2/claude-sonnet-5-5', 'google/gemini-4-hydrogen',
+  'anthropic-account-2/claude-sonnet-5-5', 'agy/gemini-4-hydrogen-medium',
 ];
 
 for (const scenario of ['second approves', 'all fail', 'veto stops fallback'] as const) test(`Revisor fallback: ${scenario}`, t => {
@@ -234,6 +234,52 @@ for (const scenario of ['second approves', 'all fail', 'veto stops fallback'] as
       assert.ok(body.includes(`Modelo do Revisor: ${models[1]}`), body);
     }
   }
+});
+
+for (const scenario of ['least used', 'least fails', 'missing cache'] as const) test(`Revisor quota: ${scenario}`, t => {
+  const fx = fixture(); t.after(fx.close);
+  const profile = join(fx.dir, 'optchat', 'profiles', 'ship-test');
+  const log = join(fx.dir, 'models.log');
+  const [codex2, codex, sonnet, hydrogen] = reviewFallbackModels;
+  if (scenario !== 'missing cache') {
+    mkdirSync(profile, { recursive: true });
+    writeFileSync(join(profile, 'quota-health.json'), JSON.stringify({ 'Cota dos modelos': {
+      detail: 'leitura em cache: agy 8% usado (renova 25/11 00:00); anthropic-account-2 26% usado (renova 25/11 00:00); openai-codex 64% usado (renova 25/11 00:00); openai-codex-account-2 esgotada até 25/11 01:48 · ritmo semanal: openai-codex-account-2 projeção: 1% no reset',
+    } }));
+  }
+  const outcomes = scenario === 'least fails' ? { [hydrogen]: { code: 1, stderr: 'quota' }, [sonnet]: { stdout: 'invalid' } }
+    : scenario === 'missing cache' ? { [codex2]: { code: 1 } } : {};
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--no-auto'], {
+    SHIP_REVIEW_MODEL: '', FAKE_REVISOR_OUTCOMES: JSON.stringify(outcomes), FAKE_REVISOR_ARGS: log,
+  });
+  const attempts = scenario === 'least used' ? [hydrogen] : scenario === 'least fails' ? [hydrogen, sonnet, codex] : [codex2, codex];
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.out.review_model, attempts.at(-1));
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)), attempts.map(model => ['--model', model]));
+});
+
+function reviewModelSection(model: string) {
+  assert.ok(model);
+  return `<!-- ship:revisor:start -->\n## Revisor\n\nModelo do Revisor: ${model}\n<!-- ship:revisor:end -->`;
+}
+
+test('Revisor quota: hydrogen invokes agy through its PC ask adapter', t => {
+  const fx = fixture(); t.after(fx.close);
+  const log = join(fx.dir, 'agy-args.log');
+  const shim = `${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_REVISOR)}`;
+  writeFileSync(join(fx.bin, 'pi'), `#!/bin/sh\nexec ${shim} "$@"\n`);
+  chmodSync(join(fx.bin, 'pi'), 0o755);
+  writeFileSync(join(fx.bin, 'pi.cmd'), `@${shim.replace(/\//g, '\\')} %*\r\n`);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--no-auto'], {
+    SHIP_REVIEW_MODEL: 'agy/gemini-4-hydrogen-medium', SHIP_REVIEW_WORKER: '', SHIP_REVIEW_AGY_PC: FAKE_REVISOR, FAKE_REVISOR_ARGS: log,
+  });
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(r.out.review_model, 'agy/gemini-4-hydrogen-medium');
+  const args = JSON.parse(readFileSync(log, 'utf8'));
+  assert.match(args[2], /^ship-review-\d+-[a-f0-9]+$/);
+  assert.deepEqual(args, ['--ask', '--name', args[2], '--model', 'gemini-4-hydrogen-medium', '--timeout', '240']);
 });
 
 test('Revisor refuses a missing shared script and names what to install', t => {
@@ -421,7 +467,7 @@ for (const concurrentEdit of [false, true]) test(`Revisor final: ${concurrentEdi
     assert.equal(payload.title, 'Atualizado');
     assert.equal(payload.body, 'Descrição atualizada');
     assert.equal(pr.title, payload.title);
-    assert.equal(pr.body.trim(), payload.body);
+    assert.equal(pr.body.trim(), `${payload.body}\n\n${reviewModelSection(r.out.review_model)}`);
   }
 });
 
@@ -1009,7 +1055,7 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   const create = fx.ghCalls()[1];
   assert.deepEqual(create, ['pr', 'create', '--title', 'feat: a', '--body-file', create[5], '--base', 'main', '--head', 'feat/x']);
   const state = JSON.parse(readFileSync(fx.statePath, 'utf8'));
-  assert.equal(state.prs[0].body, 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.\n', 'the PR carries the description');
+  assert.equal(state.prs[0].body, `Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.\n\n${reviewModelSection(r.out.review_model)}\n`, 'the PR carries the description and reviewer model');
   assert.equal(existsSync(create[5]), false, 'the description file is removed');
   assert.match(git(fx.work, ['log', '-1', '--format=%b']), /Problema: a.txt faltava/, 'the commit carries it too');
   assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body,baseRefName');
