@@ -384,3 +384,10 @@ test('heartbeat verdict input and WAKE triggers cover approved-not-dispatched, s
     assert.ok(staleReasons[0]!.includes('run_silent'));
   } finally { removeDir(dir); }
 });
+
+test('readIdeas skips a torn line and keeps the other rows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ideas-torn-'));
+  const good = { id: 'idea_00000001', day: '2026-04-10', title: 'A', status: 'proposed', effort: 'S', at: 1 };
+  writeFileSync(join(dir, 'ideas.jsonl'), `${JSON.stringify(good)}\n{"id":"idea_0000\n${JSON.stringify({ ...good, id: 'idea_00000002' })}\n`);
+  assert.deepEqual(readIdeas(dir).map(row => row.id), ['idea_00000001', 'idea_00000002']);
+});
