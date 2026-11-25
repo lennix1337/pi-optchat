@@ -118,6 +118,13 @@ export const QUOTA_BACK = 'Your model account was out of quota and is available 
 /** Parked workers of one account are reported together once no new one has parked for this long. */
 export const PARK_NOTE_MS = 2000;
 
+/** Asks a Codex request for the priority tier while `untilYear` (0: off) has not ended. */
+export function codexFastPayload(payload: unknown, api: string | undefined, untilYear: number, now: number): unknown {
+  if (api !== 'openai-codex-responses' || new Date(now).getFullYear() > untilYear) return payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  return { ...payload, service_tier: 'priority' };
+}
+
 interface QueuedTask { id: string; model: string; until: number }
 interface QuotaHit { retryAt?: number; message: string }
 const queuedText = (queued: QueuedTask[], now: number) => {
@@ -779,7 +786,8 @@ export class Children {
           event.systemPromptOptions.sections.instructions = instructions;
           if (kind) { event.systemPromptOptions.cwd = WORKER_CWD; event.systemPromptOptions.contextFiles = relativeContext(event.systemPromptOptions.contextFiles ?? [], directory); }
         });
-        pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(kind ? markBriefPrefix(event.payload) : event.payload, { prefix: prefixRetention(ctx.model) }) : event.payload);
+        pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(kind ? markBriefPrefix(event.payload) : event.payload, { prefix: prefixRetention(ctx.model) })
+          : codexFastPayload(event.payload, ctx.model?.api, this.settings.codexFastUntilYear, this.now()));
       }],
     });
     await loader.reload();
