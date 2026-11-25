@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beatSnapshot, previousWakeNote, type WakeRecord } from '../src/heartbeat.ts';
-import { EMPTY_WAKE_RETRY, heartbeatCommand, MEMORY_REPLY_RETRY, memoryShapedReply, renderReport, silentWake, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
+import { EMPTY_WAKE_RETRY, heartbeatCommand, MAX_EMPTY_RETRIES, MEMORY_REPLY_RETRY, memoryShapedReply, renderReport, silentWake, summarizeTurn, wakeRetry } from '../src/heartbeat-report.ts';
 import { queueFile } from '../src/heartbeat-queue.ts';
 import { ACCEPT_CALL, acceptResult, FAILED, REFUSED, SHIPPED, UNCERTAIN } from './accept-answer.ts';
 
@@ -175,9 +175,9 @@ test('a wake reply shaped like a memory line is caught (03/11 16:35, 13/11 19:34
 
 test('a memory-line reply is sent back even after tools ran and after the empty-wake nudge (13/11 19:34: "158821+1|work: ..." reached the operator)', () => {
   const leaked = { reply: '158821+1|work: heartbeat notice repeats that the wake is about to end', tools: 12, commits: [] };
-  assert.equal(wakeRetry(leaked, { empty: true }), MEMORY_REPLY_RETRY);
-  assert.equal(wakeRetry(leaked, { empty: true, memory: true }), undefined, 'each nudge goes once per wake');
-  assert.equal(wakeRetry({ reply: 'Nada novo.', tools: 2, commits: [] }, { empty: true }), undefined);
+  assert.equal(wakeRetry(leaked, { empty: 1 }), MEMORY_REPLY_RETRY);
+  assert.equal(wakeRetry(leaked, { empty: MAX_EMPTY_RETRIES, memory: true }), undefined, 'the memory nudge goes once per wake');
+  assert.equal(wakeRetry({ reply: 'Nada novo.', tools: 2, commits: [] }, { empty: MAX_EMPTY_RETRIES }), undefined);
   assert.doesNotMatch(MEMORY_REPLY_RETRY, /ran no tool/);
 });
 
@@ -226,6 +226,17 @@ test('a wake that settles with no commit, push, PR or merge is sent back once to
   assert.equal(wakeRetry({ reply: 'PR #97 aberta.', tools: 3, commits: ['pr https://github.com/x/y/pull/97'] }), undefined);
   assert.equal(wakeRetry({ reply: '', tools: 1, commits: [], stopReason: 'aborted' }), undefined, 'an abort is the operator or a fault, not idleness');
   assert.equal(wakeRetry({ reply: '429', tools: 1, commits: [], stopReason: 'error' }), undefined);
+});
+
+test('a wake with no delivery goes back to the start until it ships, up to the cap (operator 24/11: "ALGO TEM QUE SER FEITO SEMPRE")', () => {
+  const idle = { reply: 'Nada pendente.', tools: 4, commits: [] };
+  assert.equal(MAX_EMPTY_RETRIES, 3);
+  for (let n = 0; n < MAX_EMPTY_RETRIES; n++) assert.equal(wakeRetry(idle, { empty: n }), EMPTY_WAKE_RETRY, `retry ${n + 1}`);
+  assert.equal(wakeRetry(idle, { empty: MAX_EMPTY_RETRIES }), undefined, 'the cap ends the loop');
+  assert.equal(wakeRetry(idle, { memory: true }), EMPTY_WAKE_RETRY, 'the memory nudge does not spend the empty ones');
+  assert.match(EMPTY_WAKE_RETRY, /back to the start/);
+  assert.match(EMPTY_WAKE_RETRY, /any of his repositories/);
+  assert.match(EMPTY_WAKE_RETRY, /performance|quality/);
 });
 
 test('a quiet commit and a gh pr merge count as delivery even when git prints no ref line', () => {

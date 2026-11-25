@@ -60,17 +60,20 @@ export function summarizeTurn(messages: TurnMessage[]): WakeSummary {
 /** Sent once into the same wake when its reply was a memory line, whatever ran before it. */
 export const MEMORY_REPLY_RETRY = '[OptChat heartbeat] Your wake reply was a memory summary line, and the operator reads that text as a broken answer. Reply again: if the wake still has work, do it with your tools; then end with a short report in Portuguese (pt-BR) in plain sentences, never in memory-line format (no `id+n|`, no `user:`/`talk:`/`echo:` tags).';
 
-/** Sent once into the same wake when it settled having committed, pushed, opened or merged nothing (operator 08/11: "não quero que um wake não faça nada"). */
-export const EMPTY_WAKE_RETRY = '[OptChat heartbeat] This wake is about to end without delivering a change: no commit, push, PR or merge. Measuring, re-reading state and reporting "nothing new" is not a wake (operator, 08/11: "não quero que um wake não faça nada"; explore new horizons). Keep going in this same wake: pick a new capability toward the end goal, a living assistant that helps the operator through his day on its own (notices what he needs, decides and acts without being asked), in the harness or a new package. Name its user-visible result and evidence, write the red test, build it, ship it as a PR with auto-merge, then report in Portuguese (pt-BR) what it does and how it was validated.';
+/** How many times a wake that delivered nothing is sent back to the start (operator 24/11: "ALGO TEM QUE SER FEITO SEMPRE"). */
+export const MAX_EMPTY_RETRIES = 3;
 
-/** Which nudges this wake already got; each goes at most once. */
-export interface WakeRetried { memory?: boolean; empty?: boolean }
+/** Sent into the same wake, up to MAX_EMPTY_RETRIES times, while it has committed, pushed, opened or merged nothing (operator 08/11 and 24/11). */
+export const EMPTY_WAKE_RETRY = '[OptChat heartbeat] This wake is about to end without delivering a change: no commit, push, PR or merge. Measuring, re-reading state and reporting "nothing new" is not a wake (operator 24/11: "ALGO TEM QUE SER FEITO SEMPRE... seja creativo"). Go back to the start of this same wake and find something again: open PRs and issues first; when nothing is pending, pick any of his repositories (pi-avatar, Genexus18MCP, the harness packages, dotfiles) and improve it because it can be better: performance, quality, UX, a missing test, a new capability toward a living assistant that helps him through his day on its own. Do not invent restrictions: the authority map is the only limit. Name its user-visible result and evidence, write the red test, build it, ship it as a PR with auto-merge, then report in Portuguese (pt-BR) what it does and how it was validated.';
+
+/** Which nudges this wake already got: the memory one goes once, the empty one up to MAX_EMPTY_RETRIES times. */
+export interface WakeRetried { memory?: boolean; empty?: number }
 
 /** The nudge a settled wake gets: a memory-line reply, or no delivered change. Aborts and errors are not idleness. */
 export function wakeRetry(summary: WakeSummary, retried: WakeRetried = {}): string | undefined {
   if (summary.stopReason === 'aborted' || summary.stopReason === 'error') return undefined;
   if (memoryShapedReply(summary.reply)) return retried.memory ? undefined : MEMORY_REPLY_RETRY;
-  return summary.commits.length || retried.empty ? undefined : EMPTY_WAKE_RETRY;
+  return summary.commits.length || (retried.empty ?? 0) >= MAX_EMPTY_RETRIES ? undefined : EMPTY_WAKE_RETRY;
 }
 
 /**
