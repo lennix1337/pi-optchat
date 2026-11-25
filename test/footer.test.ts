@@ -118,3 +118,20 @@ test('the footer leads with the model and its thinking level, then the cache hit
   const broken = new FooterState({ ...ctx as object, sessionManager: { getLeafEntry: () => { throw new Error('x'); } } } as never, { spend: () => 3, quotaState: () => ({}), thinking: () => { throw new Error('y'); }, now: () => 0 }).input(undefined);
   assert.equal(footerLine(broken, 200, (_t, s) => s), 'opus-5-5 · $3,00 hoje · contexto 50k/500k', 'a failing source only hides its part');
 });
+
+test('a redraw on the same leaf and model reuses the context usage instead of walking the session again', async () => {
+  const { FooterState } = await import('../src/footer.ts');
+  let walks = 0, leaf = 'a', clock = 0;
+  const entries: Record<string, unknown> = { a: { id: 'a', type: 'message', parentId: null, message: { role: 'user', content: 'oi' } }, b: { id: 'b', type: 'message', parentId: 'a', message: { role: 'user', content: 'oi' } } };
+  const ctx = { getContextUsage: () => { walks++; return { tokens: 10_000 * walks, contextWindow: 500_000 }; }, model: { id: 'm', provider: 'anthropic', contextWindow: 500_000 },
+    sessionManager: { getLeafId: () => leaf, getLeafEntry: () => entries[leaf], getEntry: (id: string) => entries[id] } } as never;
+  const state = new FooterState(ctx, { spend: () => 0, quotaState: () => ({}), now: () => clock });
+  for (let i = 0; i < 5; i++) state.input(undefined);
+  assert.equal(walks, 1, 'five redraws of one leaf walk the session once');
+  leaf = 'b';
+  assert.equal(state.input(undefined).context?.tokens, 20_000, 'a new leaf reads the usage again');
+  assert.equal(walks, 2);
+  clock = 10_001;
+  state.input(undefined);
+  assert.equal(walks, 3, 'past the TTL the same leaf is read again, since compaction or a new prompt can change the usage');
+});

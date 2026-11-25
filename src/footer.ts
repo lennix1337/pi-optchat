@@ -143,16 +143,27 @@ export class FooterState {
   private at = -Infinity;
   private spend: number | undefined;
   private state: unknown;
+  private session: { key: string; at: number; usage: ReturnType<ExtensionContext['getContextUsage']> | undefined; cacheHit: number | undefined } | undefined;
   constructor(private readonly ctx: Pick<ExtensionContext, 'getContextUsage' | 'model'> & Partial<Pick<ExtensionContext, 'sessionManager'>>, private readonly sources: FooterSources) {}
   input(goalStatus: string | undefined): FooterInput {
     const now = this.sources.now?.() ?? Date.now();
     if (now - this.at > TTL_MS || now < this.at) { this.at = now; this.spend = attempt(this.sources.spend); this.state = attempt(this.sources.quotaState); }
-    const usage = attempt(() => this.ctx.getContextUsage()), model = attempt(() => this.ctx.model);
+    const model = attempt(() => this.ctx.model), { usage, cacheHit } = this.sessionReads(model?.id, now);
     const window = usage?.contextWindow ?? model?.contextWindow;
     const windows = model ? quotaWindows(record(record(this.state).usageByProvider)[model.provider]) : {};
-    const thinking = attempt(() => this.sources.thinking?.()), cacheHit = this.ctx.sessionManager ? attempt(() => lastCacheHit(this.ctx.sessionManager!)) : undefined;
+    const thinking = attempt(() => this.sources.thinking?.());
     return { now, spend: this.spend, ...model ? { model: { id: model.id, thinking } } : {}, ...cacheHit !== undefined ? { cacheHit } : {}, ...window ? { context: { tokens: usage?.tokens ?? null, window } } : {},
       ...model && (windows.w5h || windows.w7d) ? { quota: { label: familyLabel(model.id, model.provider), ...windows } } : {}, goalStatus };
+  }
+
+  /** Context usage walks the whole session, which costs tens of milliseconds on a long one. A redraw on the same leaf and model within `TTL_MS` reuses it; past that it is read again, since compaction or a prompt change can move it too. */
+  private sessionReads(modelId: string | undefined, now: number) {
+    const sm = this.ctx.sessionManager, leaf = sm ? attempt(() => sm.getLeafId?.()) : undefined;
+    const key = leaf == null ? undefined : `${leaf}\u0000${modelId ?? ''}`;
+    if (key !== undefined && this.session?.key === key && now - this.session.at <= TTL_MS && now >= this.session.at) return this.session;
+    const reads = { key: key ?? '', at: now, usage: attempt(() => this.ctx.getContextUsage()), cacheHit: sm ? attempt(() => lastCacheHit(sm)) : undefined };
+    this.session = key === undefined ? undefined : reads;
+    return reads;
   }
 }
 

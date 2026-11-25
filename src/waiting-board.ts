@@ -136,13 +136,13 @@ const projectName = (run: BoardRun) => run.project ?? projectOf(run.cwd ?? '');
 const ENDED = new Set<string>(['completed', 'failed', 'stopped']);
 
 function runLine(run: BoardRun, now: number, pad: number): BoardLine | undefined {
+  if (ENDED.has(run.state) && (run.ended === undefined || now - run.ended > KEEP_MS)) return undefined;
   const project = projectName(run), goal = cut(taskLine(run.task) || run.task, GOAL_CHARS);
   const lead = project ? `${project.padEnd(pad)} · ` : '', head = lead + goal;
   const at = run.ended ?? run.updated ?? run.started;
   if (ENDED.has(run.state)) {
-    if (run.ended === undefined || now - run.ended > KEEP_MS) return undefined;
     const ok = run.state === 'completed';
-    return finished(ok, head, ok ? 'concluído' : run.state === 'failed' ? 'falhou' : 'parado', run.ended);
+    return finished(ok, head, ok ? 'concluído' : run.state === 'failed' ? 'falhou' : 'parado', run.ended!);
   }
   const age = span(now - run.started), model = modelName(run.model);
   if (run.state === 'interrupted') {
