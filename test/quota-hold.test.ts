@@ -56,7 +56,7 @@ function fakeClock() {
 }
 
 type Verdict = 'limit' | 'ok';
-type TestControl = { wait?: Promise<void>; hold?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[]; thinking?: string[]; events?: string[] };
+type TestControl = { wait?: Promise<void>; hold?: Promise<void>; secondHold?: Promise<void>; waitAlternate?: Promise<void>; fail?: boolean; secondLimit?: boolean; opens?: number; disposed?: string[]; thinking?: string[]; events?: string[] };
 function syntheticStream(provider: string, control: TestControl, seen: string[][], routes: string[], calls: Map<string, number>, verdict: (task: string, call: number) => Verdict): NonNullable<Parameters<ModelRuntime['registerProvider']>[1]['streamSimple']> {
   return (model, context) => {
       routes.push(model.provider);
@@ -69,7 +69,7 @@ function syntheticStream(provider: string, control: TestControl, seen: string[][
       const message: AssistantMessage = limited ? { ...base, role: 'assistant', content: [], stopReason: 'error', errorMessage: HINT }
         : provider === 'quota-test' && task === 'tooly' && call === 1 ? { ...base, role: 'assistant', content: [{ type: 'toolCall', id: 'call-1', name: 'date', arguments: {} }], stopReason: 'toolUse' }
         : { ...base, role: 'assistant', content: [{ type: 'text', text: `Finished ${task}` }], stopReason: 'stop' };
-      queueMicrotask(() => { void (control.hold ?? Promise.resolve()).then(() => {
+      queueMicrotask(() => { void ((provider === 'quota-test' ? control.hold : control.secondHold ?? control.hold) ?? Promise.resolve()).then(() => {
         if (message.stopReason === 'error') stream.push({ type: 'error', reason: 'error', error: message });
         else stream.push({ type: 'done', reason: message.stopReason as 'stop' | 'toolUse', message });
         stream.end();
@@ -78,27 +78,35 @@ function syntheticStream(provider: string, control: TestControl, seen: string[][
   };
 }
 function installProviders(runtime: ModelRuntime, control: TestControl, seen: string[][], routes: string[], calls: Map<string, number>, verdict: (task: string, call: number) => Verdict) {
-  for (const provider of ['quota-test', 'quota-test-2', 'quota-reasoning']) runtime.registerProvider(provider, { baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions',
+  const oauth = { name: 'Synthetic OAuth', login: async () => { throw new Error('No login in test'); },
+    refreshToken: async () => { throw new Error('No token refresh in test'); }, getApiKey: (credential: { access: string }) => credential.access };
+  for (const provider of ['quota-test', 'quota-test-2', 'quota-reasoning', 'openai-codex-account-2', 'anthropic-account-2', 'openai-codex-account-4']) runtime.registerProvider(provider, { baseUrl: 'https://invalid.local', api: 'openai-completions',
+    ...(provider.endsWith('-account-2') ? { oauth } : { apiKey: 'synthetic' }),
     models: [{ id: 'child', name: 'Synthetic child', reasoning: provider === 'quota-reasoning', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
     streamSimple: syntheticStream(provider, control, seen, routes, calls, verdict) });
 }
 
-async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { until?: number } = {}, verdict: (task: string, call: number) => Verdict = () => 'limit') {
+async function rig(t: { after(fn: () => void | Promise<void>): void }, block: { until?: number } = {}, verdict: (task: string, call: number) => Verdict = () => 'limit', extra: { quotaState?: () => unknown; onPark?: (ids: string[]) => void } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-quota-'));
   const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
   const reports: string[] = [], warnings: string[] = [], calls = new Map<string, number>(), seen: string[][] = [], routes: string[] = [];
   const control: TestControl = {};
-  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+  const authPath = join(dir, 'auth.json');
+  const credential = { type: 'oauth', access: 'synthetic', refresh: 'synthetic', expires: Date.now() + 60 * MIN };
+  writeFileSync(authPath, JSON.stringify({ 'openai-codex-account-2': credential, 'anthropic-account-2': credential }));
+  const runtime = await ModelRuntime.create({ authPath, modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
   installProviders(runtime, control, seen, routes, calls, verdict);
+  if (extra.quotaState) await runtime.refresh({ allowNetwork: false });
   const build = (clock: ReturnType<typeof fakeClock>) => {
     const made = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'quota-test', model: 'child', thinking: 'off' }), () => '',
       async text => { reports.push(text); }, text => warnings.push(text), dir,
-      { settings: () => ({ subagentLevels: 2, maxAgents: 8 }), parentSession: 'parent', clock,
+      { ...extra, settings: () => ({ subagentLevels: 2, maxAgents: 8 }), parentSession: 'parent', clock,
         quotaBlock: provider => provider === 'quota-test' && block.until !== undefined && block.until > clock.now() ? block.until : undefined,
         createSession: async options => {
           control.opens = (control.opens ?? 0) + 1;
           (control.thinking ??= []).push(options?.thinkingLevel ?? 'off');
           if (control.wait) await control.wait;
+          if (options?.model?.provider === alternate && control.waitAlternate) await control.waitAlternate;
           if (control.fail) throw new Error('synthetic session failure');
           const made = await createAgentSession({ ...options, modelRuntime: runtime });
           const prompt = made.session.prompt.bind(made.session);
@@ -646,6 +654,111 @@ test('failed retarget after the quota timer fires leaves the old route recoverab
   await h.children.tell(id, 'continue', 'manager', undefined, false, { model: 'quota-test-2/child' });
   await until(() => h.children.history.records.get(id)?.state === 'completed', 'retry completed');
   assert.equal(h.routes.filter(route => route === 'quota-test-2').length, 1);
+});
+
+const alternate = 'openai-codex-account-2';
+const quotaSnapshot = { family: 'codex', plan: 'team', fetchedAt: START, serviceable: true };
+
+test('on a quota error a worker resumes immediately with the same model and conversation on a same-family account', async t => {
+  const parked: string[] = [];
+  const state = { usageByProvider: { 'quota-test': { family: 'codex' }, [alternate]: quotaSnapshot } };
+  const h = await rig(t, {}, (_task, call) => call === 1 ? 'ok' : 'limit', { quotaState: () => state, onPark: ids => parked.push(...ids) });
+  let release!: () => void;
+  h.control.secondHold = new Promise<void>(resolve => { release = resolve; });
+  const [id] = await h.children.spawn([{ task: 'tooly' }], h.dir);
+  try {
+    await until(() => (h.children.history.records.get(id)?.parked && !h.children.parkOpening(id)) || h.routes.includes(alternate), 'quota handled');
+    const run = h.children.history.records.get(id)!;
+    assert.equal(run.model, `${alternate}/child`);
+    assert.match(run.report ?? '', /Moved to openai-codex-account-2 after quota-test ran out of quota/);
+    assert.equal(run.parked, undefined);
+  } finally { release(); }
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'same worker completed without advancing time');
+  assert.equal(h.clock.now(), START);
+  assert.deepEqual(h.routes, ['quota-test', 'quota-test', alternate]);
+  assert.ok(h.seen.at(-1)?.some(line => line.startsWith('toolResult')), 'replacement saw the original tool result');
+  assert.deepEqual(parked, [], 'the wake still waits on this worker');
+  assert.equal(h.clock.pending, 0);
+  assert.match(h.reports.find(text => text.startsWith(`[${id}]`)) ?? '', /Finished tooly/);
+});
+
+test('a quota move that becomes blocked during open falls back to the original timer without making a request', async t => {
+  const state = { usageByProvider: { 'quota-test': { family: 'codex' }, [alternate]: quotaSnapshot }, exhaustedUntilByModel: {} as Record<string, number> };
+  const parked: string[] = [];
+  const h = await rig(t, {}, (_task, call) => call === 1 ? 'limit' : 'ok', { quotaState: () => state, onPark: ids => parked.push(...ids) });
+  let release!: () => void;
+  h.control.waitAlternate = new Promise<void>(resolve => { release = resolve; });
+  const [id] = await h.children.spawn([{ task: 'blocked during open' }], h.dir);
+  try {
+    await until(() => h.control.opens === 2, 'replacement is opening');
+    state.exhaustedUntilByModel[`${alternate}/child`] = START + 30 * MIN;
+  } finally { release(); }
+  await until(() => parked.includes(id), 'worker fell back to parking');
+  assert.deepEqual(h.routes, ['quota-test']);
+  assert.deepEqual(h.control.disposed, ['quota-test', alternate]);
+  assert.equal(h.children.history.records.get(id)?.parked?.provider, 'quota-test');
+  await h.clock.advance(61 * MIN);
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'original timer resumed the worker');
+  assert.deepEqual(h.routes, ['quota-test', 'quota-test']);
+});
+
+test('a worker still parks when alternatives are outside its family, blocked, paid, or lack the model', async t => {
+  const cases = [
+    ['other family', 'anthropic-account-2', { ...quotaSnapshot, family: 'anthropic', plan: 'max' }, undefined],
+    ['blocked model', alternate, quotaSnapshot, START + 30 * MIN],
+    ['paid route', alternate, { ...quotaSnapshot, plan: 'api-key' }, undefined],
+    ['outside the plan', 'quota-test-2', quotaSnapshot, undefined],
+    ['API key despite a subscription reading', 'openai-codex-account-4', quotaSnapshot, undefined],
+    ['missing model', 'openai-codex-account-3', quotaSnapshot, undefined],
+  ] as const;
+  for (const [name, provider, snapshot, blocked] of cases) await t.test(name, async t => {
+    const state = { usageByProvider: { 'quota-test': { family: 'codex' }, [provider]: snapshot }, exhaustedUntilByModel: { [`${provider}/child`]: blocked } };
+    const h = await rig(t, {}, undefined, { quotaState: () => state });
+    const [id] = await h.children.spawn([{ task: name }], h.dir);
+    await until(() => (h.children.history.records.get(id)?.parked && !h.children.parkOpening(id)) || h.routes.length > 1, 'park decision');
+    const run = h.children.history.records.get(id)!;
+    assert.equal(run.parked?.provider, 'quota-test');
+    assert.equal(run.model, 'quota-test/child');
+    assert.deepEqual(h.routes, ['quota-test']);
+    assert.equal(h.control.opens, 1, 'no alternative session was opened');
+  });
+});
+
+test('a quota reset that moves while a worker is parked updates its report and the new timer resumes it', async t => {
+  const block: { until?: number } = {};
+  const h = await rig(t, block, (_task, call) => call === 1 ? 'limit' : 'ok');
+  const [id] = await h.children.spawn([{ task: 'moving reset' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked, 'parked');
+  const run = h.children.history.records.get(id)!;
+  assert.match(run.report ?? '', /17:01 \(Brasília\)/);
+  block.until = START + 75 * MIN;
+  await h.clock.advance(61 * MIN);
+  assert.equal(h.routes.length, 1);
+  assert.equal(run.parked?.until, START + 76 * MIN);
+  assert.equal(h.clock.pending, 1);
+  assert.match(run.report ?? '', /17:16 \(Brasília\)/);
+  await h.clock.advance(15 * MIN);
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'new timer resumed the worker');
+});
+
+test('a failed plain tell that overlaps the quota timer does not leave the worker parked forever', async t => {
+  const h = await rig(t, {}, (_task, call) => call === 1 ? 'limit' : 'ok');
+  const [id] = await h.children.spawn([{ task: 'tell overlap' }], h.dir);
+  await until(() => !!h.children.history.records.get(id)?.parked, 'parked');
+  let release!: () => void;
+  h.control.wait = new Promise<void>(resolve => { release = resolve; });
+  h.control.fail = true;
+  const rejected = assert.rejects(h.children.tell(id, 'continue'), /synthetic session failure/);
+  try {
+    await h.clock.advance(62 * MIN);
+    assert.equal(h.clock.pending, 0, 'the original timer fired during the manual open');
+    assert.deepEqual(h.routes, ['quota-test']);
+  } finally { release(); }
+  await rejected;
+  assert.equal(h.clock.pending, 1, 'failed tell re-armed the expired timer');
+  h.control.fail = false;
+  await h.clock.advance(0);
+  await until(() => h.children.history.records.get(id)?.state === 'completed', 'restored timer resumed the worker');
 });
 
 test('a worker that already used a tool and then hits the limit resumes with its conversation', async t => {

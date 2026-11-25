@@ -155,9 +155,9 @@ test('an operator-turn tell resumes a settled wake child without the wake fence'
     running: new Map(), history: { records }, options: { unattendedWake: () => false, operatorTurn: () => true }, track: (p: Promise<unknown>) => p,
     prepareResume: () => ({ run, text: 'continue', automatic: undefined, manager: {}, provider: 'openai-codex', model: { id: 'gpt-6' }, thinking: 'minimal' }),
     parkGeneration: new Map(), launching: 0, resuming: new Set(), open: async (o: unknown) => { opened = o; return session; },
-    resumeOpenValid: () => true, saveResume: (info: any) => { records.set('child', info); }, cancelPark() {},
+    resumeOpenValid: () => true, saveResume: (info: any) => { records.set('child', info); }, cancelPark() {}, parkTimers: new Map(),
     execute: async () => {}, completions: new Set(), changed() {} };
-  fake.resume = (Children.prototype as any).resume;
+  for (const name of ['resume', 'resumedRoute', 'restoreParkAfterManualOpen']) fake[name] = (Children.prototype as any)[name];
   await Children.prototype.tell.call(fake, 'child', 'continue', 'manager');
   assert.equal(opened.unattendedWake, false);
   assert.equal(records.get('child').unattendedWake, false);

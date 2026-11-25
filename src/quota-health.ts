@@ -85,6 +85,18 @@ export function routeBlock(state: unknown, provider: string, model: string, now:
   return blocked.length ? Math.max(...blocked) : undefined;
 }
 
+/** Same-family routes the cache does not block, excluding routes explicitly billed by API key. */
+export function quotaAlternates(state: unknown, provider: string, model: string, now: number) {
+  const usage = record(record(state).usageByProvider);
+  const family = Object.hasOwn(usage, provider) ? record(usage[provider]).family : undefined;
+  if (typeof family !== 'string' || !family) return [];
+  return Object.entries(usage).flatMap(([id, entry]) => {
+    const { family: otherFamily, plan } = record(entry);
+    return id !== provider && safeIdentifier(id) && otherFamily === family
+      && !(typeof plan === 'string' && /^api[-_ ]key\b/i.test(plan)) && routeBlock(state, id, model, now) === undefined ? [id] : [];
+  });
+}
+
 const describe = (a: Account) => a.blockedUntil ? `${a.id} esgotada até ${brasiliaDayTime(a.blockedUntil)}`
   : `${a.id} ${a.used}% usado (renova ${brasiliaDayTime(a.resetAt!)})`;
 
