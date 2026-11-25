@@ -78,6 +78,7 @@
   "files": [
     "src",
     "scripts/scoreboard.mjs",
+    "scripts/cost-report.mjs",
     "assistant/src",
     "assistant/scripts",
     "assistant/web/index.html",

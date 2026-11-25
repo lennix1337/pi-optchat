@@ -2,6 +2,8 @@ import { predictionWeek } from './predictions.ts';
 import { join } from 'node:path';
 import { attention, readCommitments } from './commitments.ts';
 import { localDate, PRS, type PrSeen, type Post, type ReportOwner } from './slack-reports.ts';
+import { weeklyCostLine } from './cost-delivery.ts';
+import { logBackgroundFailure } from './exec-log.ts';
 import { slackWeek, type SlackWeek } from './slack-metrics.ts';
 import { correctionsWeek } from './corrections.ts';
 import { execFile } from 'node:child_process';
@@ -148,7 +150,7 @@ async function configuredBusiness(dir: string): Promise<Omit<Business, 'previous
 export class WeeklyScoreboard {
   private scanning = false;
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post,
-    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined>; business?: (dir: string) => Promise<Omit<Business, 'previous'> | undefined> } = {}) {}
+    private readonly options: { weekday?: number; at?: number; until?: number; now?: () => number; gitwatchFile?: string; scan?: () => Promise<number | undefined>; business?: (dir: string) => Promise<Omit<Business, 'previous'> | undefined>; cost?: typeof weeklyCostLine } = {}) {}
 
   /** Posts once a week, the first check on `weekday` (Monday) between `at` (09h) and `until` (noon) local time. */
   async maybePost(): Promise<boolean> {
@@ -160,13 +162,18 @@ export class WeeklyScoreboard {
     if (saved.week === week) return false;
     if (this.scanning) return false;
     this.scanning = true;
-    let violations: number | undefined;
-    try { violations = await (this.options.scan ?? scanRuleViolations)(); } finally { this.scanning = false; }
-    const { inputs, routing } = weekInputs(owner.dir, now, saved, this.options.gitwatchFile, violations);
-    const traction = await (this.options.business ?? configuredBusiness)(owner.dir);
-    if (traction) inputs.business = { ...traction, previous: saved.downloads };
-    atomicWrite(file, JSON.stringify({ week, ...routing ? { routing } : {}, ...traction ? { downloads: traction.downloads } : saved.downloads === undefined ? {} : { downloads: saved.downloads } }));
-    await this.post(composeScoreboard(inputs), 'harness');
-    return true;
+    try {
+      const violations = await (this.options.scan ?? scanRuleViolations)();
+      const { inputs, routing } = weekInputs(owner.dir, now, saved, this.options.gitwatchFile, violations);
+      const traction = await (this.options.business ?? configuredBusiness)(owner.dir);
+      if (traction) inputs.business = { ...traction, previous: saved.downloads };
+      const cost = await (this.options.cost ?? weeklyCostLine)(owner.dir, now).catch(error => {
+        logBackgroundFailure(owner.dir, 'weekly-cost', error);
+        return 'Custo de API por entrega: fontes indisponíveis nesta semana.';
+      });
+      atomicWrite(file, JSON.stringify({ week, ...routing ? { routing } : {}, ...traction ? { downloads: traction.downloads } : saved.downloads === undefined ? {} : { downloads: saved.downloads } }));
+      await this.post(composeScoreboard(inputs) + (cost ? `\n• ${cost}` : ''), 'harness');
+      return true;
+    } finally { this.scanning = false; }
   }
 }

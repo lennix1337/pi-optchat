@@ -7,6 +7,7 @@ import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { record } from './cache.ts';
 import { appendJson } from './store.ts';
 import { nonnegative, safeIdentifier } from './diagnostic-metadata.ts';
+import { USAGE_INDEX_SCHEMA as SCHEMA, usageAmounts as amounts } from './usage-index-schema.ts';
 
 export type UsageRole = 'main' | 'subagent' | 'compactor' | 'import' | 'advisor' | 'heartbeat' | 'crew';
 export type UsageKind = 'conversation' | 'subagent' | 'compaction' | 'session-overhead' | 'import' | 'approval' | 'heartbeat';
@@ -186,9 +187,7 @@ class MemoryIndex implements UsageIndex {
   }
 }
 
-const SCHEMA = '1';
 const HOUR = 3600_000;
-const amounts = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens', 'costInput', 'costOutput', 'costCacheRead', 'costCacheWrite', 'costTotal'] as const;
 const sums = amounts.map(a => `SUM(${a}) AS ${a}`).join(', ');
 const timed = '(firstMs IS NOT NULL OR responseMs IS NOT NULL)';
 const sqlite = (() => { try { return process.getBuiltinModule('node:sqlite'); } catch { return undefined; } })();
