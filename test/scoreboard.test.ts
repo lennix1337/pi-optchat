@@ -129,6 +129,25 @@ test('the scoreboard posts once a week to #harness, Monday morning only, saving 
   assert.equal(await board.maybePost(), false);
 }));
 
+test('the optional weekly cost summary goes in the scoreboard and a source failure is visible', withDir(async dir => {
+  const posts: string[] = [];
+  let now = monday;
+  const board = new WeeklyScoreboard(() => ({ dir, name: 'p' }), async text => { posts.push(text); }, {
+    now: () => now, scan: async () => 0, business: async () => undefined,
+    cost: async (profile, at) => {
+      assert.equal(profile, dir);
+      if (at !== monday) throw new Error('ledger offline');
+      return 'Custo de API por entrega: mediana US$ 1,00.';
+    },
+  });
+  assert.equal(await board.maybePost(), true);
+  assert.match(posts[0]!, /Custo de API por entrega: mediana US\$ 1,00/);
+  now += 7 * DAY;
+  assert.equal(await board.maybePost(), true);
+  assert.match(posts[1]!, /Custo de API por entrega: fontes indisponíveis/);
+  assert.match(readFileSync(join(dir, 'exec-log.jsonl'), 'utf8'), /weekly-cost.*ledger offline/);
+}));
+
 test('the business line shows the configured product\'s npm downloads against last week, stars, and says revenue is not measured', () => {
   const base = { from: monday - 7 * DAY, to: monday, slack: { received: 0, answered: 0, nudges: 0, waiting: 0 } as never, corrections: { count: 0 }, merged: { green: 0, other: 0 } };
   const text = composeScoreboard({ ...base, business: { label: 'Acme', downloads: 1837, previous: 1500, stars: 46 } });

@@ -1,0 +1,13 @@
+{
+  "prices": [
+    {
+      "provider": "openai-codex",
+      "modelPrefix": "gpt-",
+      "input": 2.5,
+      "output": 15,
+      "cacheRead": 0.25,
+      "cacheWrite": 2.5,
+      "reference": "OpenAI GPT-5.4 API (referência para Codex sem tarifa própria; gravação ao preço de entrada)"
+    }
+  ]
+}
