@@ -760,6 +760,31 @@ test('files he sends are saved and pointed to; Slack links he pastes are read an
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a reply in a thread carries the message that opened it, so the answer keeps that subject; a failed read says why', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
+  const sent: string[] = [];
+  const fetched: unknown[] = [];
+  const inbox = [
+    { seq: 1, ts: '1793000000.000200', thread: '1793000000.000100', channel: 'D0OWNER', text: 'ficou bom?' },
+    { seq: 2, ts: '1793000000.000400', thread: '1793000000.000300', channel: 'D0OWNER', text: 'e esse?' },
+    { seq: 3, ts: '1793000000.000500', thread: null, channel: 'D0OWNER', text: 'mensagem solta' },
+  ];
+  const bridge = new SlackBridge({ sendUserMessage: ((text: string) => { sent.push(text); }) as never }, () => ({ dir, name: 'p' }), {
+    request: async (_o, path, body: any) => {
+      if (path.startsWith('/v1/slack/inbox')) return { messages: inbox };
+      if (path === '/v1/slack/fetch') { fetched.push(body); if (body.ts === '1793000000.000300') throw new Error('message_not_found'); return { user: 'U0BOT', text: 'Atualizei o CV no Drive.\nSertrading no topo.' }; }
+      return { ok: true };
+    },
+  });
+  try {
+    await bridge.poll();
+    assert.deepEqual(fetched, [{ channel: 'D0OWNER', ts: '1793000000.000100', thread: '1793000000.000100' }, { channel: 'D0OWNER', ts: '1793000000.000300', thread: '1793000000.000300' }]);
+    assert.match(sent[0]!, /^\[Slack\] ficou bom\?\n\nEm resposta à thread que começa com \(<@U0BOT>\); o assunto dele é este:\n> Atualizei o CV no Drive\.\n> Sertrading no topo\./);
+    assert.match(sent[1]!, /Em resposta a uma thread; não consegui ler a mensagem que a abriu \(message_not_found\)/);
+    assert.doesNotMatch(sent[2]!, /Em resposta/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a voice note he sends arrives transcribed; a failed transcription says why and keeps the file path', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'slack-bridge-'));
   const sent: string[] = [];

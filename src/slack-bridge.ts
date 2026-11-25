@@ -439,7 +439,7 @@ export class SlackBridge {
           catch (error) { this.options.warn(`Wake refusal not recorded: ${error instanceof Error ? error.message : String(error)}`); }
         }
         if (id) this.react(owner, id, m.ts, SEEN);
-        const extras = await this.enrich(owner, m);
+        const extras = await this.enrich(owner, m, id);
         const text = `${slackPrefix(channel)}${m.text}${extras}\n\n${budgetNote(wordBudget(channel, this.options.wordBudgets))}${this.running ? MID_RUN : ''}`;
         this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel, ...(id ? { id, ts: m.ts } : {}) });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
@@ -458,14 +458,25 @@ export class SlackBridge {
    * image or transcribe an audio) and the Slack messages he linked (read by the bot). Each part is best effort and says
    * why when it fails, so the agent never answers as if it had seen something it did not.
    */
-  private async enrich(owner: SlackOwner, m: Inbound): Promise<string> {
+  private async enrich(owner: SlackOwner, m: Inbound, channelId?: string): Promise<string> {
 
-    const [lines, quotes] = await Promise.all([
+    const [lines, quotes, parent] = await Promise.all([
       mapBounded(Array.isArray(m.files) ? m.files : [], FILE_READS, file => this.attachment(owner, file)),
       Promise.all([...m.text.matchAll(SLACK_LINK)].slice(0, 3).map(([, channel, sec, frac, thread]) => this.quote(owner, channel!, `${sec}.${frac}`, thread))),
+      channelId && typeof m.thread === 'string' && m.thread !== m.ts ? this.threadParent(owner, channelId, m.thread) : Promise.resolve(''),
     ]);
     const files = lines.length ? `\n\nAnexos:\n${lines.join('\n')}` : '';
-    return files + (quotes.length ? `\n\n${quotes.join('\n\n')}` : '');
+    return files + (quotes.length ? `\n\n${quotes.join('\n\n')}` : '') + parent;
+  }
+
+  /** A reply in a thread is about that thread: the message that opened it is quoted, so the answer keeps that subject. */
+  private async threadParent(owner: SlackOwner, channel: string, thread: string): Promise<string> {
+    try {
+      const found = await this.options.request(owner, '/v1/slack/fetch', { channel, ts: thread, thread }) as { user?: unknown; text?: unknown };
+      const raw = typeof found.text === 'string' && found.text.trim() ? found.text : '(sem texto: só anexo ou bloco)';
+      const text = raw.length > 1500 ? `${raw.slice(0, 1500)}…` : raw;
+      return `\n\nEm resposta à thread que começa com (<@${typeof found.user === 'string' ? found.user : '?'}>); o assunto dele é este:\n${text.split('\n').map(line => `> ${line}`).join('\n')}`;
+    } catch (error) { return `\n\nEm resposta a uma thread; não consegui ler a mensagem que a abriu (${error instanceof Error ? error.message : String(error)}).`; }
   }
 
   /** One file he sent, saved locally: its line for the message, with what the agent should do with it. */
