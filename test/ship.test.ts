@@ -103,7 +103,7 @@ for (const name of ['AGENTS.md', 'docs/CLAUDE.md', 'GEMINI.md', '.pi/config.json
 const CTA = '<a href="/oferta">Ver oferta</a>\n';
 for (const [name, file, text, body, rule, expected] of [
   ['CTA only unit tested', 'offer.html', CTA, 'Evidência: testes unitários passaram.', 'click_evidence_missing', 0],
-  ['false tsc success', 'app.ts', 'export const item = true;\n', 'tsc limpo\napp.ts(1,2): error TS2322: fixture', 'tsc_claim_failed', 3],
+  ['tsc success without a SHA-bound receipt', 'app.ts', 'export const item = true;\n', 'tsc limpo\napp.ts(1,2): error TS2322: fixture', 'tsc_evidence_missing', 3],
   ['plaintext password written to a file', 'account.txt', 'password: test-pass-42\n', 'Arquivo de teste.', 'plaintext_password', 2],
   ['deploy before the click', 'offer.html', CTA, 'Deploy: 2026-01-31T12:00:00Z\nClique /oferta: 2026-01-31T12:05:00Z rc=0', 'deploy_before_click', 3],
 ] as const) {
@@ -693,6 +693,61 @@ for (const scenario of ['markdown', 'wrong-sha', 'past-prefix', 'past-suffix', '
   assert.equal(r.raw.includes('tsc_evidence_missing'), missing, r.raw);
 });
 
+for (const files of ['changed', 'unknown', 'wrong-sha', 'empty'] as const) test(`Revisor dogfood 5: validates an empty remote patch with ${files} files`, t => {
+  const fx = fixture(); t.after(fx.close);
+  const sha = localSha(fx);
+  const details = {
+    sha: files === 'wrong-sha' ? 'ab'.repeat(20) : sha,
+    files: files === 'changed' ? [{ filename: 'settings.txt', status: 'modified' }] : files === 'unknown' ? null : [],
+  };
+  fx.setGh({ prs: [openFixturePr(fx, { commits: [{ sha, patch: files === 'changed' ? '\n' : '', details }] })] });
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, ['--pr', '7'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, files === 'empty' ? 0 : 2, r.raw + r.err);
+  assert.equal(existsSync(log), files === 'empty');
+  if (files !== 'empty') {
+    assert.equal(r.out.error, 'review_history_unavailable');
+    assert.ok(!fx.ghCalls().some(args => ['edit', 'merge'].includes(args[1])));
+  }
+});
+
+test('Revisor dogfood 5: an aggregate binary diff cancels queued auto-merge', t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [openFixturePr(fx, {
+    commits: [{ sha: localSha(fx), patch: '' }], diff: binaryHistory[0].patch,
+    autoMergeRequest: { enabledAt: '2026-01-31T12:00:00Z' },
+  })] });
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, ['--pr', '7'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_diff_binary');
+  assert.equal(r.out.previous_auto_merge, 'disabled');
+  assert.deepEqual(fx.ghCalls().slice(-2).map(args => args.slice(0, 4)), [['pr', 'merge', '7', '--disable-auto'], ['pr', 'view', '7', '--json']]);
+  assert.equal(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].autoMergeRequest, null);
+  assert.ok(!existsSync(log));
+});
+
+for (const scope of ['previous-sha', 'historical-section', 'unbound', 'same-sha', 'same-sha-section'] as const) test(`Revisor dogfood 5: typecheck receipt with ${scope} failure`, t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', 'a.txt']);
+  git(fx.work, ['commit', '-qm', 'fixture']);
+  const head = localSha(fx);
+  const diagnosis = 'src/a.ts(1,2): error TS2322: fixture';
+  const failures = {
+    'previous-sha': `${diagnosis} sha=${'ab'.repeat(20)}`,
+    'historical-section': `## Tentativa anterior\n\`\`\`text\n${diagnosis}\n\`\`\``,
+    unbound: diagnosis,
+    'same-sha': `npm run check rc=1 sha=${head}`,
+    'same-sha-section': `## Revisão do HEAD\nHead: ${head}\n\`\`\`text\n${diagnosis}\n\`\`\``,
+  };
+  const body = `Typecheck passou.\nnpm run check rc=0 sha=${head}\n\n${failures[scope]}`;
+  const r = ship(fx, ['-b', body, '--no-auto']);
+  const contradicts = scope.startsWith('same-sha');
+  assert.equal(r.code, contradicts ? 3 : 0, r.raw + r.err);
+  assert.equal(r.raw.includes('tsc_claim_failed'), contradicts, r.raw);
+});
+
 const firstHistorySha = '42'.repeat(20);
 for (const source of ['patch', 'message', 'incomplete'] as const) test(`Revisor dogfood: daily report detects ${source} in intermediate history`, t => {
   const fx = fixture(); t.after(fx.close);
@@ -1011,12 +1066,17 @@ test('a re-run reuses the open PR and creates nothing', t => {
 
 test('--pr queues auto-merge of an existing PR without git or PR creation', t => {
   const fx = fixture(); t.after(fx.close);
-  fx.setGh({ prs: [{ number: 9, url: 'https://github.com/acme/app/pull/9', state: 'OPEN', headRefName: 'feat/y', headRefOid: localSha(fx), mergeStateStatus: 'BLOCKED', autoMergeRequest: null, statusCheckRollup: PENDING_CI }] });
+  const sha = localSha(fx);
+  fx.setGh({ prs: [{ number: 9, url: 'https://github.com/acme/app/pull/9', state: 'OPEN', headRefName: 'feat/y', headRefOid: sha, mergeStateStatus: 'BLOCKED', autoMergeRequest: null, statusCheckRollup: PENDING_CI }] });
   const r = ship(fx, ['--pr', '9']);
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.status, 'queued');
   const calls = fx.ghCalls();
-  assert.equal(calls.filter(args => args[0] === 'api').length, 2);
+  assert.deepEqual(calls.filter(args => args[0] === 'api'), [
+    ['api', '--paginate', '--slurp', 'repos/acme/app/pulls/9/commits'],
+    ['api', `repos/acme/app/commits/${sha}`, '--header=Accept:application/vnd.github.diff'],
+    ['api', `repos/acme/app/commits/${sha}`],
+  ]);
   assert.deepEqual(calls.filter(args => args[0] === 'pr').map(args => args.slice(0, 2).join(' ')), ['pr view', 'pr diff', 'pr diff', 'pr view', 'pr view', 'pr merge', 'pr view']);
 });
 

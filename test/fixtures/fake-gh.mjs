@@ -30,10 +30,17 @@ if (group === 'api') {
       process.exit(0);
     }
   }
-  if (commit && args.includes('--header=Accept:application/vnd.github.diff')) {
+  if (commit) {
     const entry = state.prs.flatMap(commitsOf).find(c => c.sha === commit[1]);
-    if (entry?.patchError) fail('fixture commit patch unavailable');
-    if (entry) { process.stdout.write(entry.patch); process.exit(0); }
+    if (entry && args.includes('--header=Accept:application/vnd.github.diff')) {
+      if (entry.patchError) fail('fixture commit patch unavailable');
+      process.stdout.write(entry.patch);
+      process.exit(0);
+    }
+    if (entry && args.length === 2) {
+      process.stdout.write(JSON.stringify({ sha: entry.sha, files: [], ...entry.details }));
+      process.exit(0);
+    }
   }
   fail(`fake gh: unsupported ${args.join(' ')}`, 2);
 }

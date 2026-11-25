@@ -399,6 +399,7 @@ async function readRemoteReview(pr) {
   });
   const [patch, names, range] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only']), history]);
   if (patch.code || names.code) throw failed('review_diff', patch.code ? patch : names, 'não consegui ler o diff da PR');
+  if (hasBinaryPatch(patch.out)) throw refuse('review_diff_binary', 'o diff da PR contém alterações binárias que não posso revisar');
   const paths = [...remotePaths(patch.out, names.out), ...remotePaths(range.history, '')];
   return { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup };
 }
