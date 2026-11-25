@@ -351,7 +351,7 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
     { role: 'toolResult', toolCallId: 'k', content: 'ok' },
   ];
   assert.deepEqual(wakeEffects(messages), [
-    'fora dos projetos: editou pr.md',
+    'fora dos projetos: editou `pr.md` (`+1 -0`)',
     'Genexus18MCP: ship: commit 1004742, <https://github.com/lennix1337/Genexus18MCP/pull/895|PR #895> (auto-merge na fila)',
     'Genexus18MCP: comentou na issue #886',
     'Genexus18MCP: apagou a branch remota fix/888 (falhou)',
