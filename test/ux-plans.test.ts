@@ -45,6 +45,20 @@ test('the same plan sent again with steps ticked moves the DM card instead of po
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('when the card can no longer be edited, the plan goes out as a new card', async () => {
+  const dir = fixture().dir, posts: string[] = [];
+  const bridge = new SlackBridge({ sendUserMessage: () => {} } as never, () => ({ dir, name: 'p' }), {
+    now: () => NOW, schedule: () => {},
+    request: async (_o: unknown, path: string) => { posts.push(path); if (path === '/v1/slack/plan') throw new Error('message_not_found'); return { parts: 1, ts: '9.1', channel: 'D1' }; },
+  } as never);
+  try {
+    await bridge.send('<proposed_plan>\n# Migrar\n- [ ] Ler\n</proposed_plan>');
+    const result = await bridge.send('<proposed_plan>\n# Migrar\n- [x] Ler\n</proposed_plan>');
+    assert.deepEqual(posts, ['/v1/slack/send', '/v1/slack/plan', '/v1/slack/send']);
+    assert.equal(result.ts, '9.1');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a card Slack posted without a timestamp is not kept for later updates', async () => {
   const dir = fixture().dir, posts: string[] = [];
   const bridge = new SlackBridge({ sendUserMessage: () => {} } as never, () => ({ dir, name: 'p' }), {

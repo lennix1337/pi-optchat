@@ -864,9 +864,12 @@ export class SlackBridge {
       const plan = channel === null && !threadTs ? extractPlan(text) : undefined;
       const card = plan && this.planCard?.shape === planShape(plan.plan) ? this.planCard : undefined;
       if (card && plan && canCard(plan)) {
-        await this.options.request(owner, '/v1/slack/plan', { channel: card.channel, ts: card.ts, text });
-        this.options.sent(channel, text);
-        return { parts: 1, ts: card.ts, channel: card.channel };
+        const moved = await this.options.request(owner, '/v1/slack/plan', { channel: card.channel, ts: card.ts, text }).then(() => true, () => false);
+        if (moved) {
+          this.options.sent(channel, text);
+          return { parts: 1, ts: card.ts, channel: card.channel };
+        }
+        this.planCard = undefined;
       }
       const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}), ...options }) as { parts: number; ts: string; channel?: string; timestamps?: string[] };
       if (plan && canCard(plan) && result.ts && result.channel && /^D/.test(result.channel)) this.planCard = { shape: planShape(plan.plan), ts: result.ts, channel: result.channel };
