@@ -250,7 +250,9 @@ export default function optchat(host: ExtensionAPI) {
     unattendedWake: () => !!heartbeat?.waking, orderGrant: effect => grantFor(effect), wakeOrderGrant: effect => grantFor(effect, true),
   onPending: (pending, session, gate) => {
     const request = { token: pending.token, summary: pending.summary, detail: pending.detail, label: pending.kind ?? pending.tool, expires: pending.expires };
-    void slack.askApproval({ ...request, decide: approve => gate.decideFromPhone(session, pending.token, approve) });
+    void slack.askApproval({ ...request, ...(pending.reason ? { reason: pending.reason } : {}), ...(pending.targets ? { targets: pending.targets } : {}),
+      ...(pending.sessionAllow ? { sessionAllow: pending.sessionAllow, allowSession: () => gate.allowSessionFromPhone(session, pending.token) } : {}),
+      decide: approve => gate.decideFromPhone(session, pending.token, approve) });
     pi.events.emit('optchat:approval', { type: 'pending', ...request, decide: (approve: boolean) => {
       approvalVia = 'WhatsApp';
       try { return gate.decideFromPhone(session, pending.token, approve); } finally { approvalVia = undefined; }

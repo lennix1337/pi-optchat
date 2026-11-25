@@ -1331,3 +1331,45 @@ test('a background shell started while answering Slack reports its end back to t
     assert.notEqual(texts().at(-1), 'Velho demais.', 'a Slack conversation older than the window gets no shell news');
   } finally { f.close(); }
 });
+
+test('an approval card shows the reason and target, and offers the session button with its exact scope only when the gate allows it', async () => {
+  const f = fixture();
+  try {
+    const decisions: string[] = [];
+    await f.bridge.askApproval({ token: '6'.repeat(24), summary: 'git push origin main', label: 'push', expires: 1_000_000 + 600_000, reason: 'publica commits no remoto', targets: ['C:/projetos/pi-optchat'],
+      sessionAllow: 'git -C c:/projetos/pi-optchat push origin main', allowSession: () => (decisions.push('session'), true), decide: approve => (decisions.push(String(approve)), true) });
+    const post = f.requests.find(r => r.path === '/v1/slack/send')?.body as { text: string; approval?: boolean; sessionAllow?: string };
+    assert.match(post.text, /\*Motivo:\* publica commits no remoto\n\*Alvo:\* `C:\/projetos\/pi-optchat`/);
+    assert.match(post.text, /Aprovar nesta sessão\* libera só `git -C c:\/projetos\/pi-optchat push origin main`.*deploy, produção, gastos/s);
+    assert.equal(post.sessionAllow, 'git -C c:/projetos/pi-optchat push origin main');
+    f.inbox.push({ seq: 1, ts: '2.0', thread: '1.1', text: 'aprovar sessão' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, ['session'], 'the session tap calls only the session allow, never a plain approve as well');
+    assert.match(f.sent.at(-1)!.text, /liberou nesta sessão só `git -C c:\/projetos\/pi-optchat push origin main`/);
+    assert.match((f.requests.find(r => r.path === '/v1/slack/update')?.body as { text: string }).text, /liberado nesta sessão/);
+
+    await f.bridge.askApproval({ token: '7'.repeat(24), summary: 'deploy', label: 'deploy', expires: 1_000_000 + 600_000, reason: 'faz deploy em produção', decide: approve => (decisions.push(String(approve)), true) });
+    const card = f.requests.filter(r => r.path === '/v1/slack/send').at(-1)!.body as { text: string; sessionAllow?: string };
+    assert.equal(card.sessionAllow, undefined, 'a deploy card has no session button');
+    assert.doesNotMatch(card.text, /nesta sessão/);
+    f.inbox.push({ seq: 2, ts: '3.0', thread: '1.1', text: 'aprovar sessão' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, ['session'], 'a typed "aprovar sessão" on a card without that scope approves nothing');
+    assert.match(f.requests.at(-1)!.body ? (f.requests.at(-1)!.body as { text: string }).text : '', /não aceita liberação de sessão/);
+    f.inbox.push({ seq: 3, ts: '4.0', thread: '1.1', text: 'negar' });
+    await f.bridge.poll();
+    assert.deepEqual(decisions, ['session', 'false'], 'the card is still pending and can be denied');
+  } finally { f.close(); }
+});
+
+test('slack_send choices go to the service as buttons, in the topic thread too', async () => {
+  const f = fixture();
+  try {
+    await f.bridge.report('Qual caminho?', 'dm', undefined, [], ['Opção A (recomendada)', 'Opção B', 'Parar']);
+    assert.deepEqual((f.requests.find(r => r.path === '/v1/slack/send')!.body as { choices?: string[] }).choices, ['Opção A (recomendada)', 'Opção B', 'Parar']);
+    await f.bridge.report('Outra?', 'dm', 'topico-1', [], ['Sim', 'Não']);
+    assert.deepEqual((f.requests.filter(r => r.path === '/v1/slack/send').at(-1)!.body as { choices?: string[] }).choices, ['Sim', 'Não']);
+    await f.bridge.report('Só aviso.', 'dm');
+    assert.equal((f.requests.filter(r => r.path === '/v1/slack/send').at(-1)!.body as { choices?: string[] }).choices, undefined);
+  } finally { f.close(); }
+});

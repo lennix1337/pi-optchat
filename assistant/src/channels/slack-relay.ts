@@ -161,7 +161,11 @@ const PART = 3900;
 // external: Slack section block text is limited to 3,000 characters.
 const SECTION_MAX = 3000;
 /** The button ids `SlackChannel` turns into the operator's `aprovar`/`negar` in the post's thread. */
-export const APPROVAL_ACTIONS: Readonly<Record<string, 'aprovar' | 'negar'>> = { optchat_approve: 'aprovar', optchat_deny: 'negar' };
+export type ApprovalAnswer = 'aprovar' | 'negar' | 'aprovar sessão';
+export const APPROVAL_ACTIONS: Readonly<Record<string, ApprovalAnswer>> = { optchat_approve: 'aprovar', optchat_deny: 'negar', optchat_approve_session: 'aprovar sessão' };
+/** The answer buttons of a question post: `optchat_choice_<n>`, each carrying its own label as value. */
+export const CHOICE_ACTION = 'optchat_choice';
+export const CHOICE_MIN = 2, CHOICE_MAX = 5, CHOICE_LABEL_MAX = 75, SESSION_ALLOW_MAX = 150;
 /** App Home buttons, each queued as the DM text the operator could have typed (`optchat_home_approve` in the approval's thread). */
 export const HOME_ACTIONS: Readonly<Record<string, 'status' | 'parar' | 'aprovar' | 'tudo' | 'menos'>> = {
   optchat_home_status: 'status', optchat_home_stop: 'parar', optchat_home_approve: 'aprovar', optchat_home_more: 'tudo', optchat_home_less: 'menos' };
@@ -277,13 +281,30 @@ function settingBlocks(settings: HomeSettings | undefined): unknown[] {
   ];
 }
 
-function approvalBlocks(text: string): unknown[] {
-  const button = (action_id: string, label: string, style: string) => ({ type: 'button', action_id, value: action_id, style, text: { type: 'plain_text', text: label } });
+const plain = (text: string) => ({ type: 'plain_text', text });
+
+function approvalBlocks(text: string, sessionAllow?: string): unknown[] {
+  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: plain(label), ...extra });
+  const session = sessionAllow ? [button('optchat_approve_session', 'Aprovar nesta sessão', { confirm: { title: plain('Liberar nesta sessão?'), text: plain(`Libera só: ${sessionAllow}. Vale até a sessão reiniciar; qualquer outra chamada continua pedindo aprovação.`.slice(0, 300)), confirm: plain('Liberar'), deny: plain('Cancelar') } })] : [];
   return [
     { type: 'section', text: { type: 'mrkdwn', text } },
-    { type: 'actions', elements: [button('optchat_approve', 'Aprovar', 'primary'), button('optchat_deny', 'Negar', 'danger')] },
+    { type: 'actions', elements: [button('optchat_approve', 'Aprovar', { style: 'primary' }), ...session, button('optchat_deny', 'Negar', { style: 'danger' })] },
   ];
 }
+
+const DENIAL = /^(?:negar|nega|n[aã]o|parar|pare|cancelar|cancela|deny|stop|no)\b/i;
+const choiceStyle = (label: string, index: number) => DENIAL.test(label) ? 'danger' : index === 0 ? 'primary' : undefined;
+
+/** The question's text with 2..5 one-tap answers under it, the recommended one first. */
+export function choiceBlocks(text: string, choices: readonly string[]): unknown[] {
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text } },
+    { type: 'actions', elements: choices.map((label, index) => ({ type: 'button', action_id: `${CHOICE_ACTION}_${index}`, value: label, text: plain(label), ...(choiceStyle(label, index) ? { style: choiceStyle(label, index) } : {}) })) },
+  ];
+}
+
+const validChoices = (choices: readonly string[]) => choices.length >= CHOICE_MIN && choices.length <= CHOICE_MAX
+  && choices.every(c => typeof c === 'string' && c.trim().length > 0 && c.length <= CHOICE_LABEL_MAX) && new Set(choices).size === choices.length;
 
 /** Markdown from the agent to Slack mrkdwn: bold, headings and links; everything else passes through. */
 export function slackText(markdown: string): string {
@@ -320,19 +341,25 @@ export class SlackPoster {
   /** The configured name of a project channel id, or null. */
   nameOf(id: string): string | null { return Object.entries(this.options.channels).find(([, value]) => value === id)?.[0] ?? null; }
 
-  /** With `approval`, a one-part post also carries Aprovar/Negar buttons. */
-  /** Also returns the conversation id Slack posted to (the DM's `D…` id), which `update` needs. */
-  async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
+  /**
+   * With `approval`, a one-part post also carries Aprovar/Negar buttons (and, with `sessionAllow`, the session button);
+   * with `choices`, its last part carries one answer button each.
+   * Also returns the conversation id Slack posted to (the DM's `D…` id), which `update` needs.
+   */
+  async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean; sessionAllow?: string; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const destination = channel === undefined ? this.options.operator : Object.hasOwn(this.options.channels, channel) ? this.options.channels[channel] : undefined;
     if (!destination) throw new OutboxRefused('unknown_channel');
     const chunks = parts(slackText(text));
     if (!chunks.length) throw new OutboxRefused('empty_message');
+    const choices = options.choices;
+    if (choices && (options.approval || !validChoices(choices))) throw new OutboxRefused('invalid_choices');
+    if (choices && chunks.at(-1)!.length > SECTION_MAX) chunks.push('Escolha uma opção:');
     const buttons = options.approval && chunks.length === 1 && chunks[0]!.length <= SECTION_MAX;
     let ts = '', posted: string | undefined;
     const timestamps: string[] = [];
     for (const [index, chunk] of chunks.entries()) {
       let body: { ts?: unknown; channel?: unknown };
-      try { body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
+      try { body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk, options.sessionAllow) } : choices && index === chunks.length - 1 ? { blocks: choiceBlocks(chunk, choices) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
 
       catch (error) { throw index === 0 ? error : new Error('slack_partial_post'); }
       ts = typeof body.ts === 'string' ? body.ts : ts;
@@ -365,9 +392,9 @@ export class SlackPoster {
     return slot.file_id;
   }
 
-  /** Rewrites one of the bot's own DM posts as plain text, dropping its buttons. */
+  /** Rewrites one of the bot's own posts (in the DM or a configured project channel) as plain text, dropping its buttons. */
   async update(channel: string, ts: string, text: string): Promise<void> {
-    if (!/^D[A-Z0-9]{2,20}$/.test(channel)) throw new OutboxRefused('unknown_channel');
+    if (!/^D[A-Z0-9]{2,20}$/.test(channel) && !Object.values(this.options.channels).includes(channel)) throw new OutboxRefused('unknown_channel');
     await this.call(UPDATE_URL, { channel, ts, text: slackText(text), blocks: [] });
   }
 
