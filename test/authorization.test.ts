@@ -161,9 +161,9 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   const hooks = new Map<string, (...args: any[]) => any>();
   const notices: [string, string?][] = [];
   const widgets: (string[] | undefined)[] = [];
-  let bells = 0;
+  let bells = 0; const bellText: (string | undefined)[] = [];
   const pi = { on(name: string, fn: (...args: any[]) => any) { hooks.set(name, fn); } } as unknown as ExtensionAPI;
-  registerEffectApprovals(pi, { enabled: true, bell: () => { bells++; } });
+  registerEffectApprovals(pi, { enabled: true, bell: summary => { bells++; bellText.push(summary); } });
   const ctx = { cwd: 'C:/projetos/pi-optchat', sessionManager: { getSessionId: () => 'owner' },
     ui: { notify: (message: string, type?: string) => notices.push([message, type]), setWidget: (_key: string, lines?: string[]) => widgets.push(lines) } };
   const event = { toolName: 'bash', toolCallId: 'call', input: { command: 'git push origin main' } };
@@ -174,6 +174,7 @@ test('a pending approval stays on screen until approved, denied or expired; /app
   assert.match(shown, /push/); assert.match(shown, /git push origin main/); assert.match(shown, /\/approve/); assert.match(shown, /\/deny/);
   assert.equal(notices.filter(([, type]) => type === 'warning').length, 1);
   assert.equal(bells, 1, 'the terminal is alerted once per new pending call');
+  assert.match(bellText[0] ?? '', /git push/, 'the desktop notification says what is waiting');
   await hooks.get('tool_call')!(event, ctx);
   assert.equal(bells, 1, 'a repeated refusal of the same call does not alert again');
 

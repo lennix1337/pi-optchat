@@ -12,6 +12,7 @@ import { pipeStatusRefusal } from './pipe-status-guard.ts';
 import { killRefusal } from './kill-guard.ts';
 import { registerRepeatStop } from './repeat-stop-guard.ts';
 import { winPathRefusal } from './winpath-guard.ts';
+import { notifyDesktop } from './terminal-notify.ts';
 import { withProductionHosts } from './external-effects.ts';
 
 const WIDGET = 'optchat-approval';
@@ -20,7 +21,7 @@ type UiContext = Pick<ExtensionContext, 'sessionManager' | 'ui'>;
 export type ContractDir = () => string | undefined;
 
 // external: BEL flashes the taskbar or beeps in Windows Terminal.
-const terminalBell = () => { if (process.stdout.isTTY) process.stdout.write('\x07'); };
+const terminalBell = (summary?: string) => { if (process.stdout.isTTY) process.stdout.write('\x07'); if (summary) notifyDesktop('Aprovação pendente', summary); };
 
 const label = ({ kind, tool }: PendingApproval) => kind ?? tool;
 const summaries = (pending: PendingApproval[]) => pending.map(p => p.summary).join('; ');
@@ -295,7 +296,7 @@ export function registerEffectApprovals(pi: ExtensionAPI, { enabled = undefined 
     if (pending && !alerted.has(pending.token)) {
       alerted.add(pending.token);
       ctx.ui.notify(`Approval needed \u2014 ${label(pending)}. Type /approve to run it once, /deny to drop it.\n${pending.detail}`, 'warning');
-      bell();
+      bell(pending.summary);
       if (onPending) phone.hold(pending, session);
     }
     return { block: true, reason: note + refusal.reason };

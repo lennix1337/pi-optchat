@@ -35,6 +35,8 @@ export interface CommandState {
   setThinking?(level: string): string;
   proactivityPaused?(): boolean;
   wakeRefusals?(ts: string): string;
+  /** What happened since the operator's last message, from the profile's records. */
+  recap?(): string;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
@@ -103,6 +105,7 @@ function changeThinking(state: CommandState, arg: string): CommandResult {
 
 export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
   { name: 'recusas', aliases: [], summary: 'lista os assuntos recusados; *recusas ID* libera um', run: (state, arg) => ({ text: state.wakeRefusals?.(arg) ?? 'Não consigo ler as recusas nesta sessão.' }) },
+  { name: 'resumo', aliases: ['recap', 'voltei'], summary: 'o que aconteceu desde sua última mensagem e o próximo passo', run: state => ({ text: state.recap?.() ?? 'Não consigo ler os registros nesta sessão.' }) },
   { name: 'status', aliases: ['estado'], summary: 'o que estou fazendo, modelo e conta atuais', run: state => ({ text: withSwitch(state, [state.activity(), modelLine(state)]) }) },
   {
     name: 'parar', aliases: ['pare', 'stop'], summary: 'interrompe o trabalho em andamento (como Esc no terminal)',
