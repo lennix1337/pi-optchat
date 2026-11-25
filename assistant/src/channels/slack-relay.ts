@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Outbox, OutboxRefused, type OutboxOptions, type OutboxRow } from '../outbox/outbox.ts';
 import { immediate } from '../store/transaction.ts';
 import { renderGraph, type HomeGraph } from './home-graph.ts';
+import { canCard, extractPlan, planBlocks, planPreview, withoutPlanTags } from './plan-card.ts';
 
 
 
@@ -39,7 +40,7 @@ const OFFLINE_RECEIPT = 'Recebi. O OptChat não está aberto agora; sua mensagem
 const RETRYABLE_SLACK_ERRORS = new Set(['ratelimited', 'internal_error', 'service_unavailable']);
 
 /** Replaces an approval post with its decided text (no buttons), queued with the click that decided it. */
-export type RetireRequest = { channel: string; ts: string; text: string };
+export type RetireRequest = { channel: string; ts: string; text: string; blocks?: unknown[] };
 
 export class SlackRelay {
   private readonly db: DatabaseSync;
@@ -116,9 +117,9 @@ export class SlackRelay {
     if (next !== null) { this.retryTimer = setTimeout(() => this.schedule(), Math.max(0, next - this.now())); this.retryTimer.unref(); }
   }
   private async deliver(poster: SlackPoster, row: OutboxRow): Promise<void> {
-    const payload = row.payload as Record<string, string | undefined>;
+    const payload = row.payload as Record<string, string | undefined> & { blocks?: unknown };
     if (row.kind === 'receipt') { await poster.send(String(payload.text), payload.thread, payload.destination); return; }
-    if (row.kind === 'retire') { await poster.update(String(payload.channel), String(payload.ts), String(payload.text)); return; }
+    if (row.kind === 'retire') { await poster.update(String(payload.channel), String(payload.ts), String(payload.text), Array.isArray(payload.blocks) ? payload.blocks : []); return; }
     throw new OutboxRefused('unknown_outbox_kind');
   }
 
@@ -346,6 +347,15 @@ function inlineMrkdwn(text: string): string {
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>');
 }
 
+/**
+ * What the phone's lock screen shows when a post carries blocks: Slack reads the top-level `text`, so it opens with the
+ * subject or outcome (first line, link targets dropped), never with the whole body.
+ */
+export function preview(text: string, max = 120): string {
+  const line = (text.split('\n').map(l => l.trim()).find(Boolean) ?? '').replace(/<([^|>]+)\|([^>]+)>/g, '$2').replace(/<([^>]+)>/g, '$1').replace(/\s+/g, ' ').trim();
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}\u2026` : line;
+}
+
 const outsideInlineCode = (text: string): string => text.split(/(`[^`\n]+`)/).map((piece, at) => at % 2 ? piece : inlineMrkdwn(piece)).join('');
 
 /**
@@ -391,7 +401,13 @@ export class SlackPoster {
   async send(text: string, threadTs?: string, channel?: string, options: { approval?: boolean; broadcast?: boolean; sessionAllow?: string; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const destination = channel === undefined ? this.options.operator : Object.hasOwn(this.options.channels, channel) ? this.options.channels[channel] : undefined;
     if (!destination) throw new OutboxRefused('unknown_channel');
-    const chunks = parts(slackText(text));
+    const plan = extractPlan(text);
+    if (plan && canCard(plan)) {
+      const body = await this.call(POST_URL, { channel: destination, text: planPreview(plan.plan), blocks: planBlocks(plan, { actions: channel === undefined }), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }) as { ts?: unknown; channel?: unknown };
+      const ts = typeof body.ts === 'string' ? body.ts : '';
+      return { parts: 1, ts, ...(typeof body.channel === 'string' ? { channel: body.channel } : {}) };
+    }
+    const chunks = parts(slackText(withoutPlanTags(text)));
     if (!chunks.length) throw new OutboxRefused('empty_message');
     const choices = options.choices;
     if (choices && (options.approval || !validChoices(choices))) throw new OutboxRefused('invalid_choices');
@@ -401,7 +417,7 @@ export class SlackPoster {
     const timestamps: string[] = [];
     for (const [index, chunk] of chunks.entries()) {
       let body: { ts?: unknown; channel?: unknown };
-      try { body = await this.call(POST_URL, { channel: destination, text: chunk, ...(buttons ? { blocks: approvalBlocks(chunk, options.sessionAllow) } : choices && index === chunks.length - 1 ? { blocks: choiceBlocks(chunk, choices) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
+      try { body = await this.call(POST_URL, { channel: destination, text: buttons ? preview(chunk) : chunk, ...(buttons ? { blocks: approvalBlocks(chunk, options.sessionAllow) } : choices && index === chunks.length - 1 ? { blocks: choiceBlocks(chunk, choices) } : {}), ...(threadTs ? { thread_ts: threadTs, ...(options.broadcast ? { reply_broadcast: true } : {}) } : {}), unfurl_links: false }); }
 
       catch (error) { throw index === 0 ? error : new Error('slack_partial_post'); }
       ts = typeof body.ts === 'string' ? body.ts : ts;
@@ -434,10 +450,18 @@ export class SlackPoster {
     return slot.file_id;
   }
 
-  /** Rewrites one of the bot's own posts (in the DM or a configured project channel) as plain text, dropping its buttons. */
-  async update(channel: string, ts: string, text: string): Promise<void> {
+  /** Rewrites one of the bot's own posts (in the DM or a configured project channel) as plain text, dropping its buttons unless `blocks` is given. */
+  async update(channel: string, ts: string, text: string, blocks: unknown[] = []): Promise<void> {
     if (!/^D[A-Z0-9]{2,20}$/.test(channel) && !Object.values(this.options.channels).includes(channel)) throw new OutboxRefused('unknown_channel');
-    await this.call(UPDATE_URL, { channel, ts, text: slackText(text), blocks: [] });
+    await this.call(UPDATE_URL, { channel, ts, text: slackText(text), blocks });
+  }
+
+  /** Redraws a plan card in the DM with its live N/M; an update never brings the buttons back. */
+  async updatePlan(channel: string, ts: string, text: string): Promise<void> {
+    if (!/^D[A-Z0-9]{2,20}$/.test(channel)) throw new OutboxRefused('unknown_channel');
+    const plan = extractPlan(text);
+    if (!plan || !canCard(plan)) throw new OutboxRefused('not_a_plan');
+    await this.call(UPDATE_URL, { channel, ts, text: planPreview(plan.plan), blocks: planBlocks(plan, { actions: false }) });
   }
 
   /** Marks a message the operator wrote (DM or a configured channel) with an emoji: seen, done. */

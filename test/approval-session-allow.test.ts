@@ -38,7 +38,7 @@ test('the session tap approves this call and allows only that exact push for the
     'git -C C:/projetos/dotfiles push origin main',
     'git -C C:/projetos/pi-optchat push --force origin main',
     'git -C C:/projetos/pi-optchat push origin feature',
-    'git -C C:/projetos/pi-optchat push origin main; rm -rf /',
+    'git -C C:/projetos/pi-optchat push origin main; whoami',
     'git push origin main',
   ]) wait(gate, bash(other));
   wait(gate, bash(PUSH, 'other-session'));

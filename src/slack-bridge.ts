@@ -9,6 +9,7 @@ import type { Settled } from './authorization.ts';
 import { promptText, wakeTask } from './heartbeat.ts';
 import { recordAnswer, recordInbound } from './slack-metrics.ts';
 import { delivers, projectOf, projectOfRepo, toolCalls } from './projects.ts';
+import { awayRecap } from './away-recap.ts';
 import { readDay, recordRun, renderDay } from './home-day.ts';
 import type { Economy } from './quota-economy.ts';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
@@ -27,6 +28,7 @@ import { memoryShapedReply } from './wake-noise.ts';
 import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
 import { activeRefusals, recordRefusal, rememberWake, revokeRefusal } from './wake-refusal.ts';
+import { canCard, extractPlan, planTitle } from '../assistant/src/channels/plan-card.ts';
 
 /**
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
@@ -565,7 +567,7 @@ export class SlackBridge {
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
     const { model, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused, wakeRefusals: ts => {
+    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused, recap: () => { const owner = this.owner(); return owner ? awayRecap(owner.dir, now()) : 'Perfil indisponível.'; }, wakeRefusals: ts => {
       const owner = this.owner();
       if (!owner) return 'Perfil indisponível.';
       if (ts) return revokeRefusal(owner.dir, ts) ? 'Assunto liberado.' : 'Recusa não encontrada.';
@@ -851,12 +853,23 @@ export class SlackBridge {
     return this.send(text, threadTs, channel, options);
   }
 
+  /** The plan card last posted in the DM, so a later send of the same plan updates it. */
+  private planCard: { title: string; ts: string; channel: string } | undefined;
+
   /** To the operator's DM, or with `channel` to that configured project channel. */
   async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true; broadcast?: true; sessionAllow?: string; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
     try {
+      const plan = channel === null && !threadTs ? extractPlan(text) : undefined;
+      const card = plan && this.planCard?.title === planTitle(plan.plan) ? this.planCard : undefined;
+      if (card && plan && canCard(plan)) {
+        await this.options.request(owner, '/v1/slack/plan', { channel: card.channel, ts: card.ts, text });
+        this.options.sent(channel, text);
+        return { parts: 1, ts: card.ts, channel: card.channel };
+      }
       const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}), ...options }) as { parts: number; ts: string; channel?: string; timestamps?: string[] };
+      if (plan && canCard(plan) && result.channel && /^D/.test(result.channel)) this.planCard = { title: planTitle(plan.plan), ts: result.ts, channel: result.channel };
       this.options.sent(channel, text);
       return result;
     }
