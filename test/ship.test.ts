@@ -407,6 +407,75 @@ test('a full local model dry-run neither consults GitHub nor changes Git state',
   assert.equal(ship(fx, [...BODY, '--review-model']).code, 2);
 });
 
+for (const staged of [false, true]) test(`Ship hardening: model dry-run refuses check changes to ${staged ? 'index bytes with the same porcelain' : 'porcelain status'}`, t => {
+  const fx = fixture(); t.after(fx.close);
+  const script = staged ? 'git update-index --assume-unchanged README.md' : 'node check-fixture.cjs';
+  writeFileSync(join(fx.work, 'check-fixture.cjs'), "require('node:fs').writeFileSync('generated.txt', 'generated')\n");
+  writeFileSync(join(fx.work, 'package.json'), JSON.stringify({ scripts: { check: script } }));
+  commitFile(fx, 'a.txt');
+  const before = git(fx.work, ['status', '--porcelain']);
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--dry-run', '--review-model'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'dry_run_check_changed_git');
+  assert.equal(existsSync(log), false);
+  assert.deepEqual(fx.ghCalls(), []);
+  if (staged) assert.equal(git(fx.work, ['status', '--porcelain']), before);
+});
+
+test('Ship hardening: reviews and publishes the subject of an existing local commit as the title', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', 'a.txt']);
+  git(fx.work, ['commit', '-qm', 'Reviewed-subject']);
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, [...BODY, '--no-auto'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.equal(readReviewPrompt(log).payload.title, 'Reviewed-subject');
+  assert.equal(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].title, 'Reviewed-subject');
+});
+
+test('Ship hardening: refuses a new PR whose commit has no subject', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  git(fx.work, ['add', 'a.txt']);
+  git(fx.work, ['commit', '-q', '--allow-empty-message', '-m', '']);
+  const r = ship(fx, [...BODY, '--no-auto']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_title_missing');
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'create'));
+});
+
+for (const verdict of ['changes', 'block'] as const) test(`Ship hardening: --pr ${verdict} cancels existing auto-merge`, t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [openFixturePr(fx, { autoMergeRequest: { enabledAt: '2026-01-31T12:00:00Z' } })] });
+  const finding = verdict === 'block' ? { severity: 'blocker', text: '[pii] Dado sensível.' } : { severity: 'major', text: '[verification] Falta verificação.' };
+  const r = ship(fx, ['--pr', '7'], { FAKE_REVISOR_ANSWER: JSON.stringify({ verdict, findings: [finding] }) });
+  assert.equal(r.code, verdict === 'block' ? 2 : 3, r.raw + r.err);
+  assert.equal(r.out.previous_auto_merge, 'disabled');
+  assert.deepEqual(fx.ghCalls().filter(args => args[1] === 'merge'), [['pr', 'merge', '7', '--disable-auto']]);
+  const pr = JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0];
+  assert.equal(pr.autoMergeRequest, null);
+  assert.equal(pr.state, 'OPEN');
+});
+
+test('Ship hardening: a hook-rewritten neutral message is not pushed', { skip: process.platform === 'win32' }, t => {
+  const fx = fixture(); t.after(fx.close);
+  const hook = join(fx.work, '.git', 'hooks', 'commit-msg');
+  writeFileSync(hook, '#!/bin/sh\nprintf "Assunto reescrito pelo hook\\n" > "$1"\n');
+  chmodSync(hook, 0o755);
+  commitFile(fx, 'a.txt');
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.equal(r.out.error, 'review_commit_message_changed');
+  assert.equal(readReviewPrompt(log).payload.commitMessage, `fixture\n\n${BODY[1]}\n`);
+  assert.equal(git(fx.work, ['log', '-1', '--format=%s']), 'Assunto reescrito pelo hook');
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'create'));
+});
+
 const OFFER_DIFF = `diff --git a/offer.html b/offer.html\n--- /dev/null\n+++ b/offer.html\n@@ -0,0 +1 @@\n+${CTA}`;
 
 test('Revisor prevents --pr from bypassing findings, updates the body and follows the PR', t => {
@@ -583,10 +652,11 @@ test('commits only the selected paths, pushes, opens the PR and queues auto-merg
   assert.equal(remoteSha(fx, 'feat/x'), localSha(fx));
   const calls = fx.ghCalls().map(args => args.join(' '));
   assert.equal(calls[0], 'pr view feat/x --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body');
-  assert.equal(calls[1], 'pr create --fill --body-file ' + calls[1].split(' ')[4] + ' --base main --head feat/x');
+  const create = fx.ghCalls()[1];
+  assert.deepEqual(create, ['pr', 'create', '--title', 'feat: a', '--body-file', create[5], '--base', 'main', '--head', 'feat/x']);
   const state = JSON.parse(readFileSync(fx.statePath, 'utf8'));
   assert.equal(state.prs[0].body, 'Problema: a.txt faltava. Mudança: cria a.txt. Evidência: teste.\n', 'the PR carries the description');
-  assert.equal(existsSync(calls[1].split(' ')[4]), false, 'the description file is removed');
+  assert.equal(existsSync(create[5]), false, 'the description file is removed');
   assert.match(git(fx.work, ['log', '-1', '--format=%b']), /Problema: a.txt faltava/, 'the commit carries it too');
   assert.equal(calls.at(-1), 'pr view 1 --json number,url,state,mergeStateStatus,autoMergeRequest,statusCheckRollup,headRefOid,title,body');
   assert.ok(calls.includes(`pr merge 1 --squash --auto --match-head-commit ${localSha(fx)}`));

@@ -72,6 +72,11 @@ if (verb === 'view') {
 } else if (verb === 'merge') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for ${rest[0]}`);
+  if (rest.includes('--disable-auto')) {
+    pr.autoMergeRequest = null;
+    save();
+    process.exit(0);
+  }
   if (flag('--match-head-commit') !== headOf(pr)) fail('head mismatch');
   if (!rest.includes('--auto')) {
     if (pr.mergeStateStatus !== 'CLEAN') fail(`Pull request is not mergeable: ${pr.mergeStateStatus}`);

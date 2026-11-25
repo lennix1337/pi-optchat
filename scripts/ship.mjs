@@ -4,6 +4,7 @@
 
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
@@ -24,7 +25,7 @@ const FORBIDDEN_HINT = {
 };
 const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --body-file ARQ] [caminhos... | --all] [--title "título da PR"] [--pr N] [--no-auto] [--subscriber RUN] [--metric NOME (--before NUM | --metrics-file ARQ) [--direction lower|higher] [--manifest ARQ]] [--direct-main] [--branch NOME] [--base BRANCH] [--wait S] [--dry-run] | --sync
   -m, --message TEXTO  assunto do commit (obrigatório com caminhos ou --all)
-  --title TEXTO        título da PR (padrão: o assunto do commit, ou o nome da branch com vários commits)
+  --title TEXTO        título da PR (padrão: o assunto do commit revisado)
   -b, --body TEXTO     descrição da PR e corpo do commit: o problema, a mudança, o que falta e a evidência
                        (obrigatória quando a branch ainda não tem PR aberta)
   --body-file ARQ      a mesma descrição, lida de um arquivo
@@ -291,7 +292,7 @@ function reportAuto(ctx, result) {
 async function openPr(branch, base, body, title) {
   const file = (await git(['rev-parse', '--git-path', 'SHIP_PR_BODY'])).out.trim();
   writeFileSync(file, `${body.trim()}\n`);
-  const c = await gh(['pr', 'create', ...(title ? ['--title', title] : ['--fill']), '--body-file', file, '--base', base, '--head', branch], 'create', title)
+  const c = await gh(['pr', 'create', '--title', title, '--body-file', file, '--base', base, '--head', branch], 'create', title)
     .finally(() => rmSync(file, { force: true }));
   if (c.killed) {
     const found = await viewPr(branch);
@@ -307,12 +308,13 @@ async function openPr(branch, base, body, title) {
 }
 
 
-async function review(opts, ctx, input) {
+async function review(opts, ctx, input, pr) {
   let result;
   try { result = await reviewChange({ ...input, dryRun: opts.dryRun && !opts.reviewModel, fullDiff: opts.reviewModel, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
   catch (e) { throw refuse('review_unavailable', firstLine(e.message)); }
   ctx.review = result.verdict;
   if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
+  if (pr?.autoMergeRequest && !opts.dryRun && ['changes', 'block'].includes(result.verdict)) await disableAutoMerge(pr, ctx);
   if (result.verdict === 'block') throw new Stop('refused', {
     error: 'review_blocked', review: result.verdict, review_findings: ctx.review_findings,
     hint: 'Revisor bloqueou: remova o problema e revise novamente.',
@@ -342,6 +344,18 @@ async function updatePrReview(pr, result, metadata = pr) {
   return { title, body };
 }
 
+async function disableAutoMerge(pr, ctx) {
+  const command = await gh(['pr', 'merge', String(pr.number), '--disable-auto']);
+  const after = await viewPr(pr.number);
+  if (after.pr?.state === 'OPEN' && after.pr.autoMergeRequest === null) {
+    ctx.previous_auto_merge = 'disabled';
+    return;
+  }
+  const hint = `gh pr view ${pr.number} --json state,autoMergeRequest para reconciliar; não repita o cancelamento`;
+  if (command.killed || after.error || !command.code) throw uncertain('disable_auto_merge', hint);
+  throw failed('disable_auto_merge', command, hint);
+}
+
 async function autoMergeOnly(opts, ctx) {
   const view = await viewPr(ctx.pr);
   if (view.error) throw failed('pr_lookup', view.error, 'gh pr view falhou antes da revisão');
@@ -350,7 +364,6 @@ async function autoMergeOnly(opts, ctx) {
   if (pr.state !== 'OPEN') return reportAuto(ctx, pr.state === 'MERGED' ? { auto: 'merged', pr } : { auto: 'not_queued', reason: 'pr_closed', pr });
   const result = await reviewRemotePr(opts, ctx, pr);
   if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `Revisor (prévia determinística) > ${result.verdict === 'changes' ? 'não enfileirar' : 'ver checks para auto-merge'}` });
-  if (result.verdict === 'changes' && pr.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
   await confirmPrSnapshot(pr, 'a PR mudou durante a revisão; revise novamente');
   const metadata = await updatePrReview(pr, result);
   if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
@@ -390,7 +403,7 @@ async function reviewRemotePr(opts, ctx, pr) {
   const [patch, names, range] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only']), remoteHistory(pr)]);
   if (patch.code || names.code) throw failed('review_diff', patch.code ? patch : names, 'não consegui ler o diff da PR');
   const paths = [...remotePaths(patch.out, names.out), ...remotePaths(range.history, '')];
-  return review(opts, ctx, { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup });
+  return review(opts, ctx, { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup }, pr);
 }
 
 async function mainCheckoutOf() {
@@ -479,8 +492,35 @@ async function reviewGit(args, env = process.env) {
   return r.out;
 }
 
+const indexPath = async () => (await reviewGit(['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
+
+async function dryRunGitState() {
+  const status = await reviewGit(['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all']);
+  const index = await indexPath();
+  const hash = existsSync(index) ? createHash('sha256').update(readFileSync(index)).digest('hex') : null;
+  return JSON.stringify({ status, hash });
+}
+
+async function checkBeforeReview(opts) {
+  if ((opts.dryRun && !opts.reviewModel) || !hasCheckScript()) return undefined;
+  const before = opts.dryRun ? await dryRunGitState() : undefined;
+  const check = await run('npm', ['run', 'check'], 'commit', { shell: process.platform === 'win32' });
+  if (before !== undefined && before !== await dryRunGitState()) {
+    throw refuse('dry_run_check_changed_git', 'npm run check alterou o status ou o índice durante a prévia; confira git status e git diff --cached. Nada foi enviado.');
+  }
+  if (check.code) throw failed('check', check, 'npm run check falhou (lint/tipos): corrija antes do push; nada foi commitado');
+  return check.code;
+}
+
+async function reviewedCommitMessage(opts) {
+  if (opts.message === undefined) return '';
+  const result = await run('git', ['stripspace'], 'local', { input: [opts.message, opts.body].filter(Boolean).join('\n\n') });
+  if (result.code) throw failed('review_commit_message', result, 'não consegui preparar a mensagem do commit; nada foi enviado');
+  return result.out;
+}
+
 async function previewTree(opts, head) {
-  const original = (await reviewGit(['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
+  const original = await indexPath();
   const dir = mkdtempSync(join(tmpdir(), 'ship-index-'));
   const index = join(dir, 'index');
   const env = { ...process.env, GIT_INDEX_FILE: index };
@@ -492,7 +532,7 @@ async function previewTree(opts, head) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-async function reviewSnapshot(opts, ctx, { base, head, existing, metadata, localCheck }) {
+async function reviewSnapshot(opts, ctx, { base, head, existing, metadata, localCheck, commitMessage }) {
   const mergeBase = (await reviewGit(['merge-base', `refs/remotes/origin/${base}`, head])).trim();
   const tree = await previewTree(opts, head);
   const range = `${mergeBase}..${head}`;
@@ -514,7 +554,7 @@ async function reviewSnapshot(opts, ctx, { base, head, existing, metadata, local
   const commitMessages = [];
   const parts = messages.split('\0');
   for (let i = 0; i + 1 < parts.length; i += 2) commitMessages.push({ sha: parts[i], message: parts[i + 1] });
-  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, ...metadata, localCheck, head: tree === (await reviewGit(['rev-parse', `${head}^{tree}`])).trim() ? head : undefined, checksHead: existing?.headRefOid, checks: existing?.statusCheckRollup, commitMessage: `${opts.message ?? ''}\n${opts.body ?? ''}`, commitMessages });
+  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, ...metadata, localCheck, head: tree === (await reviewGit(['rev-parse', `${head}^{tree}`])).trim() ? head : undefined, checksHead: existing?.headRefOid, checks: existing?.statusCheckRollup, commitMessage, commitMessages }, existing);
   return { tree, result };
 }
 
@@ -565,17 +605,15 @@ async function shipBranch(opts, ctx) {
   const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
   const head = headR.out.trim();
   if (!head) throw refuse('review_head_unknown', 'não consegui identificar o commit local para revisão');
-  const metadata = { title: opts.title ?? (existingOpen ? existingOpen.title : opts.message), body: opts.body ?? existingOpen?.body };
-  let localCheck;
-  if ((!opts.dryRun || opts.reviewModel) && hasCheckScript()) {
-    const check = await run('npm', ['run', 'check'], 'commit', { shell: process.platform === 'win32' });
-    if (check.code) throw failed('check', check, 'npm run check falhou (lint/tipos): corrija antes do push; nada foi commitado');
-    localCheck = check.code;
-  }
-  const { tree, result } = await reviewSnapshot(opts, ctx, { base, head, existing: existingOpen, metadata, localCheck });
+  const commitMessage = await reviewedCommitMessage(opts);
+  const metadata = { title: existingOpen?.title, body: opts.body ?? existingOpen?.body };
+  if (!opts.directMain && !existingOpen) {
+    metadata.title = opts.title ?? (opts.message === undefined ? (await reviewGit(['show', '-s', '--format=%s', head])).trim() : commitMessage.split('\n')[0]);
+    if (!metadata.title) throw refuse('review_title_missing', 'o commit não tem assunto revisável; passe --title. Nada foi enviado.');
+  } else if (opts.title !== undefined) metadata.title = opts.title;
+  const localCheck = await checkBeforeReview(opts);
+  const { tree, result } = await reviewSnapshot(opts, ctx, { base, head, existing: existingOpen, metadata, localCheck, commitMessage });
   if (result.verdict === 'changes' && opts.directMain) throw refuse('review_changes_requires_pr', 'Revisor pediu mudanças: abra uma PR, não envie direto à base');
-  // external: GitHub can merge a newly pushed head if auto-merge is already enabled.
-  if (result.verdict === 'changes' && existingOpen?.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
   if (opts.dryRun) {
     if (opts.reviewModel) return emit(result.verdict === 'changes' ? 'not_queued' : 'dry_run', { ...ctx, base, plan: 'revisão local sem envio' });
     const plan = [
@@ -613,7 +651,7 @@ async function shipBranch(opts, ctx) {
   }
   if (commitNeeded) {
     const headBefore = headR.out.trim();
-    const c = await git(['commit', '-m', opts.message, ...(opts.body ? ['-m', opts.body] : []), ...(selecting && !opts.all ? ['--', ...opts.paths] : [])], 'commit');
+    const c = await git(['commit', '--cleanup=whitespace', '-m', opts.message, ...(opts.body ? ['-m', opts.body] : []), ...(selecting && !opts.all ? ['--', ...opts.paths] : [])], 'commit');
     if (c.killed) {
       const head = (await git(['rev-parse', '--verify', '--quiet', 'HEAD'])).out.trim();
       if (head === headBefore || !head) throw uncertain('commit', 'git log -1 para reconciliar; não repita o commit');
@@ -637,12 +675,13 @@ async function shipBranch(opts, ctx) {
     throw refuse('review_snapshot_changed', 'o commit mudou após a revisão (por exemplo, um hook): nada foi enviado; revise novamente');
   }
   if (commitNeeded) {
-    const message = await reviewGit(['show', '-s', '--format=%B', reviewedHead]);
+    const message = await reviewGit(['show', '-s', '--format=format:%B', reviewedHead]);
     try { await review({ ...opts, dryRun: true }, {}, { commitMessages: [{ sha: reviewedHead, message }] }); }
     catch (error) {
       if (!(error instanceof Stop) || error.fields.error !== 'review_blocked') throw error;
       throw new Stop('refused', { ...error.fields, hint: 'A mensagem gravada pelo Git contém um segredo; corrija o commit local. Nada foi enviado.' });
     }
+    if (message !== commitMessage) throw refuse('review_commit_message_changed', 'a mensagem gravada pelo Git difere da revisada; revise o commit local antes de enviar. Nada foi enviado.');
   }
   const updated = existingOpen ? await updatePrReview(existingOpen, result, metadata) : undefined;
   const target = opts.directMain ? base : branch;
@@ -664,13 +703,14 @@ async function shipBranch(opts, ctx) {
     return emit('pushed', { ...ctx, branch: target });
   }
 
-  const pr = existingOpen ?? await openPr(branch, base, reviewBody(metadata.body, result), opts.title);
+  const published = updated ?? { title: metadata.title, body: reviewBody(metadata.body, result) };
+  const pr = existingOpen ?? await openPr(branch, base, published.body, published.title);
   ctx.pr = pr.number;
   ctx.url = pr.url;
   await recordShippedManifest(opts, ctx, { branch, pr: pr.number, url: pr.url });
   if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
   if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
-  return reportAuto(ctx, await autoMerge(pr.number, opts.wait, reviewedHead, updated));
+  return reportAuto(ctx, await autoMerge(pr.number, opts.wait, reviewedHead, published));
 }
 
 
