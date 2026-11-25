@@ -445,3 +445,12 @@ test('a crew memory write that names the contract file is prose, not a contract 
 
   assert.equal(touchesContract({ tool: 'edit', input: { path: '~/.optchat/profiles/sample-profile/autonomy.json', edits: [] } }), true);
 });
+
+test('an edit of the contract file is summarised by its file and line change, not by the bare tool name', () => {
+  const gate = new EffectApprovals();
+  const path = '~/.optchat/profiles/sample-profile/autonomy.json';
+  token(gate, invocation('edit', { path, edits: [{ oldText: 'a\nb', newText: 'a\nc\nd' }, { oldText: 'x', newText: 'y' }] }));
+  const [pending] = gate.pendingFor('owner');
+  assert.match(pending.summary, /^edit autonomy\.json \(\+3 -2\) \(in repo\)$/);
+  assert.ok(pending.detail.includes('"oldText"'), 'the whole invocation is still shown verbatim');
+});

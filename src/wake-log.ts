@@ -1,5 +1,6 @@
 import { acceptedPr } from './accepted-pr.ts';
 import { commandWords, segments } from './effect-classifier.ts';
+import { callDelta, deltaText, type LineDelta } from './diff-stat.ts';
 
 
 
@@ -66,11 +67,27 @@ export function councilThread(messages: readonly Message[]): string | undefined 
   return undefined;
 }
 
+const MAX_FILES = 6;
+function addEdit(files: Map<string, LineDelta | undefined>, name: string, delta: LineDelta | undefined): void {
+  const before = files.get(name);
+  files.set(name, delta ? { added: (before?.added ?? 0) + delta.added, removed: (before?.removed ?? 0) + delta.removed } : before);
+}
+
+function editedLine(files: ReadonlyMap<string, LineDelta | undefined>): string {
+  const known = [...files.values()].filter((d): d is LineDelta => !!d);
+  const each = (name: string, delta: LineDelta | undefined) => `\`${name}\`${delta ? ` (\`${deltaText(delta)}\`)` : ''}`;
+  if (!known.length) return `editou ${[...files.keys()].join(', ')}`;
+  const total = deltaText({ added: known.reduce((sum, d) => sum + d.added, 0), removed: known.reduce((sum, d) => sum + d.removed, 0) });
+  if (files.size === 1) { const [[name, delta]] = [...files]; return `editou ${each(name!, delta)}`; }
+  const shown = [...files].slice(0, MAX_FILES).map(([name, delta]) => each(name, delta));
+  return `*editou ${files.size} arquivos* (\`${total}\`) \u2014 ${shown.join(', ')}${files.size > MAX_FILES ? `, e mais ${files.size - MAX_FILES}` : ''}`;
+}
+
 /** Each effect of a run, in order, as `repo: what` (failed calls say so); repeated lines are kept once. */
 export function wakeEffects(messages: readonly Message[]): string[] {
   const results = new Map<string, { text: string; error: boolean }>();
   for (const m of messages) if (m.role === 'toolResult' && m.toolCallId) results.set(m.toolCallId, { text: textOf(m.content), error: !!m.isError });
-  const lines: string[] = [], edited = new Map<string, Set<string>>();
+  const lines: string[] = [], edited = new Map<string, Map<string, LineDelta | undefined>>();
   for (const m of messages) {
     if (m.role !== 'assistant') continue;
     for (const call of blocks(m.content)) {
@@ -81,7 +98,7 @@ export function wakeEffects(messages: readonly Message[]): string[] {
         if (result?.error) continue;
         const repo = repoIn(args.path) ?? 'fora dos projetos';
         if (!result) lines.push(`${repo}: edição de ${base(args.path)} não confirmada`);
-        else (edited.get(repo) ?? edited.set(repo, new Set()).get(repo)!).add(base(args.path));
+        else addEdit(edited.get(repo) ?? edited.set(repo, new Map()).get(repo)!, base(args.path), callDelta(call.name, args));
       } else if ((call.name === 'bash' || call.name === 'powershell') && typeof args.command === 'string') {
         const repo = repoIn(args.command);
         for (const segment of segments(args.command, ''))
@@ -97,7 +114,7 @@ export function wakeEffects(messages: readonly Message[]): string[] {
       }
     }
   }
-  const files = [...edited].map(([repo, names]) => `${repo}: editou ${[...names].join(', ')}`);
+  const files = [...edited].map(([repo, names]) => `${repo}: ${editedLine(names)}`);
   return [...new Set([...files, ...lines])];
 }
 

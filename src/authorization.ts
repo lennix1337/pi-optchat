@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { callDelta, deltaText } from './diff-stat.ts';
 import { isReadOnlyDiagnostic } from './operation-diagnostics.ts';
 import { databaseDestructive, externalEffectsOf, productionWriteHost, scriptCommands, runsDeploy, segments, planSpawn, paidDelegationCode } from './effect-classifier.ts';
 import { browserConsentEffect } from './external-effects.ts';
@@ -240,11 +241,17 @@ function shellRisk(text: string, script: boolean) {
 }
 
 
+function fileChange(tool: string, input: unknown): string | undefined {
+  if ((tool !== 'edit' && tool !== 'write') || !record(input) || typeof input.path !== 'string') return undefined;
+  const delta = callDelta(tool, input);
+  return `${tool} ${input.path.split(/[\\/]/).pop()}${delta ? ` (${deltaText(delta)})` : ''}`;
+}
+
 function summarize({ tool, input, cwd }: Invocation) {
   const where = cwd ? ` (in ${cwd.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)})` : '';
   const text = record(input) && typeof input.command === 'string' ? input.command
-    : record(input) && typeof input.code === 'string' ? `${tool} script`
-      : record(input) ? [tool, input.action, input.agent, input.name].filter(part => typeof part === 'string').join(' ') : tool;
+    : fileChange(tool, input) ?? (record(input) && typeof input.code === 'string' ? `${tool} script`
+      : record(input) ? [tool, input.action, input.agent, input.name].filter(part => typeof part === 'string').join(' ') : tool);
   const line = text.replace(/\s+/g, ' ').trim();
   return (line.length > 120 ? `${line.slice(0, 119)}…` : line) + where;
 }

@@ -146,6 +146,19 @@ test('slack text turns Markdown tables into key/value records a phone can read',
   assert.equal(slackText('a | b\nsem separador'), 'a | b\nsem separador');
 });
 
+test('slack text leaves fenced and inline code untouched', () => {
+  const fenced = 'antes **negrito**\n```\n**nao** ~~risca~~ [x](https://x.test) | a | b |\n| --- | --- |\n# titulo\n```\ndepois **negrito**';
+  assert.equal(slackText(fenced), 'antes *negrito*\n```\n**nao** ~~risca~~ [x](https://x.test) | a | b |\n| --- | --- |\n# titulo\n```\ndepois *negrito*');
+  assert.equal(slackText('use `**x**` e `[a](https://x.test)` mas **y**'), 'use `**x**` e `[a](https://x.test)` mas *y*');
+  assert.equal(slackText('```\n**aberto sem fim**'), '```\n**aberto sem fim**');
+});
+
+test('slack text converts strikethrough, task lists and file links', () => {
+  assert.equal(slackText('~~velho~~ novo'), '~velho~ novo');
+  assert.equal(slackText('- [x] feito\n  - [ ] falta'), '\u2611 feito\n  \u2610 falta');
+  assert.equal(slackText('veja [a.ts](file:///home/ana/proj/src/a.ts#L10) e [b](file:///C:/proj/b.ts#L3-L9) e [c](file:///home/ana/c.ts)'), 'veja `/home/ana/proj/src/a.ts:10` e `C:/proj/b.ts:3` e `/home/ana/c.ts`');
+});
+
 test('when nobody polled recently, a new DM gets one automatic receipt', async () => {
   let now = 1_793_000_000_000;
   const slack = fakeSlack();
