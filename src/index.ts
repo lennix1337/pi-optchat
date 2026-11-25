@@ -1,5 +1,6 @@
 import { ciBackToWorker, SUBSCRIBER_NOTICE_CHANNEL } from './ci-back-to-worker.ts';
 import { predictionsTool } from './predictions.ts';
+import { formatIdeasBoard, ideasConfig, ideasTool, readIdeas } from './ideas.ts';
 import { configuredShadowRepos, reconcileAcceptedShadow, shadowWakeNote, stageNextPrediction, workerRoutesForShadow } from './shadow-execution.ts';
 import { nightShiftConfig, nightShiftLogPath, nightShiftWakeNote } from './night-shift.ts';
 import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.ts';
@@ -389,9 +390,10 @@ export default function optchat(host: ExtensionAPI) {
     const lastStop = lastStopOf(ctx);
     const agents = a.children.ids.flatMap(id => a.children.live(id)?.info ?? []).map(r => `${r.id} ${r.state} for ${age(r.started)}: ${oneLine(r.task).slice(0, 160)}`);
     const jobs = runningShells(shells).map(j => `${j.id} running for ${age(j.started)}: ${oneLine(j.command).slice(0, 160)}`);
+    const ideasBoard = formatIdeasBoard(readIdeas(a.dir), ideasConfig(a.config), now) || undefined;
     return beatSnapshot({ view: a.memory.render(), state: renderOperationalContext(readOperationalState(join(a.dir, 'operational-state.json'))),
       idleMinutes: idleMinutes(), lastStop, agents, shells: jobs, plan: heartbeatPlan(a.config), queueItem: nextQueueItem(a.dir), radar,
-      obligations: liveObligations({ ...obligationSource(a), now }), refusals: activeRefusals(a.dir, now).map(rule => rule.topic) });
+      obligations: liveObligations({ ...obligationSource(a), now }), refusals: activeRefusals(a.dir, now).map(rule => rule.topic), ideas: ideasBoard });
   };
   const showTitle = (ctx: ExtensionContext) => {
     const a = active;
@@ -618,6 +620,7 @@ export default function optchat(host: ExtensionAPI) {
         }).staged;
       },
       obligations: () => { const a = own(); return a ? obligationSource(a) : {}; },
+      ideas: () => { const a = own(); return a ? ideasConfig(a.config) : undefined; },
       wake: (beat, radar, choice) => {
         wakeRetried = {}; clearWakeWorkers();
         const dream = briefDream(ctx);
@@ -627,11 +630,12 @@ export default function optchat(host: ExtensionAPI) {
         const instructions = profile.config.heartbeatInstructions;
         const shadow = beat.staged ? shadowWakeNote(beat.staged) : undefined;
         const nightShift = nightShiftWakeNote(nightShiftConfig(profile.config), nightShiftLogPath(profile.dir), Date.now());
+        const ideasNote = formatIdeasBoard(readIdeas(profile.dir), ideasConfig(profile.config), Date.now()) || undefined;
         const top = beat.obligations ?? liveObligations({ ...obligationSource(profile), now: Date.now() });
         const pace = paceWakeNote(paceForecasts(readQuotaHistory(profile.dir), Date.now()));
         const refused = activeRefusals(profile.dir, Date.now()).map(rule => rule.topic);
         const text = wakeTurn(beat.trigger === 'signal' ? signalWakeText(idleMinutes(), heartbeatPlan(profile.config), note, instructions, top)
-          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift) + (note ? `\n${note}` : '') + (pace ? `\n${pace}` : ''), previousWake(profile.dir), beat.unchanged, instructions)
+          : wakeText(beat.text, beat.model ?? 'compactor', idleMinutes(), heartbeatPlan(profile.config), { path: queueFile(profile.dir), item: nextQueueItem(profile.dir) }, radar, instructions, top, shadow, nightShift, ideasNote) + (note ? `\n${note}` : '') + (pace ? `\n${pace}` : ''), previousWake(profile.dir), beat.unchanged, instructions)
           + (refused.length ? `\nOperator refused these wake topics; do not propose them:\n${refused.map(topic => `- ${topic}`).join('\n')}` : '');
         const target = choice ? (choice.provider === main?.provider && choice.model === main.model ? undefined : choice) : wakeModelFor(profile.config, main);
         wakeOn(profile.dir, target, wakeHost(ctx)).catch(error => ctx.ui.notify(`Wake model switch failed: ${errorText(error)}`, 'warning'))
@@ -1046,7 +1050,7 @@ export default function optchat(host: ExtensionAPI) {
 
   registerWhatsAppBridge(pi, () => active && inPhase('open') ? active.dir : undefined, () => slack.commandState(), () => inPhase('open'));
 
-  registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0, () => active ? nightShiftConfig(active.config) : undefined);
+  registerSlackReports(pi, slackOwner, (text, channel, topic) => slack.post(text, channel, topic), () => active ? approvals?.pendingFor(active.sessionId).length ?? 0 : 0, () => active ? nightShiftConfig(active.config) : undefined, () => active ? ideasConfig(active.config) : undefined);
 
   registerQuotaCommand(pi, () => slackOwner()?.dir);
   registerProdHealth(pi, () => { const owner = slackOwner(); return owner ? { ...owner, prodHealth: active?.config.prodHealth } : undefined; }, (text, channel) => slack.post(text, channel), text => deliverReport(text, { once: true }));
@@ -1481,6 +1485,7 @@ export default function optchat(host: ExtensionAPI) {
     } });
   pi.registerTool(operationalStateTool(required, flush));
   pi.registerTool(predictionsTool(required));
+  pi.registerTool(ideasTool(required));
   pi.registerTool({ ...searchTool(() => required().memory), defaultActive: false });
 
 

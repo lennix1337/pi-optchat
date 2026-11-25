@@ -22,6 +22,7 @@ import { accountLines, weeklyLines } from './quota-format.ts';
 import { tallySession } from './machine-turn-share.ts';
 import { wakeYield } from './wake-yield.ts';
 import { nightShiftDigest, readNightShiftLog, type NightShiftConfig } from './night-shift.ts';
+import { DEFAULT_IDEAS, ideasSummary, readIdeas, type IdeasConfig, type IdeasSummary } from './ideas.ts';
 
 /**
  * What the operator hears on Slack without asking, each in its project's channel: his PRs changing (CI green or red,
@@ -193,13 +194,13 @@ const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assis
 const DAILY = 'slack-daily.json';
 export const localDate = (at: number) => new Date(at).toLocaleDateString('sv-SE');
 
-export type SummaryInputs = { predictions?: { text: string; link: string }[]; staged?: { text: string; repo: string; branch: string; status: 'staged' | 'accepted' | 'dropped' }[]; nightShift?: string[]; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; autonomyProposals?: string[]; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[]; opusMachineShare?: string; wakeWithoutDelivery?: string; interventionScoreboard?: string };
+export type SummaryInputs = { predictions?: { text: string; link: string }[]; staged?: { text: string; repo: string; branch: string; status: 'staged' | 'accepted' | 'dropped' }[]; nightShift?: string[]; ideas?: IdeasSummary; day: DayEntry[]; waiting: string[]; prs: PrSeen[]; briefing?: Briefing; approvals: number; autonomyProposals?: string[]; commitments?: { waiting: string[]; attention: string[] }; health?: string[]; pc?: string[]; quota?: string[]; accounts?: string[]; risks?: string[]; fixes?: string[]; github?: Activity; cost?: string; weekly?: string[]; opusMachineShare?: string; wakeWithoutDelivery?: string; interventionScoreboard?: string };
 /**
  * The 07:00 briefing, most actionable first: what needs him today, a short plan, what closed in the last day, what
  * the harness did and noticed, then state (production, PC, quotas, PRs, agenda) and its cost. A source that failed
  * is named at the end.
  */
-export function composeSummary({ day, waiting, prs, briefing, approvals, autonomyProposals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions, staged, nightShift, opusMachineShare, wakeWithoutDelivery, interventionScoreboard }: SummaryInputs): string {
+export function composeSummary({ day, waiting, prs, briefing, approvals, autonomyProposals, commitments, health, pc, quota, accounts, risks, fixes, github, cost, weekly, predictions, staged, nightShift, ideas, opusMachineShare, wakeWithoutDelivery, interventionScoreboard }: SummaryInputs): string {
   const lines = ['☀️ *Bom dia! Resumo das últimas 24h*'];
   const act = github ? activityLines(github) : { needs: [], closed: [] };
   const wait = [...(approvals ? [`${approvals} aprovação(ões) pendente(s) no terminal/Slack`] : []), ...waiting.map(t => `Pergunta minha: ${one(t, 140)}`),
@@ -212,6 +213,19 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, autonom
   if (predictions?.length) lines.push('', '*Antecipei*', ...predictions.map(p => `• Você ia pedir: ${one(p.text, 200)} — feito: ${p.link}`));
   if (staged?.length) lines.push('', '*Preparado em shadow*', ...staged.map(s => `• ${one(s.text, 160)} — \`${one(s.repo, 60)}\` (\`${one(s.branch, 80)}\`, ${s.status})`));
   if (nightShift?.length) lines.push('', '*Turno da madrugada*', ...nightShift);
+  if (ideas && (ideas.proposed.length || ideas.approved || ideas.doing || ideas.doneYesterday.length || ideas.stale)) {
+    const staleH = ideas.staleHours ?? DEFAULT_IDEAS.staleHours;
+    const doneLinks = ideas.doneYesterday.length
+      ? `${ideas.doneYesterday.length} (${ideas.doneYesterday.map(d => d.pr).join(', ')})`
+      : '0';
+    lines.push(
+      '',
+      '*Ideias de ontem*',
+      ...ideas.proposed.slice(0, 30).map(item => `${item.number}. ${[one(item.title, 120), one(item.repo, 60), item.effort].filter(Boolean).join(' · ')}`),
+      `• Aprovadas em andamento: ${ideas.approved + ideas.doing} (${ideas.approved} aprovadas, ${ideas.doing} em andamento) · Feitas ontem: ${doneLinks} · Paradas há mais de ${staleH} h: ${ideas.stale}`,
+      ...ideas.proposed.length ? ['Responda com os números (ex.: 1, 4, 7) para eu implementar hoje.'] : [],
+    );
+  }
   if (fixes?.length) lines.push('', '*Resolvi sozinho*', ...fixes.slice(-8).map(f => `• ${one(f, 200)}`));
   const byChannel = new Map<string, string[]>();
   for (const e of latestPerLink(day)) if (e.channel) byChannel.set(e.channel, [...byChannel.get(e.channel) ?? [], e.line]);
@@ -256,7 +270,7 @@ function scanInterventions(): Promise<string> {
 
 export class DailySummary {
   constructor(private readonly owner: () => ReportOwner | undefined, private readonly post: Post, private readonly prs: PrWatch,
-    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh; sessionsDir?: string; interventionScoreboard?: () => Promise<string>; nightShift?: () => NightShiftConfig | undefined } = {}) {}
+    private readonly approvals: () => number, private readonly options: { at?: string; until?: number; now?: () => number; request?: Request; quotaFile?: string; gh?: Gh; sessionsDir?: string; interventionScoreboard?: () => Promise<string>; nightShift?: () => NightShiftConfig | undefined; ideas?: () => IdeasConfig | undefined } = {}) {}
 
   /** Posts once a day, the first check after `at` (07:00, or nightShift.digestAt when enabled) and before `until` (noon): a late start skips the day. */
   async maybePost(): Promise<boolean> {
@@ -274,7 +288,7 @@ export class DailySummary {
     const remote = await assistantInputs(owner, today, this.options.request ?? defaultRequest);
     const github = await githubInputs(this.options.gh ?? defaultGh, now);
     const interventionScoreboard = await (this.options.interventionScoreboard ?? scanInterventions)();
-    const sent = await this.post(composeSummary({ interventionScoreboard, ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir), ns), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
+    const sent = await this.post(composeSummary({ interventionScoreboard, ...remote, ...withQuota(localInputs(owner.dir, now, this.prs.open(owner.dir), ns, this.options.ideas?.()), owner.dir, now, this.options.quotaFile ?? QUOTA_FILE),
       approvals: this.approvals(), github, cost: harnessCost(owner.dir, now), ...sessionShares(this.options.sessionsDir ?? join(homedir(), '.pi', 'agent', 'sessions'), now), ...quotaSection(owner.dir, now, this.options.quotaFile ?? QUOTA_FILE) }), null);
 
     const ts = (sent as { ts?: unknown } | undefined)?.ts;
@@ -335,7 +349,7 @@ async function assistantInputs(owner: ReportOwner, today: string, request: Reque
  * What this profile recorded on disk (the day's reports, commitments, production health, PRs) and the forecast drawn
  * from it. A new sense adds its section here.
  */
-export function localInputs(dir: string, now: number, prs: PrSeen[], nightShift?: NightShiftConfig): Omit<SummaryInputs, 'briefing' | 'waiting' | 'approvals'> {
+export function localInputs(dir: string, now: number, prs: PrSeen[], nightShift?: NightShiftConfig, ideas?: IdeasConfig): Omit<SummaryInputs, 'briefing' | 'waiting' | 'approvals'> {
   let items: Commitment[] = [];
   let commitments: SummaryInputs['commitments'];
   try { items = readCommitments(dir); commitments = summaryLines(items, now); } catch { commitments = undefined; }
@@ -344,7 +358,8 @@ export function localInputs(dir: string, now: number, prs: PrSeen[], nightShift?
   const autonomyProposals = ladderProposalLines(dir, now);
   const staged = readStaged(dir).filter(s => s.status === 'staged' || (s.status === 'accepted' && now - s.at < 86_400_000));
   const nightShiftLines = nightShift?.enabled ? nightShiftDigest(readNightShiftLog(dir), nightShift, now) : [];
-  return { predictions: donePredictions(dir, localDate(now)), ...(staged.length ? { staged: staged.map(s => ({ text: s.text, repo: s.repo, branch: s.branch, status: s.status })) } : {}), ...(nightShiftLines.length ? { nightShift: nightShiftLines } : {}), day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now), ...(autonomyProposals.length ? { autonomyProposals } : {}) };
+  const ideasDigest = ideasSummary(readIdeas(dir), now, ideas?.staleHours ?? DEFAULT_IDEAS.staleHours);
+  return { predictions: donePredictions(dir, localDate(now)), ...(staged.length ? { staged: staged.map(s => ({ text: s.text, repo: s.repo, branch: s.branch, status: s.status })) } : {}), ...(nightShiftLines.length ? { nightShift: nightShiftLines } : {}), ...(ideasDigest ? { ideas: ideasDigest } : {}), day: readDay(dir, now - 86_400_000), prs, commitments, health: healthLines(health), pc: healthLines(pc), risks, fixes: fixLines(readFixes(dir), now), ...(autonomyProposals.length ? { autonomyProposals } : {}) };
 }
 
 
@@ -383,9 +398,9 @@ export class BackgroundFailures {
 }
 
 /** Timers for the PR watch (every 3 min) and the morning summary (checked every minute), per session. */
-export function registerSlackReports(pi: ExtensionAPI, owner: () => ReportOwner | undefined, post: Post, approvals: () => number, nightShift?: () => NightShiftConfig | undefined) {
+export function registerSlackReports(pi: ExtensionAPI, owner: () => ReportOwner | undefined, post: Post, approvals: () => number, nightShift?: () => NightShiftConfig | undefined, ideas?: () => IdeasConfig | undefined) {
   const prs = new PrWatch(owner, post);
-  const daily = new DailySummary(owner, post, prs, approvals, { nightShift });
+  const daily = new DailySummary(owner, post, prs, approvals, { nightShift, ideas });
   const weekly = new WeeklyScoreboard(owner, post);
   let timers: ReturnType<typeof setInterval>[] = [];
   const failures = new BackgroundFailures(() => owner()?.dir);

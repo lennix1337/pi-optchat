@@ -17,6 +17,7 @@ import type { ProjectPatterns } from './commitment-due.ts';
 import { validProductionHealth, type ProductionHealthConfig } from './prod-health.ts';
 import { invalidAutonomyLadder, type AutonomyLadderConfig } from './autonomy-ladder.ts';
 import { invalidNightShift, type NightShiftConfig } from './night-shift.ts';
+import { invalidIdeas, type IdeasConfig } from './ideas.ts';
 
 export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
@@ -59,6 +60,8 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   shadowRepos?: string[];
   /** Opt-in night-shift autonomous issue-to-draft-PR mode (see src/night-shift.ts). */
   nightShift?: NightShiftConfig;
+  /** Ideas board heartbeat pipeline configuration (see src/ideas.ts). */
+  ideas?: IdeasConfig;
   /** Default lookback window in days for `/skill-stocktake` (default 30). */
   skillStocktakeDays?: number }
 /** The main model the roles follow, as Pi's model_select reports it. */
@@ -162,7 +165,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'skillStocktakeDays', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
+const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'ideas', 'skillStocktakeDays', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
 function validRegex(pattern: unknown): boolean {
   if (typeof pattern !== 'string' || !pattern.trim()) return false;
   try { new RegExp(pattern, 'i'); return true; } catch { return false; }
@@ -199,7 +202,7 @@ export function loadConfig(dir: string): ProfileConfig {
     || value.skillStocktakeDays !== undefined && !(Number.isSafeInteger(value.skillStocktakeDays) && Number(value.skillStocktakeDays) >= 1)
     || value.shadowRepos !== undefined && !(Array.isArray(value.shadowRepos) && value.shadowRepos.every(entry => typeof entry === 'string' && entry.trim() !== ''))) throw new Error(`Invalid profile config: ${dir}/config.json`);
   try {
-    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol) ?? invalidAutonomyLadder(value.autonomyLadder) ?? invalidNightShift(value.nightShift);
+    const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol) ?? invalidAutonomyLadder(value.autonomyLadder) ?? invalidNightShift(value.nightShift) ?? invalidIdeas(value.ideas);
     if (problem) throw new Error(problem);
 
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;
