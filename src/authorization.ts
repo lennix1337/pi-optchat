@@ -241,7 +241,6 @@ function shellRisk(text: string, script: boolean) {
 }
 
 
-/** An edit or write as `edit a.ts (+3 -1)`: the file and how many lines it changes, when the arguments say. */
 function fileChange(tool: string, input: unknown): string | undefined {
   if ((tool !== 'edit' && tool !== 'write') || !record(input) || typeof input.path !== 'string') return undefined;
   const delta = callDelta(tool, input);

@@ -68,13 +68,11 @@ export function councilThread(messages: readonly Message[]): string | undefined 
 }
 
 const MAX_FILES = 6;
-/** A file edited again adds its line change to the earlier one; a call whose change is unknown leaves the known part as it was. */
 function addEdit(files: Map<string, LineDelta | undefined>, name: string, delta: LineDelta | undefined): void {
   const before = files.get(name);
   files.set(name, delta ? { added: (before?.added ?? 0) + delta.added, removed: (before?.removed ?? 0) + delta.removed } : before);
 }
 
-/** The files one repository had edited: `editou a.ts, b.ts` when no line count is known, else the count of files and lines with each file's own. */
 function editedLine(files: ReadonlyMap<string, LineDelta | undefined>): string {
   const known = [...files.values()].filter((d): d is LineDelta => !!d);
   const each = (name: string, delta: LineDelta | undefined) => `\`${name}\`${delta ? ` (\`${deltaText(delta)}\`)` : ''}`;

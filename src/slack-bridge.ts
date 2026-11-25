@@ -129,7 +129,6 @@ export function thoughtHeadline(thinking: string): string {
   return clipWords(heading || /^.+?(?:[.!?](?=\s|$)|$)/.exec(text)?.[0] || '', 90);
 }
 
-/** The headline of the last thinking block in a message, or the previous one when it holds none. */
 function latestHeadline(previous: string, content: unknown): string {
   if (!Array.isArray(content)) return previous;
   let headline = previous;
@@ -140,7 +139,6 @@ function latestHeadline(previous: string, content: unknown): string {
   return headline;
 }
 
-/** The steps of a run counted by what they were for, so the Home reads "explorou 7 · editou 2" instead of 14 raw steps. */
 interface StepCounts { explored: number; edited: Set<string>; tests: number; git: number }
 const noCounts = (): StepCounts => ({ explored: 0, edited: new Set(), tests: 0, git: 0 });
 

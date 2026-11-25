@@ -306,7 +306,6 @@ function tablesToRecords(markdown: string): string {
   return out.join('\n');
 }
 
-/** A file link as inline code: the path with a leading line number (`#L10-L20` keeps `:10`), the drive colon of `file:///C:/x` kept. */
 function fileLink(url: string): string {
   const [location = '', fragment] = url.slice('file://'.length).split('#');
   let path = location;
@@ -325,7 +324,6 @@ function inlineMrkdwn(text: string): string {
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>');
 }
 
-/** The text outside inline `code` spans, rewritten; the spans themselves pass through. */
 const outsideInlineCode = (text: string): string => text.split(/(`[^`\n]+`)/).map((piece, at) => at % 2 ? piece : inlineMrkdwn(piece)).join('');
 
 /**
