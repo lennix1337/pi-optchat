@@ -1138,6 +1138,16 @@ test('--title names the PR when it ships existing commits', t => {
   assert.equal(ship(fx, ['--title', 'x', '--pr', '1']).out.error, 'conflicting_args');
 });
 
+test('--title with shell metacharacters is refused when gh is a Windows .cmd shim, before any PR is created', t => {
+  const fx = fixture(); t.after(fx.close);
+  writeFileSync(join(fx.work, 'a.txt'), 'a\n');
+  git(fx.work, ['add', 'a.txt']); git(fx.work, ['commit', '-q', '-m', 'wip: first']);
+  const r = ship(fx, ['--title', 'feat: a & calc "b" %PATH%', ...BODY]);
+  if (process.platform !== 'win32') return assert.equal(r.code, 0, r.err);
+  assert.equal(r.out.error, 'unsafe_argument', 'the fixture gh.cmd runs through a shell');
+  assert.ok(!fx.ghCalls().some(args => args[1] === 'create'));
+});
+
 test('a re-run reuses the open PR and creates nothing', t => {
   const fx = fixture(); t.after(fx.close);
   fx.setGh({ prs: [{ number: 7, url: 'https://github.com/acme/app/pull/7', state: 'OPEN', headRefName: 'feat/x', mergeStateStatus: 'BLOCKED', autoMergeRequest: null, statusCheckRollup: PENDING_CI }] });
