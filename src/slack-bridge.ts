@@ -72,14 +72,20 @@ export const slackRequestTimeout = (path: string) => path === '/v1/slack/home' ?
 const defaultRequest: Request = async (owner, path, body, cancel) => assistantRequest(assistantConfig(owner), path, body, slackRequestTimeout(path), cancel);
 const APPROVE = /^(?:aprovar|aprova|aprovado|sim|ok|approve)[.!]?$/i;
 const DENY = /^(?:negar|nega|negado|n[aã]o|deny)[.!]?$/i;
+const APPROVE_SESSION = /^aprovar sess[aã]o$/i;
 /** A gated call waiting for the operator, and how to decide it. */
 export type ApprovalRequest = { token: string; summary: string; label: string; expires: number;
   /** The whole invocation, shown verbatim in the post so the operator sees exactly what he approves. */
   detail?: string; decide: (approve: boolean) => boolean;
+  /** Why the call needs the operator, and the files or repository it touches, shown above the command. */
+  reason?: string; targets?: readonly string[];
+  /** The exact scope a session allow would cover (shown on its button); only set together with `allowSession`, which approves the call and allows that scope. */
+  sessionAllow?: string; allowSession?: () => boolean;
   /** An effect the bridge itself runs on the phone's decision (a remote command); its answer replaces the note to the agent. */
   onPhone?: (approve: boolean) => Promise<string> };
 
-const SETTLED_TEXT: Record<Settled | 'phone-approved' | 'phone-denied', string> = {
+const SETTLED_TEXT: Record<Settled | 'phone-approved' | 'phone-denied' | 'phone-session', string> = {
+  'phone-session': '\u2705 *Aprovado no Slack e liberado nesta sess\u00e3o*',
   approved: '\u2705 *Aprovado no terminal*', denied: '\u{1f6ab} *Negado no terminal*', superseded: '\u21aa\ufe0f *Substitu\u00edda por uma chamada mais nova*',
   expired: '\u231b *Expirou sem decis\u00e3o*', 'phone-approved': '\u2705 *Aprovado no Slack*', 'phone-denied': '\u{1f6ab} *Negado no Slack*',
 };
@@ -375,8 +381,8 @@ export class SlackBridge {
       for (const m of messages) {
         if (!Number.isSafeInteger(m.seq) || m.seq <= seq || typeof m.text !== 'string') continue;
         const channel = typeof m.channelName === 'string' ? m.channelName : null;
-        if (!channel && typeof m.thread === 'string' && this.approvals.has(m.thread) && (APPROVE.test(m.text.trim()) || DENY.test(m.text.trim()))) {
-          await this.decided(m.thread, APPROVE.test(m.text.trim()));
+        if (!channel && typeof m.thread === 'string' && this.approvals.has(m.thread) && (APPROVE.test(m.text.trim()) || DENY.test(m.text.trim()) || APPROVE_SESSION.test(m.text.trim()))) {
+          await this.decided(m.thread, APPROVE.test(m.text.trim()) || APPROVE_SESSION.test(m.text.trim()), APPROVE_SESSION.test(m.text.trim()));
           atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
           continue;
         }
@@ -684,10 +690,13 @@ export class SlackBridge {
     for (const [ts, post] of this.approvals) if (post.request.expires <= now) this.approvals.delete(ts);
     const minutes = Math.max(1, Math.round((request.expires - now) / 60_000));
     const full = request.detail ? `\`\`\`${request.detail.replaceAll('```', '`\u200b``')}\`\`\`\n` : '';
-    const head = `⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\n${full}`, tail = `(vale ${minutes} min). Aprova só esta chamada, uma vez.`;
+    const why = `${request.reason ? `*Motivo:* ${request.reason}\n` : ''}${request.targets?.length ? `*Alvo:* ${request.targets.slice(0, 5).map(t => `\`${t}\``).join(', ')}${request.targets.length > 5 ? ` e mais ${request.targets.length - 5}` : ''}\n` : ''}`;
+    const head = `⏸ *Aprovação pendente* · ${request.label}: ${request.summary}\n${why}${full}`, tail = `(vale ${minutes} min). Aprova só esta chamada, uma vez.`;
+    const session = request.sessionAllow && request.allowSession ? request.sessionAllow : undefined;
+    const scope = session ? `\n*Aprovar nesta sessão* libera só \`${session}\` até a sessão reiniciar; deploy, produção, gastos, mensagens a terceiros e credenciais continuam pedindo a cada chamada.\n` : ' ';
     try {
       let ts: string, channel: string | undefined;
-      try { ({ ts, channel } = await this.send(`${head}Toque em *Aprovar* ou *Negar*, ou responda *aprovar*/*negar* nesta thread ${tail}`, null, null, { approval: true })); }
+      try { ({ ts, channel } = await this.send(`${head}Toque em *Aprovar* ou *Negar*, ou responda *aprovar*/*negar* nesta thread ${tail}${session ? scope.trimEnd() : ''}`, null, null, { approval: true, ...(session ? { sessionAllow: session } : {}) })); }
       catch (error) {
 
         if (!refused(error)) throw error;
@@ -729,22 +738,26 @@ export class SlackBridge {
     return this.settling;
   }
 
-  private async decided(ts: string, approve: boolean): Promise<void> {
+  private async decided(ts: string, approve: boolean, session = false): Promise<void> {
     const post = this.approvals.get(ts)!, { request } = post;
+    if (session && !(request.sessionAllow && request.allowSession)) {
+      try { await this.send('Essa chamada n\u00e3o aceita libera\u00e7\u00e3o de sess\u00e3o; responda *aprovar* ou *negar*.', ts); } catch {   }
+      return;
+    }
     this.approvals.delete(ts);
     this.refreshHome();
-    const done = request.expires > this.options.now() && request.decide(approve);
-    if (done) await this.retire(ts, post, approve ? 'phone-approved' : 'phone-denied');
+    const done = request.expires > this.options.now() && (session ? request.allowSession!() : request.decide(approve));
+    if (done) await this.retire(ts, post, session ? 'phone-session' : approve ? 'phone-approved' : 'phone-denied');
     if (done && request.onPhone) {
       let reply: string;
       try { reply = await request.onPhone(approve); } catch (error) { reply = `Falhou: ${error instanceof Error ? error.message : String(error)}`; }
       try { await this.send(reply, ts); } catch {   }
       return;
     }
-    const reply = !done ? 'Essa aprovação já expirou ou foi decidida; nada rodou por ela.' : approve ? `Aprovado: ${request.summary}. Vou rodar agora.` : `Negado: ${request.summary}. Não vou rodar.`;
+    const reply = !done ? 'Essa aprovação já expirou ou foi decidida; nada rodou por ela.' : session ? `Aprovado e liberado nesta sess\u00e3o (s\u00f3 \`${request.sessionAllow}\`): ${request.summary}. Vou rodar agora.` : approve ? `Aprovado: ${request.summary}. Vou rodar agora.` : `Negado: ${request.summary}. Não vou rodar.`;
     try { await this.send(reply, ts); } catch {   }
     if (!done) return;
-    const note = approve ? `aprovou no celular: ${request.summary}. Rode de novo exatamente a mesma chamada, uma vez.` : `negou no celular: ${request.summary}. Não rode nem tente de novo.`;
+    const note = session ? `aprovou no celular e liberou nesta sess\u00e3o s\u00f3 \`${request.sessionAllow}\`: ${request.summary}. Rode de novo exatamente a mesma chamada.` : approve ? `aprovou no celular: ${request.summary}. Rode de novo exatamente a mesma chamada, uma vez.` : `negou no celular: ${request.summary}. Não rode nem tente de novo.`;
     this.pi.sendUserMessage(`${SLACK_PREFIX}(aprovação) O operador ${note}`, { deliverAs: 'steer' });
   }
 
@@ -752,12 +765,12 @@ export class SlackBridge {
    * Posts under a topic: the first post of a `topic` opens a message in the channel, later ones reply in its thread,
    * so one subject (a PR, a long task) keeps its history together. Topics last two weeks.
    */
-  async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; thread: string }> {
+  async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; thread: string }> {
     const owner = this.owner();
     if (!topic || !owner) {
 
       const thread = this.progressThread(channel);
-      const sent = await this.publish(text, thread, channel, this.answering?.channel === channel && !thread ? options : {});
+      const sent = await this.publish(text, thread, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(this.answering?.channel === channel && !thread && options.broadcast ? { broadcast: true as const } : {}) });
       return { ...sent, thread: thread ?? sent.ts };
     }
     const file = join(owner.dir, TOPICS), now = this.options.now();
@@ -765,7 +778,7 @@ export class SlackBridge {
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch {   }
     const known = topics[topic];
     const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
-    const result = await this.publish(text, open?.ts ?? null, channel, open ? options : {});
+    const result = await this.publish(text, open?.ts ?? null, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(open && options.broadcast ? { broadcast: true as const } : {}) });
     if (!open) {
       topics[topic] = { channel, ts: result.ts, at: now };
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
@@ -779,9 +792,9 @@ export class SlackBridge {
    * touched), unless the run answers his DM; `dm` forces the DM. A reply in a thread also shows in the conversation,
    * so he sees every report without opening threads.
    */
-  async report(text: string, channel?: string, topic?: string, files: readonly string[] = []): Promise<{ channel: string | null }> {
+  async report(text: string, channel?: string, topic?: string, files: readonly string[] = [], choices?: readonly string[]): Promise<{ channel: string | null }> {
     const to = channel === 'dm' ? null : channel ?? this.workChannel(topic);
-    const { thread } = await this.post(text, to, topic, { broadcast: true });
+    const { thread } = await this.post(text, to, topic, { broadcast: true, ...(choices ? { choices } : {}) });
     for (const path of files) await this.attach(path, thread, to);
     return { channel: to };
   }
@@ -804,12 +817,12 @@ export class SlackBridge {
   }
 
   /** A post the agent wants to make (a final answer, a wake report, slack_send): always one whole message. */
-  private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
+  private async publish(text: string, threadTs: string | null, channel: string | null, options: { broadcast?: true; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     return this.send(text, threadTs, channel, options);
   }
 
   /** To the operator's DM, or with `channel` to that configured project channel. */
-  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true; broadcast?: true } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
+  async send(text: string, threadTs: string | null = null, channel: string | null = null, options: { approval?: true; broadcast?: true; sessionAllow?: string; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; channel?: string; timestamps?: string[] }> {
     const owner = this.owner();
     if (!owner) throw new Error('No active profile.');
     try {
@@ -872,10 +885,11 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
       text: Type.String({ minLength: 1, maxLength: 20000 }),
       channel: Type.Optional(Type.String({ pattern: '^[a-z0-9][a-z0-9_-]{0,79}$', description: 'Project channel name without #, or dm; omit to follow the work.' })),
       files: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 4, description: 'Absolute paths of pictures or PDFs (png, jpg, gif, webp, pdf; 10 MB each) to attach under the message, e.g. a screenshot of finished work.' })),
+      choices: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 75 }), { minItems: 2, maxItems: 5, description: 'One-tap answer buttons under the message (2-5 short labels, the recommended one first; a denial such as "N\u00e3o" or "Parar" shows in red). The tap comes back as his reply. Use when you ask him to pick.' })),
       topic: Type.Optional(Type.String({ pattern: '^[\\w.#:/-]{1,80}$', description: 'Short key of the task this post belongs to (e.g. denta-106, gx-issue-701). The first post with a topic opens it; later posts with the same topic reply in its thread.' })),
     }, { additionalProperties: false }),
     async execute(_id, params) {
-      const { channel } = await bridge.report(params.text, params.channel, params.topic, params.files);
+      const { channel } = await bridge.report(params.text, params.channel, params.topic, params.files, params.choices);
       bridge.answered(channel);
       return { content: [{ type: 'text', text: `Sent to ${channel ? `Slack #${channel}` : "the operator's Slack DM"}.` }], details: undefined };
     },
