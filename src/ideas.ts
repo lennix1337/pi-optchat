@@ -104,7 +104,12 @@ export function readIdeas(dir: string): IdeaRow[] {
   let raw: string;
   try { raw = readFileSync(file(dir), 'utf8'); }
   catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []; throw e; }
-  return raw.split('\n').filter(Boolean).map(line => JSON.parse(line) as IdeaRow);
+  const rows: IdeaRow[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    try { rows.push(JSON.parse(line) as IdeaRow); } catch { continue; }
+  }
+  return rows;
 }
 
 /** Collapses append-only rows to the latest row per id. */
