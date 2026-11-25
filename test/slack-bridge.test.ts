@@ -351,7 +351,7 @@ test('wakeEffects reads what ship.mjs, gh and git actually did, and marks the ca
     { role: 'toolResult', toolCallId: 'k', content: 'ok' },
   ];
   assert.deepEqual(wakeEffects(messages), [
-    'fora dos projetos: editou pr.md',
+    'fora dos projetos: editou `pr.md` (`+1 -0`)',
     'Genexus18MCP: ship: commit 1004742, <https://github.com/lennix1337/Genexus18MCP/pull/895|PR #895> (auto-merge na fila)',
     'Genexus18MCP: comentou na issue #886',
     'Genexus18MCP: apagou a branch remota fix/888 (falhou)',
@@ -1141,32 +1141,36 @@ test('a Slack message tells the model the reply budget of its own channel', asyn
 type HomeBody = { text: string; working?: boolean; choices?: { label: string; options: string[] }[]; fold?: string };
 const homes$ = bodiesFor<HomeBody>('/v1/slack/home');
 
-test('App Home: pensamentos recentes e duração avançam durante um comando e param no fim', async t => {
+test('App Home: só a manchete do pensamento aparece, e a duração avança durante um comando e para no fim', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture();
   const thought = (...texts: string[]) => ({ role: 'assistant', content: texts.map(thinking => ({ type: 'thinking', thinking })) }) as unknown as AgentMessage;
   try {
     f.bridge.runStarted();
     f.bridge.sawUserMessage('tarefa no terminal');
-    f.bridge.assistantSaid(thought('primeiro', 'segundo'));
-    f.bridge.assistantSaid(thought('terceiro'));
+    f.bridge.assistantSaid(thought('**Lendo a rotina de envio**\nprimeiro detalhe interno que não interessa no celular'));
     f.bridge.toolStarted('bash', { command: 'npm test' });
     await settle();
     let text = homes$(f).at(-1)!.text;
-    assert.match(text, /\*Pensando\*[\s\S]*> primeiro[\s\S]*> segundo[\s\S]*> terceiro[\s\S]*Agora:.*rodando há 0s/);
-    f.bridge.assistantSaid(thought('quarto'));
+    assert.match(text, /\*Pensando:\* Lendo a rotina de envio\n[\s\S]*Agora:.*rodando há 0s/);
+    assert.doesNotMatch(text, /detalhe interno/);
+    f.bridge.assistantSaid(thought('Vou rodar os testes agora. Depois confiro o resultado com calma.'));
     f.advance(20_000); t.mock.timers.tick(20_000);
     await settle();
     text = homes$(f).at(-1)!.text;
-    assert.doesNotMatch(text, /> primeiro/);
-    assert.match(text, /> segundo[\s\S]*> terceiro[\s\S]*> quarto[\s\S]*Agora:.*rodando há 20s/);
+    assert.match(text, /\*Pensando:\* Vou rodar os testes agora\.\n[\s\S]*Agora:.*rodando há 20s/);
+    assert.doesNotMatch(text, /Lendo a rotina|confiro o resultado/);
+    f.bridge.assistantSaid(thought(`${'palavra '.repeat(30)}sem ponto final`));
+    f.advance(20_000); t.mock.timers.tick(20_000);
+    await settle();
+    assert.ok(homes$(f).at(-1)!.text.match(/\*Pensando:\* (.*)\n/)![1]!.length <= 91, 'a long thought is cut to a short headline');
     f.bridge.assistantSaid(thought('Authorization: Bearer tok_live_9876543210fedcbaABCDEF'));
     f.advance(40_000); t.mock.timers.tick(40_000);
     await settle();
     text = homes$(f).at(-1)!.text;
     assert.match(text, /Authorization: Bearer \[segredo:bearer\]/);
     assert.doesNotMatch(text, /tok_live_9876543210fedcbaABCDEF/);
-    assert.match(text, /rodando há 1min 0s/);
+    assert.match(text, /rodando há 1min 20s/);
     await f.bridge.runEnded([]);
     await settle();
     const count = homes$(f).length;
@@ -1186,7 +1190,7 @@ test('App Home: pensamento do wake anterior ao início mantém a origem e stop c
     f.bridge.assistantSaid({ role: 'assistant', content: [{ type: 'thinking', thinking: '   wake\n  em andamento  ' }] } as unknown as AgentMessage);
     f.bridge.toolStarted('bash', { command: 'true' });
     await settle();
-    assert.match(homes$(f).at(-1)!.text, /wake[\s\S]*> wake em andamento[\s\S]*Agora:/);
+    assert.match(homes$(f).at(-1)!.text, /wake[\s\S]*\*Pensando:\* wake em andamento[\s\S]*Agora:/);
     f.bridge.stop();
     const count = homes$(f).length;
     f.advance(20_000); t.mock.timers.tick(20_000);
@@ -1372,4 +1376,23 @@ test('slack_send choices go to the service as buttons, in the topic thread too',
     await f.bridge.report('Só aviso.', 'dm');
     assert.equal((f.requests.filter(r => r.path === '/v1/slack/send').at(-1)!.body as { choices?: string[] }).choices, undefined);
   } finally { f.close(); }
+});
+
+test('App Home: passos de exploração, edição e testes viram uma linha de contagens', async () => {
+  const f = fixture();
+  const home = () => bodiesFor<{ text: string }>('/v1/slack/home')(f).at(-1)!.text;
+  try {
+    f.bridge.runStarted();
+    f.bridge.sawUserMessage('arruma a rotina');
+    for (const tool of ['read', 'grep', 'read_many']) f.bridge.toolStarted(tool, { path: 'C:/projetos/pi-optchat/src/a.ts' });
+    f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/a.ts' });
+    f.bridge.toolStarted('edit', { path: 'C:/projetos/pi-optchat/src/a.ts' });
+    f.bridge.toolStarted('write', { path: 'C:/projetos/pi-optchat/src/b.ts' });
+    f.advance(30_000);
+    f.bridge.toolStarted('bash', { command: 'npm run -s test:one -- test/a.test.ts' });
+    await settle();
+    const text = home();
+    assert.match(text, /\u{1f50d} Explorou 3 · ✏️ editou 2 arquivos · \u{1f9ea} 1 teste\n/u);
+    assert.match(text, /Agora: rodando `npm run` · rodando há 0s · 7 passos/);
+  } finally { f.bridge.stop(); f.close(); }
 });

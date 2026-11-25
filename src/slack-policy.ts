@@ -12,9 +12,9 @@ export const wordBudget = (channel: string | null, budgets: WordBudgets = {}): n
   channel === null ? DEFAULT_WORD_BUDGET : budgets[channel] ?? BUILT_IN[channel] ?? DEFAULT_WORD_BUDGET;
 
 /** The instruction the model reads with each Slack message: the budget of the channel it answers in. */
-export const budgetNote = (budget: number): string => `(Responda em até ${budget} palavras, numa mensagem só.)`;
+export const budgetNote = (budget: number): string => `(Responda em até ${budget} palavras, numa mensagem só: abra com a conclusão em **negrito**, cite PRs e links como [PR #42](url) em vez de URL solta e use no máximo 5 itens.)`;
 /** The paragraph `budgetNote` ends a Slack message with, matched to take it off again (a message's title). */
-export const BUDGET_NOTE = /\n\n\(Responda em até \d+ palavras(?:, numa mensagem só|; o que passar disso vai para a thread)\.\)/;
+export const BUDGET_NOTE = /\n\n\(Responda em até \d+ palavras(?:, numa mensagem só(?::[^\n]*?)?|; o que passar disso vai para a thread)\.\)/;
 /** The paragraph a Slack message gets when it arrives while a run is working. */
 export const MID_RUN = '\n\n(Arrived while you were working: answer it with slack_send, then continue the current work. Do not end the run just to reply.)';
 /** His message without the notes the bridge appended to it: what he actually wrote. */
