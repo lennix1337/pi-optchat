@@ -9,6 +9,7 @@ import { tempDir } from './support.ts';
 const SHIP = fileURLToPath(new URL('../scripts/ship.mjs', import.meta.url));
 const MANIFEST_CLI = fileURLToPath(new URL('../scripts/change-manifest.mjs', import.meta.url));
 const FAKE_GH = fileURLToPath(new URL('./fixtures/fake-gh.mjs', import.meta.url));
+const FAKE_REVISOR = fileURLToPath(new URL('./fixtures/fake-revisor.mjs', import.meta.url));
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Manifest Test',
   GIT_AUTHOR_EMAIL: 'manifest@test.invalid',
@@ -76,6 +77,8 @@ function envFor(fx: Fixture, extra: Record<string, string> = {}) {
     FAKE_GH_STATE: fx.statePath,
     FAKE_GH_LOG: fx.logPath,
     PI_GITWATCH_DIR: join(fx.dir, 'gitwatch'),
+    SHIP_REVIEW_SCRIPT: FAKE_REVISOR,
+    SHIP_REVIEW_WORKER: FAKE_REVISOR,
     OPTCHAT_HOME: fx.optchatHome,
     ...extra,
   } as Record<string, string>;
