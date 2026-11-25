@@ -18,6 +18,8 @@ const PR_FIELDS = 'number,url,state,mergeStateStatus,autoMergeRequest,statusChec
 const TIMEOUT_MS = { local: 60_000, commit: 1_200_000, push: 180_000, gh: 60_000, create: 120_000 };
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
 const SAFE_GH_ARG = /^[A-Za-z0-9._/,:=-]+$/;
+// external: cmd.exe re-parses a .cmd shim's arguments; letters, digits, spaces and plain punctuation survive double quotes.
+const SHELL_QUOTABLE = /^[\p{L}\p{N} .,:;()/_+'-]+$/u;
 const SAFE_METRIC = /^[A-Za-z0-9._:/-]{1,120}$/;
 const EXIT = { queued: 0, merged: 0, synced: 0, pr_open: 0, pushed: 0, dry_run: 0, failed: 1, refused: 2, not_queued: 3, uncertain: 4 };
 const FORBIDDEN_HINT = {
@@ -136,8 +138,9 @@ function findGh() {
 
 function gh(args, kind = 'gh', free, input) {
   const found = findGh();
-  if (!args.every(arg => SAFE_GH_ARG.test(arg) || (arg === free && !found.shell))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
-  return run(found.file, args, kind, { shell: found.shell, input });
+  const quoted = args.map(arg => (arg === free && found.shell && SHELL_QUOTABLE.test(arg) ? `"${arg}"` : arg));
+  if (!args.every((arg, i) => SAFE_GH_ARG.test(arg) || quoted[i] !== arg || (arg === free && !found.shell))) throw refuse('unsafe_argument', 'argumento fora do formato seguro para o gh');
+  return run(found.file, quoted, kind, { shell: found.shell, input });
 }
 
 
