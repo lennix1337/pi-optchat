@@ -57,7 +57,9 @@ if (verb === 'view') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for ${rest[0]}`);
   const file = flag('--body-file');
-  pr.body = readFileSync(file === '-' ? 0 : file, 'utf8');
+  if (file) pr.body = readFileSync(file === '-' ? 0 : file, 'utf8');
+  if (flag('--title') !== undefined) pr.title = flag('--title');
+  if (state.afterEdit) Object.assign(pr, state.afterEdit);
   save();
 } else if (verb === 'create') {
   if (state.createHangs) { sleepSync(3000); process.exit(0); }

@@ -45,6 +45,7 @@ const USAGE = `uso: node scripts/ship.mjs [-m "assunto"] [-b "descrição" | --b
   --base BRANCH        base da PR (padrão: branch padrão do origin)
   --wait S             espera até S segundos pelos checks (padrão 20)
   --dry-run            roda a revisão determinística e mostra o plano; não chama o modelo nem altera a branch ou o index
+  --review-model       com --dry-run, revisa o diff local completo com o modelo, sem consultar o GitHub
   --sync               depois do merge: vai para a branch padrão, puxa só com fast-forward e apaga a branch local anterior se o git a considera mesclada; num worktree, atualiza o checkout principal e deixa o worktree
 saída: "status" final. exit 0 feito · 1 falhou · 2 recusado antes de qualquer efeito · 3 PR aberta sem auto-merge · 4 efeito incerto: reconcilie, não repita`;
 
@@ -225,11 +226,13 @@ async function mergeNow(number, head) {
   return { auto: 'not_queued', reason: 'merge_refused', detail: firstLine(m.err), pr: after.pr };
 }
 
-async function autoMerge(number, waitSeconds, head) {
+async function autoMerge(number, waitSeconds, head, metadata) {
   const settled = await settle(number, waitSeconds);
   if (settled.error) return { auto: 'not_queued', reason: 'pr_unreadable', detail: tail(settled.error.err) };
   if (settled.none) return { auto: 'not_queued', reason: 'pr_not_found' };
-  if (settled.pr.headRefOid !== head) return { auto: 'not_queued', reason: 'review_head_changed', pr: settled.pr };
+  if (settled.pr.headRefOid !== head || (metadata && !samePrText(settled.pr, metadata))) {
+    return { auto: 'not_queued', reason: 'review_head_changed', pr: settled.pr };
+  }
   const decision = decide(settled.pr);
   if (decision.action === 'merged') return { auto: 'merged', pr: settled.pr };
   if (decision.action === 'queued') return { auto: 'queued', pr: settled.pr };
@@ -306,7 +309,7 @@ async function openPr(branch, base, body, title) {
 
 async function review(opts, ctx, input) {
   let result;
-  try { result = await reviewChange({ ...input, dryRun: opts.dryRun, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
+  try { result = await reviewChange({ ...input, dryRun: opts.dryRun && !opts.reviewModel, fullDiff: opts.reviewModel, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
   catch (e) { throw refuse('review_unavailable', firstLine(e.message)); }
   ctx.review = result.verdict;
   if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
@@ -317,12 +320,26 @@ async function review(opts, ctx, input) {
   return result;
 }
 
-async function updatePrReview(pr, result) {
-  const body = reviewBody(pr.body, result);
-  if (body === (pr.body ?? '').trim()) return;
-  const r = await gh(['pr', 'edit', String(pr.number), '--body-file', '-'], 'gh', undefined, `${body}\n`);
-  if (r.killed) throw uncertain('pr_edit', `gh pr view ${pr.number} --json body para reconciliar; não repita a edição`);
+const samePrText = (actual, expected) => actual.title === expected.title && (actual.body ?? '').trim() === (expected.body ?? '').trim();
+
+async function confirmPrSnapshot(pr, message) {
+  const same = await viewPr(pr.number);
+  if (same.pr?.state !== 'OPEN' || same.pr.headRefOid !== pr.headRefOid || !samePrText(same.pr, pr)) {
+    throw refuse('review_head_changed', message);
+  }
+}
+
+async function updatePrReview(pr, result, metadata = pr) {
+  const body = reviewBody(metadata.body, result);
+  const title = metadata.title;
+  const changeTitle = title != null && title !== pr.title;
+  const changeBody = body !== (pr.body ?? '').trim();
+  if (!changeTitle && !changeBody) return { title, body };
+  const r = await gh(['pr', 'edit', String(pr.number), ...(changeTitle ? ['--title', title] : []), ...(changeBody ? ['--body-file', '-'] : [])], 'gh', title, changeBody ? `${body}\n` : undefined);
+  if (r.killed) throw uncertain('pr_edit', `gh pr view ${pr.number} --json title,body para reconciliar; não repita a edição`);
   if (r.code) throw failed('pr_edit', r, 'não consegui registrar a revisão na PR; auto-merge não foi solicitado');
+  await confirmPrSnapshot({ ...pr, title, body }, 'o título ou a descrição publicados não conferem com a revisão; revise novamente');
+  return { title, body };
 }
 
 async function autoMergeOnly(opts, ctx) {
@@ -334,11 +351,10 @@ async function autoMergeOnly(opts, ctx) {
   const result = await reviewRemotePr(opts, ctx, pr);
   if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `Revisor (prévia determinística) > ${result.verdict === 'changes' ? 'não enfileirar' : 'ver checks para auto-merge'}` });
   if (result.verdict === 'changes' && pr.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
-  const same = await viewPr(ctx.pr);
-  if (same.pr?.headRefOid !== pr.headRefOid || same.pr.body !== pr.body || same.pr.title !== pr.title) throw refuse('review_head_changed', 'a PR mudou durante a revisão; revise novamente');
-  await updatePrReview(pr, result);
+  await confirmPrSnapshot(pr, 'a PR mudou durante a revisão; revise novamente');
+  const metadata = await updatePrReview(pr, result);
   if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
-  return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait, pr.headRefOid));
+  return reportAuto(ctx, await autoMerge(ctx.pr, opts.wait, pr.headRefOid, metadata));
 }
 
 
@@ -476,7 +492,7 @@ async function previewTree(opts, head) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-async function reviewSnapshot(opts, ctx, { base, head, existing }) {
+async function reviewSnapshot(opts, ctx, { base, head, existing, metadata, localCheck }) {
   const mergeBase = (await reviewGit(['merge-base', `refs/remotes/origin/${base}`, head])).trim();
   const tree = await previewTree(opts, head);
   const range = `${mergeBase}..${head}`;
@@ -498,7 +514,7 @@ async function reviewSnapshot(opts, ctx, { base, head, existing }) {
   const commitMessages = [];
   const parts = messages.split('\0');
   for (let i = 0; i + 1 < parts.length; i += 2) commitMessages.push({ sha: parts[i], message: parts[i + 1] });
-  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, title: opts.title ?? existing?.title ?? opts.message, body: existing?.body ?? opts.body, head: tree === (await reviewGit(['rev-parse', `${head}^{tree}`])).trim() ? head : undefined, checksHead: existing?.headRefOid, checks: existing?.statusCheckRollup, commitMessage: `${opts.message ?? ''}\n${opts.body ?? ''}`, commitMessages });
+  const result = await review(opts, ctx, { diff, history: [pending, history].join('\n'), paths, ...metadata, localCheck, head: tree === (await reviewGit(['rev-parse', `${head}^{tree}`])).trim() ? head : undefined, checksHead: existing?.headRefOid, checks: existing?.statusCheckRollup, commitMessage: `${opts.message ?? ''}\n${opts.body ?? ''}`, commitMessages });
   return { tree, result };
 }
 
@@ -535,7 +551,7 @@ async function shipBranch(opts, ctx) {
 
 
   const aheadP = git(['rev-list', '--count', `origin/${base}..HEAD`]);
-  const existingP = opts.directMain ? Promise.resolve(undefined) : viewPr(branch);
+  const existingP = opts.directMain || opts.reviewModel ? Promise.resolve(undefined) : viewPr(branch);
   if (!opts.directMain && opts.body === undefined) {
     const existing = await existingP;
     if (!existing?.error && existing?.pr?.state !== 'OPEN') {
@@ -549,11 +565,19 @@ async function shipBranch(opts, ctx) {
   const existingOpen = existing?.pr?.state === 'OPEN' ? existing.pr : undefined;
   const head = headR.out.trim();
   if (!head) throw refuse('review_head_unknown', 'não consegui identificar o commit local para revisão');
-  const { tree, result } = await reviewSnapshot(opts, ctx, { base, head, existing: existingOpen });
+  const metadata = { title: opts.title ?? (existingOpen ? existingOpen.title : opts.message), body: opts.body ?? existingOpen?.body };
+  let localCheck;
+  if ((!opts.dryRun || opts.reviewModel) && hasCheckScript()) {
+    const check = await run('npm', ['run', 'check'], 'commit', { shell: process.platform === 'win32' });
+    if (check.code) throw failed('check', check, 'npm run check falhou (lint/tipos): corrija antes do push; nada foi commitado');
+    localCheck = check.code;
+  }
+  const { tree, result } = await reviewSnapshot(opts, ctx, { base, head, existing: existingOpen, metadata, localCheck });
   if (result.verdict === 'changes' && opts.directMain) throw refuse('review_changes_requires_pr', 'Revisor pediu mudanças: abra uma PR, não envie direto à base');
   // external: GitHub can merge a newly pushed head if auto-merge is already enabled.
   if (result.verdict === 'changes' && existingOpen?.autoMergeRequest) throw refuse('review_already_queued', 'a PR já tem auto-merge; desative-o antes de prosseguir');
   if (opts.dryRun) {
+    if (opts.reviewModel) return emit(result.verdict === 'changes' ? 'not_queued' : 'dry_run', { ...ctx, base, plan: 'revisão local sem envio' });
     const plan = [
       'Revisor (prévia determinística)',
       creating && `criar branch ${branch}`,
@@ -567,10 +591,7 @@ async function shipBranch(opts, ctx) {
     return emit('dry_run', { ...ctx, base, pr: existingOpen?.number, plan });
   }
 
-  if (hasCheckScript()) {
-    const check = await run('npm', ['run', '-s', 'check'], 'commit', { shell: process.platform === 'win32' });
-    if (check.code) throw failed('check', check, 'npm run check falhou (lint/tipos): corrija antes do push; nada foi commitado');
-  }
+  if (existingOpen) await confirmPrSnapshot(existingOpen, 'a PR mudou durante a revisão; revise novamente');
 
   if (creating) {
     const sw = await git(['switch', '-c', opts.branch]);
@@ -623,6 +644,7 @@ async function shipBranch(opts, ctx) {
       throw new Stop('refused', { ...error.fields, hint: 'A mensagem gravada pelo Git contém um segredo; corrija o commit local. Nada foi enviado.' });
     }
   }
+  const updated = existingOpen ? await updatePrReview(existingOpen, result, metadata) : undefined;
   const target = opts.directMain ? base : branch;
   const p = await git(['push', 'origin', `${reviewedHead}:refs/heads/${target}`], 'push');
   if (p.killed) {
@@ -642,14 +664,13 @@ async function shipBranch(opts, ctx) {
     return emit('pushed', { ...ctx, branch: target });
   }
 
-  const pr = existingOpen ?? await openPr(branch, base, reviewBody(opts.body, result), opts.title);
-  if (existingOpen) await updatePrReview(existingOpen, result);
+  const pr = existingOpen ?? await openPr(branch, base, reviewBody(metadata.body, result), opts.title);
   ctx.pr = pr.number;
   ctx.url = pr.url;
   await recordShippedManifest(opts, ctx, { branch, pr: pr.number, url: pr.url });
   if (result.verdict === 'changes') return reportAuto(ctx, { auto: 'not_queued', reason: 'review_changes', pr });
   if (opts.noAuto) return emit('pr_open', { ...ctx, gitwatch: requestFollow(pr.url), state: pr.state, url: pr.url, auto_merge: 'skipped', next: `node scripts/ship.mjs --pr ${pr.number} quando quiser enfileirar` });
-  return reportAuto(ctx, await autoMerge(pr.number, opts.wait, reviewedHead));
+  return reportAuto(ctx, await autoMerge(pr.number, opts.wait, reviewedHead, updated));
 }
 
 
@@ -722,10 +743,14 @@ function parseArgs(argv) {
       opts.wait = Number(digits(valueOf(arg, i), arg)); i++;
       if (opts.wait > 120) throw refuse('invalid_value', '--wait vai até 120 segundos');
     } else if (arg === '--dry-run') opts.dryRun = true;
+    else if (arg === '--review-model') opts.reviewModel = true;
     else if (arg.startsWith('-')) throw refuse('unknown_flag', FORBIDDEN_HINT[arg] ?? `flag desconhecida: ${arg} (veja --help)`);
     else opts.paths.push(arg);
   }
   if (opts.help) return opts;
+  if (opts.reviewModel && (!opts.dryRun || opts.pr !== undefined || opts.sync || opts.skipReview)) {
+    throw refuse('conflicting_args', '--review-model exige --dry-run local, sem --pr, --sync ou --skip-review');
+  }
   if ((opts.sync && (opts.skipReview || opts.allowRules)) || (opts.directMain && opts.skipReview)) {
     throw refuse('conflicting_args', '--skip-review exige uma PR para registrar o motivo; --sync não faz revisão');
   }
