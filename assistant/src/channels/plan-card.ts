@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
 const PLAN = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i;
-const STEP = /^\s*(?:[-*]\s+\[([ xX])\]|\d+[.)])\s+(.*\S)\s*$/;
+const STEP = /^\s*(?:[-*]\s+\[([ xX])\]|\d+[.)](?:\s+\[([ xX])\])?)\s+(.*\S)\s*$/;
+const step = (line: string): { text: string; ticked: boolean } | undefined => {
+  const m = STEP.exec(line);
+  return m ? { text: m[3]!, ticked: /x/i.test(m[1] ?? m[2] ?? '') } : undefined;
+};
 const SECTION_MAX = 3000;
 const CARD_MAX = 12_000;
 const TITLE_MAX = 80;
@@ -36,7 +40,7 @@ export const planId = (plan: string): string => createHash('sha256').update(plan
 
 /** Each step of the plan (checkbox or numbered line), and whether its own checkbox is already ticked. */
 export function planSteps(plan: string): { text: string; ticked: boolean }[] {
-  return plan.split('\n').flatMap(line => { const m = STEP.exec(line); return m ? [{ text: m[2]!, ticked: m[1] === 'x' || m[1] === 'X' }] : []; });
+  return plan.split('\n').flatMap(line => step(line) ?? []);
 }
 
 /** Names a plan by its title and the text of its steps, ignoring which boxes are ticked: the same plan keeps one shape as it progresses. */
@@ -49,11 +53,11 @@ function body(plan: string): string {
   const finished = new Set<number>();
   let index = 0;
   const lines = plan.split('\n').map(line => {
-    const m = STEP.exec(line);
-    if (!m) return line;
-    const step = index++;
-    if (m[1] === 'x' || m[1] === 'X') finished.add(step);
-    return `\u0000${step}\u0000${m[2]}`;
+    const parsed = step(line);
+    if (!parsed) return line;
+    const n = index++;
+    if (parsed.ticked) finished.add(n);
+    return `\u0000${n}\u0000${parsed.text}`;
   });
   const current = [...Array(total).keys()].find(i => !finished.has(i));
   return lines.map(line => {

@@ -66,6 +66,13 @@ test('the checklist shows done, current and next steps, with the N/M count', () 
   assert.equal(planPreview(plan.plan), 'Plano proposto: Ler \u00b7 1/3');
 });
 
+test('a numbered plan advances when its steps carry boxes', () => {
+  const plan = extractPlan('<proposed_plan>\n1. [x] Ler\n2. [ ] Escrever\n3. Testar\n</proposed_plan>')!;
+  assert.deepEqual(planProgress(plan.plan), { done: 1, total: 3 });
+  const blocks = planBlocks(plan, { actions: false }) as Block[];
+  assert.equal(blocks[1]!.text!.text, '\u2714 ~Ler~\n\u25b6\ufe0f *Escrever*\n\u2b1c Testar');
+});
+
 test('the buttons name the plan the same way however many boxes are ticked, and a long card keeps them', () => {
   const value = (text: string) => (planBlocks(extractPlan(text)!, { actions: true }) as Block[]).at(-1)!.elements![0]!.value;
   assert.equal(value('<proposed_plan>\n- [x] Ler\n- [ ] Escrever\n</proposed_plan>'), value('<proposed_plan>\n- [ ] Ler\n- [ ] Escrever\n</proposed_plan>'));

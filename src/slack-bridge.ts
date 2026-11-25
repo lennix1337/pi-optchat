@@ -869,7 +869,7 @@ export class SlackBridge {
         return { parts: 1, ts: card.ts, channel: card.channel };
       }
       const result = await this.options.request(owner, '/v1/slack/send', { text, threadTs, ...(channel ? { channel } : {}), ...options }) as { parts: number; ts: string; channel?: string; timestamps?: string[] };
-      if (plan && canCard(plan) && result.channel && /^D/.test(result.channel)) this.planCard = { shape: planShape(plan.plan), ts: result.ts, channel: result.channel };
+      if (plan && canCard(plan) && result.ts && result.channel && /^D/.test(result.channel)) this.planCard = { shape: planShape(plan.plan), ts: result.ts, channel: result.channel };
       this.options.sent(channel, text);
       return result;
     }
