@@ -227,5 +227,14 @@
     "scope": "final replies and Slack/WhatsApp messages",
     "detector": "look-yourself",
     "precision": "A reply that hands him a screen check ('só você consegue olhar/ver', 'abra a aba', 'dá uma olhada na tela/Home', 'confere na tela') instead of taking it with pi-agent-desktop on the PC (agent-desktop screenshot via pc-task) or browser_harness. Quoted text ignored."
+  },
+  {
+    "id": "overdue-in-wake",
+    "guardedAt": "2026-11-25T01:40:00Z",
+    "quote": "termina tudo, os wakes eram pra finalizar esses pontos tbm se nao tem oq fazer, n era pra ter nada pendente, se vc fica sem nada pra fazer como q existe algo pendente?",
+    "date": "24/11",
+    "scope": "assistant final text of a run started by an OptChat heartbeat prompt",
+    "detector": "overdue-in-wake",
+    "precision": "A wake's final text that names a commitment id (c_xxxxxx) together with atrasado/atrasada/overdue/segue pendente, i.e. ends the wake with an overdue item still open; a text that says it closed (fechei/fechado/closed/concluído) is not counted."
   }
 ]
