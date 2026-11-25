@@ -522,7 +522,84 @@ test('Revisor dogfood: cancels and confirms active auto-merge when the worker is
   assert.equal(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].autoMergeRequest, null);
 });
 
+for (const source of ['history', 'patch', 'names'] as const) test(`Revisor dogfood 3: cancels and confirms auto-merge on unavailable ${source}`, t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [openFixturePr(fx, {
+    autoMergeRequest: { enabledAt: '2026-01-31T12:00:00Z' },
+    ...(source === 'history' ? { commits: [{ sha: localSha(fx), patchError: true }] } : { diffError: source }),
+  })] });
+  const log = join(fx.dir, 'reviewer.log');
+  const r = ship(fx, ['--pr', '7'], { FAKE_REVISOR_LOG: log });
+  assert.equal(r.code, source === 'history' ? 2 : 1, r.raw + r.err);
+  assert.equal(source === 'history' ? r.out.error : r.out.stage, source === 'history' ? 'review_history_unavailable' : 'review_diff');
+  assert.equal(r.out.previous_auto_merge, 'disabled');
+  assert.deepEqual(fx.ghCalls().slice(-2).map(args => args.slice(0, 4)), [['pr', 'merge', '7', '--disable-auto'], ['pr', 'view', '7', '--json']]);
+  assert.equal(JSON.parse(readFileSync(fx.statePath, 'utf8')).prs[0].autoMergeRequest, null);
+  assert.ok(!existsSync(log));
+});
+
+const binaryHistory = [
+  { sha: 'ab'.repeat(20), patch: 'diff --git a/cache.bin b/cache.bin\nnew file mode 100644\nindex 0000000..a1b2c3d\nBinary files /dev/null and b/cache.bin differ\n' },
+  { patch: 'diff --git a/cache.bin b/cache.bin\ndeleted file mode 100644\nindex a1b2c3d..0000000\nBinary files a/cache.bin and /dev/null differ\n' },
+];
+for (const command of ['ship', 'daily'] as const) test(`Revisor dogfood 3: ${command} refuses history with a binary added and removed`, t => {
+  const fx = fixture(); t.after(fx.close);
+  fx.setGh({ prs: [openFixturePr(fx, {
+    ...(command === 'daily' ? { state: 'MERGED', mergedAt: '2026-01-31T12:00:00Z' } : {}),
+    commits: [binaryHistory[0], { ...binaryHistory[1], sha: localSha(fx) }],
+  })] });
+  const log = join(fx.dir, 'reviewer.log');
+  if (command === 'ship') {
+    const r = ship(fx, ['--pr', '7'], { FAKE_REVISOR_LOG: log });
+    assert.equal(r.code, 2, r.raw + r.err);
+    assert.equal(r.out.error, 'review_history_unavailable');
+  } else {
+    const r = spawnSync(process.execPath, [REVISOR_DAY, '2026-01-31'], { cwd: fx.work, encoding: 'utf8', env: envFor(fx) });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /PR #7:.*histórico incompleto/);
+    assert.match(r.stdout, /0 PR\(s\) revisada\(s\)/);
+  }
+  assert.ok(!existsSync(log));
+  assert.ok(!fx.ghCalls().some(args => ['edit', 'merge'].includes(args[1])));
+});
+
+test('Revisor dogfood 3: allows a placeholder-only env example', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, '.env.example', '# Template\nDB_PASSWORD=changeme\nSERVICE_API_TOKEN="your_token_here"\nCLIENT_SECRET=\nSERVICE_ACCESS_KEY=${MY_ACCESS_KEY}\nPORT=3000\n');
+  const r = ship(fx, [...BODY, '-m', 'fixture', '.env.example', '--dry-run']);
+  assert.equal(r.code, 0, r.raw + r.err);
+  assert.doesNotMatch(r.raw, /secret_path/);
+});
+
+test('Revisor dogfood 3: env example does not hide a credential assignment', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, '.env.example', 'SERVICE_API_TOKEN=exampleRealFixtureToken8790\n');
+  const r = ship(fx, [...BODY, '-m', 'fixture', '.env.example', '--dry-run', '--skip-review', 'revisão humana']);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /secret_content:blocker/);
+  assert.doesNotMatch(r.raw + r.err, /secret_path|exampleRealFixtureToken8790/);
+});
+
+test('Revisor dogfood 3: env example is still subject to configured path policy', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, '.env.example', 'SERVICE_API_TOKEN=\n');
+  const r = ship(fx, [...BODY, '-m', 'fixture', '.env.example', '--dry-run'], { SHIP_REVIEW_POLICY: JSON.stringify({ secretPaths: ['example$'] }) });
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /secret_path:blocker/);
+});
+
 const privateFolder = 'private-fixture-user@example.invalid';
+
+test('Revisor dogfood 3: refuses a skip reason with PII before publishing', t => {
+  const fx = fixture(); t.after(fx.close);
+  commitFile(fx, 'a.txt');
+  const r = ship(fx, [...BODY, '-m', 'fixture', 'a.txt', '--skip-review', `Autorizado por ${privateFolder}`]);
+  assert.equal(r.code, 2, r.raw + r.err);
+  assert.match(r.raw, /skip_reason_pii:blocker/);
+  assert.doesNotMatch(r.raw + r.err, /private-fixture-user|example\.invalid/);
+  assert.equal(remoteSha(fx, 'feat/x'), '');
+  assert.ok(!fx.ghCalls().some(args => ['create', 'edit', 'merge'].includes(args[1])));
+});
 
 test('Revisor dogfood: deterministic blockers omit personal folders from the terminal', t => {
   const fx = fixture(); t.after(fx.close);

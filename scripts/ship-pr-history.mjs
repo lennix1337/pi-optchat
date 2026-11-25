@@ -26,7 +26,7 @@ export async function remoteHistory(pr, read) {
   for (const { sha } of commits) {
     const patch = await read(['api', `${root}/commits/${sha}`, '--header=Accept:application/vnd.github.diff']);
     bytes += Buffer.byteLength(patch);
-    if (bytes > 16 * 1024 * 1024) throw new IncompletePrHistory();
+    if (bytes > 16 * 1024 * 1024 || /^(?:Binary files .+ differ|GIT binary patch)\r?$/m.test(patch)) throw new IncompletePrHistory();
     patches.push(patch);
   }
   return { history: patches.join('\n'), commitMessages: commits.map(({ sha, commit }) => ({ sha, message: commit.message })) };

@@ -32,6 +32,7 @@ if (group === 'api') {
   }
   if (commit && args.includes('--header=Accept:application/vnd.github.diff')) {
     const entry = state.prs.flatMap(commitsOf).find(c => c.sha === commit[1]);
+    if (entry?.patchError) fail('fixture commit patch unavailable');
     if (entry) { process.stdout.write(entry.patch); process.exit(0); }
   }
   fail(`fake gh: unsupported ${args.join(' ')}`, 2);
@@ -51,7 +52,9 @@ if (verb === 'view') {
 } else if (verb === 'diff') {
   const pr = find(rest[0]);
   if (!pr) fail(`no pull requests found for ${rest[0]}`);
-  process.stdout.write((rest.includes('--name-only') ? pr.names : pr.diff) ?? '');
+  const namesOnly = rest.includes('--name-only');
+  if (pr.diffError === (namesOnly ? 'names' : 'patch')) fail('fixture diff unavailable');
+  process.stdout.write((namesOnly ? pr.names : pr.diff) ?? '');
 } else if (verb === 'list') {
   process.stdout.write(JSON.stringify(state.prs.map(pr => ({ url: `https://github.com/acme/app/pull/${pr.number}`, ...pr, headRefOid: headOf(pr) }))));
 } else if (verb === 'edit') {

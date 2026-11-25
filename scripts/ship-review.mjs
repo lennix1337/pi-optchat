@@ -6,7 +6,11 @@ import { scrubSecrets } from '../src/secret-scrub.ts';
 
 const DEFAULT_REVIEW_MODEL = 'openai-codex-account-2/gpt-6.2-sol';
 const DEFAULT_RULE_PATH = /(?:^|\/)(?:agents\.md|claude\.md|gemini\.md|autonomy\.json|closed-conflicts\.json)$|(?:^|\/)\.pi(?:\/|$)/i;
-const DEFAULT_SECRET_PATH = /(?:^|\/)(?:\.env(?:\.[^/]+)?|\.(?:netrc|npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|(?:secrets?|credentials?|tokens?|passw(?:or)?ds?)(?:[._-][^/]+)?|[^/]+\.(?:pem|key|p12|pfx))$|(?:^|\/)\.pi-vault(?:\/|$)/i;
+const DEFAULT_SECRET_PATH = /(?:^|\/)(?:\.env(?!\.example$)(?:\.[^/]+)?|\.(?:netrc|npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|(?:secrets?|credentials?|tokens?|passw(?:or)?ds?)(?:[._-][^/]+)?|[^/]+\.(?:pem|key|p12|pfx))$|(?:^|\/)\.pi-vault(?:\/|$)/i;
+const ENV_EXAMPLE = /(?:^|\/)\.env\.example$/i;
+const ENV_CREDENTIAL = /^(?:export\s+)?([\w]+)\s*=\s*(.*)$/i;
+const ENV_SECRET_NAME = /(?:^|_)(?:password|passwd|senha|secret|token|credential|apikey|api_key|access_key|private_key)(?:_|$)/i;
+const ENV_PLACEHOLDER = /^(["']?)(?:(?:example|placeholder|changeme|your|xxx)(?:[-_][\w-]+)?|<[^<>]+>|\$\{[\w]+\})?\1\s*(?:#.*)?$/i;
 const PASSWORD = /^\s*(?:export\s+)?["']?(?:(?:[\w.-]+[_-])?(?:password|passwd)|senha)["']?\s*[:=]\s*["']?([^\s"'`,;#}]+)/i;
 const PLACEHOLDER = /^(?:example|placeholder|changeme|your[_-]|xxx|<|\$\{|process\.env\b|null$|undefined$|true$|false$)/i;
 const WEB_FILE = /\.(?:html?|[jt]sx?|vue|svelte|astro|php|erb|mdx)$/i;
@@ -57,12 +61,18 @@ function pathFindings(paths, allowRules, patterns) {
   return findings;
 }
 
+function envExampleHasCredential({ file, text }) {
+  if (!ENV_EXAMPLE.test(file)) return false;
+  const assignment = ENV_CREDENTIAL.exec(text.trim());
+  return !!assignment && ENV_SECRET_NAME.test(assignment[1]) && !ENV_PLACEHOLDER.test(assignment[2]);
+}
+
 function contentFindings(rows, patterns, body) {
   const findings = [];
   for (const row of [...rows, ...body.split(/\r?\n/).map((text, i) => ({ file: 'Descrição da PR', line: i + 1, text }))]) {
     const value = PASSWORD.exec(row.text)?.[1];
     if (value && !PLACEHOLDER.test(value)) findings.push(item('plaintext_password', 'blocker', row.file, 'Possível senha em texto puro.', 'Remova o valor, use um cofre e rotacione se ele foi exposto.', row.line));
-    if (patterns.secretContent.some(re => re.test(row.text))) findings.push(item('secret_content', 'blocker', row.file, 'Conteúdo coincide com uma regra de credencial.', 'Remova o valor e guarde-o em um cofre.', row.line));
+    if (envExampleHasCredential(row) || patterns.secretContent.some(re => re.test(row.text))) findings.push(item('secret_content', 'blocker', row.file, 'Conteúdo coincide com uma regra de credencial.', 'Remova o valor e guarde-o em um cofre.', row.line));
   }
   return findings;
 }
@@ -256,6 +266,9 @@ export async function reviewChange({ diff = '', history = '', paths = [], title 
     ...contentFindings([...rows, ...historyRows, ...messageRows], patterns, meta),
     ...evidenceFindings({ rows, body, merged, checks, head, checksHead }),
   ];
+  if (skipReason && SENSITIVE_PII.test(skipReason)) {
+    local.push(item('skip_reason_pii', 'blocker', null, 'O motivo de --skip-review contém dados pessoais.', 'Informe o motivo sem dados pessoais.'));
+  }
   for (const row of messageRows) {
     if (scrubSecrets(row.text) !== row.text) local.push(item('secret_content', 'blocker', row.file, 'Possível credencial na mensagem de commit.', 'Reescreva a mensagem sem a credencial e rotacione se necessário.', row.line));
   }

@@ -309,16 +309,20 @@ async function openPr(branch, base, body, title) {
 }
 
 
+async function cancelQueuedReview(opts, ctx, pr) {
+  if (pr?.autoMergeRequest && !opts.dryRun) await disableAutoMerge(pr, ctx);
+}
+
 async function review(opts, ctx, input, pr) {
   let result;
   try { result = await reviewChange({ ...input, dryRun: opts.dryRun && !opts.reviewModel, fullDiff: opts.reviewModel, allowRules: opts.allowRules, skipReason: opts.skipReview }); }
   catch (e) {
-    if (pr?.autoMergeRequest && !opts.dryRun) await disableAutoMerge(pr, ctx);
+    await cancelQueuedReview(opts, ctx, pr);
     throw refuse('review_unavailable', firstLine(e.message));
   }
   ctx.review = result.verdict;
   if (result.findings.length) ctx.review_findings = result.findings.map(findingLine).join('\n');
-  if (pr?.autoMergeRequest && !opts.dryRun && ['changes', 'block'].includes(result.verdict)) await disableAutoMerge(pr, ctx);
+  if (['changes', 'block'].includes(result.verdict)) await cancelQueuedReview(opts, ctx, pr);
   if (result.verdict === 'block') throw new Stop('refused', {
     error: 'review_blocked', review: result.verdict, review_findings: ctx.review_findings,
     hint: 'Revisor bloqueou: remova o problema e revise novamente.',
@@ -368,7 +372,13 @@ async function autoMergeOnly(opts, ctx) {
   if (!view.pr) throw refuse('pr_not_found', 'não encontrei a PR para revisar');
   const pr = view.pr;
   if (pr.state !== 'OPEN') return reportAuto(ctx, pr.state === 'MERGED' ? { auto: 'merged', pr } : { auto: 'not_queued', reason: 'pr_closed', pr });
-  const result = await reviewRemotePr(opts, ctx, pr);
+  let input;
+  try { input = await readRemoteReview(pr); }
+  catch (error) {
+    await cancelQueuedReview(opts, ctx, pr);
+    throw error;
+  }
+  const result = await review(opts, ctx, input, pr);
   if (opts.dryRun) return emit('dry_run', { ...ctx, plan: `Revisor (prévia determinística) > ${result.verdict === 'changes' ? 'não enfileirar' : 'ver checks para auto-merge'}` });
   await confirmPrSnapshot(pr, 'a PR mudou durante a revisão; revise novamente');
   const metadata = await updatePrReview(pr, result);
@@ -377,7 +387,7 @@ async function autoMergeOnly(opts, ctx) {
 }
 
 
-async function reviewRemotePr(opts, ctx, pr) {
+async function readRemoteReview(pr) {
   if (!isCommitSha(pr.headRefOid)) throw refuse('review_head_unknown', 'não consegui identificar o commit da PR');
   const history = remoteHistory(pr, async args => {
     const r = await gh(args);
@@ -390,7 +400,7 @@ async function reviewRemotePr(opts, ctx, pr) {
   const [patch, names, range] = await Promise.all([gh(['pr', 'diff', String(pr.number)]), gh(['pr', 'diff', String(pr.number), '--name-only']), history]);
   if (patch.code || names.code) throw failed('review_diff', patch.code ? patch : names, 'não consegui ler o diff da PR');
   const paths = [...remotePaths(patch.out, names.out), ...remotePaths(range.history, '')];
-  return review(opts, ctx, { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup }, pr);
+  return { ...range, diff: patch.out, paths, body: pr.body, title: pr.title, head: pr.headRefOid, checksHead: pr.headRefOid, checks: pr.statusCheckRollup };
 }
 
 async function mainCheckoutOf() {
