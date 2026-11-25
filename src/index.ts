@@ -89,7 +89,7 @@ import { liveObligations } from './obligations.ts';
 import { readUnansweredMessages } from './slack-metrics.ts';
 import { nextQueueItem, queueFile } from './heartbeat-queue.ts';
 import { DayFrozenLessons, morningSummary } from './dream-lessons.ts';
-import { heartbeatCommand, MEMORY_REPLY_RETRY, silentWake, summarizeTurn, wakeRetry, type WakeRetried } from './heartbeat-report.ts';
+import { heartbeatCommand, MAX_EMPTY_RETRIES, MEMORY_REPLY_RETRY, silentWake, summarizeTurn, wakeRetry, type WakeRetried } from './heartbeat-report.ts';
 import { catchupSource, registerCatchup } from './catchup-integration.ts';
 import { orderGrantFor, readOperationalState, renderOperationalContext } from './operational-state.ts';
 import { operationalStateTool } from './operational-tool.ts';
@@ -1347,7 +1347,7 @@ export default function optchat(host: ExtensionAPI) {
       const expired = wakeWorkers.expire();
       if (!expired) { watchWakeWorkers(ctx); return; }
       ctx.ui.notify(WORKER_UNVERIFIED, 'warning');
-      wakeRetried = { memory: true, empty: true };
+      wakeRetried = { memory: true, empty: MAX_EMPTY_RETRIES };
 
       if (expired === 'recover') {
         void deliverReport(WORKER_RECOVERY, { workerRecovery: true }).catch(error => ctx.ui.notify(`Worker recovery dispatch failed: ${errorText(error)}`, 'error'));
@@ -1413,7 +1413,7 @@ export default function optchat(host: ExtensionAPI) {
     if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
     else if (waitingReload) {   }
     else if (retry?.startsWith(CLAIM_CHECK_PREFIX)) { claimRetried = true; void deliverReport(retry); }
-    else if (retry) { wakeRetried = { ...wakeRetried, [retry === MEMORY_REPLY_RETRY ? 'memory' : 'empty']: true }; void deliverReport(retry); }
+    else if (retry) { wakeRetried = retry === MEMORY_REPLY_RETRY ? { ...wakeRetried, memory: true } : { ...wakeRetried, empty: (wakeRetried.empty ?? 0) + 1 }; void deliverReport(retry); }
     else {
       heartbeat?.turnSettled({ ...wake ?? summarizeTurn(turn), ...ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}` } });
       if (active) await wakeOff(active.dir, wakeHost(ctx)).catch(error => ctx.ui.notify(`Could not restore the main model after the wake: ${errorText(error)}`, 'error'));
