@@ -107,7 +107,9 @@ export function readIdeas(dir: string): IdeaRow[] {
   const rows: IdeaRow[] = [];
   for (const line of raw.split('\n')) {
     if (!line) continue;
-    try { rows.push(JSON.parse(line) as IdeaRow); } catch { continue; }
+    let row: unknown;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (row && typeof row === 'object' && typeof (row as IdeaRow).id === 'string') rows.push(row as IdeaRow);
   }
   return rows;
 }
