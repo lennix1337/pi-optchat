@@ -8,7 +8,8 @@ import { boundedInteger } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
-import { triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { billTiming, daysUntil, detectBill, FUTURE_DAYS } from './bills.ts';
+import { senderAddress, triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
@@ -17,8 +18,8 @@ import { triage, type TriageRules, type Uncertainty, type Urgency } from './tria
  * subjects are withheld, and nothing here starts work: Start is a separate call that needs the operator authority.
  */
 export type BriefingKind = 'daily' | 'on_demand';
-export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
-export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean };
+export type Section = 'tasks' | 'bills' | 'agenda' | 'messages' | 'changes';
+export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean; dueDate?: string; amount?: string };
 export type SourceState = { sourceId: string; state: 'ok' | 'partial' | 'unavailable'; error: string | null };
 export type Briefing = {
   version: 1; briefingId: string; profileId: string; kind: BriefingKind; localDate: string; timeZone: string; createdAt: string;
@@ -28,7 +29,9 @@ export type StartRequest = { requestId: string; sessionId: string; channelId: st
 export type ComposerOptions = {
   databasePath: string; profileId: string; operatorAuthority: object; timeZone: string; store: TaskStore; google: GoogleConnections;
   /** The connections to read, by name. There is no default: an unnamed account is never read. */
-  connections: string[]; rules: TriageRules; retentionDays?: number; now?: () => number;
+  connections: string[]; rules: TriageRules;
+  /** List bills with due dates found in mail in their own section, ordered by due date. Off unless set. */
+  bills?: boolean; retentionDays?: number; now?: () => number;
 };
 
 const DAY_MS = 86_400_000;
@@ -36,7 +39,7 @@ const PRIVATE_TITLE = '[private content withheld]';
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
 const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
-const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 2, changes: 3 };
+const SECTION_ORDER: Record<Section, number> = { tasks: 0, bills: 1, agenda: 2, messages: 3, changes: 4 };
 const MAX_STORE_PAGES = 20;
 const fail = (code: string): never => { throw new Error(code); };
 const errorCode = (error: unknown) => error instanceof Error && /^[a-z][a-z_]{0,63}$/.test(error.message) ? error.message : 'source_failed';
@@ -51,7 +54,8 @@ export class BriefingComposer {
     const valid = options?.operatorAuthority && typeof options.operatorAuthority === 'object' && typeof options.profileId === 'string' && options.profileId.length > 0
       && options.store?.matchesProfile(options.profileId) && options.google && Array.isArray(options.connections) && options.connections.length <= 10
       && options.connections.every(c => typeof c === 'string' && c.length > 0) && new Set(options.connections).size === options.connections.length
-      && Array.isArray(options.rules?.trustedSenders) && options.rules.trustedSenders.every(s => typeof s === 'string') && isTimeZone(options.timeZone);
+      && Array.isArray(options.rules?.trustedSenders) && options.rules.trustedSenders.every(s => typeof s === 'string') && isTimeZone(options.timeZone)
+      && (options.bills === undefined || typeof options.bills === 'boolean');
     if (!valid) fail('invalid_options');
     this.retentionDays = boundedInteger(options.retentionDays, 14, 1, 90);
     this.options = { ...options, connections: [...options.connections], rules: { trustedSenders: [...options.rules.trustedSenders] } };
@@ -132,13 +136,25 @@ export class BriefingComposer {
 
 
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
-      const found = { mail: [] as Omit<BriefingItem, 'itemId'>[], changes: [] as Omit<BriefingItem, 'itemId'>[], agenda: [] as (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: 0 };
+      const found = { mail: [] as Omit<BriefingItem, 'itemId'>[], bills: [] as { key: string; item: Omit<BriefingItem, 'itemId'> }[], changes: [] as Omit<BriefingItem, 'itemId'>[], agenda: [] as (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: 0 };
       const [mail, calendar] = await Promise.all([
         this.read(`${connectionId}:mail`, async () => {
           const page = await this.options.google.listMessages(connectionId);
           for (const message of page.items) {
             const result = triage(message, this.options.rules);
             if (result.urgency === 'low') { found.distractions++; continue; }
+            const bill = this.options.bills && !result.suspectedInjection ? detectBill(message, localDate) : null;
+            if (bill) {
+              const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
+              found.bills.push({
+                key: `${senderAddress(message.from)}\n${bill.dueDate}\n${bill.amount ?? ''}`,
+                item: {
+                  section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`,
+                  ...billTiming(bill.daysLeft), uncertainty: 'medium', untrusted: true, startable: true, dueDate: bill.dueDate, ...(bill.amount ? { amount: bill.amount } : {}),
+                },
+              });
+              continue;
+            }
             found.mail.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: true });
           }
           return page.truncated;
@@ -154,15 +170,18 @@ export class BriefingComposer {
       ]);
       return { found, states: [mail, calendar] };
     }));
+    const seenBills = new Set<string>();
     for (const { found, states } of reads) {
       sources.push(...states);
       items.push(...found.mail, ...found.changes);
+      for (const { key, item } of found.bills) if (!seenBills.has(key)) { seenBills.add(key); items.push(item); }
       agenda.push(...found.agenda);
       distractions += found.distractions;
     }
+    if (this.options.bills && since) this.carryBills(since, localDate, items);
     agenda.sort((a, b) => a.at.localeCompare(b.at));
     const ordered = [...items, ...agenda.map(({ at: _at, ...item }) => item)]
-      .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section]);
+      .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section] || (a.dueDate ?? '').localeCompare(b.dueDate ?? ''));
     return {
       version: 1, briefingId: randomUUID(), profileId: this.options.profileId, kind, localDate, timeZone: this.options.timeZone, createdAt: new Date(now).toISOString(),
       taskSequence, sources, items: ordered.map(item => ({ itemId: sha256(`${item.section}\n${item.sourceRef}`).slice(0, 16), ...item })), distractions,
@@ -202,6 +221,19 @@ export class BriefingComposer {
     } catch (error) {
       sources.push({ sourceId: 'tasks', state: 'unavailable', error: errorCode(error) });
       return since?.taskSequence ?? 0;
+    }
+  }
+
+  /**
+   * Mail is read over a short window, so a bill seen on an earlier day would vanish from the next briefing long before it
+   * is due: bills of the previous briefing that are not yet due are kept, flagged again for today, until their date passes.
+   */
+  private carryBills(since: Briefing, today: string, items: Omit<BriefingItem, 'itemId'>[]): void {
+    const seen = new Set(items.filter(item => item.section === 'bills').flatMap(item => [item.sourceRef, item.title]));
+    for (const { itemId: _id, ...old } of since.items) {
+      const left = old.section === 'bills' && old.dueDate ? daysUntil(today, old.dueDate) : null;
+      if (left === null || left < 0 || left > FUTURE_DAYS || seen.has(old.sourceRef) || seen.has(old.title)) continue;
+      items.push({ ...old, ...billTiming(left) });
     }
   }
 

@@ -188,7 +188,7 @@ export class PrWatch {
 }
 
 
-type Briefing = { localDate: string; items: { section: string; title: string; urgency: string }[]; sources: { sourceId: string; state: string }[] };
+type Briefing = { localDate: string; items: { section: string; title: string; urgency: string; reason?: string }[]; sources: { sourceId: string; state: string }[] };
 type Request = (owner: ReportOwner, path: string, body?: unknown, timeoutMs?: number) => Promise<unknown>;
 const defaultRequest: Request = (owner, path, body, timeoutMs = 20_000) => assistantRequest(assistantConfig(owner), path, body, timeoutMs);
 const DAILY = 'slack-daily.json';
@@ -249,6 +249,8 @@ export function composeSummary({ day, waiting, prs, briefing, approvals, autonom
     const agenda = briefing.items.filter(i => i.section === 'agenda').slice(0, 8);
     const mail = briefing.items.filter(i => i.section === 'messages' && (i.urgency === 'urgent' || i.urgency === 'high')).slice(0, 5);
     lines.push('', '*Agenda de hoje*', ...(agenda.length ? agenda.map(i => `• ${one(i.title, 140)}`) : ['• Nada na agenda.']));
+    const bills = briefing.items.filter(i => i.section === 'bills').slice(0, 8);
+    if (bills.length) lines.push('', '*Contas a pagar*', ...bills.map(i => `• ${i.urgency === 'urgent' ? '⚠️ ' : ''}${one(i.title, 140)}${i.reason === 'bill_overdue' ? ' (vencida)' : ''}`));
     if (mail.length) lines.push('', '*E-mails que parecem urgentes*', ...mail.map(i => `• ${one(i.title, 140)}`));
     const off = briefing.sources.filter(s => s.state !== 'ok').map(s => `${s.sourceId} ${s.state}`);
     if (off.length) lines.push(`_Fontes incompletas: ${off.join(', ')}_`);

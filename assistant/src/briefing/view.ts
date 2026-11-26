@@ -17,9 +17,11 @@ export function briefingView(value: unknown, profileId: string): Briefing | null
   });
   const items = value.items.map(i => {
     if (!record(i) || !string(i.itemId) || !string(i.title) || !string(i.sourceRef) || !string(i.reason)
-      || !['tasks', 'agenda', 'messages', 'changes'].includes(String(i.section)) || !['urgent', 'normal', 'low'].includes(String(i.urgency))
-      || !['high', 'medium', 'low'].includes(String(i.uncertainty)) || typeof i.untrusted !== 'boolean' || typeof i.startable !== 'boolean') throw new Error('invalid_briefing');
-    return { itemId: i.itemId, section: i.section, title: i.title, sourceRef: i.sourceRef, reason: i.reason, urgency: i.urgency, uncertainty: i.uncertainty, untrusted: i.untrusted, startable: i.startable };
+      || !['tasks', 'bills', 'agenda', 'messages', 'changes'].includes(String(i.section)) || !['urgent', 'normal', 'low'].includes(String(i.urgency))
+      || !['high', 'medium', 'low'].includes(String(i.uncertainty)) || typeof i.untrusted !== 'boolean' || typeof i.startable !== 'boolean'
+      || !(i.dueDate === undefined || (string(i.dueDate) && /^\d{4}-\d{2}-\d{2}$/.test(i.dueDate))) || !(i.amount === undefined || string(i.amount))) throw new Error('invalid_briefing');
+    return { itemId: i.itemId, section: i.section, title: i.title, sourceRef: i.sourceRef, reason: i.reason, urgency: i.urgency, uncertainty: i.uncertainty, untrusted: i.untrusted, startable: i.startable,
+      ...(i.dueDate === undefined ? {} : { dueDate: i.dueDate }), ...(i.amount === undefined ? {} : { amount: i.amount }) };
   });
   return { version: 1, profileId, briefingId: value.briefingId, kind: value.kind, localDate: value.localDate, timeZone: value.timeZone,
     createdAt: value.createdAt, taskSequence: value.taskSequence, distractions: value.distractions, sources, items } as Briefing;

@@ -7,15 +7,15 @@ import { TaskStore } from '../src/store/db.ts';
 import { ACCOUNTS, CLIENT_ID, CLIENT_SECRET, FakeGoogle, TOKEN_CANARY, type AccountKey } from './google-support.ts';
 import { contains, memoryProtector, privateDir } from './vault-support.ts';
 
-async function rig(fn: (r: { dir: string; fake: FakeGoogle; local: () => Promise<GoogleLocal>; consent: (url: string, account: AccountKey) => Promise<Response> }) => Promise<void>) {
+async function rig(fn: (r: { dir: string; fake: FakeGoogle; local: (extra?: { bills?: boolean }) => Promise<GoogleLocal>; consent: (url: string, account: AccountKey) => Promise<Response> }) => Promise<void>) {
   await privateDir('google-local-', async dir => {
     const clock = { now: Date.parse('2026-10-28T12:00:00.000Z') };
     const fake = new FakeGoogle(clock);
     await fake.start();
     const { protector } = memoryProtector();
     const opened: GoogleLocal[] = [];
-    const local = async () => {
-      const l = await GoogleLocal.open({ databasePath: join(dir, 'tasks.sqlite'), profileId: 'p', protector, endpoints: fake.endpoints, now: () => clock.now });
+    const local = async (extra: { bills?: boolean } = {}) => {
+      const l = await GoogleLocal.open({ databasePath: join(dir, 'tasks.sqlite'), profileId: 'p', protector, endpoints: fake.endpoints, now: () => clock.now, ...extra });
       opened.push(l);
       return l;
     };
@@ -95,4 +95,18 @@ test('consent that never returns times out and closes the listener', async () =>
   let redirect = '';
   await assert.rejects(l.connect({ name: 'personal', email: ACCOUNTS.personal.email, timeoutMs: 200, onUrl: url => { redirect = new URL(url).searchParams.get('redirect_uri')!; } }), /google_consent_timeout/);
   await assert.rejects(fetch(redirect), 'the port no longer listens');
+}));
+
+test('the bills option set on the local service reaches the briefing it composes', async () => rig(async ({ fake, local, consent }) => {
+  fake.clientId = REAL_ID;
+  const l = await local({ bills: true });
+  l.setClient(JSON.stringify({ installed: { client_id: REAL_ID, client_secret: CLIENT_SECRET } }));
+  let page: Promise<Response> | undefined;
+  await l.connect({ name: 'personal', email: ACCOUNTS.personal.email, onUrl: url => { page = consent(url, 'personal'); } });
+  await page!;
+  fake.mail.personal.push({ id: 'm-bill', from: 'Agua Fake <contas@agua.example.test>', subject: 'Fatura de agua', body: 'Valor R$ 45,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T10:00:00.000Z' });
+  const on = await l.briefing(['personal'], 'America/Sao_Paulo');
+  assert.deepEqual(on.items.filter(i => i.section === 'bills').map(i => [i.dueDate, i.amount]), [['2026-10-30', 'R$ 45,00']]);
+  const off = await (await local()).briefing(['personal'], 'America/Sao_Paulo');
+  assert.deepEqual(off.items.filter(i => i.section === 'bills'), [], 'off unless the option is set');
 }));

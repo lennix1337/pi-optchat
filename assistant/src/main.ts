@@ -29,6 +29,8 @@ Optional Google briefing (read-only; connect accounts first with assistant/scrip
 "google":{"connections":["<name>"],"timeZone":"<IANA>","dailyAt":"HH:MM"}
 reads the named accounts' mail and agenda once a day after dailyAt; clients read it at GET /v1/briefing
 and ask for a fresh one with POST /v1/briefing. Naming an account here is the operator's consent.
+"bills":true inside "google" (off by default) lists bills with a due date found in that mail, by due date, flagging
+those due within 3 days.
 Optional voice uses the existing Pi Voice/F5 local settings and model (no download or cloud call):
 "voice":{"piVoicePath":"<absolute installed @earendil-works/pi-voice directory>","settingsPath":"<absolute pi-voice.json>"}
 Portuguese must already be selected in /voice-settings. The panel records at most 30 seconds, then shows
@@ -85,7 +87,7 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type EventsConfig = { sources: Record<string, import('./http/hooks.ts').HookSource> };
-export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
+export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string; bills?: boolean };
 export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; events?: EventsConfig; learning?: true; signals?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
 const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'events', 'learning', 'signals'];
@@ -98,7 +100,7 @@ function validWebOrigins(value: unknown): value is string[] {
 function validGoogle(value: unknown): value is GoogleConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const g = value as Record<string, unknown>;
-  if (Object.keys(g).sort().join(',') !== 'connections,dailyAt,timeZone' || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
+  if (Object.keys(g).filter(key => key !== 'bills').sort().join(',') !== 'connections,dailyAt,timeZone' || !(g.bills === undefined || typeof g.bills === 'boolean') || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
   if (!Array.isArray(g.connections) || g.connections.length < 1 || g.connections.length > 10 || new Set(g.connections).size !== g.connections.length ||
       !g.connections.every(name => typeof name === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name))) return false;
   if (typeof g.timeZone !== 'string' || g.timeZone.length > 64) return false;
@@ -332,7 +334,7 @@ async function startGoogle(config: Config, settings: GoogleConfig, notices: Noti
   const { osKeyProtector } = await import('./secrets/protector.ts');
   const dir = dirname(config.databasePath);
   for (const name of ['vault.sqlite', 'google.sqlite', 'google-gateway.sqlite', 'briefings.sqlite']) prepareDatabase(join(dir, name));
-  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector() });
+  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector(), ...(settings.bills ? { bills: true } : {}) });
   const service = new BriefingService({
     local, connections: settings.connections, timeZone: settings.timeZone, dailyAt: settings.dailyAt,
     onReady: briefing => {
