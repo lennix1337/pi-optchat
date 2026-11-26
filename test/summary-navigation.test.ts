@@ -73,22 +73,3 @@ test('search and continuity texts are unchanged, and navigation does not claim s
   assert.match(CONTINUITY, /^\n\nFor conversational continuity, the memory view may be followed by the immediately preceding completed exchange/);
   assert.doesNotMatch(NAVIGATION_DOC, /\bsearch\b/i, 'with Memory search off, the guidance must not mention a tool the agent lacks');
 });
-
-
-
-const landmarks: Record<string, RegExp> = {
-  subjectAndDecision: /\bdeploy.*\b(?:not|only|approved)\b/i,
-  sourceDistinction: /\b(?:user|work|echo|talk):/,
-  revocationPrecedence: /\b(?:revokes|replaces|supersedes)\b/i,
-  authorizationBoundary: /\bnot (?:authorized|approved)\b/i,
-  attemptedVsVerified: /\b(?:attempted|ran|verified|not verified)\b/i,
-  usefulIdentifier: /#\d+|\b\d+\+\d+\b|[\w./-]+\.\w{2,4}\b/,
-};
-const hits = (line: string) => Object.entries(landmarks).filter(([, pattern]) => pattern.test(line)).map(([name]) => name);
-
-test('fixture rubric: a signpost line shows the landmarks that a bare line hides (checklist illustration, not model evidence)', () => {
-  const bare = 'user said to deploy, later changed the plan; tests were looked at.';
-  const signpost = 'user: deploy to staging only, revokes "deploy to prod" from 12+4 (reason: prod freeze); prod not authorized. echo: attempted npm test in ci.yml, 2 failures, not verified green; see #88.';
-  assert.deepEqual(hits(bare), []);
-  assert.deepEqual(hits(signpost), Object.keys(landmarks));
-});

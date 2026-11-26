@@ -12,9 +12,6 @@ import { removeDir } from './support.ts';
 test('child schema resources are immutable shared definitions', () => {
   const frozen = (value: unknown): boolean => !value || typeof value !== 'object' || (Object.isFrozen(value) && Reflect.ownKeys(value).every(key => frozen(Reflect.get(value, key))));
   assert.ok(frozen(childToolSchemas), 'the whole schema graph is frozen');
-  assert.strictEqual(childToolSchemas.spawn, childToolSchemas.spawn);
-  assert.strictEqual(childToolSchemas.tell, childToolSchemas.tell);
-  assert.strictEqual(childToolSchemas.parent, childToolSchemas.parent);
 });
 
 test('children get fresh closures and current delegation settings while reusing only frozen schemas', async () => {
