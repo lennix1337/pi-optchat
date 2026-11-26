@@ -843,7 +843,7 @@ export default function optchat(host: ExtensionAPI) {
         waiting: () => active ? [...approvals?.pendingFor(active.sessionId).map((p): WaitItem => ({ text: `aprovação: ${p.summary}`, id: p.token, choices: ['aprovar', 'negar'] })) ?? [], ...stillWaiting(boardWaiting(readCommitments(active.dir), Date.now()), readWatch(active.dir))] : [],
       }, pi.events);
       board.requestState();
-      if (ctx.mode === 'tui') {
+      if (ctx.mode === 'tui' && config.panels) {
         const boardNav = new BoardNavigation(board), customEditor = Boolean(ctx.ui.getEditorComponent());
 
         unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); }, shells, boardNav, ctx.hasUI);

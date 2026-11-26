@@ -113,6 +113,9 @@ export const SETTINGS = {
   skillBudgetBytes: { kind: 'number', label: 'Skill prompt budget', default: DEFAULT_SKILL_BUDGET_BYTES, min: 0, unit: 'bytes',
     description: 'Byte ceiling for the skills list and loaded SKILL.md files in the prompt; tool_inventory and /tools flag when exceeded. 0: off.',
     applies: 'Applies immediately to inventory reports.' },
+  panels: { kind: 'toggle', label: 'Terminal panels', default: true,
+    description: 'Show the agents list, the waiting board and the footer in the terminal. Off: none of them is mounted and nothing redraws on a timer, for a Pi that runs where nobody watches the screen (a server, a detached tmux). Slack, reports and tools work the same.',
+    applies: 'Applies at the next start or reload.' },
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
