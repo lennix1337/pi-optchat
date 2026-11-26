@@ -55,11 +55,14 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
 
 
 /** The major findings ship.mjs's Revisor left open in the PR description (its `ship:revisor` block), as `file:line`. Parses exactly
- * the line scripts/ship-review.mjs findingLine writes (`- [code:severity] file:line: text`); any line that starts (after list marks) with a `[code:major]` tag counts even when
- * the rest is malformed; a tag quoted mid-text of a minor does not, while a severity named in prose is not a finding. */
+ * the line scripts/ship-review.mjs findingLine writes (`- [code:severity] file:line: text`); a line whose first tag is `[code:major]` counts wherever the tag sits (list marks, a
+ * label before it) even when the rest is malformed; a major tag quoted after a minor's own tag does not, while a severity named in prose is not a finding. */
 export function openMajors(body?: string | null): string[] {
   const block = /<!-- ship:revisor:start -->([\s\S]*?)<!-- ship:revisor:end -->/.exec(body ?? '')?.[1] ?? '';
-  const majors = [...block.matchAll(/^[^\w\[\n]*(?:\d+[.)]\s*)?\[[\w./-]+\s*:\s*(?:major|blocker|critical)\s*\].*$/gmu)].map(m => /\[[\w./-]+\s*:\s*\w+\s*\]\W*(\S+?): /u.exec(m[0])?.[1] ?? 'sem local');
+  const majors = block.split('\n').flatMap(line => {
+    const tag = /\[[\w./-]+\s*:\s*(\w+)\s*\]\W*(?:(\S+?): )?/u.exec(line);
+    return tag && /^(?:major|blocker|critical)$/iu.test(tag[1]) ? [tag[2] ?? 'sem local'] : [];
+  });
   return /^O revisor pediu mudanças sem detalhar\.$/mu.test(block) ? [...majors, 'sem local'] : majors;
 }
 
