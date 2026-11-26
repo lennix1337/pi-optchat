@@ -14,6 +14,35 @@ const DRAFT = { kind: 'message', connectionId: 'test-mail', to: ['customer@examp
 const WRITE = { sessionId: 'session-1', taskId: 'task-1', runId: 'run-1', policyVersion: 'policy-1' };
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+function fakeGoogle(gateway: ReturnType<typeof createGateway>) {
+  const effect = (draft: Draft, write: WriteContext) => ({ ...write, version: 1 as const, profileId: PROFILE, adapter: 'google', action: 'gmail.send', account: 'operator@example.test', destination: draft.kind === 'message' ? draft.to.join(',') : 'invalid', payload: Buffer.from(JSON.stringify(draft.kind === 'message' ? { body: draft.body, subject: draft.subject, to: draft.to } : {})) });
+  const prepared: string[] = [], invoked: string[] = [];
+  const reviews = new Map<string, { reviewId: string; request: ReturnType<typeof effect> }>();
+  let refuseNextSend = false;
+  const google = {
+    prepareSend(draft: Draft, write: WriteContext) {
+      prepared.push(write.operationId);
+      const request = effect(draft, write), review = gateway.prepare(request);
+      if (review.decision === 'review') reviews.set(write.operationId, { reviewId: review.reviewId, request });
+      return review;
+    },
+    send<T>(draft: Draft, write: WriteContext, sink: DraftSink<T>, reviewId?: string) {
+      invoked.push(write.operationId);
+      assert.ok(reviewId, 'must use the exact gateway review');
+      if (refuseNextSend) {
+        refuseNextSend = false;
+        return Promise.reject(new Error('denied'));
+      }
+      return gateway.dispatchReviewed(effect(draft, write), reviewId, sink);
+    },
+  };
+  function reviewPending(id: string) {
+    const item = reviews.get(id)!;
+    return !!gateway.pendingReview(item.reviewId, item.request);
+  }
+  return { google, prepared, invoked, reviewPending, refuseSend: () => { refuseNextSend = true; } };
+}
+
 function fixture(t: TestContext) {
   const f = channelFixture(), authority = {}, feedbackPath = join(f.dir, 'draft-feedback.sqlite');
   const relay = new SlackRelay({ databasePath: join(f.dir, 'relay.sqlite'), profileId: PROFILE });
@@ -21,22 +50,20 @@ function fixture(t: TestContext) {
   let time = 1_793_000_000_000;
   const now = () => time;
   const gateway = createGateway({ databasePath: ':memory:', profileId: PROFILE, operatorAuthority: authority, policy: () => 'review', inspect: () => ({ decision: 'review', reasons: [] }), now });
-  const effect = (draft: Draft, write: WriteContext) => ({ ...write, version: 1 as const, profileId: PROFILE, adapter: 'google', action: 'gmail.send', account: 'operator@example.test', destination: draft.kind === 'message' ? draft.to.join(',') : 'invalid', payload: Buffer.from(JSON.stringify(draft.kind === 'message' ? { body: draft.body, subject: draft.subject, to: draft.to } : {})) });
-  const prepared: string[] = [], invoked: string[] = [], dispatched: { id: string; bytes: string }[] = [];
-  const google = {
-    prepareSend(draft: Draft, write: WriteContext) { prepared.push(write.operationId); return gateway.prepare(effect(draft, write)); },
-    send<T>(draft: Draft, write: WriteContext, sink: DraftSink<T>, reviewId?: string) {
-      invoked.push(write.operationId);
-      assert.ok(reviewId, 'must use the exact gateway review');
-      return gateway.dispatchReviewed(effect(draft, write), reviewId, sink);
-    },
-  };
+  const { google, ...googleState } = fakeGoogle(gateway);
+  const dispatched: { id: string; bytes: string }[] = [];
   type Button = { action_id: string; value: string; text: { text: string } };
   type Block = { type: string; text?: { type: string; text: string }; elements?: Button[] };
-  const posts: { url: string; body: { channel: string; text: string; blocks: Block[] }; ts: string }[] = [];
+  const posts: { url: string; body: { channel: string; text: string; blocks: Block[]; thread_ts?: string }; ts: string }[] = [];
+  let refuseNextCard = false;
   const poster = new SlackPoster({ botToken: 'xoxb-test', operator: OWNER, fetch: async (url, init) => {
     const ts = `1793000000.${String(posts.length + 1).padStart(6, '0')}`;
-    posts.push({ url: String(url), body: JSON.parse(String(init?.body)), ts });
+    const body = JSON.parse(String(init?.body));
+    if (refuseNextCard && String(url).endsWith('chat.postMessage') && !body.thread_ts) {
+      refuseNextCard = false;
+      return new Response(JSON.stringify({ ok: false, error: 'invalid_blocks' }));
+    }
+    posts.push({ url: String(url), body, ts });
     return new Response(JSON.stringify({ ok: true, channel: DM, ts }));
   } });
   const logs: string[] = [];
@@ -50,7 +77,7 @@ function fixture(t: TestContext) {
   const channel = new SlackChannel(channelOptions);
   t.after(() => { drafts.close(); gateway.close(); relay.close(); f.close(); });
   const stage = (body = DRAFT.body as string) => drafts.prepare({ ...DRAFT, to: [...DRAFT.to], body }, WRITE);
-  const card = (i = 0) => posts.filter(post => post.url.endsWith('chat.postMessage'))[i]!;
+  const card = (i = 0) => posts.filter(post => post.url.endsWith('chat.postMessage') && !post.body.thread_ts)[i]!;
   function tap(label: string, index = 0, change: { user?: string; channel?: string; post?: string; value?: string; at?: string; team?: string; app?: string } = {}) {
     const post = card(index);
     const button = post.body.blocks.flatMap(block => block.elements ?? []).find(action => action.text.text === label);
@@ -63,7 +90,9 @@ function fixture(t: TestContext) {
     const event = slackEnvelope(`EvReply${++replies}`, text, { user, channel: DM, thread_ts: card(index).ts });
     return channel.accept(event);
   }
-  return { stage, card, tap, reply, relay, drafts, options, prepared, invoked, dispatched, posts, logs, loseSendResponse: () => { sinkUncertain = true; }, advance: (ms: number) => { time += ms; } };
+  return { stage, card, tap, reply, relay, drafts, options, dispatched, posts, logs, ...googleState,
+    refuseCard: () => { refuseNextCard = true; },
+    loseSendResponse: () => { sinkUncertain = true; }, advance: (ms: number) => { time += ms; } };
 }
 
 test('draft is shown only in the operator DM; typed approval and forged taps never call send', async t => {
@@ -110,10 +139,36 @@ test('an uncertain send remains a single attempt and the card does not claim it 
   f.loseSendResponse();
   f.tap('Aprovar');
   await flush();
-  f.tap('Aprovar', 0, { at: '1793000001.000001' });
+  assert.equal(f.tap('Aprovar', 0, { at: '1793000001.000001' }).outcome, 'stale');
+  assert.equal(f.tap('Editar').outcome, 'stale');
+  await flush();
+  assert.deepEqual(f.prepared, [id]);
   assert.deepEqual(f.invoked, [id]);
   assert.equal(f.dispatched.length, 1);
-  assert.match(f.posts.at(-1)!.body.text, /Envio não confirmado/);
+  assert.match(f.posts.at(-1)!.body.text, /Confira a pasta Enviados.*não reenvie/i);
+});
+
+test('a refusal before dispatch keeps a recovery path and only a fresh approval can send', async t => {
+  const f = fixture(t);
+  const id = await f.stage();
+  f.refuseSend();
+  f.tap('Aprovar');
+  assert.equal(f.tap('Editar').outcome, 'stale', 'no replacements while a send is in flight');
+  await flush();
+  assert.deepEqual(f.dispatched, []);
+  const notice = f.posts.at(-1)!.body;
+  assert.match(notice.text, /não foi enviado.*Editar/i);
+  assert.equal(notice.channel, DM);
+  assert.equal(notice.thread_ts, f.card().ts);
+  assert.equal(f.tap('Aprovar').outcome, 'stale', 'old approval or redelivery never sends');
+  assert.equal(f.tap('Editar').outcome, 'responded');
+  await flush();
+  assert.notEqual(f.prepared[1], id);
+  assert.deepEqual(f.invoked, [id]);
+  f.tap('Aprovar', 1);
+  f.tap('Aprovar', 1, { at: '1793000001.000001' });
+  await flush();
+  assert.deepEqual(f.dispatched, [{ id: f.prepared[1], bytes: JSON.stringify({ body: DRAFT.body, subject: DRAFT.subject, to: DRAFT.to }) }]);
 });
 
 test('discard never sends, and records the operator’s reason from the exact DM thread', async t => {
@@ -143,6 +198,40 @@ test('a draft expired at the configured deadline refuses its approval', async t 
   await flush();
   assert.deepEqual(f.invoked, []);
   assert.deepEqual(f.dispatched, []);
+});
+
+test('when Slack refuses the edited card, the old review and replacement text survive until a replacement is ready', async t => {
+  const f = fixture(t);
+  const id = await f.stage();
+  f.tap('Editar');
+  f.refuseCard();
+  assert.equal(f.reply('Keep this replacement.').outcome, 'responded');
+  assert.equal(f.reviewPending(id), true, 'original is not revoked while posting');
+  assert.equal(f.tap('Aprovar').outcome, 'stale', 'the original cannot send while replacing it');
+  await flush();
+  assert.equal(f.reviewPending(id), true, 'failed posting does not revoke the original');
+  assert.equal(f.reviewPending(f.prepared[1]!), false, 'failed candidate cannot be approved');
+  assert.match(f.posts.at(-1)!.body.text, /texto foi mantido/i);
+  assert.equal(f.tap('Editar').outcome, 'responded', 'retry without retyping the replacement');
+  await flush();
+  assert.equal(f.reviewPending(id), false, 'original revoked only once the new card exists');
+  assert.deepEqual(f.invoked, []);
+  f.tap('Aprovar', 1);
+  await flush();
+  assert.deepEqual(f.dispatched, [{ id: f.prepared[2], bytes: JSON.stringify({ body: 'Keep this replacement.', subject: DRAFT.subject, to: DRAFT.to }) }]);
+});
+
+test('a replacement confirmed at the expiry deadline cannot be approved', async t => {
+  const f = fixture(t);
+  await f.stage();
+  f.advance(59_999);
+  f.tap('Editar');
+  f.reply('Replacement at the deadline.');
+  f.advance(1);
+  await flush();
+  assert.equal(f.tap('Aprovar', 1).outcome, 'stale');
+  assert.deepEqual(f.prepared.map(f.reviewPending), [false, false]);
+  assert.deepEqual(f.invoked, []);
 });
 
 test('editing retires the original card; a replacement requires its own tap', async t => {
