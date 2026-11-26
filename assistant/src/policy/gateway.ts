@@ -8,8 +8,12 @@ export type BoundedRule = { scope: 'rule'; uses: number; expiresAt: number };
 
 class AdmissionRefused extends Error {}
 class ReviewedDispatchRefusal extends Error {
-  constructor(cause: AdmissionRefused, readonly operationId: string, readonly reviewId: string) {
+  readonly operationId: string;
+  readonly reviewId: string;
+  constructor(cause: AdmissionRefused, operationId: string, reviewId: string) {
     super(cause.message, { cause });
+    this.operationId = operationId;
+    this.reviewId = reviewId;
   }
 }
 
