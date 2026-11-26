@@ -30,6 +30,13 @@ test('only a verdict from mx.google.com about exactly the From domain counts', (
   assert.equal(gmailVerifiedSender(FROM, undefined), false);
 });
 
+test('case and a trailing dot on the server or a domain do not change the verdict', () => {
+  assert.equal(gmailVerifiedSender(FROM, 'MX.Google.COM.; dmarc=pass header.from=energia.example.test'), true, 'fully qualified server name');
+  assert.equal(gmailVerifiedSender(FROM, 'mx.google.com; DMARC=PASS header.from=Energia.Example.Test.'), true, 'header.from with case and a trailing dot');
+  assert.equal(gmailVerifiedSender('Energia <Contas@ENERGIA.example.test.>', 'mx.google.com; dmarc=pass header.from=energia.example.test'), true, 'From domain with a trailing dot');
+  assert.equal(gmailVerifiedSender(FROM, 'mx.google.com; dmarc=pass header.from=energia.example.test.evil.test'), false, 'a longer domain is another domain');
+});
+
 test('the domain is the one of the real From address: a display name that only looks like an address, a second address or a full-width at sign never counts', () => {
   assert.equal(gmailVerifiedSender('pague a contas@energia.example.test', GMAIL), false, 'no address, only text');
   assert.equal(gmailVerifiedSender('contas@energia.example.test, outro@evil.example.test', GMAIL), false, 'two addresses');

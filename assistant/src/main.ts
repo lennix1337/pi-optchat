@@ -334,7 +334,7 @@ async function startJournal(config: Config, notices: Notices | undefined, channe
 
 
 export function googleBriefingOptions(settings: GoogleConfig): { bills?: true; trustedSenders?: string[] } {
-  return { ...(settings.bills ? { bills: true as const } : {}), ...(settings.trustedSenders ? { trustedSenders: settings.trustedSenders } : {}) };
+  return { ...(settings.bills ? { bills: true as const } : {}), ...(settings.trustedSenders ? { trustedSenders: [...new Set(settings.trustedSenders.map(sender => sender.toLowerCase()))] } : {}) };
 }
 
 async function startGoogle(config: Config, settings: GoogleConfig, notices: Notices | undefined): Promise<Briefings> {

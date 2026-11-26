@@ -74,6 +74,18 @@ test('without an amount the due date is the first one in the text; with an amoun
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026\n\n\n\n\n\nValor R$ 10,00. Vencimento: 05/11/2026')?.dueDate, '2026-11-05');
 });
 
+test('a long body with thousands of dates and amounts is scanned in linear time', () => {
+  const bodies = [
+    `Valor R$ 20,00. Vencimento: 30/10/2026. ${'fatura anterior R$ 10,00 e vencimento: 05/11/2026 outra linha sem ponto '.repeat(16_000)}`,
+    `Pague R$ 20,00 vencimento: 30/10/2026 ${'R$ 10,00 vencimento: 05/11/2026 mais texto sem ponto '.repeat(24_000)}`,
+  ];
+  for (const body of bodies) {
+    const started = performance.now();
+    assert.equal(bill('Fatura', body)?.dueDate, '2026-10-30');
+    assert.ok(performance.now() - started < 1000, `took ${Math.round(performance.now() - started)} ms for ${body.length} characters`);
+  }
+});
+
 test('the amount: the total when labelled, otherwise the first one', () => {
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amount, 'R$ 1.234,56');
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amount, 'R$ 80,00');

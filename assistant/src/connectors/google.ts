@@ -406,16 +406,18 @@ export function senderAddress(from: string): string {
 // external: Gmail writes its own verdict as the topmost Authentication-Results header, from mx.google.com; lower ones come from the sender's path, so a second header from mx.google.com is never taken as Gmail's.
 /** True when Gmail's single verdict, the topmost `Authentication-Results` value, says DMARC passed for the domain of the From address. */
 export function gmailVerifiedSender(from: string, authentication: unknown): boolean {
-  const domain = senderAddress(from).split('@')[1];
+  const domain = withoutTrailingDot(senderAddress(from).split('@')[1] ?? '');
   const headers = Array.isArray(authentication) ? authentication : [authentication];
   if (!domain || headers.length === 0 || !headers.every(value => typeof value === 'string')) return false;
   const parsed = headers.map(value => authenticationParts(value));
-  const fromGmail = parsed.filter(([server]) => server.trim().toLowerCase() === 'mx.google.com');
+  const fromGmail = parsed.filter(([server]) => withoutTrailingDot(server.trim().toLowerCase()) === 'mx.google.com');
   if (fromGmail.length !== 1 || fromGmail[0] !== parsed[0]) return false;
   const [, ...results] = parsed[0];
   return results.some(result => /^\s*dmarc\s*=\s*pass(?![\w-])/i.test(result)
-      && /(?:^|\s)header\.from\s*=\s*"?([^\s";]+)"?/i.exec(result)?.[1].toLowerCase() === domain);
+      && withoutTrailingDot(/(?:^|\s)header\.from\s*=\s*"?([^\s";]+)"?/i.exec(result)?.[1].toLowerCase() ?? '') === domain);
 }
+
+const withoutTrailingDot = (name: string) => name.replace(/\.$/, '');
 
 // external: RFC 8601 Authentication-Results may hold comments and quoted strings; text inside either must never read as a verdict.
 function authenticationParts(value: string): string[] {

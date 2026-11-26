@@ -50,7 +50,6 @@ test('bills watch on: due bills are listed by due date with amount and the ones 
   assert.deepEqual(list.map(i => [i.dueDate, i.amount ?? null, i.urgency, i.reason]), [
     ['2026-10-25', null, 'urgent', 'bill_overdue'],
     ['2026-10-30', 'R$ 1.234,56', 'urgent', 'bill_due_soon'],
-    ['2026-10-31', null, 'urgent', 'bill_due_soon'],
     ['2026-11-02', 'R$ 700,00', 'normal', 'bill_upcoming'],
     ['2026-11-05', 'R$ 99,90', 'normal', 'bill_upcoming'],
   ], JSON.stringify(list));
@@ -63,8 +62,8 @@ test('bills watch on: due bills are listed by due date with amount and the ones 
   assert.ok(messages.some(ref => /b-inject/.test(ref)), 'an injection-shaped message is never promoted to a bill');
   assert.ok(messages.some(ref => /b-old/.test(ref)), 'a long-past due date is ordinary mail');
   assert.ok(messages.some(ref => /b-none/.test(ref)));
-  assert.equal(briefing.distractions, 0, 'the only promotion in the fixture is a bill, so nothing is hidden');
-  assert.deepEqual(list.filter(i => /b-promo/.test(i.sourceRef)).map(i => [i.uncertainty, i.startable]), [['high', false]], 'a bill filed under Promotions is listed, uncertain and not startable');
+  assert.equal(briefing.distractions, 1, 'the promotion with a billing word and no extra signal is hidden');
+  assert.equal(list.filter(i => /b-promo/.test(i.sourceRef)).length, 0);
 }));
 
 test('bills watch on: the same reminder in two accounts is listed once and private content is withheld', () => withGoogle(async rig => {
@@ -143,8 +142,8 @@ test('triage rules still decide first: executable attachments, injection, promot
   const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`));
   assert.deepEqual([byRef('e1')?.section, byRef('e1')?.reason, byRef('e1')?.urgency], ['messages', 'executable_attachment', 'normal']);
   assert.deepEqual([byRef('e2')?.section, byRef('e2')?.reason], ['messages', 'suspected_injection']);
-  assert.deepEqual([byRef('e3')?.section, byRef('e3')?.startable], ['bills', false], 'a promotion-labelled bill is listed, not startable');
-  assert.equal(briefing.distractions, 0);
+  assert.equal(byRef('e3'), undefined, 'a promotion-labelled mail with a billing word and no extra signal stays hidden');
+  assert.equal(briefing.distractions, 1);
   assert.deepEqual([byRef('e4')?.section, byRef('e4')?.title.startsWith('[private content withheld]')], ['bills', true]);
   assert.ok(!JSON.stringify(briefing).includes('4111'));
 }));
@@ -281,28 +280,31 @@ test('known limit: a trusted sender on a subdomain is not startable unless Gmail
   assert.deepEqual([startable('a1'), startable('a2')], [false, true]);
 }));
 
-test('a bill is found before the low-urgency discard: an unsubscribe footer does not hide it, a Gmail promotion label never hides a bill but never makes it startable', () => withGoogle(async rig => {
+test('mail that reads like a promotion becomes a bill only with an extra signal: a trusted sender, or an amount with a sender Gmail verified; a billing newsletter stays hidden', () => withGoogle(async rig => {
   const base = { receivedAt: '2026-10-28T08:00:00.000Z' };
   rig.fake.mail.personal.push(
-    { id: 'l1', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Sua fatura', body: `Valor R$ 80,00. Vencimento: 30/10/2026\nPara cancelar o envio, unsubscribe aqui.`, ...base },
+    { id: 'l1', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Sua fatura', body: `Valor R$ 80,00. Vencimento: 30/10/2026\nPara cancelar o envio, unsubscribe aqui.`, authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
     { id: 'l2', from: 'Loja Fake <l@loja.example.test>', subject: 'Fatura com desconto', body: 'Vencimento: 31/10/2026', labels: ['CATEGORY_PROMOTIONS'], ...base },
     { id: 'l3', from: 'News Fake <n@news.example.test>', subject: 'Newsletter', body: 'Novidades. unsubscribe', ...base },
     { id: 'l5', from: 'Loja Fake <l@loja.example.test>', subject: 'Ofertas da semana', body: 'Compre agora. Vence em breve a promoção.', labels: ['CATEGORY_PROMOTIONS'], ...base },
-    { id: 'l4', from: 'Banco Fake <fatura@banco.example.test>', subject: `Fatura ${CARD}`, body: `Cartao ${CARD}. Vencimento: 02/11/2026. unsubscribe`, ...base },
+    { id: 'l4', from: 'Banco Fake <fatura@banco.example.test>', subject: `Fatura ${CARD}`, body: `Cartao ${CARD}. Valor R$ 12,00. Vencimento: 02/11/2026. unsubscribe`, authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
+    { id: 'l6', from: 'News Fake <n@news.example.test>', subject: 'Newsletter: sua fatura de marketing', body: 'Valor R$ 70,00. Vencimento do desconto: 01/11/2026. Para cancelar, unsubscribe aqui.', ...base },
+    { id: 'l7', from: 'News Fake <n@news.example.test>', subject: 'Newsletter: sua fatura do mes', body: 'Vencimento: 01/11/2026. Para cancelar, unsubscribe aqui.', authenticationResults: [GMAIL_DMARC('news.example.test')], ...base },
+    { id: 'l8', from: 'Energia <contas@energia.example.test>', subject: 'Fatura de energia', body: 'Vencimento: 03/11/2026', labels: ['CATEGORY_PROMOTIONS'], authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
   );
   await connectBoth(rig);
-  const briefing = await composer(rig, { bills: true, connections: ['personal'] }).daily();
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
   const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`));
-  assert.equal(byRef('l1')?.section, 'bills');
-  assert.deepEqual([byRef('l2')?.section, byRef('l2')?.uncertainty, byRef('l2')?.startable], ['bills', 'high', false], 'a bill in Promotions is listed, flagged uncertain and not startable');
-  assert.match(byRef('l2')!.title, /promoç/i);
-  assert.equal(byRef('l5'), undefined, 'a promotion that is not a bill stays hidden');
-  assert.equal(byRef('l3'), undefined, 'a promotional mail that is not a bill stays hidden');
+  assert.deepEqual([byRef('l1')?.section, byRef('l1')?.uncertainty, byRef('l1')?.startable], ['bills', 'high', false], 'an unsubscribe footer with an amount from a verified sender: listed, doubtful');
+  assert.match(byRef('l1')!.title, /parece promoção/);
+  assert.deepEqual([byRef('l8')?.section, byRef('l8')?.uncertainty, byRef('l8')?.startable], ['bills', 'high', false], 'a trusted sender filed under Promotions: listed, doubtful, not startable');
+  assert.match(byRef('l8')!.title, /promoç/i);
+  for (const id of ['l2', 'l3', 'l5', 'l6', 'l7']) assert.equal(byRef(id), undefined, `${id} is a promotion without the extra signal and stays hidden`);
   assert.deepEqual([byRef('l4')?.section, byRef('l4')?.title.startsWith('[private content withheld]')], ['bills', true]);
-  assert.equal(briefing.distractions, 2);
+  assert.equal(briefing.distractions, 5);
   assert.ok(!JSON.stringify(briefing).includes('4111'));
   const off = await composer(rig, { connections: ['personal'] }).onDemand();
-  assert.equal(off.distractions, 5, 'with bills off every low-urgency mail is still a distraction');
+  assert.equal(off.distractions, 8, 'with bills off every low-urgency mail is still a distraction');
 }));
 
 test('a trusted, DMARC-verified sender is still not startable when Gmail filed the bill under Promotions; a spoofed display name is never trusted', () => withGoogle(async rig => {
@@ -322,7 +324,7 @@ test('a bill with several distinct amounts, or one that reads like a billing new
   rig.fake.mail.personal.push(
     { id: 'u1', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00', authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
     { id: 'u2', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 80,00. Vencimento: 31/10/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
-    { id: 'u3', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Newsletter: sua fatura', body: 'Valor R$ 70,00. Vencimento: 01/11/2026. Para cancelar, unsubscribe aqui.', ...base },
+    { id: 'u3', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Newsletter: sua fatura', body: 'Valor R$ 70,00. Vencimento: 01/11/2026. Para cancelar, unsubscribe aqui.', authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
   );
   await connectBoth(rig);
   const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
@@ -380,7 +382,7 @@ test('the stored view keeps bill fields and refuses malformed ones', () => withG
   await connectBoth(rig);
   const stored = JSON.parse(JSON.stringify(await composer(rig, { bills: true }).daily()));
   const view = briefingView(stored, 'p')!;
-  assert.deepEqual(bills(view).map(i => i.dueDate), ['2026-10-25', '2026-10-30', '2026-10-31', '2026-11-02', '2026-11-05']);
+  assert.deepEqual(bills(view).map(i => i.dueDate), ['2026-10-25', '2026-10-30', '2026-11-02', '2026-11-05']);
   assert.equal(bills(view)[1].amount, 'R$ 1.234,56');
   const bad = JSON.parse(JSON.stringify(stored));
   bad.items.find((i: { section: string }) => i.section === 'bills').dueDate = 20261030;
@@ -404,3 +406,21 @@ test('configuration: google.bills is optional, boolean only', () => {
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('startable needs all three: the address in trustedSenders, Gmail DMARC for the From domain, and a bill read today; a carried bill is never startable', () => withGoogle(async rig => {
+  const base = { from: 'Energia <contas@energia.example.test>', subject: 'Fatura', receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push(
+    { id: 'x1', ...base, body: 'Valor R$ 1,00. Vencimento: 05/11/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+    { id: 'x2', ...base, body: 'Valor R$ 2,00. Vencimento: 05/11/2026' },
+    { id: 'x3', ...base, from: 'Outra <outra@energia.example.test>', body: 'Valor R$ 3,00. Vencimento: 05/11/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+  );
+  await connectBoth(rig);
+  const table = (items: ReturnType<typeof bills>) => Object.fromEntries(items.map(i => [i.sourceRef.split(':').at(-1), i.startable]));
+  const listed = composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } });
+  assert.deepEqual(table(bills(await listed.daily())), { x1: true, x2: false, x3: false }, 'address in the list and DMARC pass: only x1');
+  const unlisted = composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: [] } });
+  assert.deepEqual(table(bills(await unlisted.onDemand())), { x1: false, x2: false, x3: false }, 'the same mail with no list: none');
+  rig.fake.mail.personal.length = 0;
+  rig.clock.now = Date.parse('2026-10-29T12:00:00.000Z');
+  assert.deepEqual(table(bills(await listed.onDemand())), { x1: false, x2: false, x3: false }, 'carried: none, even the one that was startable');
+}));

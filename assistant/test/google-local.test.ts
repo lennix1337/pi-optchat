@@ -130,6 +130,7 @@ test('a config file with google.bills and google.trustedSenders reaches the brie
     const briefing = await l.briefing(['personal'], 'America/Sao_Paulo');
     assert.deepEqual(briefing.items.filter(i => i.section === 'bills').map(i => [i.amount, i.startable]), [['R$ 45,00', true]]);
     assert.deepEqual(googleBriefingOptions({ connections: ['personal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' }), {}, 'nothing set, nothing on');
+    assert.deepEqual(googleBriefingOptions({ connections: ['personal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00', trustedSenders: ['Contas@Agua.Example.Test', 'contas@agua.example.test', 'b@x.test'] }).trustedSenders, ['contas@agua.example.test', 'b@x.test'], 'lowercase and no duplicates');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }));
 

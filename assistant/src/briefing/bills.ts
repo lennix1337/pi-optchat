@@ -26,9 +26,28 @@ const EARLIER_BILL = /\b(?:anterior|anteriores|previous|prior|passad[ao])\b/i;
 const CURRENCY = '(?:R\\$|US\\$|BRL|USD|EUR|€|\\$)\\s*(\\d{1,3}(?:\\.\\d{3})+,\\d{2}|\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+[.,]\\d{2}|\\d+)';
 const TOTAL_AMOUNT = new RegExp(`\\b(?:total|valor|amount|value|montante)\\b[^\\d\\n]{0,20}?(${CURRENCY})`, 'gi');
 const ANY_AMOUNT = new RegExp(CURRENCY, 'gi');
-const CLAUSE_BREAK = /\n|[.;,]\s/;
+const CLAUSE_BREAK = /\n|[.;,]\s/g;
+const EARLIER_BILL_WORDS = new RegExp(EARLIER_BILL.source, 'gi');
 
-const inEarlierBillClause = (text: string, end: number) => EARLIER_BILL.test(text.slice(0, end).split(CLAUSE_BREAK).at(-1)!);
+function lastAtMost(sorted: readonly number[], limit: number): number {
+  let low = 0, high = sorted.length - 1, found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] <= limit) { found = mid; low = mid + 1; } else high = mid - 1;
+  }
+  return found;
+}
+
+function earlierBillClauses(text: string): (end: number) => boolean {
+  const clauseStarts = [...text.matchAll(CLAUSE_BREAK)].map(match => (match.index ?? 0) + match[0].length);
+  const words = [...text.matchAll(EARLIER_BILL_WORDS)].map(match => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+  const wordEnds = words.map(word => word.end);
+  return end => {
+    const start = clauseStarts[lastAtMost(clauseStarts, end)] ?? 0;
+    const word = words[lastAtMost(wordEnds, end)];
+    return word !== undefined && word.start >= start;
+  };
+}
 
 /** How the briefing flags a bill `daysLeft` days from today (negative: overdue). */
 export function billTiming(daysLeft: number): { reason: 'bill_overdue' | 'bill_due_soon' | 'bill_upcoming'; urgency: 'urgent' | 'normal' } {
@@ -52,17 +71,23 @@ const pad = (n: number) => String(n).padStart(2, '0');
 export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today: string): Bill | null {
   const text = `${message.subject}\n${message.body}`;
   if (!SPECIFIC_BILL_WORDS.test(text)) return null;
+  const earlier = earlierBillClauses(text);
   const own = (pattern: RegExp) => [...text.matchAll(pattern)]
     .map(match => ({ match, at: match.index ?? 0 }))
-    .filter(({ match, at }) => !inEarlierBillClause(text, at + match[0].length));
+    .filter(({ match, at }) => !earlier(at + match[0].length));
   const labelled = own(TOTAL_AMOUNT);
   const amounts = (labelled.length ? labelled.map(({ match, at }) => ({ at, value: match[1] })) : own(ANY_AMOUNT).map(({ match, at }) => ({ at, value: match[0] })))
     .map(({ at, value }) => ({ at, value: value.replace(/\s+/g, ' ').trim() }));
-  const gap = (at: number) => amounts.length ? Math.min(...amounts.map(amount => Math.abs(amount.at - at))) : 0;
-  const dateFound = own(DUE_DATE).sort((a, b) => gap(a.at) - gap(b.at) || a.at - b.at)[0];
+  const amountPositions = amounts.map(amount => amount.at);
+  const nearestAmount = (at: number) => {
+    const before = lastAtMost(amountPositions, at);
+    return [amounts[before], amounts[before + 1]].filter(amount => amount !== undefined).sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at))[0];
+  };
+  const gap = (at: number) => { const nearest = nearestAmount(at); return nearest ? Math.abs(nearest.at - at) : 0; };
+  const dateFound = own(DUE_DATE).map(date => ({ ...date, gap: gap(date.at) })).reduce<{ match: RegExpMatchArray; at: number; gap: number } | undefined>((best, date) => best && (best.gap < date.gap || (best.gap === date.gap && best.at <= date.at)) ? best : date, undefined);
   if (!dateFound) return null;
   const m = dateFound.match;
-  const amount = [...amounts].sort((a, b) => Math.abs(a.at - dateFound.at) - Math.abs(b.at - dateFound.at))[0]?.value ?? null;
+  const amount = nearestAmount(dateFound.at)?.value ?? null;
   const [ty, tm, td] = today.split('-').map(Number);
   const todayNumber = dayNumber(ty, tm, td);
   if (todayNumber === null) return null;

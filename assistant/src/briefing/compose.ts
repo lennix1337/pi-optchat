@@ -145,11 +145,12 @@ export class BriefingComposer {
           const page = await this.options.google.listMessages(connectionId);
           for (const message of page.items) {
             const result = triage(message, this.options.rules);
-            const bill = this.options.bills && !NEVER_A_BILL.some(signal => result.signals.includes(signal)) ? detectBill(message, localDate) : null;
-            if (!bill && result.urgency === 'low') { found.distractions++; continue; }
+            const detected = this.options.bills && !NEVER_A_BILL.some(signal => result.signals.includes(signal)) ? detectBill(message, localDate) : null;
+            const readsLikePromotion = result.urgency === 'low';
+            const bill = detected && (!readsLikePromotion || result.signals.includes('trusted_sender') || (detected.amount !== null && message.senderVerified)) ? detected : null;
+            if (!bill && readsLikePromotion) { found.distractions++; continue; }
             if (bill) {
               const filedAsPromotion = result.signals.includes('promotional_label');
-              const readsLikePromotion = result.urgency === 'low';
               const doubtful = filedAsPromotion || readsLikePromotion || bill.amountsDiffer === true;
               const marker = filedAsPromotion ? ' (Gmail: promoções)' : readsLikePromotion ? ' (parece promoção)' : '';
               const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
