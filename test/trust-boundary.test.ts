@@ -285,17 +285,18 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: nada grave.')), []);
   assert.deepEqual(openMajors('- [model_review:major] fora do bloco do Revisor'), []);
   const written = reviewBody('Problema: x', { verdict: 'changes', findings: [
-    { severity: 'major', file: 'src/a.ts', line: 3, text: 'grave.' }, { severity: 'blocker', file: 'src/b.ts', text: 'sem linha.' },
+    { severity: 'major', file: 'src/a.ts', line: 3, text: 'grave.' }, { severity: 'major', file: 'src/b.ts', text: 'sem linha.' },
     { code: 'cr', severity: 'major', text: 'sem arquivo.' }, { severity: 'minor', file: 'c.ts', line: 1, text: 'como [o major] disse, nada grave.' }] });
-  assert.deepEqual(openMajors(written), ['src/a.ts:3', 'src/b.ts', 'sem local'], 'parses what ship-review.mjs writes, majors and blockers only');
-  assert.deepEqual(openMajors(block('* **[model_review:major]** sem dois-pontos\n› [cr:blocker]')), ['sem local', 'sem local'], 'a malformed line with a major tag still counts');
+  assert.deepEqual(openMajors(written), ['src/a.ts:3', 'src/b.ts', 'sem local'], 'parses generated majors with or without a location');
+  const malformed = 'malformed or incomplete Revisor block';
+  assert.deepEqual(openMajors(block('* **[model_review:major]** sem dois-pontos\n› [cr:blocker]')), [malformed, malformed], 'both malformed lines block');
   assert.deepEqual(openMajors(reviewBody('x', { verdict: 'changes', findings: [] })), ['sem local'], 'changes without detail stay open');
   assert.deepEqual(openMajors(reviewBody('x', { verdict: 'approve', findings: [{ severity: 'minor', file: 'd.ts', line: 2, text: '[no major issues] ok.' }] })), [], 'a severity named in prose is not a finding');
-  assert.deepEqual(openMajors(block('- [model_review: critical] a.ts:4: x.\n- [review/v2.1:major] b.ts:5: y.')), ['a.ts:4', 'b.ts:5'], 'spaces, dots, slashes and critical still count');
-  assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: texto cita [x:major] no meio.')), [], 'a tag quoted mid-text of a minor is not a major');
-  assert.deepEqual(openMajors(block('1. [model_review:major] c.ts:4: numerada.\n2) [cr:blocker] d.ts:5: outra.')), ['c.ts:4', 'd.ts:5'], 'numbered list marks still count');
-  assert.deepEqual(openMajors(block('Achado: [x:critical] e.ts:6: rotulado.')), ['e.ts:6'], 'a label before the tag still counts');
-  assert.deepEqual(openMajors(block('Ver [a:b] antes. [x:major] f.ts:7: depois de outra tag.')), ['f.ts:7'], 'a non-severity tag before the major does not hide it');
+  assert.deepEqual(openMajors(block('- [model_review: critical] a.ts:4: x.\n- [review/v2.1:major] path with spaces.ts:5: y.').replaceAll('\n', '\r\n')), [malformed, 'path with spaces.ts:5']);
+  assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: texto cita [x:major] no meio.\n- [r:nit]: ok.\n- [r:suggestion]: ok.')), [], 'only leading tags count; minor, nit and suggestion are advisory');
+  assert.deepEqual(openMajors(block('1. [model_review:major] c.ts:4: numerada.\n2) [cr:blocker] d.ts:5: outra.')), [malformed, malformed], 'noncanonical list markers block');
+  assert.deepEqual(openMajors(block('Achado: [x:critical] e.ts:6: rotulado.')), [malformed], 'a label before the tag is not a finding');
+  assert.deepEqual(openMajors(block('Ver [a:b] antes. [x:major] f.ts:7: depois de outra tag.')), [malformed], 'a mid-line tag does not make a malformed line pass');
   assert.deepEqual(openMajors(null), []);
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 1, stdout: '', stderr: 'HTTP 502' })))!, /could not read its checks/, 'an unreadable description never lets the merge through');
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 0, stdout: '{not json', stderr: '' })))!, /could not read its checks/);
@@ -304,6 +305,40 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   for (const command of ['gh pr merge 602 --squash', 'gh pr merge 602 --auto --squash'])
     assert.match((await mergeRefusal(command, 'C:/', exec(major)))!, /^Not run: PR 602 still has open major findings from the Revisor \(src\/ideas\.ts:107\).*ship\.mjs --pr 602/);
   assert.equal(await mergeRefusal('gh pr merge 602 --squash', 'C:/', exec(block('- [model_review:minor] a.ts:1: ok.'))), undefined);
+});
+
+test('Revisor severity comes from the leading finding tag, not citations before or within a minor finding', () => {
+  const body = reviewBody('Problema: x', {
+    verdict: 'approve', reason: 'Contexto: o texto cita [x:major] antes do achado.',
+    findings: [
+      { severity: 'minor', text: '[x:major] é uma citação no início do texto.' },
+      { severity: 'minor', file: 'a.ts', line: 1, text: 'Uma citação [y:major] no meio do texto.' },
+    ],
+  });
+  assert.deepEqual(openMajors(body), []);
+});
+
+test('green CI does not permit a merge with an unreadable Revisor section', async t => {
+  const body = reviewBody('Problema: x', { verdict: 'changes', findings: [{ severity: 'major', file: 'a.ts', line: 1, text: 'grave.' }] });
+  const green = { statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], mergeStateStatus: 'CLEAN' };
+  const edits = {
+    'removed leading tag': body.replace('- [model_review:major] ', ''),
+    'citation before the finding tag': body.replace('- [model_review:major]', 'Nota [x:major] cita - [model_review:minor]'),
+    'wrong severity case': body.replace(':major]', ':MAJOR]'),
+    'unknown severity': body.replace(':major]', ':info]'),
+    'blocker from older review format': reviewBody('x', { verdict: 'block', findings: [{ severity: 'blocker', file: 'a.ts', text: 'grave.' }] }),
+    'missing detail after a leading minor tag': body.replace(/^- \[.*$/m, '- [model_review:minor]'),
+    'missing end marker': body.replace('<!-- ship:revisor:end -->', ''),
+    'missing start marker': body.replace('<!-- ship:revisor:start -->', ''),
+    'only the heading survives': 'Problema: x\n\n## Revisor',
+    'missing markers but heading and finding remain': body.replace(/^<!-- ship:revisor:.*-->$/gm, ''),
+    'duplicate blocks': `${body}\n\n${body}`,
+    'empty block': body.replace(/^- \[.*$/m, ''),
+  };
+  for (const [edit, broken] of Object.entries(edits)) await t.test(edit, async () => {
+    const exec: Exec = async () => ({ code: 0, stdout: JSON.stringify({ ...green, body: broken }), stderr: '' });
+    assert.match((await mergeRefusal('gh pr merge 602 --auto --squash', 'C:/', exec)) ?? '', /malformed or incomplete Revisor block .*possible open major findings.*ship\.mjs --pr 602/);
+  });
 });
 
 test('a merge the guard cannot check before it runs is refused with the way through: a PR in a shell variable, a PR the same command creates', async () => {

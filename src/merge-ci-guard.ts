@@ -54,16 +54,26 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
 }
 
 
-/** The major findings ship.mjs's Revisor left open in the PR description (its `ship:revisor` block), as `file:line`. Parses exactly
- * the line scripts/ship-review.mjs findingLine writes (`- [code:severity] file:line: text`); a line whose first severity tag is `[code:major]` counts wherever the tag sits (list marks, a
- * label or an unrelated `[a:b]` before it) even when the rest is malformed; a major tag quoted after a minor's own tag does not, while a severity named in prose is not a finding. */
+const MALFORMED_REVISOR = 'malformed or incomplete Revisor block';
+
+/** Major locations (or a refusal reason) from the PR description's Revisor section. */
 export function openMajors(body?: string | null): string[] {
-  const block = /<!-- ship:revisor:start -->([\s\S]*?)<!-- ship:revisor:end -->/.exec(body ?? '')?.[1] ?? '';
-  const majors = block.split('\n').flatMap(line => {
-    const tag = /\[[\w./-]+\s*:\s*(major|blocker|critical|minor|nit|info|suggestion)\s*\]\W*(?:(\S+?): )?/iu.exec(line);
-    return tag && /^(?:major|blocker|critical)$/iu.test(tag[1]) ? [tag[2] ?? 'sem local'] : [];
+  const lines = (body ?? '').split(/\r?\n/);
+  const marks = lines.flatMap((line, i) => /<!--\s*ship:revisor\b/i.test(line) || line === '## Revisor' ? [i] : []);
+  if (!marks.length) return [];
+  const [start = -1, heading = -1, end = -1] = marks;
+  if (marks.length !== 3 || lines[start] !== '<!-- ship:revisor:start -->' || heading !== start + 1
+    || lines[heading] !== '## Revisor' || lines[end] !== '<!-- ship:revisor:end -->') return [MALFORMED_REVISOR];
+
+  const content = lines.slice(heading + 1, end).filter(line => line.trim());
+  if (!content.length) return [MALFORMED_REVISOR];
+  return content.flatMap(line => {
+    if (/^(Modelo do Revisor|Revisão de modelo pulada): \s*\S/.test(line)) return [];
+    if (line === 'O revisor pediu mudanças sem detalhar.') return ['sem local'];
+    const finding = /^- \[[\w./-]+:(major|minor|nit|suggestion)\](?: (.+?))?: \s*\S/.exec(line);
+    if (!finding) return [MALFORMED_REVISOR];
+    return finding[1] === 'major' ? [finding[2] ?? 'sem local'] : [];
   });
-  return /^O revisor pediu mudanças sem detalhar\.$/mu.test(block) ? [...majors, 'sem local'] : majors;
 }
 
 async function neverStarted(view: Rollup, exec: Exec, cwd: string): Promise<boolean> {
@@ -91,7 +101,12 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
       else {
         const view = JSON.parse(out.stdout) as Rollup;
         const majors = openMajors(view.body);
-        if (majors.length) return `Not run: PR ${merge.pr ?? '(current branch)'} still has open major findings from the Revisor (${majors.slice(0, 5).join(', ')}). Fix each with a red-first test and rerun \`node scripts/ship.mjs --pr ${merge.pr ?? '<N>'}\`, which reviews the new head, rewrites the block and queues the merge; a finding you judge wrong goes back to the Revisor through that rerun with the evidence in the PR (a test or log), never past it by hand.`;
+        if (majors.length) {
+          const reviewProblem = majors.includes(MALFORMED_REVISOR)
+            ? `has a ${MALFORMED_REVISOR} (possible open major findings). Regenerate it with`
+            : `still has open major findings from the Revisor (${majors.slice(0, 5).join(', ')}). Fix each with a red-first test and rerun`;
+          return `Not run: PR ${merge.pr ?? '(current branch)'} ${reviewProblem} \`node scripts/ship.mjs --pr ${merge.pr ?? '<N>'}\`, which reviews the new head, rewrites the block and queues the merge; a finding you judge wrong goes back to the Revisor through that rerun with the evidence in the PR (a test or log), never past it by hand.`;
+        }
         problem = ciProblem(view, merge.auto);
         const noChecks = problem?.startsWith('no CI check');
         if (noChecks || (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir))) {
