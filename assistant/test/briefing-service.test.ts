@@ -408,6 +408,28 @@ test('weekly review: a degraded review is announced once, upgraded when its sour
   assert.equal(fake.log.length, done, 'and a complete review is not read again');
 }));
 
+test('weekly review: an exhausted upgrade budget survives a restart without Google reads or another notice', () => rig(async ({ fake, clock, local }) => {
+  const sent: Briefing[] = [];
+  const make = async () => new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });
+  const service = await make();
+  fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  clock.now = sunday('21:00');
+  for (let i = 0; i < 7; i++) {
+    if (i < 2) await assert.rejects(service.weeklyTick(), /weekly_review_incomplete/);
+    else await service.weeklyTick();
+    clock.now += 16 * 60_000;
+  }
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].sources.find(source => source.sourceId === 'personal:calendar')?.state, 'unavailable');
+  const reads = fake.log.length;
+  fake.failures.clear();
+  const restarted = await make();
+  assert.equal(await restarted.weeklyTick(), null);
+  assert.equal(fake.log.length, reads, 'even after backoff and recovery, no new read is attempted');
+  assert.deepEqual(await restarted.latestWeekly(), sent[0]);
+  assert.equal(sent.length, 1);
+}));
+
 test('weekly review: a failure that repeats before the review is stored is retried a few times, then given up for the week', () => rig(async ({ fake, clock, local }) => {
   const sent: Briefing[] = [];
   const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });

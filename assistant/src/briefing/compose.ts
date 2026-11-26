@@ -42,6 +42,7 @@ export type ComposerOptions = {
 
 const DAY_MS = 86_400_000;
 const PRIVATE_TITLE = '[private content withheld]';
+const BLOCKED_THREAD_READS = new Set(['google_unauthorized', 'google_reauthorization_required', 'google_rate_limited', 'google_scope_missing', 'google_connection_revoked']);
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
 const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
@@ -283,8 +284,8 @@ export class BriefingComposer {
     this.db.prepare('DELETE FROM briefing_reply_drafts WHERE profile = ? AND last_used < ?').run(this.options.profileId, cutoff);
   }
 
-  private async compose(kind: BriefingKind, now: number, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
-    const since = this.one('AND created >= ? ORDER BY created DESC LIMIT 1', this.retentionCutoff(now));
+  private async compose(kind: Exclude<BriefingKind, 'weekly'>, now: number, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
+    const since = this.one("AND kind != 'weekly' AND created >= ? ORDER BY created DESC LIMIT 1", this.retentionCutoff(now));
     const rules = { ...this.options.rules, learned: this.learnedRules() };
     const effects = new Map(rules.learned.map(({ ruleId, reason }) => [ruleId, { ruleId, reason, hidden: 0 }]));
     const sources: SourceState[] = [];
@@ -305,7 +306,11 @@ export class BriefingComposer {
       agenda.push(...found.agenda);
       distractions += found.distractions;
     }
-    return this.assemble(kind, localDate, now, taskSequence, sources, items, agenda, distractions);
+    return {
+      ...this.assemble(kind, localDate, now, taskSequence, sources, items, agenda, distractions),
+      ruleEffects: [...effects.values()],
+      ...(meetingPrep ? { meetingPrep: cards.sort(byMeetingStart) } : {}),
+    };
   }
 
   /** Open tasks, mail threads still waiting for the user over the past week, and the next seven days of agenda; no model and no writes. */
@@ -323,25 +328,28 @@ export class BriefingComposer {
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
       const found = { waiting: [] as Omit<BriefingItem, 'itemId'>[], events: [] as WeekEvent[], distractions: 0 };
       const [mail, calendar] = await Promise.all([
-        this.read(`${connectionId}:mail`, async () => {
+        readSource(`${connectionId}:mail`, async () => {
           const page = await this.options.google.listMessages(connectionId, { lookbackDays: WEEK_LOOKBACK_DAYS });
           const latest = new Map<string, MailMessage>();
           for (const message of page.items) {
             const seen = latest.get(message.threadId);
             if (!seen || Date.parse(message.receivedAt) > Date.parse(seen.receivedAt)) latest.set(message.threadId, message);
           }
-          let checks = 0, uncertain = false;
+          let checks = 0, uncertain = false, blocked = false;
           for (const message of [...latest.values()].sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))) {
             if (message.labels.includes('SENT') || message.labels.includes('DRAFT')) continue;
             const result = triage(message, this.options.rules);
             if (result.urgency === 'low') { found.distractions++; continue; }
             let uncertainty = result.uncertainty, unverified = false;
-            if (checks < MAX_THREAD_CHECKS) {
+            if (!blocked && checks < MAX_THREAD_CHECKS) {
               checks++;
               try {
                 const answeredAt = await this.options.google.lastSentAt(connectionId, message.threadId);
                 if (answeredAt !== null && answeredAt >= Date.parse(message.receivedAt)) continue;
-              } catch { unverified = true; }
+              } catch (error) {
+                blocked = BLOCKED_THREAD_READS.has(errorCode(error));
+                unverified = true;
+              }
             } else unverified = true;
             if (unverified) { uncertainty = 'high'; uncertain = true; }
             const who = senderAddress(message.from) || bounded(message.from);
@@ -349,7 +357,7 @@ export class BriefingComposer {
           }
           return page.truncated || uncertain;
         }),
-        this.read(`${connectionId}:calendar`, async () => {
+        readSource(`${connectionId}:calendar`, async () => {
           const page = await this.options.google.listEvents(connectionId, { from, to, timeZone: this.options.timeZone });
           found.events.push(...page.items.map(event => ({ connectionId, event })));
           return page.truncated;
@@ -378,8 +386,7 @@ export class BriefingComposer {
     return {
       version: 1, briefingId: randomUUID(), profileId: this.options.profileId, kind, localDate, timeZone: this.options.timeZone, createdAt: new Date(now).toISOString(),
       taskSequence, sources, items: ordered.map(item => ({ itemId: sha256(`${item.section}\n${item.sourceRef}`).slice(0, 16), ...item,
-        step: item.step ?? { kind: 'next', text: NEXT_STEP[item.section] } })), distractions, ruleEffects: [...effects.values()],
-      ...(meetingPrep ? { meetingPrep: cards.sort(byMeetingStart) } : {}),
+        step: item.step ?? { kind: 'next', text: NEXT_STEP[item.section] } })), distractions,
     };
   }
 

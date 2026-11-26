@@ -310,6 +310,7 @@ export class GoogleConnections {
   private async refresh(row: Row): Promise<void> {
     const reply = await this.withSecret(row.refresh_ref, 'google.refresh', this.endpoints.token, token => this.tokenRequest({ grant_type: 'refresh_token', refresh_token: token, client_id: this.options.clientId }));
     if (reply.status === 400 || reply.status === 401) fail('google_reauthorization_required');
+    if (reply.status === 429) fail('google_rate_limited');
     if (reply.status !== 200) fail('google_request_failed');
     const tokens = tokenResponse(reply.body, false);
     this.options.vault.rotate(row.access_ref, { profileId: this.options.profileId, origin: new URL(this.endpoints.api).origin, action: 'google.access' }, Buffer.from(tokens.access_token));
@@ -328,6 +329,7 @@ export class GoogleConnections {
     url.search = new URLSearchParams(query).toString();
     const reply = await this.withSecret(row.access_ref, 'google.access', this.endpoints.api, token => this.request(url.href, { method: 'GET', headers: { authorization: `Bearer ${token}` } }));
     if (reply.status === 401) fail('google_unauthorized');
+    if (reply.status === 429) fail('google_rate_limited');
     if (reply.status !== 200) fail('google_request_failed');
     return reply.body;
   }

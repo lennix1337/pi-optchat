@@ -5,7 +5,7 @@ import { weeklyNotice, weeklySchedule } from '../src/briefing/weekly.ts';
 import type { CalendarEvent } from '../src/connectors/google.ts';
 
 const meeting = (id: string, uid: string | null, start = '2026-11-02T12:00:00Z'): CalendarEvent => ({
-  ref: { id } as CalendarEvent['ref'], title: 'Planning', start, end: '2026-11-02T13:00:00Z', allDay: false, localDate: '2026-11-02', localStart: '09:00', recurring: false, uid, updated: null,
+  ref: { id } as CalendarEvent['ref'], title: 'Planning', start, end: '2026-11-02T13:00:00Z', allDay: false, localDate: '2026-11-02', localStart: '09:00', recurring: false, uid, updated: null, attendees: [],
 });
 
 test('one invitation on three calendars is listed once, with or without an iCalUID, and raises no conflict', () => {

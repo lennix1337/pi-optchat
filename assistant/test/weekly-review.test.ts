@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { withGoogle } from './google-support.ts';
-import { SUNDAY_EVENING, composer, section, seed } from './weekly-support.ts';
+import { SUNDAY_EVENING, composer, event, section, seed } from './weekly-support.ts';
 
 test('the weekly review lists open tasks, threads still waiting for the user, and next week with conflicts and back-to-back meetings flagged', () => withGoogle(async rig => {
   await seed(rig);
@@ -42,8 +42,10 @@ test('one weekly review per local date, kept out of the daily line and the lates
   assert.equal(c.latest(), null, 'the weekly review is not the latest daily or on-demand briefing');
   assert.equal(c.latestWeekly()?.briefingId, first.briefing.briefingId);
 
+  rig.fake.events.personal.push({ ...event('sunday-edit', 'Sunday check-in', '2026-11-01T22:00:00Z', '2026-11-01T22:30:00Z'), updated: '2026-11-01T21:45:00Z' });
   const daily = await c.daily();
   assert.equal(daily.kind, 'daily');
+  assert.ok(section(daily, 'agenda').some(item => item.sourceRef === 'calendar:personal:sunday-edit'));
   assert.deepEqual(section(daily, 'changes'), [], 'the weekly review is not the baseline for what changed since the last briefing');
   assert.equal(c.latest()?.briefingId, daily.briefingId);
 }));

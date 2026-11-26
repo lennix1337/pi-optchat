@@ -3,6 +3,27 @@ import assert from 'node:assert/strict';
 import { withGoogle } from './google-support.ts';
 import { SUNDAY_EVENING, composer, section, seed } from './weekly-support.ts';
 
+for (const status of [401, 429, 404]) {
+  test(`a Gmail thread check returning ${status} only stops later checks for an account-wide error`, () => withGoogle(async rig => {
+    rig.clock.now = SUNDAY_EVENING;
+    for (const [account, count] of [['personal', 3], ['dentai', 1]] as const) {
+      for (let i = 0; i < count; i++) rig.fake.mail[account].push({ id: `${account}-${i}`, from: 'Ana <ana@example.test>', subject: `Proposal ${i}`, body: 'Can you look?', receivedAt: `2026-10-30T1${i}:00:00.000Z` });
+    }
+    await rig.connect('personal', 'personal');
+    await rig.connect('dentai', 'dentai');
+    rig.fake.failures.set('/gmail/v1/users/me/threads/thread-personal-2', status);
+    const { briefing } = await composer(rig).weekly();
+    const reads = rig.fake.log.filter(entry => entry.path.startsWith('/gmail/v1/users/me/threads/'));
+    assert.deepEqual(reads.filter(entry => entry.account === 'personal').map(entry => entry.path.split('/').at(-1)),
+      status === 404 ? ['thread-personal-2', 'thread-personal-1', 'thread-personal-0'] : ['thread-personal-2']);
+    assert.equal(reads.filter(entry => entry.account === 'dentai').length, 1, 'the other connection keeps checking');
+    assert.equal(briefing.sources.find(source => source.sourceId === 'personal:mail')?.state, 'partial');
+    const unverified = section(briefing, 'messages').filter(item => item.reason === 'awaiting_reply_unverified');
+    assert.equal(unverified.length, status === 404 ? 1 : 3, 'unchecked candidates remain explicitly unverified');
+    assert.ok(unverified.every(item => item.sourceRef.startsWith('gmail:personal:') && item.uncertainty === 'high'));
+  }));
+}
+
 test('a source that fails is listed, and the rest of the review still arrives', () => withGoogle(async rig => {
   await seed(rig);
   rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
