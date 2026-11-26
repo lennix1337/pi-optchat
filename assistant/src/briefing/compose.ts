@@ -85,11 +85,12 @@ export class BriefingComposer {
 
   /**
    * The weekly review due on `localDate`; `created` is false when it was already stored, so a caller announces it once. It is
-   * stored under the boundary it was due, but reads the seven days after the day it is composed, so one recovered late is
-   * labelled with the missed boundary and describes the coming week. After three tries a review missing some sources is
+   * stored under the boundary it was due, and reads the seven days after the day it is composed, so one recovered late is
+   * labelled with the missed boundary and describes the coming week; its calendar starts the moment it is composed, so
+   * what is still ahead on the days since the boundary is in and what is over is not. After three tries a review missing some sources is
    * stored with an urgent item for each, so its absence is stated, never silent; it is then `degraded` and each later call
    * re-reads it, replacing the stored review in place (same id, so no second announcement) once fewer sources are missing,
-   * until a few more tries pass (its attempt then stays, as the proof it is final, until the next week prunes it). Only a source that is unavailable counts as a try; an exception counts for nothing.
+   * until a few more tries pass (its attempt then stays, as the proof it is final, until the next week prunes it). Before a review is stored only a source that is unavailable counts as a try and an exception counts for nothing; once it is stored every re-read counts, exception or not, so none goes on forever.
    */
   async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean; degraded: boolean }> {
     const profile = this.options.profileId;
@@ -98,11 +99,11 @@ export class BriefingComposer {
     const held = existing ? unavailableSources(existing) : 0;
     const prior = this.weeklyAttempt(localDate)?.tries ?? 0;
     if (existing && (!held || prior >= MAX_WEEKLY_TRIES + MAX_UPGRADE_TRIES)) return { briefing: existing, created: false, complete: true, degraded: false };
-    this.db.prepare('INSERT INTO weekly_attempts VALUES (?, ?, ?, 0) ON CONFLICT (profile, local_date) DO UPDATE SET attempted = excluded.attempted').run(profile, localDate, this.now());
+    this.db.prepare('INSERT INTO weekly_attempts VALUES (?, ?, ?, ?) ON CONFLICT (profile, local_date) DO UPDATE SET attempted = excluded.attempted, tries = excluded.tries').run(profile, localDate, this.now(), existing ? prior + 1 : prior);
     const fresh = await this.composeWeekly(localDate);
     const down = unavailableSources(fresh);
     const google = fresh.sources.filter(source => source.sourceId !== 'tasks').length;
-    const tries = down ? prior + 1 : prior;
+    const tries = existing || down ? prior + 1 : prior;
     this.db.prepare('UPDATE weekly_attempts SET tries = ? WHERE profile = ? AND local_date = ?').run(tries, profile, localDate);
     if (!existing) {
       if (down && (down === google || tries < MAX_WEEKLY_TRIES)) return { briefing: fresh, created: false, complete: false, degraded: false };
@@ -223,7 +224,10 @@ export class BriefingComposer {
     const items: Omit<BriefingItem, 'itemId'>[] = [];
     const now = this.now();
     const taskSequence = this.readTasks(null, sources, items);
-    const { from, to } = weekRange(localDateTime(now, this.options.timeZone).date, this.options.timeZone);
+    const today = localDateTime(now, this.options.timeZone).date;
+    const range = weekRange(today, this.options.timeZone);
+    const { to } = range;
+    const from = today === localDate ? range.from : new Date(now).toISOString();
     let distractions = 0;
     const events: WeekEvent[] = [];
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
@@ -356,11 +360,13 @@ export function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & 
   const timed = unique.filter(({ event }) => !event.allDay);
   for (const [i, later] of timed.entries()) {
     for (const earlier of timed.slice(0, i)) {
-      const gap = Date.parse(later.event.start) - Date.parse(earlier.event.end);
-      const kind = gap < 0 ? 'conflict' : gap <= BACK_TO_BACK_MS ? 'back_to_back' : null;
-      if (!kind) continue;
-      for (const entry of [earlier, later]) if (kind === 'conflict' || !flag.has(entry)) flag.set(entry, kind);
+      if (Date.parse(later.event.start) >= Date.parse(earlier.event.end)) continue;
+      flag.set(earlier, 'conflict');
+      flag.set(later, 'conflict');
     }
+    const neighbour = timed[i - 1];
+    const gap = neighbour ? Date.parse(later.event.start) - Date.parse(neighbour.event.end) : -1;
+    if (neighbour && gap >= 0 && gap <= BACK_TO_BACK_MS) for (const entry of [neighbour, later]) if (!flag.has(entry)) flag.set(entry, 'back_to_back');
   }
   return unique.map(entry => {
     const { connectionId, event } = entry;
