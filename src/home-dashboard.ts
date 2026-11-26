@@ -26,9 +26,9 @@ export function workerHome(task: string, cwd?: string): { label: string; target?
   const parts = (cwd ?? '').split(/[\\/]+/).filter(Boolean);
   const at = parts.lastIndexOf('worktrees');
   const repo = at > 0 ? parts[at - 1] : parts.at(-1);
-  const tree = at > 0 ? parts[at + 1] : undefined;
+  const tree = (at > 0 ? parts[at + 1] : undefined) ?? repo;
   const goal = /^\s*Goal:\s*(.+)$/im.exec(task)?.[1]
-    ?? task.replace(/you are a subagent\.?|don'?t write memory pages\.?/gi, ' ').split(/\n|(?<=[.!?])\s+(?=[A-ZÀ-Ú])/u).map(s => s.trim()).find(Boolean) ?? '';
+    ?? task.replace(/you are a subagent\.?|don'?t write memory pages\.?/gi, ' ').split(/\n|(?<=[.!?])\s+(?=[\p{L}\d])/u).map(s => s.trim()).find(Boolean) ?? '';
   const text = goal.replace(/\s+/g, ' ').trim();
   const what = text ? (text.length > 120 ? `${text.slice(0, 119)}…` : text) : tree ? 'tarefa sem descrição' : '';
   const label = [tree, what].filter(Boolean).join(': ');
