@@ -106,12 +106,74 @@ test('reminders make their card available once at 30 minutes, independently of t
     await service.tick();
     assert.deepEqual(ready.map(card => card.title), ['Design review', 'Demo']);
     assert.equal(await service.latest(), null, 'reminders do not overwrite or advance the daily brief');
+    const beforeRestart = gmailReads(fake);
+    service.stop();
     await (await make(true)).tick();
+    assert.deepEqual(ready.map(card => card.title), ['Design review', 'Demo'], 'the callback is not replayed after restart');
+    assert.equal(gmailReads(fake), beforeRestart, 'already announced cards do not need fresh Gmail reads');
     const notices = center.list();
     assert.equal(notices.length, 2, 'same occurrences deduplicate in the notification center after restart');
     assert.ok(notices.every(note => note.category === 'meeting_prep_ready' && note.state === 'pending'));
     assert.ok(!JSON.stringify(notices).includes('Design review'));
   } finally { center.close(); }
+}));
+
+test('a fresh daily briefing and its due reminders share one read of each Google source', async () => rig(async ({ fake, clock, local }) => {
+  fake.events.personal.push(meeting('due', 'Design review', '2026-10-28T09:30:00Z', [guest]));
+  fake.mail.personal.push({ id: 'review', from: guest.email, subject: 'Sketch', body: 'Draft', receivedAt: '2026-10-28T08:45:00Z' });
+  const ready: MeetingPrepCard[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true,
+    now: () => clock.now, onMeetingPrep: card => { ready.push(card); },
+  });
+  const daily = await service.tick();
+  assert.deepEqual(ready, daily?.meetingPrep);
+  assert.deepEqual([
+    fake.log.filter(r => r.path === '/gmail/v1/users/me/messages').length,
+    fake.requests('/calendar/v3/calendars/primary/events').length,
+  ], [1, 1]);
+
+  service.stop();
+  fake.events.personal[0] = meeting('due', 'Rescheduled design review', '2026-10-28T09:25:00Z', [guest]);
+  const restarted = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true,
+    now: () => clock.now, onMeetingPrep: card => { ready.push(card); },
+  });
+  assert.equal((await restarted.tick())?.briefingId, daily?.briefingId, 'restart reuses the stored daily');
+  assert.deepEqual(ready.map(card => card.title), ['Design review', 'Rescheduled design review'], 'reminders see changes since the stored daily');
+  assert.notEqual(ready[0].cardId, ready[1].cardId, 'a changed start is a new occurrence');
+}));
+
+test('a failed reminder callback does not drop the other cards in its tick', async () => rig(async ({ fake, clock, local }) => {
+  fake.events.personal.push(
+    meeting('first', 'Design review', '2026-10-28T09:15:00Z', [guest]),
+    meeting('second', 'Demo', '2026-10-28T09:20:00Z', [guest]),
+  );
+  const delivered: string[] = [];
+  let fail = true;
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true, now: () => clock.now,
+    onMeetingPrep: card => { if (fail && card.title === 'Design review') throw new Error('notification_failed'); delivered.push(card.title); },
+  });
+  await assert.rejects(service.tick(), /notification_failed/);
+  assert.deepEqual(delivered, ['Demo']);
+  assert.equal((await service.latest())?.kind, 'daily');
+  fail = false;
+  await service.tick();
+  assert.deepEqual(delivered, ['Demo', 'Design review'], 'only the failed card is retried');
+}));
+
+test('prep includes active all-day meetings but not ones whose exclusive end is today', async () => rig(async ({ fake, clock, local }) => {
+  fake.events.personal.push(
+    { id: 'active', summary: 'Design retreat', start: { date: '2026-10-25' }, end: { date: '2026-10-29' }, attendees: [guest] },
+    { id: 'ended', summary: 'Previous retreat', start: { date: '2026-10-27' }, end: { date: '2026-10-28' }, attendees: [guest] },
+    { id: 'tomorrow', summary: 'Demo day', start: { date: '2026-10-29' }, end: { date: '2026-10-30' }, attendees: [guest] },
+  );
+  const ready: MeetingPrepCard[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true, now: () => clock.now,
+    onMeetingPrep: card => { ready.push(card); },
+  });
+  const daily = await service.tick();
+  assert.deepEqual(daily?.meetingPrep?.map(card => card.title), ['Design retreat', 'Demo day']);
+  assert.deepEqual(daily?.items.filter(item => item.section === 'agenda').map(item => item.title), ['All day Design retreat']);
+  assert.deepEqual(ready, [], 'all-day cards never emit timed reminders');
 }));
 
 test('the service reads mail and agenda once a day at dailyAt, and a restart the same day does not read again', async () => rig(async ({ fake, clock, local }) => {

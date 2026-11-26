@@ -20,7 +20,7 @@ export type BriefingServiceOptions = {
   /** Called with each daily briefing the service reads or finds stored; must not throw. */
   onReady?: (briefing: Briefing) => void;
   meetingPrep?: boolean;
-  onMeetingPrep?: (card: MeetingPrepCard) => void;
+  onMeetingPrep?: (card: MeetingPrepCard) => void | Promise<void>;
 };
 
 export class BriefingService {
@@ -28,7 +28,6 @@ export class BriefingService {
   private readonly now: () => number;
   private doneDate: string | null = null;
   private timer: NodeJS.Timeout | undefined;
-  private readonly announcedMeetings = new Map<string, number>();
 
   constructor(options: BriefingServiceOptions) {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(options.dailyAt)) throw new Error('invalid_options');
@@ -38,10 +37,22 @@ export class BriefingService {
 
   /** Reads today's briefing when it is due and not yet read by this process; otherwise null. */
   readonly tick: () => Promise<Briefing | null> = singleFlight(async () => {
-    const [daily, reminders] = await Promise.allSettled([this.due(), this.meetingReminders()]);
-    if (daily.status === 'rejected') throw daily.reason;
-    if (reminders.status === 'rejected') throw reminders.reason;
-    return daily.value;
+    const now = this.now();
+    const { date, time } = localDateTime(now, this.options.timeZone);
+    const { dailyAt, meetingPrep, onMeetingPrep, onReady } = this.options;
+    const due = time >= dailyAt && this.doneDate !== date;
+    const notify = meetingPrep ? onMeetingPrep : undefined;
+    if (!due && !notify) return null;
+
+    return this.compose(async composer => {
+      const daily = due ? await composer.readDaily(now) : null;
+      if (daily) {
+        this.doneDate = date;
+        onReady?.(daily.briefing);
+      }
+      if (notify) await this.meetingReminders(composer, now, daily?.fresh ?? null, notify);
+      return daily?.briefing ?? null;
+    });
   });
 
   /** A briefing read now (on demand). */
@@ -64,28 +75,23 @@ export class BriefingService {
     return this.options.local.withComposer(this.options.connections, this.options.timeZone, use, this.options.meetingPrep === true);
   }
 
-  private async meetingReminders(): Promise<void> {
-    const { meetingPrep, onMeetingPrep } = this.options;
-    if (!meetingPrep || !onMeetingPrep) return;
-    const now = this.now();
-    for (const [id, start] of this.announcedMeetings) if (start <= now) this.announcedMeetings.delete(id);
-    const { cards, sources } = await this.compose(composer => composer.upcomingMeetingPrep(now, MEETING_LEAD_MS, this.announcedMeetings));
+  private async meetingReminders(composer: BriefingComposer, now: number, fresh: Briefing | null, notify: NonNullable<BriefingServiceOptions['onMeetingPrep']>): Promise<void> {
+    const { cards, sources } = await composer.upcomingMeetingPrep(now, MEETING_LEAD_MS, fresh);
+    const errors: unknown[] = [];
+    const attempted = new Set<string>();
     for (const card of cards) {
+      const { cardId } = card;
       const start = Date.parse(card.start);
-      if (start <= this.now() || this.announcedMeetings.has(card.cardId)) continue;
-      onMeetingPrep(card);
-      this.announcedMeetings.set(card.cardId, start);
+      if (start <= this.now() || attempted.has(cardId)) continue;
+      attempted.add(cardId);
+      try {
+        await notify(card);
+        composer.recordMeetingPrep(cardId, start);
+      } catch (error) { errors.push(error); }
     }
     const unavailable = sources.find(source => source.state === 'unavailable');
-    if (unavailable) throw new Error(unavailable.error ?? 'source_failed');
-  }
-
-  private async due(): Promise<Briefing | null> {
-    const { date, time } = localDateTime(this.now(), this.options.timeZone);
-    if (time < this.options.dailyAt || this.doneDate === date) return null;
-    const briefing = await this.compose(composer => composer.daily());
-    this.doneDate = date;
-    this.options.onReady?.(briefing);
-    return briefing;
+    if (unavailable) errors.push(new Error(unavailable.error ?? 'source_failed'));
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'meeting_prep_failed');
   }
 }

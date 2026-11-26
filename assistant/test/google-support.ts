@@ -25,7 +25,8 @@ type Grant = { account: AccountKey; scopes: string[] };
 type Code = Grant & { challenge: string; method: string; redirectUri: string; nonce: string; used: boolean };
 type Attachment = { filename: string; mimeType: string; size: number };
 export type FixtureMessage = { id: string; threadId?: string; from: string; to?: string; subject: string; body: string; labels?: string[]; receivedAt: string; attachments?: Attachment[] };
-export type FixtureEvent = Record<string, unknown> & { id: string; start: { dateTime?: string; date?: string; timeZone?: string } };
+type FixtureEventTime = { dateTime?: string; date?: string; timeZone?: string };
+export type FixtureEvent = Record<string, unknown> & { id: string; start: FixtureEventTime; end?: FixtureEventTime };
 export type Logged = { method: string; path: string; account?: AccountKey; params: Record<string, string> };
 
 const b64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
@@ -191,7 +192,12 @@ export class FakeGoogle {
       if (!grant.scopes.includes(CALENDAR_SCOPE)) { send(403, { error: 'insufficient_scope' }); return; }
       const min = Date.parse(params.timeMin ?? ''), max = Date.parse(params.timeMax ?? '');
       const source = params.singleEvents === 'true' ? this.events[grant.account] : this.masters[grant.account];
-      const inRange = source.filter(e => { const at = Date.parse(e.start.dateTime ?? `${e.start.date}T00:00:00Z`); return at < max && at >= min - 86400_000; });
+      // external: Calendar filters by overlap and uses the calendar's zone (UTC in this fake) for all-day dates.
+      const inRange = source.filter(e => {
+        const start = Date.parse(e.start.dateTime ?? e.start.date ?? '');
+        const end = Date.parse(e.end?.dateTime ?? e.end?.date ?? e.start.dateTime ?? e.start.date ?? '');
+        return start < max && end > min;
+      });
       const { slice, next } = page(inRange);
       send(200, { timeZone: params.timeZone, items: slice, ...(next ? { nextPageToken: next } : {}) });
       return;

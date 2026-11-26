@@ -62,38 +62,48 @@ export class BriefingComposer {
     this.db = new DatabaseSync(options.databasePath);
     this.db.exec(`PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
-      CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';`);
+      CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
+      CREATE TABLE IF NOT EXISTS meeting_prep_announced (profile TEXT NOT NULL, card_id TEXT NOT NULL, start_ms INTEGER NOT NULL, PRIMARY KEY (profile, card_id));`);
   }
 
   /** Today's briefing for this profile; when another client already made it, that one is returned without reading again. */
-  async daily(): Promise<Briefing> {
-    const localDate = localDateTime(this.now(), this.options.timeZone).date;
-    const existing = this.dailyFor(localDate);
-    if (existing) return existing;
-    const briefing = await this.compose('daily', localDate);
+  async daily(): Promise<Briefing> { return (await this.readDaily(this.now())).briefing; }
 
-    this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'daily', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
-    return this.dailyFor(localDate)!;
+  /** Only a briefing composed in this pass is fresh enough to reuse for reminders. */
+  async readDaily(now: number): Promise<{ briefing: Briefing; fresh: Briefing | null }> {
+    const localDate = localDateTime(now, this.options.timeZone).date;
+    const existing = this.dailyFor(localDate);
+    if (existing) return { briefing: existing, fresh: null };
+    const fresh = await this.compose('daily', now, localDate);
+    this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, fresh.briefingId, 'daily', localDate, now, JSON.stringify(fresh));
+    return { briefing: this.dailyFor(localDate)!, fresh };
   }
 
   async onDemand(): Promise<Briefing> {
-    const briefing = await this.compose('on_demand', localDateTime(this.now(), this.options.timeZone).date);
+    const now = this.now();
+    const briefing = await this.compose('on_demand', now, localDateTime(now, this.options.timeZone).date);
     this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?)').run(this.options.profileId, briefing.briefingId, 'on_demand', briefing.localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
     return briefing;
   }
 
-  async upcomingMeetingPrep(now: number, leadMs: number, seen: ReadonlyMap<string, number>): Promise<{ cards: MeetingPrepCard[]; sources: SourceState[] }> {
-    const { google, timeZone, rules } = this.options;
+  async upcomingMeetingPrep(now: number, leadMs: number, fresh: Briefing | null): Promise<{ cards: MeetingPrepCard[]; sources: SourceState[] }> {
+    const { google, timeZone, rules, profileId } = this.options;
     const end = now + leadMs;
+    this.db.prepare('DELETE FROM meeting_prep_announced WHERE profile = ? AND start_ms <= ?').run(profileId, now);
+    const rows = this.db.prepare('SELECT card_id FROM meeting_prep_announced WHERE profile = ? AND start_ms <= ?').all(profileId, end) as { card_id: string }[];
+    const seen = new Set(rows.map(row => row.card_id));
+    const due = (meeting: CalendarEvent | MeetingPrepCard) => {
+      const start = Date.parse(meeting.start);
+      return !meeting.allDay && start > now && start <= end && !seen.has('cardId' in meeting ? meeting.cardId : meetingId(meeting));
+    };
+    if (fresh) return { cards: (fresh.meetingPrep ?? []).filter(due), sources: fresh.sources };
+
     const range = { from: new Date(now).toISOString(), to: new Date(end + 1000).toISOString(), timeZone };
     const results = await Promise.all(this.options.connections.map(async id => {
       let events: CalendarEvent[] = [];
       const calendar = await readSource(`${id}:calendar`, async () => {
         const page = await google.listEvents(id, range);
-        events = page.items.filter(event => {
-          const start = Date.parse(event.start);
-          return !event.allDay && event.attendees.length > 0 && start > now && start <= end && !seen.has(meetingId(event));
-        });
+        events = page.items.filter(event => event.attendees.length > 0 && due(event));
         return page.truncated;
       });
       const sources = [calendar];
@@ -110,6 +120,11 @@ export class BriefingComposer {
     if (results.some(result => result.events.length)) this.readTasks(null, sources, tasks);
     const cards = results.flatMap(({ events, messages }) => events.map(event => buildMeetingCard(event, messages, tasks, timeZone, rules)));
     return { cards: cards.sort(byMeetingStart), sources };
+  }
+
+  /** Record only completed callbacks, so a failed card can be retried while it is still upcoming. */
+  recordMeetingPrep(cardId: string, start: number): void {
+    this.db.prepare('INSERT INTO meeting_prep_announced VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, cardId, start);
   }
 
   /** The newest stored briefing of either kind, or null when none is kept. */
@@ -152,8 +167,7 @@ export class BriefingComposer {
     return row ? JSON.parse(row.body) as Briefing : null;
   }
 
-  private async compose(kind: BriefingKind, localDate: string): Promise<Briefing> {
-    const now = this.now();
+  private async compose(kind: BriefingKind, now: number, localDate: string): Promise<Briefing> {
     this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, now - this.retentionDays * DAY_MS);
     const since = this.latest();
     const sources: SourceState[] = [];
@@ -243,8 +257,10 @@ async function readConnection({ google, timeZone, meetingPrep, rules }: Composer
       for (const event of page.items) {
         if (meetingPrep) {
           const start = agendaInstant(event.start, timeZone);
-          if (event.attendees.length && start >= now && start < prepEnd) meetings.push(event);
-          if (start >= dayEnd || (start < dayStart && agendaInstant(event.end, timeZone) <= dayStart)) continue;
+          const end = agendaInstant(event.end, timeZone);
+          const inPrep = start < prepEnd && (event.allDay ? end > now : start >= now);
+          if (inPrep && event.attendees.length) meetings.push(event);
+          if (start >= dayEnd || end <= dayStart) continue;
         }
         agenda.push({ at: event.allDay ? '' : event.start, section: 'agenda', title: bounded(`${event.localStart ?? 'All day'} ${event.title}`), sourceRef: `calendar:${id}:${event.ref.id}`, reason: event.recurring ? 'recurring_event' : 'event', urgency: 'normal', uncertainty: 'low', untrusted: true, startable: true });
         if (since && updatedSince(event, since.createdAt)) changes.push({ section: 'changes', title: bounded(`${event.title} (updated)`), sourceRef: `calendar:${id}:${event.ref.id}`, reason: 'changed_since_last_briefing', urgency: 'normal', uncertainty: 'low', untrusted: true, startable: false });
