@@ -38,7 +38,7 @@ export function directMerges(command: string, cwd: string) {
 }
 
 type Check = { name?: string; context?: string; status?: string; conclusion?: string; state?: string; detailsUrl?: string };
-type Rollup = { statusCheckRollup?: Check[]; mergeStateStatus?: string; headRefOid?: string; headRepository?: { name?: string } };
+type Rollup = { statusCheckRollup?: Check[]; mergeStateStatus?: string; headRefOid?: string; headRepository?: { name?: string }; body?: string };
 const PASSED = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
 
 /** Why the PR's checks do not allow the merge now, or undefined when every check passed (or GitHub will wait, for --auto). */
@@ -53,6 +53,28 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
   return undefined;
 }
 
+
+const MALFORMED_REVISOR = 'malformed or incomplete Revisor block';
+
+/** Major locations (or a refusal reason) from the PR description's Revisor section. */
+export function openMajors(body?: string | null): string[] {
+  const lines = (body ?? '').split(/\r?\n/);
+  const marks = lines.flatMap((line, i) => /<!--\s*ship:revisor\b/i.test(line) || line === '## Revisor' ? [i] : []);
+  if (!marks.length) return [];
+  const [start = -1, heading = -1, end = -1] = marks;
+  if (marks.length !== 3 || lines[start] !== '<!-- ship:revisor:start -->' || heading !== start + 1
+    || lines[heading] !== '## Revisor' || lines[end] !== '<!-- ship:revisor:end -->') return [MALFORMED_REVISOR];
+
+  const content = lines.slice(heading + 1, end).filter(line => line.trim());
+  if (!content.length) return [MALFORMED_REVISOR];
+  return content.flatMap(line => {
+    if (/^(Modelo do Revisor|Revisão de modelo pulada): \s*\S/.test(line)) return [];
+    if (line === 'O revisor pediu mudanças sem detalhar.') return ['sem local'];
+    const finding = /^- \[[\w./-]+:(major|minor|nit|suggestion)\](?: (.+?))?: \s*\S/.exec(line);
+    if (!finding) return [MALFORMED_REVISOR];
+    return finding[1] === 'major' ? [finding[2] ?? 'sem local'] : [];
+  });
+}
 
 async function neverStarted(view: Rollup, exec: Exec, cwd: string): Promise<boolean> {
   const open = (view.statusCheckRollup ?? []).filter(c => !(c.conclusion && PASSED.has(c.conclusion)));
@@ -70,7 +92,7 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
   for (const merge of directMerges(command, cwd)) {
     const variable = [merge.pr, merge.repo].find(value => value?.includes('$'));
     if (variable) return `Not run: the PR of \`gh pr merge\` comes from a shell variable (${variable}), so its checks cannot be read before the command runs. Write it out: one \`gh pr merge <N>\` per PR, several may share one command.`;
-    const args = ['pr', 'view', ...(merge.pr ? [merge.pr] : []), ...(merge.repo ? ['--repo', merge.repo] : []), '--json', 'statusCheckRollup,mergeStateStatus,headRefOid,headRepository'];
+    const args = ['pr', 'view', ...(merge.pr ? [merge.pr] : []), ...(merge.repo ? ['--repo', merge.repo] : []), '--json', 'statusCheckRollup,mergeStateStatus,headRefOid,headRepository,body'];
     let problem: string | undefined;
     try {
       const out = await exec('gh', args, { cwd: merge.dir, timeout: 20_000 });
@@ -78,6 +100,13 @@ export async function mergeRefusal(command: string, cwd: string, exec: Exec): Pr
       if (out.code !== 0 || out.killed) problem = `could not read its checks (${(out.stderr || 'gh failed').trim().slice(0, 160)})`;
       else {
         const view = JSON.parse(out.stdout) as Rollup;
+        const majors = openMajors(view.body);
+        if (majors.length) {
+          const reviewProblem = majors.includes(MALFORMED_REVISOR)
+            ? `has a ${MALFORMED_REVISOR} (possible open major findings). Regenerate it with`
+            : `still has open major findings from the Revisor (${majors.slice(0, 5).join(', ')}). Fix each with a red-first test and rerun`;
+          return `Not run: PR ${merge.pr ?? '(current branch)'} ${reviewProblem} \`node scripts/ship.mjs --pr ${merge.pr ?? '<N>'}\`, which reviews the new head, rewrites the block and queues the merge; a finding you judge wrong goes back to the Revisor through that rerun with the evidence in the PR (a test or log), never past it by hand.`;
+        }
         problem = ciProblem(view, merge.auto);
         const noChecks = problem?.startsWith('no CI check');
         if (noChecks || (problem?.startsWith('failing checks') && await neverStarted(view, exec, merge.dir))) {

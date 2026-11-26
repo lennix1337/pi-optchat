@@ -183,8 +183,9 @@ export function unbackedPromises(reply: string, evidence: string): string[] {
   return backed >= promises.length ? [] : promises;
 }
 
-export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = [], utc: readonly string[] = [], freeActions: readonly string[] = [], promises: readonly string[] = []): string {
+export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = [], utc: readonly string[] = [], freeActions: readonly string[] = [], promises: readonly string[] = [], memoryShaped = false): string {
   const parts = [`${CLAIM_CHECK_PREFIX}`];
+  if (memoryShaped) parts.push('Your reply is written as a memory summary line (an id range such as `199529-199533`, `id+n|`, `talk:`/`echo:` tags or machine-notice wording), and the operator reads it as a broken answer. Rewrite it for him in Portuguese (pt-BR), in plain sentences, outcome first.');
   if (claims.length) parts.push(`Your reply states facts that no output of this run shows: ${claims.join(', ')}.`);
   if (admissions.length) parts.push(`Your reply admits not having checked: ${admissions.map(a => `"${a}"`).join(' ')} You always have a way to check (operator, 18/11): make the tool call for each one now, in this round. Writing "not verified" again without a call is not an answer; keep it only for what needs something only the operator holds, and name that thing.`);
   if (causes.length) parts.push(`Your reply gives up on a cause: ${causes.map(a => `"${a}"`).join(' ')} Take one more cheap step before sending (read the failing log, run the narrowest test, diff against the last good state) and report what it showed, or ship the diagnostic that would answer it.`);

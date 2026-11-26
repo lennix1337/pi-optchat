@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, freeActionQuestions, uncheckedAdmissions, unbackedClaims, unbackedPromises, utcTimes } from '../src/claim-check.ts';
+import { memoryShapedReply } from '../src/wake-noise.ts';
 
 test('multiple hash claims normalize the evidence at most once', () => {
   const evidence = 'ABC1234 DEF5678 '.repeat(1000);
@@ -105,6 +106,17 @@ test('permission questions for free actions trigger a retry, except quoted text 
   assert.deepEqual(freeActionQuestions('Faço o deploy em produção?'), []);
   assert.deepEqual(freeActionQuestions('Ele perguntou “Posso mergear a PR?”'), []);
   assert.match(claimRetryText([], [], [], [], ['Posso mergear a PR?']), /do the action now[\s\S]*drop the question[\s\S]*production deploy/i);
+});
+
+test('a reply written as a memory line goes back once to be rewritten for the operator, outside wakes too (25/11: 12 such replies)', () => {
+  for (const reply of [
+    '199529-199533 (25/11 18:16): user-side machine notice, not operator words: gitwatch pi-optchat #602 CLEAN',
+    '199398-199399 (25/11 ~17:21): shell 71add037 FAILED lv_rc=123',
+    '198939+1|talk: 25/11 15:56 BRT wake (heartbeat ordered a delivery).',
+  ]) assert.equal(memoryShapedReply(reply), true, reply);
+  assert.equal(memoryShapedReply('O PR #602 foi mesclado às 18:16.'), false);
+  assert.match(claimRetryText([], [], [], [], [], [], true), /memory summary line[\s\S]*Portuguese/);
+  assert.doesNotMatch(claimRetryText(['#5 mesclado']), /memory summary line/);
 });
 
 test('a reply that gives up on a cause goes back once to take one more step (operator 15/11)', () => {

@@ -7,6 +7,7 @@ import { WakeWorkers, WORKER_RECOVERY, WORKER_UNVERIFIED } from './wake-workers.
 import { registerAssistant } from './assistant-client.ts';
 import { registerAssistantMemory } from './assistant-memory.ts';
 import { finalText, registerSlackBridge } from './slack-bridge.ts';
+import { memoryShapedReply } from './wake-noise.ts';
 import { CLAIM_CHECK_PREFIX, branchEvidenceMessages, claimRetryText, evidenceText, abandonedCauses, freeActionQuestions, uncheckedAdmissions, utcTimes, unbackedClaims, unbackedNote, unbackedPromises } from './claim-check.ts';
 import { NO_WORK, readHomeWork, readWatch, runningItem, stillWaiting } from './home-items.ts';
 import { homeShell, workerHome } from './home-dashboard.ts';
@@ -1416,8 +1417,9 @@ export default function optchat(host: ExtensionAPI) {
     const utc = settledCleanly && finalText(messages) ? utcTimes(finalText(messages)) : [];
     const freeActions = settledCleanly && finalText(messages) ? freeActionQuestions(finalText(messages)) : [];
     const promises = settledCleanly && finalText(messages) ? unbackedPromises(finalText(messages), evidenceText(messages)) : [];
+    const memoryShaped = settledCleanly && !wake && memoryShapedReply(finalText(messages));
     const retry = (wake && settled ? wakeRetry(wake, wakeRetried) : undefined) ??
-      ((claims.length || admissions.length || causes.length || utc.length || freeActions.length || promises.length) && !claimRetried && settledCleanly ? claimRetryText(claims, admissions, causes, utc, freeActions, promises) : undefined);
+      ((claims.length || admissions.length || causes.length || utc.length || freeActions.length || promises.length || memoryShaped) && !claimRetried && settledCleanly ? claimRetryText(claims, admissions, causes, utc, freeActions, promises, memoryShaped) : undefined);
     if (waitingWorkers) { watchWakeWorkers(ctx); if (!_event.aborted) await slack.answerDuringHold(); }
     else if (waitingReload) {   }
     else if (retry?.startsWith(CLAIM_CHECK_PREFIX)) { claimRetried = true; void deliverReport(retry); }
