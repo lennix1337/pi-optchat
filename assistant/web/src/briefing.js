@@ -18,9 +18,16 @@ export function renderBriefing(root, value) {
   for (const item of value.items) {
     const li = node('li', '');
     li.append(node('strong', item.title), node('p', `${item.urgency} · ${item.reason} · incerteza ${uncertainty[item.uncertainty]}`), node('p', `Fonte: ${item.sourceRef}`));
+    if (item.step?.kind === 'reply_draft') li.append(node('p', `Rascunho local não enviado: ${item.step.subject} (${item.step.draftId})`));
+    else if (item.step?.kind === 'next') li.append(node('p', `Próximo passo: ${item.step.text}`));
     items.append(li);
   }
-  root.append(items, node('p', `${value.distractions} mensagens de baixa prioridade omitidas. Ler este resumo não inicia nenhuma ação.`));
+  root.append(items, node('p', `${value.distractions} mensagens omitidas. Ler este resumo não inicia nenhuma ação.`));
+  if (value.ruleEffects?.length) {
+    const rules = node('ul', '');
+    for (const rule of value.ruleEffects) rules.append(node('li', `Regra ${rule.ruleId}: ocultou ${rule.hidden} · ${rule.reason}`));
+    root.append(rules);
+  }
 }
 async function load() {
   if (!request) return;

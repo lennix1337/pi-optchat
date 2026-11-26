@@ -134,7 +134,7 @@ export class GoogleLocal {
     try { return await google.revoke(name, this.authority); } finally { google.close(); }
   }
 
-  /** Reads the named connections now and stores the briefing; mail stays untrusted and nothing is started. */
+  /** Reads the named connections and stores the briefing; mail stays untrusted and nothing is sent. */
   async briefing(names: string[], timeZone: string): Promise<Briefing> {
     return this.withComposer(names, timeZone, composer => composer.onDemand());
   }
@@ -144,6 +144,14 @@ export class GoogleLocal {
     return this.withComposer(names, timeZone, async composer => composer.start(briefingId, itemId, this.authority, {
       requestId: randomUUID(), sessionId: 'google-cli', channelId: 'local-cli', actorId: 'operator', sourceKind: 'trusted-local-human',
     }));
+  }
+
+  async learnRule(text: string, timeZone: string) {
+    return this.withComposer([], timeZone, composer => composer.learnRule(text, this.authority));
+  }
+
+  async forgetRule(id: string, timeZone: string): Promise<boolean> {
+    return this.withComposer([], timeZone, composer => composer.forgetRule(id, this.authority));
   }
 
   /** Runs `use` with a composer over the named connections and the service's task store, closing both after. */

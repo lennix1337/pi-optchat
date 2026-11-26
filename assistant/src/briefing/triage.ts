@@ -12,8 +12,25 @@ export type Uncertainty = 'low' | 'medium' | 'high';
 export type TriageReason = 'suspected_injection' | 'executable_attachment' | 'promotional' | 'urgent_terms' | 'trusted_sender' | 'no_signal';
 export type TriageSignal = TriageReason | 'private_data' | 'promotional_label';
 /** Operator-owned triage configuration. */
-export type TriageRules = { trustedSenders: readonly string[] };
-export type Triage = { sourceRef: SourceRef; urgency: Urgency; reason: TriageReason; uncertainty: Uncertainty; private: boolean; suspectedInjection: boolean; signals: TriageSignal[] };
+export type LearnedRule = { ruleId: string; match: { text: string; unless: string[] }; action: 'hide'; reason: string; createdAt: string };
+export const MAX_LEARNED_RULES = 50;
+export type TriageRules = { trustedSenders: readonly string[]; learned?: readonly LearnedRule[] };
+export type Triage = { sourceRef: SourceRef; urgency: Urgency; reason: TriageReason; uncertainty: Uncertainty; private: boolean; suspectedInjection: boolean; signals: TriageSignal[]; hiddenBy?: string };
+
+/** Only explicit operator input enters this parser; match terms are literals, never regexes or instructions. */
+export function parseRule(text: string): Pick<LearnedRule, 'match' | 'action' | 'reason'> {
+  const line = text.trim();
+  const parts = line.length <= 1000 && !/[\p{Cc}\p{Cf}]/u.test(line) && (
+    /^hide (.+?)(?: unless (.+?))? because (.+)$/i.exec(line) ??
+    /^oculte (.+?)(?: exceto (.+?))? porque (.+)$/i.exec(line)
+  );
+  if (!parts) throw new Error('invalid_triage_rule');
+  const match = parts[1].trim();
+  const unless = parts[2]?.split(/\s+(?:or|ou)\s+/i).map(term => term.trim()) ?? [];
+  const reason = parts[3].trim();
+  if (!match || match.length > 120 || !reason || reason.length > 300 || unless.length > 10 || unless.some(term => !term || term.length > 120)) throw new Error('invalid_triage_rule');
+  return { match: { text: match, unless }, action: 'hide', reason };
+}
 
 const INJECTION_PATTERNS: readonly RegExp[] = [
   /\b(ignore|disregard|forget|override)\b.{0,40}\b(previous|prior|above|earlier|all|your|any)\b.{0,30}\b(instructions?|rules|prompts?|guidelines|polic(y|ies))\b/is,
@@ -48,8 +65,11 @@ export function triage(message: MailMessage, rules: TriageRules): Triage {
   if (URGENT_TERMS.test(text)) signals.add('urgent_terms');
   if (trusted) signals.add('trusted_sender');
   if (isPrivate) signals.add('private_data');
-  const result = (urgency: Urgency, reason: TriageReason, uncertainty: Uncertainty): Triage =>
-    ({ sourceRef: message.ref, urgency, reason, uncertainty, private: isPrivate, suspectedInjection, signals: [...signals].sort() });
+  const safetyWarning = suspectedInjection || signals.has('executable_attachment');
+  const result = (urgency: Urgency, reason: TriageReason, uncertainty: Uncertainty): Triage => {
+    const hiddenBy = urgency === 'low' || safetyWarning ? undefined : matchingRule(message, rules.learned ?? []);
+    return { sourceRef: message.ref, urgency, reason, uncertainty, private: isPrivate, suspectedInjection, signals: [...signals].sort(), ...(hiddenBy ? { hiddenBy } : {}) };
+  };
 
 
   if (suspectedInjection) return result('normal', 'suspected_injection', 'high');
@@ -59,4 +79,15 @@ export function triage(message: MailMessage, rules: TriageRules): Triage {
   if (trusted) return result('normal', 'trusted_sender', 'low');
   if (signals.has('promotional')) return result('low', 'promotional', 'medium');
   return result('normal', 'no_signal', 'medium');
+}
+
+function matchingRule(message: MailMessage, rules: readonly LearnedRule[]): string | undefined {
+  const normalize = (text: string) => text.normalize('NFC').toLowerCase();
+  const subject = normalize(message.subject);
+  const body = normalize(message.body);
+  const address = normalize(senderAddress(message.from));
+  const mentions = (text: string) => subject.includes(text) || body.includes(text);
+  const noPossibleException = (terms: string[]) => !terms.length || !message.bodyTruncated && !terms.some(term => mentions(normalize(term)));
+  return rules.find(({ action, match }) => action === 'hide' && (mentions(normalize(match.text)) || address.includes(normalize(match.text)))
+    && noPossibleException(match.unless))?.ruleId;
 }

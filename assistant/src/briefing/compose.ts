@@ -2,27 +2,31 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { Event, SourceKind } from '../contracts/events.ts';
 import type { Task } from '../contracts/tasks.ts';
-import type { CalendarEvent, GoogleConnections } from '../connectors/google.ts';
+import type { CalendarEvent, DraftPreview, GoogleConnections, MailMessage } from '../connectors/google.ts';
 import { isTimeZone, localDateTime } from '../connectors/google.ts';
 import { boundedInteger } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
-import { triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
  * briefing, with every source that could not be read listed as such. One daily briefing exists per profile and local
  * date however many clients ask; each on-demand briefing is its own. Message bodies are never stored, private
- * subjects are withheld, and nothing here starts work: Start is a separate call that needs the operator authority.
+ * subjects are withheld. A receipt-only reply may be drafted locally; Start and sending are separate actions.
  */
 export type BriefingKind = 'daily' | 'on_demand';
 export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
-export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean };
+export type BriefingStep = { kind: 'next'; text: string } | { kind: 'reply_draft'; draftId: string; subject: string };
+export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean; step?: BriefingStep };
+export type RuleEffect = { ruleId: string; reason: string; hidden: number };
+export type ReplyDraft = { draftId: string; subject: string; preview: DraftPreview };
+const NEXT_STEP: Record<Section, string> = { tasks: 'Open the task to see its current status.', agenda: 'Review the calendar event.', messages: 'Review the original message.', changes: 'Review what changed.' };
 export type SourceState = { sourceId: string; state: 'ok' | 'partial' | 'unavailable'; error: string | null };
 export type Briefing = {
   version: 1; briefingId: string; profileId: string; kind: BriefingKind; localDate: string; timeZone: string; createdAt: string;
-  taskSequence: number; sources: SourceState[]; items: BriefingItem[]; distractions: number;
+  taskSequence: number; sources: SourceState[]; items: BriefingItem[]; distractions: number; ruleEffects?: RuleEffect[];
 };
 export type StartRequest = { requestId: string; sessionId: string; channelId: string; actorId: string; sourceKind: SourceKind };
 export type ComposerOptions = {
@@ -59,7 +63,9 @@ export class BriefingComposer {
     this.db = new DatabaseSync(options.databasePath);
     this.db.exec(`PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
-      CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';`);
+      CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
+      CREATE TABLE IF NOT EXISTS briefing_reply_drafts (profile TEXT NOT NULL, id TEXT NOT NULL, last_used INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));
+      CREATE TABLE IF NOT EXISTS briefing_triage_rules (profile TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));`);
   }
 
   /** Today's briefing for this profile; when another client already made it, that one is returned without reading again. */
@@ -83,6 +89,31 @@ export class BriefingComposer {
   latest(): Briefing | null { return this.one('ORDER BY created DESC LIMIT 1'); }
 
   get(briefingId: string): Briefing | null { return this.one('AND briefing_id = ?', briefingId); }
+
+  draft(id: string): ReplyDraft | null {
+    const row = this.db.prepare('SELECT body FROM briefing_reply_drafts WHERE profile = ? AND id = ? AND last_used >= ?').get(this.options.profileId, id, this.now() - this.retentionDays * DAY_MS);
+    return row ? JSON.parse(row.body as string) as ReplyDraft : null;
+  }
+
+  learnedRules(): LearnedRule[] {
+    return this.db.prepare('SELECT body FROM briefing_triage_rules WHERE profile = ? ORDER BY rowid').all(this.options.profileId)
+      .map(row => JSON.parse(row.body as string) as LearnedRule);
+  }
+
+  learnRule(text: string, authority: object): LearnedRule {
+    if (authority !== this.options.operatorAuthority) fail('unauthorized');
+    const rule: LearnedRule = { ruleId: randomUUID(), ...parseRule(text), createdAt: new Date(this.now()).toISOString() };
+    const inserted = this.db.prepare(`INSERT INTO briefing_triage_rules (profile, id, body) SELECT ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM briefing_triage_rules WHERE profile = ?) < ?`)
+      .run(this.options.profileId, rule.ruleId, JSON.stringify(rule), this.options.profileId, MAX_LEARNED_RULES);
+    if (!inserted.changes) fail('triage_rules_full');
+    return rule;
+  }
+
+  forgetRule(id: string, authority: object): boolean {
+    if (authority !== this.options.operatorAuthority) fail('unauthorized');
+    return this.db.prepare('DELETE FROM briefing_triage_rules WHERE profile = ? AND id = ?').run(this.options.profileId, id).changes !== 0;
+  }
 
   /** Start turns one briefing item into a queued task in the store. Only the operator authority can call it; repeating it returns the same task. */
   start(briefingId: string, itemId: string, authority: object, request: StartRequest): Task {
@@ -121,8 +152,12 @@ export class BriefingComposer {
 
   private async compose(kind: BriefingKind, localDate: string): Promise<Briefing> {
     const now = this.now();
-    this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, now - this.retentionDays * DAY_MS);
+    const cutoff = now - this.retentionDays * DAY_MS;
+    this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, cutoff);
+    this.db.prepare('DELETE FROM briefing_reply_drafts WHERE profile = ? AND last_used < ?').run(this.options.profileId, cutoff);
     const since = this.latest();
+    const rules = { ...this.options.rules, learned: this.learnedRules() };
+    const effects = new Map(rules.learned.map(({ ruleId, reason }) => [ruleId, { ruleId, reason, hidden: 0 }]));
     const sources: SourceState[] = [];
     const items: Omit<BriefingItem, 'itemId'>[] = [];
     let distractions = 0;
@@ -137,9 +172,13 @@ export class BriefingComposer {
         this.read(`${connectionId}:mail`, async () => {
           const page = await this.options.google.listMessages(connectionId);
           for (const message of page.items) {
-            const result = triage(message, this.options.rules);
-            if (result.urgency === 'low') { found.distractions++; continue; }
-            found.mail.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: true });
+            const result = triage(message, rules);
+            const effect = result.hiddenBy ? effects.get(result.hiddenBy) : undefined;
+            if (effect) effect.hidden++;
+            if (effect || result.urgency === 'low') { found.distractions++; continue; }
+            const sourceRef = `gmail:${connectionId}:${message.ref.id}`;
+            const step = this.replyStep(message, result, sourceRef, now);
+            found.mail.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: !step, ...(step ? { step } : {}) });
           }
           return page.truncated;
         }),
@@ -165,8 +204,25 @@ export class BriefingComposer {
       .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section]);
     return {
       version: 1, briefingId: randomUUID(), profileId: this.options.profileId, kind, localDate, timeZone: this.options.timeZone, createdAt: new Date(now).toISOString(),
-      taskSequence, sources, items: ordered.map(item => ({ itemId: sha256(`${item.section}\n${item.sourceRef}`).slice(0, 16), ...item })), distractions,
+      taskSequence, sources, items: ordered.map(item => ({ itemId: sha256(`${item.section}\n${item.sourceRef}`).slice(0, 16), ...item,
+        step: item.step ?? { kind: 'next', text: NEXT_STEP[item.section] } })), distractions, ruleEffects: [...effects.values()],
     };
+  }
+
+  private replyStep(message: MailMessage, result: Triage, sourceRef: string, now: number): BriefingStep | undefined {
+    if (result.private || result.suspectedInjection || message.bodyTruncated || message.attachments.some(a => a.executable)
+      || !message.labels.includes('INBOX') || !message.labels.includes('UNREAD') || message.labels.includes('SENT') || message.labels.includes('DRAFT')) return;
+    const draftId = `reply-${sha256(sourceRef).slice(0, 32)}`;
+    let saved = this.draft(draftId);
+    if (!saved) {
+      const draft = this.options.google.receiptReply(message, senderAddress(message.from));
+      if (!draft) return;
+      saved = { draftId, ...draft };
+    }
+    this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
+      ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`).run(this.options.profileId, draftId, now, JSON.stringify(saved));
+    const stored = this.draft(draftId) ?? fail('draft_unavailable');
+    return { kind: 'reply_draft', draftId, subject: stored.subject };
   }
 
   /** Open tasks, and the last state of every task changed since the previous briefing. Returns the sequence read up to. */
