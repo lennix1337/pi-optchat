@@ -444,6 +444,7 @@ export function serve(server: Server, store: { close(): void | Promise<void> }, 
     process.exitCode = 1;
     if (closing) return;
     closing = true;
+    setTimeout(() => process.exit(1), 3000).unref();
     void Promise.resolve(store.close()).catch(() => { console.error('Assistant resource shutdown failed.'); }).finally(() => process.exit(1));
   });
   server.listen(port, '127.0.0.1', () => {
