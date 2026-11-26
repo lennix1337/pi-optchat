@@ -1029,6 +1029,7 @@ export default function optchat(host: ExtensionAPI) {
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch {   } },
     { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, onInbound: () => heartbeat?.notifyObligations(), deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
       everyAnswer: () => active?.config.slackEveryAnswer === true, proactivityPaused: () => active?.config.heartbeatPaused === true,
+      taskThreadAfterMs: () => active?.config.slack?.taskThreadAfterMs,
 
       items: () => {
         const a = active;
