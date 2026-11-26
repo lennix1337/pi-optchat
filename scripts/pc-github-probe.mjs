@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// One line saying whether the PC reaches GitHub over TCP 443: the desktop runner, pushes and CI depend on it.
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
