@@ -11,21 +11,24 @@ const DAY_MS = 86_400_000;
 /** A due date this many days in the past is an old message, not a bill still open; further ahead than FUTURE_DAYS is not yet worth listing. */
 export const OVERDUE_DAYS = 30;
 export const FUTURE_DAYS = 60;
-/** A bill due within this many days (or already overdue) is flagged. */
+/** A bill due within this many days is flagged urgent. */
 export const SOON_DAYS = 3;
+/** An overdue bill stays urgent this many days after its due date; after that it is still listed, as normal, until OVERDUE_DAYS. */
+export const OVERDUE_URGENT_DAYS = 7;
 
-const BILL_WORDS = /\b(boleto|fatura|invoice|bill|cobran[cç]a|conta|mensalidade|parcela|statement|pagamento|payment)\b/i;
+const SPECIFIC_BILL_WORDS = new RegExp(`\\b(?:boleto|fatura|invoice|cobran[cç]a|mensalidade|contas?\\s+a\\s+pagar|conta\\s+(?:de\\s+)?(?:luz|[aá]gua|g[aá]s|telefone|celular|internet|energia|condom[ií]nio)|your\\s+(?:bill|statement)|bill\\s+is\\s+due|(?:payment|amount)\\s+(?:is\\s+)?due|pagamento\\s+pendente)\\b`, 'i');
 const MONTHS = ['janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 const MONTH_NAMES = MONTHS.map(m => m === 'marco' ? 'mar[cç]o' : m).join('|');
 const DATE = `(\\d{4})-(\\d{2})-(\\d{2})|(\\d{1,2})/(\\d{1,2})(?:/(\\d{4}|\\d{2}))?|(\\d{1,2}) de (${MONTH_NAMES})(?: de (\\d{4}))?`;
-const DUE_DATE = new RegExp(`\\b(?:vencimento|vence(?:r[aá])?|venc\\.|vencid[oa]|due(?: date)?|(?:pague|pagar|pagamento) at[eé]|payable by|pay by)(?![a-z])[^\\d\\n]{0,25}?(?:${DATE})`, 'i');
+const LABEL_RIGHT_BEFORE_DATE = 'vencimento|venc\\.|vence(?:r[aá])?(?:\\s+(?:em|dia|no\\s+dia)|\\s*:)|vencid[oa]\\s+(?:em|desde|dia)|due(?:\\s+date|\\s+on|\\s+by)?|(?:pague|pagar|pagamento)\\s+at[eé]|payable\\s+by|pay\\s+by';
+const DUE_DATE = new RegExp(`\\b(?:${LABEL_RIGHT_BEFORE_DATE})(?![a-z])[\\s:.\\-–]{0,4}(?:(?:em|dia|no\\s+dia)\\s+)?(?:dia\\s+)?(?:${DATE})`, 'i');
 const CURRENCY = '(?:R\\$|US\\$|BRL|USD|EUR|€|\\$)\\s*(\\d{1,3}(?:\\.\\d{3})+,\\d{2}|\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+[.,]\\d{2}|\\d+)';
 const TOTAL_AMOUNT = new RegExp(`\\b(?:total|valor|amount|value|montante)\\b[^\\d\\n]{0,20}?(${CURRENCY})`, 'i');
 const ANY_AMOUNT = new RegExp(CURRENCY, 'i');
 
 /** How the briefing flags a bill `daysLeft` days from today (negative: overdue). */
 export function billTiming(daysLeft: number): { reason: 'bill_overdue' | 'bill_due_soon' | 'bill_upcoming'; urgency: 'urgent' | 'normal' } {
-  return daysLeft < 0 ? { reason: 'bill_overdue', urgency: 'urgent' } : daysLeft <= SOON_DAYS ? { reason: 'bill_due_soon', urgency: 'urgent' } : { reason: 'bill_upcoming', urgency: 'normal' };
+  return daysLeft < 0 ? { reason: 'bill_overdue', urgency: daysLeft >= -OVERDUE_URGENT_DAYS ? 'urgent' : 'normal' } : daysLeft <= SOON_DAYS ? { reason: 'bill_due_soon', urgency: 'urgent' } : { reason: 'bill_upcoming', urgency: 'normal' };
 }
 
 /** Whole days from `today` to `date`, both YYYY-MM-DD; null when either is not a calendar date. */
@@ -44,7 +47,7 @@ const pad = (n: number) => String(n).padStart(2, '0');
 /** The bill in a message, relative to `today` (YYYY-MM-DD, the briefing's local date), or null when it is not an open bill. */
 export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today: string): Bill | null {
   const text = `${message.subject}\n${message.body}`;
-  if (!BILL_WORDS.test(text)) return null;
+  if (!SPECIFIC_BILL_WORDS.test(text)) return null;
   const m = DUE_DATE.exec(text);
   if (!m) return null;
   const [ty, tm, td] = today.split('-').map(Number);

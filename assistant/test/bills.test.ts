@@ -29,6 +29,17 @@ test('not a bill: no billing word, no due-date label, impossible date, or out of
   assert.equal(detectBill({ subject: 'Fatura', body: 'Vencimento: 30/10/2026' }, 'not-a-date'), null);
 });
 
+test('generic words and loose labels are not enough', () => {
+  assert.equal(bill('Conta criada', 'Seu plano vence em 30/10/2026'), null, 'bare "conta"');
+  assert.equal(bill('Bill sent a note', 'Due 30/10/2026'), null, 'bare "bill"');
+  assert.equal(bill('Payment received', 'Delivery due 2026-10-30'), null, 'bare "payment"');
+  assert.equal(bill('Fatura', 'O prazo vence 30/10/2026'), null, '"vence" without em/dia/:');
+  assert.equal(bill('Fatura', 'due to maintenance on 30/10/2026'), null, 'a "due" that is not a label');
+  assert.equal(bill('Conta de luz', 'Vence em 30/10/2026')?.dueDate, '2026-10-30');
+  assert.equal(bill('Sua conta a pagar', 'Vence: 30/10/2026')?.dueDate, '2026-10-30');
+  assert.equal(bill('Your bill is due', 'Due on 2026-10-31')?.dueDate, '2026-10-31');
+});
+
 test('the amount: the total when labelled, otherwise the first one', () => {
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amount, 'R$ 1.234,56');
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amount, 'R$ 80,00');
@@ -39,6 +50,7 @@ test('the amount: the total when labelled, otherwise the first one', () => {
 test('timing: overdue and up to 3 days are urgent, later is not', () => {
   assert.deepEqual([-1, 0, 3, 4].map(d => billTiming(d).reason), ['bill_overdue', 'bill_due_soon', 'bill_due_soon', 'bill_upcoming']);
   assert.deepEqual([-1, 3, 4].map(d => billTiming(d).urgency), ['urgent', 'urgent', 'normal']);
+  assert.deepEqual([-7, -8, -30].map(d => [billTiming(d).reason, billTiming(d).urgency]), [['bill_overdue', 'urgent'], ['bill_overdue', 'normal'], ['bill_overdue', 'normal']]);
   assert.equal(daysUntil('2026-10-28', '2026-11-02'), 5);
   assert.equal(daysUntil('2026-10-28', '2026-13-02'), null);
 });
