@@ -3,7 +3,7 @@ import type { GoogleLocal } from '../connectors/google-local.ts';
 import { singleFlight } from '../single-flight.ts';
 import type { Briefing, BriefingComposer, SourceState } from './compose.ts';
 import type { MeetingPrepCard } from './meeting-prep.ts';
-import { CLOCK, type WeeklySchedule } from './weekly.ts';
+import { CLOCK, MAX_WEEKLY_FAILURES, type WeeklySchedule } from './weekly.ts';
 
 const MEETING_LEAD_MS = 30 * 60_000;
 const INITIAL_BACKOFF_MS = 2 * 60_000;
@@ -113,6 +113,11 @@ export class BriefingService {
     if (errors.length > 1) throw new AggregateError(errors, 'meeting_prep_failed');
   }
 
+  /**
+   * The weekly review of the last configured boundary. A boundary missed while the service ran is recovered once, but one
+   * missed while it was down before it ever produced a review is not: a service enabled midweek, or down at its very first
+   * boundary, waits for the next one instead of looking back.
+   */
   private async weeklyDue(): Promise<Briefing | null> {
     const schedule = this.options.weekly;
     if (!schedule) return null;
@@ -125,7 +130,7 @@ export class BriefingService {
     const result = await this.compose(composer => {
       if (!dueToday && !composer.latestWeekly()) return null;
       const attempt = composer.weeklyAttempt(due);
-      return attempt && this.now() < attempt.at + WEEKLY_RETRY_MS ? null : composer.weekly(due);
+      return attempt && (attempt.failures >= MAX_WEEKLY_FAILURES || this.now() < attempt.at + WEEKLY_RETRY_MS) ? null : composer.weekly(due);
     });
     if (!result) return null;
     const { briefing, created, complete, degraded } = result;

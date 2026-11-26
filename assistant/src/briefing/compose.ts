@@ -77,10 +77,11 @@ export class BriefingComposer {
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_weekly ON briefings (profile, local_date) WHERE kind = 'weekly';
-      CREATE TABLE IF NOT EXISTS weekly_attempts (profile TEXT NOT NULL, local_date TEXT NOT NULL, attempted INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (profile, local_date));
+      CREATE TABLE IF NOT EXISTS weekly_attempts (profile TEXT NOT NULL, local_date TEXT NOT NULL, attempted INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 1, failures INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (profile, local_date));
       CREATE TABLE IF NOT EXISTS meeting_prep_announced (profile TEXT NOT NULL, card_id TEXT NOT NULL, start_ms INTEGER NOT NULL, PRIMARY KEY (profile, card_id));
       CREATE TABLE IF NOT EXISTS briefing_reply_drafts (profile TEXT NOT NULL, id TEXT NOT NULL, last_used INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));
       CREATE TABLE IF NOT EXISTS briefing_triage_rules (profile TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));`);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('weekly_attempts') WHERE name = 'failures'").get()) this.db.exec('ALTER TABLE weekly_attempts ADD COLUMN failures INTEGER NOT NULL DEFAULT 0');
   }
 
   /** Today's briefing for this profile; when another client already made it, that one is returned without reading again. */
@@ -117,7 +118,7 @@ export class BriefingComposer {
    * what is still ahead on the days since the boundary is in and what is over is not. After three tries a review missing some sources is
    * stored with an urgent item for each, so its absence is stated, never silent; it is then `degraded` and each later call
    * re-reads it, replacing the stored review in place (same id, so no second announcement) once fewer sources are missing,
-   * until a few more tries pass (its attempt then stays, as the proof it is final, until the next week prunes it). Before a review is stored only a source that is unavailable counts as a try and an exception counts for nothing; once it is stored every re-read counts, exception or not, so none goes on forever.
+   * until a few more tries pass (its attempt then stays, as the proof it is final, until the next week prunes it). Before a review is stored only a source that is unavailable counts as a try; an exception counts as a failed attempt of its own, which `MAX_WEEKLY_FAILURES` caps. Once it is stored every re-read counts, exception or not, so none goes on forever.
    */
   async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean; degraded: boolean }> {
     const profile = this.options.profileId;
@@ -126,8 +127,12 @@ export class BriefingComposer {
     const held = existing ? unavailableSources(existing) : 0;
     const prior = this.weeklyAttempt(localDate)?.tries ?? 0;
     if (existing && (!held || prior >= MAX_WEEKLY_TRIES + MAX_UPGRADE_TRIES)) return { briefing: existing, created: false, complete: true, degraded: false };
-    this.db.prepare('INSERT INTO weekly_attempts VALUES (?, ?, ?, ?) ON CONFLICT (profile, local_date) DO UPDATE SET attempted = excluded.attempted, tries = excluded.tries').run(profile, localDate, this.now(), existing ? prior + 1 : prior);
-    const fresh = await this.composeWeekly(localDate);
+    this.db.prepare('INSERT INTO weekly_attempts (profile, local_date, attempted, tries) VALUES (?, ?, ?, ?) ON CONFLICT (profile, local_date) DO UPDATE SET attempted = excluded.attempted, tries = excluded.tries').run(profile, localDate, this.now(), existing ? prior + 1 : prior);
+    let fresh: Briefing;
+    try { fresh = await this.composeWeekly(localDate); } catch (error) {
+      this.db.prepare('UPDATE weekly_attempts SET failures = failures + 1 WHERE profile = ? AND local_date = ?').run(profile, localDate);
+      throw error;
+    }
     const down = unavailableSources(fresh);
     const google = fresh.sources.filter(source => source.sourceId !== 'tasks').length;
     const tries = existing || down ? prior + 1 : prior;
@@ -199,9 +204,9 @@ export class BriefingComposer {
   latest(): Briefing | null { return this.one("AND kind != 'weekly' ORDER BY created DESC LIMIT 1"); }
 
   /** When and how often this week's review was attempted without being stored, so a restart keeps the retry delay; cleared once it is saved. */
-  weeklyAttempt(localDate: string): { at: number; tries: number } | null {
-    const row = this.db.prepare('SELECT attempted, tries FROM weekly_attempts WHERE profile = ? AND local_date = ?').get(this.options.profileId, localDate) as { attempted: number; tries: number } | undefined;
-    return row ? { at: row.attempted, tries: row.tries } : null;
+  weeklyAttempt(localDate: string): { at: number; tries: number; failures: number } | null {
+    const row = this.db.prepare('SELECT attempted, tries, failures FROM weekly_attempts WHERE profile = ? AND local_date = ?').get(this.options.profileId, localDate) as { attempted: number; tries: number; failures: number } | undefined;
+    return row ? { at: row.attempted, tries: row.tries, failures: row.failures } : null;
   }
 
   latestWeekly(): Briefing | null { return this.one("AND kind = 'weekly' ORDER BY created DESC LIMIT 1"); }
@@ -523,9 +528,9 @@ export function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & 
       flag.set(earlier, 'conflict');
       flag.set(later, 'conflict');
     }
-    const neighbour = timed[i - 1];
-    const gap = neighbour ? Date.parse(later.event.start) - Date.parse(neighbour.event.end) : -1;
-    if (neighbour && gap >= 0 && gap <= BACK_TO_BACK_MS) for (const entry of [neighbour, later]) if (!flag.has(entry)) flag.set(entry, 'back_to_back');
+    const before = timed.slice(0, i).reduce<WeekEvent | null>((latest, entry) => !latest || Date.parse(entry.event.end) > Date.parse(latest.event.end) ? entry : latest, null);
+    const gap = before ? Date.parse(later.event.start) - Date.parse(before.event.end) : -1;
+    if (before && gap >= 0 && gap <= BACK_TO_BACK_MS) for (const entry of [before, later]) if (!flag.has(entry)) flag.set(entry, 'back_to_back');
   }
   return unique.map(entry => {
     const { connectionId, event } = entry;

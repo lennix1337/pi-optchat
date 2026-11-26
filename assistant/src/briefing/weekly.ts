@@ -4,6 +4,8 @@ import type { Briefing } from './compose.ts';
 export type WeeklySchedule = { day: number; at: string };
 export type WeeklyConfig = true | { day?: string; at?: string };
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+/** Failed attempts (an exception, not an unavailable source) after which a week's review is given up. */
+export const MAX_WEEKLY_FAILURES = 6;
 export const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** `true` or a partial `{ day, at }` from the configuration, with Sunday 18:00 filling what is missing; undefined stays off. */

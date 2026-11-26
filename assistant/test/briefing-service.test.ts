@@ -7,7 +7,7 @@ import { BriefingService } from '../src/briefing/service.ts';
 import type { MeetingPrepCard } from '../src/briefing/meeting-prep.ts';
 import { createNotificationCenter } from '../src/notifications/center.ts';
 import { weeklySchedule } from '../src/briefing/weekly.ts';
-import type { Briefing } from '../src/briefing/compose.ts';
+import { BriefingComposer, type Briefing } from '../src/briefing/compose.ts';
 import { createAssistantServer } from '../src/http/server.ts';
 import { TaskStore } from '../src/store/db.ts';
 import { ACCOUNTS, CLIENT_ID, CLIENT_SECRET, FakeGoogle } from './google-support.ts';
@@ -406,6 +406,27 @@ test('weekly review: a degraded review is announced once, upgraded when its sour
   clock.now += 16 * 60_000;
   assert.equal(await service.weeklyTick(), null);
   assert.equal(fake.log.length, done, 'and a complete review is not read again');
+}));
+
+test('weekly review: a failure that repeats before the review is stored is retried a few times, then given up for the week', () => rig(async ({ fake, clock, local }) => {
+  const sent: Briefing[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });
+  const proto = BriefingComposer.prototype as unknown as { assemble: () => never };
+  const assemble = proto.assemble;
+  proto.assemble = () => { throw new Error('boom'); };
+  try {
+    clock.now = sunday('21:00');
+    const outcomes: string[] = [];
+    const reads: number[] = [];
+    for (let i = 0; i < 9; i++) {
+      outcomes.push(await service.weeklyTick().then(() => 'quiet', error => (error as Error).message));
+      reads.push(fake.log.length);
+      clock.now += 16 * 60_000;
+    }
+    assert.deepEqual(outcomes, ['boom', 'boom', 'boom', 'boom', 'boom', 'boom', 'quiet', 'quiet', 'quiet']);
+    assert.equal(reads[5], reads[8], 'nothing is read after the sixth failure');
+    assert.equal(sent.length, 0);
+  } finally { proto.assemble = assemble; }
 }));
 
 test('weekly review: the retry delay survives a restart: a new service does not read Google again until it is over', () => rig(async ({ fake, clock, local }) => {
