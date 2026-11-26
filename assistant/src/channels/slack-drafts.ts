@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DraftSink, GoogleConnections, MessageDraft } from '../connectors/google.ts';
 import type { WriteContext } from '../connectors/mcp.ts';
-import type { Gateway } from '../policy/gateway.ts';
+import { isReviewedDispatchRefusal, type Gateway } from '../policy/gateway.ts';
 import type { Outcome } from './inbound.ts';
 import type { DraftAction, SlackPoster } from './slack-relay.ts';
 
@@ -15,23 +15,25 @@ export type DraftReviewOptions = {
 type Write = Omit<WriteContext, 'operationId' | 'expiresAt'>;
 type Post = { channel: string; ts: string };
 type Entry = {
-  reviewId: string; write: WriteContext; timer: NodeJS.Timeout;
-  draft?: MessageDraft; post?: Post; replacement?: string;
+  write: WriteContext; timer: NodeJS.Timeout;
+  reviewId?: string; draft?: MessageDraft; post?: Post; replacement?: string;
   state: 'pending' | 'sending' | 'edit' | 'replacing' | 'reason';
 };
 const DEFAULT_TTL_MS = 15 * 60_000;
 const DRAFT_LIMIT = 32;
 
-async function dispatchDraft({ google, gateway, authority, sink, log }: DraftReviewOptions, { draft, write, reviewId }: Entry) {
+async function dispatchDraft({ google, gateway, authority, sink, log }: DraftReviewOptions, entry: Entry) {
+  const { draft, write, reviewId } = entry;
+  if (!draft || !reviewId) return 'uncertain';
   try {
     gateway.decide(reviewId, 'approve', authority);
-    await google.send(draft!, write, sink, reviewId);
+    await google.send(draft, write, sink, reviewId);
     return 'sent';
   } catch (error) {
     try {
       gateway.revoke(reviewId, authority);
-      const noDispatchIntent = gateway.status(write.operationId) === 'absent';
-      if (noDispatchIntent && !(error instanceof Error && error.message === 'effect_uncertain')) return 'not_sent';
+      delete entry.reviewId;
+      if (isReviewedDispatchRefusal(error, write.operationId, reviewId) && gateway.status(write.operationId) === 'absent') return 'not_sent';
     } catch { log('Draft send status could not be verified.'); }
     return 'uncertain';
   }
@@ -76,8 +78,10 @@ export class SlackDraftReviews {
       entry.post = await poster.postDraftReview(id, `De: ${review.metadata.account}\nPara: ${review.metadata.destination}\nAssunto: ${subject}\n\n${body}`, expiresAt);
       if (this.entries.get(id) !== entry || expiresAt <= this.now()) throw new Error('draft_review_unavailable');
       if (previous) {
-        this.options.gateway.revoke(previous.reviewId, this.options.authority);
-        this.forget(previous.write.operationId, previous, false);
+        const previousId = previous.write.operationId;
+        if (this.entries.get(previousId) !== previous || previous.state !== 'replacing') throw new Error('draft_review_unavailable');
+        if (previous.reviewId) this.options.gateway.revoke(previous.reviewId, this.options.authority);
+        this.forget(previousId, previous, false);
       }
       entry.state = 'pending';
       return id;
@@ -93,10 +97,7 @@ export class SlackDraftReviews {
     const entry = this.entries.get(id);
     if (!entry || entry.post?.channel !== post.channel || entry.post.ts !== post.ts) return 'stale';
     if (entry.write.expiresAt <= this.now()) { this.expire(id); return 'stale'; }
-    if (action === 'edit' && entry.state === 'edit' && entry.replacement !== undefined) {
-      void this.replace(id, entry, post);
-      return 'responded';
-    }
+    if (action === 'edit' && entry.replacement !== undefined) return this.replace(entry, post, entry.replacement);
     if (entry.state !== 'pending') return 'stale';
     if (action === 'approve') {
       entry.state = 'sending';
@@ -118,19 +119,25 @@ export class SlackDraftReviews {
     for (const [id, entry] of this.entries) {
       if (entry.post?.channel !== post.channel || entry.post.ts !== post.ts) continue;
       if (entry.write.expiresAt <= this.now()) { this.expire(id); return 'stale'; }
+      if (entry.state === 'replacing') return 'stale';
       if (entry.state !== 'edit' && entry.state !== 'reason') return 'review_required';
       if (!text.trim() || !text.isWellFormed() || text.length > (entry.state === 'reason' ? 2_000 : 30_000)) return 'ignored';
-      if (entry.state === 'reason') {
-        this.db.prepare('INSERT INTO slack_draft_feedback VALUES (?, ?, ?)').run(id, text.trim(), this.now());
-        this.forget(id, entry, false);
-        this.update(post, 'Rascunho descartado. Motivo registrado.');
-      } else {
-        entry.replacement = text;
-        void this.replace(id, entry, post);
-      }
+      if (entry.state === 'edit') return this.replace(entry, post, text);
+      this.recordFeedback(id, entry, post, text.trim());
       return 'responded';
     }
     return undefined;
+  }
+
+  private recordFeedback(id: string, entry: Entry, post: Post, reason: string): void {
+    try { this.db.prepare('INSERT INTO slack_draft_feedback VALUES (?, ?, ?)').run(id, reason, this.now()); }
+    catch {
+      this.options.log('Draft feedback could not be recorded.');
+      this.update(post, 'Não foi possível registrar o motivo. Responda novamente nesta thread.', true);
+      return;
+    }
+    this.forget(id, entry, false);
+    this.update(post, 'Rascunho descartado. Motivo registrado.');
   }
 
   feedback(id: string): string | undefined {
@@ -161,17 +168,27 @@ export class SlackDraftReviews {
     }[outcome]);
   }
 
-  private async replace(id: string, entry: Entry, post: Post): Promise<void> {
+  private replace(entry: Entry, post: Post, body: string): Outcome {
+    if (entry.state !== 'edit') return 'stale';
     entry.state = 'replacing';
+    entry.replacement = body;
+    void this.finishReplacement(entry, post, body);
+    return 'responded';
+  }
+
+  private async finishReplacement(entry: Entry, post: Post, body: string): Promise<void> {
+    const id = entry.write.operationId;
     try {
-      await this.stage({ ...entry.draft!, body: entry.replacement! }, entry.write, entry.write.expiresAt, entry);
-      this.update(post, 'Rascunho anterior cancelado. Revise a nova versão no DM.');
+      await this.stage({ ...entry.draft!, body }, entry.write, entry.write.expiresAt, entry);
     } catch {
       if (this.entries.get(id) !== entry) return;
       if (entry.write.expiresAt <= this.now()) { this.expire(id); return; }
       entry.state = 'edit';
-      this.update(post, 'Não foi possível criar o novo cartão. O texto foi mantido: toque em Editar para usar o mesmo texto ou responda nesta thread com outro.', true);
+      const revoked = entry.reviewId ? '' : ' O cartão anterior continua sem poder ser aprovado.';
+      this.update(post, `Não foi possível criar o novo cartão.${revoked} O texto foi mantido: toque em Editar para usar o mesmo texto ou responda nesta thread com outro.`, true);
+      return;
     }
+    this.update(post, 'Rascunho anterior cancelado. Revise a nova versão no DM.');
   }
 
   private expire(id: string): void {
@@ -187,7 +204,8 @@ export class SlackDraftReviews {
     if (revoke) this.revoke(entry.reviewId);
   }
 
-  private revoke(reviewId: string): void {
+  private revoke(reviewId: string | undefined): void {
+    if (!reviewId) return;
     try { this.options.gateway.revoke(reviewId, this.options.authority); }
     catch { this.options.log('Draft review could not be revoked.'); }
   }

@@ -1,6 +1,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { SlackChannel, type SlackOptions } from '../src/channels/slack.ts';
 import { SlackDraftReviews } from '../src/channels/slack-drafts.ts';
 import { SlackPoster, SlackRelay } from '../src/channels/slack-relay.ts';
@@ -14,11 +15,11 @@ const DRAFT = { kind: 'message', connectionId: 'test-mail', to: ['customer@examp
 const WRITE = { sessionId: 'session-1', taskId: 'task-1', runId: 'run-1', policyVersion: 'policy-1' };
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-function fakeGoogle(gateway: ReturnType<typeof createGateway>) {
+function fakeGoogle(gateway: ReturnType<typeof createGateway>, denyDispatch: (id: string) => void) {
   const effect = (draft: Draft, write: WriteContext) => ({ ...write, version: 1 as const, profileId: PROFILE, adapter: 'google', action: 'gmail.send', account: 'operator@example.test', destination: draft.kind === 'message' ? draft.to.join(',') : 'invalid', payload: Buffer.from(JSON.stringify(draft.kind === 'message' ? { body: draft.body, subject: draft.subject, to: draft.to } : {})) });
   const prepared: string[] = [], invoked: string[] = [];
   const reviews = new Map<string, { reviewId: string; request: ReturnType<typeof effect> }>();
-  let refuseNextSend = false;
+  let nextSend: 'deny' | 'adapter_error' | undefined;
   const google = {
     prepareSend(draft: Draft, write: WriteContext) {
       prepared.push(write.operationId);
@@ -29,10 +30,10 @@ function fakeGoogle(gateway: ReturnType<typeof createGateway>) {
     send<T>(draft: Draft, write: WriteContext, sink: DraftSink<T>, reviewId?: string) {
       invoked.push(write.operationId);
       assert.ok(reviewId, 'must use the exact gateway review');
-      if (refuseNextSend) {
-        refuseNextSend = false;
-        return Promise.reject(new Error('denied'));
-      }
+      const mode = nextSend;
+      nextSend = undefined;
+      if (mode === 'adapter_error') return Promise.reject(new Error('denied'));
+      if (mode === 'deny') denyDispatch(write.operationId);
       return gateway.dispatchReviewed(effect(draft, write), reviewId, sink);
     },
   };
@@ -40,7 +41,8 @@ function fakeGoogle(gateway: ReturnType<typeof createGateway>) {
     const item = reviews.get(id)!;
     return !!gateway.pendingReview(item.reviewId, item.request);
   }
-  return { google, prepared, invoked, reviewPending, refuseSend: () => { refuseNextSend = true; } };
+  return { google, prepared, invoked, reviewPending,
+    refuseSend: () => { nextSend = 'deny'; }, failAdapter: () => { nextSend = 'adapter_error'; } };
 }
 
 function fixture(t: TestContext) {
@@ -49,8 +51,10 @@ function fixture(t: TestContext) {
   for (const user of [OWNER, 'U0OTHER']) f.ledger.authorize('slack', TEAM, user, 'operador', f.authority);
   let time = 1_793_000_000_000;
   const now = () => time;
-  const gateway = createGateway({ databasePath: ':memory:', profileId: PROFILE, operatorAuthority: authority, policy: () => 'review', inspect: () => ({ decision: 'review', reasons: [] }), now });
-  const { google, ...googleState } = fakeGoogle(gateway);
+  let deniedOperation: string | undefined;
+  const gateway = createGateway({ databasePath: ':memory:', profileId: PROFILE, operatorAuthority: authority,
+    policy: m => m.operationId === deniedOperation ? 'deny' : 'review', inspect: () => ({ decision: 'review', reasons: [] }), now });
+  const { google, ...googleState } = fakeGoogle(gateway, id => { deniedOperation = id; });
   const dispatched: { id: string; bytes: string }[] = [];
   type Button = { action_id: string; value: string; text: { text: string } };
   type Block = { type: string; text?: { type: string; text: string }; elements?: Button[] };
@@ -171,6 +175,72 @@ test('a refusal before dispatch keeps a recovery path and only a fresh approval 
   assert.deepEqual(f.dispatched, [{ id: f.prepared[1], bytes: JSON.stringify({ body: DRAFT.body, subject: DRAFT.subject, to: DRAFT.to }) }]);
 });
 
+test('an adapter error with the same text as a Gateway refusal and an absent intent is still uncertain', async t => {
+  const f = fixture(t);
+  const id = await f.stage();
+  f.failAdapter();
+  f.tap('Aprovar');
+  await flush();
+  assert.equal(f.options.gateway.status(id), 'absent');
+  assert.equal(f.tap('Editar').outcome, 'stale');
+  assert.match(f.posts.at(-1)!.body.text, /Envio não confirmado.*não reenvie/i);
+  assert.deepEqual(f.prepared, [id]);
+  assert.deepEqual(f.dispatched, []);
+});
+
+test('a failed recovery post cannot restore the revoked approval or claim a replacement exists', async t => {
+  const f = fixture(t);
+  const old = await f.stage();
+  const revoke = t.mock.method(f.options.gateway, 'revoke');
+  f.refuseSend();
+  f.tap('Aprovar');
+  await flush();
+  const [revokedId] = revoke.mock.calls[0]!.arguments;
+  f.refuseCard();
+  assert.equal(f.tap('Editar').outcome, 'responded');
+  await flush();
+  assert.equal(f.card(1), undefined);
+  assert.equal(f.tap('Aprovar').outcome, 'stale');
+  assert.match(f.posts.at(-1)!.body.text, /não foi possível criar.*cartão anterior continua sem poder ser aprovado.*texto foi mantido/i);
+  assert.equal(f.tap('Editar').outcome, 'responded');
+  await flush();
+  assert.equal(revoke.mock.calls.filter(call => call.arguments[0] === revokedId).length, 1);
+  assert.equal(f.reviewPending(old), false);
+  f.tap('Aprovar', 1);
+  await flush();
+  assert.deepEqual(f.dispatched.map(send => send.id), [f.prepared[2]]);
+});
+
+for (const first of ['reply', 'edit'] as const) test(`only one replacement is prepared while ${first} waits for Slack`, async t => {
+  const f = fixture(t);
+  await f.stage();
+  f.refuseSend();
+  f.tap('Aprovar');
+  await flush();
+  const gate = Promise.withResolvers<void>();
+  const poster = f.options.poster;
+  const post = poster.postDraftReview.bind(poster);
+  t.mock.method(poster, 'postDraftReview', async (...args: Parameters<typeof post>) => {
+    await gate.promise;
+    return post(...args);
+  });
+  const edit = () => f.tap('Editar').outcome;
+  const reply = () => f.reply('An edited body.').outcome;
+  const [start, overlap] = first === 'reply' ? [reply, edit] : [edit, reply];
+  assert.equal(start(), 'responded');
+  assert.equal(overlap(), 'stale');
+  assert.equal(f.prepared.length, 2);
+  assert.equal(f.card(1), undefined);
+  gate.resolve();
+  await flush();
+  assert.ok(f.card(1));
+  assert.equal(f.card(2), undefined);
+  f.tap('Aprovar', 1);
+  await flush();
+  const body = first === 'reply' ? 'An edited body.' : DRAFT.body;
+  assert.deepEqual(f.dispatched, [{ id: f.prepared[1], bytes: JSON.stringify({ body, subject: DRAFT.subject, to: DRAFT.to }) }]);
+});
+
 test('discard never sends, and records the operator’s reason from the exact DM thread', async t => {
   const f = fixture(t);
   const id = await f.stage();
@@ -188,6 +258,24 @@ test('discard never sends, and records the operator’s reason from the exact DM
   const reopened = new SlackDraftReviews(f.options);
   try { assert.equal(reopened.feedback(id), 'Do not promise a date.'); } finally { reopened.close(); }
   assert.deepEqual(f.invoked, []);
+});
+
+test('a feedback INSERT failure is logged without the reason and can be followed by a new reply', async t => {
+  const f = fixture(t);
+  const id = await f.stage();
+  f.tap('Descartar');
+  const db = new DatabaseSync(f.options.feedbackPath);
+  t.after(() => db.close());
+  db.exec("CREATE TRIGGER reject_feedback BEFORE INSERT ON slack_draft_feedback BEGIN SELECT RAISE(ABORT, 'private diagnostic'); END");
+  assert.equal(f.reply('Private reason.').outcome, 'responded');
+  await flush();
+  assert.equal(f.drafts.feedback(id), undefined);
+  assert.deepEqual(f.logs, ['Draft feedback could not be recorded.']);
+  assert.match(f.posts.at(-1)!.body.text, /não foi possível registrar o motivo/i);
+  db.exec('DROP TRIGGER reject_feedback');
+  assert.equal(f.reply('Reason to record.').outcome, 'responded');
+  assert.equal(f.drafts.feedback(id), 'Reason to record.');
+  assert.deepEqual(f.dispatched, []);
 });
 
 test('a draft expired at the configured deadline refuses its approval', async t => {
