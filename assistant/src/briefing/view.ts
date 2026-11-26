@@ -27,10 +27,13 @@ export function briefingView(value: unknown, profileId: string): Briefing | null
   });
   const items = value.items.map(i => {
     if (!record(i) || !string(i.itemId) || !string(i.title) || !string(i.sourceRef) || !string(i.reason)
-      || !['tasks', 'agenda', 'messages', 'changes'].includes(String(i.section)) || !['urgent', 'normal', 'low'].includes(String(i.urgency))
-      || !['high', 'medium', 'low'].includes(String(i.uncertainty)) || typeof i.untrusted !== 'boolean' || typeof i.startable !== 'boolean') throw new Error('invalid_briefing');
+      || !['tasks', 'bills', 'agenda', 'messages', 'changes'].includes(String(i.section)) || !['urgent', 'normal', 'low'].includes(String(i.urgency))
+      || !['high', 'medium', 'low'].includes(String(i.uncertainty)) || typeof i.untrusted !== 'boolean' || typeof i.startable !== 'boolean'
+      || (i.dueDate !== undefined && (!string(i.dueDate) || !/^\d{4}-\d{2}-\d{2}$/.test(i.dueDate)))
+      || (i.amount !== undefined && !string(i.amount)) || (i.billKey !== undefined && (!string(i.billKey) || !/^[0-9a-f]{16}$/.test(i.billKey)))) throw new Error('invalid_briefing');
     return { itemId: i.itemId, section: i.section, title: i.title, sourceRef: i.sourceRef, reason: i.reason, urgency: i.urgency, uncertainty: i.uncertainty, untrusted: i.untrusted, startable: i.startable,
-      ...(i.step === undefined ? {} : { step: stepView(i.step) }) };
+      ...(i.step === undefined ? {} : { step: stepView(i.step) }), ...(i.dueDate === undefined ? {} : { dueDate: i.dueDate }),
+      ...(i.amount === undefined ? {} : { amount: i.amount }), ...(i.billKey === undefined ? {} : { billKey: i.billKey }) };
   });
   if (value.ruleEffects !== undefined && (!Array.isArray(value.ruleEffects) || value.ruleEffects.length > MAX_LEARNED_RULES)) throw new Error('invalid_briefing');
   const ruleEffects = (value.ruleEffects as unknown[] | undefined)?.map(effect => {

@@ -42,7 +42,7 @@ export type GoogleOptions = {
 export type GoogleConnection = { connectionId: string; subject: string; email: string; scopes: string[]; state: 'active' | 'revoked' };
 export type SourceRef = { connectionId: string; account: string; kind: 'gmail.message' | 'calendar.event'; id: string };
 export type Attachment = { filename: string; mimeType: string; size: number; executable: boolean };
-export type MailMessage = { ref: SourceRef; threadId: string; from: string; replyTo?: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; attachments: Attachment[] };
+export type MailMessage = { ref: SourceRef; threadId: string; from: string; replyTo?: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; senderVerified?: boolean; rfcMessageId?: string; attachments: Attachment[] };
 export type CalendarAttendee = { email: string; displayName?: string };
 export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; uid: string | null; updated: string | null; attendees: CalendarAttendee[] };
 export type Page<T> = { items: T[]; truncated: boolean };
@@ -370,17 +370,23 @@ export class GoogleConnections {
     const headers = Array.isArray(m.payload.headers) ? m.payload.headers : [];
     const isHeader = (h: (typeof headers)[number], name: string) => typeof h?.name === 'string' && h.name.toLowerCase() === name;
     const header = (name: string) => headers.find(h => isHeader(h, name))?.value;
-    const replyTo = headers.filter(h => isHeader(h, 'reply-to'));
+    const headerValues = (name: string) => headers.filter(h => isHeader(h, name)).map(h => h.value);
+    const replyTo = headerValues('reply-to');
+    const rawFrom = header('from');
+    const from = typeof rawFrom === 'string' && rawFrom.length > MAX_HEADER_CHARS ? '' : headerText(rawFrom);
+    const rfcMessageId = headerText(header('message-id'));
     const text = plainText(m.payload, 0) ?? (typeof m.snippet === 'string' ? m.snippet : '');
     const chars = Array.from(text);
     return {
       ref: { connectionId: row.connection_id, account: row.email, kind: 'gmail.message', id: m.id },
       threadId: singleLine(m.threadId, 256) ? m.threadId : m.id,
-      from: headerText(header('from')), to: headerText(header('to')), subject: headerText(header('subject')),
-      ...(replyTo.length ? { replyTo: replyTo.length === 1 && singleLine(replyTo[0].value, 500) ? replyTo[0].value : '' } : {}),
+      from, to: headerText(header('to')), subject: headerText(header('subject')),
+      ...(replyTo.length ? { replyTo: replyTo.length === 1 && singleLine(replyTo[0], 500) ? replyTo[0] : '' } : {}),
       receivedAt: new Date(Number(m.internalDate)).toISOString(),
       labels: Array.isArray(m.labelIds) ? m.labelIds.filter(label => singleLine(label, 128)) : [],
       body: chars.slice(0, this.retention.maxBodyChars).join(''), bodyTruncated: chars.length > this.retention.maxBodyChars,
+      senderVerified: gmailVerifiedSender(from, headerValues('authentication-results')),
+      ...(rfcMessageId ? { rfcMessageId } : {}),
       attachments: attachments(m.payload, 0),
     };
   }
@@ -421,14 +427,56 @@ export class GoogleConnections {
 
 type GmailPart = { mimeType?: unknown; filename?: unknown; headers?: { name?: unknown; value?: unknown }[]; body?: { size?: unknown; data?: unknown }; parts?: GmailPart[] };
 
+const NAME_ADDR = /^(?:"(?:[^"\\]|\\.)*"|[^<>";,:]*)\s*<([^<>]+)>$/u;
+const MAX_HEADER_CHARS = 500;
+
 function replyRecipient(header: string): string | null {
-  const nameAddr = /^(?:"(?:[^"\\]|\\.)*"|[^<>";,:]*)\s*<([^<>]+)>$/u;
-  const address = (nameAddr.exec(header)?.[1] ?? header).toLowerCase();
+  const address = (NAME_ADDR.exec(header)?.[1] ?? header).toLowerCase();
   return singleLine(address, 254) && EMAIL.test(address) ? address : null;
 }
 
+/** A single From mailbox, never a trailing match in a list of addresses. */
+export function senderAddress(from: string): string {
+  const address = (NAME_ADDR.exec(from.trim())?.[1] ?? from.trim()).toLowerCase();
+  return singleLine(address, 254) && /^[^\s<>@,;":]+@[^\s<>@,;":]+$/u.test(address) ? address : '';
+}
+
+// external: Gmail writes its own verdict as the topmost Authentication-Results header, from mx.google.com; lower ones come from the sender's path, so a second header from mx.google.com is never taken as Gmail's.
+/** True when Gmail's single verdict, the topmost `Authentication-Results` value, says DMARC passed for the domain of the From address. */
+export function gmailVerifiedSender(from: string, authentication: unknown): boolean {
+  const domain = withoutTrailingDot(senderAddress(from).split('@')[1] ?? '');
+  const headers = Array.isArray(authentication) ? authentication : [authentication];
+  if (!domain || headers.length === 0 || !headers.every(value => typeof value === 'string')) return false;
+  const parsed = headers.map(value => authenticationParts(value));
+  const fromGmail = parsed.filter(([server]) => withoutTrailingDot(server.trim().toLowerCase()) === 'mx.google.com');
+  if (fromGmail.length !== 1 || fromGmail[0] !== parsed[0]) return false;
+  const [, ...results] = parsed[0];
+  return results.some(result => /^\s*dmarc\s*=\s*pass(?![\w-])/i.test(result)
+      && withoutTrailingDot(/(?:^|\s)header\.from\s*=\s*"?([^\s";]+)"?/i.exec(result)?.[1].toLowerCase() ?? '') === domain);
+}
+
+const withoutTrailingDot = (name: string) => name.replace(/\.$/, '');
+
+// external: RFC 8601 Authentication-Results may hold comments and quoted strings; text inside either must never read as a verdict.
+function authenticationParts(value: string): string[] {
+  const parts = [''];
+  let comments = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === '\\' && (quoted || comments > 0)) { i++; continue; }
+    if (comments > 0) { comments += c === '(' ? 1 : c === ')' ? -1 : 0; continue; }
+    if (quoted) { if (c === '"') quoted = false; parts[parts.length - 1] += /[\s;=]/.test(c) ? '_' : c; continue; }
+    if (c === '(') comments = 1;
+    else if (c === '"') quoted = true;
+    else if (c === ';') parts.push('');
+    else parts[parts.length - 1] += c;
+  }
+  return parts;
+}
+
 function headerText(value: unknown): string {
-  return typeof value === 'string' && value.isWellFormed() ? value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, 500) : '';
+  return typeof value === 'string' && value.isWellFormed() ? value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, MAX_HEADER_CHARS) : '';
 }
 
 function plainText(part: GmailPart, depth: number): string | undefined {

@@ -30,6 +30,9 @@ Optional Google briefing (read-only; connect accounts first with assistant/scrip
 "google":{"connections":["<name>"],"timeZone":"<IANA>","dailyAt":"HH:MM"}
 reads the named accounts' mail and agenda once a day after dailyAt; clients read it at GET /v1/briefing
 and ask for a fresh one with POST /v1/briefing. Naming an account here is the operator's consent.
+"bills":true inside "google" (off by default) lists bills with a due date found in that mail, by due date, flagging
+those due within 3 days.
+"trustedSenders":["<address>"] inside "google" (none by default) names senders whose bills can be started as tasks once Gmail has verified the sender domain.
 Optional voice uses the existing Pi Voice/F5 local settings and model (no download or cloud call):
 "voice":{"piVoicePath":"<absolute installed @earendil-works/pi-voice directory>","settingsPath":"<absolute pi-voice.json>"}
 Portuguese must already be selected in /voice-settings. The panel records at most 30 seconds, then shows
@@ -86,7 +89,7 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type EventsConfig = { sources: Record<string, import('./http/hooks.ts').HookSource> };
-export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string; meetingPrep?: boolean; weekly?: WeeklyConfig };
+export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string; meetingPrep?: boolean; weekly?: WeeklyConfig; bills?: boolean; trustedSenders?: string[] };
 export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; events?: EventsConfig; learning?: true; signals?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
 const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'events', 'learning', 'signals'];
@@ -96,12 +99,17 @@ function validWebOrigins(value: unknown): value is string[] {
   try { return remoteOrigins(value).size === value.length; } catch { return false; }
 }
 
+function validSenders(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 50 && value.every(sender => typeof sender === 'string' && sender.length <= 254 && /^[^\s<>@,;"]+@[^\s<>@,;"]+$/.test(sender));
+}
+
 function validGoogle(value: unknown): value is GoogleConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const g = value as Record<string, unknown>;
   if (g.weekly !== undefined && !validWeekly(g.weekly)) return false;
-  if (Object.keys(g).some(key => !['connections', 'dailyAt', 'timeZone', 'meetingPrep', 'weekly'].includes(key))
-      || (Object.hasOwn(g, 'meetingPrep') && typeof g.meetingPrep !== 'boolean') || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
+  if (Object.keys(g).some(key => !['connections', 'dailyAt', 'timeZone', 'meetingPrep', 'weekly', 'bills', 'trustedSenders'].includes(key))
+      || (Object.hasOwn(g, 'meetingPrep') && typeof g.meetingPrep !== 'boolean') || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)
+      || (g.bills !== undefined && typeof g.bills !== 'boolean') || (g.trustedSenders !== undefined && !validSenders(g.trustedSenders))) return false;
   if (!Array.isArray(g.connections) || g.connections.length < 1 || g.connections.length > 10 || new Set(g.connections).size !== g.connections.length ||
       !g.connections.every(name => typeof name === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name))) return false;
   if (typeof g.timeZone !== 'string' || g.timeZone.length > 64) return false;
@@ -329,13 +337,17 @@ async function startJournal(config: Config, notices: Notices | undefined, channe
 }
 
 
+export function googleBriefingOptions(settings: GoogleConfig): { bills?: true; trustedSenders?: string[] } {
+  return { ...(settings.bills ? { bills: true as const } : {}), ...(settings.trustedSenders ? { trustedSenders: [...new Set(settings.trustedSenders.map(sender => sender.toLowerCase()))] } : {}) };
+}
+
 async function startGoogle(config: Config, settings: GoogleConfig, notices: Notices | undefined): Promise<Briefings> {
   const { GoogleLocal } = await import('./connectors/google-local.ts');
   const { BriefingService } = await import('./briefing/service.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
   const dir = dirname(config.databasePath);
   for (const name of ['vault.sqlite', 'google.sqlite', 'google-gateway.sqlite', 'briefings.sqlite']) prepareDatabase(join(dir, name));
-  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector() });
+  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector(), ...googleBriefingOptions(settings) });
   const service = new BriefingService({
     local, connections: settings.connections, timeZone: settings.timeZone, dailyAt: settings.dailyAt, meetingPrep: settings.meetingPrep === true,
     ...(notices ? { onMeetingPrep: card => notices.notify({ id: card.cardId, ref: card.cardId, channel: 'local', category: 'meeting_prep_ready' }) } : {}),

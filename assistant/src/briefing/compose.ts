@@ -9,8 +9,9 @@ import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
 import { immediate } from '../store/transaction.ts';
+import { billTiming, daysUntil, detectBill, FUTURE_DAYS, OVERDUE_DAYS } from './bills.ts';
 import { agendaInstant, buildMeetingCard, byMeetingStart, meetingId, type MeetingPrepCard } from './meeting-prep.ts';
-import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type TriageSignal, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
@@ -22,12 +23,12 @@ import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, 
  * flagged. It is never the baseline for "changed since the last briefing" and `latest` does not return it.
  */
 export type BriefingKind = 'daily' | 'on_demand' | 'weekly';
-export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
+export type Section = 'tasks' | 'bills' | 'agenda' | 'messages' | 'changes';
 export type BriefingStep = { kind: 'next'; text: string } | { kind: 'reply_draft'; draftId: string; subject: string };
-export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean; step?: BriefingStep };
+export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean; step?: BriefingStep; dueDate?: string; amount?: string; billKey?: string };
 export type RuleEffect = { ruleId: string; reason: string; hidden: number };
 export type ReplyDraft = { draftId: string; subject: string; preview: DraftPreview };
-const NEXT_STEP: Record<Section, string> = { tasks: 'Open the task to see its current status.', agenda: 'Review the calendar event.', messages: 'Review the original message.', changes: 'Review what changed.' };
+const NEXT_STEP: Record<Section, string> = { tasks: 'Open the task to see its current status.', bills: 'Verify the bill in the original message.', agenda: 'Review the calendar event.', messages: 'Review the original message.', changes: 'Review what changed.' };
 export type SourceState = { sourceId: string; state: 'ok' | 'partial' | 'unavailable'; error: string | null };
 export type Briefing = {
   version: 1; briefingId: string; profileId: string; kind: BriefingKind; localDate: string; timeZone: string; createdAt: string;
@@ -37,16 +38,17 @@ export type StartRequest = { requestId: string; sessionId: string; channelId: st
 export type ComposerOptions = {
   databasePath: string; profileId: string; operatorAuthority: object; timeZone: string; store: TaskStore; google: GoogleConnections;
   /** The connections to read, by name. There is no default: an unnamed account is never read. */
-  connections: string[]; rules: TriageRules; retentionDays?: number; now?: () => number; meetingPrep?: boolean;
+  connections: string[]; rules: TriageRules; retentionDays?: number; now?: () => number; meetingPrep?: boolean; bills?: boolean;
 };
 
 const DAY_MS = 86_400_000;
+const NEVER_A_BILL: readonly TriageSignal[] = ['suspected_injection', 'executable_attachment'];
 const PRIVATE_TITLE = '[private content withheld]';
 const BLOCKED_THREAD_READS = new Set(['google_unauthorized', 'google_reauthorization_required', 'google_rate_limited', 'google_scope_missing', 'google_connection_revoked']);
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
 const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
-const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 2, changes: 3 };
+const SECTION_ORDER: Record<Section, number> = { tasks: 0, bills: 1, agenda: 2, messages: 3, changes: 4 };
 const MAX_STORE_PAGES = 20;
 const MAX_THREAD_CHECKS = 25;
 const MAX_WEEKLY_TRIES = 3;
@@ -68,7 +70,8 @@ export class BriefingComposer {
     const valid = options?.operatorAuthority && typeof options.operatorAuthority === 'object' && typeof options.profileId === 'string' && options.profileId.length > 0
       && options.store?.matchesProfile(options.profileId) && options.google && Array.isArray(options.connections) && options.connections.length <= 10
       && options.connections.every(c => typeof c === 'string' && c.length > 0) && new Set(options.connections).size === options.connections.length
-      && Array.isArray(options.rules?.trustedSenders) && options.rules.trustedSenders.every(s => typeof s === 'string') && isTimeZone(options.timeZone);
+      && Array.isArray(options.rules?.trustedSenders) && options.rules.trustedSenders.every(s => typeof s === 'string') && isTimeZone(options.timeZone)
+      && (options.bills === undefined || typeof options.bills === 'boolean');
     if (!valid) fail('invalid_options');
     this.retentionDays = boundedInteger(options.retentionDays, 14, 1, 90);
     this.options = { ...options, connections: [...options.connections], rules: { trustedSenders: [...options.rules.trustedSenders] } };
@@ -298,15 +301,18 @@ export class BriefingComposer {
     const tasks = items.filter(item => item.section === 'tasks');
     const cards: MeetingPrepCard[] = [];
     const range = dayRange(localDate, timeZone);
-    const reads = await Promise.all(connections.map(id => readConnection({ ...this.options, rules }, id, range, now, since, effects,
+    const reads = await Promise.all(connections.map(id => readConnection({ ...this.options, rules }, id, { ...range, localDate }, now, since, effects,
       (message, result, sourceRef) => drafts && this.replyStep(message, result, sourceRef, drafts))));
+    const seenBills = new Set<string>();
     for (const found of reads) {
       for (const event of found.meetings) cards.push(buildMeetingCard(event, found.messages, tasks, timeZone, rules));
       sources.push(...found.sources);
       items.push(...found.mail, ...found.changes);
+      for (const bill of found.bills) if (!seenBills.has(bill.billKey)) { seenBills.add(bill.billKey); items.push(bill); }
       agenda.push(...found.agenda);
       distractions += found.distractions;
     }
+    if (this.options.bills && since) carryBills(since, localDate, items, seenBills);
     return {
       ...this.assemble(kind, localDate, now, taskSequence, sources, items, agenda, distractions),
       ruleEffects: [...effects.values()],
@@ -383,7 +389,7 @@ export class BriefingComposer {
   private assemble(kind: BriefingKind, localDate: string, now: number, taskSequence: number, sources: SourceState[], items: Omit<BriefingItem, 'itemId'>[], agenda: (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: number): Briefing {
     agenda.sort((a, b) => a.at.localeCompare(b.at));
     const ordered = [...items, ...agenda.map(({ at: _at, ...item }) => item)]
-      .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section]);
+      .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section] || (a.dueDate ?? '').localeCompare(b.dueDate ?? ''));
     return {
       version: 1, briefingId: randomUUID(), profileId: this.options.profileId, kind, localDate, timeZone: this.options.timeZone, createdAt: new Date(now).toISOString(),
       taskSequence, sources, items: ordered.map(item => ({ itemId: sha256(`${item.section}\n${item.sourceRef}`).slice(0, 16), ...item,
@@ -460,9 +466,9 @@ function withoutDraftLinks(briefing: Briefing): Briefing {
     : item) };
 }
 
-async function readConnection({ google, timeZone, meetingPrep, rules }: ComposerOptions, id: string, { from, to }: { from: string; to: string }, now: number, since: Briefing | null,
+async function readConnection({ google, timeZone, meetingPrep, rules, bills: showBills }: ComposerOptions, id: string, { from, to, localDate }: { from: string; to: string; localDate: string }, now: number, since: Briefing | null,
   effects: Map<string, RuleEffect>, replyStep: (message: MailMessage, result: Triage, sourceRef: string) => BriefingStep | undefined) {
-  const mail: Item[] = [], changes: Item[] = [], agenda: AgendaItem[] = [], meetings: CalendarEvent[] = [];
+  const mail: Item[] = [], bills: (Item & { billKey: string })[] = [], changes: Item[] = [], agenda: AgendaItem[] = [], meetings: CalendarEvent[] = [];
   let messages: MailMessage[] = [], distractions = 0;
   const prepEnd = now + DAY_MS;
   const dayStart = Date.parse(from), dayEnd = Date.parse(to);
@@ -474,9 +480,11 @@ async function readConnection({ google, timeZone, meetingPrep, rules }: Composer
       for (const message of page.items) {
         const result = triage(message, rules);
         const effect = result.hiddenBy ? effects.get(result.hiddenBy) : undefined;
-        if (effect) effect.hidden++;
-        if (effect || result.urgency === 'low') { distractions++; continue; }
+        if (effect) { effect.hidden++; distractions++; continue; }
         const sourceRef = `gmail:${id}:${message.ref.id}`;
+        const bill = showBills ? toBillItem(message, result, sourceRef, localDate) : null;
+        if (bill) { bills.push(bill); continue; }
+        if (result.urgency === 'low') { distractions++; continue; }
         const step = replyStep(message, result, sourceRef);
         mail.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: !step, ...(step ? { step } : {}) });
       }
@@ -498,7 +506,39 @@ async function readConnection({ google, timeZone, meetingPrep, rules }: Composer
       return page.truncated;
     }),
   ]);
-  return { mail, changes, agenda, meetings, messages, distractions, sources };
+  return { mail, bills, changes, agenda, meetings, messages, distractions, sources };
+}
+
+function toBillItem(message: MailMessage, result: Triage, sourceRef: string, localDate: string): (Item & { billKey: string }) | null {
+  if (NEVER_A_BILL.some(signal => result.signals.includes(signal))) return null;
+  const promotional = result.signals.includes('promotional_label') || result.signals.includes('promotional');
+  const trusted = result.signals.includes('trusted_sender');
+  if (promotional && !trusted) return null;
+  const bill = detectBill(message, localDate);
+  if (!bill) return null;
+  const doubtful = promotional || bill.amountsDiffer === true;
+  const marker = message.labels.includes('CATEGORY_PROMOTIONS') ? ' (Gmail: promoções)' : '';
+  const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
+  return {
+    section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}${marker}`), sourceRef,
+    ...billTiming(bill.daysLeft), uncertainty: doubtful ? 'high' : 'medium', untrusted: true, startable: !doubtful && trusted && message.senderVerified === true,
+    dueDate: bill.dueDate, billKey: billKey(message, bill.dueDate, bill.amount), ...(bill.amount ? { amount: bill.amount } : {}),
+  };
+}
+
+function billKey(message: MailMessage, dueDate: string, amount: string | null): string {
+  const sender = senderAddress(message.from);
+  const identity = sender && (amount ?? message.rfcMessageId) ? `${sender}\n${amount ? '' : message.rfcMessageId}` : `${message.ref.connectionId}:${message.ref.id}`;
+  return sha256(`${identity}\n${dueDate}\n${amount ?? ''}`).slice(0, 16);
+}
+
+function carryBills(since: Briefing, today: string, items: Item[], seen: Set<string>): void {
+  for (const { itemId: _id, ...old } of since.items) {
+    const left = old.section === 'bills' && old.dueDate ? daysUntil(today, old.dueDate) : null;
+    if (left === null || left < -OVERDUE_DAYS || left > FUTURE_DAYS || !old.billKey || seen.has(old.billKey)) continue;
+    items.push({ ...old, ...billTiming(left), startable: false });
+    seen.add(old.billKey);
+  }
 }
 
 async function readSource(sourceId: string, work: () => Promise<boolean>): Promise<SourceState> {
