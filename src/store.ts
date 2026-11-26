@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldLoop } from 'node:timers/promises';
 import { runSync } from './sliced.ts';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { Entry, Summary } from './memory.ts';
+import type { Entry, HiddenState, Summary } from './memory.ts';
 import { scrubSecrets } from './secret-scrub.ts';
 
 /** The image types memory keeps, and the file extension each is saved under. */
@@ -49,6 +49,8 @@ export interface Store {
   appendTerminal?(record: TerminalRecord): Write;
   /** Replaces the saved view. */
   saveView(view: string): Write;
+  loadHidden?(): unknown;
+  saveHidden?(state: HiddenState): void;
   putImage(name: string, mimeType: Mime, data: Uint8Array): Write;
   image(name: string): Maybe<{ mimeType: Mime; data: Uint8Array } | undefined>;
   /** Reads message `i`'s text back from the log, so Memory can drop old texts from RAM. Undefined when the store cannot. */
@@ -591,6 +593,11 @@ export class FileStore implements Store {
     if (this.cached?.file === file) this.drop();
   }
   appendTerminal(record: TerminalRecord): undefined { this.appendNode(record); }
+  loadHidden(): unknown {
+    try { return JSON.parse(readFileSync(join(this.directory, 'hidden.json'), 'utf8')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+  }
+  saveHidden(state: HiddenState): void { atomicWrite(join(this.directory, 'hidden.json'), JSON.stringify(state)); }
   saveView(view: string): undefined { atomicWrite(join(this.directory, 'view.json'), view); }
   putImage(name: string, mimeType: Mime, data: Uint8Array): undefined { atomicWrite(join(this.directory, 'images', `${name}.${EXTENSIONS[mimeType]}`), data); }
   image(name: string) {

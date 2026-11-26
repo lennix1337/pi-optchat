@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import type { Entry } from './memory.ts';
+import type { Entry, Memory } from './memory.ts';
 import { CatchupWindows, buildCatchup, catchupPage, catchupLiteral, catchupTime, renderCatchup, type CatchupReport, type CatchupSpan } from './catchup.ts';
 import { catchupJson, showCatchup } from './catchup-ui.ts';
 import { runningShells, type ShellJobs } from './shells.ts';
@@ -10,8 +10,11 @@ interface Source {
   dir: string; entries: readonly Entry[]; flush: () => void;
   attention: () => { approvals: number; uncertain: number; agents: number; shells: number };
 }
-export function catchupSource(profile: { dir: string; memory: { root: readonly Entry[] }; sessionId: string; operations: { pending(): readonly unknown[] }; children: { ids: readonly string[] } }, flush: () => void, approvals: EffectApprovals | undefined, shells: ShellJobs): Source {
-  return { dir: profile.dir, entries: profile.memory.root, flush,
+export function catchupSource(profile: { dir: string; memory: Pick<Memory, 'root' | 'hasHidden' | 'isHidden'>; sessionId: string; operations: { pending(): readonly unknown[] }; children: { ids: readonly string[] } }, flush: () => void, approvals: EffectApprovals | undefined, shells: ShellJobs): Source {
+  return { dir: profile.dir, get entries() {
+      const { memory } = profile;
+      return memory.hasHidden ? memory.root.map<Entry>(e => memory.isHidden(e.i) ? { i: e.i, date: e.date, kind: 'note', size: 0, text: '' } : e) : memory.root;
+    }, flush,
     attention: () => ({ approvals: approvals?.pendingFor(profile.sessionId).length ?? 0, uncertain: profile.operations.pending().length,
       agents: profile.children.ids.length, shells: runningShells(shells).length }) };
 }

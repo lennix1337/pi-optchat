@@ -1,10 +1,13 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { classifyEffects, runsDeploy, type Action } from './effect-classifier.ts';
+import { scrubSecrets } from './secret-scrub.ts';
 
 /** What happened to one execution, in words the operator can read in the log. */
 export type ExecClass = 'ok' | 'exit_nonzero' | 'timeout' | 'not_found' | 'refused' | 'aborted' | 'network' | 'rate_limited' | 'error';
-export type ExecEntry = { at: string; source: 'tool' | 'background'; name: string; target?: string; class: ExecClass; ms?: number; code?: number; detail?: string; run?: string };
+export type ExecutedEffect = { label: string; revert: string };
+export type ExecEntry = { at: string; source: 'tool' | 'background'; name: string; target?: string; class: ExecClass; ms?: number; code?: number; detail?: string; run?: string; call?: string; effects?: ExecutedEffect[] };
 
 export const EXEC_LOG = 'exec-log.jsonl';
 /** One live file plus one rotated `.1`: at most about 2 MB on disk. */
@@ -94,22 +97,61 @@ const targetOf = (args: unknown): { raw: string; target: string } | undefined =>
   return typeof value === 'string' ? { raw: value, target: clip(value, 200) } : undefined;
 };
 
+const undoAdvice: Partial<Record<Action, [label: string, revert: string]>> = {
+  push: ['Push Git', 'Confira o remoto e publique um commit de reversão, se necessário.'],
+  'push-main': ['Push Git na branch principal', 'Confira o remoto e publique um commit de reversão, se necessário.'],
+  'force-push': ['Push forçado', 'Identifique o commit anterior no remoto e combine a recuperação com quem usa a branch.'],
+  merge: ['Merge', 'Abra uma PR de reversão do merge.'],
+  'merge-bypass': ['Merge com bypass', 'Abra uma PR de reversão do merge.'],
+  deploy: ['Deploy', 'Use o procedimento de rollback para a última versão estável.'],
+  message: ['Mensagem enviada', 'Use a exclusão ou retratação no canal, se disponível.'],
+  'production-write': ['Escrita em produção', 'Confira a alteração e use o procedimento de recuperação autorizado.'],
+  'database-destructive': ['Alteração destrutiva no banco', 'Confira o backup e siga o procedimento de restauração.'],
+  publish: ['Publicação', 'Verifique se o registro permite despublicar ou depreciar a versão.'],
+};
+
+export function executedEffects(tool: string, input: unknown, cwd: string, result: string): ExecutedEffect[] {
+  const target = targetOf(input)?.raw ?? '';
+  const effects: ExecutedEffect[] = [];
+  const command = tool === 'bash' ? target : '';
+  const pr = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)\b/.exec(result);
+  const opened = /\bgh\s+pr\s+create\b|\bship\.mjs\b/.test(command) && pr;
+  if (opened) effects.push({ label: `PR #${opened[1]} aberta`, revert: 'Feche a PR no GitHub se ela ainda estiver aberta.' });
+  const merged = /\bgh\s+pr\s+merge\s+(?:https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/)?(\d+)\b/.exec(command);
+  const safe = (value: string) => clip(scrubSecrets(value), 150);
+  const repo = { slug: () => undefined, branch: () => undefined };
+  for (const { action, targets } of tool === 'shell_start' ? [] : classifyEffects({ tool, input, cwd }, repo)) {
+    const advice = undoAdvice[action];
+    if (!advice) continue;
+    const refs = ['push', 'push-main', 'force-push'].includes(action) ? /\bgit(?:\s+-C\s+\S+)?\s+push\s+([\w.-]+\s+[\w./:-]+)/.exec(command)?.[1] : undefined;
+    effects.push({ label: merged && (action === 'merge' || action === 'merge-bypass') ? `PR #${merged[1]} mesclada` : `${advice[0]}: ${safe(refs ?? targets.join(', '))}`, revert: advice[1] });
+  }
+  if (/^(?:slack|whatsapp)_send$/.test(tool) && !effects.length) effects.push({ label: tool === 'slack_send' ? 'Mensagem enviada no Slack' : 'Mensagem enviada no WhatsApp', revert: undoAdvice.message![1] });
+  if (['edit', 'write'].includes(tool) && target) effects.push({ label: `Arquivo alterado: ${safe(target)}`, revert: 'Revise o diff e reverta só a alteração correspondente.' });
+  if (command && !effects.some(e => e.label.startsWith('Deploy')) && runsDeploy(command)) effects.push({ label: 'Deploy', revert: undoAdvice.deploy![1] });
+  return effects;
+}
+
 /** One entry per tool call: everything the agent runs, its outcome class and, on failure, the reason. */
 export function registerExecLog(pi: ExtensionAPI, dir: () => string | undefined) {
-  const started = new Map<string, { raw: string; target: string } | undefined>();
+  const started = new Map<string, unknown>();
   let runSeq = 0;
   let currentRun: string | undefined;
   pi.on('agent_start', () => { currentRun = `${Date.now().toString(36)}-${++runSeq}`; });
-  pi.on('tool_execution_start', event => { started.set(event.toolCallId, targetOf(event.args)); });
-  pi.on('tool_execution_end', event => {
-    const where = dir(); const call = started.get(event.toolCallId), target = call?.target, raw = call?.raw; started.delete(event.toolCallId);
+  pi.on('tool_execution_start', event => { started.set(event.toolCallId, event.args); });
+  pi.on('tool_execution_end', (event, ctx) => {
+    const where = dir(), input = started.get(event.toolCallId), call = targetOf(input), target = call?.target, raw = call?.raw;
+    started.delete(event.toolCallId);
     if (!where) return;
     const text = resultText(event.result);
     // external: Pi bash appends its own exit-code trailer.
     const exit = event.toolName === 'bash' ? /Command exited with code (\d+)\s*$/.exec(text) : null;
     const answered = (exit?.[1] === '1' && isNoMatch(raw, text)) || (event.toolName === 'bash' && isShipWait(raw, text));
     const kind = classify(!answered && (event.isError === true || (exit !== null && exit[1] !== '0')), event.isError ? text : text.slice(-400), exit ? Number(exit[1]) : undefined);
+    let effects: ExecutedEffect[] = [];
+    if (kind === 'ok') try { effects = executedEffects(event.toolName, input, ctx?.cwd ?? '', text); } catch { }
     appendExecLog(where, { at: new Date().toISOString(), source: 'tool', name: event.toolName, ...(target ? { target } : {}), class: kind,
+      ...(effects.length ? { call: event.toolCallId, effects } : {}),
       ...(event.durationMs === undefined ? {} : { ms: Math.round(event.durationMs) }), ...(exit ? { code: Number(exit[1]) } : {}),
       ...(kind === 'ok' ? {} : { detail: clipTail(text, 300) }), ...(currentRun ? { run: currentRun } : {}) });
   });

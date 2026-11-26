@@ -66,20 +66,20 @@ export function stateless(prompt: string) {
   const section = /\n*<cwd>\n([^\n]*)\n<\/cwd>/.exec(prompt);
   return section ? { prompt: prompt.replace(section[0], ''), state: `Working directory: ${section[1]}` } : { prompt, state: undefined };
 }
-export function logMessage(memory: Memory, message: AgentMessage, receipt?: string, original?: AgentMessage) {
+export function logMessage(memory: Memory, message: AgentMessage, receipt?: string, original?: AgentMessage, slack?: string) {
   const date = new Date(message.timestamp).toISOString();
-  if (message.role === 'user') for (const text of pieces(textContent(message.content))) memory.append(receipt?.startsWith(REPORT_RECEIPT) ? 'work' : 'user', text, date, receipt);
+  if (message.role === 'user') for (const text of pieces(textContent(message.content))) memory.append(receipt?.startsWith(REPORT_RECEIPT) ? 'work' : 'user', text, date, receipt, undefined, slack);
   else if (message.role === 'assistant') {
     for (const block of message.content) {
       if (block.type === 'text' && block.text.trim()) for (const text of pieces(block.text)) memory.append('talk', text, date);
-      if (block.type === 'toolCall') memory.append('tool', `${block.name} ${JSON.stringify(block.arguments)}`, date);
+      if (block.type === 'toolCall') memory.append('tool', `${block.name} ${JSON.stringify(block.arguments)}`, date, block.id);
     }
     if (message.stopReason === 'error' || message.stopReason === 'aborted')
       memory.append('echo', `Agent ${message.stopReason}: ${message.errorMessage ?? 'No further details'}`, date);
   } else if (message.role === 'toolResult') {
 
     const result = original?.role === 'toolResult' ? original : message;
-    memory.append('echo', `${result.toolName}: ${textContent(result.content, result.toolName !== 'zoom')}`, date);
+    memory.append('echo', `${result.toolName}: ${textContent(result.content, result.toolName !== 'zoom')}`, date, result.toolCallId);
   }
 }
 /** Pi's built-in tools attach the full TruncationResult (including a duplicate up-to-50 KB `content` string) to

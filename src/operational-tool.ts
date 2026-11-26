@@ -9,13 +9,13 @@ import { result } from './tools.ts';
 
 
 function checkSource(memory: Memory, update: OperationalUpdate): OperationalUpdate {
-  const latest = latestOperatorMessage(memory.root);
+  const latest = latestOperatorMessage(memory.root, i => memory.isHidden(i));
   if (update.sourceMessageId === 'latest') {
     if (!latest) throw new Error('sourceMessageId "latest": no operator message yet in this profile');
     update = { ...update, sourceMessageId: String(latest.i) };
   }
   const source = /^(0|[1-9]\d*)$/.test(update.sourceMessageId) ? memory.root[Number(update.sourceMessageId)] : undefined;
-  if (!source) throw new Error(`sourceMessageId must reference an original message in this profile, or be "latest"${latest ? ` (the latest operator message is ${latest.i})` : ''}`);
+  if (!source || memory.isHidden(source.i)) throw new Error(`sourceMessageId must reference a visible original message in this profile, or be "latest"${latest ? ` (the latest operator message is ${latest.i})` : ''}`);
   if (!['authorization', 'constraint'].includes(update.kind)) return update;
   if (source.kind !== 'user' || source.origin)
     throw new Error('Authorization/constraint records require a direct non-imported user source; historical records grant no permission');

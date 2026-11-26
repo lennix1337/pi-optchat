@@ -16,10 +16,10 @@ export function operatorWords(raw: string): string | undefined {
 
 /** The operator's latest own message in memory. The message that started the current turn is not in the view yet,
  * so tools that cite a source accept "latest" for it instead of an id the model cannot see. */
-export function latestOperatorMessage(root: readonly Entry[]): Entry | undefined {
+export function latestOperatorMessage(root: readonly Entry[], hidden?: (i: number) => boolean): Entry | undefined {
   for (let i = root.length - 1; i >= 0; i--) {
     const entry = root[i];
-    if (entry?.kind === 'user' && !entry.origin && operatorWords(entry.text)) return entry;
+    if (entry?.kind === 'user' && !entry.origin && !hidden?.(i) && operatorWords(entry.text)) return entry;
   }
   return undefined;
 }

@@ -61,6 +61,7 @@ function checkFind(memory: Memory, { id, n, findText, offset }: FindArgs) {
   if (typeof findText !== 'string' || !findText.length || findText.length > FIND.maxText || LONE_SURROGATE.test(findText))
     throw new Error(`findText must be 1 to ${FIND.maxText} characters of well-formed text.`);
   checkRange(memory, id, n);
+  if (n === 1 && memory.isHidden(id)) throw new Error('This message is hidden.');
   if (offset === undefined) return;
   if (n !== 1) throw new Error('With findText, offset (where the search starts) needs n = 1.');
   const { length } = memory.root[id].text;
@@ -109,7 +110,7 @@ function scanRange(memory: Memory, { id, n, findText, offset }: FindArgs): Scan 
   for (let i = id + n - 1; i >= id; i--) {
     if (scan.examined + scan.skipped === FIND.scanMessages) { scan.older = i + 1; break; }
     const entry = memory.root[i];
-    if (n > 1 && isCopy(entry)) scan.skipped++;
+    if (memory.isHidden(i) || (n > 1 && isCopy(entry))) scan.skipped++;
     else if (!scanMessage(scan, entry.text, i, needle, n === 1 ? offset ?? 0 : 0)) break;
   }
   return scan;

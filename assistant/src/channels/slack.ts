@@ -78,9 +78,11 @@ export class SlackChannel {
       if (body.callback_id !== FORWARD_CALLBACK || !o.relay) return { outcome: 'ignored' };
       return this.forward(o.relay, body);
     }
-    if (body?.type !== 'event_callback' || body.event?.type !== 'message') return { outcome: 'ignored' };
+    if (body.type !== 'event_callback' || !body.event) return { outcome: 'ignored' };
     if (body.team_id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
     const event = body.event;
+    if (event.type === 'reaction_added') return this.undoReaction(body.event_id, event);
+    if (event.type !== 'message') return { outcome: 'ignored' };
     if (typeof body.event_id !== 'string' || typeof event.channel !== 'string' || typeof event.ts !== 'string') return { outcome: 'ignored' };
     const human = !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string';
     if (o.drafts && human && event.channel.startsWith('D') && typeof event.thread_ts === 'string' && typeof event.text === 'string' && o.ledger.authorized('slack', o.team, event.user)) {
@@ -96,6 +98,17 @@ export class SlackChannel {
       conversation: event.channel, messageId: event.ts, ...(typeof event.thread_ts === 'string' && event.thread_ts !== event.ts ? { thread: event.thread_ts } : {}),
       text: typeof event.text === 'string' ? event.text : '',
     }, o);
+  }
+
+  private undoReaction(delivery: unknown, event: Record<string, any>): Received {
+    const o = this.options;
+    const { channel, ts, type } = event.item ?? {};
+    if (!o.relay || event.reaction !== 'leftwards_arrow_with_hook' || type !== 'message'
+      || typeof delivery !== 'string' || typeof channel !== 'string' || typeof ts !== 'string' || !/^\d{1,12}\.\d{1,8}$/.test(ts)
+      || typeof event.user !== 'string' || event.item_user !== event.user
+      || (!channel.startsWith('D') && !o.relayChannels?.has(channel))) return { outcome: 'ignored' };
+    if (!o.ledger.authorized('slack', o.team, event.user)) return { outcome: 'unauthorized_sender' };
+    return { outcome: o.relay.enqueue({ delivery, sender: event.user, channel, ts, text: '', undoTs: ts }) };
   }
 
   private draftClick(drafts: SlackDraftReviews, body: Record<string, any>, action: DraftAction): Received {

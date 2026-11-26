@@ -38,7 +38,7 @@ export function registerAssistantMemory(pi: ExtensionAPI, source: () => Assistan
       const chat: MemorySource = { sourceId: 'optchat', profileId: owner.profileId, get(ref) {
         if (!/^(0|[1-9]\d*)$/.test(ref)) return undefined;
         const entry = owner.memory.root[Number(ref)];
-        if (!entry) return undefined;
+        if (!entry || owner.memory.isHidden(entry.i)) return undefined;
         return { ref, text: entry.text, observedAt: entry.date, author: JSON.stringify({ kind: entry.kind, date: entry.date, ...(entry.origin ? { origin: entry.origin } : {}) }), kind: entry.kind === 'note' || entry.origin?.source === 'claude-memory' ? 'summary' : entry.kind === 'user' ? 'fact' : 'hypothesis' };
       } };
       const sources = [chat];

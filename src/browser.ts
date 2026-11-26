@@ -6,8 +6,13 @@ import { type Memory } from './memory.ts';
 export function exportBrowser(memory: Memory, profile: string, directory = memory.directory) {
   const data = JSON.stringify({
     profile, budget: memory.budget, size: memory.size, view: memory.view,
-    root: memory.root.map(({ i, kind, text, date, origin }) => ({ i, kind, text, date, ...(origin ? { origin: { source: origin.source, title: origin.title } } : {}) })),
-    tree: [...memory.tree.values()].map(({ l, i, text }) => ({ l, i, text })),
+    root: memory.root.map(entry => {
+      const { i, kind, date } = entry;
+      if (memory.isHidden(i)) return { i, kind, date, text: '', hidden: true };
+      const { text, origin } = entry;
+      return { i, kind, text, date, ...(origin ? { origin: { source: origin.source, title: origin.title } } : {}) };
+    }),
+    tree: [...memory.visibleNodes()].map(({ l, i, text }) => ({ l, i, text })),
   }).replace(/</g, '\\u003c');
   const path = join(directory, 'memory.html'); atomicWrite(path, PAGE.replace('__DATA__', () => data)); return path;
 }
@@ -220,7 +225,7 @@ function find() {
   hits.replaceChildren(); counter.textContent = '';
   if (s.length < 2) return;
   const found = [];
-  for (let i = D.root.length - 1; i >= 0; i--) { const j = lower[i].indexOf(s); if (j >= 0) found.push([i, j]); }
+  for (let i = D.root.length - 1; i >= 0; i--) { if (D.root[i].hidden) continue; const j = lower[i].indexOf(s); if (j >= 0) found.push([i, j]); }
   // Imported history is appended after native messages and may be out of date order, so sort by time.
   found.sort((x, y) => times[y[0]] - times[x[0]] || y[0] - x[0]);
   counter.textContent = found.length ? found.length.toLocaleString() + (found.length === 1 ? ' message' : ' messages') + ', newest first' + (found.length > 100 ? ' (showing 100)' : '') : 'No messages match.';

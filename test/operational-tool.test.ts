@@ -40,6 +40,21 @@ test('operational tool validates original provenance and never treats assistant/
   } finally { await memory.close(); }
 });
 
+test('operational state cannot quote a hidden source and latest skips it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operational-tool-hidden-'));
+  const memory = new Memory(dir, async () => 'short');
+  const tool = operationalStateTool(() => ({ dir, memory }), () => {});
+  try {
+    memory.append('user', 'Visible request');
+    memory.append('user', 'Hidden quote canary');
+    memory.undo();
+    await assert.rejects(tool.execute('hidden', { update: { kind: 'constraint', text: 'Guess', sourceMessageId: '1' } }),
+      (error: Error) => /original message/.test(error.message) && !error.message.includes('Hidden quote canary'));
+    const latest = await tool.execute('latest', { update: { kind: 'decision', text: 'Visible request', sourceMessageId: 'latest' } });
+    assert.equal(JSON.parse(latest.content[0]!.text).recorded.sourceMessageId, '0');
+  } finally { await memory.close(); }
+});
+
 test('a full log that makes room answers with the new record, not "already recorded"', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'operational-tool-full-'));
   const memory = new Memory(dir, async () => 'short');

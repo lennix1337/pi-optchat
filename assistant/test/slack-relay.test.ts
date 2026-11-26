@@ -29,6 +29,21 @@ function fakeSlack() {
   return { calls, fetch };
 }
 
+test('reaction_added queues only the authorized operator’s own message, once', () => {
+  const r = relayFixture();
+  try {
+    const event = { type: 'reaction_added', user: 'U0OWNER', item_user: 'U0OWNER', reaction: 'leftwards_arrow_with_hook', item: { type: 'message', channel: 'D0OWNER', ts: '1793000000.000100' } };
+    const envelope = { type: 'event_callback', team_id: TEAM, api_app_id: APP, event_id: 'EvFakeUndo', event };
+    assert.equal(r.channel.accept({ ...envelope, team_id: 'T0OTHER' }).outcome, 'foreign_workspace');
+    assert.equal(r.channel.accept({ ...envelope, event: { ...event, item_user: 'U0BOT' } }).outcome, 'ignored');
+    assert.equal(r.channel.accept({ ...envelope, event: { ...event, item_user: 'U0OTHER', user: 'U0OTHER' } }).outcome, 'unauthorized_sender');
+    assert.equal(r.channel.accept(envelope).outcome, 'relayed');
+    assert.equal(r.channel.accept(envelope).outcome, 'duplicate');
+    const page = r.relay.after(0, 10);
+    assert.deepEqual(page.map(m => [m.channel, m.undoTs, m.text]), [['D0OWNER', '1793000000.000100', '']]);
+  } finally { r.close(); }
+});
+
 test('an operator DM in relay mode is queued for the chat, not turned into a task; redelivery stays single', () => {
   const r = relayFixture();
   try {
