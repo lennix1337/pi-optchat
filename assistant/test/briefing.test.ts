@@ -43,6 +43,31 @@ function count(databasePath: string, sql: string): number {
   try { return Number((db.prepare(sql).get() as { n: number }).n); } finally { db.close(); }
 }
 
+test('a date-only event near local midnight is never interpreted as a UTC start by the reminder filter', t => withGoogle(async rig => {
+  const start = '2026-10-28';
+  const now = Date.parse('2026-10-28T02:45:00Z');
+  t.mock.method(rig.google, 'listEvents', async () => ({ truncated: false, items: [{
+    ref: { connectionId: 'personal', account: 'fixture@example.test', kind: 'calendar.event', id: 'retreat' },
+    start, end: '2026-10-29', title: 'Retreat', allDay: true, localDate: start, localStart: null, recurring: false, updated: null,
+    attendees: [{ email: 'guest@example.test' }],
+  }] }));
+  const briefings = composer(rig, { connections: ['personal'], now: () => now, meetingPrep: true });
+  const daily = await briefings.daily();
+  assert.equal(daily.meetingPrep?.[0]?.start, '2026-10-28T03:00:00.000Z');
+
+  const parse = Date.parse;
+  const dateOnlyParsed: string[] = [];
+  const spy = t.mock.method(Date, 'parse', (value: string) => {
+    if (value === start) dateOnlyParsed.push(value);
+    return parse(value);
+  });
+  try {
+    const reminder = await briefings.upcomingMeetingPrep(now, 30 * 60_000, null);
+    assert.deepEqual(reminder.cards, [], 'an all-day event in the lead window is not a timed reminder');
+    assert.deepEqual(dateOnlyParsed, [], 'the filter must not parse the bare date as UTC');
+  } finally { spy.mock.restore(); }
+}));
+
 test('journey: disposable OAuth -> read -> triage -> briefing with a partial failure -> Start -> tracked task', () => withGoogle(async rig => {
   seedMail(rig);
   await connectBoth(rig);

@@ -142,22 +142,75 @@ test('a fresh daily briefing and its due reminders share one read of each Google
   assert.notEqual(ready[0].cardId, ready[1].cardId, 'a changed start is a new occurrence');
 }));
 
-test('a failed reminder callback does not drop the other cards in its tick', async () => rig(async ({ fake, clock, local }) => {
+test('a callback that affects delivery then throws is not replayed, and the other cards still run', async () => rig(async ({ fake, clock, local }) => {
   fake.events.personal.push(
     meeting('first', 'Design review', '2026-10-28T09:15:00Z', [guest]),
     meeting('second', 'Demo', '2026-10-28T09:20:00Z', [guest]),
   );
   const delivered: string[] = [];
-  let fail = true;
-  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true, now: () => clock.now,
-    onMeetingPrep: card => { if (fail && card.title === 'Design review') throw new Error('notification_failed'); delivered.push(card.title); },
+  const make = async () => new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true, now: () => clock.now,
+    onMeetingPrep: card => { delivered.push(card.title); if (card.title === 'Design review') throw new Error('notification_failed'); },
   });
+  const service = await make();
   await assert.rejects(service.tick(), /notification_failed/);
-  assert.deepEqual(delivered, ['Demo']);
+  assert.deepEqual(delivered, ['Design review', 'Demo']);
   assert.equal((await service.latest())?.kind, 'daily');
-  fail = false;
+  clock.now += 60_000;
+  const next = await service.tick().catch((error: unknown) => error);
+  service.stop();
+  clock.now += 60_000;
+  const restarted = await (await make()).tick().catch((error: unknown) => error);
+  assert.deepEqual(delivered, ['Design review', 'Demo'], 'uncertain delivery is not repeated after a tick or restart');
+  assert.equal(next, null);
+  assert.equal((restarted as { kind?: string } | null)?.kind, 'daily');
+}));
+
+test('a persistent Calendar outage backs off and is reported only once until recovery', async () => rig(async ({ fake, clock, local }) => {
+  const calendar = '/calendar/v3/calendars/primary/events';
+  const reads = () => fake.requests(calendar).length;
+  const initial = clock.now;
+  fake.events.personal.push(meeting('due', 'Design review', '2026-10-28T09:25:00Z', [guest]));
+  fake.failures.set(calendar, 500);
+  const ready: string[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '12:00', meetingPrep: true, now: () => clock.now,
+    onMeetingPrep: card => { ready.push(card.title); },
+  });
+  await assert.rejects(service.tick(), /google_request_failed/);
+  assert.equal(reads(), 1);
+  clock.now = initial + 60_000;
+  assert.equal(await service.tick(), null);
+  assert.equal(reads(), 1, 'no read during the initial backoff');
+  clock.now = initial + 2 * 60_000;
+  assert.equal(await service.tick(), null, 'a retry failure is not reported as a new outage');
+  assert.equal(reads(), 2);
+  fake.failures.delete(calendar);
+  clock.now = initial + 5 * 60_000;
   await service.tick();
-  assert.deepEqual(delivered, ['Demo', 'Design review'], 'only the failed card is retried');
+  assert.equal(reads(), 2, 'the delay grows after consecutive failures');
+  clock.now = initial + 6 * 60_000;
+  await service.tick();
+  assert.equal(reads(), 3);
+  assert.deepEqual(ready, ['Design review']);
+  fake.failures.set(calendar, 500);
+  clock.now += 60_000;
+  await assert.rejects(service.tick(), /google_request_failed/, 'a failure after recovery is a new outage');
+  assert.equal(reads(), 4);
+}));
+
+test('a Gmail outage does not block Calendar or other due cards', async () => rig(async ({ fake, clock, local }) => {
+  const mail = '/gmail/v1/users/me/messages';
+  fake.failures.set(mail, 500);
+  fake.events.personal.push(meeting('first', 'Design review', '2026-10-28T09:30:00Z', [guest]));
+  const ready: string[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '12:00', meetingPrep: true, now: () => clock.now,
+    onMeetingPrep: card => { ready.push(card.title); },
+  });
+  await assert.rejects(service.tick(), /google_request_failed/);
+  fake.events.personal.push(meeting('second', 'Demo', '2026-10-28T09:31:00Z', [guest]));
+  clock.now += 60_000;
+  await service.tick();
+  assert.equal(fake.requests(mail).length, 1, 'Gmail was not read during backoff');
+  assert.deepEqual(ready, ['Design review', 'Demo']);
 }));
 
 test('prep includes active all-day meetings but not ones whose exclusive end is today', async () => rig(async ({ fake, clock, local }) => {

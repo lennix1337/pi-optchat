@@ -86,20 +86,21 @@ export class BriefingComposer {
     return briefing;
   }
 
-  async upcomingMeetingPrep(now: number, leadMs: number, fresh: Briefing | null): Promise<{ cards: MeetingPrepCard[]; sources: SourceState[] }> {
+  async upcomingMeetingPrep(now: number, leadMs: number, fresh: Briefing | null, canRead: (sourceId: string) => boolean = () => true): Promise<{ cards: MeetingPrepCard[]; sources: SourceState[] }> {
     const { google, timeZone, rules, profileId } = this.options;
     const end = now + leadMs;
     this.db.prepare('DELETE FROM meeting_prep_announced WHERE profile = ? AND start_ms <= ?').run(profileId, now);
     const rows = this.db.prepare('SELECT card_id FROM meeting_prep_announced WHERE profile = ? AND start_ms <= ?').all(profileId, end) as { card_id: string }[];
     const seen = new Set(rows.map(row => row.card_id));
     const due = (meeting: CalendarEvent | MeetingPrepCard) => {
-      const start = Date.parse(meeting.start);
+      const start = agendaInstant(meeting.start, timeZone);
       return !meeting.allDay && start > now && start <= end && !seen.has('cardId' in meeting ? meeting.cardId : meetingId(meeting));
     };
     if (fresh) return { cards: (fresh.meetingPrep ?? []).filter(due), sources: fresh.sources };
 
     const range = { from: new Date(now).toISOString(), to: new Date(end + 1000).toISOString(), timeZone };
-    const results = await Promise.all(this.options.connections.map(async id => {
+    const connections = this.options.connections.filter(id => canRead(`${id}:calendar`));
+    const results = await Promise.all(connections.map(async id => {
       let events: CalendarEvent[] = [];
       const calendar = await readSource(`${id}:calendar`, async () => {
         const page = await google.listEvents(id, range);
@@ -108,7 +109,7 @@ export class BriefingComposer {
       });
       const sources = [calendar];
       let messages: MailMessage[] = [];
-      if (events.length) sources.push(await readSource(`${id}:mail`, async () => {
+      if (events.length && canRead(`${id}:mail`)) sources.push(await readSource(`${id}:mail`, async () => {
         const page = await google.listMessages(id);
         messages = page.items;
         return page.truncated;
@@ -117,14 +118,15 @@ export class BriefingComposer {
     }));
     const tasks: Omit<BriefingItem, 'itemId'>[] = [];
     const sources = results.flatMap(result => result.sources);
-    if (results.some(result => result.events.length)) this.readTasks(null, sources, tasks);
+    if (canRead('tasks') && results.some(result => result.events.length)) this.readTasks(null, sources, tasks);
     const cards = results.flatMap(({ events, messages }) => events.map(event => buildMeetingCard(event, messages, tasks, timeZone, rules)));
     return { cards: cards.sort(byMeetingStart), sources };
   }
 
-  /** Record only completed callbacks, so a failed card can be retried while it is still upcoming. */
-  recordMeetingPrep(cardId: string, start: number): void {
-    this.db.prepare('INSERT INTO meeting_prep_announced VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, cardId, start);
+  /** Claim before calling out: a throw or crash can leave delivery uncertain, so it must not be replayed. */
+  claimMeetingPrep(cardId: string, start: number): boolean {
+    const result = this.db.prepare('INSERT INTO meeting_prep_announced VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, cardId, start);
+    return Number(result.changes) === 1;
   }
 
   /** The newest stored briefing of either kind, or null when none is kept. */

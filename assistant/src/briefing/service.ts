@@ -1,10 +1,13 @@
 import { localDateTime } from '../connectors/google.ts';
 import type { GoogleLocal } from '../connectors/google-local.ts';
 import { singleFlight } from '../single-flight.ts';
-import type { Briefing, BriefingComposer } from './compose.ts';
+import type { Briefing, BriefingComposer, SourceState } from './compose.ts';
 import type { MeetingPrepCard } from './meeting-prep.ts';
 
 const MEETING_LEAD_MS = 30 * 60_000;
+const INITIAL_BACKOFF_MS = 2 * 60_000;
+const MAX_BACKOFF_MS = 8 * 60_000;
+type SourceBackoff = Map<string, { retryAt: number; delayMs: number }>;
 
 /**
  * The background side of the Google briefing: once the profile's local time reaches `dailyAt`, today's briefing is read
@@ -28,6 +31,7 @@ export class BriefingService {
   private readonly now: () => number;
   private doneDate: string | null = null;
   private timer: NodeJS.Timeout | undefined;
+  private readonly meetingSourceBackoff: SourceBackoff = new Map();
 
   constructor(options: BriefingServiceOptions) {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(options.dailyAt)) throw new Error('invalid_options');
@@ -76,22 +80,32 @@ export class BriefingService {
   }
 
   private async meetingReminders(composer: BriefingComposer, now: number, fresh: Briefing | null, notify: NonNullable<BriefingServiceOptions['onMeetingPrep']>): Promise<void> {
-    const { cards, sources } = await composer.upcomingMeetingPrep(now, MEETING_LEAD_MS, fresh);
-    const errors: unknown[] = [];
-    const attempted = new Set<string>();
+    const { cards, sources } = await composer.upcomingMeetingPrep(now, MEETING_LEAD_MS, fresh,
+      sourceId => (this.meetingSourceBackoff.get(sourceId)?.retryAt ?? now) <= now);
+    const errors: unknown[] = recordSourceOutages(this.meetingSourceBackoff, sources, this.now());
     for (const card of cards) {
-      const { cardId } = card;
       const start = Date.parse(card.start);
-      if (start <= this.now() || attempted.has(cardId)) continue;
-      attempted.add(cardId);
+      if (start <= this.now()) continue;
       try {
-        await notify(card);
-        composer.recordMeetingPrep(cardId, start);
+        if (composer.claimMeetingPrep(card.cardId, start)) await notify(card);
       } catch (error) { errors.push(error); }
     }
-    const unavailable = sources.find(source => source.state === 'unavailable');
-    if (unavailable) errors.push(new Error(unavailable.error ?? 'source_failed'));
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) throw new AggregateError(errors, 'meeting_prep_failed');
   }
+}
+
+function recordSourceOutages(backoff: SourceBackoff, sources: SourceState[], now: number): Error[] {
+  const errors: Error[] = [];
+  for (const { sourceId, state, error } of sources) {
+    if (state !== 'unavailable') {
+      backoff.delete(sourceId);
+      continue;
+    }
+    const previous = backoff.get(sourceId);
+    const delayMs = previous ? Math.min(previous.delayMs * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
+    backoff.set(sourceId, { retryAt: now + delayMs, delayMs });
+    if (!previous) errors.push(new Error(error ?? 'source_failed'));
+  }
+  return errors;
 }
