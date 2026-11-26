@@ -42,7 +42,7 @@ export type GoogleOptions = {
 export type GoogleConnection = { connectionId: string; subject: string; email: string; scopes: string[]; state: 'active' | 'revoked' };
 export type SourceRef = { connectionId: string; account: string; kind: 'gmail.message' | 'calendar.event'; id: string };
 export type Attachment = { filename: string; mimeType: string; size: number; executable: boolean };
-export type MailMessage = { ref: SourceRef; threadId: string; from: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; attachments: Attachment[] };
+export type MailMessage = { ref: SourceRef; threadId: string; from: string; replyTo?: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; attachments: Attachment[] };
 export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; updated: string | null };
 export type Page<T> = { items: T[]; truncated: boolean };
 export type MessageDraft = { kind: 'message'; connectionId: string; to: string[]; subject: string; body: string };
@@ -207,10 +207,11 @@ export class GoogleConnections {
   }
 
   /** Validate reply drafts through the existing preview path, without staging an effect or calling Google. */
-  receiptReply(message: MailMessage, recipient: string): { subject: string; preview: DraftPreview } | null {
-    if (!EMAIL.test(recipient) || recipient === message.ref.account.toLowerCase()) return null;
+  receiptReply(message: MailMessage): { subject: string; preview: DraftPreview } | null {
     const portuguese = /\bconfirme (?:o )?recebimento\b/i.test(message.body);
     if (!portuguese && !/\bconfirm (?:that you (?:received|got) (?:this|it)|receipt)\b/i.test(message.body)) return null;
+    const recipient = replyRecipient(message.replyTo ?? message.from);
+    if (!recipient || recipient === message.ref.account.toLowerCase()) return null;
     const original = message.subject.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
     const subject = (/^re:/i.test(original) ? original : `Re: ${original || '(no subject)'}`).slice(0, 199).toWellFormed();
     const body = portuguese ? 'Obrigado pela mensagem. Confirmo o recebimento.' : 'Thank you for your message. I confirm that I received it.';
@@ -350,13 +351,16 @@ export class GoogleConnections {
     const m = value as { id?: unknown; threadId?: unknown; labelIds?: unknown; snippet?: unknown; internalDate?: unknown; payload?: GmailPart };
     if (!m || !singleLine(m.id, 256) || typeof m.internalDate !== 'string' || !/^\d{1,15}$/.test(m.internalDate) || !m.payload || typeof m.payload !== 'object') return fail('google_response_invalid');
     const headers = Array.isArray(m.payload.headers) ? m.payload.headers : [];
-    const header = (name: string) => headers.find(h => typeof h?.name === 'string' && h.name.toLowerCase() === name)?.value;
+    const isHeader = (h: (typeof headers)[number], name: string) => typeof h?.name === 'string' && h.name.toLowerCase() === name;
+    const header = (name: string) => headers.find(h => isHeader(h, name))?.value;
+    const replyTo = headers.filter(h => isHeader(h, 'reply-to'));
     const text = plainText(m.payload, 0) ?? (typeof m.snippet === 'string' ? m.snippet : '');
     const chars = Array.from(text);
     return {
       ref: { connectionId: row.connection_id, account: row.email, kind: 'gmail.message', id: m.id },
       threadId: singleLine(m.threadId, 256) ? m.threadId : m.id,
       from: headerText(header('from')), to: headerText(header('to')), subject: headerText(header('subject')),
+      ...(replyTo.length ? { replyTo: replyTo.length === 1 && singleLine(replyTo[0].value, 500) ? replyTo[0].value : '' } : {}),
       receivedAt: new Date(Number(m.internalDate)).toISOString(),
       labels: Array.isArray(m.labelIds) ? m.labelIds.filter(label => singleLine(label, 128)) : [],
       body: chars.slice(0, this.retention.maxBodyChars).join(''), bodyTruncated: chars.length > this.retention.maxBodyChars,
@@ -399,6 +403,12 @@ export class GoogleConnections {
 }
 
 type GmailPart = { mimeType?: unknown; filename?: unknown; headers?: { name?: unknown; value?: unknown }[]; body?: { size?: unknown; data?: unknown }; parts?: GmailPart[] };
+
+function replyRecipient(header: string): string | null {
+  const nameAddr = /^(?:"(?:[^"\\]|\\.)*"|[^<>";,:]*)\s*<([^<>]+)>$/u;
+  const address = (nameAddr.exec(header)?.[1] ?? header).toLowerCase();
+  return singleLine(address, 254) && EMAIL.test(address) ? address : null;
+}
 
 function headerText(value: unknown): string {
   return typeof value === 'string' && value.isWellFormed() ? value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, 500) : '';

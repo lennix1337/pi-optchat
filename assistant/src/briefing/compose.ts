@@ -8,13 +8,14 @@ import { boundedInteger } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
-import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { immediate } from '../store/transaction.ts';
+import { MAX_LEARNED_RULES, parseRule, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
  * briefing, with every source that could not be read listed as such. One daily briefing exists per profile and local
  * date however many clients ask; each on-demand briefing is its own. Message bodies are never stored, private
- * subjects are withheld. A receipt-only reply may be drafted locally; Start and sending are separate actions.
+ * subjects are withheld. Only a new daily briefing can save a receipt-only reply draft; Start and sending are separate actions.
  */
 export type BriefingKind = 'daily' | 'on_demand';
 export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
@@ -73,10 +74,16 @@ export class BriefingComposer {
     const localDate = localDateTime(this.now(), this.options.timeZone).date;
     const existing = this.dailyFor(localDate);
     if (existing) return existing;
-    const briefing = await this.compose('daily', localDate);
-
-    this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'daily', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
-    return this.dailyFor(localDate)!;
+    const drafts: ReplyDraft[] = [];
+    const briefing = await this.compose('daily', localDate, drafts);
+    const created = Date.parse(briefing.createdAt);
+    return immediate(this.db, () => {
+      const inserted = this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING')
+        .run(this.options.profileId, briefing.briefingId, 'daily', localDate, created, JSON.stringify(briefing));
+      if (!inserted.changes) return this.dailyFor(localDate)!;
+      if (drafts.length) this.saveDrafts(drafts, created);
+      return briefing;
+    });
   }
 
   async onDemand(): Promise<Briefing> {
@@ -150,7 +157,7 @@ export class BriefingComposer {
     return row ? JSON.parse(row.body) as Briefing : null;
   }
 
-  private async compose(kind: BriefingKind, localDate: string): Promise<Briefing> {
+  private async compose(kind: BriefingKind, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
     const now = this.now();
     const cutoff = now - this.retentionDays * DAY_MS;
     this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, cutoff);
@@ -177,7 +184,7 @@ export class BriefingComposer {
             if (effect) effect.hidden++;
             if (effect || result.urgency === 'low') { found.distractions++; continue; }
             const sourceRef = `gmail:${connectionId}:${message.ref.id}`;
-            const step = this.replyStep(message, result, sourceRef, now);
+            const step = drafts && this.replyStep(message, result, sourceRef, drafts);
             found.mail.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)'), sourceRef, reason: result.reason, urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: !step, ...(step ? { step } : {}) });
           }
           return page.truncated;
@@ -209,20 +216,20 @@ export class BriefingComposer {
     };
   }
 
-  private replyStep(message: MailMessage, result: Triage, sourceRef: string, now: number): BriefingStep | undefined {
+  private replyStep(message: MailMessage, result: Triage, sourceRef: string, drafts: ReplyDraft[]): BriefingStep | undefined {
     if (result.private || result.suspectedInjection || message.bodyTruncated || message.attachments.some(a => a.executable)
       || !message.labels.includes('INBOX') || !message.labels.includes('UNREAD') || message.labels.includes('SENT') || message.labels.includes('DRAFT')) return;
-    const draftId = `reply-${sha256(sourceRef).slice(0, 32)}`;
-    let saved = this.draft(draftId);
-    if (!saved) {
-      const draft = this.options.google.receiptReply(message, senderAddress(message.from));
-      if (!draft) return;
-      saved = { draftId, ...draft };
-    }
-    this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
-      ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`).run(this.options.profileId, draftId, now, JSON.stringify(saved));
-    const stored = this.draft(draftId) ?? fail('draft_unavailable');
-    return { kind: 'reply_draft', draftId, subject: stored.subject };
+    const draft = this.options.google.receiptReply(message);
+    if (!draft) return;
+    const draftId = `reply-${sha256(JSON.stringify([sourceRef, draft.preview.account, draft.preview.contentHash])).slice(0, 32)}`;
+    drafts.push({ draftId, ...draft });
+    return { kind: 'reply_draft', draftId, subject: draft.subject };
+  }
+
+  private saveDrafts(drafts: ReplyDraft[], now: number): void {
+    const save = this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
+      ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`);
+    for (const draft of drafts) save.run(this.options.profileId, draft.draftId, now, JSON.stringify(draft));
   }
 
   /** Open tasks, and the last state of every task changed since the previous briefing. Returns the sequence read up to. */

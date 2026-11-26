@@ -14,6 +14,8 @@ export type TriageSignal = TriageReason | 'private_data' | 'promotional_label';
 /** Operator-owned triage configuration. */
 export type LearnedRule = { ruleId: string; match: { text: string; unless: string[] }; action: 'hide'; reason: string; createdAt: string };
 export const MAX_LEARNED_RULES = 50;
+const LEARNED_PATTERN_MIN = /(?:[\p{L}\p{N}][^\p{L}\p{N}]*){4}/u;
+const validLearnedPattern = (text: string) => text.length <= 120 && LEARNED_PATTERN_MIN.test(text.normalize('NFC'));
 export type TriageRules = { trustedSenders: readonly string[]; learned?: readonly LearnedRule[] };
 export type Triage = { sourceRef: SourceRef; urgency: Urgency; reason: TriageReason; uncertainty: Uncertainty; private: boolean; suspectedInjection: boolean; signals: TriageSignal[]; hiddenBy?: string };
 
@@ -28,7 +30,7 @@ export function parseRule(text: string): Pick<LearnedRule, 'match' | 'action' | 
   const match = parts[1].trim();
   const unless = parts[2]?.split(/\s+(?:or|ou)\s+/i).map(term => term.trim()) ?? [];
   const reason = parts[3].trim();
-  if (!match || match.length > 120 || !reason || reason.length > 300 || unless.length > 10 || unless.some(term => !term || term.length > 120)) throw new Error('invalid_triage_rule');
+  if (!validLearnedPattern(match) || !reason || reason.length > 300 || unless.length > 10 || unless.some(term => !term || term.length > 120)) throw new Error('invalid_triage_rule');
   return { match: { text: match, unless }, action: 'hide', reason };
 }
 
@@ -67,7 +69,7 @@ export function triage(message: MailMessage, rules: TriageRules): Triage {
   if (isPrivate) signals.add('private_data');
   const safetyWarning = suspectedInjection || signals.has('executable_attachment');
   const result = (urgency: Urgency, reason: TriageReason, uncertainty: Uncertainty): Triage => {
-    const hiddenBy = urgency === 'low' || safetyWarning ? undefined : matchingRule(message, rules.learned ?? []);
+    const hiddenBy = urgency === 'normal' && !safetyWarning ? matchingRule(message, rules.learned ?? []) : undefined;
     return { sourceRef: message.ref, urgency, reason, uncertainty, private: isPrivate, suspectedInjection, signals: [...signals].sort(), ...(hiddenBy ? { hiddenBy } : {}) };
   };
 
@@ -88,6 +90,7 @@ function matchingRule(message: MailMessage, rules: readonly LearnedRule[]): stri
   const address = normalize(senderAddress(message.from));
   const mentions = (text: string) => subject.includes(text) || body.includes(text);
   const noPossibleException = (terms: string[]) => !terms.length || !message.bodyTruncated && !terms.some(term => mentions(normalize(term)));
-  return rules.find(({ action, match }) => action === 'hide' && (mentions(normalize(match.text)) || address.includes(normalize(match.text)))
+  return rules.find(({ action, match }) => action === 'hide' && validLearnedPattern(match.text)
+    && (mentions(normalize(match.text)) || address.includes(normalize(match.text)))
     && noPossibleException(match.unless))?.ruleId;
 }
