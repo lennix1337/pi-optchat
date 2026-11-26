@@ -77,7 +77,9 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     invalid.push(...[{ local: 'yes' }, { local: true, web: true }, {}, [], null].map(value => JSON.stringify({ ...base, notifications: value })));
     const google = { connections: ['pessoal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' };
     invalid.push(...[{ ...google, connections: [] }, { ...google, connections: ['Pessoal'] }, { ...google, connections: ['a', 'a'] }, { ...google, timeZone: 'Mars/Base' },
-      { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null].map(value => JSON.stringify({ ...base, google: value })));
+      { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null,
+      { ...google, weekly: false }, { ...google, weekly: 'sun' }, { ...google, weekly: { day: 'funday' } }, { ...google, weekly: { at: '6pm' } }, { ...google, weekly: { at: '24:00' } }, { ...google, weekly: { extra: 1 } }, { ...google, weekly: null },
+    ].map(value => JSON.stringify({ ...base, google: value })));
     invalid.push(...[[], ['http://desk.tail0000.ts.net'], ['https://desk.tail0000.ts.net/'], ['https://desk.tail0000.ts.net/web'], ['nope'], [1], 'https://desk.tail0000.ts.net']
       .map(value => JSON.stringify({ ...base, webOrigins: value })));
     invalid.push(...[null, {}, { piVoicePath: 'relative', settingsPath: '/local/settings' },
@@ -87,6 +89,10 @@ test('help is side-effect free; invalid configs cannot open a database', async (
       writeFileSync(config, data);
       assert.throws(() => readConfig(config));
       assert.equal(existsSync(db), false);
+    }
+    for (const weekly of [true, {}, { day: 'fri' }, { at: '20:30' }, { day: 'sun', at: '18:00' }]) {
+      writeFileSync(config, JSON.stringify({ ...base, google: { ...google, weekly } }));
+      assert.doesNotThrow(() => readConfig(config), JSON.stringify(weekly));
     }
 
     writeFileSync(config, invalid[1]);

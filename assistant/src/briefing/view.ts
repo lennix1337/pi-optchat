@@ -8,7 +8,7 @@ const integer = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 export function briefingView(value: unknown, profileId: string): Briefing | null {
   if (value === null) return null;
   if (!record(value) || value.version !== 1 || value.profileId !== profileId || !string(value.briefingId)
-    || !['daily', 'on_demand'].includes(String(value.kind)) || !string(value.localDate) || !string(value.timeZone) || !string(value.createdAt)
+    || !['daily', 'on_demand', 'weekly'].includes(String(value.kind)) || !string(value.localDate) || !string(value.timeZone) || !string(value.createdAt)
     || !integer(value.taskSequence) || !integer(value.distractions) || !Array.isArray(value.sources) || value.sources.length > 100
     || !Array.isArray(value.items) || value.items.length > 1000) throw new Error('invalid_briefing');
   const sources = value.sources.map(s => {

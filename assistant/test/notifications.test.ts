@@ -94,6 +94,18 @@ test('lock-screen content is fixed per category: no task title, secret or person
   } finally { c.close(); }
 }));
 
+test('the weekly review notification carries fixed text and its own category, once per id', () => withDir('notify-weekly-', async dir => {
+  const c = center(dir);
+  try {
+    c.setConsent('local', true, operator);
+    c.notify({ id: 'weekly-2026-11-01', channel: 'local', category: 'weekly_review_ready', ref: 'briefing-b1' });
+    c.notify({ id: 'weekly-2026-11-01', channel: 'local', category: 'weekly_review_ready', ref: 'briefing-b1' });
+    const { sent, transport } = collector();
+    await c.deliver('local', transport);
+    assert.deepEqual(sent.map(n => n.text), ['Your weekly review is ready.']);
+  } finally { c.close(); }
+}));
+
 test('transport acceptance is not human reading; only markRead records a read, and failures stay visible', () => withDir('notify-read-', async dir => {
   const c = center(dir);
   try {
