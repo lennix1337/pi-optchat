@@ -50,12 +50,14 @@ async function seed(rig: GoogleRig) {
     event('alone', 'Dentist', '2026-11-05T18:00:00Z', '2026-11-05T19:00:00Z'),
     event('standup-1', 'Standup', '2026-11-06T12:00:00Z', '2026-11-06T12:30:00Z'),
     event('standup-2', 'Standup', '2026-11-06T12:00:00Z', '2026-11-06T12:30:00Z'),
+    event('offsite', 'Offsite', '2026-11-05T20:00:00Z', '2026-11-05T21:00:00Z'),
     event('later', 'The week after', '2026-11-09T15:00:00Z', '2026-11-09T16:00:00Z'),
   );
   rig.fake.events.dentai.push(
     event('call', 'Client call', '2026-11-02T12:30:00Z', '2026-11-02T13:30:00Z'),
     event('planning-copy', 'Planning', '2026-11-02T12:00:00Z', '2026-11-02T13:00:00Z', 'planning@uid'),
     event('retro-b', 'Retro', '2026-11-04T15:00:00Z', '2026-11-04T16:00:00Z', 'retro-b@uid'),
+    event('offsite-copy', 'Offsite', '2026-11-05T20:00:00Z', '2026-11-05T21:00:00Z'),
   );
 }
 
@@ -78,8 +80,8 @@ test('the weekly review lists open tasks, threads still waiting for the user, an
   const agenda = section(briefing, 'agenda');
   assert.deepEqual(agenda.map(i => [i.title.replace(/^\S+ \S+ /, ''), i.reason, i.urgency]), [
     ['Planning', 'conflict', 'urgent'], ['Client call', 'conflict', 'urgent'], ['Retro', 'conflict', 'urgent'], ['Retro', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'],
-    ['Review', 'back_to_back', 'normal'], ['Lunch', 'back_to_back', 'normal'], ['Sync', 'back_to_back', 'normal'], ['Dentist', 'event', 'normal'],
-  ], 'conflicts first, then by time; the same invitation (same iCalUID) on both calendars counts once, homonymous meetings with different invitations on two calendars stay, two distinct events with the same title and time on one calendar both stay, and the week after is out of range');
+    ['Review', 'back_to_back', 'normal'], ['Lunch', 'back_to_back', 'normal'], ['Sync', 'back_to_back', 'normal'], ['Dentist', 'event', 'normal'], ['Offsite', 'event', 'normal'],
+  ], 'conflicts first, then by time; the same invitation (same iCalUID) on both calendars counts once, homonymous meetings with different invitations on two calendars stay, two distinct events with the same title and time on one calendar both stay, a copy without an iCalUID on both calendars counts once by time and title and fakes no conflict, and the week after is out of range');
   assert.match(agenda[0].title, /^2026-11-02 09:00 Planning$/);
   assert.ok(agenda.every(i => i.untrusted && !i.startable));
 }));
@@ -131,6 +133,47 @@ test('thread checks are bounded per connection, and a thread that cannot be chec
   assert.equal(briefing.sources.find(s => s.sourceId === 'personal:mail')?.state, 'partial');
   const waiting = section(briefing, 'messages');
   assert.equal(waiting.length, 30, 'unchecked threads are still listed');
-  const unchecked = waiting.filter(i => i.uncertainty === 'high').map(i => i.sourceRef).sort();
+  const unchecked = waiting.filter(i => i.reason === 'awaiting_reply_unverified').map(i => i.sourceRef).sort();
+  assert.ok(waiting.filter(i => i.reason === 'awaiting_reply').every(i => i.uncertainty !== 'high'), 'a verified thread is not marked uncertain');
+  assert.ok(waiting.filter(i => i.reason === 'awaiting_reply_unverified').every(i => i.uncertainty === 'high'));
   assert.deepEqual(unchecked, ['m29', 'm0', 'm1', 'm2', 'm3', 'm4'].map(id => `gmail:personal:${id}`).sort(), 'the failed read and the five beyond the limit');
+}));
+
+test('a review recovered after its boundary reads the days after it is composed, not a window cut from the missed Sunday', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.clock.now = Date.parse('2026-11-03T15:00:00.000Z');
+  const { briefing, created } = await composer(rig).weekly('2026-11-01');
+  assert.equal(created, true);
+  assert.equal(briefing.localDate, '2026-11-01');
+  const titles = section(briefing, 'agenda').map(i => i.title.replace(/^\S+ \S+ /, ''));
+  assert.ok(titles.includes('The week after'), 'the seven days after the recovery day, up to the Tuesday after');
+  assert.ok(titles.includes('Retro') && !titles.includes('Planning'), 'days before the window are out');
+}));
+
+test('a source that stays down degrades the review after a few tries, a total outage never does, and the attempt is cleared once it is saved', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  const results: boolean[] = [];
+  for (let i = 0; i < 3; i++) {
+    results.push((await c.weekly()).complete);
+    if (!results[i]) assert.equal(c.weeklyAttempt('2026-11-01')?.tries, i + 1, 'an unsaved review keeps its attempt');
+    rig.clock.now += 16 * 60_000;
+  }
+  assert.deepEqual(results, [false, false, true]);
+  const stored = c.latestWeekly()!;
+  assert.deepEqual(stored.sources.filter(s => s.state === 'unavailable').map(s => s.sourceId), ['personal:calendar', 'dentai:calendar']);
+  assert.equal(c.weeklyAttempt('2026-11-01'), null, 'cleared after the save');
+  assert.equal(section(stored, 'tasks').length, 1);
+}));
+
+test('when every Google source is down the review is held, however many tries', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  rig.fake.failures.set('/gmail/v1/users/me/messages', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  for (let i = 0; i < 5; i++) { assert.equal((await c.weekly()).complete, false); rig.clock.now += 16 * 60_000; }
+  assert.equal(c.latestWeekly(), null);
 }));

@@ -17,7 +17,8 @@ type SourceBackoff = Map<string, { retryAt: number; delayMs: number }>;
  * With `weekly` set, one weekly review is read on that local weekday once the local time reaches its hour, and announced
  * once per week (a restart the same evening finds it stored and says nothing). A week the service missed is read on the
  * next tick, until the next boundary, once the feature has produced a review before. A review with an unavailable source is
- * not stored: the tick fails with `weekly_review_incomplete` and retries every 15 minutes, a delay a restart keeps. Without `weekly` nothing is read for it.
+ * not stored: the tick fails with `weekly_review_incomplete` and retries every 15 minutes, a delay a restart keeps, and
+ * after three tries a review missing some sources is saved with them listed as unavailable (never when all are down). Without `weekly` nothing is read for it.
  */
 export type BriefingServiceOptions = {
   local: Pick<GoogleLocal, 'withComposer'>;
@@ -123,8 +124,8 @@ export class BriefingService {
     if (this.weeklyDate === due) return null;
     const result = await this.compose(composer => {
       if (!dueToday && !composer.latestWeekly()) return null;
-      const attempted = composer.lastWeeklyAttempt(due);
-      return attempted !== null && this.now() < attempted + WEEKLY_RETRY_MS ? null : composer.weekly(due);
+      const attempt = composer.weeklyAttempt(due);
+      return attempt && this.now() < attempt.at + WEEKLY_RETRY_MS ? null : composer.weekly(due);
     });
     if (!result) return null;
     const { briefing, created, complete } = result;
