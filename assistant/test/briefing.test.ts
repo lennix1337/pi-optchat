@@ -45,9 +45,65 @@ test('morning briefing links a saved local reply draft and tells what to do for 
   assert.deepEqual(JSON.parse(draft.preview.content), { subject: 'Re: Workshop', to: ['team@example.test'], body: 'Thank you for your message. I confirm that I received it.' });
   assert.deepEqual(info.step, { kind: 'next', text: 'Review the original message.' });
   assert.equal(unsafe.step?.kind, 'next');
-  const later = await briefings.onDemand();
-  assert.deepEqual(later.items.find(item => item.sourceRef === reply.sourceRef)?.step, reply.step);
   assert.ok(rig.fake.requests('/gmail/').every(request => request.method === 'GET'));
+}));
+
+test('on-demand briefing gives next steps without creating or extending local drafts', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  seedReplyMail(rig);
+  const briefings = composer(rig, { connections: ['personal'], retentionDays: 1 });
+  const replyStep = (brief: Briefing) => brief.items.find(item => item.sourceRef.endsWith(':reply-needed'))?.step;
+  const draftCount = () => count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts');
+  assert.equal(replyStep(await briefings.onDemand())?.kind, 'next', 'on demand does not generate draft links');
+  assert.equal(draftCount(), 0);
+
+  const saved = replyStep(await briefings.daily());
+  assert.ok(saved?.kind === 'reply_draft');
+  assert.equal(draftCount(), 1);
+  rig.clock.now += 12 * hour;
+  assert.equal(replyStep(await briefings.onDemand())?.kind, 'next');
+  assert.ok(briefings.draft(saved.draftId), 'daily draft is still retrievable during retention');
+  rig.clock.now += 13 * hour;
+  assert.equal(briefings.draft(saved.draftId), null, 'the earlier refresh did not extend retention');
+  await briefings.onDemand();
+  assert.equal(draftCount(), 0, 'expired draft row was removed');
+}));
+
+test('reply preview prefers a single Reply-To and lowercases it or the From fallback', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  const base = { from: 'Team <TEAM@EXAMPLE.TEST>', subject: 'Workshop', body: 'Please reply to confirm receipt.', labels: ['INBOX', 'UNREAD'], receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push(
+    { ...base, id: 'routed', replyTo: '"Workshop, support" <HELP@EXAMPLE.TEST>' },
+    { ...base, id: 'fallback' },
+    { ...base, id: 'ambiguous', replyTo: 'Ops <OPS@EXAMPLE.TEST>, Help <HELP@EXAMPLE.TEST>' },
+    { ...base, id: 'self', replyTo: ACCOUNTS.personal.email.toUpperCase() },
+  );
+  const briefings = composer(rig, { connections: ['personal'] });
+  const daily = await briefings.daily();
+  const stepFor = (id: string) => daily.items.find(item => item.sourceRef.endsWith(`:${id}`))?.step;
+  for (const [id, to] of [['routed', 'help@example.test'], ['fallback', 'team@example.test']]) {
+    const step = stepFor(id);
+    assert.ok(step?.kind === 'reply_draft');
+    const draft = briefings.draft(step.draftId);
+    assert.ok(draft);
+    assert.deepEqual(JSON.parse(draft.preview.content).to, [to]);
+    assert.equal(draft.preview.destination, to);
+  }
+  assert.equal(stepFor('ambiguous')?.kind, 'next');
+  assert.equal(stepFor('self')?.kind, 'next');
+}));
+
+test('learned hide rules leave urgent matches visible and do not count them', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  seedReplyMail(rig);
+  rig.fake.mail.personal.push({ id: 'urgent', from: 'Team <team@example.test>', subject: 'Workshop deadline today', body: 'Please sign.', receivedAt: '2026-10-28T08:03:00.000Z' });
+  const briefings = composer(rig, { connections: ['personal'] });
+  const { ruleId } = briefings.learnRule('Hide workshop unless notes because routine', rig.authority);
+  const daily = await briefings.daily();
+  assert.equal(daily.items.find(item => item.sourceRef.endsWith(':urgent'))?.urgency, 'urgent');
+  assert.ok(!daily.items.some(item => item.sourceRef.endsWith(':reply-needed')));
+  assert.deepEqual(daily.ruleEffects, [{ ruleId, reason: 'routine', hidden: 1 }]);
+  assert.equal(daily.distractions, 1);
 }));
 
 test('operator rule round-trips, explains only what it hid and can be undone', () => withGoogle(async rig => {

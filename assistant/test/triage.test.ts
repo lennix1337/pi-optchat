@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { senderAddress, triage, type Triage, type TriageRules } from '../src/briefing/triage.ts';
+import { parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules } from '../src/briefing/triage.ts';
 import type { MailMessage } from '../src/connectors/google.ts';
 
 type Labeled = { id: string; from: string; subject: string; body: string; labels: string[]; attachments?: MailMessage['attachments']; expect: Record<Label, boolean> };
@@ -37,6 +37,16 @@ test('message text cannot change the rules, impersonate a trusted sender or esca
   assert.equal(JSON.stringify(rules), before);
   for (const value of [result.reason, ...result.signals]) assert.ok(vocabulary.has(value), value);
   assert.ok(!JSON.stringify(result).includes('evil'), 'nothing from the message text is copied into the result');
+});
+
+test('learned patterns require four letters or digits, including for legacy rules', () => {
+  assert.throws(() => parseRule('Hide abc because too broad'), /invalid_triage_rule/);
+  assert.throws(() => parseRule('Hide a... because too broad'), /invalid_triage_rule/);
+  assert.equal(parseRule('Oculte ação porque duplicado').match.text, 'ação');
+  const legacy: LearnedRule = { ruleId: 'legacy', match: { text: 'abc', unless: [] }, action: 'hide', reason: 'legacy', createdAt: '2026-10-28T10:00:00.000Z' };
+  const note = message({ id: 'legacy-match', subject: 'Note ABCD' });
+  assert.equal(triage(note, { ...rules, learned: [legacy] }).hiddenBy, undefined);
+  assert.equal(triage(note, { ...rules, learned: [{ ...legacy, ...parseRule('Hide abcd because duplicate') }] }).hiddenBy, 'legacy');
 });
 
 test('labeled evaluation: precision, recall and false negatives on the synthetic fixture', t => {

@@ -8,14 +8,15 @@ import { boundedInteger, boundedText } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
+import { immediate } from '../store/transaction.ts';
 import { agendaInstant, buildMeetingCard, byMeetingStart, meetingId, type MeetingPrepCard } from './meeting-prep.ts';
-import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { MAX_LEARNED_RULES, parseRule, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
  * briefing, with every source that could not be read listed as such. One daily briefing exists per profile and local
  * date however many clients ask; each on-demand briefing is its own. Message bodies are never stored, private
- * subjects are withheld. A receipt-only reply may be drafted locally; Start and sending are separate actions.
+ * subjects are withheld. Only a new daily briefing can save a receipt-only reply draft; Start and sending are separate actions.
  */
 export type BriefingKind = 'daily' | 'on_demand';
 export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
@@ -80,9 +81,15 @@ export class BriefingComposer {
     const localDate = localDateTime(now, this.options.timeZone).date;
     const existing = this.dailyFor(localDate);
     if (existing) return { briefing: existing, fresh: null };
-    const fresh = await this.compose('daily', now, localDate);
-    this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, fresh.briefingId, 'daily', localDate, now, JSON.stringify(fresh));
-    return { briefing: this.dailyFor(localDate)!, fresh };
+    const drafts: ReplyDraft[] = [];
+    const fresh = await this.compose('daily', now, localDate, drafts);
+    return immediate(this.db, () => {
+      const inserted = this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING')
+        .run(this.options.profileId, fresh.briefingId, 'daily', localDate, now, JSON.stringify(fresh));
+      if (!inserted.changes) return { briefing: this.dailyFor(localDate)!, fresh: null };
+      if (drafts.length) this.saveDrafts(drafts, now);
+      return { briefing: fresh, fresh };
+    });
   }
 
   async onDemand(): Promise<Briefing> {
@@ -200,8 +207,9 @@ export class BriefingComposer {
     return row ? JSON.parse(row.body) as Briefing : null;
   }
 
-  private async compose(kind: BriefingKind, now: number, localDate: string): Promise<Briefing> {
-    this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, now - this.retentionDays * DAY_MS);
+  private async compose(kind: BriefingKind, now: number, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
+    const cutoff = now - this.retentionDays * DAY_MS;
+    this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, cutoff);
     this.db.prepare('DELETE FROM briefing_reply_drafts WHERE profile = ? AND last_used < ?').run(this.options.profileId, cutoff);
     const since = this.latest();
     const rules = { ...this.options.rules, learned: this.learnedRules() };
@@ -216,7 +224,7 @@ export class BriefingComposer {
     const cards: MeetingPrepCard[] = [];
     const range = dayRange(localDate, timeZone);
     const reads = await Promise.all(connections.map(id => readConnection({ ...this.options, rules }, id, range, now, since, effects,
-      (message, result, sourceRef) => this.replyStep(message, result, sourceRef, now))));
+      (message, result, sourceRef) => drafts && this.replyStep(message, result, sourceRef, drafts))));
     for (const found of reads) {
       for (const event of found.meetings) cards.push(buildMeetingCard(event, found.messages, tasks, timeZone, rules));
       sources.push(...found.sources);
@@ -235,20 +243,20 @@ export class BriefingComposer {
     };
   }
 
-  private replyStep(message: MailMessage, result: Triage, sourceRef: string, now: number): BriefingStep | undefined {
+  private replyStep(message: MailMessage, result: Triage, sourceRef: string, drafts: ReplyDraft[]): BriefingStep | undefined {
     if (result.private || result.suspectedInjection || message.bodyTruncated || message.attachments.some(a => a.executable)
       || !message.labels.includes('INBOX') || !message.labels.includes('UNREAD') || message.labels.includes('SENT') || message.labels.includes('DRAFT')) return;
-    const draftId = `reply-${sha256(sourceRef).slice(0, 32)}`;
-    let saved = this.draft(draftId);
-    if (!saved) {
-      const draft = this.options.google.receiptReply(message, senderAddress(message.from));
-      if (!draft) return;
-      saved = { draftId, ...draft };
-    }
-    this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
-      ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`).run(this.options.profileId, draftId, now, JSON.stringify(saved));
-    const stored = this.draft(draftId) ?? fail('draft_unavailable');
-    return { kind: 'reply_draft', draftId, subject: stored.subject };
+    const draft = this.options.google.receiptReply(message);
+    if (!draft) return;
+    const draftId = `reply-${sha256(JSON.stringify([sourceRef, draft.preview.account, draft.preview.contentHash])).slice(0, 32)}`;
+    drafts.push({ draftId, ...draft });
+    return { kind: 'reply_draft', draftId, subject: draft.subject };
+  }
+
+  private saveDrafts(drafts: ReplyDraft[], now: number): void {
+    const save = this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
+      ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`);
+    for (const draft of drafts) save.run(this.options.profileId, draft.draftId, now, JSON.stringify(draft));
   }
 
   /** Open tasks, and the last state of every task changed since the previous briefing. Returns the sequence read up to. */
