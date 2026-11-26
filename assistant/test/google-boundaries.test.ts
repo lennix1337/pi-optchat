@@ -152,8 +152,9 @@ test('sending goes only through the gateway: without the exact grant for account
   for (const changed of [{ ...draftMessage, body: 'Friday instead?' }, { ...draftMessage, to: ['bia@example.test'] }, { ...draftMessage, connectionId: 'dentai' }]) {
     await assert.rejects(google.send(changed, write('op-1', clock.now), sink), /approval_required/, JSON.stringify(changed));
   }
+  await assert.rejects(google.send(draftMessage, write('op-1', clock.now), sink, 'wrong-review'), /approval_required/);
   assert.equal(sent.length, 0);
-  assert.equal(await google.send(draftMessage, write('op-1', clock.now), sink), 'sent');
+  assert.equal(await google.send(draftMessage, write('op-1', clock.now), sink, review.reviewId), 'sent');
   assert.deepEqual(sent, [{ content: google.preview(draftMessage).content, account: ACCOUNTS.personal.email, destination: 'bia@example.test,carl@example.test' }]);
   await assert.rejects(google.send(draftMessage, write('op-1', clock.now), sink), /operation_already_dispatched/);
   await assert.rejects(google.send(draftMessage, write('op-2', clock.now), sink), /approval_required/, 'the grant was single-use');

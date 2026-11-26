@@ -221,8 +221,9 @@ export class GoogleConnections {
   }
 
   /** Dispatches only through the gateway, which admits it only under a grant for this account, destination and content. */
-  send<T>(draft: Draft, write: WriteContext, sink: DraftSink<T>): Promise<T> {
-    return this.options.gateway.dispatch(this.effect(draft, write), sink);
+  send<T>(draft: Draft, write: WriteContext, sink: DraftSink<T>, reviewId?: string): Promise<T> {
+    const request = this.effect(draft, write);
+    return reviewId === undefined ? this.options.gateway.dispatch(request, sink) : this.options.gateway.dispatchReviewed(request, reviewId, sink);
   }
 
   close(): void { this.db.close(); }
