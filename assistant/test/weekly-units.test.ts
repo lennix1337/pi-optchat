@@ -23,9 +23,11 @@ test('a copy merges into one meeting per calendar, so two meetings on one calend
 const timed = (id: string, start: string, end: string): CalendarEvent => ({ ...meeting(id, null, start), title: id, end });
 const reasons = (...events: CalendarEvent[]) => weekAgenda(events.map(event => ({ connectionId: 'a', event }))).map(i => [i.sourceRef.slice(-1), i.reason]);
 
-test('back to back is the gap to the neighbouring meeting, an overlap is with any earlier one', () => {
+test('back to back is the gap to the latest-ending earlier meeting, an overlap is with any earlier one', () => {
   assert.deepEqual(reasons(timed('a', '2026-11-02T12:00:00Z', '2026-11-02T14:00:00Z'), timed('b', '2026-11-02T12:10:00Z', '2026-11-02T12:20:00Z'), timed('c', '2026-11-02T14:02:00Z', '2026-11-02T15:00:00Z')),
-    [['a', 'conflict'], ['b', 'conflict'], ['c', 'event']], 'c follows b by hours: only the neighbour counts');
+    [['a', 'conflict'], ['b', 'conflict'], ['c', 'back_to_back']], 'c follows the meeting that encloses b by two minutes');
+  assert.deepEqual(reasons(timed('a', '2026-11-02T12:00:00Z', '2026-11-02T14:00:00Z'), timed('b', '2026-11-02T12:10:00Z', '2026-11-02T12:20:00Z'), timed('c', '2026-11-02T16:00:00Z', '2026-11-02T17:00:00Z')),
+    [['a', 'conflict'], ['b', 'conflict'], ['c', 'event']], 'two hours later is not back to back');
   assert.deepEqual(reasons(timed('a', '2026-11-02T12:00:00Z', '2026-11-02T15:00:00Z'), timed('b', '2026-11-02T12:30:00Z', '2026-11-02T13:00:00Z'), timed('c', '2026-11-02T13:30:00Z', '2026-11-02T14:00:00Z')),
     [['a', 'conflict'], ['b', 'conflict'], ['c', 'conflict']], 'c overlaps a long meeting it is not next to');
   assert.deepEqual(reasons(timed('a', '2026-11-02T12:00:00Z', '2026-11-02T13:00:00Z'), timed('b', '2026-11-02T13:03:00Z', '2026-11-02T14:00:00Z'), timed('c', '2026-11-02T16:00:00Z', '2026-11-02T17:00:00Z')),

@@ -147,6 +147,15 @@ test('an unavailable task store is named as missing, not as a calendar or mail',
   assert.deepEqual(missing.map(i => [i.section, i.title]), [['tasks', 'tasks is unavailable: not included in this review']]);
 }));
 
+test('an exception before the review is stored counts as a failed attempt, apart from the tries that degrade a review', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  (c as unknown as { assemble: () => never }).assemble = () => { throw new Error('boom'); };
+  for (let i = 0; i < 3; i++) { await assert.rejects(c.weekly(), /boom/); rig.clock.now += 16 * 60_000; }
+  assert.deepEqual(c.weeklyAttempt('2026-11-01') && [c.weeklyAttempt('2026-11-01')!.tries, c.weeklyAttempt('2026-11-01')!.failures], [0, 3]);
+}));
+
 test('a stored degraded review whose re-reads keep failing with an exception stops being re-read after the same few tries', () => withGoogle(async rig => {
   await seed(rig);
   rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
