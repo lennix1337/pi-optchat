@@ -8,8 +8,8 @@ import { boundedInteger } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
-import { billTiming, daysUntil, detectBill, FUTURE_DAYS } from './bills.ts';
-import { senderAddress, triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { billTiming, daysUntil, detectBill, FUTURE_DAYS, OVERDUE_DAYS } from './bills.ts';
+import { senderAddress, triage, type TriageRules, type TriageSignal, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
@@ -37,7 +37,7 @@ export type ComposerOptions = {
 };
 
 const DAY_MS = 86_400_000;
-const TRIAGE_KEEPS_AS_MESSAGE: ReadonlySet<string> = new Set(['suspected_injection', 'executable_attachment']);
+const NEVER_A_BILL: readonly TriageSignal[] = ['suspected_injection', 'executable_attachment'];
 const PRIVATE_TITLE = '[private content withheld]';
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
@@ -146,14 +146,14 @@ export class BriefingComposer {
           for (const message of page.items) {
             const result = triage(message, this.options.rules);
             if (result.urgency === 'low') { found.distractions++; continue; }
-            const bill = this.options.bills && !TRIAGE_KEEPS_AS_MESSAGE.has(result.reason) ? detectBill(message, localDate) : null;
+            const bill = this.options.bills && !NEVER_A_BILL.some(signal => result.signals.includes(signal)) ? detectBill(message, localDate) : null;
             if (bill) {
               const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
               found.bills.push({
                 key: billKey(message.from, bill.dueDate, bill.amount),
                 item: {
                   section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`,
-                  ...billTiming(bill.daysLeft), uncertainty: 'medium', untrusted: true, startable: true, dueDate: bill.dueDate, billKey: billKey(message.from, bill.dueDate, bill.amount), ...(bill.amount ? { amount: bill.amount } : {}),
+                  ...billTiming(bill.daysLeft), uncertainty: 'medium', untrusted: true, startable: result.signals.includes('trusted_sender'), dueDate: bill.dueDate, billKey: billKey(message.from, bill.dueDate, bill.amount), ...(bill.amount ? { amount: bill.amount } : {}),
                 },
               });
               continue;
@@ -229,13 +229,13 @@ export class BriefingComposer {
 
   /**
    * Mail is read over a short window, so a bill seen on an earlier day would vanish from the next briefing long before it
-   * is due: bills of the previous briefing that are not yet due are kept, flagged again for today, until their date passes.
+   * is due: bills of the previous briefing are kept and flagged again for today, until OVERDUE_DAYS after their date.
    */
   private carryBills(since: Briefing, today: string, items: Omit<BriefingItem, 'itemId'>[]): void {
     const seen = new Set(items.flatMap(item => item.billKey ? [item.billKey] : []));
     for (const { itemId: _id, ...old } of since.items) {
       const left = old.section === 'bills' && old.dueDate ? daysUntil(today, old.dueDate) : null;
-      if (left === null || left < 0 || left > FUTURE_DAYS || !old.billKey || seen.has(old.billKey)) continue;
+      if (left === null || left < -OVERDUE_DAYS || left > FUTURE_DAYS || !old.billKey || seen.has(old.billKey)) continue;
       items.push({ ...old, ...billTiming(left) });
     }
   }
@@ -251,7 +251,7 @@ export class BriefingComposer {
   }
 }
 
-function billKey(from: string, dueDate: string, amount: string | null): string { return sha256(`${senderAddress(from)}\n${dueDate}\n${amount ?? ''}`).slice(0, 16); }
+function billKey(from: string, dueDate: string, amount: string | null): string { return sha256(`${senderAddress(from) || from.trim().toLowerCase()}\n${dueDate}\n${amount ?? ''}`).slice(0, 16); }
 function bounded(text: string): string { return Array.from(text).slice(0, 200).join(''); }
 
 function updatedSince(event: CalendarEvent, createdAt: string): boolean {

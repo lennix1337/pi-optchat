@@ -11,6 +11,7 @@ import { MAIL_SCOPE, withGoogle, type GoogleRig } from './google-support.ts';
 const TZ = 'America/Sao_Paulo';
 const CARD = '4111 1111 1111 1111';
 const rules = { trustedSenders: [] };
+const startRequest = (requestId: string) => ({ requestId, sessionId: 'terminal-1', channelId: 'terminal', actorId: 'lucas', sourceKind: 'trusted-local-human' as const });
 
 function composer(rig: GoogleRig, overrides: Partial<ConstructorParameters<typeof BriefingComposer>[0]> & { bills?: boolean } = {}) {
   const c = new BriefingComposer({ databasePath: rig.databasePath, profileId: 'p', operatorAuthority: rig.authority, timeZone: TZ, store: rig.store, google: rig.google, connections: ['personal', 'dentai'], rules, now: () => rig.clock.now, ...overrides } as ConstructorParameters<typeof BriefingComposer>[0]);
@@ -106,7 +107,11 @@ test('a bill seen yesterday stays listed, re-flagged each day, until its date pa
   rig.clock.now = Date.parse('2026-11-03T12:00:00.000Z');
   assert.equal(bills(await briefings.onDemand()).length, 1, 'still listed when mail shows it again or an on-demand briefing follows');
   rig.clock.now = Date.parse('2026-11-06T12:00:00.000Z');
-  assert.deepEqual(bills(await briefings.daily()), [], 'dropped once the date has passed');
+  assert.deepEqual(bills(await briefings.daily()).map(i => [i.dueDate, i.reason, i.urgency]), [['2026-11-05', 'bill_overdue', 'urgent']], 'a carried bill follows the same overdue rule as a fresh one');
+  rig.clock.now = Date.parse('2026-11-13T12:00:00.000Z');
+  assert.deepEqual(bills(await briefings.daily()).map(i => [i.reason, i.urgency]), [['bill_overdue', 'normal']], 'normal after a week overdue');
+  rig.clock.now = Date.parse('2026-12-06T12:00:00.000Z');
+  assert.deepEqual(bills(await briefings.daily()), [], 'dropped 30 days after the due date');
 }));
 
 test('a reminder with a different subject for a bill already carried is the same bill', () => withGoogle(async rig => {
@@ -165,6 +170,32 @@ test('everyday mail that only has a generic word and a date is not a bill', () =
   const briefing = await composer(rig, { bills: true, connections: ['personal'] }).daily();
   assert.deepEqual(bills(briefing), []);
   assert.equal(briefing.items.filter(i => i.section === 'messages').length, 3);
+}));
+
+test('mail text never makes a bill startable: only the operator\'s trusted senders do, and never with an executable attached', () => withGoogle(async rig => {
+  rig.fake.mail.personal.push(
+    { id: 's1', from: 'Stranger <x@stranger.example.test>', subject: 'Fatura', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 's2', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 20,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 's3', from: 'Energia Fake <contas@energia.example.test>', subject: 'Boleto', body: 'Valor R$ 30,00. Vencimento: 31/10/2026', attachments: [{ filename: 'boleto.exe', mimeType: 'application/x-msdownload', size: 10 }], receivedAt: '2026-10-28T08:00:00.000Z' },
+  );
+  await connectBoth(rig);
+  const briefings = composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } });
+  const briefing = await briefings.daily();
+  const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!;
+  assert.deepEqual([byRef('s1').section, byRef('s1').startable], ['bills', false]);
+  assert.deepEqual([byRef('s2').section, byRef('s2').startable], ['bills', true]);
+  assert.equal(byRef('s3').section, 'messages', 'a trusted sender with an executable attached is not turned into a bill');
+  assert.throws(() => briefings.start(briefing.briefingId, byRef('s1').itemId, rig.authority, startRequest('r1')), /briefing_item_not_startable/);
+  assert.ok(briefings.start(briefing.briefingId, byRef('s2').itemId, rig.authority, startRequest('r2')).taskId);
+}));
+
+test('two senders without a parsable address are two bills, not one', () => withGoogle(async rig => {
+  rig.fake.mail.personal.push(
+    { id: 'u1', from: 'Fake One', subject: 'Fatura um', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 'u2', from: 'Fake Two', subject: 'Fatura dois', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+  );
+  await connectBoth(rig);
+  assert.equal(bills(await composer(rig, { bills: true, connections: ['personal'] }).daily()).length, 2);
 }));
 
 test('the stored view keeps bill fields and refuses malformed ones', () => withGoogle(async rig => {
