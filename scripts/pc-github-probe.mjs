@@ -30,9 +30,13 @@ function remoteScript() {
   return `${probe('github', GITHUB)}; ${probe('control', CONTROL)}`;
 }
 
+export function probeGithub(host = 'pc', run = spawnSync) {
+  const r = run('ssh', ['-o', 'ConnectTimeout=10', host, `pwsh -NoProfile -EncodedCommand ${Buffer.from(remoteScript(), 'utf16le').toString('base64')}`], { encoding: 'utf8', timeout: 120_000 });
+  return r.error || r.status ? { code: 'ssh-failed', exit: 2, line: `ssh to the PC failed: ${r.error?.message ?? (r.stderr || '').trim().slice(0, 200)}` } : judge(parseProbe(r.stdout));
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const r = spawnSync('ssh', ['-o', 'ConnectTimeout=10', process.argv[2] ?? 'pc', `pwsh -NoProfile -EncodedCommand ${Buffer.from(remoteScript(), 'utf16le').toString('base64')}`], { encoding: 'utf8', timeout: 120_000 });
-  const v = r.error || r.status ? { code: 'ssh-failed', exit: 2, line: `ssh to the PC failed: ${r.error?.message ?? (r.stderr || '').trim().slice(0, 200)}` } : judge(parseProbe(r.stdout));
+  const v = probeGithub(process.argv[2]);
   console.log(`${v.code}: ${v.line}`);
   process.exit(v.exit);
 }

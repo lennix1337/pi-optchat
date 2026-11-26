@@ -2,3 +2,4 @@ export interface ProbeRow { group: 'github' | 'control'; host: string; ok: boole
 export interface Verdict { code: 'ok' | 'github-partial' | 'github-unreachable' | 'pc-offline' | 'no-data'; exit: number; line: string }
 export function parseProbe(out: string): ProbeRow[];
 export function judge(rows: ProbeRow[]): Verdict;
+export function probeGithub(host?: string, run?: (cmd: string, args: string[], opts: object) => { status: number | null; stdout: string; stderr: string; error?: Error }): Verdict;
