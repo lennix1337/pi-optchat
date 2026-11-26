@@ -20,6 +20,10 @@ import type { Task } from '../contracts/tasks.ts';
 export type GoogleLocalOptions = {
   databasePath: string; profileId: string; protector: KeyProtector;
   endpoints?: GoogleEndpoints; fetch?: typeof fetch; now?: () => number;
+  /** The briefing lists bills with due dates found in mail. Off unless set. */
+  bills?: boolean;
+  /** Senders (bare addresses) the briefing trusts. A bill is startable only from one of them, once Gmail has verified the sender domain. Empty unless set. */
+  trustedSenders?: readonly string[];
 };
 type ClientFile = { version: 1; clientId: string; clientSecretRef: string };
 const CALLBACK_PATH = '/';
@@ -161,7 +165,8 @@ export class GoogleLocal {
     try {
       const composer = new BriefingComposer({
         databasePath: join(dirname(this.options.databasePath), 'briefings.sqlite'), profileId: this.options.profileId, operatorAuthority: this.authority,
-        timeZone, store, google, connections: names, meetingPrep, rules: { trustedSenders: [] }, ...(this.options.now ? { now: this.options.now } : {}),
+        timeZone, store, google, connections: names, meetingPrep, rules: { trustedSenders: this.options.trustedSenders ?? [] },
+        ...(this.options.bills ? { bills: true } : {}), ...(this.options.now ? { now: this.options.now } : {}),
       });
       try { return await use(composer); } finally { composer.close(); }
     } finally { store.close(); google.close(); }

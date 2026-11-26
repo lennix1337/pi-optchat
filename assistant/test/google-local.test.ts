@@ -2,20 +2,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { readConfig, googleBriefingOptions } from '../src/main.ts';
 import { GoogleLocal, parseClientJson } from '../src/connectors/google-local.ts';
 import { TaskStore } from '../src/store/db.ts';
 import { ACCOUNTS, CLIENT_ID, CLIENT_SECRET, FakeGoogle, TOKEN_CANARY, type AccountKey } from './google-support.ts';
 import { contains, memoryProtector, privateDir } from './vault-support.ts';
 
-async function rig(fn: (r: { dir: string; fake: FakeGoogle; local: () => Promise<GoogleLocal>; consent: (url: string, account: AccountKey) => Promise<Response> }) => Promise<void>) {
+async function rig(fn: (r: { dir: string; fake: FakeGoogle; local: (extra?: { bills?: boolean; trustedSenders?: string[] }) => Promise<GoogleLocal>; consent: (url: string, account: AccountKey) => Promise<Response> }) => Promise<void>) {
   await privateDir('google-local-', async dir => {
     const clock = { now: Date.parse('2026-10-28T12:00:00.000Z') };
     const fake = new FakeGoogle(clock);
     await fake.start();
     const { protector } = memoryProtector();
     const opened: GoogleLocal[] = [];
-    const local = async () => {
-      const l = await GoogleLocal.open({ databasePath: join(dir, 'tasks.sqlite'), profileId: 'p', protector, endpoints: fake.endpoints, now: () => clock.now });
+    const local = async (extra: { bills?: boolean; trustedSenders?: string[] } = {}) => {
+      const l = await GoogleLocal.open({ databasePath: join(dir, 'tasks.sqlite'), profileId: 'p', protector, endpoints: fake.endpoints, now: () => clock.now, ...extra });
       opened.push(l);
       return l;
     };
@@ -95,4 +98,52 @@ test('consent that never returns times out and closes the listener', async () =>
   let redirect = '';
   await assert.rejects(l.connect({ name: 'personal', email: ACCOUNTS.personal.email, timeoutMs: 200, onUrl: url => { redirect = new URL(url).searchParams.get('redirect_uri')!; } }), /google_consent_timeout/);
   await assert.rejects(fetch(redirect), 'the port no longer listens');
+}));
+
+test('trustedSenders set on the local service make a verified sender\'s bill startable; empty by default', async () => rig(async ({ fake, local, consent }) => {
+  fake.clientId = REAL_ID;
+  const l = await local({ bills: true, trustedSenders: ['contas@agua.example.test'] });
+  l.setClient(JSON.stringify({ installed: { client_id: REAL_ID, client_secret: CLIENT_SECRET } }));
+  let page: Promise<Response> | undefined;
+  await l.connect({ name: 'personal', email: ACCOUNTS.personal.email, onUrl: url => { page = consent(url, 'personal'); } });
+  await page!;
+  fake.mail.personal.push({ id: 'm-bill', from: 'Agua Fake <contas@agua.example.test>', subject: 'Fatura de agua', body: 'Valor R$ 45,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T10:00:00.000Z', authenticationResults: ['mx.google.com; dmarc=pass (p=REJECT) header.from=agua.example.test'] });
+  const trusted = await l.briefing(['personal'], 'America/Sao_Paulo');
+  assert.deepEqual(trusted.items.filter(i => i.section === 'bills').map(i => i.startable), [true]);
+  const none = await (await local({ bills: true })).briefing(['personal'], 'America/Sao_Paulo');
+  assert.deepEqual(none.items.filter(i => i.section === 'bills').map(i => i.startable), [false]);
+}));
+
+test('a config file with google.bills and google.trustedSenders reaches the briefing it composes, end to end', async () => rig(async ({ fake, local, consent }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'bills-e2e-'));
+  try {
+    const path = join(dir, 'config.json');
+    writeFileSync(path, JSON.stringify({ version: 1, profileId: 'p', databasePath: join(dir, 'tasks.sqlite'), endpoint: 'http://127.0.0.1:4321', token: 'a-disposable-fake-token-value-0000000000000000',
+      google: { connections: ['personal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00', bills: true, trustedSenders: ['contas@agua.example.test'] } }));
+    fake.clientId = REAL_ID;
+    const l = await local(googleBriefingOptions(readConfig(path).google!));
+    l.setClient(JSON.stringify({ installed: { client_id: REAL_ID, client_secret: CLIENT_SECRET } }));
+    let page: Promise<Response> | undefined;
+    await l.connect({ name: 'personal', email: ACCOUNTS.personal.email, onUrl: url => { page = consent(url, 'personal'); } });
+    await page!;
+    fake.mail.personal.push({ id: 'm-bill', from: 'Agua Fake <contas@agua.example.test>', subject: 'Fatura de agua', body: 'Valor R$ 45,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T10:00:00.000Z', authenticationResults: ['mx.google.com; dmarc=pass (p=REJECT) header.from=agua.example.test'] });
+    const briefing = await l.briefing(['personal'], 'America/Sao_Paulo');
+    assert.deepEqual(briefing.items.filter(i => i.section === 'bills').map(i => [i.amount, i.startable]), [['R$ 45,00', true]]);
+    assert.deepEqual(googleBriefingOptions({ connections: ['personal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' }), {}, 'nothing set, nothing on');
+    assert.deepEqual(googleBriefingOptions({ connections: ['personal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00', trustedSenders: ['Contas@Agua.Example.Test', 'contas@agua.example.test', 'b@x.test'] }).trustedSenders, ['contas@agua.example.test', 'b@x.test'], 'lowercase and no duplicates');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}));
+
+test('the bills option set on the local service reaches the briefing it composes', async () => rig(async ({ fake, local, consent }) => {
+  fake.clientId = REAL_ID;
+  const l = await local({ bills: true });
+  l.setClient(JSON.stringify({ installed: { client_id: REAL_ID, client_secret: CLIENT_SECRET } }));
+  let page: Promise<Response> | undefined;
+  await l.connect({ name: 'personal', email: ACCOUNTS.personal.email, onUrl: url => { page = consent(url, 'personal'); } });
+  await page!;
+  fake.mail.personal.push({ id: 'm-bill', from: 'Agua Fake <contas@agua.example.test>', subject: 'Fatura de agua', body: 'Valor R$ 45,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T10:00:00.000Z' });
+  const on = await l.briefing(['personal'], 'America/Sao_Paulo');
+  assert.deepEqual(on.items.filter(i => i.section === 'bills').map(i => [i.dueDate, i.amount]), [['2026-10-30', 'R$ 45,00']]);
+  const off = await (await local()).briefing(['personal'], 'America/Sao_Paulo');
+  assert.deepEqual(off.items.filter(i => i.section === 'bills'), [], 'off unless the option is set');
 }));

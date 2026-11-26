@@ -24,7 +24,7 @@ export const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly
 type Grant = { account: AccountKey; scopes: string[] };
 type Code = Grant & { challenge: string; method: string; redirectUri: string; nonce: string; used: boolean };
 type Attachment = { filename: string; mimeType: string; size: number };
-export type FixtureMessage = { id: string; threadId?: string; from: string; replyTo?: string; to?: string; subject: string; body: string; labels?: string[]; unlisted?: boolean; receivedAt: string; attachments?: Attachment[] };
+export type FixtureMessage = { id: string; threadId?: string; from: string; replyTo?: string; to?: string; subject: string; body: string; labels?: string[]; unlisted?: boolean; receivedAt: string; attachments?: Attachment[]; authenticationResults?: string[]; messageId?: string };
 type FixtureEventTime = { dateTime?: string; date?: string; timeZone?: string };
 export type FixtureEvent = Record<string, unknown> & { id: string; start: FixtureEventTime; end?: FixtureEventTime };
 export type Logged = { method: string; path: string; account?: AccountKey; params: Record<string, string> };
@@ -35,6 +35,8 @@ const b64url = (value: string | Buffer) => Buffer.from(value).toString('base64ur
 function gmailResource(m: FixtureMessage) {
   const headers = [{ name: 'From', value: m.from }, { name: 'To', value: m.to ?? 'me@example.test' }, { name: 'Subject', value: m.subject }];
   if (m.replyTo !== undefined) headers.push({ name: 'rEpLy-To', value: m.replyTo });
+  if (m.messageId) headers.push({ name: 'Message-ID', value: m.messageId });
+  headers.unshift(...(m.authenticationResults ?? []).map(value => ({ name: 'Authentication-Results', value })));
   const parts: unknown[] = [{ partId: '0', mimeType: 'text/plain', filename: '', body: { size: m.body.length, data: b64url(m.body) } }];
   for (const [i, a] of (m.attachments ?? []).entries()) parts.push({ partId: String(i + 1), mimeType: a.mimeType, filename: a.filename, body: { size: a.size, attachmentId: `att-${m.id}-${i}` } });
   return { id: m.id, threadId: m.threadId ?? `thread-${m.id}`, labelIds: m.labels ?? ['INBOX'], snippet: m.body.slice(0, 40), internalDate: String(Date.parse(m.receivedAt)), payload: { mimeType: 'multipart/mixed', headers, parts } };
