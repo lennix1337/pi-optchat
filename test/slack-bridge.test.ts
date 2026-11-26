@@ -52,7 +52,7 @@ const replies = (...texts: string[]) => texts.map(text => ({ role: 'assistant', 
 const TASK_TS = '1793000000.000100';
 const TOPIC_TS = '1793000000.000200';
 
-function taskThreadFixture(taskThreadAfterMs?: number) {
+function taskThreadFixture(taskThreadAfterMs?: number, startPost?: () => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), 'slack-task-thread-'));
   const { pi, fire } = hookedPi();
   const received: string[] = [];
@@ -69,7 +69,10 @@ function taskThreadFixture(taskThreadAfterMs?: number) {
     taskThreadAfterMs: () => taskThreadAfterMs,
     request: async (_owner, path, body) => {
       if (path.startsWith('/v1/slack/inbox')) return { messages: inbox };
-      if (path === '/v1/slack/send') posted.push(body);
+      if (path === '/v1/slack/send') {
+        posted.push(body);
+        if ((body as { text: string }).text.startsWith('Comecei:')) await startPost?.();
+      }
       return { parts: 1, ts: TOPIC_TS };
     },
   });
@@ -138,9 +141,53 @@ test('task thread: slack_send follows the task, but explicit topics open and reu
     assert.deepEqual(f.posted, [
       { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS },
       { text: 'Fila lida.', threadTs: TASK_TS },
-      { text: 'Relatório separado.', threadTs: null },
+      { text: 'Relatório separado.', threadTs: null, broadcast: true },
       { text: 'Mais detalhes.', threadTs: TOPIC_TS, broadcast: true },
       { text: 'Feito.', threadTs: TASK_TS },
+    ]);
+  } finally { f.close(); }
+});
+
+for (const opening of [false, true]) {
+  test(`task thread: a new Slack origin replaces one waiting on ${opening ? 'confirmation' : 'the timer'}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const confirmation = Promise.withResolvers<void>();
+    const f = taskThreadFixture(5_000, () => confirmation.promise);
+    try {
+      const dm = await f.receive();
+      f.start(); f.say(dm);
+      if (opening) t.mock.timers.tick(5_000);
+      f.inbox.push({ seq: 2, ts: '1793000000.000300', channel: 'D0TEST', text: 'Responda aqui.', thread: TOPIC_TS });
+      f.say(await f.receive());
+      t.mock.timers.tick(5_000);
+      const update = f.send('Recebido.');
+      confirmation.resolve();
+      await update;
+      await f.finish('Feito.');
+      const updates = f.posted.filter(body => !(body as { text: string }).text.startsWith('Comecei:'));
+      assert.deepEqual(updates, [{ text: 'Recebido.', threadTs: TOPIC_TS }, { text: 'Feito.', threadTs: TOPIC_TS }]);
+      assert.equal(f.posted.length, opening ? 3 : 2);
+    } finally { f.close(); }
+  });
+}
+
+test('task thread: an unconfirmed start is not used for progress or the final answer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const confirmation = Promise.withResolvers<void>();
+  const f = taskThreadFixture(5_000, () => confirmation.promise);
+  try {
+    const dm = await f.receive();
+    f.start(); f.say(dm);
+    t.mock.timers.tick(5_000);
+    const update = f.send('Fila lida.');
+    assert.equal(f.posted.length, 1, 'progress waits for the result of the opening post');
+    confirmation.reject(new Error('fake Slack post failed'));
+    await update;
+    await f.finish('Feito.');
+    assert.deepEqual(f.posted, [
+      { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS },
+      { text: 'Fila lida.', threadTs: null },
+      { text: 'Feito.', threadTs: null },
     ]);
   } finally { f.close(); }
 });
