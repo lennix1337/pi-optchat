@@ -30,7 +30,7 @@ function sessionFiles(dir: string, since: number): { label: string; full: string
 
 type Content = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Event = { type?: string; customType?: string; content?: unknown; timestamp?: string; message?: { role?: string; stopReason?: string; toolCallId?: string; content?: Content[] | string } };
-type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; verified?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number; clicked?: boolean };
+type Pacing = { active: boolean; directWork: number; wake?: boolean; wakeEdits?: number; checked?: boolean; verified?: boolean; suites?: number; ripwired?: boolean; sent?: string[]; shipped?: number; clicked?: boolean; more?: boolean };
 
 const noPacing = (): Pacing => ({ active: false, directWork: 0 });
 
@@ -42,21 +42,29 @@ function toolCalls(event: Event): Content[] {
   });
 }
 
+type Message = NonNullable<Event['message']>;
+const plainText = (msg: Message): string => (typeof msg.content === 'string' ? msg.content : (Array.isArray(msg.content) ? msg.content : []).filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+const ASKS_MORE = /\be ate mesmo mais\b|\bqueremos mais\b|\bcade o mais\b/u;
+const LISTED_COUNT = /\b(?:\d+|(?:dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez))\s+(?:itens|items|ideias|pontos|tarefas|passos)\b/u;
+const NAMES_EXTRA = /\balem\b|\bextras?\b|\ba mais\b|\badicion(?:ais|al)\b|\+\s?\d|\be mais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\b|\bmais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\s+(?:itens?|items?|melhorias?|ideias?|pontos?|tarefas?|passos?)\b/u;
+const reportsOnlyListedCount = (text: string): boolean => { const plain = withoutQuotes(text).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase(); return LISTED_COUNT.test(plain) && !NAMES_EXTRA.test(plain); };
+
+const restartPacing = (from: Pacing, active: boolean, directWork: number): Pacing => ({ active, directWork, more: from.more });
+
 function nextPacing(previous: Pacing, event: Event): Pacing {
   const msg = event.message;
   let state: Pacing = previous;
   if (event.type === 'custom_message' && event.customType === 'optchat-report') {
     const heartbeat = typeof event.content === 'string' && event.content.startsWith('[OptChat heartbeat]');
     state = { ...state, wake: heartbeat, wakeEdits: heartbeat ? 0 : state.wakeEdits, checked: false, verified: false, suites: heartbeat ? 0 : state.suites, ripwired: heartbeat ? false : state.ripwired, sent: [], shipped: 0, clicked: false };
-  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0, clicked: false };
+  } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, more: ASKS_MORE.test(plainText(msg)), wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0, clicked: false };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
-    const content = Array.isArray(msg.content) ? msg.content : [];
-    const text = (typeof msg.content === 'string' ? msg.content : content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = noPacing();
+    const text = plainText(msg);
+    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = restartPacing(state, false, 0);
     else if (!text.includes('?') && (/^quota pacing active\b/u.test(text) || (
       /\b(?:quota|cota)(?: semanal)?\b[^.\n]{0,80}\b(?:acabando|apertando|gastando mais rapido)\b/u.test(text) &&
       (msg.role === 'assistant' || /^(?:ja falei[^.\n]{0,40}|use|usa|delegue|coloca)\b[^.\n]{0,80}\bworkers?\b/u.test(text))
-    ))) state = { active: true, directWork: previous.directWork };
+    ))) state = restartPacing(state, true, previous.directWork);
   }
   const calls = toolCalls(event);
   if (calls.some(verifiesLive)) state = { ...state, checked: true };
@@ -73,9 +81,9 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
     (c.name === 'bash' || c.name === 'shell_start') && String(c.arguments?.command ?? '').split(/[;&|\n]/u).some(command =>
       /^\s*node(?:\.exe)?\s+["']?(?:[^\s"';&|]*[\\/])?agy-(?:worker|pc)\.mjs["']?(?:\s|$)/u.test(command) && !/\s--(?:quota|help|version)\b/u.test(command))
   ));
-  if (delegated) return { active: state.active, directWork: 0, wake: state.wake, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, clicked: state.clicked, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
+  if (delegated) return { more: state.more, active: state.active, directWork: 0, wake: state.wake, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, clicked: state.clicked, wakeEdits: state.wakeEdits === undefined ? undefined : 0 };
   const wakeEdits = state.wakeEdits === undefined ? undefined : state.wakeEdits + calls.filter(writesSource).length;
-  return { wake: state.wake, wakeEdits, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, clicked: state.clicked, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
+  return { more: state.more, wake: state.wake, wakeEdits, checked: state.checked, verified: state.verified, suites: state.suites, ripwired: state.ripwired, sent: state.sent, shipped: state.shipped, clicked: state.clicked, active: state.active, directWork: state.active ? state.directWork + calls.filter(c => ['bash', 'shell_start', 'edit', 'write'].includes(c.name ?? '')).length : 0 };
 }
 
 
@@ -192,6 +200,7 @@ export function detect(rule: Rule, input: object, pacing: Pacing = noPacing()): 
     case 'his-call': return calls.some(c => c.name === 'bash' && /(?:^|[;&|\n(]\s*|\s)(?:(?:sudo\s+)?(?:kill|pkill|killall|taskkill)\s+-?\S|rm\s+-[a-z]*[rR]|(?:deploy-(?:web|changed|prod)\.ps1|wrangler\s+(?:pages\s+)?deploy)\b|dentai-ship\b[^\n]*--deploy)/u.test(withoutScratchCleanup(withoutQuotedText(String(c.arguments?.command ?? '')))));
     case 'weaken-test': return calls.some(weakensTest);
     case 'sleep-poll': return calls.some(c => c.name === 'bash' && sleepsToWait(withoutQuotedText(String(c.arguments?.command ?? ''))));
+    case 'more-means-more': return !!pacing.more && (reportsOnlyListedCount(final) || calls.some(c => isOutbound(c) && reportsOnlyListedCount(String(c.arguments?.text ?? ''))));
     case 'look-yourself': return LOOK_YOURSELF.test(withoutQuotes(final)) || calls.some(c => isOutbound(c) && LOOK_YOURSELF.test(withoutQuotes(String(c.arguments?.text ?? ''))));
     case 'package-pii': return calls.some(writesRealPhone);
     default: throw new Error(`Unknown correction detector: ${rule.detector}`);
