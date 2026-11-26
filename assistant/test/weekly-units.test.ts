@@ -1,0 +1,27 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { weekAgenda, type Briefing } from '../src/briefing/compose.ts';
+import { weeklyNotice } from '../src/briefing/weekly.ts';
+import type { CalendarEvent } from '../src/connectors/google.ts';
+
+const meeting = (id: string, uid: string | null, start = '2026-11-02T12:00:00Z'): CalendarEvent => ({
+  ref: { id } as CalendarEvent['ref'], title: 'Planning', start, end: '2026-11-02T13:00:00Z', allDay: false, localDate: '2026-11-02', localStart: '09:00', recurring: false, uid, updated: null,
+});
+
+test('one invitation on three calendars is listed once, with or without an iCalUID, and raises no conflict', () => {
+  for (const uid of ['planning@uid', null]) {
+    const items = weekAgenda(['a', 'b', 'c'].map(connectionId => ({ connectionId, event: meeting(`${connectionId}-1`, uid) })));
+    assert.deepEqual(items.map(i => [i.sourceRef, i.reason]), [['calendar:a:a-1', 'event']], `uid ${uid}`);
+  }
+});
+
+test('a copy merges into one meeting per calendar, so two meetings on one calendar stay two', () => {
+  const found = [{ connectionId: 'a', event: meeting('a-1', null) }, { connectionId: 'a', event: meeting('a-2', null) }, { connectionId: 'b', event: meeting('b-1', null) }, { connectionId: 'b', event: meeting('b-2', null) }];
+  assert.deepEqual(weekAgenda(found).map(i => i.sourceRef), ['calendar:a:a-1', 'calendar:a:a-2']);
+});
+
+test('the notice says when a weekly review is missing sources', () => {
+  const review = (...states: ('ok' | 'partial' | 'unavailable')[]) => ({ sources: states.map((state, i) => ({ sourceId: `s${i}`, state, error: null })) }) as Briefing;
+  assert.equal(weeklyNotice(review('ok', 'partial')), 'weekly_review_ready');
+  assert.equal(weeklyNotice(review('ok', 'unavailable')), 'weekly_review_degraded');
+});
