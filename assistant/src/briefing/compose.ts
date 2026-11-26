@@ -83,14 +83,21 @@ export class BriefingComposer {
     if (existing) return { briefing: existing, fresh: null };
     const drafts: ReplyDraft[] = [];
     const fresh = await this.compose('daily', now, localDate, drafts);
-    return immediate(this.db, () => {
+    const { briefing, freshRead, won } = immediate(this.db, () => {
       const inserted = this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING')
         .run(this.options.profileId, fresh.briefingId, 'daily', localDate, now, JSON.stringify(fresh));
-      if (!inserted.changes) return { briefing: this.dailyFor(localDate)!, fresh: null };
-      if (drafts.length) this.saveDrafts(drafts, now);
-      if (fresh.sources.every(source => source.state !== 'unavailable')) this.pruneExpired(now);
-      return { briefing: fresh, fresh };
+      if (!inserted.changes) return { briefing: this.dailyFor(localDate)!, freshRead: withoutDraftLinks(fresh), won: false };
+      if (!drafts.length || this.trySaveDrafts(drafts, now)) return { briefing: fresh, freshRead: fresh, won: true };
+      const briefing = withoutDraftLinks(fresh);
+      this.db.prepare('UPDATE briefings SET body = ? WHERE profile = ? AND briefing_id = ?')
+        .run(JSON.stringify(briefing), this.options.profileId, briefing.briefingId);
+      return { briefing, freshRead: briefing, won: true };
     });
+    if (won && briefing.sources.every(source => source.state !== 'unavailable')) {
+      try { immediate(this.db, () => this.pruneExpired(now)); }
+      catch { console.warn('Google briefing retention cleanup failed.'); }
+    }
+    return { briefing, fresh: freshRead };
   }
 
   async onDemand(): Promise<Briefing> {
@@ -259,10 +266,19 @@ export class BriefingComposer {
     return { kind: 'reply_draft', draftId, subject: draft.subject };
   }
 
-  private saveDrafts(drafts: ReplyDraft[], now: number): void {
-    const save = this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
-      ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`);
-    for (const draft of drafts) save.run(this.options.profileId, draft.draftId, now, JSON.stringify(draft));
+  private trySaveDrafts(drafts: ReplyDraft[], now: number): boolean {
+    this.db.exec('SAVEPOINT save_briefing_drafts');
+    let saved = false;
+    try {
+      const save = this.db.prepare(`INSERT INTO briefing_reply_drafts (profile, id, last_used, body) VALUES (?, ?, ?, ?)
+        ON CONFLICT(profile, id) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)`);
+      for (const draft of drafts) save.run(this.options.profileId, draft.draftId, now, JSON.stringify(draft));
+      saved = true;
+    } catch {
+      this.db.exec('ROLLBACK TO save_briefing_drafts');
+    }
+    this.db.exec('RELEASE save_briefing_drafts');
+    return saved;
   }
 
   /** Open tasks, and the last state of every task changed since the previous briefing. Returns the sequence read up to. */
@@ -301,6 +317,12 @@ export class BriefingComposer {
     }
   }
 
+}
+
+function withoutDraftLinks(briefing: Briefing): Briefing {
+  return { ...briefing, items: briefing.items.map(item => item.step?.kind === 'reply_draft'
+    ? { ...item, startable: true, step: { kind: 'next', text: 'Review the original message; no local reply draft was saved.' } }
+    : item) };
 }
 
 async function readConnection({ google, timeZone, meetingPrep, rules }: ComposerOptions, id: string, { from, to }: { from: string; to: string }, now: number, since: Briefing | null,

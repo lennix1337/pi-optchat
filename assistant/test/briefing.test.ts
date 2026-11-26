@@ -114,20 +114,49 @@ test('daily insert that loses a race does not purge expired rows', t => withGoog
   assert.deepEqual(contender.get(first.briefingId), first);
 }));
 
-test('daily publication rolls back snapshot and retention when pruning fails', () => withGoogle(async rig => {
+test('daily publication keeps the new snapshot and draft when pruning rolls back', () => withGoogle(async rig => {
   await rig.connect('personal', 'personal');
   seedReplyMail(rig);
   const briefings = composer(rig, { connections: ['personal'], retentionDays: 1 });
   const first = await briefings.daily();
   rig.clock.now += 25 * hour;
-  rig.fake.mail.personal.length = 0;
+  const reply = rig.fake.mail.personal.find(message => message.id === 'reply-needed')!;
+  rig.fake.mail.personal.splice(0, Infinity, { ...reply, id: 'new-reply' });
   const db = new DatabaseSync(rig.databasePath);
   rig.defer(() => db.close());
   db.exec(`CREATE TRIGGER test_prune_failure BEFORE DELETE ON briefing_reply_drafts
     BEGIN SELECT RAISE(ABORT, 'test_prune_failed'); END`);
-  await assert.rejects(briefings.daily(), /test_prune_failed/);
-  assert.deepEqual(briefings.latest(), first);
-  assert.equal(count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts'), 1);
+  const next = await briefings.daily();
+  assert.notEqual(next.briefingId, first.briefingId);
+  assert.deepEqual(briefings.latest(), next);
+  const step = next.items.find(item => item.sourceRef.endsWith(':new-reply'))?.step;
+  assert.ok(step?.kind === 'reply_draft');
+  assert.equal(briefings.draft(step.draftId)?.draftId, step.draftId);
+  assert.deepEqual(briefings.get(first.briefingId), first, 'both retention deletes roll back');
+  assert.equal(count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts'), 2);
+}));
+
+test('daily publication survives a draft write failure without storing partial drafts or broken links', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  seedReplyMail(rig);
+  const reply = rig.fake.mail.personal.find(message => message.id === 'reply-needed')!;
+  rig.fake.mail.personal.push({ ...reply, id: 'other-reply' });
+  const briefings = composer(rig, { connections: ['personal'] });
+  const db = new DatabaseSync(rig.databasePath);
+  rig.defer(() => db.close());
+  db.exec(`CREATE TRIGGER test_draft_failure BEFORE INSERT ON briefing_reply_drafts
+    WHEN EXISTS (SELECT 1 FROM briefing_reply_drafts WHERE profile = NEW.profile)
+    BEGIN SELECT RAISE(ABORT, 'test_second_draft_write_failed'); END`);
+  const briefing = await briefings.daily();
+  assert.deepEqual(briefings.latest(), briefing);
+  assert.deepEqual(await briefings.daily(), briefing, 'the published fallback is reused');
+  for (const id of ['reply-needed', 'other-reply']) {
+    const item = briefing.items.find(item => item.sourceRef.endsWith(`:${id}`));
+    assert.deepEqual(item?.step, { kind: 'next', text: 'Review the original message; no local reply draft was saved.' });
+    assert.equal(item?.startable, true);
+  }
+  assert.deepEqual(briefing.items.find(item => item.sourceRef.endsWith(':info-only'))?.step, { kind: 'next', text: 'Review the original message.' });
+  assert.equal(count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts'), 0, 'the first insert was rolled back too');
 }));
 
 test('reply preview prefers a single Reply-To and lowercases it or the From fallback', () => withGoogle(async rig => {
