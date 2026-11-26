@@ -45,6 +45,12 @@ test('a review recovered after its boundary reads the days after it is composed,
   const titles = section(briefing, 'agenda').map(i => i.title.replace(/^\S+ \S+ /, ''));
   assert.ok(titles.includes('The week after'), 'the seven days after the recovery day, up to the Tuesday after');
   assert.ok(titles.includes('Retro') && !titles.includes('Planning'), 'days before the window are out');
+  const windows = () => rig.fake.log.filter(entry => entry.path === '/calendar/v3/calendars/primary/events').map(entry => [entry.params.timeMin, entry.params.timeMax]);
+  assert.deepEqual(windows()[0], ['2026-11-03T15:00:00.000Z', '2026-11-11T03:00:00.000Z'], 'a late review starts when it is composed, so what is still ahead of the missed Monday and Tuesday is in');
+  rig.fake.log.length = 0;
+  rig.clock.now = Date.parse('2026-11-08T21:30:00.000Z');
+  await composer(rig).weekly('2026-11-08');
+  assert.deepEqual(windows()[0], ['2026-11-09T03:00:00.000Z', '2026-11-16T03:00:00.000Z'], 'on time it starts at the Monday');
 }));
 
 test('a source that stays down degrades the review after a few tries, a total outage never does, and the attempt is cleared once it is saved', () => withGoogle(async rig => {
@@ -139,4 +145,23 @@ test('an unavailable task store is named as missing, not as a calendar or mail',
   for (let i = 0; i < 3; i++) { await c.weekly(); rig.clock.now += 16 * 60_000; }
   const missing = c.latestWeekly()!.items.filter(i => i.reason === 'source_unavailable');
   assert.deepEqual(missing.map(i => [i.section, i.title]), [['tasks', 'tasks is unavailable: not included in this review']]);
+}));
+
+test('a stored degraded review whose re-reads keep failing with an exception stops being re-read after the same few tries', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  for (let i = 0; i < 3; i++) { await c.weekly(); rig.clock.now += 16 * 60_000; }
+  assert.equal(c.weeklyAttempt('2026-11-01')?.tries, 3);
+  (c as unknown as { assemble: () => never }).assemble = () => { throw new Error('boom'); };
+  const outcomes: string[] = [];
+  const reads: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    outcomes.push(await c.weekly().then(r => String(r.degraded), error => (error as Error).message));
+    reads.push(rig.fake.log.length);
+    rig.clock.now += 16 * 60_000;
+  }
+  assert.deepEqual(outcomes, ['boom', 'boom', 'boom', 'boom', 'false', 'false']);
+  assert.equal(reads[3], reads[5], 'no read after the limit');
 }));
