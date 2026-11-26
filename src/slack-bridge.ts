@@ -50,7 +50,7 @@ export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
 type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string } };
 
-type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean };
+type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<void> };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
 
 const FILE_READS = 4;
@@ -64,6 +64,7 @@ const OFF_FOR_MS = 5 * 60_000;
 const LONG_POLL_MS = 15_000;
 
 const HELD_MS = 1_000;
+const TASK_THREAD_AFTER_MS = 60_000;
 
 const COMMAND_APPROVAL_MS = 10 * 60_000;
 // external: pi-multi-account injects resume prompts after quota, rate-limit or transient provider errors.
@@ -237,6 +238,7 @@ export class SlackBridge {
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
+  private taskThreadTimer: ReturnType<typeof setTimeout> | undefined;
   /** Set when a heartbeat wake started the current run: what it delivered is reported to the repo's channel. */
   private waking = false;
   private running = false;
@@ -267,6 +269,7 @@ export class SlackBridge {
     thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking']; proactivityPaused?: CommandState['proactivityPaused'];
     /** On (setting `slackEveryAnswer`, for a Pi nobody watches at a terminal): the final answer of every run, not only of Slack and wakes, goes to the DM. */
     everyAnswer?: () => boolean;
+    taskThreadAfterMs?: () => number | undefined;
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
     abort: () => boolean;
     /** When the heartbeat next checks for a wake, if armed. */
@@ -326,6 +329,7 @@ export class SlackBridge {
   stop(): void {
     this.generation++; this.cancelRead?.abort(); this.cancelRead = undefined;
     this.answering = undefined; this.waking = false; this.running = false;
+    this.cancelTaskThread();
     clearTimeout(this.workTimer); this.workTimer = undefined; this.work = undefined;
   }
   runStarted(continuing = false): void { if (!continuing || !this.running) { clearTimeout(this.workTimer); this.workTimer = undefined; if (this.running) this.work = undefined; this.touched = []; } this.running = true; }
@@ -441,7 +445,7 @@ export class SlackBridge {
         if (id) this.react(owner, id, m.ts, SEEN);
         const extras = await this.enrich(owner, m, id);
         const text = `${slackPrefix(channel)}${m.text}${extras}\n\n${budgetNote(wordBudget(channel, this.options.wordBudgets))}${this.running ? MID_RUN : ''}`;
-        this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel, ...(id ? { id, ts: m.ts } : {}) });
+        this.threads.set(text, this.inboundOrigin(m, channel, id));
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
         const inboundAt = this.options.now();
@@ -451,6 +455,12 @@ export class SlackBridge {
       }
       return delivered;
     } finally { this.polling = false; }
+  }
+
+  private inboundOrigin(m: Inbound, channel: string | null, id?: string): Origin {
+    const thread = typeof m.thread === 'string' ? m.thread : null;
+    const startsTask = !this.running && !channel && !thread && id?.startsWith('D') && /^\d{1,12}\.\d{1,8}$/.test(m.ts);
+    return { thread, channel, ...(id ? { id, ts: m.ts } : {}), ...(startsTask ? { startText: m.text } : {}) };
   }
 
   /**
@@ -623,11 +633,45 @@ export class SlackBridge {
     this.progressOnly = (this.progressOnly ?? true) && !match && WORKER_PROGRESS.test(text);
     if (!match) {
 
-      if (this.answering && this.replied && this.replied !== this.delivered) { this.delivered = this.replied; void this.answer(this.answering, this.replied, false); }
+      if (this.answering && this.replied && this.replied !== this.delivered) {
+        this.cancelTaskThread();
+        this.delivered = this.replied;
+        void this.answer(this.answering, this.replied, false);
+      }
       return;
     }
-    this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
+    const origin = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
+    if (this.taskThreadTimer || this.answering?.opening) return;
+    this.answering = origin;
+    this.scheduleTaskThread(origin);
+  }
+
+  private scheduleTaskThread(origin: Origin): void {
+    const { ts, startText } = origin;
+    if (!this.running || !ts || startText === undefined) return;
+    this.taskThreadTimer = setTimeout(() => {
+      this.taskThreadTimer = undefined;
+      if (!this.running || this.answering !== origin) return;
+      const summary = replyLead(scrubSecrets(startText), 120).replace(/\s+/g, ' ');
+      const plain = summary.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+      origin.thread = ts;
+      origin.opening = this.publish(`Comecei: ${plain || 'tarefa com anexo'}`, ts, null).then(() => {}, error => {
+        this.options.warn(`Slack task start not confirmed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, this.options.taskThreadAfterMs?.() ?? TASK_THREAD_AFTER_MS);
+    this.taskThreadTimer.unref?.();
+  }
+
+  private cancelTaskThread(): void {
+    clearTimeout(this.taskThreadTimer);
+    this.taskThreadTimer = undefined;
+  }
+
+  private async waitForTaskStart(opening: Promise<void>): Promise<void> {
+    const generation = this.generation;
+    await opening;
+    if (generation !== this.generation) throw new Error('Slack task session closed before delivery.');
   }
 
   /**
@@ -657,6 +701,7 @@ export class SlackBridge {
   private async answer(answering: Origin, text: string, closing: boolean): Promise<void> {
     const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
     try {
+      if (answering.opening) await this.waitForTaskStart(answering.opening);
       await this.publish(text, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
       this.answered(answering.channel);
       const owner = this.owner();
@@ -668,6 +713,7 @@ export class SlackBridge {
   async answerDuringHold(): Promise<void> {
     const answering = this.answering, text = this.replied;
     if (!answering || !text) return;
+    this.cancelTaskThread();
     this.answering = undefined; this.replied = ''; this.delivered = '';
     await this.answer(answering, text, true);
   }
@@ -678,6 +724,7 @@ export class SlackBridge {
     this.progressOnly = undefined; this.shellEnd = false;
     this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
+    this.cancelTaskThread();
     clearTimeout(this.workTimer); this.workTimer = undefined;
     const steps = this.work?.steps ?? 0, work = this.work, owner = this.owner();
     this.work = undefined;
@@ -813,7 +860,9 @@ export class SlackBridge {
     if (!topic || !owner) {
 
       const thread = this.progressThread(channel);
-      const sent = await this.publish(text, thread, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(this.answering?.channel === channel && !thread && options.broadcast ? { broadcast: true as const } : {}) });
+      const opening = thread ? this.answering?.opening : undefined;
+      if (opening) await this.waitForTaskStart(opening);
+      const sent = await this.publish(text, thread, channel, options.choices ? { choices: options.choices } : {});
       return { ...sent, thread: thread ?? sent.ts };
     }
     const file = join(owner.dir, TOPICS), now = this.options.now();
@@ -910,7 +959,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void; taskThreadAfterMs?: () => number | undefined } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;

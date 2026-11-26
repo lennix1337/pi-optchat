@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { HttpError } from '../src/assistant-client.ts';
+import { defaults, loadConfig, saveConfig } from '../src/profiles.ts';
 import { SLACK_PREFIX, SlackBridge, clipWords, finalText, registerSlackBridge, wakeChannel } from '../src/slack-bridge.ts';
 import { budgetNote, words } from '../src/slack-policy.ts';
 import { readDay } from '../src/home-day.ts';
@@ -47,6 +48,150 @@ function fixture(inbox: { seq: number; ts: string; thread: string | null; text: 
 }
 
 const replies = (...texts: string[]) => texts.map(text => ({ role: 'assistant', content: [{ type: 'text', text }] }) as unknown as AgentMessage);
+
+const TASK_TS = '1793000000.000100';
+const TOPIC_TS = '1793000000.000200';
+
+function taskThreadFixture(taskThreadAfterMs?: number) {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-task-thread-'));
+  const { pi, fire } = hookedPi();
+  const received: string[] = [];
+  const posted: unknown[] = [];
+  const inbox = [{ seq: 1, ts: TASK_TS, thread: null as string | null, channel: 'D0TEST', text: 'Confira a fila\ne os testes.\n\nDetalhes para depois.' }];
+  let send!: (text: string, topic?: string) => Promise<unknown>;
+  Object.assign(pi as object, {
+    sendUserMessage: (text: string) => received.push(text),
+    registerTool: (tool: { execute(id: string, params: { text: string; topic?: string }): Promise<unknown> }) => {
+      send = (text, topic) => tool.execute('fixture', { text, ...(topic ? { topic } : {}) });
+    },
+  });
+  const bridge = registerSlackBridge(pi, () => ({ dir, name: 'fixture' }), undefined, {
+    taskThreadAfterMs: () => taskThreadAfterMs,
+    request: async (_owner, path, body) => {
+      if (path.startsWith('/v1/slack/inbox')) return { messages: inbox };
+      if (path === '/v1/slack/send') posted.push(body);
+      return { parts: 1, ts: TOPIC_TS };
+    },
+  });
+  const say = (text: string) => {
+    const message: AgentMessage = { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() };
+    fire('message_end', { message });
+  };
+  return { bridge, inbox, posted, send: (text: string, topic?: string) => send(text, topic), say,
+    start: () => fire('agent_start'),
+    receive: async () => { await bridge.poll(); return received.at(-1)!; },
+    finish: (text: string) => fire('agent_end', { messages: replies(text) }),
+    close: () => { bridge.stop(); rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
+test('task thread: a quick DM answer stays at the top level and cancels the timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = taskThreadFixture();
+  try {
+    const dm = await f.receive();
+    f.start(); f.say(dm);
+    t.mock.timers.tick(59_999);
+    assert.deepEqual(f.posted, []);
+    await f.finish('Tudo certo.');
+    t.mock.timers.tick(60_000);
+    assert.deepEqual(f.posted, [{ text: 'Tudo certo.', threadTs: null }]);
+  } finally { f.close(); }
+});
+
+test('task thread: the default opens once at 60s and the final and shell follow-up stay in that thread', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = taskThreadFixture();
+  try {
+    const dm = await f.receive();
+    t.mock.timers.tick(60_000);
+    assert.deepEqual(f.posted, [], 'being queued is not working');
+    f.start(); f.say(dm);
+    t.mock.timers.tick(59_999);
+    assert.deepEqual(f.posted, []);
+    t.mock.timers.tick(1);
+    await settle();
+    assert.deepEqual(f.posted, [{ text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS }]);
+    t.mock.timers.tick(120_000);
+    await f.finish('Testes concluídos.');
+    f.start(); f.say('[shell deadbeef] exit 0');
+    await f.finish('Fila validada.');
+    assert.deepEqual(f.posted, [
+      { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS },
+      { text: 'Testes concluídos.', threadTs: TASK_TS },
+      { text: 'Fila validada.', threadTs: TASK_TS },
+    ]);
+  } finally { f.close(); }
+});
+
+test('task thread: slack_send follows the task, but explicit topics open and reuse their own threads', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = taskThreadFixture(5_000);
+  try {
+    const dm = await f.receive();
+    f.start(); f.say(dm);
+    t.mock.timers.tick(5_000);
+    await f.send('Fila lida.');
+    await f.send('Relatório separado.', 'outro-assunto');
+    await f.send('Mais detalhes.', 'outro-assunto');
+    await f.finish('Feito.');
+    assert.deepEqual(f.posted, [
+      { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS },
+      { text: 'Fila lida.', threadTs: TASK_TS },
+      { text: 'Relatório separado.', threadTs: null },
+      { text: 'Mais detalhes.', threadTs: TOPIC_TS, broadcast: true },
+      { text: 'Feito.', threadTs: TASK_TS },
+    ]);
+  } finally { f.close(); }
+});
+
+test('task thread: a DM steering an existing run does not open a task thread', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = taskThreadFixture(5_000);
+  try {
+    f.start(); f.say('Tarefa do terminal.');
+    f.say(await f.receive());
+    t.mock.timers.tick(5_000);
+    await f.finish('Feito.');
+    assert.deepEqual(f.posted, [{ text: 'Feito.', threadTs: null }]);
+  } finally { f.close(); }
+});
+
+test('task thread: existing Slack threads are reused and stopping the bridge cancels a new timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = taskThreadFixture(5_000);
+  try {
+    f.inbox[0]!.thread = TOPIC_TS;
+    const first = await f.receive();
+    f.start(); f.say(first);
+    t.mock.timers.tick(5_000);
+    await f.finish('Respondido.');
+    assert.deepEqual(f.posted, [{ text: 'Respondido.', threadTs: TOPIC_TS }]);
+
+    f.inbox.push({ seq: 2, ts: '1793000000.000300', channel: 'D0TEST', text: 'Mais uma tarefa.', thread: null });
+    const second = await f.receive();
+    f.start(); f.say(second);
+    f.bridge.stop();
+    t.mock.timers.tick(5_000);
+    assert.equal(f.posted.length, 1);
+  } finally { f.close(); }
+});
+
+test('task thread: profile config preserves the custom threshold and rejects invalid timers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slack-task-thread-config-'));
+  try {
+    saveConfig(dir, defaults);
+    assert.equal(loadConfig(dir).slack, undefined);
+    for (const taskThreadAfterMs of [0, 5_000]) {
+      saveConfig(dir, { ...defaults, slack: { taskThreadAfterMs } });
+      assert.equal(loadConfig(dir).slack?.taskThreadAfterMs, taskThreadAfterMs);
+    }
+    for (const taskThreadAfterMs of [-1, 2.5, 2_147_483_648]) {
+      saveConfig(dir, { ...defaults, slack: { taskThreadAfterMs } });
+      assert.throws(() => loadConfig(dir), /slack\.taskThreadAfterMs/);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('operator DMs become [Slack] user messages in order, once, across restarts', async () => {
   const f = fixture([{ seq: 1, ts: '1.0', thread: null, text: 'como ta o deploy?' }, { seq: 2, ts: '2.0', thread: null, text: 'e o CI?' }]);
