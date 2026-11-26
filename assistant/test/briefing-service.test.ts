@@ -4,6 +4,8 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { GoogleLocal } from '../src/connectors/google-local.ts';
 import { BriefingService } from '../src/briefing/service.ts';
+import type { MeetingPrepCard } from '../src/briefing/meeting-prep.ts';
+import { createNotificationCenter } from '../src/notifications/center.ts';
 import { createAssistantServer } from '../src/http/server.ts';
 import { TaskStore } from '../src/store/db.ts';
 import { ACCOUNTS, CLIENT_ID, CLIENT_SECRET, FakeGoogle } from './google-support.ts';
@@ -42,6 +44,76 @@ async function rig(fn: (r: { dir: string; fake: FakeGoogle; clock: { now: number
 
 const gmailReads = (fake: FakeGoogle) => fake.log.filter(entry => entry.path.startsWith('/gmail/')).length;
 
+const meeting = (id: string, summary: string, start: string, attendees: { email: string; displayName?: string; self?: boolean }[]) => ({
+  id, summary, start: { dateTime: start }, end: { dateTime: new Date(Date.parse(start) + 3_600_000).toISOString() }, attendees,
+});
+const guest = { email: 'robin@example.test', displayName: 'Robin' };
+
+test('daily briefing includes ordered 24-hour prep cards with relevant threads and open items', async () => rig(async ({ fake, clock, local }) => {
+  fake.events.personal.push(
+    meeting('later', 'Project Quartz', '2026-10-29T08:55:00Z', [guest]),
+    meeting('solo', 'Solo', '2026-10-28T10:00:00Z', [{ email: ACCOUNTS.personal.email, self: true }]),
+    meeting('early', 'Review Indigo', '2026-10-28T12:00:00Z', [guest, { email: ACCOUNTS.personal.email }]),
+    meeting('outside', 'Outside', '2026-10-29T09:00:00Z', [guest]),
+    meeting('started', 'Started', '2026-10-28T08:45:00Z', [guest]),
+  );
+  fake.mail.personal.push(
+    { id: 'old', threadId: 'thread-1', from: 'casey@example.test', subject: 'Earlier notes', body: 'Old body', labels: ['UNREAD'], receivedAt: '2026-10-27T11:00:00Z' },
+    { id: 'new', threadId: 'thread-1', from: 'owner@example.test', to: `Robin <${guest.email}>`, subject: 'New notes', body: 'This must not reach the card', receivedAt: '2026-10-28T08:45:00Z' },
+    { id: 'subject', from: 'casey@example.test', subject: 'Re: Review Indigo', body: 'Review question', labels: ['INBOX', 'UNREAD'], receivedAt: '2026-10-28T08:30:00Z' },
+    { id: 'unrelated', from: 'other-robin@example.test', subject: 'Unrelated', body: 'Ignore this fixture', receivedAt: '2026-10-28T08:50:00Z' },
+  );
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '06:00', meetingPrep: true, now: () => clock.now });
+  const briefing = await service.tick();
+  const cards = briefing?.meetingPrep ?? [];
+  assert.deepEqual(cards.map(card => card.title), ['Review Indigo', 'Project Quartz']);
+  assert.deepEqual(cards[0].attendees, [guest]);
+  assert.equal(cards[0].when, '2026-10-28 09:00');
+  assert.deepEqual(cards[0].threads.map(thread => thread.subject), ['New notes', 'Re: Review Indigo']);
+  assert.deepEqual(cards[0].openItems.map(item => item.title), ['Re: Review Indigo']);
+  assert.ok(!JSON.stringify(cards).includes('This must not reach the card'));
+  assert.deepEqual((await service.latest())?.meetingPrep, cards);
+  assert.equal(fake.requests('/gmail/v1/users/me/messages').filter(r => r.path.endsWith('/messages')).length, 2, 'one paginated mail read');
+  assert.ok(fake.log.filter(r => /^\/(gmail|calendar)\//.test(r.path)).every(r => r.method === 'GET'));
+}));
+
+test('reminders make their card available once at 30 minutes, independently of the daily brief', async () => rig(async ({ dir, fake, clock, local }) => {
+  fake.events.personal.push(
+    meeting('upcoming', 'Design review', '2026-10-28T10:00:00Z', [guest]),
+    meeting('solo', 'Solo', '2026-10-28T10:05:00Z', []),
+    meeting('second', 'Demo', '2026-10-28T10:10:00Z', [guest]),
+  );
+  fake.mail.personal.push({ id: 'design', from: guest.email, subject: 'Sketch', body: 'Draft', receivedAt: '2026-10-28T08:45:00Z' });
+  const center = createNotificationCenter({ databasePath: join(dir, 'notifications.sqlite'), operatorAuthority: {}, now: () => clock.now });
+  const ready: MeetingPrepCard[] = [];
+  const make = async (meetingPrep: boolean) => new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '12:00', meetingPrep, now: () => clock.now,
+    onMeetingPrep: card => { center.notify({ id: card.cardId, ref: card.cardId, channel: 'local', category: 'meeting_prep_ready' }); ready.push(card); },
+  });
+  try {
+    const service = await make(true);
+    clock.now = Date.parse('2026-10-28T09:29:59.999Z');
+    assert.equal(await service.tick(), null);
+    assert.deepEqual(ready, []);
+    assert.equal(gmailReads(fake), 0);
+    clock.now++;
+    await Promise.all([service.tick(), service.tick(), (await make(false)).tick()]);
+    assert.deepEqual(ready.map(card => card.title), ['Design review']);
+    assert.equal(ready[0].threads[0].subject, 'Sketch');
+    const reads = gmailReads(fake);
+    await service.tick();
+    assert.equal(gmailReads(fake), reads);
+    clock.now = Date.parse('2026-10-28T09:40:00Z');
+    await service.tick();
+    assert.deepEqual(ready.map(card => card.title), ['Design review', 'Demo']);
+    assert.equal(await service.latest(), null, 'reminders do not overwrite or advance the daily brief');
+    await (await make(true)).tick();
+    const notices = center.list();
+    assert.equal(notices.length, 2, 'same occurrences deduplicate in the notification center after restart');
+    assert.ok(notices.every(note => note.category === 'meeting_prep_ready' && note.state === 'pending'));
+    assert.ok(!JSON.stringify(notices).includes('Design review'));
+  } finally { center.close(); }
+}));
+
 test('the service reads mail and agenda once a day at dailyAt, and a restart the same day does not read again', async () => rig(async ({ fake, clock, local }) => {
   fake.mail.personal.push({ id: 'm1', from: 'Ana <ana@example.test>', subject: 'Reunião amanhã', body: 'Pode confirmar?', receivedAt: '2026-10-28T08:00:00.000Z' });
   const ready: string[] = [];
@@ -53,6 +125,7 @@ test('the service reads mail and agenda once a day at dailyAt, and a restart the
   clock.now = Date.parse('2026-10-28T10:30:00.000Z');
   const daily = await service.tick();
   assert.equal(daily?.kind, 'daily');
+  assert.equal(daily?.meetingPrep, undefined, 'omitting the opt-in leaves the stored shape unchanged');
   assert.ok(daily!.sources.some(s => s.sourceId === 'personal:mail' && s.state === 'ok'), JSON.stringify(daily!.sources));
   assert.ok(daily!.items.some(i => i.sourceRef.includes('m1') && i.untrusted), JSON.stringify(daily!.items));
   const reads = gmailReads(fake);

@@ -85,7 +85,7 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type EventsConfig = { sources: Record<string, import('./http/hooks.ts').HookSource> };
-export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string };
+export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string; meetingPrep?: boolean };
 export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; events?: EventsConfig; learning?: true; signals?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
 const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'events', 'learning', 'signals'];
@@ -98,7 +98,8 @@ function validWebOrigins(value: unknown): value is string[] {
 function validGoogle(value: unknown): value is GoogleConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const g = value as Record<string, unknown>;
-  if (Object.keys(g).sort().join(',') !== 'connections,dailyAt,timeZone' || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
+  if (Object.keys(g).some(key => !['connections', 'dailyAt', 'timeZone', 'meetingPrep'].includes(key))
+      || (Object.hasOwn(g, 'meetingPrep') && typeof g.meetingPrep !== 'boolean') || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
   if (!Array.isArray(g.connections) || g.connections.length < 1 || g.connections.length > 10 || new Set(g.connections).size !== g.connections.length ||
       !g.connections.every(name => typeof name === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name))) return false;
   if (typeof g.timeZone !== 'string' || g.timeZone.length > 64) return false;
@@ -334,7 +335,8 @@ async function startGoogle(config: Config, settings: GoogleConfig, notices: Noti
   for (const name of ['vault.sqlite', 'google.sqlite', 'google-gateway.sqlite', 'briefings.sqlite']) prepareDatabase(join(dir, name));
   const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector() });
   const service = new BriefingService({
-    local, connections: settings.connections, timeZone: settings.timeZone, dailyAt: settings.dailyAt,
+    local, connections: settings.connections, timeZone: settings.timeZone, dailyAt: settings.dailyAt, meetingPrep: settings.meetingPrep === true,
+    ...(notices ? { onMeetingPrep: card => notices.notify({ id: card.cardId, ref: card.cardId, channel: 'local', category: 'meeting_prep_ready' }) } : {}),
     onReady: briefing => {
       console.log(`Google briefing ${briefing.localDate}: ${briefing.items.length} items; sources ${briefing.sources.map(s => `${s.sourceId} ${s.state}`).join(', ')}.`);
       notices?.announce(`briefing-${briefing.localDate}`, `briefing-${briefing.briefingId}`);

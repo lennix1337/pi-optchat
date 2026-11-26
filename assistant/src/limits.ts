@@ -4,3 +4,7 @@ export function boundedInteger(value: number | undefined, fallback: number, min:
   if (!Number.isSafeInteger(n) || n < min || n > max) throw new Error('invalid_options');
   return n;
 }
+
+export function boundedText(text: string, maxCodePoints: number): string {
+  return Array.from(text).slice(0, maxCodePoints).join('');
+}
