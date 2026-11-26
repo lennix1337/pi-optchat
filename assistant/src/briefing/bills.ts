@@ -62,7 +62,6 @@ export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today
   return { dueDate: `${year}-${pad(month)}-${pad(day)}`, amount: amount ? amount.replace(/\s+/g, ' ').trim() : null, daysLeft };
 }
 
-/** Of last, this and next year, the one that puts a yearless day/month closest to today. */
 function nearestYear(thisYear: number, month: number, day: number, todayNumber: number): number {
   let best = thisYear, gap = Infinity;
   for (const year of [thisYear - 1, thisYear, thisYear + 1]) {

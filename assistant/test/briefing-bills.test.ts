@@ -8,7 +8,6 @@ import { briefingView } from '../src/briefing/view.ts';
 import { readConfig } from '../src/main.ts';
 import { MAIL_SCOPE, withGoogle, type GoogleRig } from './google-support.ts';
 
-// Fake clock: 2026-10-28 12:00Z is 09:00 on the 28th in Sao Paulo.
 const TZ = 'America/Sao_Paulo';
 const CARD = '4111 1111 1111 1111';
 const rules = { trustedSenders: [] };
@@ -37,7 +36,6 @@ function seedBills(rig: GoogleRig) {
     { id: 'b-none', from: 'Ana <ana@example.test>', subject: 'Almoco?', body: 'O prazo vence amanha, vamos almocar?', receivedAt: '2026-10-27T12:00:00.000Z' },
     { id: 'b-card', from: 'Cartao Fake <fatura@cartao.example.test>', subject: `Fatura do cartao ${CARD}`, body: `Cartao ${CARD}. Total R$ 700,00. Vencimento: 02/11/2026`, receivedAt: '2026-10-27T13:00:00.000Z' },
   );
-  // The same reminder arrives in the second account.
   rig.fake.mail.dentai.push({ id: 'd-energy', from: 'Energia Fake <contas@energia.example.test>', subject: 'Lembrete: fatura', body: 'Valor total: R$ 1.234,56\nVencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' });
 }
 
