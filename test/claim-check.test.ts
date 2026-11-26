@@ -180,6 +180,9 @@ test('a final reply that promises later work needs a commitment, a background jo
   assert.deepEqual(unbackedPromises('PR aberto. Amanhã reviso o resto e te aviso.', ''), ['Amanhã reviso o resto e te aviso.']);
   assert.deepEqual(unbackedPromises('Vou medir a CPU depois do merge.', ''), ['Vou medir a CPU depois do merge.']);
   assert.equal(unbackedPromises("I'll check it tomorrow.", '').length, 1);
+  assert.equal(unbackedPromises('Amanhã começo pelo radar.', '').length, 1);
+  assert.equal(unbackedPromises('Amanhã verificarei o deploy.', '').length, 1);
+  assert.deepEqual(unbackedPromises('A vovó chegou; o devoto rezou.', ''), []);
   assert.deepEqual(unbackedPromises('Vou medir a CPU depois do merge.', 'Added c_ab12cd [optchat · open] medir CPU'), []);
   assert.deepEqual(unbackedPromises('Te aviso quando o CI terminar.', '[gitwatch] now following lennix1337/x #3: you are woken when CI finishes'), []);
   assert.deepEqual(unbackedPromises('Te aviso quando terminar.', 'Background shell 5c02 started.'), []);

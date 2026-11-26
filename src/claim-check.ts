@@ -174,7 +174,7 @@ export function utcTimes(reply: string): string[] {
  * promise unless the run left a commitment, a background shell, a started worker, a gitwatch follow or a reload behind it (operator 25/11: "i dont
  * want false promises"; the same day a reply promised five fixes with no PR, commitment or job behind any).
  */
-export const PROMISE = /(?<!\bn[ãa]o\s)\b(?:vou|irei|vamos|prometo|amanh[ãa]\s+(?:eu\s+)?\w+[oa]\b|depois\s+(?:eu\s+)?(?:te\s+)?(?:aviso|mando|reviso|meço|corrijo|fa[çc]o)|te\s+(?:aviso|mando|conto|passo)|aviso\s+(?:quando|assim|depois)|I'll|I\s+will|will\s+report)\b/iu;
+export const PROMISE = /(?<!\bn[ãa]o\s)\b(?:vou|irei|vamos|prometo|amanh[ãa]\s+(?:eu\s+)?\p{L}+(?:o|ei|a)|depois\s+(?:eu\s+)?(?:te\s+)?(?:aviso|mando|reviso|meço|corrijo|fa[çc]o)|te\s+(?:aviso|mando|conto|passo)|aviso\s+(?:quando|assim|depois)|I'll|I\s+will|will\s+report)(?![\p{L}\p{N}_])/iu;
 const PROMISE_BACKING = /^Added .*\bc_[0-9a-f]{6}|\bmoved to background shell\b|\bBackground shell \S+ started\b|\[gitwatch\] now following\b|\bReload requested\b|^Started: .*Reports? will arrive|^Started: .*reports will arrive/mu;
 
 export function unbackedPromises(reply: string, evidence: string): string[] {
