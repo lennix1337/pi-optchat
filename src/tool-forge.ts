@@ -419,12 +419,24 @@ export function proposeSkills(entries: readonly ExecEntry[], options: DetectForg
     });
 }
 
-function calledByAnotherScript(target: ForgedScript, scripts: readonly ForgedScript[]): boolean {
-  const stem = target.name.replace(/\.[^.]+$/, '');
-  return scripts.some(other => {
-    if (other.path === target.path) return false;
-    try { return readFileSync(other.path, 'utf8').includes(stem); } catch { return false; }
-  });
+function namesFile(source: string, fileName: string): boolean {
+  return new RegExp(`(?<![\\w.-])${fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`).test(source);
+}
+
+function stillRunByLiveScripts(prune: readonly ForgedScriptUsage[], scripts: readonly ForgedScript[]): Set<string> {
+  const stale = new Set(prune.map(item => item.path));
+  const sources = new Map(scripts.map(script => { try { return [script.path, readFileSync(script.path, 'utf8')] as const; } catch { return [script.path, ''] as const; } }));
+  const live = scripts.filter(script => !stale.has(script.path));
+  const kept = new Set<string>();
+  for (let i = 0; i < live.length; i++) {
+    const source = sources.get(live[i]!.path) ?? '';
+    for (const item of prune) {
+      if (kept.has(item.path) || item.path === live[i]!.path || !namesFile(source, item.name)) continue;
+      kept.add(item.path);
+      live.push(item);
+    }
+  }
+  return kept;
 }
 
 /** Runs candidate detection and forged-script reuse/pruning analysis over a profile's exec log and tool directory. */
@@ -434,7 +446,8 @@ export function analyzeToolForge(profileDir: string, options: AnalyzeForgeOption
   const candidates = detectForgeCandidates(entries, options);
   const scripts = listForgedScripts(toolDir);
   const { reuse, prune } = trackForgedReuse(entries, scripts, options);
-  return { candidates, skillProposals: proposeSkills(entries, options), reuse, prune: prune.filter(item => !calledByAnotherScript(item, scripts)), toolDir: options.displayToolDir ?? options.toolDir ?? DEFAULT_TOOL_DIR_DISPLAY };
+  const runByOthers = stillRunByLiveScripts(prune, scripts);
+  return { candidates, skillProposals: proposeSkills(entries, options), reuse, prune: prune.filter(item => !runByOthers.has(item.path)), toolDir: options.displayToolDir ?? options.toolDir ?? DEFAULT_TOOL_DIR_DISPLAY };
 }
 
 /** Formats top forge candidates, reuse counts and 30-day prune candidates as lines for the daily retro prompt. */

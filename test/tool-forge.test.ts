@@ -205,11 +205,13 @@ test('analyzeToolForge reads exec-log and tool dir end-to-end without any extra 
     const oldScript = join(bin, 'legacy-check.sh');
     writeFileSync(activeScript, '#!/usr/bin/env node\nconsole.log("ok");\n');
     writeFileSync(oldScript, '#!/usr/bin/env bash\necho old\n');
-    const launched = join(bin, 'crash-observer.js'), launcher = join(bin, 'launcher.js');
-    writeFileSync(launched, 'console.log("observe");\n');
-    writeFileSync(launcher, "require('./crash-observer.js');\n");
+    const write = (name: string, body: string) => { const file = join(bin, name); writeFileSync(file, body); return file; };
+    write('launcher.js', "require(path.join(__dirname, 'observer.js'));\n");
+    const observer = write('observer.js', "require('./capture.js'); // like legacy-check\n");
+    const capture = write('capture.js', 'module.exports = {};\n');
+    const pairA = write('pair-a.sh', 'bash pair-b.sh\n'), pairB = write('pair-b.sh', 'bash pair-a.sh\n');
     const oldTime = new Date(NOW - 35 * DAY);
-    for (const file of [activeScript, oldScript, launched, launcher]) utimesSync(file, oldTime, oldTime);
+    for (const file of [activeScript, oldScript, observer, capture, pairA, pairB]) utimesSync(file, oldTime, oldTime);
 
     for (let i = 0; i < 6; i++) {
       appendExecLog(dir, bashRow(-i * DAY, `git status -sb && git diff --stat src/f${i}.ts`, { run: `r${i}` }));
@@ -217,7 +219,7 @@ test('analyzeToolForge reads exec-log and tool dir end-to-end without any extra 
     appendExecLog(dir, bashRow(-2 * DAY, `node "${activeScript}" --short`, { run: 'r9' }));
     appendExecLog(dir, bashRow(-1 * DAY, `node "${activeScript}" --full`, { run: 'r10' }));
 
-    assert.equal(listForgedScripts(bin).length, 4);
+    assert.equal(listForgedScripts(bin).length, 7);
     assert.equal(readExecLog(dir).length, 8);
 
     const report = analyzeToolForge(dir, { toolDir: bin, now: NOW });
@@ -225,7 +227,7 @@ test('analyzeToolForge reads exec-log and tool dir end-to-end without any extra 
     assert.equal(report.candidates.length, 1);
     assert.equal(report.candidates[0].count, 6);
     assert.equal(report.reuse.find(s => s.name === 'summarize-diff.mjs')?.uses, 2);
-    assert.deepEqual(report.prune.map(s => s.name), ['launcher.js', 'legacy-check.sh'], 'a script another one runs is not a prune candidate (25/11: pi-process-observer.js, run by pi-launcher.js, was listed)');
+    assert.deepEqual(report.prune.map(s => s.name).sort(), ['legacy-check.sh', 'pair-a.sh', 'pair-b.sh'], 'a script run, directly or through a chain, by a script still in use is not a prune candidate (25/11: pi-process-observer.js, run by pi-launcher.js, was listed); a stem without its extension or two idle scripts naming each other keep nothing');
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(bin, { recursive: true, force: true });

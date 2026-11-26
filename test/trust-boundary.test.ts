@@ -283,6 +283,7 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   assert.deepEqual(openMajors(major), ['src/ideas.ts:107']);
   assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: nada grave.')), []);
   assert.deepEqual(openMajors('- [model_review:major] fora do bloco do Revisor'), []);
+  assert.deepEqual(openMajors(block('* [model_review:Major] a.ts:3: bullet e caixa diferentes.\n- [model_review:blocker]')), ['a.ts:3', 'sem local']);
   const green = { statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], mergeStateStatus: 'CLEAN' };
   const exec = (body: string): Exec => async () => ({ code: 0, stdout: JSON.stringify({ ...green, body }), stderr: '' });
   for (const command of ['gh pr merge 602 --squash', 'gh pr merge 602 --auto --squash'])
