@@ -90,7 +90,10 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
     await session.bindExtensions({ mode: 'tui', onError: e => errors.push(e.error), uiContext: { ...session.extensionRunner!.getUIContext(), notify: () => {}, setStatus: () => {} },
       commandContextActions: { reload: async () => {
         reloads++; mark('reload-attempt');
-        if (mode === 'partial') { await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'reload' }); shutdown = true; mark('reload-shutdown'); }
+        if (mode === 'partial') {
+          await session!.extensionRunner!.emit({ type: 'session_shutdown', reason: 'reload' });
+          shutdown = true; mark('reload-shutdown');
+        }
         reloadAttempted();
         if (mode !== 'success') throw new Error(`fixture reload ${mode}`);
         await session!.reload();
@@ -139,6 +142,9 @@ for (const mode of ['success', 'lost', 'partial'] as const) test(`a real schedul
     if (mode === 'partial') {
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(shutdown, true, 'failure happens after the old runtime shuts down');
+      assert.equal(recoveryTimers.size, 1, 'the old runtime armed a wake recovery deadline');
+      assert.equal([...recoveryTimers.values()].filter(timer => timer.active).length, 0,
+        'session_shutdown must cancel the old runtime’s wake recovery deadline');
       const before = manager.getBranch().findLast(e => e.type === 'custom' && e.customType === RELOAD_ENTRY);
       assert.ok(before?.type === 'custom'); assert.equal((before.data as { state: string }).state, 'reloading');
       await reopen();
