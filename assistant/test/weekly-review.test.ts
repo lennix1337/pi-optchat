@@ -6,7 +6,6 @@ import type { Task } from '../src/contracts/tasks.ts';
 import { withGoogle, type GoogleRig } from './google-support.ts';
 
 const TZ = 'America/Sao_Paulo';
-/** Sunday 2026-11-01, 18:30 in Sao Paulo. */
 const SUNDAY_EVENING = Date.parse('2026-11-01T21:30:00.000Z');
 const rules = { trustedSenders: ['boss@dentai.example.test'] };
 
