@@ -46,7 +46,7 @@ type Message = NonNullable<Event['message']>;
 const plainText = (msg: Message): string => (typeof msg.content === 'string' ? msg.content : (Array.isArray(msg.content) ? msg.content : []).filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 const ASKS_MORE = /\be ate mesmo mais\b|\bqueremos mais\b|\bcade o mais\b/u;
 const LISTED_COUNT = /\b(?:\d+|(?:dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez))\s+(?:itens|items|ideias|pontos|tarefas|passos)\b/u;
-const NAMES_EXTRA = /\balem\b|\bextras?\b|\ba mais\b|\badicion(?:ais|al)\b|\+\s?\d|\bmais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\b/u;
+const NAMES_EXTRA = /\balem\b|\bextras?\b|\ba mais\b|\badicion(?:ais|al)\b|\+\s?\d|\be mais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\b|\bmais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\s+(?:itens?|items?|melhorias?|ideias?|pontos?|tarefas?|passos?)\b/u;
 const reportsOnlyListedCount = (text: string): boolean => { const plain = withoutQuotes(text).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase(); return LISTED_COUNT.test(plain) && !NAMES_EXTRA.test(plain); };
 
 function nextPacing(previous: Pacing, event: Event): Pacing {

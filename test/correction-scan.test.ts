@@ -385,7 +385,8 @@ test('more-means-more flags a final reply that reports only the listed count aft
  const more = { active: false, directWork: 0, more: true };
  for (const s of ['Feito: os 5 itens estão no ar.', 'Fiz os cinco itens que listei.', 'Todos os 5 itens concluídos e validados.']) assert.equal(detect(rule, text(s), more), true, s);
  assert.equal(detect(rule, call('slack_send', { text: 'Terminei os 5 itens.' }), more), true);
- for (const s of ['Fiz os 5 itens e além disso o item 6 (cache).', 'Os 5 itens mais 2 extras: cache e log.', 'Os 5 itens +3 adicionais.', 'Entreguei os 5 itens e mais um a mais: o painel.', 'Fiz os 5 itens e mais 2: cache e log.', 'Fiz os 5 itens e mais um: o painel.']) assert.equal(detect(rule, text(s), more), false, s);
+ for (const s of ['Fiz os 5 itens e além disso o item 6 (cache).', 'Os 5 itens mais 2 extras: cache e log.', 'Os 5 itens +3 adicionais.', 'Entreguei os 5 itens e mais um a mais: o painel.', 'Fiz os 5 itens e mais 2: cache e log.', 'Fiz os 5 itens e mais um: o painel.', 'Fiz os 5 itens, mais 2 melhorias: cache e log.', 'Fiz os 5 itens, mais um item: o painel.']) assert.equal(detect(rule, text(s), more), false, s);
+ for (const s of ['Fiz os 5 itens; mais um teste passou.', 'Fiz os 5 itens com mais 3 commits no main.', 'Os 5 itens estão no ar, mais 2 reviews pendentes.']) assert.equal(detect(rule, text(s), more), true, s);
  assert.equal(detect(rule, call('slack_send', { text: 'Terminei os 5 itens e 2 extras.' }), more), false);
  assert.equal(detect(rule, text('Feito: os 5 itens estão no ar.')), false);
  assert.equal(detect(rule, text('Feito: os 5 itens estão no ar.'), { active: false, directWork: 0, more: false }), false);
