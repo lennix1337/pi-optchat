@@ -174,4 +174,7 @@ test('a running worker shows its worktree and goal, not the brief boilerplate', 
     { label: 'task-thread: Implement the Slack task thread.', target: { repo: 'pi-optchat' } });
   assert.deepEqual(workerHome('Goal: radar reply deadlines\nAcceptance: x', 'C:\\Projetos\\dotfiles'), { label: 'radar reply deadlines', target: { repo: 'dotfiles' } });
   assert.deepEqual(workerHome('You are a subagent.'), { label: 'Trabalho em andamento' });
+  assert.deepEqual(workerHome('You are a subagent.', '/p/x/worktrees/fix-a'), { label: 'fix-a: tarefa sem descrição', target: { repo: 'x' } });
+  assert.equal(workerHome('Edit src/home.ts and a.b.c now. Then more.', '/p/x').label, 'Edit src/home.ts and a.b.c now.');
+  assert.equal(workerHome(`Goal: ${'a'.repeat(300)}`, '/p/x').label.length, 120);
 });

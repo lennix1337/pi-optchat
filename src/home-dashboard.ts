@@ -28,8 +28,10 @@ export function workerHome(task: string, cwd?: string): { label: string; target?
   const repo = at > 0 ? parts[at - 1] : parts.at(-1);
   const tree = at > 0 ? parts[at + 1] : undefined;
   const goal = /^\s*Goal:\s*(.+)$/im.exec(task)?.[1]
-    ?? task.replace(/you are a subagent\.?|don'?t write memory pages\.?/gi, ' ').split(/\n|(?<=[.!?])\s/).map(s => s.trim()).find(Boolean) ?? '';
-  const label = [tree, goal.replace(/\s+/g, ' ').trim()].filter(Boolean).join(': ');
+    ?? task.replace(/you are a subagent\.?|don'?t write memory pages\.?/gi, ' ').split(/\n|(?<=[.!?])\s+(?=[A-ZÀ-Ú])/u).map(s => s.trim()).find(Boolean) ?? '';
+  const text = goal.replace(/\s+/g, ' ').trim();
+  const what = text ? (text.length > 120 ? `${text.slice(0, 119)}…` : text) : tree ? 'tarefa sem descrição' : '';
+  const label = [tree, what].filter(Boolean).join(': ');
   return { label: label || 'Trabalho em andamento', ...(repo ? { target: { repo } } : {}) };
 }
 
