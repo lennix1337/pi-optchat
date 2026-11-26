@@ -42,6 +42,7 @@ const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
 const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 2, changes: 3 };
 const MAX_STORE_PAGES = 20;
 const MAX_THREAD_CHECKS = 25;
+const MAX_WEEKLY_TRIES = 3;
 const WEEK_LOOKBACK_DAYS = 7;
 const BACK_TO_BACK_MS = 5 * 60_000;
 const fail = (code: string): never => { throw new Error(code); };
@@ -67,7 +68,7 @@ export class BriefingComposer {
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_weekly ON briefings (profile, local_date) WHERE kind = 'weekly';
-      CREATE TABLE IF NOT EXISTS weekly_attempts (profile TEXT NOT NULL, local_date TEXT NOT NULL, attempted INTEGER NOT NULL, PRIMARY KEY (profile, local_date));`);
+      CREATE TABLE IF NOT EXISTS weekly_attempts (profile TEXT NOT NULL, local_date TEXT NOT NULL, attempted INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (profile, local_date));`);
   }
 
   /** Today's briefing for this profile; when another client already made it, that one is returned without reading again. */
@@ -85,10 +86,14 @@ export class BriefingComposer {
   async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean }> {
     const existing = this.weeklyFor(localDate);
     if (existing) return { briefing: existing, created: false, complete: true };
-    this.db.prepare('INSERT OR REPLACE INTO weekly_attempts VALUES (?, ?, ?)').run(this.options.profileId, localDate, this.now());
+    const tries = (this.weeklyAttempt(localDate)?.tries ?? 0) + 1;
+    this.db.prepare('INSERT OR REPLACE INTO weekly_attempts VALUES (?, ?, ?, ?)').run(this.options.profileId, localDate, this.now(), tries);
     const briefing = await this.composeWeekly(localDate);
-    if (briefing.sources.some(source => source.state === 'unavailable')) return { briefing, created: false, complete: false };
+    const google = briefing.sources.filter(source => source.sourceId !== 'tasks');
+    const down = google.filter(source => source.state === 'unavailable').length;
+    if (down && (down === google.length || tries < MAX_WEEKLY_TRIES)) return { briefing, created: false, complete: false };
     this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'weekly', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
+    this.db.prepare('DELETE FROM weekly_attempts WHERE profile = ? AND local_date = ?').run(this.options.profileId, localDate);
     const stored = this.weeklyFor(localDate)!;
     return { briefing: stored, created: stored.briefingId === briefing.briefingId, complete: true };
   }
@@ -102,10 +107,10 @@ export class BriefingComposer {
   /** The newest stored daily or on-demand briefing, or null when none is kept. */
   latest(): Briefing | null { return this.one("AND kind != 'weekly' ORDER BY created DESC LIMIT 1"); }
 
-  /** When this week's review was last attempted without being stored, so a restart keeps the retry delay. */
-  lastWeeklyAttempt(localDate: string): number | null {
-    const row = this.db.prepare('SELECT attempted FROM weekly_attempts WHERE profile = ? AND local_date = ?').get(this.options.profileId, localDate) as { attempted: number } | undefined;
-    return row ? row.attempted : null;
+  /** When and how often this week's review was attempted without being stored, so a restart keeps the retry delay; cleared once it is saved. */
+  weeklyAttempt(localDate: string): { at: number; tries: number } | null {
+    const row = this.db.prepare('SELECT attempted, tries FROM weekly_attempts WHERE profile = ? AND local_date = ?').get(this.options.profileId, localDate) as { attempted: number; tries: number } | undefined;
+    return row ? { at: row.attempted, tries: row.tries } : null;
   }
 
   latestWeekly(): Briefing | null { return this.one("AND kind = 'weekly' ORDER BY created DESC LIMIT 1"); }
@@ -199,8 +204,7 @@ export class BriefingComposer {
     const items: Omit<BriefingItem, 'itemId'>[] = [];
     const now = this.now();
     const taskSequence = this.readTasks(null, sources, items);
-    const range = weekRange(localDate, this.options.timeZone);
-    const from = new Date(Math.max(Date.parse(range.from), now)).toISOString(), to = range.to;
+    const { from, to } = weekRange(localDateTime(now, this.options.timeZone).date, this.options.timeZone);
     let distractions = 0;
     const events: WeekEvent[] = [];
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
@@ -218,16 +222,17 @@ export class BriefingComposer {
             if (message.labels.includes('SENT') || message.labels.includes('DRAFT')) continue;
             const result = triage(message, this.options.rules);
             if (result.urgency === 'low') { found.distractions++; continue; }
-            let uncertainty = result.uncertainty;
+            let uncertainty = result.uncertainty, unverified = false;
             if (checks < MAX_THREAD_CHECKS) {
               checks++;
               try {
                 const answeredAt = await this.options.google.lastSentAt(connectionId, message.threadId);
                 if (answeredAt !== null && answeredAt >= Date.parse(message.receivedAt)) continue;
-              } catch { uncertainty = 'high'; uncertain = true; }
-            } else { uncertainty = 'high'; uncertain = true; }
+              } catch { unverified = true; }
+            } else unverified = true;
+            if (unverified) { uncertainty = 'high'; uncertain = true; }
             const who = senderAddress(message.from) || bounded(message.from);
-            found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: 'awaiting_reply', urgency: result.urgency, uncertainty, untrusted: true, startable: false });
+            found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: unverified ? 'awaiting_reply_unverified' : 'awaiting_reply', urgency: result.urgency, uncertainty, untrusted: true, startable: false });
           }
           return page.truncated || uncertain;
         }),
@@ -307,7 +312,10 @@ export class BriefingComposer {
 
 type WeekEvent = { connectionId: string; event: CalendarEvent };
 
-function sameInvitation(a: CalendarEvent, b: CalendarEvent): boolean { return a.uid !== null && a.uid === b.uid && a.start === b.start && a.end === b.end; }
+function sameInvitation(a: CalendarEvent, b: CalendarEvent): boolean {
+  if (a.start !== b.start || a.end !== b.end) return false;
+  return a.uid !== null && b.uid !== null ? a.uid === b.uid : a.title === b.title;
+}
 
 function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
   const unique: WeekEvent[] = [];
