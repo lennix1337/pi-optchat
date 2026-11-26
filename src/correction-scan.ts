@@ -49,6 +49,8 @@ const LISTED_COUNT = /\b(?:\d+|(?:dois|duas|tres|quatro|cinco|seis|sete|oito|nov
 const NAMES_EXTRA = /\balem\b|\bextras?\b|\ba mais\b|\badicion(?:ais|al)\b|\+\s?\d|\be mais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\b|\bmais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\s+(?:itens?|items?|melhorias?|ideias?|pontos?|tarefas?|passos?)\b/u;
 const reportsOnlyListedCount = (text: string): boolean => { const plain = withoutQuotes(text).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase(); return LISTED_COUNT.test(plain) && !NAMES_EXTRA.test(plain); };
 
+const restartPacing = (from: Pacing, active: boolean, directWork: number): Pacing => ({ active, directWork, more: from.more });
+
 function nextPacing(previous: Pacing, event: Event): Pacing {
   const msg = event.message;
   let state: Pacing = previous;
@@ -58,11 +60,11 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, more: ASKS_MORE.test(plainText(msg)), wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0, clicked: false };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const text = plainText(msg);
-    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = { ...noPacing(), more: state.more };
+    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = restartPacing(state, false, 0);
     else if (!text.includes('?') && (/^quota pacing active\b/u.test(text) || (
       /\b(?:quota|cota)(?: semanal)?\b[^.\n]{0,80}\b(?:acabando|apertando|gastando mais rapido)\b/u.test(text) &&
       (msg.role === 'assistant' || /^(?:ja falei[^.\n]{0,40}|use|usa|delegue|coloca)\b[^.\n]{0,80}\bworkers?\b/u.test(text))
-    ))) state = { active: true, directWork: previous.directWork, more: state.more };
+    ))) state = restartPacing(state, true, previous.directWork);
   }
   const calls = toolCalls(event);
   if (calls.some(verifiesLive)) state = { ...state, checked: true };
