@@ -377,3 +377,25 @@ test('overdue-in-wake flags a wake that ends with an overdue commitment still op
  assert.equal(count([wakePrompt, text('Fechei o c_3fcb54 com o print da Home e o reload verificados.')]), 0, 'closed');
  assert.equal(count([operator, text('c_3fcb54 segue atrasado.')]), 0, 'not a wake');
 });
+
+const userSays = (s: string) => ({ type: 'message', timestamp: '2026-11-14T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: s }] } });
+const MORE_ASK = 'pode fazer todos os 5 itens e até mesmo mais... ambição, queremos mais';
+test('more-means-more flags a final reply that reports only the listed count after he asked for more', () => {
+ const rule = rules.find(r => r.id === 'more-means-more')!; assert.ok(rule);
+ const more = { active: false, directWork: 0, more: true };
+ for (const s of ['Feito: os 5 itens estão no ar.', 'Fiz os cinco itens que listei.', 'Todos os 5 itens concluídos e validados.']) assert.equal(detect(rule, text(s), more), true, s);
+ assert.equal(detect(rule, call('slack_send', { text: 'Terminei os 5 itens.' }), more), true);
+ for (const s of ['Fiz os 5 itens e além disso o item 6 (cache).', 'Os 5 itens mais 2 extras: cache e log.', 'Os 5 itens +3 adicionais.', 'Entreguei os 5 itens e mais um a mais: o painel.']) assert.equal(detect(rule, text(s), more), false, s);
+ assert.equal(detect(rule, call('slack_send', { text: 'Terminei os 5 itens e 2 extras.' }), more), false);
+ assert.equal(detect(rule, text('Feito: os 5 itens estão no ar.')), false);
+ assert.equal(detect(rule, text('Feito: os 5 itens estão no ar.'), { active: false, directWork: 0, more: false }), false);
+});
+test('more-means-more reads the flag from his latest message and clears it on the next one', () => {
+ const done = text('Feito: os 5 itens estão no ar.');
+ assert.equal(ruleCount('more-means-more', [userSays(MORE_ASK), done]), 1);
+ assert.equal(ruleCount('more-means-more', [userSays(MORE_ASK), call('bash', { command: 'echo ok' }), done]), 1);
+ assert.equal(ruleCount('more-means-more', [userSays(MORE_ASK), userSays('pode fazer os 5 itens'), done]), 0);
+ assert.equal(ruleCount('more-means-more', [userSays('pode fazer os 5 itens'), done]), 0);
+ assert.equal(ruleCount('more-means-more', [userSays(MORE_ASK), text('Fiz os 5 itens e além disso mais 2 extras.')]), 0);
+ for (const ask of ['cadê o mais?', 'faz mais', 'Queremos mais!', 'além disso, corrija o log']) assert.equal(ruleCount('more-means-more', [userSays(ask), done]), 1, ask);
+});
