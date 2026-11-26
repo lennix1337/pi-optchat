@@ -33,6 +33,7 @@ export interface ProfileConfig extends Settings { compactor: ModelChoice; subage
   wakeRouteAcrossFamilies?: boolean;
   /** Use the wake model for eligible machine-notice turns (default true). */
   machineTurnsOnWakeModel?: boolean;
+  slack?: { taskThreadAfterMs?: number };
   /** Event-driven wakes (see wake-signals.ts): a heartbeat tick wakes the agent only for a project with news, or once every `buildMinutes` to build something new. Absent: every tick wakes as before. */
   wakeTriage?: { buildMinutes: number; stallHours?: number };
   /** Case-insensitive regular expressions for inferring a commitment's specialist. Empty by default. */
@@ -165,7 +166,7 @@ export function removeAlternate(list: ModelChoice[] | undefined, choice: ModelCh
   const group = accountGroup(choice.provider);
   return (list ?? []).filter(entry => accountGroup(entry.provider) !== group);
 }
-const OPTIONAL = ['alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'ideas', 'skillStocktakeDays', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
+const OPTIONAL = ['slack', 'alternates', 'heartbeat', 'heartbeatRadar', 'wakeModel', 'workerModels', 'deployCommands', 'forgeToolDir', 'autonomyLadder', 'shadowRepos', 'nightShift', 'ideas', 'skillStocktakeDays', 'wakeTriage', 'localTriage', 'specialistPatrol', 'lazyTools', 'commitmentProjects', 'issueAliases', 'councilContext', 'heartbeatInstructions', 'prodHealth', 'productionHosts', 'businessTrack'] as const;
 function validRegex(pattern: unknown): boolean {
   if (typeof pattern !== 'string' || !pattern.trim()) return false;
   try { new RegExp(pattern, 'i'); return true; } catch { return false; }
@@ -204,6 +205,11 @@ export function loadConfig(dir: string): ProfileConfig {
   try {
     const problem = invalidPlan(value.heartbeat) ?? invalidRadar(value.heartbeatRadar) ?? invalidTriage(value.wakeTriage) ?? invalidLocalTriage(value.localTriage) ?? invalidPatrol(value.specialistPatrol) ?? invalidAutonomyLadder(value.autonomyLadder) ?? invalidNightShift(value.nightShift) ?? invalidIdeas(value.ideas);
     if (problem) throw new Error(problem);
+    if (value.slack !== undefined && (!record(value.slack) || (value.slack.taskThreadAfterMs !== undefined
+      && (typeof value.slack.taskThreadAfterMs !== 'number' || !Number.isInteger(value.slack.taskThreadAfterMs)
+        || value.slack.taskThreadAfterMs < 0 || value.slack.taskThreadAfterMs > 2_147_483_647)))) {
+      throw new Error('slack.taskThreadAfterMs must be a whole number between 0 and 2147483647 milliseconds');
+    }
 
     const present = Object.fromEntries(OPTIONAL.filter(key => value[key]).map(key => [key, value[key]])) as Pick<ProfileConfig, typeof OPTIONAL[number]>;
     return { compactor: value.compactor, subagent: value.subagent, ...present, ...value.wakeRouteAcrossFamilies === false ? { wakeRouteAcrossFamilies: false } : {}, ...value.machineTurnsOnWakeModel === false ? { machineTurnsOnWakeModel: false } : {}, ...readSettings(value) };

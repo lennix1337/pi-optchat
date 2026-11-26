@@ -50,7 +50,7 @@ export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
 type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string } };
 
-type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean };
+type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<string | null> };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
 
 const FILE_READS = 4;
@@ -64,6 +64,7 @@ const OFF_FOR_MS = 5 * 60_000;
 const LONG_POLL_MS = 15_000;
 
 const HELD_MS = 1_000;
+const TASK_THREAD_AFTER_MS = 60_000;
 
 const COMMAND_APPROVAL_MS = 10 * 60_000;
 // external: pi-multi-account injects resume prompts after quota, rate-limit or transient provider errors.
@@ -237,6 +238,7 @@ export class SlackBridge {
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
   private answering: Origin | undefined;
+  private taskThreadTimer: ReturnType<typeof setTimeout> | undefined;
   /** Set when a heartbeat wake started the current run: what it delivered is reported to the repo's channel. */
   private waking = false;
   private running = false;
@@ -267,6 +269,7 @@ export class SlackBridge {
     thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking']; proactivityPaused?: CommandState['proactivityPaused'];
     /** On (setting `slackEveryAnswer`, for a Pi nobody watches at a terminal): the final answer of every run, not only of Slack and wakes, goes to the DM. */
     everyAnswer?: () => boolean;
+    taskThreadAfterMs?: () => number | undefined;
     /** Stops the run in progress (the Home's Parar, the DM's `parar`); false when idle. */
     abort: () => boolean;
     /** When the heartbeat next checks for a wake, if armed. */
@@ -326,6 +329,7 @@ export class SlackBridge {
   stop(): void {
     this.generation++; this.cancelRead?.abort(); this.cancelRead = undefined;
     this.answering = undefined; this.waking = false; this.running = false;
+    this.cancelTaskThread();
     clearTimeout(this.workTimer); this.workTimer = undefined; this.work = undefined;
   }
   runStarted(continuing = false): void { if (!continuing || !this.running) { clearTimeout(this.workTimer); this.workTimer = undefined; if (this.running) this.work = undefined; this.touched = []; } this.running = true; }
@@ -441,7 +445,7 @@ export class SlackBridge {
         if (id) this.react(owner, id, m.ts, SEEN);
         const extras = await this.enrich(owner, m, id);
         const text = `${slackPrefix(channel)}${m.text}${extras}\n\n${budgetNote(wordBudget(channel, this.options.wordBudgets))}${this.running ? MID_RUN : ''}`;
-        this.threads.set(text, { thread: typeof m.thread === 'string' ? m.thread : null, channel, ...(id ? { id, ts: m.ts } : {}) });
+        this.threads.set(text, this.inboundOrigin(m, channel, id));
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
         const inboundAt = this.options.now();
@@ -451,6 +455,12 @@ export class SlackBridge {
       }
       return delivered;
     } finally { this.polling = false; }
+  }
+
+  private inboundOrigin(m: Inbound, channel: string | null, id?: string): Origin {
+    const thread = typeof m.thread === 'string' ? m.thread : null;
+    const startsTask = !this.running && !channel && !thread && id?.startsWith('D') && /^\d{1,12}\.\d{1,8}$/.test(m.ts);
+    return { thread, channel, ...(id ? { id, ts: m.ts } : {}), ...(startsTask ? { startText: m.text } : {}) };
   }
 
   /**
@@ -623,21 +633,57 @@ export class SlackBridge {
     this.progressOnly = (this.progressOnly ?? true) && !match && WORKER_PROGRESS.test(text);
     if (!match) {
 
-      if (this.answering && this.replied && this.replied !== this.delivered) { this.delivered = this.replied; void this.answer(this.answering, this.replied, false); }
+      if (this.answering && this.replied && this.replied !== this.delivered) {
+        this.cancelTaskThread();
+        this.delivered = this.replied;
+        void this.answer(this.answering, this.replied, false);
+      }
       return;
     }
-    this.answering = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
+    const origin = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
+    if (this.answering?.startText !== undefined) return;
+    this.answering = origin;
+    this.scheduleTaskThread(origin);
   }
 
-  /**
-   * A progress post of the run that answers a Slack message, to that same place and without a topic, goes in the thread
-   * of the operator's message, so a long task keeps its history together; the final answer then closes that thread.
-   */
-  progressThread(channel: string | null): string | null {
+  private scheduleTaskThread(origin: Origin): void {
+    const { ts, startText } = origin;
+    if (!this.running || !ts || startText === undefined) return;
+    this.taskThreadTimer = setTimeout(() => {
+      this.taskThreadTimer = undefined;
+      if (!this.running || this.answering !== origin) return;
+      const scrubbed = scrubSecrets(startText);
+      const summary = replyLead(scrubbed, 120).replace(/\s+/g, ' ');
+      const plain = summary.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+      origin.opening = this.publish(`Comecei: ${plain || 'tarefa com anexo'}`, ts, null).then(() => ts, error => {
+        this.options.warn(`Slack task start not confirmed: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      });
+    }, this.options.taskThreadAfterMs?.() ?? TASK_THREAD_AFTER_MS);
+    this.taskThreadTimer.unref?.();
+  }
+
+  private cancelTaskThread(): void {
+    clearTimeout(this.taskThreadTimer);
+    this.taskThreadTimer = undefined;
+  }
+
+  /** Undefined means the session changed: send to the same profile without reusing any thread. */
+  private async waitForTaskStart(opening: Promise<string | null>): Promise<string | null | undefined> {
+    const generation = this.generation, dir = this.owner()?.dir;
+    const thread = await opening;
+    if (!dir || this.owner()?.dir !== dir) throw new Error('Slack profile changed before delivery.');
+    return generation === this.generation ? thread : undefined;
+  }
+
+  private async progressThread(channel: string | null): Promise<string | null> {
     const origin = this.answering;
     if (!origin || origin.channel !== channel) return null;
-    const thread = origin.thread ?? (origin.channel === null || origin.id ? origin.ts ?? null : null);
+    const confirmed = origin.opening ? await this.waitForTaskStart(origin.opening) : origin.thread;
+    if (confirmed === undefined) return null;
+    const canUseParent = (origin.channel === null || origin.id) && (!origin.opening || origin.threaded);
+    const thread = confirmed ?? (canUseParent ? origin.ts ?? null : null);
     if (thread) origin.threaded = true;
     return thread;
   }
@@ -655,19 +701,24 @@ export class SlackBridge {
   }
 
   private async answer(answering: Origin, text: string, closing: boolean): Promise<void> {
-    const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
     try {
-      await this.publish(text, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
+      const parent = answering.opening ? await this.waitForTaskStart(answering.opening) : answering.thread;
+      const legacyProgress = answering.threaded && parent === null;
+      await this.publish(text, legacyProgress ? answering.ts ?? null : parent ?? null, answering.channel, legacyProgress ? { broadcast: true } : {});
       this.answered(answering.channel);
       const owner = this.owner();
       if (closing && owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
     }
-    catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) {
+      const warning = closing ? 'Slack final answer not sent' : 'Slack reply not sent';
+      this.options.warn(`${warning}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async answerDuringHold(): Promise<void> {
     const answering = this.answering, text = this.replied;
     if (!answering || !text) return;
+    this.cancelTaskThread();
     this.answering = undefined; this.replied = ''; this.delivered = '';
     await this.answer(answering, text, true);
   }
@@ -678,6 +729,7 @@ export class SlackBridge {
     this.progressOnly = undefined; this.shellEnd = false;
     this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
+    this.cancelTaskThread();
     clearTimeout(this.workTimer); this.workTimer = undefined;
     const steps = this.work?.steps ?? 0, work = this.work, owner = this.owner();
     this.work = undefined;
@@ -810,10 +862,12 @@ export class SlackBridge {
    */
   async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; thread: string }> {
     const owner = this.owner();
+    const sameChannel = this.answering?.channel === channel;
+    const choices = options.choices ? { choices: options.choices } : {};
     if (!topic || !owner) {
-
-      const thread = this.progressThread(channel);
-      const sent = await this.publish(text, thread, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(this.answering?.channel === channel && !thread && options.broadcast ? { broadcast: true as const } : {}) });
+      const thread = await this.progressThread(channel);
+      const broadcast = options.broadcast && !thread && sameChannel ? true : undefined;
+      const sent = await this.publish(text, thread, channel, broadcast ? { ...choices, broadcast } : choices);
       return { ...sent, thread: thread ?? sent.ts };
     }
     const file = join(owner.dir, TOPICS), now = this.options.now();
@@ -821,7 +875,8 @@ export class SlackBridge {
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch {   }
     const known = topics[topic];
     const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
-    const result = await this.publish(text, open?.ts ?? null, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(open && options.broadcast ? { broadcast: true as const } : {}) });
+    const broadcast = (open || sameChannel) && options.broadcast;
+    const result = await this.publish(text, open?.ts ?? null, channel, broadcast ? { ...choices, broadcast } : choices);
     if (!open) {
       topics[topic] = { channel, ts: result.ts, at: now };
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
@@ -910,7 +965,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void; taskThreadAfterMs?: () => number | undefined } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
