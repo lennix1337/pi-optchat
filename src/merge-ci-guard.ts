@@ -55,8 +55,8 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
 
 
 /** The major findings ship.mjs's Revisor left open in the PR description (its `ship:revisor` block), as `file:line`. */
-export function openMajors(body = ''): string[] {
-  const block = /<!-- ship:revisor:start -->([\s\S]*?)<!-- ship:revisor:end -->/.exec(body)?.[1] ?? '';
+export function openMajors(body?: string | null): string[] {
+  const block = /<!-- ship:revisor:start -->([\s\S]*?)<!-- ship:revisor:end -->/.exec(body ?? '')?.[1] ?? '';
   return [...block.matchAll(/^.*?\[[\w-]+:\s*(?:major|blocker|critical)\s*\]\s*(?:([\w./@-]+\.\w+(?::\d+(?:-\d+)?)?)(?=[:\s]|$))?/gimu)].map(m => m[1] ?? 'sem local');
 }
 
