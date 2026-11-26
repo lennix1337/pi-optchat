@@ -333,13 +333,17 @@ async function startJournal(config: Config, notices: Notices | undefined, channe
 }
 
 
+export function googleBriefingOptions(settings: GoogleConfig): { bills?: true; trustedSenders?: string[] } {
+  return { ...(settings.bills ? { bills: true as const } : {}), ...(settings.trustedSenders ? { trustedSenders: settings.trustedSenders } : {}) };
+}
+
 async function startGoogle(config: Config, settings: GoogleConfig, notices: Notices | undefined): Promise<Briefings> {
   const { GoogleLocal } = await import('./connectors/google-local.ts');
   const { BriefingService } = await import('./briefing/service.ts');
   const { osKeyProtector } = await import('./secrets/protector.ts');
   const dir = dirname(config.databasePath);
   for (const name of ['vault.sqlite', 'google.sqlite', 'google-gateway.sqlite', 'briefings.sqlite']) prepareDatabase(join(dir, name));
-  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector(), ...(settings.bills ? { bills: true } : {}), ...(settings.trustedSenders ? { trustedSenders: settings.trustedSenders } : {}) });
+  const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector(), ...googleBriefingOptions(settings) });
   const service = new BriefingService({
     local, connections: settings.connections, timeZone: settings.timeZone, dailyAt: settings.dailyAt,
     onReady: briefing => {

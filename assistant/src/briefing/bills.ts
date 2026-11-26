@@ -53,7 +53,7 @@ export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today
   const anyAmount = total ? null : ANY_AMOUNT.exec(text);
   const amountAt = (total ?? anyAmount)?.index ?? 0;
   const m = [...text.matchAll(DUE_DATE)]
-    .filter(candidate => !EARLIER_BILL.test(text.slice(Math.max(0, candidate.index - 60), candidate.index + candidate[0].length).split(/\n|[.;,]\s/).at(-1)!))
+    .filter(candidate => !EARLIER_BILL.test(text.slice(0, candidate.index + candidate[0].length).split(/\n|[.;,]\s/).at(-1)!))
     .sort((a, b) => Math.abs(a.index - amountAt) - Math.abs(b.index - amountAt))[0];
   if (!m) return null;
   const [ty, tm, td] = today.split('-').map(Number);

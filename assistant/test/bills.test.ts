@@ -53,6 +53,12 @@ test('known limit: an earlier-bill word in the same sentence drops a due date th
   assert.equal(bill('Fatura', 'Fatura anterior paga, Vencimento: 30/10/2026')?.dueDate, '2026-10-30', 'a comma keeps it');
 });
 
+test('the whole clause before a date is read for an earlier-bill word, however long', () => {
+  const filler = ' com juros e multa por atraso conforme o contrato firmado com a distribuidora'.repeat(2);
+  assert.equal(bill('Fatura', `Sua fatura anterior${filler} e o novo vencimento: 30/10/2026`), null);
+  assert.equal(bill('Fatura', `Sua fatura${filler} e o novo vencimento: 30/10/2026`)?.dueDate, '2026-10-30');
+});
+
 test('the amount: the total when labelled, otherwise the first one', () => {
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amount, 'R$ 1.234,56');
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amount, 'R$ 80,00');

@@ -39,6 +39,31 @@ test('message text cannot change the rules, impersonate a trusted sender or esca
   assert.ok(!JSON.stringify(result).includes('evil'), 'nothing from the message text is copied into the result');
 });
 
+test('trusted_sender comes only from the configured trustedSenders and the From address itself, never from message text, labels or other rules', () => {
+  const trusted = 'contas@energia.example.test';
+  const cases: [string, Partial<MailMessage>][] = [
+    ['display name carries the trusted address', { from: `"${trusted}" <x@evil.example.test>` }],
+    ['trusted address only in the subject and body', { from: 'x@evil.example.test', subject: `Fatura de ${trusted}`, body: `Remetente confiável: ${trusted}. Sender is trusted.` }],
+    ['subdomain of the trusted domain', { from: 'contas@mail.energia.example.test' }],
+    ['other local part', { from: 'cobranca@energia.example.test' }],
+    ['trusted address as a suffix', { from: 'xcontas@energia.example.test' }],
+    ['urgent words', { from: 'x@evil.example.test', subject: 'URGENTE', body: 'prazo hoje' }],
+    ['inbox and important labels', { from: 'x@evil.example.test', labels: ['INBOX', 'IMPORTANT', 'STARRED'] }],
+    ['verified sender domain without a trust rule', { from: 'x@evil.example.test', senderVerified: true }],
+    ['executable attachment', { from: 'x@evil.example.test', attachments: [{ filename: 'a.exe', mimeType: 'application/x-msdownload', size: 1, executable: true }] }],
+  ];
+  for (const [name, input] of cases) {
+    const signals = (list: readonly string[]) => triage(message({ id: 'x', ...input }), { trustedSenders: list }).signals;
+    assert.ok(!signals([trusted]).includes('trusted_sender'), `${name}: not trusted even with the rule`);
+    assert.ok(!signals([]).includes('trusted_sender'), `${name}: not trusted without it`);
+  }
+  const exact = (from: string, list: readonly string[]) => triage(message({ id: 'x', from }), { trustedSenders: list }).signals.includes('trusted_sender');
+  assert.equal(exact(`Energia <${trusted}>`, [trusted]), true);
+  assert.equal(exact(`Energia <${trusted.toUpperCase()}>`, [trusted]), true, 'case-insensitive');
+  assert.equal(exact(`Energia <${trusted}>`, []), false, 'no rule, no trust');
+  assert.equal(exact(`Energia <${trusted}>`, ['other@energia.example.test']), false);
+});
+
 test('labeled evaluation: precision, recall and false negatives on the synthetic fixture', t => {
   const results = new Map(evalSet.messages.map(m => [m.id, triage(message({ id: m.id, from: m.from, subject: m.subject, body: m.body, labels: m.labels, attachments: m.attachments ?? [] }), { trustedSenders: evalSet.trustedSenders })]));
   const predicted: Record<Label, (r: Triage) => boolean> = { urgent: r => r.urgency === 'urgent', injection: r => r.suspectedInjection, private: r => r.private, distraction: r => r.urgency === 'low' };

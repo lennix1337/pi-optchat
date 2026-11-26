@@ -37,7 +37,7 @@ export type ComposerOptions = {
 };
 
 const DAY_MS = 86_400_000;
-const NEVER_A_BILL: readonly TriageSignal[] = ['suspected_injection', 'executable_attachment', 'promotional_label'];
+const NEVER_A_BILL: readonly TriageSignal[] = ['suspected_injection', 'executable_attachment'];
 const PRIVATE_TITLE = '[private content withheld]';
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
@@ -148,12 +148,14 @@ export class BriefingComposer {
             const bill = this.options.bills && !NEVER_A_BILL.some(signal => result.signals.includes(signal)) ? detectBill(message, localDate) : null;
             if (!bill && result.urgency === 'low') { found.distractions++; continue; }
             if (bill) {
+              const filedAsPromotion = result.signals.includes('promotional_label');
               const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
+              const key = billKey(message, bill.dueDate, bill.amount);
               found.bills.push({
-                key: billKey(message, bill.dueDate, bill.amount),
+                key,
                 item: {
-                  section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`,
-                  ...billTiming(bill.daysLeft), uncertainty: 'medium', untrusted: true, startable: result.signals.includes('trusted_sender') && message.senderVerified, dueDate: bill.dueDate, billKey: billKey(message, bill.dueDate, bill.amount), ...(bill.amount ? { amount: bill.amount } : {}),
+                  section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}${filedAsPromotion ? ' (Gmail: promoções)' : ''}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`,
+                  ...billTiming(bill.daysLeft), uncertainty: filedAsPromotion ? 'high' : 'medium', untrusted: true, startable: !filedAsPromotion && result.signals.includes('trusted_sender') && message.senderVerified, dueDate: bill.dueDate, billKey: key, ...(bill.amount ? { amount: bill.amount } : {}),
                 },
               });
               continue;
