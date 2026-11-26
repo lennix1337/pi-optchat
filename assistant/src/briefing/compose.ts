@@ -139,7 +139,7 @@ export class BriefingComposer {
     const tries = existing || down ? prior + 1 : prior;
     this.db.prepare('UPDATE weekly_attempts SET tries = ? WHERE profile = ? AND local_date = ?').run(tries, profile, localDate);
     if (!existing) {
-      if (down && (down === google || tries < MAX_WEEKLY_TRIES)) return { briefing: fresh, created: false, complete: false, degraded: false };
+      if (down && (down >= google || tries < MAX_WEEKLY_TRIES)) return { briefing: fresh, created: false, complete: false, degraded: false };
       this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(profile, fresh.briefingId, 'weekly', localDate, Date.parse(fresh.createdAt), JSON.stringify(fresh));
     } else if (down < held) {
       const upgraded = { ...fresh, briefingId: existing.briefingId };

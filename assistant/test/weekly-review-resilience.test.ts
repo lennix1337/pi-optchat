@@ -105,6 +105,26 @@ test('when every Google source is down the review is held, however many tries', 
   assert.equal(c.latestWeekly(), null);
 }));
 
+test('an outage of tasks and every Google source never stores a weekly review', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.store.list = () => { throw new Error('store_down'); };
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  rig.fake.failures.set('/gmail/v1/users/me/messages', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  for (let i = 0; i < 5; i++) {
+    const { briefing, complete, created } = await c.weekly();
+    assert.deepEqual(briefing.sources.map(({ sourceId, state }) => [sourceId, state]), [
+      ['tasks', 'unavailable'], ['personal:mail', 'unavailable'], ['personal:calendar', 'unavailable'],
+      ['dentai:mail', 'unavailable'], ['dentai:calendar', 'unavailable'],
+    ]);
+    assert.equal(complete, false, `attempt ${i + 1} must stay incomplete`);
+    assert.equal(created, false);
+    assert.equal(c.latestWeekly(), null);
+    rig.clock.now += 16 * 60_000;
+  }
+}));
+
 test('a degraded review is upgraded in place once its missing source returns, keeping its identity, and is final after that', () => withGoogle(async rig => {
   await seed(rig);
   rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
