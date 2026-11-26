@@ -10,15 +10,18 @@ import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
 import { immediate } from '../store/transaction.ts';
 import { agendaInstant, buildMeetingCard, byMeetingStart, meetingId, type MeetingPrepCard } from './meeting-prep.ts';
-import { MAX_LEARNED_RULES, parseRule, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
  * briefing, with every source that could not be read listed as such. One daily briefing exists per profile and local
  * date however many clients ask; each on-demand briefing is its own. Message bodies are never stored, private
  * subjects are withheld. Only a new daily briefing can save a receipt-only reply draft; Start and sending are separate actions.
+ * The weekly review is a third kind, one per profile and local date like the daily one but kept apart from it: open tasks,
+ * threads whose last message is not the user's, and the next seven days of agenda with overlaps and back-to-back meetings
+ * flagged. It is never the baseline for "changed since the last briefing" and `latest` does not return it.
  */
-export type BriefingKind = 'daily' | 'on_demand';
+export type BriefingKind = 'daily' | 'on_demand' | 'weekly';
 export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
 export type BriefingStep = { kind: 'next'; text: string } | { kind: 'reply_draft'; draftId: string; subject: string };
 export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean; step?: BriefingStep };
@@ -44,6 +47,8 @@ const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
 const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
 const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 2, changes: 3 };
 const MAX_STORE_PAGES = 20;
+const WEEK_LOOKBACK_DAYS = 7;
+const BACK_TO_BACK_MS = 5 * 60_000;
 const fail = (code: string): never => { throw new Error(code); };
 const errorCode = (error: unknown) => error instanceof Error && /^[a-z][a-z_]{0,63}$/.test(error.message) ? error.message : 'source_failed';
 type Item = Omit<BriefingItem, 'itemId'>;
@@ -68,6 +73,7 @@ export class BriefingComposer {
     this.db.exec(`PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
+      CREATE UNIQUE INDEX IF NOT EXISTS briefings_weekly ON briefings (profile, local_date) WHERE kind = 'weekly';
       CREATE TABLE IF NOT EXISTS meeting_prep_announced (profile TEXT NOT NULL, card_id TEXT NOT NULL, start_ms INTEGER NOT NULL, PRIMARY KEY (profile, card_id));
       CREATE TABLE IF NOT EXISTS briefing_reply_drafts (profile TEXT NOT NULL, id TEXT NOT NULL, last_used INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));
       CREATE TABLE IF NOT EXISTS briefing_triage_rules (profile TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));`);
@@ -98,6 +104,17 @@ export class BriefingComposer {
       catch { console.warn('Google briefing retention cleanup failed.'); }
     }
     return { briefing, fresh: freshRead };
+  }
+
+  /** This local date's weekly review; `created` is false when it was already stored, so a caller announces it once. */
+  async weekly(): Promise<{ briefing: Briefing; created: boolean }> {
+    const localDate = localDateTime(this.now(), this.options.timeZone).date;
+    const existing = this.weeklyFor(localDate);
+    if (existing) return { briefing: existing, created: false };
+    const briefing = await this.composeWeekly(localDate);
+    this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'weekly', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
+    const stored = this.weeklyFor(localDate)!;
+    return { briefing: stored, created: stored.briefingId === briefing.briefingId };
   }
 
   async onDemand(): Promise<Briefing> {
@@ -150,8 +167,10 @@ export class BriefingComposer {
     return Number(result.changes) === 1;
   }
 
-  /** The newest stored briefing of either kind, or null when none is kept. */
-  latest(): Briefing | null { return this.one('ORDER BY created DESC LIMIT 1'); }
+  /** The newest stored daily or on-demand briefing, or null when none is kept. */
+  latest(): Briefing | null { return this.one("AND kind != 'weekly' ORDER BY created DESC LIMIT 1"); }
+
+  latestWeekly(): Briefing | null { return this.one("AND kind = 'weekly' ORDER BY created DESC LIMIT 1"); }
 
   get(briefingId: string): Briefing | null { return this.one('AND briefing_id = ?', briefingId); }
 
@@ -209,6 +228,8 @@ export class BriefingComposer {
 
   private dailyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'daily'", localDate); }
 
+  private weeklyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'weekly'", localDate); }
+
   /** One of this profile's briefings; `rest` is a fixed SQL suffix with placeholders for `args`, never input text. */
   private one(rest: string, ...args: (string | number)[]): Briefing | null {
     const row = this.db.prepare(`SELECT body FROM briefings WHERE profile = ? ${rest}`).get(this.options.profileId, ...args) as { body: string } | undefined;
@@ -245,6 +266,55 @@ export class BriefingComposer {
       agenda.push(...found.agenda);
       distractions += found.distractions;
     }
+    return this.assemble(kind, localDate, now, taskSequence, sources, items, agenda, distractions);
+  }
+
+  /** Open tasks, mail threads still waiting for the user over the past week, and the next seven days of agenda; no model and no writes. */
+  private async composeWeekly(localDate: string): Promise<Briefing> {
+    const sources: SourceState[] = [];
+    const items: Omit<BriefingItem, 'itemId'>[] = [];
+    const now = this.now();
+    const taskSequence = this.readTasks(null, sources, items);
+    const { from, to } = weekRange(localDate, this.options.timeZone);
+    let distractions = 0;
+    const events: WeekEvent[] = [];
+    const reads = await Promise.all(this.options.connections.map(async connectionId => {
+      const found = { waiting: [] as Omit<BriefingItem, 'itemId'>[], events: [] as WeekEvent[], distractions: 0 };
+      const [mail, calendar] = await Promise.all([
+        this.read(`${connectionId}:mail`, async () => {
+          const page = await this.options.google.listMessages(connectionId, { lookbackDays: WEEK_LOOKBACK_DAYS });
+          const latest = new Map<string, MailMessage>();
+          for (const message of page.items) {
+            const seen = latest.get(message.threadId);
+            if (!seen || Date.parse(message.receivedAt) > Date.parse(seen.receivedAt)) latest.set(message.threadId, message);
+          }
+          for (const message of latest.values()) {
+            if (message.labels.includes('SENT') || message.labels.includes('DRAFT')) continue;
+            const result = triage(message, this.options.rules);
+            if (result.urgency === 'low') { found.distractions++; continue; }
+            const who = senderAddress(message.from) || bounded(message.from);
+            found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: 'awaiting_reply', urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: false });
+          }
+          return page.truncated;
+        }),
+        this.read(`${connectionId}:calendar`, async () => {
+          const page = await this.options.google.listEvents(connectionId, { from, to, timeZone: this.options.timeZone });
+          found.events.push(...page.items.map(event => ({ connectionId, event })));
+          return page.truncated;
+        }),
+      ]);
+      return { found, states: [mail, calendar] };
+    }));
+    for (const { found, states } of reads) {
+      sources.push(...states);
+      items.push(...found.waiting);
+      events.push(...found.events);
+      distractions += found.distractions;
+    }
+    return this.assemble('weekly', localDate, now, taskSequence, sources, items, weekAgenda(events), distractions);
+  }
+
+  private assemble(kind: BriefingKind, localDate: string, now: number, taskSequence: number, sources: SourceState[], items: Omit<BriefingItem, 'itemId'>[], agenda: (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: number): Briefing {
     agenda.sort((a, b) => a.at.localeCompare(b.at));
     const ordered = [...items, ...agenda.map(({ at: _at, ...item }) => item)]
       .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section]);
@@ -375,6 +445,30 @@ async function readSource(sourceId: string, work: () => Promise<boolean>): Promi
   }
 }
 
+type WeekEvent = { connectionId: string; event: CalendarEvent };
+
+function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
+  const seen = new Set<string>();
+  const unique = found.filter(({ event }) => { const key = `${event.start}|${event.end}|${event.title}`; return !seen.has(key) && !!seen.add(key); })
+    .sort((a, b) => a.event.start.localeCompare(b.event.start));
+  const flag = new Map<WeekEvent, 'conflict' | 'back_to_back'>();
+  const timed = unique.filter(({ event }) => !event.allDay);
+  for (const [i, later] of timed.entries()) {
+    for (const earlier of timed.slice(0, i)) {
+      const gap = Date.parse(later.event.start) - Date.parse(earlier.event.end);
+      const kind = gap < 0 ? 'conflict' : gap <= BACK_TO_BACK_MS ? 'back_to_back' : null;
+      if (!kind) continue;
+      for (const entry of [earlier, later]) if (kind === 'conflict' || !flag.has(entry)) flag.set(entry, kind);
+    }
+  }
+  return unique.map(entry => {
+    const { connectionId, event } = entry;
+    const reason = flag.get(entry) ?? (event.recurring ? 'recurring_event' : 'event');
+    return { at: event.allDay ? '' : event.start, section: 'agenda', title: bounded(`${event.localDate} ${event.localStart ?? 'All day'} ${event.title}`), sourceRef: `calendar:${connectionId}:${event.ref.id}`, reason,
+      urgency: reason === 'conflict' ? 'urgent' : 'normal', uncertainty: 'low', untrusted: true, startable: false };
+  });
+}
+
 function bounded(text: string): string { return boundedText(text, 200); }
 
 function updatedSince(event: CalendarEvent, createdAt: string): boolean {
@@ -382,11 +476,16 @@ function updatedSince(event: CalendarEvent, createdAt: string): boolean {
 }
 
 
-function dayRange(localDate: string, timeZone: string): { from: string; to: string } {
+function midnight(localDate: string, plusDays: number, timeZone: string): string {
   const [year, month, day] = localDate.split('-').map(Number);
-  const next = new Date(Date.UTC(year, month - 1, day + 1));
-  return {
-    from: new Date(zonedInstant(year, month, day, 0, 0, timeZone)).toISOString(),
-    to: new Date(zonedInstant(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, timeZone)).toISOString(),
-  };
+  const at = new Date(Date.UTC(year, month - 1, day + plusDays));
+  return new Date(zonedInstant(at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate(), 0, 0, timeZone)).toISOString();
+}
+
+function dayRange(localDate: string, timeZone: string): { from: string; to: string } {
+  return { from: midnight(localDate, 0, timeZone), to: midnight(localDate, 1, timeZone) };
+}
+
+function weekRange(localDate: string, timeZone: string): { from: string; to: string } {
+  return { from: midnight(localDate, 1, timeZone), to: midnight(localDate, 8, timeZone) };
 }

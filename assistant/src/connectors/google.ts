@@ -186,9 +186,9 @@ export class GoogleConnections {
   }
 
   /** Mail newer than the lookback window, newest pages first as Gmail returns them; bodies are plain text, bounded. */
-  async listMessages(connectionId: string): Promise<Page<MailMessage>> {
+  async listMessages(connectionId: string, options: { lookbackDays?: number } = {}): Promise<Page<MailMessage>> {
     const row = this.active(connectionId);
-    const after = this.now() - this.retention.mailLookbackDays * DAY_MS;
+    const after = this.now() - boundedInteger(options.lookbackDays, this.retention.mailLookbackDays, 1, 30) * DAY_MS;
     const query = { q: `after:${Math.floor(after / 1000)}`, maxResults: String(Math.min(100, this.retention.maxMessages)) };
     return this.collect(connectionId, MAIL_SCOPE, '/gmail/v1/users/me/messages', query, 'messages', this.retention.maxMessages, async entry => {
       const id = (entry as { id?: unknown })?.id;

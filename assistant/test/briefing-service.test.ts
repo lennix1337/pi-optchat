@@ -6,6 +6,8 @@ import { GoogleLocal } from '../src/connectors/google-local.ts';
 import { BriefingService } from '../src/briefing/service.ts';
 import type { MeetingPrepCard } from '../src/briefing/meeting-prep.ts';
 import { createNotificationCenter } from '../src/notifications/center.ts';
+import { weeklySchedule } from '../src/briefing/weekly.ts';
+import type { Briefing } from '../src/briefing/compose.ts';
 import { createAssistantServer } from '../src/http/server.ts';
 import { TaskStore } from '../src/store/db.ts';
 import { ACCOUNTS, CLIENT_ID, CLIENT_SECRET, FakeGoogle } from './google-support.ts';
@@ -292,4 +294,77 @@ test('HTTP: GET /v1/briefing returns the latest, POST makes one now; both need t
     for (const server of servers) { server.closeAllConnections(); server.close(); }
     store.close();
   }
+}));
+
+const sunday = (hhmmZ: string, date = '2026-11-01') => Date.parse(`${date}T${hhmmZ}:00.000Z`);
+
+test('weekly review: nothing without opt-in; with it exactly one review per week, on the configured local day after the hour, kept across restarts', () => rig(async ({ fake, clock, local }) => {
+  fake.mail.personal.push({ id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' });
+  fake.events.personal.push({ id: 'a', summary: 'A', status: 'confirmed', start: { dateTime: '2026-11-02T12:00:00Z' }, end: { dateTime: '2026-11-02T13:00:00Z' } });
+  const sent: Briefing[] = [];
+  const make = async (weekly = true) => new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, ...(weekly ? { weekly: { day: 0, at: '18:00' } } : {}), onWeekly: b => sent.push(b) });
+
+  clock.now = sunday('21:30');
+  assert.equal(await (await make(false)).weeklyTick(), null, 'weekly is opt-in');
+  assert.equal(gmailReads(fake), 0);
+
+  const service = await make();
+  clock.now = sunday('01:30');
+  assert.equal(await service.weeklyTick(), null, 'Saturday 22:30 in Sao Paulo is not Sunday');
+  clock.now = sunday('20:59');
+  assert.equal(await service.weeklyTick(), null, 'Sunday 17:59 is before the hour');
+  assert.equal(gmailReads(fake), 0);
+
+  clock.now = sunday('21:00');
+  const review = await service.weeklyTick();
+  assert.equal(review?.kind, 'weekly');
+  assert.equal(review?.localDate, '2026-11-01');
+  assert.equal(sent.length, 1);
+  assert.ok(review!.items.some(i => i.section === 'messages' && i.sourceRef.endsWith(':w1')), JSON.stringify(review!.items));
+  assert.ok(review!.items.some(i => i.section === 'agenda'), 'next week agenda is read');
+  const reads = gmailReads(fake);
+  clock.now = sunday('23:50');
+  assert.equal(await service.weeklyTick(), null, 'already sent this week');
+  assert.equal(await (await make()).weeklyTick(), null, 'a restart the same evening does not send again');
+  assert.equal(gmailReads(fake), reads, 'nor read Google again');
+  assert.equal(sent.length, 1);
+  assert.equal((await service.latestWeekly())?.briefingId, review!.briefingId);
+  assert.equal(await service.latest(), null, 'the weekly review is not the daily briefing');
+
+  clock.now = sunday('21:00', '2026-11-02');
+  assert.equal(await service.weeklyTick(), null, 'Monday is not the day');
+  clock.now = sunday('21:00', '2026-11-08');
+  const next = await service.weeklyTick();
+  assert.equal(next?.localDate, '2026-11-08');
+  assert.equal(sent.length, 2, 'one send per week');
+}));
+
+test('weekly review: the background loop sends it, and the schedule defaults to Sunday evening', () => rig(async ({ clock, local }) => {
+  clock.now = sunday('21:10');
+  const sent = Promise.withResolvers<Briefing>();
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '23:59', now: () => clock.now, weekly: weeklySchedule(true), onWeekly: b => sent.resolve(b) });
+  service.start(3_600_000, error => sent.reject(error));
+  try { assert.equal((await sent.promise).kind, 'weekly'); } finally { service.stop(); }
+  assert.deepEqual(weeklySchedule(true), { day: 0, at: '18:00' });
+  assert.deepEqual(weeklySchedule({ day: 'fri' }), { day: 5, at: '18:00' });
+  assert.deepEqual(weeklySchedule({ at: '20:30' }), { day: 0, at: '20:30' });
+  assert.equal(weeklySchedule(undefined), undefined);
+}));
+
+test('HTTP: GET /v1/briefing?kind=weekly returns the stored weekly review, and no other kind is accepted', () => rig(async ({ dir, clock, local }) => {
+  clock.now = sunday('21:10');
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' } });
+  const store = new TaskStore(join(dir, 'tasks.sqlite'), 'p');
+  const server = createAssistantServer({ store, token: 't', profileId: 'p', briefings: service });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const get = (query: string) => fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/v1/briefing${query}`, { headers: { authorization: 'Bearer t' } });
+  try {
+    assert.equal((await get('?kind=weekly')).status, 404, 'none yet');
+    const review = await service.weeklyTick();
+    const found = await get('?kind=weekly');
+    assert.equal(found.status, 200);
+    assert.equal((await found.json() as { briefingId: string }).briefingId, review!.briefingId);
+    assert.equal((await get('')).status, 404, 'the plain route is still the daily briefing');
+    assert.equal((await get('?kind=daily')).status, 400);
+  } finally { server.closeAllConnections(); server.close(); store.close(); }
 }));

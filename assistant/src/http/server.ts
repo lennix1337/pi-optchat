@@ -47,7 +47,7 @@ export function isAllowedRemote(address: string | undefined): boolean {
   return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address ?? '');
 }
 /** The Google briefing as the service keeps it; absent when the server config names no Google connection. */
-export type BriefingProvider = { latest(): Promise<unknown | null>; refresh(): Promise<unknown> };
+export type BriefingProvider = { latest(): Promise<unknown | null>; latestWeekly?(): Promise<unknown | null>; refresh(): Promise<unknown> };
 /** The operator's Slack DM and project channels (name -> id) as a chat: queued operator messages, posting back to them only. */
 export type SlackBridge = { relay: SlackRelay; poster?: SlackPoster; channels?: Record<string, string>;   filesDir?: string };
 /** The deterministic signal/outcome journal when `"signals":true`; every method validates its own input. */
@@ -153,9 +153,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: TaskStor
     if (events && url.pathname.startsWith('/v1/hooks/')) { await hookRoute(req, res, url, events); return; }
     if (!authenticate(req.headers.authorization, token)) { send(res, 401, { error: 'Unauthorized' }); return; }
     if (url.pathname === '/v1/briefing' && briefings && (req.method === 'GET' || req.method === 'POST')) {
-      query(url, []);
+      query(url, req.method === 'GET' ? ['kind'] : []);
       if (req.method === 'POST') { shape(await readBody(req), {}); send(res, 200, await briefings.refresh()); return; }
-      const latest = await briefings.latest();
+      const kind = url.searchParams.get('kind');
+      if (kind !== null && (kind !== 'weekly' || !briefings.latestWeekly)) throw new BadRequest();
+      const latest = kind === 'weekly' ? await briefings.latestWeekly!() : await briefings.latest();
       send(res, latest ? 200 : 404, latest ?? { error: 'Not found' }); return;
     }
     if (url.pathname.startsWith('/v1/slack/') && slack) { await slackRoute(req, res, url, slack); return; }
