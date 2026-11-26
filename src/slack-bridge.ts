@@ -50,7 +50,7 @@ export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
 type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string } };
 
-type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<void> };
+type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<string | null> };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
 
 const FILE_READS = 4;
@@ -642,7 +642,7 @@ export class SlackBridge {
     }
     const origin = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
-    if (this.taskThreadTimer || this.answering?.opening) return;
+    this.cancelTaskThread();
     this.answering = origin;
     this.scheduleTaskThread(origin);
   }
@@ -655,9 +655,9 @@ export class SlackBridge {
       if (!this.running || this.answering !== origin) return;
       const summary = replyLead(scrubSecrets(startText), 120).replace(/\s+/g, ' ');
       const plain = summary.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-      origin.thread = ts;
-      origin.opening = this.publish(`Comecei: ${plain || 'tarefa com anexo'}`, ts, null).then(() => {}, error => {
+      origin.opening = this.publish(`Comecei: ${plain || 'tarefa com anexo'}`, ts, null).then(() => ts, error => {
         this.options.warn(`Slack task start not confirmed: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
       });
     }, this.options.taskThreadAfterMs?.() ?? TASK_THREAD_AFTER_MS);
     this.taskThreadTimer.unref?.();
@@ -668,20 +668,19 @@ export class SlackBridge {
     this.taskThreadTimer = undefined;
   }
 
-  private async waitForTaskStart(opening: Promise<void>): Promise<void> {
+  private async waitForTaskStart(opening: Promise<string | null>): Promise<string | null> {
     const generation = this.generation;
-    await opening;
+    const thread = await opening;
     if (generation !== this.generation) throw new Error('Slack task session closed before delivery.');
+    return thread;
   }
 
-  /**
-   * A progress post of the run that answers a Slack message, to that same place and without a topic, goes in the thread
-   * of the operator's message, so a long task keeps its history together; the final answer then closes that thread.
-   */
-  progressThread(channel: string | null): string | null {
+  private async progressThread(channel: string | null): Promise<string | null> {
     const origin = this.answering;
     if (!origin || origin.channel !== channel) return null;
-    const thread = origin.thread ?? (origin.channel === null || origin.id ? origin.ts ?? null : null);
+    const confirmed = origin.opening && await this.waitForTaskStart(origin.opening);
+    const canUseParent = (origin.channel === null || origin.id) && (confirmed !== null || origin.threaded);
+    const thread = confirmed ?? origin.thread ?? (canUseParent ? origin.ts ?? null : null);
     if (thread) origin.threaded = true;
     return thread;
   }
@@ -699,10 +698,11 @@ export class SlackBridge {
   }
 
   private async answer(answering: Origin, text: string, closing: boolean): Promise<void> {
-    const thread = answering.threaded ? answering.thread ?? answering.ts ?? null : answering.thread;
     try {
-      if (answering.opening) await this.waitForTaskStart(answering.opening);
-      await this.publish(text, thread, answering.channel, answering.threaded && !answering.thread ? { broadcast: true } : {});
+      const confirmed = answering.opening && await this.waitForTaskStart(answering.opening);
+      const parent = confirmed ?? answering.thread;
+      const legacyProgress = answering.threaded && !parent;
+      await this.publish(text, legacyProgress ? answering.ts ?? null : parent, answering.channel, legacyProgress ? { broadcast: true } : {});
       this.answered(answering.channel);
       const owner = this.owner();
       if (closing && owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
@@ -858,10 +858,7 @@ export class SlackBridge {
   async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; thread: string }> {
     const owner = this.owner();
     if (!topic || !owner) {
-
-      const thread = this.progressThread(channel);
-      const opening = thread ? this.answering?.opening : undefined;
-      if (opening) await this.waitForTaskStart(opening);
+      const thread = await this.progressThread(channel);
       const sent = await this.publish(text, thread, channel, options.choices ? { choices: options.choices } : {});
       return { ...sent, thread: thread ?? sent.ts };
     }
@@ -870,7 +867,8 @@ export class SlackBridge {
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch {   }
     const known = topics[topic];
     const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
-    const result = await this.publish(text, open?.ts ?? null, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(open && options.broadcast ? { broadcast: true as const } : {}) });
+    const broadcast = options.broadcast && (open || this.answering?.channel === channel) ? true : undefined;
+    const result = await this.publish(text, open?.ts ?? null, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(broadcast ? { broadcast } : {}) });
     if (!open) {
       topics[topic] = { channel, ts: result.ts, at: now };
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
