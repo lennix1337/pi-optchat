@@ -128,6 +128,19 @@ test('task thread: the default opens once at 60s and the final and shell follow-
   } finally { f.close(); }
 });
 
+test('task thread: a secret crossing the 120-character boundary is scrubbed before clipping', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = taskThreadFixture(5_000);
+  try {
+    f.inbox[0]!.text = `https://fixture:${'a'.repeat(135)}@example.invalid/`;
+    const dm = await f.receive();
+    f.start(); f.say(dm);
+    t.mock.timers.tick(5_000);
+    await f.finish('Feito.');
+    assert.deepEqual(f.posted[0], { text: 'Comecei: https://[segredo:url_auth]@example.invalid/', threadTs: TASK_TS });
+  } finally { f.close(); }
+});
+
 test('task thread: slack_send without a topic or thread preserves broadcast in the origin channel', async () => {
   const f = taskThreadFixture();
   try {
@@ -159,7 +172,7 @@ test('task thread: slack_send follows the task, but explicit topics open and reu
 });
 
 for (const opening of [false, true]) {
-  test(`task thread: a new Slack origin replaces one waiting on ${opening ? 'confirmation' : 'the timer'}`, async t => {
+  test(`task thread: steering preserves the task origin while waiting on ${opening ? 'confirmation' : 'the timer'}`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const confirmation = Promise.withResolvers<void>();
     const f = taskThreadFixture(5_000, () => confirmation.promise);
@@ -174,9 +187,16 @@ for (const opening of [false, true]) {
       confirmation.resolve();
       await update;
       await f.finish('Feito.');
-      const updates = f.posted.filter(body => !(body as { text: string }).text.startsWith('Comecei:'));
-      assert.deepEqual(updates, [{ text: 'Recebido.', threadTs: TOPIC_TS }, { text: 'Feito.', threadTs: TOPIC_TS }]);
-      assert.equal(f.posted.length, opening ? 3 : 2);
+      assert.deepEqual(f.posted, [
+        { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS },
+        { text: 'Recebido.', threadTs: TASK_TS },
+        { text: 'Feito.', threadTs: TASK_TS },
+      ]);
+      f.inbox.push({ seq: 3, ts: '1793000000.000400', channel: 'D0TEST', text: 'Nova tarefa.', thread: TOPIC_TS });
+      const next = await f.receive();
+      f.start(); f.say(next);
+      await f.finish('Nova resposta.');
+      assert.deepEqual(f.posted.at(-1), { text: 'Nova resposta.', threadTs: TOPIC_TS });
     } finally { f.close(); }
   });
 }
@@ -227,6 +247,32 @@ for (const sameProfile of [true, false]) {
     } finally { f.close(); }
   });
 }
+
+test('task thread: warns that the final answer was discarded when the profile changes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const confirmation = Promise.withResolvers<void>();
+  const warnings: string[] = [];
+  const f = fixture([], {
+    warn: (text: string) => warnings.push(text),
+    taskThreadAfterMs: () => 5_000,
+    request: async (_owner: unknown, path: string, body: { text?: string }) => {
+      if (path.startsWith('/v1/slack/inbox')) return { messages: [{ seq: 1, ts: TASK_TS, thread: null, channel: 'D0TEST', text: 'Confira a fila.' }] };
+      if (path === '/v1/slack/send' && body.text?.startsWith('Comecei:')) await confirmation.promise;
+      return { parts: 1, ts: TOPIC_TS };
+    },
+  });
+  try {
+    await f.bridge.poll();
+    f.bridge.runStarted(); f.bridge.sawUserMessage(f.sent[0]!.text);
+    t.mock.timers.tick(5_000);
+    const final = f.bridge.runEnded(replies('Feito.'));
+    f.bridge.stop();
+    f.owner.dir = join(f.dir, 'other');
+    confirmation.resolve();
+    await final;
+    assert.deepEqual(warnings, ['Slack final answer not sent: Slack profile changed before delivery.']);
+  } finally { f.bridge.stop(); f.close(); }
+});
 
 test('task thread: a DM steering an existing run does not open a task thread', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

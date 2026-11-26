@@ -642,7 +642,7 @@ export class SlackBridge {
     }
     const origin = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
-    this.cancelTaskThread();
+    if (this.answering?.startText !== undefined) return;
     this.answering = origin;
     this.scheduleTaskThread(origin);
   }
@@ -653,7 +653,8 @@ export class SlackBridge {
     this.taskThreadTimer = setTimeout(() => {
       this.taskThreadTimer = undefined;
       if (!this.running || this.answering !== origin) return;
-      const summary = replyLead(scrubSecrets(startText), 120).replace(/\s+/g, ' ');
+      const scrubbed = scrubSecrets(startText);
+      const summary = replyLead(scrubbed, 120).replace(/\s+/g, ' ');
       const plain = summary.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
       origin.opening = this.publish(`Comecei: ${plain || 'tarefa com anexo'}`, ts, null).then(() => ts, error => {
         this.options.warn(`Slack task start not confirmed: ${error instanceof Error ? error.message : String(error)}`);
@@ -708,7 +709,10 @@ export class SlackBridge {
       const owner = this.owner();
       if (closing && owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
     }
-    catch (error) { this.options.warn(`Slack reply not sent: ${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) {
+      const warning = closing ? 'Slack final answer not sent' : 'Slack reply not sent';
+      this.options.warn(`${warning}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async answerDuringHold(): Promise<void> {
