@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { diskProbe, maintenanceProbe, memoryProbe, pcProbes, REPORT_MAX_AGE_MS } from '../src/pc-health.ts';
+import { githubRouteProbe, diskProbe, maintenanceProbe, memoryProbe, pcProbes, REPORT_MAX_AGE_MS } from '../src/pc-health.ts';
 import { forecast } from '../src/forecast.ts';
 import { FAILURES_BEFORE_ALERT, healthLines, PC_FILE, ProdHealth, readHealth, registerProdHealth, tellTransitions, type Monitor, type Transition } from '../src/prod-health.ts';
 import { composeSummary } from '../src/slack-reports.ts';
@@ -64,4 +64,13 @@ test('registered: every monitor runs each round, one failing does not stop the o
     await commands.get('optchat-health')!.handler('', { ui: { notify: (m: string, level: string) => notices.push([m, level]) } });
     assert.deepEqual(notices, [['✅ PC: disco C: · 100 GB livres de 500 GB\nLast round failed: disk read failed', 'warning']]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the GitHub route probe fails only when the route is down, not when the PC is unreachable', async () => {
+  const verdict = (code: string, line: string) => () => ({ code, exit: 1, line }) as ReturnType<typeof import('../scripts/pc-github-probe.mjs').probeGithub>;
+  assert.equal((await githubRouteProbe('pc', verdict('ok', 'GitHub 3/3 reachable')).check()).ok, true);
+  assert.deepEqual(await githubRouteProbe('pc', verdict('github-unreachable', 'GitHub 0/3 reachable')).check(), { ok: false, ms: 0, detail: 'GitHub 0/3 reachable', problem: 'GitHub 0/3 reachable' });
+  assert.equal((await githubRouteProbe('pc', verdict('ssh-failed', 'ssh to the PC failed')).check()).ok, true);
+  assert.equal(pcProbes({ drive: '/', reportDir: undefined, githubHost: 'pc' }).some(p => p.name === 'PC: rota até o GitHub'), true);
+  assert.equal(pcProbes({ drive: '/', reportDir: undefined }).some(p => p.name === 'PC: rota até o GitHub'), process.env.OPTCHAT_PC_SSH_HOST !== undefined);
 });

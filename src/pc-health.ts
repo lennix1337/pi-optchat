@@ -3,6 +3,7 @@ import { freemem, totalmem } from 'node:os';
 import { join } from 'node:path';
 import type { LocalProbe, ProbeResult } from './prod-health.ts';
 import { type Remedy, scheduledTask } from './self-fix.ts';
+import { probeGithub } from '../scripts/pc-github-probe.mjs';
 
 /**
  * This PC as a sense: free disk on the system drive, available memory and whether the daily maintenance task
@@ -39,6 +40,9 @@ export interface PcSources {
   backupDir?: string;
   /** Run when the backup probe goes down; null for none. Default on Windows: the backup task. */
   backup?: Remedy | null;
+  /** SSH host of the PC whose route to GitHub is probed from here; by default the OPTCHAT_PC_SSH_HOST environment variable, none when unset. */
+  githubHost?: string;
+  githubRoute?: typeof probeGithub;
 }
 
 const realDisk = (drive: string) => { const s = statfsSync(drive); return { free: s.bavail * s.bsize, total: s.blocks * s.bsize }; };
@@ -74,6 +78,18 @@ export function maintenanceProbe(dir: string, now: () => number = Date.now, repo
   };
 }
 
+/** Only a route that is down fails the probe: an unreachable PC (asleep, off) is not a GitHub outage. */
+export function githubRouteProbe(host: string, probe = probeGithub): LocalProbe {
+  return {
+    name: 'PC: rota até o GitHub',
+    check(): ProbeResult {
+      const v = probe(host);
+      const down = v.code === 'github-unreachable' || v.code === 'github-partial' || v.code === 'pc-offline';
+      return down ? { ok: false, ms: 0, detail: v.line, problem: v.line } : { ok: true, ms: 0, detail: v.line };
+    },
+  };
+}
+
 /** The probes that apply here: the system drive and memory everywhere, the maintenance and backup reports where their tasks write them. */
 export function pcProbes(sources: PcSources = {}): LocalProbe[] {
   const drive = sources.drive ?? (process.platform === 'win32' ? `${process.env.SystemDrive ?? 'C:'}\\` : '/');
@@ -86,5 +102,7 @@ export function pcProbes(sources: PcSources = {}): LocalProbe[] {
   const probes = [{ ...diskProbe(drive, sources.disk), remedy }, memoryProbe(sources.memory)];
   if (reportDir) probes.push({ ...maintenanceProbe(reportDir, sources.now, sources.reports), remedy });
   if (backupDir) probes.push({ ...maintenanceProbe(backupDir, sources.now, sources.reports, 'PC: backup na VM'), remedy: task(sources.backup, BACKUP_TASK, 'o backup na VM') });
+  const githubHost = sources.githubHost ?? process.env.OPTCHAT_PC_SSH_HOST;
+  if (githubHost) probes.push(githubRouteProbe(githubHost, sources.githubRoute));
   return probes;
 }
