@@ -291,6 +291,7 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   assert.deepEqual(openMajors(block('* **[model_review:major]** sem dois-pontos\n› [cr:blocker]')), ['sem local', 'sem local'], 'a malformed line with a major tag still counts');
   assert.deepEqual(openMajors(reviewBody('x', { verdict: 'changes', findings: [] })), ['sem local'], 'changes without detail stay open');
   assert.deepEqual(openMajors(reviewBody('x', { verdict: 'approve', findings: [{ severity: 'minor', file: 'd.ts', line: 2, text: '[no major issues] ok.' }] })), [], 'a severity named in prose is not a finding');
+  assert.deepEqual(openMajors(block('- [model_review: critical] a.ts:4: x.\n- [review/v2.1:major] b.ts:5: y.')), ['a.ts:4', 'b.ts:5'], 'spaces, dots, slashes and critical still count');
   assert.deepEqual(openMajors(null), []);
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 1, stdout: '', stderr: 'HTTP 502' })))!, /could not read its checks/, 'an unreadable description never lets the merge through');
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 0, stdout: '{not json', stderr: '' })))!, /could not read its checks/);
