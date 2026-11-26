@@ -1,4 +1,4 @@
-// Test double for `gh`, used only by test/ship.test.ts through a shim on PATH. It keeps pull requests in a JSON state
+// Test double for `gh`, used only by test/branch-ship.test.ts through a shim on PATH. It keeps pull requests in a JSON state
 // file and appends every call to a log, so a test can check which effects ran. Only the `pr` verbs that ship uses exist.
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

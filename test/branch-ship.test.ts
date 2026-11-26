@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { tempDir } from './support.ts';
 
 
@@ -25,15 +25,25 @@ function git(cwd: string, args: string[]) {
   return r.stdout.trim();
 }
 
-function fixture(): Fixture {
-  const { dir, close } = tempDir('ship-');
-  const seed = join(dir, 'seed'), origin = join(dir, 'origin.git'), work = join(dir, 'work'), bin = join(dir, 'bin');
+let template: ReturnType<typeof tempDir> | undefined;
+after(() => template?.close());
+function seedOrigin() {
+  if (template) return join(template.dir, 'origin.git');
+  const { dir } = template = tempDir('ship-template-');
+  const seed = join(dir, 'seed'), origin = join(dir, 'origin.git');
   git(dir, ['init', '-q', '-b', 'main', seed]);
   writeFileSync(join(seed, 'README.md'), 'seed\n');
   git(seed, ['add', '-A']);
   git(seed, ['commit', '-q', '-m', 'seed']);
   git(dir, ['init', '-q', '--bare', '-b', 'main', origin]);
   git(seed, ['push', '-q', origin, 'main']);
+  return origin;
+}
+
+function fixture(): Fixture {
+  const { dir, close } = tempDir('ship-');
+  const origin = join(dir, 'origin.git'), work = join(dir, 'work'), bin = join(dir, 'bin');
+  cpSync(seedOrigin(), origin, { recursive: true });
   git(dir, ['clone', '-q', origin, work]);
   git(work, ['switch', '-q', '-c', 'feat/x']);
 

@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { cpSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection, createServer } from 'node:net';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ACL_INSPECTION_TIMEOUT_MS } from '../src/store/privacy.ts';
 import { readConfig } from '../src/main.ts';
 import { createPrivateDirectory } from '../src/store/private-directory.ts';
@@ -63,6 +63,24 @@ async function stop(c: ReturnType<typeof child>) {
   try { return await c.exited; } finally { clearTimeout(timer); }
 }
 
+function configExamples(base: { version: number; profileId: string; databasePath: string; endpoint: string; token: string }) {
+  const invalid = ['{', JSON.stringify({ ...base, extra: true }), JSON.stringify({ ...base, version: 2 }), JSON.stringify({ ...base, endpoint: 'http://localhost:80' }), JSON.stringify({ ...base, endpoint: 'http://127.0.0.1:65536' }), JSON.stringify({ ...base, databasePath: ':memory:' }), JSON.stringify({ ...base, databasePath: 'relative.db' }), JSON.stringify({ ...base, profileId: ' ' }), JSON.stringify({ ...base, token: 'bad token' }), JSON.stringify(base) + ' '.repeat(8193)];
+  const slack = { appToken: 'xapp-1-disposable', team: 'T0TEST', appId: 'A0TEST', operators: ['U0OWNER'] };
+  invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, { ...slack, botToken: 'xapp-not-bot' }, { ...slack, botToken: '' }, null]
+    .map(value => JSON.stringify({ ...base, slack: value })));
+  invalid.push(...[{ local: 'yes' }, { local: true, web: true }, {}, [], null].map(value => JSON.stringify({ ...base, notifications: value })));
+  const google = { connections: ['pessoal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' };
+  invalid.push(...[{ ...google, connections: [] }, { ...google, connections: ['Pessoal'] }, { ...google, connections: ['a', 'a'] }, { ...google, timeZone: 'Mars/Base' },
+    { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null,
+    { ...google, weekly: false }, { ...google, weekly: 'sun' }, { ...google, weekly: { day: 'funday' } }, { ...google, weekly: { at: '6pm' } }, { ...google, weekly: { at: '24:00' } }, { ...google, weekly: { extra: 1 } }, { ...google, weekly: null },
+  ].map(value => JSON.stringify({ ...base, google: value })));
+  invalid.push(...[[], ['http://desk.tail0000.ts.net'], ['https://desk.tail0000.ts.net/'], ['https://desk.tail0000.ts.net/web'], ['nope'], [1], 'https://desk.tail0000.ts.net']
+    .map(value => JSON.stringify({ ...base, webOrigins: value })));
+  invalid.push(...[null, {}, { piVoicePath: 'relative', settingsPath: '/local/settings' },
+    { piVoicePath: '/local/voice', settingsPath: '/local/settings', download: true }].map(value => JSON.stringify({ ...base, voice: value })));
+  return { invalid, google };
+}
+
 test('help is side-effect free; invalid configs cannot open a database', async () => {
   const dir = privateTemp('entry-invalid-');
   try {
@@ -70,20 +88,7 @@ test('help is side-effect free; invalid configs cannot open a database', async (
     assert.equal(help.status, 0); assert.match(help.stdout, /manual/i); assert.match(help.stdout, /databasePath/); assert.deepEqual(readdirSync(dir), []);
     const db = join(dir, 'never.db'), config = join(dir, 'config.json');
     const base = { version: 1, profileId, databasePath: db, endpoint: `http://127.0.0.1:${await port()}`, token: secret };
-    const invalid = ['{', JSON.stringify({ ...base, extra: true }), JSON.stringify({ ...base, version: 2 }), JSON.stringify({ ...base, endpoint: 'http://localhost:80' }), JSON.stringify({ ...base, endpoint: 'http://127.0.0.1:65536' }), JSON.stringify({ ...base, databasePath: ':memory:' }), JSON.stringify({ ...base, databasePath: 'relative.db' }), JSON.stringify({ ...base, profileId: ' ' }), JSON.stringify({ ...base, token: 'bad token' }), JSON.stringify(base) + ' '.repeat(8193)];
-    const slack = { appToken: 'xapp-1-disposable', team: 'T0TEST', appId: 'A0TEST', operators: ['U0OWNER'] };
-    invalid.push(...[{ ...slack, appToken: 'xoxb-bot' }, { ...slack, team: 't0test' }, { ...slack, appId: '' }, { ...slack, operators: [] }, { ...slack, operators: ['U0OWNER', 'bob'] }, { ...slack, extra: 1 }, { ...slack, botToken: 'xapp-not-bot' }, { ...slack, botToken: '' }, null]
-      .map(value => JSON.stringify({ ...base, slack: value })));
-    invalid.push(...[{ local: 'yes' }, { local: true, web: true }, {}, [], null].map(value => JSON.stringify({ ...base, notifications: value })));
-    const google = { connections: ['pessoal'], timeZone: 'America/Sao_Paulo', dailyAt: '07:00' };
-    invalid.push(...[{ ...google, connections: [] }, { ...google, connections: ['Pessoal'] }, { ...google, connections: ['a', 'a'] }, { ...google, timeZone: 'Mars/Base' },
-      { ...google, dailyAt: '7:00' }, { ...google, dailyAt: '24:00' }, { ...google, extra: 1 }, null,
-      { ...google, weekly: false }, { ...google, weekly: 'sun' }, { ...google, weekly: { day: 'funday' } }, { ...google, weekly: { at: '6pm' } }, { ...google, weekly: { at: '24:00' } }, { ...google, weekly: { extra: 1 } }, { ...google, weekly: null },
-    ].map(value => JSON.stringify({ ...base, google: value })));
-    invalid.push(...[[], ['http://desk.tail0000.ts.net'], ['https://desk.tail0000.ts.net/'], ['https://desk.tail0000.ts.net/web'], ['nope'], [1], 'https://desk.tail0000.ts.net']
-      .map(value => JSON.stringify({ ...base, webOrigins: value })));
-    invalid.push(...[null, {}, { piVoicePath: 'relative', settingsPath: '/local/settings' },
-      { piVoicePath: '/local/voice', settingsPath: '/local/settings', download: true }].map(value => JSON.stringify({ ...base, voice: value })));
+    const { invalid, google } = configExamples(base);
 
     for (const data of invalid) {
       writeFileSync(config, data);
@@ -102,9 +107,12 @@ test('help is side-effect free; invalid configs cannot open a database', async (
   } finally { removeFixture(dir); }
 });
 
-test('configuration guards reject disposable mutations', { timeout: 180000 }, () => {
+test('configuration guards reject disposable mutations', { timeout: 180000 }, async () => {
   const root = privateTemp('entry-mutations-');
   const assistant = fileURLToPath(new URL('../', import.meta.url));
+  const sourcePath = join(root, 'src', 'main.ts');
+  const config = join(root, 'config.json'), databasePath = join(root, 'never.db');
+  const { invalid } = configExamples({ version: 1, profileId, databasePath, endpoint: 'http://127.0.0.1:54321', token: secret });
   const variants: [string, string][] = [
     ['count > 8192', 'false'],
     ['keys !== BASE_KEYS', 'false'],
@@ -124,19 +132,21 @@ test('configuration guards reject disposable mutations', { timeout: 180000 }, ()
     ['port > 65535', 'false'],
   ];
   try {
+    cpSync(join(assistant, 'src'), join(root, 'src'), { recursive: true });
+    cpSync(join(assistant, 'package.json'), join(root, 'package.json'));
+    const source = readFileSync(sourcePath, 'utf8');
     for (const [index, [before, after]] of variants.entries()) {
-      const copy = join(root, String(index));
-      mkdirSync(join(copy, 'test'), { recursive: true });
-      cpSync(join(assistant, 'src'), join(copy, 'src'), { recursive: true });
-      cpSync(join(assistant, 'test', 'entry.test.ts'), join(copy, 'test', 'entry.test.ts'));
-      cpSync(join(assistant, 'package.json'), join(copy, 'package.json'));
-      const sourcePath = join(copy, 'src', 'main.ts');
-      const source = readFileSync(sourcePath, 'utf8'); assert.ok(source.includes(before), before);
+      assert.equal(source.split(before).length, 2, before);
       writeFileSync(sourcePath, source.replace(before, after));
-      const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-      const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=help is side-effect free', join(copy, 'test', 'entry.test.ts')], { env, encoding: 'utf8', timeout: 30000 });
-      assert.equal(result.status, 1, `${before}: ${result.stderr}`);
-      assert.match(result.stdout, /AssertionError/, before);
+      const freshModule = pathToFileURL(sourcePath);
+      freshModule.searchParams.set('guard', String(index));
+      const { readConfig: mutatedReadConfig } = await import(freshModule.href) as typeof import('../src/main.ts');
+      const admitted = invalid.some(data => {
+        writeFileSync(config, data);
+        try { mutatedReadConfig(config); return true; } catch { return false; }
+      });
+      assert.ok(admitted, `disabling ${before} must admit a config rejected by the real validator`);
+      assert.equal(existsSync(databasePath), false);
     }
   } finally { removeFixture(root); }
 });
