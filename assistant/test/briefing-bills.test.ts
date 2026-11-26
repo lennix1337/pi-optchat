@@ -227,6 +227,26 @@ test('bills with the same sender and date but no amount are not merged, and a ca
   assert.equal(bills(await briefings.onDemand()).length, 4, 'the same mails read again are listed once each');
 }));
 
+test('known limit: a bill without an amount seen through two accounts is listed once per account', () => withGoogle(async rig => {
+  const mail = { from: 'Luz <luz@luz.example.test>', subject: 'Fatura', body: 'Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push({ id: 'd1', ...mail });
+  rig.fake.mail.dentai.push({ id: 'd2', ...mail });
+  await connectBoth(rig);
+  assert.equal(bills(await composer(rig, { bills: true }).daily()).length, 2);
+}));
+
+test('known limit: a trusted sender on a subdomain is not startable unless Gmail reports DMARC for exactly that From domain', () => withGoogle(async rig => {
+  const base = { body: 'Valor R$ 20,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z', subject: 'Fatura' };
+  rig.fake.mail.personal.push(
+    { id: 'a1', from: 'Energia <contas@mail.energia.example.test>', ...base, authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+    { id: 'a2', from: 'Energia <contas@mail.energia.example.test>', ...base, body: 'Valor R$ 21,00. Vencimento: 30/10/2026', authenticationResults: [GMAIL_DMARC('mail.energia.example.test')] },
+  );
+  await connectBoth(rig);
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@mail.energia.example.test'] } }).daily();
+  const startable = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!.startable;
+  assert.deepEqual([startable('a1'), startable('a2')], [false, true]);
+}));
+
 test('two senders without a parsable address are two bills, not one', () => withGoogle(async rig => {
   rig.fake.mail.personal.push(
     { id: 'u1', from: 'Fake One', subject: 'Fatura um', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
