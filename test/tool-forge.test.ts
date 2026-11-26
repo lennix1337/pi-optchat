@@ -205,9 +205,11 @@ test('analyzeToolForge reads exec-log and tool dir end-to-end without any extra 
     const oldScript = join(bin, 'legacy-check.sh');
     writeFileSync(activeScript, '#!/usr/bin/env node\nconsole.log("ok");\n');
     writeFileSync(oldScript, '#!/usr/bin/env bash\necho old\n');
+    const launched = join(bin, 'crash-observer.js'), launcher = join(bin, 'launcher.js');
+    writeFileSync(launched, 'console.log("observe");\n');
+    writeFileSync(launcher, "require('./crash-observer.js');\n");
     const oldTime = new Date(NOW - 35 * DAY);
-    utimesSync(activeScript, oldTime, oldTime);
-    utimesSync(oldScript, oldTime, oldTime);
+    for (const file of [activeScript, oldScript, launched, launcher]) utimesSync(file, oldTime, oldTime);
 
     for (let i = 0; i < 6; i++) {
       appendExecLog(dir, bashRow(-i * DAY, `git status -sb && git diff --stat src/f${i}.ts`, { run: `r${i}` }));
@@ -215,7 +217,7 @@ test('analyzeToolForge reads exec-log and tool dir end-to-end without any extra 
     appendExecLog(dir, bashRow(-2 * DAY, `node "${activeScript}" --short`, { run: 'r9' }));
     appendExecLog(dir, bashRow(-1 * DAY, `node "${activeScript}" --full`, { run: 'r10' }));
 
-    assert.equal(listForgedScripts(bin).length, 2);
+    assert.equal(listForgedScripts(bin).length, 4);
     assert.equal(readExecLog(dir).length, 8);
 
     const report = analyzeToolForge(dir, { toolDir: bin, now: NOW });
@@ -223,7 +225,7 @@ test('analyzeToolForge reads exec-log and tool dir end-to-end without any extra 
     assert.equal(report.candidates.length, 1);
     assert.equal(report.candidates[0].count, 6);
     assert.equal(report.reuse.find(s => s.name === 'summarize-diff.mjs')?.uses, 2);
-    assert.deepEqual(report.prune.map(s => s.name), ['legacy-check.sh']);
+    assert.deepEqual(report.prune.map(s => s.name), ['launcher.js', 'legacy-check.sh'], 'a script another one runs is not a prune candidate (25/11: pi-process-observer.js, run by pi-launcher.js, was listed)');
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(bin, { recursive: true, force: true });

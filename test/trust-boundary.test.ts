@@ -8,7 +8,7 @@ import { classifyEffects, decide, gitRepo, parseContract, type Effect, type Repo
 import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { EffectApprovals } from '../src/authorization.ts';
 import { forgetBrowserPages, observeBrowser, sensitivePage, withProductionHosts } from '../src/external-effects.ts';
-import { ciProblem, directMerges, mergeRefusal, type Exec } from '../src/merge-ci-guard.ts';
+import { ciProblem, directMerges, mergeRefusal, openMajors, type Exec } from '../src/merge-ci-guard.ts';
 
 
 const repo: Repo = { slug: () => 'lennix1337/pi-optchat', branch: () => 'feat/x' };
@@ -271,10 +271,23 @@ test('a merge runs only over green CI; --auto may wait only where GitHub itself 
   const exec = (view: object | Error): Exec => async (_c, args) => { calls.push(args); if (view instanceof Error) throw view; return { code: 0, stdout: JSON.stringify(view), stderr: '' }; };
   assert.match((await mergeRefusal('gh pr merge 31 --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }] })))!, /Not run: PR 31 .*failing checks: unit/);
   assert.match((await mergeRefusal('gh pr merge 31 --auto --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE' }], mergeStateStatus: 'BLOCKED' })))!, /failing checks/, 'red CI stops --auto too');
-  assert.deepEqual(calls.at(-1), ['pr', 'view', '31', '--json', 'statusCheckRollup,mergeStateStatus,headRefOid,headRepository']);
+  assert.deepEqual(calls.at(-1), ['pr', 'view', '31', '--json', 'statusCheckRollup,mergeStateStatus,headRefOid,headRepository,body']);
   assert.equal(await mergeRefusal('gh pr merge 31 --squash', 'C:/', exec({ statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }] })), undefined);
   assert.match((await mergeRefusal('gh pr merge 31', 'C:/', exec(new Error('gh not found'))))!, /could not read its checks/, 'unknown CI is not green CI');
   assert.equal(await mergeRefusal('gh pr merge 31 --auto --squash', 'C:/', exec({ ...running, mergeStateStatus: 'BLOCKED' })), undefined);
+});
+
+test('a merge waits while the Revisor block in the PR description lists an open major finding (#601, #602 and dotfiles #226 merged past them)', async () => {
+  const block = (lines: string) => `Problema: x\n\n<!-- ship:revisor:start -->\n## Revisor\n\n${lines}\n<!-- ship:revisor:end -->\n`;
+  const major = block('- [model_review:major] src/ideas.ts:107: O catch engole linhas. → Revise.\n- [model_review:minor] src/ideas.ts:108: valide. → Revise.');
+  assert.deepEqual(openMajors(major), ['src/ideas.ts:107']);
+  assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: nada grave.')), []);
+  assert.deepEqual(openMajors('- [model_review:major] fora do bloco do Revisor'), []);
+  const green = { statusCheckRollup: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], mergeStateStatus: 'CLEAN' };
+  const exec = (body: string): Exec => async () => ({ code: 0, stdout: JSON.stringify({ ...green, body }), stderr: '' });
+  for (const command of ['gh pr merge 602 --squash', 'gh pr merge 602 --auto --squash'])
+    assert.match((await mergeRefusal(command, 'C:/', exec(major)))!, /^Not run: PR 602 still has open major findings from the Revisor \(src\/ideas\.ts:107\).*ship\.mjs --pr 602/);
+  assert.equal(await mergeRefusal('gh pr merge 602 --squash', 'C:/', exec(block('- [model_review:minor] a.ts:1: ok.'))), undefined);
 });
 
 test('a merge the guard cannot check before it runs is refused with the way through: a PR in a shell variable, a PR the same command creates', async () => {

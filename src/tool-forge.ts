@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { commandWords, segments } from './effect-classifier.ts';
@@ -419,6 +419,14 @@ export function proposeSkills(entries: readonly ExecEntry[], options: DetectForg
     });
 }
 
+function calledByAnotherScript(target: ForgedScript, scripts: readonly ForgedScript[]): boolean {
+  const stem = target.name.replace(/\.[^.]+$/, '');
+  return scripts.some(other => {
+    if (other.path === target.path) return false;
+    try { return readFileSync(other.path, 'utf8').includes(stem); } catch { return false; }
+  });
+}
+
 /** Runs candidate detection and forged-script reuse/pruning analysis over a profile's exec log and tool directory. */
 export function analyzeToolForge(profileDir: string, options: AnalyzeForgeOptions = {}): ForgeReport {
   const toolDir = options.toolDir ?? defaultToolDir();
@@ -426,7 +434,7 @@ export function analyzeToolForge(profileDir: string, options: AnalyzeForgeOption
   const candidates = detectForgeCandidates(entries, options);
   const scripts = listForgedScripts(toolDir);
   const { reuse, prune } = trackForgedReuse(entries, scripts, options);
-  return { candidates, skillProposals: proposeSkills(entries, options), reuse, prune, toolDir: options.displayToolDir ?? options.toolDir ?? DEFAULT_TOOL_DIR_DISPLAY };
+  return { candidates, skillProposals: proposeSkills(entries, options), reuse, prune: prune.filter(item => !calledByAnotherScript(item, scripts)), toolDir: options.displayToolDir ?? options.toolDir ?? DEFAULT_TOOL_DIR_DISPLAY };
 }
 
 /** Formats top forge candidates, reuse counts and 30-day prune candidates as lines for the daily retro prompt. */
