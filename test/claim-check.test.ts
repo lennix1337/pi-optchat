@@ -187,6 +187,8 @@ test('a final reply that promises later work needs a commitment, a background jo
   assert.deepEqual(unbackedPromises('Te aviso quando o CI terminar.', '[gitwatch] now following lennix1337/x #3: you are woken when CI finishes'), []);
   assert.deepEqual(unbackedPromises('Te aviso quando terminar.', 'Background shell 5c02 started.'), []);
   assert.deepEqual(unbackedPromises('Quando ele terminar, eu reviso e te mando o print.', 'Started: a1b2 on openai-codex/gpt-6.2-sol. Reports will arrive automatically.'), []);
+  assert.equal(unbackedPromises('Se cair de novo, vou investigar o teste.', '').length, 1, 'a conditional promise with nothing watching the condition is still unkept');
+  assert.deepEqual(unbackedPromises('Se cair de novo, vou investigar o teste.', '[gitwatch] now following lennix1337/x #3: you are woken when CI finishes'), []);
   assert.deepEqual(unbackedPromises('Não vou mexer no Grafana.', ''), []);
   assert.deepEqual(unbackedPromises('O guard pega frases como "vou fazer depois".', ''), []);
   assert.deepEqual(unbackedPromises('Corrigi o teste e mesclei.', ''), []);
