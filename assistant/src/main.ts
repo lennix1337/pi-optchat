@@ -442,7 +442,9 @@ export function serve(server: Server, store: { close(): void | Promise<void> }, 
   server.once('error', (error: NodeJS.ErrnoException) => {
     console.error(listenFailureMessage(error, port));
     process.exitCode = 1;
-    if (!closing) { closing = true; void Promise.resolve(store.close()).catch(() => { console.error('Assistant resource shutdown failed.'); process.exitCode = 1; }); }
+    if (closing) return;
+    closing = true;
+    void Promise.resolve(store.close()).catch(() => { console.error('Assistant resource shutdown failed.'); }).finally(() => process.exit(1));
   });
   server.listen(port, '127.0.0.1', () => {
     if (stopFile && isAbsolute(stopFile)) stopWatch = setInterval(() => { if (existsSync(stopFile)) shutdown(); }, 200);
