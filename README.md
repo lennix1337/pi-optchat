@@ -204,6 +204,14 @@ When enabled in the profile's `config.json`, the morning DM includes **Ideias de
 
 Defaults are neutral (`dailyTarget: 0`, feature off; `staleHours: 2`).
 
+## Undo in chat memory
+
+Use `/undo` (or `/undo 1`) in Pi, or `undo` in the bot's Slack DM, to hide the latest operator input and all entries up to the next operator input. Use `/undo N` or `undo N` with `N ≥ 2` to hide exactly N currently visible raw log entries, newest first. Tool calls and results each count; long messages can span several entries. Commands and their confirmations do not count. `/redo` in Pi or `redo` in Slack restores the last batch, even after reopening the profile or chatting again.
+
+React with ↩️ (`leftwards_arrow_with_hook`) on your own Slack message to hide that exchange instead of the latest one. This works for messages received with undo support enabled. The Slack app needs the bot scope `reactions:read` and the bot event subscription `reaction_added`; both are in `assistant/slack-manifest.json`. Confirmations go to the operator's DM.
+
+Undo preserves the original log and message IDs, but the hidden entries are no longer available in the model's memory view, zoom, search or new summaries. While any batch is hidden, historical export sync pauses and affected summaries are rebuilt in memory as needed. It does not recall Slack messages, revert files, undo pushes or change anything outside the memory. The confirmation lists executed effects recorded for the affected calls and suggests manual recovery. Previous exports, provider requests and separately quoted text are not erased.
+
 ## Zoom in Code Mode
 
 Prefer direct `zoom` for a single read or tree navigation: the next branch usually depends on the previous result. `n > 1` opens two child summaries; `n = 1` reads a message. Do not batch guesses at deeper nodes before reading their parent.

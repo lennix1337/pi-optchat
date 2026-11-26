@@ -1,3 +1,4 @@
+import { registerMemoryUndo } from './memory-undo.ts';
 import { ciBackToWorker, SUBSCRIBER_NOTICE_CHANNEL } from './ci-back-to-worker.ts';
 import { predictionsTool } from './predictions.ts';
 import { formatIdeasBoard, ideasConfig, ideasTool, readIdeas } from './ideas.ts';
@@ -452,7 +453,7 @@ export default function optchat(host: ExtensionAPI) {
       const carried = bundled.get(message);
       if (carried) { logBundle(active, message, carried); receipts.delete(message); logged++; continue; }
       const receipt = receipts.get(message);
-      if (!isReplayedReport(message, receipt)) logMessage(active.memory, message, receipt, fullToolResults.get(message));
+      if (!isReplayedReport(message, receipt)) logMessage(active.memory, message, receipt, fullToolResults.get(message), slack.memoryKey(message));
       logged++;
       if (receipt && !receipt.startsWith(REPORT_RECEIPT)) active.inbox.acknowledge(receipt);
       receipts.delete(message);
@@ -1026,8 +1027,14 @@ export default function optchat(host: ExtensionAPI) {
   const slackOwner = () => active && inPhase('open', 'import-paused') ? { dir: active.dir, name: active.name } : undefined;
 
 
+  const memoryUndo = registerMemoryUndo(pi, () => {
+    if (!active || !inPhase('open') || working || !idle() || fault || pendingImport(active.dir)) return undefined;
+    flush();
+    view = undefined; focusView = undefined; viewEpoch++;
+    return active.memory;
+  });
   const slack = registerSlackBridge(pi, slackOwner, (channel, text) => { try { if (active) logSent(active.dir, channel, text); } catch {   } },
-    { accepting: () => inPhase('open'), nextWake: () => heartbeat?.nextWakeAt, onInbound: () => heartbeat?.notifyObligations(), deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
+    { accepting: () => inPhase('open'), memoryUndo, nextWake: () => heartbeat?.nextWakeAt, onInbound: () => heartbeat?.notifyObligations(), deferEnd: true, economy: cachedEconomy(() => slackOwner()?.dir),
       everyAnswer: () => active?.config.slackEveryAnswer === true, proactivityPaused: () => active?.config.heartbeatPaused === true,
       taskThreadAfterMs: () => active?.config.slack?.taskThreadAfterMs,
 
@@ -1067,8 +1074,8 @@ export default function optchat(host: ExtensionAPI) {
     return a && inPhase('open', 'closing', 'import-paused') ? {
       dir: a.dir,
       issueAliases: a.config.issueAliases,
-      sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined; },
-      latestSource: () => { flush(); const latest = latestOperatorMessage(a.memory.root); return latest ? String(latest.i) : undefined; },
+      sourceExists: (id: string) => { flush(); return /^(0|[1-9]\d*)$/.test(id) && a.memory.root[Number(id)] !== undefined && !a.memory.isHidden(Number(id)); },
+      latestSource: () => { flush(); const latest = latestOperatorMessage(a.memory.root, i => a.memory.isHidden(i)); return latest ? String(latest.i) : undefined; },
     } : undefined;
   }, Date.now, () => heartbeat?.notifyObligations());
 
@@ -1107,7 +1114,7 @@ export default function optchat(host: ExtensionAPI) {
   const startRun = (ctx: ExtensionContext) => {
     flush(); run = []; logged = 0; keep = 0; view = undefined; focusView = undefined; runStarted = true; viewEpoch++; runSeq++;
     const config = active?.config;
-    previous = config?.previousExchange ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
+    previous = config?.previousExchange && !active?.memory.hasHidden ? previousExchange(ctx.sessionManager.getBranch(), config.previousExchangeKB * 1000) : [];
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
   };
   pi.on('agent_start', (_event, ctx) => {

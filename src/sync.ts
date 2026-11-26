@@ -181,7 +181,7 @@ export class Sync {
   private async drainPages() {
     const { memory, profile, writePage = aiMemoryWriter() } = this.options;
     try {
-      await writeFinishedBlocks({ profile, memory, cursorFile: this.pagesCursorFile, writePage, stopped: () => this.closed, status: () => this.renderStatus() });
+      await writeFinishedBlocks({ profile, memory, cursorFile: this.pagesCursorFile, writePage, stopped: () => this.closed || memory.hasHidden, status: () => this.renderStatus() });
       this.warned.delete('ai-memory');
     } catch (error) {
       this.retryLater(this.pages, 'ai-memory', error);
@@ -223,9 +223,9 @@ export class Sync {
         cursor = { block: Math.max(0, Math.floor(memory.root.length / size) - 1), part: 0 };
         atomicWrite(this.cursorFile, JSON.stringify(cursor));
       }
-      for (let node; !this.closed && (node = memory.node({ l: BLOCK_LEVEL, i: cursor.block }));) {
+      for (let node; !this.closed && !memory.hasHidden && (node = memory.node({ l: BLOCK_LEVEL, i: cursor.block }));) {
         const first = cursor.block * size, parts = noteParts(first, first + size - 1, node.text);
-        for (; cursor.part < parts.length && !this.closed; cursor.part++) {
+        for (; cursor.part < parts.length && !this.closed && !memory.hasHidden; cursor.part++) {
           const marker = parts[cursor.part].slice(0, parts[cursor.part].indexOf(']') + 1);
           if (!hasNote(marker)) await send(parts[cursor.part]);
           atomicWrite(this.cursorFile, JSON.stringify({ block: cursor.block, part: cursor.part + 1 }));

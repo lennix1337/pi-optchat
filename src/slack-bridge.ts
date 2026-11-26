@@ -1,3 +1,4 @@
+import { slackMemoryKey, type UndoCommand } from './memory-undo.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Type } from 'typebox';
@@ -48,7 +49,7 @@ export const FROM_SLACK = /^\[Slack(?: #([a-z0-9][a-z0-9_-]{0,79}))?\] /;
 const FROM_WHATSAPP = /^\[WhatsApp\] /;
 export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
-type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string } };
+type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string }; undoTs?: string };
 
 type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<string | null> };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
@@ -248,6 +249,8 @@ export class SlackBridge {
   private replied = '';
   private delivered = '';
   private readonly threads = new Map<string, Origin>();
+  private readonly loggedOrigins = new WeakMap<AgentMessage, string>();
+  memoryKey(message: AgentMessage) { return this.loggedOrigins.get(message); }
   /** Approval posts by their DM ts, until decided or expired. */
   private readonly approvals = new Map<string, Post>();
   /** Rewrites of decided approval posts, in order. */
@@ -265,6 +268,7 @@ export class SlackBridge {
     models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean>;
     /** The quota economy (US$ per 1%) the `cota` command adds to each account, when there is one. */
     economy?: () => Economy | undefined;
+    memoryUndo?: (command: UndoCommand) => string;
     /** The thinking level as `/thinking` sees it, and setting it: the `thinking` command and the Home's menu. */
     thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking']; proactivityPaused?: CommandState['proactivityPaused'];
     /** On (setting `slackEveryAnswer`, for a Pi nobody watches at a terminal): the final answer of every run, not only of Slack and wakes, goes to the DM. */
@@ -427,6 +431,22 @@ export class SlackBridge {
           this.expanded = m.text === HOME_FOLD.more;
           this.refreshHome();
           atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+          continue;
+        }
+        const history = !channel ? /^(undo|redo)(?:\s+([\s\S]*))?$/i.exec(m.text.trim()) : null;
+        if (this.options.memoryUndo && (history || m.undoTs !== undefined)) {
+          if (cancel?.aborted || this.owner()?.dir !== owner.dir) return delivered;
+          if (this.running || delivered) return delivered;
+          const reaction = typeof m.undoTs === 'string' && /^\d{1,12}\.\d{1,8}$/.test(m.undoTs)
+            && typeof m.channel === 'string' && REAL_CHANNEL.test(m.channel);
+          const request: UndoCommand | undefined = reaction ? { action: 'undo', arg: '', slack: slackMemoryKey(m.channel!, m.undoTs!), seq: m.seq }
+            : history ? { action: history[1].toLowerCase() === 'undo' ? 'undo' : 'redo', arg: history[2] ?? '', seq: m.seq } : undefined;
+          const reply = request && this.options.memoryUndo(request);
+          atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+          const thread = reaction && m.channel?.startsWith('D') ? m.undoTs! : null;
+          if (reply) await this.publish(reply, thread, null).catch(error => {
+            this.options.warn(`Slack memory command confirmation could not be posted: ${error instanceof Error ? error.message : String(error)}`);
+          });
           continue;
         }
         const command = channel ? undefined : remoteCommand(m.text);
@@ -614,7 +634,7 @@ export class SlackBridge {
   }
 
   /** Called for every user message of a run; a `[Slack]` one makes this run answer where it came from. */
-  sawUserMessage(text: string): void {
+  sawUserMessage(text: string, message?: AgentMessage): void {
     const match = FROM_SLACK.exec(text);
     const resumed = this.cutWake && !wakeTask(text) && PROVIDER_RESUME.test(text) && this.options.now() - this.cutWake.endedAt <= RESUME_WINDOW_MS ? this.cutWake : undefined;
     this.cutWake = undefined;
@@ -642,6 +662,7 @@ export class SlackBridge {
     }
     const origin = this.threads.get(text) ?? { thread: null, channel: match[1] ?? null };
     this.threads.delete(text);
+    if (message && origin.id && origin.ts) this.loggedOrigins.set(message, slackMemoryKey(origin.id, origin.ts));
     if (this.answering?.startText !== undefined) return;
     this.answering = origin;
     this.scheduleTaskThread(origin);
@@ -965,7 +986,7 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void; taskThreadAfterMs?: () => number | undefined } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void; taskThreadAfterMs?: () => number | undefined; memoryUndo?: (command: UndoCommand) => string } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
@@ -986,7 +1007,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
 
   pi.on('model_select', event => { model = named(event.model); selected = event.model; });
   pi.on('session_shutdown', () => bridge.stop());
-  pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text); else bridge.assistantSaid(message); });
+  pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text, message); else bridge.assistantSaid(message); });
   pi.on('agent_start', () => bridge.runStarted(options.deferEnd));
   pi.on('tool_execution_start', event => bridge.toolStarted(event.toolName, event.args));
   pi.on('agent_end', event => { if (!options.deferEnd) return bridge.runEnded(event.messages); });

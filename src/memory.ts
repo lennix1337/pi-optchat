@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { FileStore, type ColdSummaryRecord, type Saved, type Store, type TerminalRecord } from './store.ts';
 import { runSliced, runSync, sortSteps } from './sliced.ts';
 import { scrubSecrets } from './secret-scrub.ts';
+import { operatorWords } from './operator-words.ts';
 
 export const NODE = 512;
 export const VIEW = 128_000;
@@ -19,7 +20,9 @@ export const PAGE = 25_000;
 export const KINDS = ['user', 'talk', 'tool', 'echo', 'note', 'work'] as const;
 export type Kind = typeof KINDS[number];
 export interface Origin { source: 'claude' | 'claude-memory' | 'codex' | 'pi' | 'chatgpt'; conversation: string; message: string; title: string; project?: string }
-export interface Entry { i: number; kind: Kind; text: string; size: number; date: string; receipt?: string; origin?: Origin }
+export interface Entry { i: number; kind: Kind; text: string; size: number; date: string; receipt?: string; origin?: Origin; slack?: string }
+export interface HiddenRange { from: number; to: number }
+export interface HiddenState { batches: HiddenRange[]; slackSeq: number }
 export interface Part { l: number; i: number }
 /** `revised`: a later record that replaces a built line's text (Memory.revise); the first record of a part builds it. */
 export interface Summary extends Part { text: string; size: number; revised?: true }
@@ -130,6 +133,8 @@ class Sawtooth {
     }
   }
 
+  reset() { this.parts.length = 0; this.measured = 0; this.merging = false; }
+
   resized(part: Part, delta: number) { if (this.parts.some(p => p.l === part.l && p.i === part.i)) this.measured += delta; }
 
   built(i: number) { if (this.covering(i)?.l === 0) this.measured += this.node({ l: 0, i })!.size - bytes(this.unbuilt(i)); }
@@ -166,6 +171,7 @@ class ColdIndex {
   private flags = new Uint8Array(0);
   private extraDates?: Map<number, string>;
   private receipts?: Map<number, string>;
+  private slackKeys?: Map<number, string>;
   private origins?: Map<number, Origin>;
   constructor(readonly store: Store) {}
 
@@ -199,6 +205,7 @@ class ColdIndex {
       f |= FLAG_RECEIPT;
       (this.receipts ??= new Map()).set(i, entry.receipt);
     }
+    if (entry.slack) (this.slackKeys ??= new Map()).set(i, entry.slack);
     this.flags[i] = f;
   }
 
@@ -209,6 +216,7 @@ class ColdIndex {
     return Number.isNaN(ms) ? (this.extraDates?.get(i) ?? '') : new Date(ms).toISOString();
   }
   hasOrigin(i: number): boolean { return (this.flags[i] & FLAG_ORIGIN) !== 0; }
+  slack(i: number) { return this.slackKeys?.get(i); }
   receipt(i: number): string | undefined { return (this.flags[i] & FLAG_RECEIPT) !== 0 ? this.receipts?.get(i) : undefined; }
   origin(i: number): Origin | undefined {
     if ((this.flags[i] & FLAG_ORIGIN) === 0) return undefined;
@@ -226,11 +234,12 @@ class ColdEntry implements Entry {
   get size(): number { return this.cold.size(this.i); }
   get date(): string { return this.cold.date(this.i); }
   get receipt(): string | undefined { return this.cold.receipt(this.i); }
+  get slack(): string | undefined { return this.cold.slack(this.i); }
   get origin(): Origin | undefined { return this.cold.origin(this.i); }
   get text(): string { return this.cold.text(this.i); }
   toJSON() {
-    const receipt = this.receipt, origin = this.origin;
-    return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
+    const { receipt, origin, slack } = this;
+    return { i: this.i, kind: this.kind, text: this.text, size: this.size, date: this.date, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}), ...(slack ? { slack } : {}) };
   }
 }
 
@@ -351,7 +360,12 @@ export class Memory {
   readonly root: Entry[] = [];
   readonly tree: ColdTreeMap;
   private readonly events = new EventEmitter();
-  private readonly controller = new AbortController();
+  private controller = new AbortController();
+  private batches: HiddenRange[] = [];
+  private slackSeq = 0;
+  private hidden: HiddenRange[] = [];
+  private safeBefore = Infinity;
+  private readonly projected = new Map<number, Summary>();
   private readonly busy = new Map<number, Promise<void>>();
   private readonly retryAt = new Map<number, number>();
   private readonly terminal = new Map<number, typeof POLICY_REFUSAL>();
@@ -437,6 +451,21 @@ export class Memory {
     entries.length = 0;
     yield* this.loadTree(saved.tree);
     saved.tree.length = 0;
+    const hidden = this.store.loadHidden?.();
+    if (hidden !== undefined) {
+      if (!object(hidden) || !Number.isSafeInteger(hidden.slackSeq) || Number(hidden.slackSeq) < 0
+        || !Array.isArray(hidden.batches) || !hidden.batches.every(r => object(r) && Number.isSafeInteger(r.from) && Number.isSafeInteger(r.to)
+          && Number(r.from) >= 0 && Number(r.from) < Number(r.to) && Number(r.to) <= this.root.length))
+        throw new Error('Invalid OptChat hidden ranges; refusing to expose the chat.');
+      this.slackSeq = Number(hidden.slackSeq);
+      this.setHidden(hidden.batches as HiddenRange[]);
+    }
+    if (this.hasHidden) {
+      yield* this.rebuildProjection();
+      yield* this.chillTree();
+      this.schedule();
+      return;
+    }
     for (const node of this.tree.values()) { this.queueParent(node); yield; }
     for (let i = 0; i < this.root.length; i++) {
       if (!this.node({ l: 0, i })) {
@@ -528,12 +557,12 @@ export class Memory {
     for (const id of this.terminal.keys()) { if (this.tree.has(id)) this.terminal.delete(id); yield; }
     if (this.terminal.size) this.lastError = 'Summary blocked by policy refusal; explicit retry required.';
   }
-  append(kind: Kind, text: string, date = new Date().toISOString(), receipt?: string, origin?: Origin) {
+  append(kind: Kind, text: string, date = new Date().toISOString(), receipt?: string, origin?: Origin, slack?: string) {
     if (this.stopped) throw new Error('Memory is closed.');
     if (this.failed) throw new Error(`Memory could not be saved: ${this.failed}`);
     const clean = kind === 'echo' ? scrubSecrets(text) : text;
     const textBytes = bytes(clean);
-    const entry: Entry = { i: this.root.length, kind, text: clean, date, size: textBytes + kind.length + 2, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}) };
+    const entry: Entry = { i: this.root.length, kind, text: clean, date, size: textBytes + kind.length + 2, ...(receipt ? { receipt } : {}), ...(origin ? { origin } : {}), ...(slack ? { slack } : {}) };
 
     this.retryAt.clear();
     void this.enqueue(() => this.store.append(entry), error => {
@@ -568,7 +597,89 @@ export class Memory {
     if (firstHot >= 0) this.hotCursor = firstHot;
     else while (this.hotCursor < this.root.length && !Object.getOwnPropertyDescriptor(this.root[this.hotCursor], 'text')?.writable) this.hotCursor++;
   }
-  node(part: Part) { return this.tree.get(key(part)); }
+  get hasHidden() { return this.hidden.length > 0; }
+  isHidden(from: number, to = from + 1) {
+    return this.hidden.some(r => r.from < to && from < r.to);
+  }
+  private setHidden(batches: HiddenRange[]) {
+    this.batches = batches;
+    this.hidden = [];
+    for (const r of [...batches].sort((a, b) => a.from - b.from)) {
+      const last = this.hidden.at(-1);
+      if (last && r.from <= last.to) last.to = Math.max(last.to, r.to);
+      else this.hidden.push({ ...r });
+    }
+    let cutoff = this.hidden[0]?.from ?? Infinity;
+    while (cutoff > 0 && cutoff < this.root.length && ['tool', 'echo'].includes(this.root[cutoff - 1]?.kind)) cutoff--;
+    this.safeBefore = cutoff;
+  }
+  private *rebuildProjection(): Generator<void, void> {
+    this.chat.reset(); this.compaction.reset(); this.projected.clear();
+    this.unbuilt.clear(); this.merges.clear(); this.unbuiltHotBytes = 0;
+    for (let i = 0; i < this.root.length;) {
+      if (this.isHidden(i)) { i++; yield; continue; }
+      const leaf = { l: 0, i };
+      if (!this.node(leaf)) {
+        this.unbuilt.add(i);
+        if (Object.getOwnPropertyDescriptor(this.root[i], 'text')?.writable) this.unbuiltHotBytes += bytes(this.root[i].text);
+      }
+      let part = leaf;
+      while (part.i % 2 === 0) {
+        const parent = { l: part.l + 1, i: part.i / 2 };
+        if (!this.node(parent)) break;
+        part = parent;
+      }
+      this.chat.push(part); this.compaction.push(part);
+      this.queueParent(part);
+      i = end(part);
+      yield;
+    }
+    this.fit(); this.save();
+  }
+  handledSlackCommand(seq: number | undefined) { return seq !== undefined && seq <= this.slackSeq; }
+  private changeHidden(batches: HiddenRange[], seq: number | undefined) {
+    if (this.stopped || this.failed || this.writing || !this.store.saveHidden) throw new Error('OptChat memory is not ready to change visibility.');
+    const slackSeq = seq ?? this.slackSeq;
+    this.store.saveHidden({ batches, slackSeq });
+    this.slackSeq = slackSeq;
+    this.controller.abort(new DOMException('memory_visibility', 'AbortError'));
+    this.controller = new AbortController();
+    this.retryAt.clear(); this.reported.clear();
+    this.setHidden(batches);
+    runSync(this.rebuildProjection());
+    this.schedule();
+  }
+  undo(n = 1, slack?: string, seq?: number): HiddenRange | undefined {
+    if (!Number.isSafeInteger(n) || n < 1) throw new Error('Use /undo [N], com um número inteiro positivo.');
+    let from = this.root.length, to = from;
+    if (slack !== undefined || n === 1) {
+      const operator = (e: Entry) => e.kind === 'user' && !e.origin && (!!e.slack || !!e.receipt || operatorWords(e.text) !== undefined);
+      from = this.root.findLastIndex(e => !this.isHidden(e.i) && operator(e) && (slack === undefined || e.slack === slack));
+      if (from < 0) return;
+      const entry = this.root[from];
+      const sameInput = (candidate: Entry | undefined) => candidate?.kind === 'user' && (entry.slack ? candidate.slack === entry.slack : !!entry.receipt && candidate.receipt === entry.receipt);
+      to = from + 1;
+      while (to < this.root.length && (!operator(this.root[to]) || sameInput(this.root[to]))) to++;
+      while (sameInput(this.root[from - 1])) from--;
+    } else {
+      while (from > 0 && n > 0) { from--; if (!this.isHidden(from)) n--; }
+      if (n > 0) return;
+      while (to > from && this.isHidden(to - 1)) to--;
+    }
+    const range = { from, to };
+    this.changeHidden([...this.batches, range], seq);
+    return range;
+  }
+  redo(seq?: number): HiddenRange | undefined {
+    const last = this.batches.at(-1);
+    if (last) this.changeHidden(this.batches.slice(0, -1), seq);
+    return last;
+  }
+  node(part: Part) { return (end(part) <= this.safeBefore ? this.tree : this.projected).get(key(part)); }
+  *visibleNodes() {
+    for (const node of this.tree.values()) if (end(node) <= this.safeBefore) yield node;
+    yield* this.projected.values();
+  }
   /** Explicitly reset a policy-refused node; normal appends never clear this terminal block. */
   async retryRefused(part: Part) {
     if (this.stopped) throw new Error('Memory is closed.');
@@ -634,6 +745,7 @@ export class Memory {
   /** Saved when it merges or changes batch state: a view that only grew is the saved one plus later messages, as `load` replays it.
    * The log stays authoritative, so a failed save only warns. */
   private save() {
+    if (this.hasHidden) return;
     const failed = (error: unknown) => { this.warn(`Could not save the memory view: ${error instanceof Error ? error.message : String(error)}`); };
     try { void this.enqueue(() => this.store.saveView(JSON.stringify({ parts: this.view.map(p => [p.l, p.i]), merging: this.chat.merging })), failed); }
     catch (error) { failed(error); }
@@ -649,7 +761,7 @@ export class Memory {
     const node = this.node(part);
     if (!(node instanceof ColdSummary)) return node;
     const warm = { l: node.l, i: node.i, size: node.size, text: node.text };
-    this.tree.set(key(part), warm);
+    if (end(part) <= this.safeBefore) this.tree.set(key(part), warm);
     return warm;
   }
   render() { return `${VIEW_OPEN}${this.view.map(p => `${start(p)}+${2 ** p.l}|${flat(this.viewNode(p)?.text ?? (p.l === 0 ? this.unbuiltText(p.i) : UNBUILT))}`).join('\n')}\n</chat>`; }
@@ -662,7 +774,7 @@ export class Memory {
     const due = Math.min(...[...this.retryAt.values()].filter(t => t > now));
     return { done: this.peak - this.owed(), total: this.peak, retryIn: Number.isFinite(due) ? due - now : undefined };
   }
-  private owed() { return this.expectedNodes() - this.tree.size; }
+  private owed() { return this.hasHidden ? this.unbuilt.size + this.merges.size : this.expectedNodes() - this.tree.size; }
   onChange(listener: () => void) { this.events.on('change', listener); return () => { this.events.off('change', listener); }; }
   /** The view line covering message `at`. */
   covering(at: number) { return this.chat.covering(at); }
@@ -695,7 +807,8 @@ export class Memory {
       const id = key(part);
       if (this.busy.has(id) || this.terminal.has(id) || (this.retryAt.get(id) ?? 0) > now) return;
 
-      const promise = this.build(part).catch(error => this.handleFailure(part, error))
+      const signal = this.controller.signal;
+      const promise = this.build(part, signal).catch(error => { if (!signal.aborted) return this.handleFailure(part, error); })
         .finally(() => { this.busy.delete(id); this.schedule(); this.events.emit('change'); });
       this.busy.set(id, promise);
     };
@@ -724,7 +837,7 @@ export class Memory {
     if (!this.reported.has(id)) { this.reported.add(id); this.warn(`Compactor ${start(part)}+${2 ** part.l}: ${this.lastError}`); }
     if (refused) {
       this.terminal.set(id, POLICY_REFUSAL); this.retryAt.delete(id);
-      await this.writeTerminal(part, 'terminal');
+      if (end(part) <= this.safeBefore) await this.writeTerminal(part, 'terminal');
     } else {
       this.retryAt.set(id, this.retryMs ? Date.now() + this.retryMs : Infinity);
       if (this.retryMs && !this.retryTimer) this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.schedule(); }, this.retryMs);
@@ -738,11 +851,13 @@ export class Memory {
     while (this.root[first - 1]?.kind === 'tool') first--;
     while (this.root[last + 1]?.kind === 'tool') last++;
     const echo = this.root[last + 1 + i - first];
-    return echo?.kind === 'echo' ? echo.text : undefined;
+    return echo?.kind === 'echo' && !this.isHidden(echo.i) ? echo.text : undefined;
   }
   /** Rewrites, through the compactor, each shown line for which `stale` returns a note (what to drop); the new text is appended
    * as a revision record, so it wins on load too. Returns how many lines changed. Used once to clean closed conflicts. */
   async revise(stale: (text: string) => string | undefined, signal: AbortSignal = this.controller.signal) {
+    if (this.hasHidden) return 0;
+    const projection = this.controller.signal;
     let changed = 0;
     for (const part of [...this.view]) {
       const node = this.node(part), note = node && stale(node.text);
@@ -750,6 +865,7 @@ export class Memory {
       if (!node || note === undefined || part.l === 0 && node.text === `${this.root[part.i].kind}: ${this.root[part.i].text}`) continue;
       let text = (await this.compress({ context: `${VIEW_OPEN}</chat>`, source: node.text, part, revise: note }, signal)).trim();
       if (text && part.l === 0) text = labeled(this.root[part.i].kind, text);
+      if (projection.aborted) break;
       if (!text || text === node.text || this.stopped) continue;
       const revised: Summary = { ...part, text, size: lineBytes(text), revised: true };
       const written = this.enqueue(() => this.store.appendNode(revised), error => { throw error; });
@@ -773,7 +889,7 @@ export class Memory {
     }
     return false;
   }
-  private async build(part: Part) {
+  private async build(part: Part, signal: AbortSignal) {
     const leaf = part.l === 0 ? this.root[part.i] : undefined;
     const leafText = leaf ? (leaf.kind === 'echo' ? scrubSecrets(leaf.text) : leaf.text) : '';
     const source = leaf ? `${leaf.kind}: ${leafText}`
@@ -786,16 +902,20 @@ export class Memory {
     let text = bytes(source) <= NODE ? source : (await this.compress({ context: this.compactionView(part), source: mergeSource, part,
       historical: this.hasOriginInRange(start(part), end(part)),
       ...(result === undefined ? {} : { result: cap(result, RESULT) }),
-      ...(call ? { call: { i: call.i, text: cap(`tool: ${call.text}`, 4000) } } : {}) }, this.controller.signal)).trim();
+      ...(call ? { call: { i: call.i, text: cap(`tool: ${call.text}`, 4000) } } : {}) }, signal)).trim();
 
     if (text && part.l === 0 && text !== source) text = labeled(this.root[part.i].kind, text);
-    if (this.stopped) return;
+    if (signal.aborted) return;
     if (!text) throw new Error('Compactor returned an empty summary.');
     const node = { ...part, text, size: lineBytes(text) };
 
-    const written = this.enqueue(() => this.store.appendNode(node), error => { throw error; });
-    if (written) await written;
-    this.tree.set(key(part), node); this.retryAt.delete(key(part)); this.merges.delete(key(part)); this.queueParent(part);
+    if (end(part) <= this.safeBefore) {
+      const written = this.enqueue(() => this.store.appendNode(node), error => { throw error; });
+      if (written) await written;
+      this.tree.set(key(part), node);
+    } else this.projected.set(key(part), node);
+    if (signal.aborted) return;
+    this.retryAt.delete(key(part)); this.merges.delete(key(part)); this.queueParent(part);
     if (!part.l) {
       const wasUnbuilt = this.unbuilt.delete(part.i); this.chat.built(part.i); this.compaction.built(part.i);
       const leafEntry = this.root[part.i];
@@ -816,7 +936,7 @@ export class Memory {
     let calls = results;
     while (this.root[calls - 1]?.kind === 'tool') calls--;
     const call = calls + i - results < results ? this.root[calls + i - results] : undefined;
-    return call && this.root[i].text.startsWith(`${call.text.split(' ', 1)[0]}:`) ? call : undefined;
+    return call && !this.isHidden(call.i) && this.root[i].text.startsWith(`${call.text.split(' ', 1)[0]}:`) ? call : undefined;
   }
   /** The compactions' view ends before the first unbuilt line so an unbuilt placeholder cannot distort a summary. */
   private compactionView(part: Part) {
@@ -826,7 +946,7 @@ export class Memory {
   }
   private queueParent({ l, i }: Part) {
     const parent = { l: l + 1, i: Math.floor(i / 2) };
-    if (!this.node(parent) && this.node({ l, i: i % 2 ? i - 1 : i + 1 })) this.merges.set(key(parent), parent);
+    if (!this.isHidden(start(parent), end(parent)) && !this.node(parent) && this.node({ l, i: i % 2 ? i - 1 : i + 1 })) this.merges.set(key(parent), parent);
   }
   /** A 'turn' waits until every part of the view is built, or until everything pending has failed: it then goes on with placeholders
    * for the missing lines, `lastError` says why, and failed nodes stay available for retry. 'tree' waits through retryable failures,
@@ -842,7 +962,7 @@ export class Memory {
    * (zoomable); a merged line still waits, since its placeholder would hide several. */
   async settle(signal?: AbortSignal, until: 'turn' | 'tree' | 'ahead' = 'turn', graceMs?: number): Promise<void> {
     let graceOver = false;
-    const done = () => until === 'tree' ? this.ready && this.busy.size === 0 && this.tree.size === this.expectedNodes()
+    const done = () => until === 'tree' ? this.ready && this.busy.size === 0 && (this.hasHidden ? this.owed() === 0 : this.tree.size === this.expectedNodes())
       : until === 'ahead' ? this.unbuilt.size + this.merges.size < this.jobs
       : this.ready || this.stalled || graceOver && this.view.every(p => p.l === 0 || this.node(p));
     const blockedError = () => new Error('Memory wait blocked by policy refusal; explicit retry required.');
@@ -872,6 +992,7 @@ export class Memory {
   zoom(id: number, n: number, offset?: number, limit?: number) {
     if (!Number.isSafeInteger(id) || id < 0 || !Number.isSafeInteger(n) || n < 1 || !Number.isInteger(Math.log2(n)) || id % n || id + n > this.root.length)
       throw noLine(id, n, this.root.length);
+    if (this.isHidden(id, id + n)) throw new Error('This range contains hidden messages.');
     if (n === 1) {
       const { kind, text } = this.root[id], page = Math.min(limit ?? PAGE, PAGE);
       if (!Number.isSafeInteger(page) || page < 1) throw new Error('limit must be a positive integer.');
@@ -899,7 +1020,7 @@ export class Memory {
   search(text: string, before = this.root.length) {
     const needle = text.toLowerCase(), limit = Math.min(before, this.root.length);
     const hits = this.hitIndexes(needle, limit), page: Entry[] = [];
-    for (let k = hits.length - 1; k >= 0; k--) if (hits[k] < limit) page.push(this.root[hits[k]]);
+    for (let k = hits.length - 1; k >= 0; k--) if (hits[k] < limit && !this.isHidden(hits[k])) page.push(this.root[hits[k]]);
     return page;
   }
   /** Ascending indexes of the messages containing `needle`. History is append-only, so a retained query is extended over
