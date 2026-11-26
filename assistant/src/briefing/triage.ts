@@ -69,7 +69,7 @@ export function triage(message: MailMessage, rules: TriageRules): Triage {
   if (isPrivate) signals.add('private_data');
   const safetyWarning = suspectedInjection || signals.has('executable_attachment');
   const result = (urgency: Urgency, reason: TriageReason, uncertainty: Uncertainty): Triage => {
-    const hiddenBy = urgency === 'normal' && !safetyWarning ? matchingRule(message, rules.learned ?? []) : undefined;
+    const hiddenBy = urgency === 'normal' && !trusted && !safetyWarning ? matchingRule(message, rules.learned ?? []) : undefined;
     return { sourceRef: message.ref, urgency, reason, uncertainty, private: isPrivate, suspectedInjection, signals: [...signals].sort(), ...(hiddenBy ? { hiddenBy } : {}) };
   };
 

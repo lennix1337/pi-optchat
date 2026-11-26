@@ -82,6 +82,7 @@ export class BriefingComposer {
         .run(this.options.profileId, briefing.briefingId, 'daily', localDate, created, JSON.stringify(briefing));
       if (!inserted.changes) return this.dailyFor(localDate)!;
       if (drafts.length) this.saveDrafts(drafts, created);
+      if (briefing.sources.every(source => source.state !== 'unavailable')) this.pruneExpired(created);
       return briefing;
     });
   }
@@ -98,7 +99,7 @@ export class BriefingComposer {
   get(briefingId: string): Briefing | null { return this.one('AND briefing_id = ?', briefingId); }
 
   draft(id: string): ReplyDraft | null {
-    const row = this.db.prepare('SELECT body FROM briefing_reply_drafts WHERE profile = ? AND id = ? AND last_used >= ?').get(this.options.profileId, id, this.now() - this.retentionDays * DAY_MS);
+    const row = this.db.prepare('SELECT body FROM briefing_reply_drafts WHERE profile = ? AND id = ? AND last_used >= ?').get(this.options.profileId, id, this.retentionCutoff(this.now()));
     return row ? JSON.parse(row.body as string) as ReplyDraft : null;
   }
 
@@ -152,17 +153,22 @@ export class BriefingComposer {
   private dailyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'daily'", localDate); }
 
   /** One of this profile's briefings; `rest` is a fixed SQL suffix with placeholders for `args`, never input text. */
-  private one(rest: string, ...args: string[]): Briefing | null {
+  private one(rest: string, ...args: (string | number)[]): Briefing | null {
     const row = this.db.prepare(`SELECT body FROM briefings WHERE profile = ? ${rest}`).get(this.options.profileId, ...args) as { body: string } | undefined;
     return row ? JSON.parse(row.body) as Briefing : null;
   }
 
-  private async compose(kind: BriefingKind, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
-    const now = this.now();
-    const cutoff = now - this.retentionDays * DAY_MS;
+  private retentionCutoff(now: number): number { return now - this.retentionDays * DAY_MS; }
+
+  private pruneExpired(now: number): void {
+    const cutoff = this.retentionCutoff(now);
     this.db.prepare('DELETE FROM briefings WHERE profile = ? AND created < ?').run(this.options.profileId, cutoff);
     this.db.prepare('DELETE FROM briefing_reply_drafts WHERE profile = ? AND last_used < ?').run(this.options.profileId, cutoff);
-    const since = this.latest();
+  }
+
+  private async compose(kind: BriefingKind, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
+    const now = this.now();
+    const since = this.one('AND created >= ? ORDER BY created DESC LIMIT 1', this.retentionCutoff(now));
     const rules = { ...this.options.rules, learned: this.learnedRules() };
     const effects = new Map(rules.learned.map(({ ruleId, reason }) => [ruleId, { ruleId, reason, hidden: 0 }]));
     const sources: SourceState[] = [];

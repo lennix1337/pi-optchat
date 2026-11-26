@@ -57,7 +57,8 @@ test('on-demand briefing gives next steps without creating or extending local dr
   assert.equal(replyStep(await briefings.onDemand())?.kind, 'next', 'on demand does not generate draft links');
   assert.equal(draftCount(), 0);
 
-  const saved = replyStep(await briefings.daily());
+  const first = await briefings.daily();
+  const saved = replyStep(first);
   assert.ok(saved?.kind === 'reply_draft');
   assert.equal(draftCount(), 1);
   rig.clock.now += 12 * hour;
@@ -66,7 +67,67 @@ test('on-demand briefing gives next steps without creating or extending local dr
   rig.clock.now += 13 * hour;
   assert.equal(briefings.draft(saved.draftId), null, 'the earlier refresh did not extend retention');
   await briefings.onDemand();
-  assert.equal(draftCount(), 0, 'expired draft row was removed');
+  assert.equal(draftCount(), 1, 'on-demand refresh leaves the expired draft row alone');
+  assert.deepEqual(briefings.get(first.briefingId), first);
+  rig.fake.mail.personal.length = 0;
+  await briefings.daily();
+  assert.equal(draftCount(), 0, 'successful daily publication removes the expired draft row');
+  assert.equal(briefings.get(first.briefingId), null);
+}));
+
+test('daily publication with a failed source does not purge expired rows', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  seedReplyMail(rig);
+  const briefings = composer(rig, { connections: ['personal'], retentionDays: 1 });
+  const first = await briefings.daily();
+  rig.clock.now += 25 * hour;
+  rig.fake.failures.set('/gmail/v1/users/me/messages', 500);
+  const incomplete = await briefings.daily();
+  assert.deepEqual(incomplete.sources.find(source => source.sourceId === 'personal:mail'), {
+    sourceId: 'personal:mail', state: 'unavailable', error: 'google_request_failed',
+  });
+  assert.deepEqual(briefings.get(incomplete.briefingId), incomplete, 'the failure is still published');
+  assert.equal(count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts'), 1);
+  assert.deepEqual(briefings.get(first.briefingId), first);
+}));
+
+test('daily insert that loses a race does not purge expired rows', t => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  seedReplyMail(rig);
+  const contender = composer(rig, { connections: ['personal'], retentionDays: 1 });
+  const winner = composer(rig, { google: rig.open(), connections: ['personal'], retentionDays: 2 });
+  const first = await contender.daily();
+  rig.clock.now += 25 * hour;
+  rig.fake.mail.personal.length = 0;
+  const readMail = rig.google.listMessages.bind(rig.google);
+  let published: Briefing | undefined;
+  const winDuringRead = t.mock.method(rig.google, 'listMessages', async (connectionId: string) => {
+    published = await winner.daily();
+    return readMail(connectionId);
+  });
+  const raced = await contender.daily();
+  assert.equal(winDuringRead.mock.callCount(), 1);
+  assert.ok(published, 'the other client published during the read');
+  assert.deepEqual(published.sources.map(source => source.state), ['ok', 'ok', 'ok']);
+  assert.deepEqual(raced, published);
+  assert.equal(count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts'), 1, 'only the winner may apply its retention');
+  assert.deepEqual(contender.get(first.briefingId), first);
+}));
+
+test('daily publication rolls back snapshot and retention when pruning fails', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  seedReplyMail(rig);
+  const briefings = composer(rig, { connections: ['personal'], retentionDays: 1 });
+  const first = await briefings.daily();
+  rig.clock.now += 25 * hour;
+  rig.fake.mail.personal.length = 0;
+  const db = new DatabaseSync(rig.databasePath);
+  rig.defer(() => db.close());
+  db.exec(`CREATE TRIGGER test_prune_failure BEFORE DELETE ON briefing_reply_drafts
+    BEGIN SELECT RAISE(ABORT, 'test_prune_failed'); END`);
+  await assert.rejects(briefings.daily(), /test_prune_failed/);
+  assert.deepEqual(briefings.latest(), first);
+  assert.equal(count(rig.databasePath, 'SELECT COUNT(*) AS n FROM briefing_reply_drafts'), 1);
 }));
 
 test('reply preview prefers a single Reply-To and lowercases it or the From fallback', () => withGoogle(async rig => {
@@ -93,15 +154,28 @@ test('reply preview prefers a single Reply-To and lowercases it or the From fall
   assert.equal(stepFor('self')?.kind, 'next');
 }));
 
-test('learned hide rules leave urgent matches visible and do not count them', () => withGoogle(async rig => {
+test('learned hide rules leave urgent matches and trusted senders visible, with urgent first', () => withGoogle(async rig => {
   await rig.connect('personal', 'personal');
   seedReplyMail(rig);
-  rig.fake.mail.personal.push({ id: 'urgent', from: 'Team <team@example.test>', subject: 'Workshop deadline today', body: 'Please sign.', receivedAt: '2026-10-28T08:03:00.000Z' });
+  const trusted = 'Coordinator <BOSS@DENTAI.EXAMPLE.TEST>';
+  const mail = { body: 'Please review.', receivedAt: '2026-10-28T08:03:00.000Z' };
+  rig.fake.mail.personal.push(
+    { ...mail, id: 'trusted', from: trusted, subject: 'Workshop planning' },
+    { ...mail, id: 'urgent', from: 'Team <team@example.test>', subject: 'Workshop deadline today' },
+    { ...mail, id: 'trusted-urgent', from: trusted, subject: 'Urgent workshop deadline' },
+  );
   const briefings = composer(rig, { connections: ['personal'] });
   const { ruleId } = briefings.learnRule('Hide workshop unless notes because routine', rig.authority);
   const daily = await briefings.daily();
-  assert.equal(daily.items.find(item => item.sourceRef.endsWith(':urgent'))?.urgency, 'urgent');
-  assert.ok(!daily.items.some(item => item.sourceRef.endsWith(':reply-needed')));
+  const messages = sections(daily, 'messages');
+  const protectedItems = messages.filter(item => /:(trusted|urgent|trusted-urgent)$/.test(item.sourceRef));
+  assert.deepEqual(protectedItems.map(item => [item.sourceRef, item.urgency, item.reason]), [
+    ['gmail:personal:urgent', 'urgent', 'urgent_terms'],
+    ['gmail:personal:trusted-urgent', 'urgent', 'urgent_terms'],
+    ['gmail:personal:trusted', 'normal', 'trusted_sender'],
+  ]);
+  assert.deepEqual(messages.slice(0, 2), protectedItems.slice(0, 2), 'urgent items sort ahead of normal mail');
+  assert.ok(!messages.some(item => item.sourceRef.endsWith(':reply-needed')));
   assert.deepEqual(daily.ruleEffects, [{ ruleId, reason: 'routine', hidden: 1 }]);
   assert.equal(daily.distractions, 1);
 }));
