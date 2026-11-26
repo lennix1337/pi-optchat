@@ -7,8 +7,8 @@ export const TZ = 'America/Sao_Paulo';
 export const SUNDAY_EVENING = Date.parse('2026-11-01T21:30:00.000Z');
 export const rules = { trustedSenders: ['boss@dentai.example.test'] };
 
-export function composer(rig: GoogleRig) {
-  const c = new BriefingComposer({ databasePath: rig.databasePath, profileId: 'p', operatorAuthority: rig.authority, timeZone: TZ, store: rig.store, google: rig.google, connections: ['personal', 'dentai'], rules, now: () => rig.clock.now });
+export function composer(rig: GoogleRig, connections = ['personal', 'dentai']) {
+  const c = new BriefingComposer({ databasePath: rig.databasePath, profileId: 'p', operatorAuthority: rig.authority, timeZone: TZ, store: rig.store, google: rig.google, connections, rules, now: () => rig.clock.now });
   rig.defer(() => c.close());
   return c;
 }
