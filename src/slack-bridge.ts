@@ -668,19 +668,21 @@ export class SlackBridge {
     this.taskThreadTimer = undefined;
   }
 
-  private async waitForTaskStart(opening: Promise<string | null>): Promise<string | null> {
-    const generation = this.generation;
+  /** Undefined means the session changed: send to the same profile without reusing any thread. */
+  private async waitForTaskStart(opening: Promise<string | null>): Promise<string | null | undefined> {
+    const generation = this.generation, dir = this.owner()?.dir;
     const thread = await opening;
-    if (generation !== this.generation) throw new Error('Slack task session closed before delivery.');
-    return thread;
+    if (!dir || this.owner()?.dir !== dir) throw new Error('Slack profile changed before delivery.');
+    return generation === this.generation ? thread : undefined;
   }
 
   private async progressThread(channel: string | null): Promise<string | null> {
     const origin = this.answering;
     if (!origin || origin.channel !== channel) return null;
-    const confirmed = origin.opening && await this.waitForTaskStart(origin.opening);
-    const canUseParent = (origin.channel === null || origin.id) && (confirmed !== null || origin.threaded);
-    const thread = confirmed ?? origin.thread ?? (canUseParent ? origin.ts ?? null : null);
+    const confirmed = origin.opening ? await this.waitForTaskStart(origin.opening) : origin.thread;
+    if (confirmed === undefined) return null;
+    const canUseParent = (origin.channel === null || origin.id) && (!origin.opening || origin.threaded);
+    const thread = confirmed ?? (canUseParent ? origin.ts ?? null : null);
     if (thread) origin.threaded = true;
     return thread;
   }
@@ -699,10 +701,9 @@ export class SlackBridge {
 
   private async answer(answering: Origin, text: string, closing: boolean): Promise<void> {
     try {
-      const confirmed = answering.opening && await this.waitForTaskStart(answering.opening);
-      const parent = confirmed ?? answering.thread;
-      const legacyProgress = answering.threaded && !parent;
-      await this.publish(text, legacyProgress ? answering.ts ?? null : parent, answering.channel, legacyProgress ? { broadcast: true } : {});
+      const parent = answering.opening ? await this.waitForTaskStart(answering.opening) : answering.thread;
+      const legacyProgress = answering.threaded && parent === null;
+      await this.publish(text, legacyProgress ? answering.ts ?? null : parent ?? null, answering.channel, legacyProgress ? { broadcast: true } : {});
       this.answered(answering.channel);
       const owner = this.owner();
       if (closing && owner && answering.id && answering.ts) { this.react(owner, answering.id, answering.ts, SEEN, true); this.react(owner, answering.id, answering.ts, DONE); }
@@ -857,9 +858,12 @@ export class SlackBridge {
    */
   async post(text: string, channel: string | null, topic?: string, options: { broadcast?: true; choices?: readonly string[] } = {}): Promise<{ parts: number; ts: string; thread: string }> {
     const owner = this.owner();
+    const sameChannel = this.answering?.channel === channel;
+    const choices = options.choices ? { choices: options.choices } : {};
     if (!topic || !owner) {
       const thread = await this.progressThread(channel);
-      const sent = await this.publish(text, thread, channel, options.choices ? { choices: options.choices } : {});
+      const broadcast = options.broadcast && !thread && sameChannel ? true : undefined;
+      const sent = await this.publish(text, thread, channel, broadcast ? { ...choices, broadcast } : choices);
       return { ...sent, thread: thread ?? sent.ts };
     }
     const file = join(owner.dir, TOPICS), now = this.options.now();
@@ -867,8 +871,8 @@ export class SlackBridge {
     try { topics = JSON.parse(readFileSync(file, 'utf8')); } catch {   }
     const known = topics[topic];
     const open = known && known.channel === channel && now - known.at < TOPIC_DAYS * 86_400_000 ? known : undefined;
-    const broadcast = options.broadcast && (open || this.answering?.channel === channel) ? true : undefined;
-    const result = await this.publish(text, open?.ts ?? null, channel, { ...(options.choices ? { choices: options.choices } : {}), ...(broadcast ? { broadcast } : {}) });
+    const broadcast = (open || sameChannel) && options.broadcast;
+    const result = await this.publish(text, open?.ts ?? null, channel, broadcast ? { ...choices, broadcast } : choices);
     if (!open) {
       topics[topic] = { channel, ts: result.ts, at: now };
       const fresh = Object.entries(topics).filter(([, t]) => now - t.at < TOPIC_DAYS * 86_400_000).slice(-300);
