@@ -10,15 +10,18 @@ import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
 import { immediate } from '../store/transaction.ts';
 import { agendaInstant, buildMeetingCard, byMeetingStart, meetingId, type MeetingPrepCard } from './meeting-prep.ts';
-import { MAX_LEARNED_RULES, parseRule, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
+import { MAX_LEARNED_RULES, parseRule, senderAddress, triage, type LearnedRule, type Triage, type TriageRules, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
  * briefing, with every source that could not be read listed as such. One daily briefing exists per profile and local
  * date however many clients ask; each on-demand briefing is its own. Message bodies are never stored, private
  * subjects are withheld. Only a new daily briefing can save a receipt-only reply draft; Start and sending are separate actions.
+ * The weekly review is a third kind, one per profile and local date like the daily one but kept apart from it: open tasks,
+ * threads whose last message is not the user's, and the next seven days of agenda with overlaps and back-to-back meetings
+ * flagged. It is never the baseline for "changed since the last briefing" and `latest` does not return it.
  */
-export type BriefingKind = 'daily' | 'on_demand';
+export type BriefingKind = 'daily' | 'on_demand' | 'weekly';
 export type Section = 'tasks' | 'agenda' | 'messages' | 'changes';
 export type BriefingStep = { kind: 'next'; text: string } | { kind: 'reply_draft'; draftId: string; subject: string };
 export type BriefingItem = { itemId: string; section: Section; title: string; sourceRef: string; reason: string; urgency: Urgency; uncertainty: Uncertainty; untrusted: boolean; startable: boolean; step?: BriefingStep };
@@ -39,11 +42,17 @@ export type ComposerOptions = {
 
 const DAY_MS = 86_400_000;
 const PRIVATE_TITLE = '[private content withheld]';
+const BLOCKED_THREAD_READS = new Set(['google_unauthorized', 'google_reauthorization_required', 'google_rate_limited', 'google_scope_missing', 'google_connection_revoked']);
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
 const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
 const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 2, changes: 3 };
 const MAX_STORE_PAGES = 20;
+const MAX_THREAD_CHECKS = 25;
+const MAX_WEEKLY_TRIES = 3;
+const MAX_UPGRADE_TRIES = 4;
+const WEEK_LOOKBACK_DAYS = 7;
+const BACK_TO_BACK_MS = 5 * 60_000;
 const fail = (code: string): never => { throw new Error(code); };
 const errorCode = (error: unknown) => error instanceof Error && /^[a-z][a-z_]{0,63}$/.test(error.message) ? error.message : 'source_failed';
 type Item = Omit<BriefingItem, 'itemId'>;
@@ -68,9 +77,12 @@ export class BriefingComposer {
     this.db.exec(`PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
+      CREATE UNIQUE INDEX IF NOT EXISTS briefings_weekly ON briefings (profile, local_date) WHERE kind = 'weekly';
+      CREATE TABLE IF NOT EXISTS weekly_attempts (profile TEXT NOT NULL, local_date TEXT NOT NULL, attempted INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 1, failures INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (profile, local_date));
       CREATE TABLE IF NOT EXISTS meeting_prep_announced (profile TEXT NOT NULL, card_id TEXT NOT NULL, start_ms INTEGER NOT NULL, PRIMARY KEY (profile, card_id));
       CREATE TABLE IF NOT EXISTS briefing_reply_drafts (profile TEXT NOT NULL, id TEXT NOT NULL, last_used INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));
       CREATE TABLE IF NOT EXISTS briefing_triage_rules (profile TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));`);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('weekly_attempts') WHERE name = 'failures'").get()) this.db.exec('ALTER TABLE weekly_attempts ADD COLUMN failures INTEGER NOT NULL DEFAULT 0');
   }
 
   /** Today's briefing for this profile; when another client already made it, that one is returned without reading again. */
@@ -98,6 +110,46 @@ export class BriefingComposer {
       catch { console.warn('Google briefing retention cleanup failed.'); }
     }
     return { briefing, fresh: freshRead };
+  }
+
+  /**
+   * The weekly review due on `localDate`; `created` is false when it was already stored, so a caller announces it once. It is
+   * stored under the boundary it was due, and reads the seven days after the day it is composed, so one recovered late is
+   * labelled with the missed boundary and describes the coming week; its calendar starts the moment it is composed, so
+   * what is still ahead on the days since the boundary is in and what is over is not. After three tries a review missing some sources is
+   * stored with an urgent item for each, so its absence is stated, never silent; it is then `degraded` and each later call
+   * re-reads it, replacing the stored review in place (same id, so no second announcement) once fewer sources are missing,
+   * until a few more tries pass (its attempt then stays, as the proof it is final, until the next week prunes it). Before a review is stored only a source that is unavailable counts as a try; an exception counts as a failed attempt of its own, which `MAX_WEEKLY_FAILURES` caps. Once it is stored every re-read counts, exception or not, so none goes on forever.
+   */
+  async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean; degraded: boolean }> {
+    const profile = this.options.profileId;
+    this.db.prepare('DELETE FROM weekly_attempts WHERE profile = ? AND local_date < ?').run(profile, localDate);
+    const existing = this.weeklyFor(localDate);
+    const held = existing ? unavailableSources(existing) : 0;
+    const prior = this.weeklyAttempt(localDate)?.tries ?? 0;
+    if (existing && (!held || prior >= MAX_WEEKLY_TRIES + MAX_UPGRADE_TRIES)) return { briefing: existing, created: false, complete: true, degraded: false };
+    this.db.prepare('INSERT INTO weekly_attempts (profile, local_date, attempted, tries) VALUES (?, ?, ?, ?) ON CONFLICT (profile, local_date) DO UPDATE SET attempted = excluded.attempted, tries = excluded.tries').run(profile, localDate, this.now(), existing ? prior + 1 : prior);
+    let fresh: Briefing;
+    try { fresh = await this.composeWeekly(localDate); } catch (error) {
+      this.db.prepare('UPDATE weekly_attempts SET failures = failures + 1 WHERE profile = ? AND local_date = ?').run(profile, localDate);
+      throw error;
+    }
+    const down = unavailableSources(fresh);
+    const tries = existing || down ? prior + 1 : prior;
+    this.db.prepare('UPDATE weekly_attempts SET tries = ? WHERE profile = ? AND local_date = ?').run(tries, profile, localDate);
+    if (!existing) {
+      const google = fresh.sources.filter(source => source.sourceId !== 'tasks');
+      const googleDown = google.filter(source => source.state === 'unavailable').length;
+      if (down && (googleDown === google.length || tries < MAX_WEEKLY_TRIES)) return { briefing: fresh, created: false, complete: false, degraded: false };
+      this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(profile, fresh.briefingId, 'weekly', localDate, Date.parse(fresh.createdAt), JSON.stringify(fresh));
+    } else if (down < held) {
+      const upgraded = { ...fresh, briefingId: existing.briefingId };
+      this.db.prepare("UPDATE briefings SET body = ?, created = ? WHERE profile = ? AND kind = 'weekly' AND local_date = ?").run(JSON.stringify(upgraded), Date.parse(upgraded.createdAt), profile, localDate);
+    }
+    const stored = this.weeklyFor(localDate)!;
+    const degraded = unavailableSources(stored) > 0 && tries < MAX_WEEKLY_TRIES + MAX_UPGRADE_TRIES;
+    if (!unavailableSources(stored)) this.db.prepare('DELETE FROM weekly_attempts WHERE profile = ? AND local_date = ?').run(profile, localDate);
+    return { briefing: stored, created: !existing && stored.briefingId === fresh.briefingId, complete: true, degraded };
   }
 
   async onDemand(): Promise<Briefing> {
@@ -150,8 +202,16 @@ export class BriefingComposer {
     return Number(result.changes) === 1;
   }
 
-  /** The newest stored briefing of either kind, or null when none is kept. */
-  latest(): Briefing | null { return this.one('ORDER BY created DESC LIMIT 1'); }
+  /** The newest stored daily or on-demand briefing, or null when none is kept. */
+  latest(): Briefing | null { return this.one("AND kind != 'weekly' ORDER BY created DESC LIMIT 1"); }
+
+  /** When and how often this week's review was attempted without being stored, so a restart keeps the retry delay; cleared once it is saved. */
+  weeklyAttempt(localDate: string): { at: number; tries: number; failures: number } | null {
+    const row = this.db.prepare('SELECT attempted, tries, failures FROM weekly_attempts WHERE profile = ? AND local_date = ?').get(this.options.profileId, localDate) as { attempted: number; tries: number; failures: number } | undefined;
+    return row ? { at: row.attempted, tries: row.tries, failures: row.failures } : null;
+  }
+
+  latestWeekly(): Briefing | null { return this.one("AND kind = 'weekly' ORDER BY created DESC LIMIT 1"); }
 
   get(briefingId: string): Briefing | null { return this.one('AND briefing_id = ?', briefingId); }
 
@@ -209,6 +269,8 @@ export class BriefingComposer {
 
   private dailyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'daily'", localDate); }
 
+  private weeklyFor(localDate: string): Briefing | null { return this.one("AND local_date = ? AND kind = 'weekly'", localDate); }
+
   /** One of this profile's briefings; `rest` is a fixed SQL suffix with placeholders for `args`, never input text. */
   private one(rest: string, ...args: (string | number)[]): Briefing | null {
     const row = this.db.prepare(`SELECT body FROM briefings WHERE profile = ? ${rest}`).get(this.options.profileId, ...args) as { body: string } | undefined;
@@ -223,8 +285,8 @@ export class BriefingComposer {
     this.db.prepare('DELETE FROM briefing_reply_drafts WHERE profile = ? AND last_used < ?').run(this.options.profileId, cutoff);
   }
 
-  private async compose(kind: BriefingKind, now: number, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
-    const since = this.one('AND created >= ? ORDER BY created DESC LIMIT 1', this.retentionCutoff(now));
+  private async compose(kind: Exclude<BriefingKind, 'weekly'>, now: number, localDate: string, drafts?: ReplyDraft[]): Promise<Briefing> {
+    const since = this.one("AND kind != 'weekly' AND created >= ? ORDER BY created DESC LIMIT 1", this.retentionCutoff(now));
     const rules = { ...this.options.rules, learned: this.learnedRules() };
     const effects = new Map(rules.learned.map(({ ruleId, reason }) => [ruleId, { ruleId, reason, hidden: 0 }]));
     const sources: SourceState[] = [];
@@ -245,14 +307,87 @@ export class BriefingComposer {
       agenda.push(...found.agenda);
       distractions += found.distractions;
     }
+    return {
+      ...this.assemble(kind, localDate, now, taskSequence, sources, items, agenda, distractions),
+      ruleEffects: [...effects.values()],
+      ...(meetingPrep ? { meetingPrep: cards.sort(byMeetingStart) } : {}),
+    };
+  }
+
+  /** Open tasks, mail threads still waiting for the user over the past week, and the next seven days of agenda; no model and no writes. */
+  private async composeWeekly(localDate: string): Promise<Briefing> {
+    const sources: SourceState[] = [];
+    const items: Omit<BriefingItem, 'itemId'>[] = [];
+    const now = this.now();
+    const taskSequence = this.readTasks(null, sources, items);
+    const today = localDateTime(now, this.options.timeZone).date;
+    const range = weekRange(today, this.options.timeZone);
+    const { to } = range;
+    const from = today === localDate ? range.from : new Date(now).toISOString();
+    let distractions = 0;
+    const events: WeekEvent[] = [];
+    const reads = await Promise.all(this.options.connections.map(async connectionId => {
+      const found = { waiting: [] as Omit<BriefingItem, 'itemId'>[], events: [] as WeekEvent[], distractions: 0 };
+      const [mail, calendar] = await Promise.all([
+        readSource(`${connectionId}:mail`, async () => {
+          const page = await this.options.google.listMessages(connectionId, { lookbackDays: WEEK_LOOKBACK_DAYS });
+          const latest = new Map<string, MailMessage>();
+          for (const message of page.items) {
+            const seen = latest.get(message.threadId);
+            if (!seen || Date.parse(message.receivedAt) > Date.parse(seen.receivedAt)) latest.set(message.threadId, message);
+          }
+          let checks = 0, uncertain = false, blocked = false;
+          for (const message of [...latest.values()].sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))) {
+            if (message.labels.includes('SENT') || message.labels.includes('DRAFT')) continue;
+            const result = triage(message, this.options.rules);
+            if (result.urgency === 'low') { found.distractions++; continue; }
+            let uncertainty = result.uncertainty, unverified = false;
+            if (!blocked && checks < MAX_THREAD_CHECKS) {
+              checks++;
+              try {
+                const answeredAt = await this.options.google.lastSentAt(connectionId, message.threadId);
+                if (answeredAt !== null && answeredAt >= Date.parse(message.receivedAt)) continue;
+              } catch (error) {
+                blocked = BLOCKED_THREAD_READS.has(errorCode(error));
+                unverified = true;
+              }
+            } else unverified = true;
+            if (unverified) { uncertainty = 'high'; uncertain = true; }
+            const who = senderAddress(message.from) || bounded(message.from);
+            found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: unverified ? 'awaiting_reply_unverified' : 'awaiting_reply', urgency: result.urgency, uncertainty, untrusted: true, startable: false });
+          }
+          return page.truncated || uncertain;
+        }),
+        readSource(`${connectionId}:calendar`, async () => {
+          const page = await this.options.google.listEvents(connectionId, { from, to, timeZone: this.options.timeZone });
+          found.events.push(...page.items.map(event => ({ connectionId, event })));
+          return page.truncated;
+        }),
+      ]);
+      return { found, states: [mail, calendar] };
+    }));
+    for (const { found, states } of reads) {
+      sources.push(...states);
+      items.push(...found.waiting);
+      events.push(...found.events);
+      distractions += found.distractions;
+    }
+    for (const source of sources) {
+      if (source.state !== 'unavailable') continue;
+      const [connectionId, kind] = source.sourceId.split(':');
+      items.push({ section: kind === 'calendar' ? 'agenda' : kind === 'mail' ? 'messages' : 'tasks', title: `${kind ? `${connectionId} ${kind}` : connectionId} is unavailable: not included in this review`, sourceRef: `source:${source.sourceId}`, reason: 'source_unavailable', urgency: 'urgent', uncertainty: 'high', untrusted: false, startable: false });
+    }
+    return this.assemble('weekly', localDate, now, taskSequence, sources, items, weekAgenda(events), distractions);
+  }
+
+  private assemble(kind: BriefingKind, localDate: string, now: number, taskSequence: number, sources: SourceState[], items: Omit<BriefingItem, 'itemId'>[], agenda: (Omit<BriefingItem, 'itemId'> & { at: string })[], distractions: number): Briefing {
     agenda.sort((a, b) => a.at.localeCompare(b.at));
     const ordered = [...items, ...agenda.map(({ at: _at, ...item }) => item)]
       .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency] || SECTION_ORDER[a.section] - SECTION_ORDER[b.section]);
     return {
       version: 1, briefingId: randomUUID(), profileId: this.options.profileId, kind, localDate, timeZone: this.options.timeZone, createdAt: new Date(now).toISOString(),
       taskSequence, sources, items: ordered.map(item => ({ itemId: sha256(`${item.section}\n${item.sourceRef}`).slice(0, 16), ...item,
-        step: item.step ?? { kind: 'next', text: NEXT_STEP[item.section] } })), distractions, ruleEffects: [...effects.values()],
-      ...(meetingPrep ? { meetingPrep: cards.sort(byMeetingStart) } : {}),
+        step: item.step ?? { kind: 'next', text: NEXT_STEP[item.section] } })), distractions,
     };
   }
 
@@ -375,6 +510,44 @@ async function readSource(sourceId: string, work: () => Promise<boolean>): Promi
   }
 }
 
+function unavailableSources(briefing: Briefing): number { return briefing.sources.filter(source => source.state === 'unavailable').length; }
+
+export type WeekEvent = { connectionId: string; event: CalendarEvent };
+
+function sameInvitation(a: CalendarEvent, b: CalendarEvent): boolean {
+  if (a.start !== b.start || a.end !== b.end) return false;
+  return a.uid !== null && b.uid !== null ? a.uid === b.uid : a.title === b.title;
+}
+
+/** The week's agenda items: copies of one meeting on several calendars merged, overlaps and back-to-back meetings flagged. */
+export function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
+  const unique: WeekEvent[] = [];
+  const absorbed = new Map<WeekEvent, Set<string>>();
+  for (const entry of found) {
+    const copyOf = unique.find(kept => kept.connectionId !== entry.connectionId && !absorbed.get(kept)?.has(entry.connectionId) && sameInvitation(kept.event, entry.event));
+    if (copyOf) absorbed.set(copyOf, (absorbed.get(copyOf) ?? new Set()).add(entry.connectionId)); else unique.push(entry);
+  }
+  unique.sort((a, b) => a.event.start.localeCompare(b.event.start));
+  const flag = new Map<WeekEvent, 'conflict' | 'back_to_back'>();
+  const timed = unique.filter(({ event }) => !event.allDay);
+  for (const [i, later] of timed.entries()) {
+    for (const earlier of timed.slice(0, i)) {
+      if (Date.parse(later.event.start) >= Date.parse(earlier.event.end)) continue;
+      flag.set(earlier, 'conflict');
+      flag.set(later, 'conflict');
+    }
+    const before = timed.slice(0, i).reduce<WeekEvent | null>((latest, entry) => !latest || Date.parse(entry.event.end) > Date.parse(latest.event.end) ? entry : latest, null);
+    const gap = before ? Date.parse(later.event.start) - Date.parse(before.event.end) : -1;
+    if (before && gap >= 0 && gap <= BACK_TO_BACK_MS) for (const entry of [before, later]) if (!flag.has(entry)) flag.set(entry, 'back_to_back');
+  }
+  return unique.map(entry => {
+    const { connectionId, event } = entry;
+    const reason = flag.get(entry) ?? (event.recurring ? 'recurring_event' : 'event');
+    return { at: event.allDay ? '' : event.start, section: 'agenda', title: bounded(`${event.localDate} ${event.localStart ?? 'All day'} ${event.title}`), sourceRef: `calendar:${connectionId}:${event.ref.id}`, reason,
+      urgency: reason === 'conflict' ? 'urgent' : 'normal', uncertainty: 'low', untrusted: true, startable: false };
+  });
+}
+
 function bounded(text: string): string { return boundedText(text, 200); }
 
 function updatedSince(event: CalendarEvent, createdAt: string): boolean {
@@ -382,11 +555,16 @@ function updatedSince(event: CalendarEvent, createdAt: string): boolean {
 }
 
 
-function dayRange(localDate: string, timeZone: string): { from: string; to: string } {
+function midnight(localDate: string, plusDays: number, timeZone: string): string {
   const [year, month, day] = localDate.split('-').map(Number);
-  const next = new Date(Date.UTC(year, month - 1, day + 1));
-  return {
-    from: new Date(zonedInstant(year, month, day, 0, 0, timeZone)).toISOString(),
-    to: new Date(zonedInstant(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, timeZone)).toISOString(),
-  };
+  const at = new Date(Date.UTC(year, month - 1, day + plusDays));
+  return new Date(zonedInstant(at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate(), 0, 0, timeZone)).toISOString();
+}
+
+function dayRange(localDate: string, timeZone: string): { from: string; to: string } {
+  return { from: midnight(localDate, 0, timeZone), to: midnight(localDate, 1, timeZone) };
+}
+
+function weekRange(localDate: string, timeZone: string): { from: string; to: string } {
+  return { from: midnight(localDate, 1, timeZone), to: midnight(localDate, 8, timeZone) };
 }

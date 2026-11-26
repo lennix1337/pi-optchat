@@ -9,6 +9,7 @@ import { openArtifactService } from './artifacts/service.ts';
 import { validExecutorConfig, type ExecutorConfig } from './runtime/executor-config.ts';
 import { DisplayLearning } from './memory/display-learning.ts';
 import type { NotificationChannel } from './notifications/center.ts';
+import { validWeekly, weeklyNotice, weeklySchedule, type WeeklyConfig } from './briefing/weekly.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
 Usage: node assistant/src/main.ts --config <absolute-path> [--web]
@@ -85,7 +86,7 @@ Operation (start/stop/health/backup/restore, opt-in autostart): node assistant/s
 export type SlackConfig = { appToken: string; team: string; appId: string; operators: string[]; botToken?: string; channels?: Record<string, string> };
 export type NotificationsConfig = { local: boolean };
 export type EventsConfig = { sources: Record<string, import('./http/hooks.ts').HookSource> };
-export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string; meetingPrep?: boolean };
+export type GoogleConfig = { connections: string[]; timeZone: string; dailyAt: string; meetingPrep?: boolean; weekly?: WeeklyConfig };
 export type Config = { version: 1; profileId: string; databasePath: string; endpoint: string; token: string; slack?: SlackConfig; notifications?: NotificationsConfig; google?: GoogleConfig; webOrigins?: string[]; voice?: VoiceConfig; executor?: ExecutorConfig; routines?: true; events?: EventsConfig; learning?: true; signals?: true };
 const BASE_KEYS = 'databasePath,endpoint,profileId,token,version';
 const OPTIONAL_KEYS = ['slack', 'notifications', 'google', 'webOrigins', 'voice', 'executor', 'routines', 'events', 'learning', 'signals'];
@@ -98,7 +99,8 @@ function validWebOrigins(value: unknown): value is string[] {
 function validGoogle(value: unknown): value is GoogleConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const g = value as Record<string, unknown>;
-  if (Object.keys(g).some(key => !['connections', 'dailyAt', 'timeZone', 'meetingPrep'].includes(key))
+  if (g.weekly !== undefined && !validWeekly(g.weekly)) return false;
+  if (Object.keys(g).some(key => !['connections', 'dailyAt', 'timeZone', 'meetingPrep', 'weekly'].includes(key))
       || (Object.hasOwn(g, 'meetingPrep') && typeof g.meetingPrep !== 'boolean') || typeof g.dailyAt !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(g.dailyAt)) return false;
   if (!Array.isArray(g.connections) || g.connections.length < 1 || g.connections.length > 10 || new Set(g.connections).size !== g.connections.length ||
       !g.connections.every(name => typeof name === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name))) return false;
@@ -266,7 +268,7 @@ async function openWorkers(config: Config, store: import('./store/db.ts').TaskSt
 }
 
 type Notices = {
-  stop(): void; announce(id: string, ref: string): void;
+  stop(): void; announce(id: string, ref: string, category?: import('./notifications/center.ts').NotificationCategory): void;
   notify(input: import('./notifications/center.ts').NotificationInput): void;
   list(): import('./notifications/center.ts').NotificationRecord[];
 };
@@ -341,6 +343,11 @@ async function startGoogle(config: Config, settings: GoogleConfig, notices: Noti
       console.log(`Google briefing ${briefing.localDate}: ${briefing.items.length} items; sources ${briefing.sources.map(s => `${s.sourceId} ${s.state}`).join(', ')}.`);
       notices?.announce(`briefing-${briefing.localDate}`, `briefing-${briefing.briefingId}`);
     },
+    weekly: weeklySchedule(settings.weekly),
+    onWeekly: briefing => {
+      console.log(`Google weekly review ${briefing.localDate}: ${briefing.items.length} items; sources ${briefing.sources.map(s => `${s.sourceId} ${s.state}`).join(', ')}.`);
+      notices?.announce(`weekly-${briefing.localDate}`, `briefing-${briefing.briefingId}`, weeklyNotice(briefing));
+    },
   });
   service.start(60_000, error => console.error(`Google briefing failed: ${error instanceof Error && /^[a-z][a-z_]{0,63}$/.test(error.message) ? error.message : 'error'}.`));
   return { stop() { service.stop(); local.close(); }, provider: service };
@@ -363,7 +370,7 @@ async function startNotifications(config: Config, settings: NotificationsConfig,
     list() { return center.list(50); },
     notify(input) { center.notify(input); },
 
-    announce(id, ref) { try { center.notify({ id, channel: 'local', category: 'briefing_ready', ref }); } catch { console.error('Notification could not be recorded.'); } },
+    announce(id, ref, category = 'briefing_ready') { try { center.notify({ id, channel: 'local', category, ref }); } catch { console.error('Notification could not be recorded.'); } },
   };
 }
 

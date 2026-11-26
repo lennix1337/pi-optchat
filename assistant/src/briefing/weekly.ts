@@ -1,0 +1,29 @@
+import type { Briefing } from './compose.ts';
+
+/** The weekly review's configuration: opt-in, Sunday 18:00 unless the operator names another weekday or hour. */
+export type WeeklySchedule = { day: number; at: string };
+export type WeeklyConfig = true | { day?: string; at?: string };
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+/** Failed attempts (an exception, not an unavailable source) after which a week's review is given up. */
+export const MAX_WEEKLY_FAILURES = 6;
+export const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** `true` or a partial `{ day, at }` from the configuration, with Sunday 18:00 filling what is missing; undefined stays off. */
+export function weeklySchedule(config: WeeklyConfig | undefined): WeeklySchedule | undefined {
+  if (!config) return undefined;
+  if (!validWeekly(config)) throw new Error('invalid_options');
+  const given = config === true ? {} : config;
+  return { day: given.day === undefined ? 0 : WEEKDAYS.indexOf(given.day), at: given.at ?? '18:00' };
+}
+
+/** The notification for a stored weekly review: the degraded wording when any source was unavailable, so a missing agenda is never read as an empty one. */
+export function weeklyNotice(briefing: Pick<Briefing, 'sources'>): 'weekly_review_ready' | 'weekly_review_degraded' {
+  return briefing.sources.some(source => source.state === 'unavailable') ? 'weekly_review_degraded' : 'weekly_review_ready';
+}
+
+export function validWeekly(value: unknown): value is WeeklyConfig {
+  if (value === true) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { day, at, ...rest } = value as Record<string, unknown>;
+  return Object.keys(rest).length === 0 && (day === undefined || (typeof day === 'string' && WEEKDAYS.includes(day))) && (at === undefined || (typeof at === 'string' && CLOCK.test(at)));
+}

@@ -44,7 +44,7 @@ export type SourceRef = { connectionId: string; account: string; kind: 'gmail.me
 export type Attachment = { filename: string; mimeType: string; size: number; executable: boolean };
 export type MailMessage = { ref: SourceRef; threadId: string; from: string; replyTo?: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; attachments: Attachment[] };
 export type CalendarAttendee = { email: string; displayName?: string };
-export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; updated: string | null; attendees: CalendarAttendee[] };
+export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; uid: string | null; updated: string | null; attendees: CalendarAttendee[] };
 export type Page<T> = { items: T[]; truncated: boolean };
 export type MessageDraft = { kind: 'message'; connectionId: string; to: string[]; subject: string; body: string };
 export type EventDraft = { kind: 'event'; connectionId: string; calendarId: string; summary: string; start: string; end: string; attendees: string[] };
@@ -186,9 +186,9 @@ export class GoogleConnections {
   }
 
   /** Mail newer than the lookback window, newest pages first as Gmail returns them; bodies are plain text, bounded. */
-  async listMessages(connectionId: string): Promise<Page<MailMessage>> {
+  async listMessages(connectionId: string, options: { lookbackDays?: number } = {}): Promise<Page<MailMessage>> {
     const row = this.active(connectionId);
-    const after = this.now() - this.retention.mailLookbackDays * DAY_MS;
+    const after = this.now() - boundedInteger(options.lookbackDays, this.retention.mailLookbackDays, 1, 30) * DAY_MS;
     const query = { q: `after:${Math.floor(after / 1000)}`, maxResults: String(Math.min(100, this.retention.maxMessages)) };
     return this.collect(connectionId, MAIL_SCOPE, '/gmail/v1/users/me/messages', query, 'messages', this.retention.maxMessages, async entry => {
       const id = (entry as { id?: unknown })?.id;
@@ -196,6 +196,19 @@ export class GoogleConnections {
       const message = this.message(row, await this.get(connectionId, MAIL_SCOPE, `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, { format: 'full' }));
       return Date.parse(message.receivedAt) < after ? null : message;
     });
+  }
+
+  /** When the account last sent a message in this conversation (Gmail `internalDate` in ms, the same origin as `MailMessage.receivedAt`, so the two compare exactly), or null; reads the whole thread, not the mail listing. */
+  async lastSentAt(connectionId: string, threadId: string): Promise<number | null> {
+    if (!singleLine(threadId, 256)) return fail('invalid_thread');
+    const thread = await this.get(connectionId, MAIL_SCOPE, `/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`, { format: 'minimal' }) as { messages?: unknown };
+    if (!Array.isArray(thread?.messages)) return fail('google_response_invalid');
+    let latest: number | null = null;
+    for (const entry of thread.messages as { labelIds?: unknown; internalDate?: unknown }[]) {
+      if (typeof entry?.internalDate !== 'string' || !/^\d{1,15}$/.test(entry.internalDate)) return fail('google_response_invalid');
+      if (Array.isArray(entry.labelIds) && entry.labelIds.includes('SENT')) latest = Math.max(latest ?? 0, Number(entry.internalDate));
+    }
+    return latest;
   }
 
   /** Single instances (recurring series expanded by Google) in [from, to), placed on the profile's local calendar. */
@@ -297,6 +310,7 @@ export class GoogleConnections {
   private async refresh(row: Row): Promise<void> {
     const reply = await this.withSecret(row.refresh_ref, 'google.refresh', this.endpoints.token, token => this.tokenRequest({ grant_type: 'refresh_token', refresh_token: token, client_id: this.options.clientId }));
     if (reply.status === 400 || reply.status === 401) fail('google_reauthorization_required');
+    if (reply.status === 429) fail('google_rate_limited');
     if (reply.status !== 200) fail('google_request_failed');
     const tokens = tokenResponse(reply.body, false);
     this.options.vault.rotate(row.access_ref, { profileId: this.options.profileId, origin: new URL(this.endpoints.api).origin, action: 'google.access' }, Buffer.from(tokens.access_token));
@@ -315,6 +329,7 @@ export class GoogleConnections {
     url.search = new URLSearchParams(query).toString();
     const reply = await this.withSecret(row.access_ref, 'google.access', this.endpoints.api, token => this.request(url.href, { method: 'GET', headers: { authorization: `Bearer ${token}` } }));
     if (reply.status === 401) fail('google_unauthorized');
+    if (reply.status === 429) fail('google_rate_limited');
     if (reply.status !== 200) fail('google_request_failed');
     return reply.body;
   }
@@ -467,11 +482,11 @@ function calendarAttendees(value: unknown, account: string): CalendarAttendee[] 
 }
 
 function calendarEvent(row: Row, value: unknown, timeZone: string): CalendarEvent | null {
-  const e = value as { id?: unknown; status?: unknown; summary?: unknown; start?: { dateTime?: unknown; date?: unknown }; end?: { dateTime?: unknown; date?: unknown }; recurringEventId?: unknown; updated?: unknown; attendees?: unknown };
+  const e = value as { id?: unknown; status?: unknown; summary?: unknown; start?: { dateTime?: unknown; date?: unknown }; end?: { dateTime?: unknown; date?: unknown }; recurringEventId?: unknown; iCalUID?: unknown; updated?: unknown; attendees?: unknown };
   if (!e || !singleLine(e.id, 1024)) return fail('google_response_invalid');
   if (e.status === 'cancelled') return null;
   const ref: SourceRef = { connectionId: row.connection_id, account: row.email, kind: 'calendar.event', id: e.id };
-  const base = { ref, attendees: calendarAttendees(e.attendees, row.email), title: headerText(e.summary) || '(no title)', recurring: singleLine(e.recurringEventId, 1024), updated: typeof e.updated === 'string' && Number.isFinite(Date.parse(e.updated)) ? new Date(Date.parse(e.updated)).toISOString() : null };
+  const base = { ref, attendees: calendarAttendees(e.attendees, row.email), title: headerText(e.summary) || '(no title)', recurring: singleLine(e.recurringEventId, 1024), uid: singleLine(e.iCalUID, 1024) ? e.iCalUID : null, updated: typeof e.updated === 'string' && Number.isFinite(Date.parse(e.updated)) ? new Date(Date.parse(e.updated)).toISOString() : null };
   if (typeof e.start?.date === 'string' && DATE.test(e.start.date)) {
     // external: Google Calendar all-day events use dates, not instants.
     return { ...base, allDay: true, start: e.start.date, end: typeof e.end?.date === 'string' && DATE.test(e.end.date) ? e.end.date : e.start.date, localDate: e.start.date, localStart: null };
