@@ -168,6 +168,8 @@ test('a wake reply shaped like a memory line is caught (03/11 16:35, 13/11 19:34
   const memoryLine = '104704-112 OptChat 03/11 15:57-16:20 BRT, read-only monitoring, no operator order beyond user 104994';
   assert.equal(memoryShapedReply(memoryLine), true);
   assert.equal(memoryShapedReply('105113+1|work: heartbeat'), true);
+  assert.equal(memoryShapedReply('25/11 ~00:18 · 201269-201275 OptChat, PR #612 rc=3.'), true, 'approximate time and a middle dot before the id range (25/11 Slack leak)');
+  assert.equal(memoryShapedReply('25/11 às 00:18 abri a PR #612.'), false);
   assert.equal(memoryShapedReply('tool: bash ran tests; echo: 80 pass'), true);
   assert.equal(memoryShapedReply('Abri a PR #97 e o merge automático está programado.'), false);
   assert.equal(memoryShapedReply('2 PRs mergeadas às 15:30.'), false);

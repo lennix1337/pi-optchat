@@ -167,3 +167,11 @@ test('runningItem: a worker shows what it does and for how long', () => {
   assert.equal(runningItem('agy Neon: 3 candidatos', t0, t0 + 12 * 60_000), 'agy Neon: 3 candidatos \u00b7 h\u00e1 12 min');
   assert.equal(runningItem('build', t0, t0 + 3 * 3_600_000), 'build \u00b7 h\u00e1 3 h');
 });
+
+test('a running worker shows its worktree and goal, not the brief boilerplate', async () => {
+  const { workerHome } = await import('../src/home-dashboard.ts');
+  assert.deepEqual(workerHome("You are a subagent. Don't write memory pages.\nImplement the Slack task thread.\nMore.", '/home/u/projetos/pi-optchat/worktrees/task-thread'),
+    { label: 'task-thread: Implement the Slack task thread.', target: { repo: 'pi-optchat' } });
+  assert.deepEqual(workerHome('Goal: radar reply deadlines\nAcceptance: x', 'C:\\Projetos\\dotfiles'), { label: 'radar reply deadlines', target: { repo: 'dotfiles' } });
+  assert.deepEqual(workerHome('You are a subagent.'), { label: 'Trabalho em andamento' });
+});
