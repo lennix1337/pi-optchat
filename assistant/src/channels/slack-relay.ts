@@ -453,6 +453,10 @@ export class SlackPoster {
     return { ts: body.ts, channel: body.channel };
   }
 
+  async replyToDraftReview(post: { channel: string; ts: string }, text: string): Promise<void> {
+    await this.call(POST_URL, { channel: post.channel, thread_ts: post.ts, text, unfurl_links: false, unfurl_media: false });
+  }
+
   /** Attaches a local picture or PDF to the operator's DM or a configured channel (Slack's external upload flow; needs `files:write`). */
   async upload(path: string, options: { channel?: string; threadTs?: string } = {}): Promise<{ file: string }> {
     const destination = options.channel === undefined ? undefined : Object.hasOwn(this.options.channels, options.channel) ? this.options.channels[options.channel] : null;
