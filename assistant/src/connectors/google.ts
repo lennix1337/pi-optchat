@@ -42,7 +42,7 @@ export type GoogleOptions = {
 export type GoogleConnection = { connectionId: string; subject: string; email: string; scopes: string[]; state: 'active' | 'revoked' };
 export type SourceRef = { connectionId: string; account: string; kind: 'gmail.message' | 'calendar.event'; id: string };
 export type Attachment = { filename: string; mimeType: string; size: number; executable: boolean };
-export type MailMessage = { ref: SourceRef; threadId: string; from: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; senderVerified: boolean; attachments: Attachment[] };
+export type MailMessage = { ref: SourceRef; threadId: string; from: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; senderVerified: boolean; rfcMessageId?: string; attachments: Attachment[] };
 export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; updated: string | null };
 export type Page<T> = { items: T[]; truncated: boolean };
 export type MessageDraft = { kind: 'message'; connectionId: string; to: string[]; subject: string; body: string };
@@ -339,17 +339,22 @@ export class GoogleConnections {
     const m = value as { id?: unknown; threadId?: unknown; labelIds?: unknown; snippet?: unknown; internalDate?: unknown; payload?: GmailPart };
     if (!m || !singleLine(m.id, 256) || typeof m.internalDate !== 'string' || !/^\d{1,15}$/.test(m.internalDate) || !m.payload || typeof m.payload !== 'object') return fail('google_response_invalid');
     const headers = Array.isArray(m.payload.headers) ? m.payload.headers : [];
-    const header = (name: string) => headers.find(h => typeof h?.name === 'string' && h.name.toLowerCase() === name)?.value;
+    const headerValues = (name: string) => headers.filter(h => typeof h?.name === 'string' && h.name.toLowerCase() === name).map(h => h.value);
+    const header = (name: string) => headerValues(name)[0];
+    const rawFrom = header('from');
+    const from = typeof rawFrom === 'string' && rawFrom.length > MAX_HEADER_CHARS ? '' : headerText(rawFrom);
+    const rfcMessageId = headerText(header('message-id'));
     const text = plainText(m.payload, 0) ?? (typeof m.snippet === 'string' ? m.snippet : '');
     const chars = Array.from(text);
     return {
       ref: { connectionId: row.connection_id, account: row.email, kind: 'gmail.message', id: m.id },
       threadId: singleLine(m.threadId, 256) ? m.threadId : m.id,
-      from: headerText(header('from')), to: headerText(header('to')), subject: headerText(header('subject')),
+      from, to: headerText(header('to')), subject: headerText(header('subject')),
       receivedAt: new Date(Number(m.internalDate)).toISOString(),
       labels: Array.isArray(m.labelIds) ? m.labelIds.filter(label => singleLine(label, 128)) : [],
       body: chars.slice(0, this.retention.maxBodyChars).join(''), bodyTruncated: chars.length > this.retention.maxBodyChars,
-      senderVerified: gmailVerifiedSender(headerText(header('from')), header('authentication-results')),
+      senderVerified: gmailVerifiedSender(from, headerValues('authentication-results')),
+      ...(rfcMessageId ? { rfcMessageId } : {}),
       attachments: attachments(m.payload, 0),
     };
   }
@@ -390,14 +395,25 @@ export class GoogleConnections {
 
 type GmailPart = { mimeType?: unknown; filename?: unknown; headers?: { name?: unknown; value?: unknown }[]; body?: { size?: unknown; data?: unknown }; parts?: GmailPart[] };
 
-// external: Gmail writes its own verdict as the topmost Authentication-Results header, from mx.google.com; lower ones come from the sender's path.
-/** True when Gmail's verdict says DMARC passed for the domain of the last address in `from`. */
+const MAX_HEADER_CHARS = 500;
+
+/** The lowercase address of a From header: the one in trailing angle brackets, or the whole text when it is a bare address; empty otherwise. */
+export function senderAddress(from: string): string {
+  const match = /<([^<>\s]+@[^<>\s]+)>\s*$/.exec(from) ?? /^\s*([^<>\s]+@[^<>\s]+)\s*$/.exec(from);
+  return match ? match[1].toLowerCase() : '';
+}
+
+// external: Gmail writes its own verdict as the topmost Authentication-Results header, from mx.google.com; lower ones come from the sender's path, so a second header from mx.google.com is never taken as Gmail's.
+/** True when Gmail's single verdict, the topmost `Authentication-Results` value, says DMARC passed for the domain of the From address. */
 export function gmailVerifiedSender(from: string, authentication: unknown): boolean {
-  const domain = /@([^@<>\s]+)>?\s*$/.exec(from)?.[1]?.toLowerCase();
-  if (!domain || typeof authentication !== 'string') return false;
-  const [server, ...results] = authenticationParts(authentication);
-  return server.trim().toLowerCase() === 'mx.google.com'
-    && results.some(result => /^\s*dmarc\s*=\s*pass(?![\w-])/i.test(result)
+  const domain = senderAddress(from).split('@')[1];
+  const headers = Array.isArray(authentication) ? authentication : [authentication];
+  if (!domain || headers.length === 0 || !headers.every(value => typeof value === 'string')) return false;
+  const parsed = headers.map(value => authenticationParts(value));
+  const fromGmail = parsed.filter(([server]) => server.trim().toLowerCase() === 'mx.google.com');
+  if (fromGmail.length !== 1 || fromGmail[0] !== parsed[0]) return false;
+  const [, ...results] = parsed[0];
+  return results.some(result => /^\s*dmarc\s*=\s*pass(?![\w-])/i.test(result)
       && /(?:^|\s)header\.from\s*=\s*"?([^\s";]+)"?/i.exec(result)?.[1].toLowerCase() === domain);
 }
 
@@ -420,7 +436,7 @@ function authenticationParts(value: string): string[] {
 }
 
 function headerText(value: unknown): string {
-  return typeof value === 'string' && value.isWellFormed() ? value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, 500) : '';
+  return typeof value === 'string' && value.isWellFormed() ? value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, MAX_HEADER_CHARS) : '';
 }
 
 function plainText(part: GmailPart, depth: number): string | undefined {

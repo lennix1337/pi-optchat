@@ -3,13 +3,13 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Event, SourceKind } from '../contracts/events.ts';
 import type { Task } from '../contracts/tasks.ts';
 import type { CalendarEvent, GoogleConnections, MailMessage } from '../connectors/google.ts';
-import { isTimeZone, localDateTime } from '../connectors/google.ts';
+import { isTimeZone, localDateTime, senderAddress } from '../connectors/google.ts';
 import { boundedInteger } from '../limits.ts';
 import { sha256 } from '../hash.ts';
 import { zonedInstant } from '../routines/schedule.ts';
 import type { TaskStore } from '../store/db.ts';
 import { billTiming, daysUntil, detectBill, FUTURE_DAYS, OVERDUE_DAYS } from './bills.ts';
-import { senderAddress, triage, type TriageRules, type TriageSignal, type Uncertainty, type Urgency } from './triage.ts';
+import { triage, type TriageRules, type TriageSignal, type Uncertainty, type Urgency } from './triage.ts';
 
 /**
  * Daily and on-demand briefings: the task inbox, today's agenda, triaged mail and what changed since the previous
@@ -242,6 +242,7 @@ export class BriefingComposer {
       const left = old.section === 'bills' && old.dueDate ? daysUntil(today, old.dueDate) : null;
       if (left === null || left < -OVERDUE_DAYS || left > FUTURE_DAYS || !old.billKey || seen.has(old.billKey)) continue;
       items.push({ ...old, ...billTiming(left), startable: false });
+      seen.add(old.billKey);
     }
   }
 
@@ -258,7 +259,8 @@ export class BriefingComposer {
 
 function billKey(message: MailMessage, dueDate: string, amount: string | null): string {
   const sender = senderAddress(message.from);
-  return sha256(`${sender && amount ? sender : `${message.ref.connectionId}:${message.ref.id}`}\n${dueDate}\n${amount ?? ''}`).slice(0, 16);
+  const identity = sender && (amount ?? message.rfcMessageId) ? `${sender}\n${amount ? '' : message.rfcMessageId}` : `${message.ref.connectionId}:${message.ref.id}`;
+  return sha256(`${identity}\n${dueDate}\n${amount ?? ''}`).slice(0, 16);
 }
 function bounded(text: string): string { return Array.from(text).slice(0, 200).join(''); }
 

@@ -1,5 +1,5 @@
 import { inspectEgress } from '../policy/egress.ts';
-import type { MailMessage, SourceRef } from '../connectors/google.ts';
+import { senderAddress, type MailMessage, type SourceRef } from '../connectors/google.ts';
 
 /**
  * Explainable, rule-based mail triage. Message text is only ever matched against fixed patterns: it cannot add
@@ -30,10 +30,7 @@ const PROMOTIONAL_TERMS = /\b(unsubscribe|newsletter|descadastr\w*|promo(tion|ç
 const PRIVATE_REASONS = new Set(['payment_data', 'authentication_data', 'sensitive_identifier']);
 
 /** The bare address of a From header, lowercased. */
-export function senderAddress(from: string): string {
-  const match = /<([^<>\s]+@[^<>\s]+)>\s*$/.exec(from) ?? /^\s*([^<>\s]+@[^<>\s]+)\s*$/.exec(from);
-  return match ? match[1].toLowerCase() : '';
-}
+export { senderAddress };
 
 export function triage(message: MailMessage, rules: TriageRules): Triage {
   const text = `${message.subject}\n${message.body}`;

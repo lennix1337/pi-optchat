@@ -228,12 +228,45 @@ test('bills with the same sender and date but no amount are not merged, and a ca
   assert.equal(bills(await briefings.onDemand()).length, 4, 'the same mails read again are listed once each');
 }));
 
-test('known limit: a bill without an amount seen through two accounts is listed once per account', () => withGoogle(async rig => {
+test('a bill without an amount is the same bill through two accounts only when it is the same email: same sender and Message-ID; otherwise each message is its own', () => withGoogle(async rig => {
   const mail = { from: 'Luz <luz@luz.example.test>', subject: 'Fatura', body: 'Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' };
-  rig.fake.mail.personal.push({ id: 'd1', ...mail });
-  rig.fake.mail.dentai.push({ id: 'd2', ...mail });
+  rig.fake.mail.personal.push({ id: 'd1', ...mail, messageId: '<same@luz.example.test>' }, { id: 'd3', ...mail, messageId: '<other@luz.example.test>' }, { id: 'd5', ...mail });
+  rig.fake.mail.dentai.push({ id: 'd2', ...mail, messageId: '<same@luz.example.test>' }, { id: 'd4', ...mail, from: 'Outra <outra@luz.example.test>', messageId: '<same@luz.example.test>' }, { id: 'd6', ...mail });
   await connectBoth(rig);
-  assert.equal(bills(await composer(rig, { bills: true }).daily()).length, 2);
+  const list = bills(await composer(rig, { bills: true }).daily());
+  assert.deepEqual(list.map(i => i.sourceRef.split(':').at(-1)).sort(), ['d1', 'd3', 'd4', 'd5', 'd6'], 'd2 is d1 again; another sender with the same Message-ID, and mail without one, stay apart');
+}));
+
+test('a carried bill is not listed again when the same email arrives through the other account', () => withGoogle(async rig => {
+  const mail = { from: 'Luz <luz@luz.example.test>', subject: 'Fatura', body: 'Vencimento: 31/10/2026', receivedAt: '2026-10-27T08:00:00.000Z', messageId: '<m1@luz.example.test>' };
+  rig.fake.mail.personal.push({ id: 'k1', ...mail });
+  await connectBoth(rig);
+  const briefings = composer(rig, { bills: true });
+  assert.equal(bills(await briefings.daily()).length, 1);
+  rig.fake.mail.personal.length = 0;
+  rig.fake.mail.dentai.push({ id: 'k2', ...mail });
+  assert.deepEqual(bills(await briefings.onDemand()).map(i => i.sourceRef), ['gmail:dentai:k2']);
+}));
+
+test('a From header cut at 500 characters never lends its truncated address to trust: the sender is unknown and the bill is not startable', () => withGoogle(async rig => {
+  const trusted = '<contas@energia.example.test>';
+  const forged = `${'X'.repeat(500 - trusted.length)}${trusted} <x@evil.example.test>`;
+  rig.fake.mail.personal.push({ id: 't1', from: forged, subject: 'Fatura', body: 'Valor R$ 20,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z', authenticationResults: [GMAIL_DMARC('energia.example.test')] });
+  await connectBoth(rig);
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
+  assert.deepEqual(bills(briefing).map(i => i.startable), [false]);
+}));
+
+test('two Authentication-Results headers from mx.google.com make the verdict ambiguous, so the bill is not startable', () => withGoogle(async rig => {
+  const base = { from: 'Energia <contas@energia.example.test>', subject: 'Fatura', receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push(
+    { id: 'h1', ...base, body: 'Valor R$ 20,00. Vencimento: 30/10/2026', authenticationResults: [GMAIL_DMARC('energia.example.test'), GMAIL_DMARC('energia.example.test')] },
+    { id: 'h2', ...base, body: 'Valor R$ 21,00. Vencimento: 30/10/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+  );
+  await connectBoth(rig);
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
+  const startable = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!.startable;
+  assert.deepEqual([startable('h1'), startable('h2')], [false, true]);
 }));
 
 test('known limit: a trusted sender on a subdomain is not startable unless Gmail reports DMARC for exactly that From domain', () => withGoogle(async rig => {

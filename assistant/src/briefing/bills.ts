@@ -58,8 +58,8 @@ export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today
   const labelled = own(TOTAL_AMOUNT);
   const amounts = (labelled.length ? labelled.map(({ match, at }) => ({ at, value: match[1] })) : own(ANY_AMOUNT).map(({ match, at }) => ({ at, value: match[0] })))
     .map(({ at, value }) => ({ at, value: value.replace(/\s+/g, ' ').trim() }));
-  const gap = (at: number) => amounts.length ? Math.min(...amounts.map(amount => Math.abs(amount.at - at))) : at;
-  const dateFound = own(DUE_DATE).sort((a, b) => gap(a.at) - gap(b.at))[0];
+  const gap = (at: number) => amounts.length ? Math.min(...amounts.map(amount => Math.abs(amount.at - at))) : 0;
+  const dateFound = own(DUE_DATE).sort((a, b) => gap(a.at) - gap(b.at) || a.at - b.at)[0];
   if (!dateFound) return null;
   const m = dateFound.match;
   const amount = [...amounts].sort((a, b) => Math.abs(a.at - dateFound.at) - Math.abs(b.at - dateFound.at))[0]?.value ?? null;

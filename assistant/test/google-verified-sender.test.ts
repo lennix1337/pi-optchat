@@ -28,5 +28,25 @@ test('only a verdict from mx.google.com about exactly the From domain counts', (
   assert.equal(gmailVerifiedSender(FROM, GMAIL.replace('header.from=energia.example.test', 'header.from=xenergia.example.test')), false);
   assert.equal(gmailVerifiedSender('no address', GMAIL), false);
   assert.equal(gmailVerifiedSender(FROM, undefined), false);
-  assert.equal(gmailVerifiedSender(FROM, ['mx.google.com; dmarc=pass header.from=energia.example.test']), false, 'not a single header value');
+});
+
+test('the domain is the one of the real From address: a display name that only looks like an address, a second address or a full-width at sign never counts', () => {
+  assert.equal(gmailVerifiedSender('pague a contas@energia.example.test', GMAIL), false, 'no address, only text');
+  assert.equal(gmailVerifiedSender('contas@energia.example.test, outro@evil.example.test', GMAIL), false, 'two addresses');
+  assert.equal(gmailVerifiedSender('Energia <contas\uFF20energia.example.test>', GMAIL), false, 'full-width at sign');
+  assert.equal(gmailVerifiedSender('"contas@energia.example.test" <x@evil.example.test>', GMAIL), false, 'the address is the one in angle brackets');
+  assert.equal(gmailVerifiedSender('contas@energia.example.test', GMAIL), true, 'a bare address');
+});
+
+test('Authentication-Results headers: one verdict from mx.google.com, the first header; any other header from mx.google.com makes it ambiguous', () => {
+  const pass = 'mx.google.com; dmarc=pass header.from=energia.example.test';
+  const fail = 'mx.google.com; dmarc=fail header.from=energia.example.test';
+  assert.equal(gmailVerifiedSender(FROM, [pass]), true);
+  assert.equal(gmailVerifiedSender(FROM, [pass, 'mx.evil.example.test; dmarc=fail header.from=energia.example.test']), true, 'a header from another server is not Gmail');
+  assert.equal(gmailVerifiedSender(FROM, [fail, pass]), false, 'a forged pass below Gmail fail');
+  assert.equal(gmailVerifiedSender(FROM, [pass, fail]), false, 'a second Gmail header contradicts the first');
+  assert.equal(gmailVerifiedSender(FROM, [pass, pass]), false, 'Gmail writes one verdict');
+  assert.equal(gmailVerifiedSender(FROM, ['mx.evil.example.test; dmarc=pass header.from=energia.example.test', pass]), false, 'the topmost header is not Gmail');
+  assert.equal(gmailVerifiedSender(FROM, []), false);
+  assert.equal(gmailVerifiedSender(FROM, [pass, 7]), false, 'a malformed value among them');
 });

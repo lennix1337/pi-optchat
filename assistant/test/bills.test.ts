@@ -68,6 +68,12 @@ test('the amount is the one nearest the due date; values of an earlier bill are 
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amountsDiffer, undefined, 'a labelled total outweighs other values');
 });
 
+test('without an amount the due date is the first one in the text; with an amount the one nearest it', () => {
+  assert.equal(bill('Fatura', 'Vencimento: 05/11/2026. Se nao pagar ate o vencimento: 30/10/2026')?.dueDate, '2026-11-05');
+  assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Reaviso, vencimento: 05/11/2026')?.dueDate, '2026-10-30');
+  assert.equal(bill('Fatura', 'Vencimento: 30/10/2026\n\n\n\n\n\nValor R$ 10,00. Vencimento: 05/11/2026')?.dueDate, '2026-11-05');
+});
+
 test('the amount: the total when labelled, otherwise the first one', () => {
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amount, 'R$ 1.234,56');
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amount, 'R$ 80,00');
