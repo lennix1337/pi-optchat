@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 test('the hang reporter only names the file still held open after its tests finish', () => {
@@ -17,7 +18,7 @@ test('the hang reporter only names the file still held open after its tests fini
   const r = spawnSync(process.execPath, [
     '--test',
     '--test-reporter=tap', '--test-reporter-destination=stdout',
-    '--test-reporter=' + join(import.meta.dirname, '../scripts/ci-hang-reporter.mjs'), '--test-reporter-destination=stderr',
+    '--test-reporter=' + pathToFileURL(join(import.meta.dirname, '../scripts/ci-hang-reporter.mjs')).href, '--test-reporter-destination=stderr',
     join(dir, 'fine.test.mjs'), join(dir, 'leaky.test.mjs'),
   ], { encoding: 'utf8', timeout: 8000, env });
   assert.ifError(r.error);
