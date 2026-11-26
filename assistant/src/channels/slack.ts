@@ -2,7 +2,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { TaskStore } from '../store/db.ts';
 import { admit, type ChannelLedger, type Received } from './inbound.ts';
 import { PLAN_ACTIONS, PLAN_VALUE, settledPlanBlocks } from './plan-card.ts';
-import { APPROVAL_ACTIONS, CHOICE_ACTION, CHOICE_LABEL_MAX, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, HOME_CHOICE, HOME_SETTINGS, SETTING_VALUE, slackFiles, type ApprovalAnswer, type SlackRelay } from './slack-relay.ts';
+import { APPROVAL_ACTIONS, CHOICE_ACTION, CHOICE_LABEL_MAX, DRAFT_ACTIONS, FORWARD_CHANNEL, HOME_ACTIONS, HOME_CHANNEL, HOME_CHOICE, HOME_SETTINGS, SETTING_VALUE, slackFiles, type ApprovalAnswer, type DraftAction, type SlackRelay } from './slack-relay.ts';
+import type { SlackDraftReviews } from './slack-drafts.ts';
 
 /** The message shortcut ("Mandar pro Jarvis") the app manifest declares. */
 export const FORWARD_CALLBACK = 'optchat_forward';
@@ -27,6 +28,7 @@ export type SlackOptions = {
   signingSecret?: string;
   /** With a relay, operator DMs are a chat with the OptChat session instead of suggested tasks. */
   relay?: SlackRelay;
+  drafts?: SlackDraftReviews;
   /** Project channels (ids) whose operator messages join the same chat as the DM. */
   relayChannels?: ReadonlySet<string>;
   now?: () => number; reviewLink: (taskId: string) => string;
@@ -55,6 +57,8 @@ export class SlackChannel {
     const body = payload as Record<string, any>;
     if (body.type === 'block_actions') {
       if (body.team?.id !== o.team || body.api_app_id !== o.appId) return { outcome: 'foreign_workspace' };
+      const draft = DRAFT_ACTIONS.get(body.actions?.[0]?.action_id);
+      if (draft) return o.drafts ? this.draftClick(o.drafts, body, draft) : { outcome: 'ignored' };
       const answer = APPROVAL_ACTIONS[body.actions?.[0]?.action_id];
       if (o.relay && answer) return this.approvalClick(o.relay, body, answer);
       const plan = PLAN_ACTIONS[body.actions?.[0]?.action_id];
@@ -79,6 +83,10 @@ export class SlackChannel {
     const event = body.event;
     if (typeof body.event_id !== 'string' || typeof event.channel !== 'string' || typeof event.ts !== 'string') return { outcome: 'ignored' };
     const human = !event.bot_id && !NON_HUMAN_SUBTYPES.has(event.subtype) && typeof event.user === 'string';
+    if (o.drafts && human && event.channel.startsWith('D') && typeof event.thread_ts === 'string' && typeof event.text === 'string' && o.ledger.authorized('slack', o.team, event.user)) {
+      const outcome = o.drafts.reply(event.user, { channel: event.channel, ts: event.thread_ts }, event.text);
+      if (outcome) return { outcome };
+    }
     const relayed = o.relay && (event.channel.startsWith('D') || o.relayChannels?.has(event.channel));
 
     if (relayed) return this.relay(o.relay!, body.event_id, event, human || (event.subtype === 'file_share' && !event.bot_id && typeof event.user === 'string'));
@@ -88,6 +96,15 @@ export class SlackChannel {
       conversation: event.channel, messageId: event.ts, ...(typeof event.thread_ts === 'string' && event.thread_ts !== event.ts ? { thread: event.thread_ts } : {}),
       text: typeof event.text === 'string' ? event.text : '',
     }, o);
+  }
+
+  private draftClick(drafts: SlackDraftReviews, body: Record<string, any>, action: DraftAction): Received {
+    const user = body.user?.id, channel = body.container?.channel_id, post = body.container?.message_ts;
+    const { value, action_ts } = body.actions[0];
+    if (typeof user !== 'string' || typeof channel !== 'string' || typeof post !== 'string' || typeof value !== 'string' || typeof action_ts !== 'string') return { outcome: 'ignored' };
+    if (!channel.startsWith('D') || (body.channel !== undefined && body.channel?.id !== channel)) return { outcome: 'ignored' };
+    if (!this.options.ledger.authorized('slack', this.options.team, user)) return { outcome: 'unauthorized_sender' };
+    return { outcome: drafts.tap(user, { channel, ts: post }, value, action) };
   }
 
   /**

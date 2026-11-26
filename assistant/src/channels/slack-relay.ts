@@ -284,8 +284,15 @@ function settingBlocks(settings: HomeSettings | undefined): unknown[] {
 
 const plain = (text: string) => ({ type: 'plain_text', text });
 
+const approvalButton = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: plain(label), ...extra });
+
+export const DRAFT_ACTIONS: ReadonlyMap<string, DraftAction> = new Map([
+  ['optchat_draft_approve', 'approve'], ['optchat_draft_edit', 'edit'], ['optchat_draft_discard', 'discard'],
+] as const);
+export type DraftAction = 'approve' | 'edit' | 'discard';
+
 function approvalBlocks(text: string, sessionAllow?: string): unknown[] {
-  const button = (action_id: string, label: string, extra: Record<string, unknown> = {}) => ({ type: 'button', action_id, value: action_id, text: plain(label), ...extra });
+  const button = approvalButton;
   const session = sessionAllow ? [button('optchat_approve_session', 'Aprovar nesta sessão', { confirm: { title: plain('Liberar nesta sessão?'), text: plain(`Libera só: ${sessionAllow}. Vale até a sessão reiniciar; qualquer outra chamada continua pedindo aprovação.`.slice(0, 300)), confirm: plain('Liberar'), deny: plain('Cancelar') } })] : [];
   return [
     { type: 'section', text: { type: 'mrkdwn', text } },
@@ -390,6 +397,8 @@ export class SlackPoster {
     this.options = { fetch: globalThis.fetch, channels: {}, ...options };
   }
 
+  get operator(): string { return this.options.operator; }
+
   /** The configured name of a project channel id, or null. */
   nameOf(id: string): string | null { return Object.entries(this.options.channels).find(([, value]) => value === id)?.[0] ?? null; }
 
@@ -425,6 +434,27 @@ export class SlackPoster {
       posted = typeof body.channel === 'string' ? body.channel : posted;
     }
     return { parts: chunks.length, ts, ...(posted ? { channel: posted } : {}), ...(chunks.length > 1 ? { timestamps } : {}) };
+  }
+
+  async postDraftReview(id: string, preview: string, expiresAt: number): Promise<{ ts: string; channel: string }> {
+    const sections = preview.match(/.{1,1400}/gsu) ?? [];
+    if (!sections.length || sections.length > 48) throw new OutboxRefused('draft_preview_too_long');
+    const blocks = [
+      { type: 'section', text: { type: 'mrkdwn', text: `Revise este rascunho. Prazo: <!date^${Math.floor(expiresAt / 1000)}^{date_short} {time}|${new Date(expiresAt).toISOString()}>` } },
+      ...sections.map(text => ({ type: 'section', text: plain(text) })),
+      { type: 'actions', elements: [
+        approvalButton('optchat_draft_approve', 'Aprovar', { value: id, style: 'primary' }),
+        approvalButton('optchat_draft_edit', 'Editar', { value: id }),
+        approvalButton('optchat_draft_discard', 'Descartar', { value: id, style: 'danger' }),
+      ] },
+    ];
+    const body = await this.call(POST_URL, { channel: this.options.operator, text: 'Rascunho de e-mail para revisar', blocks, unfurl_links: false, unfurl_media: false });
+    if (typeof body.channel !== 'string' || !/^D[A-Z0-9]{2,20}$/.test(body.channel) || typeof body.ts !== 'string' || !/^\d{1,12}\.\d{1,9}$/.test(body.ts)) throw new Error('draft_dm_not_confirmed');
+    return { ts: body.ts, channel: body.channel };
+  }
+
+  async replyToDraftReview(post: { channel: string; ts: string }, text: string): Promise<void> {
+    await this.call(POST_URL, { channel: post.channel, thread_ts: post.ts, text, unfurl_links: false, unfurl_media: false });
   }
 
   /** Attaches a local picture or PDF to the operator's DM or a configured channel (Slack's external upload flow; needs `files:write`). */

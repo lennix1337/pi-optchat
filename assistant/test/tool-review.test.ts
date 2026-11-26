@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGateway } from '../src/policy/gateway.ts';
+import { createGateway, isReviewedDispatchRefusal } from '../src/policy/gateway.ts';
 
 test('exact pending review and mandatory grant survive policy changing to allow', async () => {
   const authority = {}; let policy: 'review' | 'allow' | 'deny' = 'review';
@@ -19,7 +19,14 @@ test('exact pending review and mandatory grant survive policy changing to allow'
     gateway.decide(review.reviewId, 'approve', authority); assert.equal(gateway.pendingReview(review.reviewId, request), undefined);
     const other = createGateway({ databasePath: ':memory:', profileId: 'p', operatorAuthority: authority, policy: () => 'allow', inspect: () => ({ decision: 'allow', reasons: [] }) });
     try { await assert.rejects(other.dispatchReviewed(request, review.reviewId, () => { calls++; }), /approval_required/); assert.equal(calls, 0); } finally { other.close(); }
-    policy = 'deny'; await assert.rejects(gateway.dispatchReviewed(request, review.reviewId, () => { calls++; }), /denied/);
+    policy = 'deny';
+    await assert.rejects(gateway.dispatchReviewed(request, review.reviewId, () => { calls++; }), (error: Error) => {
+      assert.equal(error.message, 'denied');
+      assert.equal(isReviewedDispatchRefusal(error, request.operationId, review.reviewId), true);
+      assert.equal(isReviewedDispatchRefusal(error, 'other-operation', review.reviewId), false);
+      assert.equal(isReviewedDispatchRefusal(error, request.operationId, 'other-review'), false);
+      return true;
+    });
     policy = 'allow'; assert.equal(await gateway.dispatchReviewed(request, review.reviewId, () => { calls++; return 'ok'; }), 'ok'); assert.equal(calls, 1);
     await assert.rejects(gateway.dispatchReviewed(request, review.reviewId, () => { calls++; }), /operation_already_dispatched/);
   } finally { gateway.close(); }

@@ -6,6 +6,22 @@ type Decision = 'allow' | 'review' | 'deny';
 export type GatewayOptions = { databasePath: string; profileId: string; operatorAuthority: object; policy: (metadata: EffectMetadata) => Decision; inspect: (bytes: Uint8Array) => { decision: Decision; reasons: readonly string[] }; now?: () => number };
 export type BoundedRule = { scope: 'rule'; uses: number; expiresAt: number };
 
+class AdmissionRefused extends Error {}
+class ReviewedDispatchRefusal extends Error {
+  readonly operationId: string;
+  readonly reviewId: string;
+  constructor(cause: AdmissionRefused, operationId: string, reviewId: string) {
+    super(cause.message, { cause });
+    this.operationId = operationId;
+    this.reviewId = reviewId;
+  }
+}
+
+/** An explicit Gateway refusal before intent recording for this reviewed operation, not an adapter error. */
+export function isReviewedDispatchRefusal(error: unknown, operationId: string, reviewId: string): boolean {
+  return error instanceof ReviewedDispatchRefusal && error.operationId === operationId && error.reviewId === reviewId;
+}
+
 export class Gateway {
   private db: DatabaseSync;
   private now: () => number;
@@ -31,7 +47,7 @@ export class Gateway {
       inspection = this.options.inspect(Buffer.from(item.payload)).decision;
     } catch { throw new Error('policy_error'); }
     if (!['allow', 'review', 'deny'].includes(policy) || !['allow', 'review', 'deny'].includes(inspection)) throw new Error('policy_error');
-    if (policy === 'deny' || inspection === 'deny') throw new Error('denied');
+    if (policy === 'deny' || inspection === 'deny') throw new AdmissionRefused('denied');
     return { ...item, review: policy === 'review' || inspection === 'review' };
   }
   /** A review result carries owned copies of the exact bound metadata and bytes, so a reviewer sees what dispatch will send. */
@@ -78,7 +94,21 @@ export class Gateway {
     return this.dispatchInternal(request, invoke);
   }
   private async dispatchInternal<T>(request: EffectRequest, invoke: (bytes: Uint8Array, metadata: Readonly<EffectMetadata>) => T | Promise<T>, reviewId?: string): Promise<T> {
-    const item = this.evaluate(request);
+    const item = snapshot(request, this.options.profileId, this.now());
+    try { this.recordIntent(item, reviewId); }
+    catch (error) {
+      if (reviewId !== undefined && error instanceof AdmissionRefused) throw new ReviewedDispatchRefusal(error, item.metadata.operationId, reviewId);
+      throw error;
+    }
+    try {
+      const result = await invoke(item.payload, Object.freeze({ ...item.metadata }));
+      this.db.prepare('UPDATE intents SET state = ? WHERE operation = ?').run('response_recorded', item.operation);
+      return result;
+    } catch { throw new Error('effect_uncertain'); }
+  }
+
+  private recordIntent(item: ReturnType<typeof snapshot>, reviewId?: string): void {
+    this.evaluateSnapshot(item);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const admission = this.evaluateSnapshot(item);
@@ -87,19 +117,14 @@ export class Gateway {
         const grant = reviewId !== undefined
           ? this.db.prepare('SELECT id FROM grants WHERE id = ? AND binding = ? AND operation = ? AND revoked = 0 AND remaining > 0 AND expires > ?').get(reviewId, item.binding, item.operation, this.now()) as { id: string } | undefined
           : this.db.prepare('SELECT id FROM grants WHERE binding = ? AND (operation = ? OR operation IS NULL) AND revoked = 0 AND remaining > 0 AND expires > ? ORDER BY operation IS NULL, expires LIMIT 1').get(item.binding, item.operation, this.now()) as { id: string } | undefined;
-        if (!grant) throw new Error('approval_required');
+        if (!grant) throw new AdmissionRefused('approval_required');
         const result = this.db.prepare('UPDATE grants SET remaining = remaining - 1 WHERE id = ? AND revoked = 0 AND remaining > 0 AND expires > ?').run(grant.id, this.now());
-        if (result.changes !== 1) throw new Error('approval_required');
+        if (result.changes !== 1) throw new AdmissionRefused('approval_required');
       }
       if (item.metadata.expiresAt <= this.now()) throw new Error('invalid_request');
       this.db.prepare('INSERT INTO intents VALUES (?, ?)').run(item.operation, 'uncertain');
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    try {
-      const result = await invoke(item.payload, Object.freeze({ ...item.metadata }));
-      this.db.prepare('UPDATE intents SET state = ? WHERE operation = ?').run('response_recorded', item.operation);
-      return result;
-    } catch { throw new Error('effect_uncertain'); }
   }
   status(operationId: string): 'uncertain' | 'response_recorded' | 'absent' {
 
