@@ -146,13 +146,12 @@ export class BriefingComposer {
           for (const message of page.items) {
             const result = triage(message, this.options.rules);
             const detected = this.options.bills && !NEVER_A_BILL.some(signal => result.signals.includes(signal)) ? detectBill(message, localDate) : null;
-            const readsLikePromotion = result.urgency === 'low';
-            const bill = detected && (!readsLikePromotion || result.signals.includes('trusted_sender') || (detected.amount !== null && message.senderVerified)) ? detected : null;
-            if (!bill && readsLikePromotion) { found.distractions++; continue; }
+            const filedAsPromotion = result.urgency === 'low';
+            const bill = detected && (!filedAsPromotion || result.signals.includes('trusted_sender')) ? detected : null;
+            if (!bill && filedAsPromotion) { found.distractions++; continue; }
             if (bill) {
-              const filedAsPromotion = result.signals.includes('promotional_label');
-              const doubtful = filedAsPromotion || readsLikePromotion || bill.amountsDiffer === true;
-              const marker = filedAsPromotion ? ' (Gmail: promoções)' : readsLikePromotion ? ' (parece promoção)' : '';
+              const doubtful = filedAsPromotion || bill.amountsDiffer === true;
+              const marker = filedAsPromotion ? ' (Gmail: promoções)' : '';
               const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
               const key = billKey(message, bill.dueDate, bill.amount);
               found.bills.push({

@@ -280,31 +280,30 @@ test('known limit: a trusted sender on a subdomain is not startable unless Gmail
   assert.deepEqual([startable('a1'), startable('a2')], [false, true]);
 }));
 
-test('mail that reads like a promotion becomes a bill only with an extra signal: a trusted sender, or an amount with a sender Gmail verified; a billing newsletter stays hidden', () => withGoogle(async rig => {
+test('mail that reads like a promotion becomes a bill only from a sender in google.trustedSenders: an amount and a sender Gmail verified are not enough, so a scammer with its own DMARC adds nothing', () => withGoogle(async rig => {
   const base = { receivedAt: '2026-10-28T08:00:00.000Z' };
   rig.fake.mail.personal.push(
     { id: 'l1', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Sua fatura', body: `Valor R$ 80,00. Vencimento: 30/10/2026\nPara cancelar o envio, unsubscribe aqui.`, authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
     { id: 'l2', from: 'Loja Fake <l@loja.example.test>', subject: 'Fatura com desconto', body: 'Vencimento: 31/10/2026', labels: ['CATEGORY_PROMOTIONS'], ...base },
     { id: 'l3', from: 'News Fake <n@news.example.test>', subject: 'Newsletter', body: 'Novidades. unsubscribe', ...base },
     { id: 'l5', from: 'Loja Fake <l@loja.example.test>', subject: 'Ofertas da semana', body: 'Compre agora. Vence em breve a promoção.', labels: ['CATEGORY_PROMOTIONS'], ...base },
-    { id: 'l4', from: 'Banco Fake <fatura@banco.example.test>', subject: `Fatura ${CARD}`, body: `Cartao ${CARD}. Valor R$ 12,00. Vencimento: 02/11/2026. unsubscribe`, authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
+    { id: 'l4', from: 'Banco Fake <cartao@banco.example.test>', subject: `Fatura ${CARD}`, body: `Cartao ${CARD}. Valor R$ 12,00. Vencimento: 02/11/2026. unsubscribe`, authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
     { id: 'l6', from: 'News Fake <n@news.example.test>', subject: 'Newsletter: sua fatura de marketing', body: 'Valor R$ 70,00. Vencimento do desconto: 01/11/2026. Para cancelar, unsubscribe aqui.', ...base },
     { id: 'l7', from: 'News Fake <n@news.example.test>', subject: 'Newsletter: sua fatura do mes', body: 'Vencimento: 01/11/2026. Para cancelar, unsubscribe aqui.', authenticationResults: [GMAIL_DMARC('news.example.test')], ...base },
+    { id: 'l9', from: 'Golpe Fake <cobranca@golpe.example.test>', subject: 'Fatura em atraso', body: 'Valor R$ 900,00. Vencimento: 30/10/2026. Pague agora, unsubscribe aqui.', labels: ['CATEGORY_PROMOTIONS'], authenticationResults: [GMAIL_DMARC('golpe.example.test')], ...base },
     { id: 'l8', from: 'Energia <contas@energia.example.test>', subject: 'Fatura de energia', body: 'Vencimento: 03/11/2026', labels: ['CATEGORY_PROMOTIONS'], authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
   );
   await connectBoth(rig);
-  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test', 'cartao@banco.example.test'] } }).daily();
   const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`));
-  assert.deepEqual([byRef('l1')?.section, byRef('l1')?.uncertainty, byRef('l1')?.startable], ['bills', 'high', false], 'an unsubscribe footer with an amount from a verified sender: listed, doubtful');
-  assert.match(byRef('l1')!.title, /parece promoção/);
   assert.deepEqual([byRef('l8')?.section, byRef('l8')?.uncertainty, byRef('l8')?.startable], ['bills', 'high', false], 'a trusted sender filed under Promotions: listed, doubtful, not startable');
   assert.match(byRef('l8')!.title, /promoç/i);
-  for (const id of ['l2', 'l3', 'l5', 'l6', 'l7']) assert.equal(byRef(id), undefined, `${id} is a promotion without the extra signal and stays hidden`);
+  for (const id of ['l1', 'l2', 'l3', 'l5', 'l6', 'l7', 'l9']) assert.equal(byRef(id), undefined, `${id} is a promotion from a sender that is not trusted and stays hidden`);
   assert.deepEqual([byRef('l4')?.section, byRef('l4')?.title.startsWith('[private content withheld]')], ['bills', true]);
-  assert.equal(briefing.distractions, 5);
+  assert.equal(briefing.distractions, 7);
   assert.ok(!JSON.stringify(briefing).includes('4111'));
   const off = await composer(rig, { connections: ['personal'] }).onDemand();
-  assert.equal(off.distractions, 8, 'with bills off every low-urgency mail is still a distraction');
+  assert.equal(off.distractions, 9, 'with bills off every low-urgency mail is still a distraction');
 }));
 
 test('a trusted, DMARC-verified sender is still not startable when Gmail filed the bill under Promotions; a spoofed display name is never trusted', () => withGoogle(async rig => {
@@ -319,20 +318,17 @@ test('a trusted, DMARC-verified sender is still not startable when Gmail filed t
   assert.deepEqual([startable('p1'), startable('p2')], [false, false]);
 }));
 
-test('a bill with several distinct amounts, or one that reads like a billing newsletter, is listed with high uncertainty and is not startable', () => withGoogle(async rig => {
+test('a bill with several distinct amounts is listed with high uncertainty and is not startable', () => withGoogle(async rig => {
   const base = { receivedAt: '2026-10-28T08:00:00.000Z' };
   rig.fake.mail.personal.push(
     { id: 'u1', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00', authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
     { id: 'u2', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 80,00. Vencimento: 31/10/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
-    { id: 'u3', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Newsletter: sua fatura', body: 'Valor R$ 70,00. Vencimento: 01/11/2026. Para cancelar, unsubscribe aqui.', authenticationResults: [GMAIL_DMARC('banco.example.test')], ...base },
   );
   await connectBoth(rig);
   const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
   const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!;
   assert.deepEqual([byRef('u1').uncertainty, byRef('u1').startable], ['high', false]);
   assert.deepEqual([byRef('u2').uncertainty, byRef('u2').startable], ['medium', true]);
-  assert.deepEqual([byRef('u3').section, byRef('u3').uncertainty, byRef('u3').startable], ['bills', 'high', false]);
-  assert.match(byRef('u3').title, /parece promoção/);
 }));
 
 test('known limit: a bill already paid stays listed, urgent for 7 days after its due date and normal until 30', () => withGoogle(async rig => {
