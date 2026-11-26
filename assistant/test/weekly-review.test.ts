@@ -14,7 +14,7 @@ function composer(rig: GoogleRig) {
   rig.defer(() => c.close());
   return c;
 }
-const event = (id: string, summary: string, start: string, end: string) => ({ id, summary, status: 'confirmed', updated: '2026-10-01T00:00:00.000Z', start: { dateTime: start }, end: { dateTime: end } });
+const event = (id: string, summary: string, start: string, end: string, iCalUID?: string) => ({ id, summary, status: 'confirmed', updated: '2026-10-01T00:00:00.000Z', start: { dateTime: start }, end: { dateTime: end }, ...(iCalUID ? { iCalUID } : {}) });
 const section = (b: Briefing, name: string) => b.items.filter(i => i.section === name);
 
 function openTask(rig: GoogleRig, taskId: string, title: string, status: Task['status']) {
@@ -42,7 +42,8 @@ async function seed(rig: GoogleRig) {
   );
   rig.fake.mail.dentai.push({ id: 'd1', from: 'Rita <boss@dentai.example.test>', subject: 'Sign the contract today', body: 'Please.', receivedAt: '2026-10-31T10:00:00.000Z' });
   rig.fake.events.personal.push(
-    event('planning', 'Planning', '2026-11-02T12:00:00Z', '2026-11-02T13:00:00Z'),
+    event('planning', 'Planning', '2026-11-02T12:00:00Z', '2026-11-02T13:00:00Z', 'planning@uid'),
+    event('retro-a', 'Retro', '2026-11-04T15:00:00Z', '2026-11-04T16:00:00Z', 'retro-a@uid'),
     event('review', 'Review', '2026-11-02T13:30:00Z', '2026-11-02T14:00:00Z'),
     event('lunch', 'Lunch', '2026-11-03T15:00:00Z', '2026-11-03T16:00:00Z'),
     event('sync', 'Sync', '2026-11-03T16:00:00Z', '2026-11-03T16:30:00Z'),
@@ -53,7 +54,8 @@ async function seed(rig: GoogleRig) {
   );
   rig.fake.events.dentai.push(
     event('call', 'Client call', '2026-11-02T12:30:00Z', '2026-11-02T13:30:00Z'),
-    event('planning-copy', 'Planning', '2026-11-02T12:00:00Z', '2026-11-02T13:00:00Z'),
+    event('planning-copy', 'Planning', '2026-11-02T12:00:00Z', '2026-11-02T13:00:00Z', 'planning@uid'),
+    event('retro-b', 'Retro', '2026-11-04T15:00:00Z', '2026-11-04T16:00:00Z', 'retro-b@uid'),
   );
 }
 
@@ -75,9 +77,9 @@ test('the weekly review lists open tasks, threads still waiting for the user, an
 
   const agenda = section(briefing, 'agenda');
   assert.deepEqual(agenda.map(i => [i.title.replace(/^\S+ \S+ /, ''), i.reason, i.urgency]), [
-    ['Planning', 'conflict', 'urgent'], ['Client call', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'],
+    ['Planning', 'conflict', 'urgent'], ['Client call', 'conflict', 'urgent'], ['Retro', 'conflict', 'urgent'], ['Retro', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'],
     ['Review', 'back_to_back', 'normal'], ['Lunch', 'back_to_back', 'normal'], ['Sync', 'back_to_back', 'normal'], ['Dentist', 'event', 'normal'],
-  ], 'conflicts first, then by time; a meeting copied on both calendars counts once, two distinct events with the same title and time on one calendar both stay, and the week after is out of range');
+  ], 'conflicts first, then by time; the same invitation (same iCalUID) on both calendars counts once, homonymous meetings with different invitations on two calendars stay, two distinct events with the same title and time on one calendar both stay, and the week after is out of range');
   assert.match(agenda[0].title, /^2026-11-02 09:00 Planning$/);
   assert.ok(agenda.every(i => i.untrusted && !i.startable));
 }));
@@ -112,4 +114,23 @@ test('a source that fails is listed, and the rest of the review still arrives', 
   assert.deepEqual([created, complete, c.latestWeekly()], [false, false, null], 'an incomplete review is not stored as the final one');
   assert.equal(section(briefing, 'agenda').length, 0);
   assert.equal(section(briefing, 'messages').length, 3);
+}));
+
+test('thread checks are bounded per connection, and a thread that cannot be checked is listed as uncertain without losing the review', () => withGoogle(async rig => {
+  await rig.connect('personal', 'personal');
+  await rig.connect('dentai', 'dentai');
+  rig.fake.pageSize = 50;
+  for (let i = 0; i < 30; i++) rig.fake.mail.personal.push({ id: `m${i}`, from: `Ana <ana${i}@example.test>`, subject: 'Proposal for review', body: 'Can you look?', receivedAt: new Date(Date.parse('2026-10-30T12:00:00.000Z') + i * 60_000).toISOString() });
+  rig.fake.failures.set('/gmail/v1/users/me/threads/thread-m29', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  const { briefing, created, complete } = await c.weekly();
+  const checks = rig.fake.log.filter(entry => entry.path.startsWith('/gmail/v1/users/me/threads/'));
+  assert.ok(checks.length <= 25, `${checks.length} thread reads`);
+  assert.deepEqual([created, complete], [true, true], 'one thread failing does not make the source unavailable');
+  assert.equal(briefing.sources.find(s => s.sourceId === 'personal:mail')?.state, 'partial');
+  const waiting = section(briefing, 'messages');
+  assert.equal(waiting.length, 30, 'unchecked threads are still listed');
+  const unchecked = waiting.filter(i => i.uncertainty === 'high').map(i => i.sourceRef).sort();
+  assert.deepEqual(unchecked, ['m29', 'm0', 'm1', 'm2', 'm3', 'm4'].map(id => `gmail:personal:${id}`).sort(), 'the failed read and the five beyond the limit');
 }));

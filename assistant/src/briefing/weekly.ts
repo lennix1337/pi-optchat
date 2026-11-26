@@ -7,6 +7,7 @@ export const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** `true` or a partial `{ day, at }` from the configuration, with Sunday 18:00 filling what is missing; undefined stays off. */
 export function weeklySchedule(config: WeeklyConfig | undefined): WeeklySchedule | undefined {
   if (!config) return undefined;
+  if (!validWeekly(config)) throw new Error('invalid_options');
   const given = config === true ? {} : config;
   return { day: given.day === undefined ? 0 : WEEKDAYS.indexOf(given.day), at: given.at ?? '18:00' };
 }

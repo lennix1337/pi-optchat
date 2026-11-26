@@ -43,7 +43,7 @@ export type GoogleConnection = { connectionId: string; subject: string; email: s
 export type SourceRef = { connectionId: string; account: string; kind: 'gmail.message' | 'calendar.event'; id: string };
 export type Attachment = { filename: string; mimeType: string; size: number; executable: boolean };
 export type MailMessage = { ref: SourceRef; threadId: string; from: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; attachments: Attachment[] };
-export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; updated: string | null };
+export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; uid: string | null; updated: string | null };
 export type Page<T> = { items: T[]; truncated: boolean };
 export type MessageDraft = { kind: 'message'; connectionId: string; to: string[]; subject: string; body: string };
 export type EventDraft = { kind: 'event'; connectionId: string; calendarId: string; summary: string; start: string; end: string; attendees: string[] };
@@ -444,11 +444,11 @@ export function localDateTime(instant: number, timeZone: string): { date: string
 }
 
 function calendarEvent(row: Row, value: unknown, timeZone: string): CalendarEvent | null {
-  const e = value as { id?: unknown; status?: unknown; summary?: unknown; start?: { dateTime?: unknown; date?: unknown }; end?: { dateTime?: unknown; date?: unknown }; recurringEventId?: unknown; updated?: unknown };
+  const e = value as { id?: unknown; status?: unknown; summary?: unknown; start?: { dateTime?: unknown; date?: unknown }; end?: { dateTime?: unknown; date?: unknown }; recurringEventId?: unknown; iCalUID?: unknown; updated?: unknown };
   if (!e || !singleLine(e.id, 1024)) return fail('google_response_invalid');
   if (e.status === 'cancelled') return null;
   const ref: SourceRef = { connectionId: row.connection_id, account: row.email, kind: 'calendar.event', id: e.id };
-  const base = { ref, title: headerText(e.summary) || '(no title)', recurring: singleLine(e.recurringEventId, 1024), updated: typeof e.updated === 'string' && Number.isFinite(Date.parse(e.updated)) ? new Date(Date.parse(e.updated)).toISOString() : null };
+  const base = { ref, title: headerText(e.summary) || '(no title)', recurring: singleLine(e.recurringEventId, 1024), uid: singleLine(e.iCalUID, 1024) ? e.iCalUID as string : null, updated: typeof e.updated === 'string' && Number.isFinite(Date.parse(e.updated)) ? new Date(Date.parse(e.updated)).toISOString() : null };
   if (typeof e.start?.date === 'string' && DATE.test(e.start.date)) {
     // external: Google Calendar all-day events use dates, not instants.
     return { ...base, allDay: true, start: e.start.date, end: typeof e.end?.date === 'string' && DATE.test(e.end.date) ? e.end.date : e.start.date, localDate: e.start.date, localStart: null };

@@ -11,7 +11,7 @@ import { CLOCK, type WeeklySchedule } from './weekly.ts';
  * With `weekly` set, one weekly review is read on that local weekday once the local time reaches its hour, and announced
  * once per week (a restart the same evening finds it stored and says nothing). A week the service missed is read on the
  * next tick, until the next boundary, once the feature has produced a review before. A review with an unavailable source is
- * not stored: the tick fails with `weekly_review_incomplete` and retries every 15 minutes. Without `weekly` nothing is read for it.
+ * not stored: the tick fails with `weekly_review_incomplete` and retries every 15 minutes, a delay a restart keeps. Without `weekly` nothing is read for it.
  */
 export type BriefingServiceOptions = {
   local: Pick<GoogleLocal, 'withComposer'>;
@@ -34,7 +34,6 @@ export class BriefingService {
   private readonly now: () => number;
   private doneDate: string | null = null;
   private weeklyDate: string | null = null;
-  private weeklyRetryAt = 0;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(options: BriefingServiceOptions) {
@@ -89,11 +88,15 @@ export class BriefingService {
     const daysSince = (new Date(Date.UTC(year, month - 1, day)).getUTCDay() - schedule.day + 7) % 7;
     const dueToday = daysSince === 0 && time >= schedule.at;
     const due = new Date(Date.UTC(year, month - 1, day - (daysSince === 0 && !dueToday ? 7 : daysSince))).toISOString().slice(0, 10);
-    if (this.weeklyDate === due || this.now() < this.weeklyRetryAt) return null;
-    const result = await this.compose(composer => dueToday || composer.latestWeekly() ? composer.weekly(due) : null);
+    if (this.weeklyDate === due) return null;
+    const result = await this.compose(composer => {
+      if (!dueToday && !composer.latestWeekly()) return null;
+      const attempted = composer.lastWeeklyAttempt(due);
+      return attempted !== null && this.now() < attempted + WEEKLY_RETRY_MS ? null : composer.weekly(due);
+    });
     if (!result) return null;
     const { briefing, created, complete } = result;
-    if (!complete) { this.weeklyRetryAt = this.now() + WEEKLY_RETRY_MS; throw new Error('weekly_review_incomplete'); }
+    if (!complete) throw new Error('weekly_review_incomplete');
     this.weeklyDate = due;
     if (!created) return null;
     this.options.onWeekly?.(briefing);

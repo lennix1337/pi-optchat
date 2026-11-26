@@ -192,6 +192,23 @@ test('weekly review: a source that fails keeps the week open: nothing is stored 
   assert.equal(sent.length, 1);
 }));
 
+test('weekly review: the retry delay survives a restart: a new service does not read Google again until it is over', () => rig(async ({ fake, clock, local }) => {
+  fake.mail.personal.push({ id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' });
+  const sent: Briefing[] = [];
+  const make = async () => new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });
+  fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  clock.now = sunday('21:00');
+  await assert.rejects((await make()).weeklyTick(), /weekly_review_incomplete/);
+  const reads = fake.log.length;
+  clock.now += 60_000;
+  assert.equal(await (await make()).weeklyTick(), null, 'a restart one minute later waits');
+  assert.equal(fake.log.length, reads, 'and does not hit Google');
+  fake.failures.clear();
+  clock.now += 20 * 60_000;
+  assert.equal((await (await make()).weeklyTick())?.kind, 'weekly');
+  assert.equal(sent.length, 1);
+}));
+
 test('weekly review: the background loop sends it, and the schedule defaults to Sunday evening', () => rig(async ({ clock, local }) => {
   clock.now = sunday('21:10');
   const sent = Promise.withResolvers<Briefing>();
@@ -202,6 +219,8 @@ test('weekly review: the background loop sends it, and the schedule defaults to 
   assert.deepEqual(weeklySchedule({ day: 'fri' }), { day: 5, at: '18:00' });
   assert.deepEqual(weeklySchedule({ at: '20:30' }), { day: 0, at: '20:30' });
   assert.equal(weeklySchedule(undefined), undefined);
+  assert.throws(() => weeklySchedule({ day: 'funday' }), /invalid_options/);
+  assert.throws(() => weeklySchedule({ at: '6pm' }), /invalid_options/);
 }));
 
 test('HTTP: GET /v1/briefing?kind=weekly returns the stored weekly review, and no other kind is accepted', () => rig(async ({ dir, clock, local }) => {
