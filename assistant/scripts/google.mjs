@@ -13,12 +13,16 @@ const usage = `Usage: node assistant/scripts/google.mjs <command> --config <abso
   revoke --name <id>                 end local access, then revoke at Google
   briefing --name <id>[,<id>] [--tz <IANA>]           read mail and agenda now; items carry their source references
   start --briefing <id> --item <id> --name <id>[,<id>] [--tz <IANA>]   queue one briefing item as a local task
+  draft --id <id>                    inspect a local reply draft; nothing is sent
+  learn                              read one rule from stdin: Hide <text> [unless <term> or <term>] because <reason>
+  rules                              list this profile's learned rules and their IDs
+  forget --id <id>                   remove a learned rule for future briefings
 Scopes are read-only (openid, email, gmail.readonly, calendar.readonly); nothing is sent. Windows DPAPI only.`;
 
 const names = value => String(value ?? '').split(',').filter(Boolean);
 cli(usage, {
   config: { type: 'string', required: true, path: true }, 'client-file': { type: 'string', path: true },
-  name: { type: 'string' }, email: { type: 'string' }, tz: { type: 'string' }, briefing: { type: 'string' }, item: { type: 'string' },
+  name: { type: 'string' }, email: { type: 'string' }, tz: { type: 'string' }, briefing: { type: 'string' }, item: { type: 'string' }, id: { type: 'string' },
 }, async (values, [command]) => {
   const config = loadConfig(values.config);
   const local = await GoogleLocal.open({ databasePath: config.databasePath, profileId: config.profileId, protector: osKeyProtector() });
@@ -36,6 +40,25 @@ cli(usage, {
       case 'revoke': return { result: 'revoked', ...(await local.revoke(values.name)) };
       case 'briefing': return { result: 'ok', briefing: await local.briefing(names(values.name), tz) };
       case 'start': return { result: 'queued', task: await local.start(values.briefing, values.item, names(values.name), tz) };
+      case 'draft': {
+        const draft = values.id && await local.withComposer([], tz, composer => composer.draft(values.id));
+        if (!draft) throw new Error('draft_unknown');
+        return { result: 'draft', draft };
+      }
+      case 'learn': {
+        let text = '';
+        process.stdin.setEncoding('utf8');
+        for await (const chunk of process.stdin) {
+          text += chunk;
+          if (text.length > 1002) throw new Error('invalid_triage_rule');
+        }
+        return { result: 'learned', rule: await local.learnRule(text, tz) };
+      }
+      case 'rules': return { result: 'ok', rules: await local.withComposer([], tz, composer => composer.learnedRules()) };
+      case 'forget': {
+        if (!values.id || !await local.forgetRule(values.id, tz)) throw new Error('triage_rule_unknown');
+        return { result: 'forgotten', ruleId: values.id };
+      }
       default: console.error(usage); return { result: 'usage', exitCode: 2 };
     }
   } finally { local.close(); }

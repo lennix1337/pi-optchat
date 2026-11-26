@@ -207,6 +207,17 @@ export class GoogleConnections {
     return this.collect(connectionId, CALENDAR_SCOPE, '/calendar/v3/calendars/primary/events', query, 'items', this.retention.maxEvents, async entry => calendarEvent(row, entry, range.timeZone));
   }
 
+  /** Validate reply drafts through the existing preview path, without staging an effect or calling Google. */
+  receiptReply(message: MailMessage, recipient: string): { subject: string; preview: DraftPreview } | null {
+    if (!EMAIL.test(recipient) || recipient === message.ref.account.toLowerCase()) return null;
+    const portuguese = /\bconfirme (?:o )?recebimento\b/i.test(message.body);
+    if (!portuguese && !/\bconfirm (?:that you (?:received|got) (?:this|it)|receipt)\b/i.test(message.body)) return null;
+    const original = message.subject.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
+    const subject = (/^re:/i.test(original) ? original : `Re: ${original || '(no subject)'}`).slice(0, 199).toWellFormed();
+    const body = portuguese ? 'Obrigado pela mensagem. Confirmo o recebimento.' : 'Thank you for your message. I confirm that I received it.';
+    return { subject, preview: this.preview({ kind: 'message', connectionId: message.ref.connectionId, to: [recipient], subject, body }) };
+  }
+
   /** The exact account, destination and content a send would carry. */
   preview(draft: Draft): DraftPreview {
     const content = draftContent(draft);
