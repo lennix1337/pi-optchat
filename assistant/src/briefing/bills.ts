@@ -5,7 +5,7 @@ import type { MailMessage } from '../connectors/google.ts';
  * next to it. Matching is by fixed patterns only; message text never reaches rules, grants or tools. Only the date
  * and the amount are taken from the text, and the heuristics miss bills and can flag mail that is not one.
  */
-export type Bill = { dueDate: string; amount: string | null; daysLeft: number };
+export type Bill = { dueDate: string; amount: string | null; daysLeft: number; amountsDiffer?: true };
 
 const DAY_MS = 86_400_000;
 /** A due date this many days in the past is an old message, not a bill still open; further ahead than FUTURE_DAYS is not yet worth listing. */
@@ -24,8 +24,11 @@ const LABEL_RIGHT_BEFORE_DATE = 'vencimento|venc\\.|vence(?:r[aá])?(?:\\s+(?:em
 const DUE_DATE = new RegExp(`\\b(?:${LABEL_RIGHT_BEFORE_DATE})(?![a-z])[\\s:.\\-–]{0,4}(?:(?:em|dia|no\\s+dia)\\s+)?(?:dia\\s+)?(?:${DATE})`, 'gi');
 const EARLIER_BILL = /\b(?:anterior|anteriores|previous|prior|passad[ao])\b/i;
 const CURRENCY = '(?:R\\$|US\\$|BRL|USD|EUR|€|\\$)\\s*(\\d{1,3}(?:\\.\\d{3})+,\\d{2}|\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+[.,]\\d{2}|\\d+)';
-const TOTAL_AMOUNT = new RegExp(`\\b(?:total|valor|amount|value|montante)\\b[^\\d\\n]{0,20}?(${CURRENCY})`, 'i');
-const ANY_AMOUNT = new RegExp(CURRENCY, 'i');
+const TOTAL_AMOUNT = new RegExp(`\\b(?:total|valor|amount|value|montante)\\b[^\\d\\n]{0,20}?(${CURRENCY})`, 'gi');
+const ANY_AMOUNT = new RegExp(CURRENCY, 'gi');
+const CLAUSE_BREAK = /\n|[.;,]\s/;
+
+const inEarlierBillClause = (text: string, end: number) => EARLIER_BILL.test(text.slice(0, end).split(CLAUSE_BREAK).at(-1)!);
 
 /** How the briefing flags a bill `daysLeft` days from today (negative: overdue). */
 export function billTiming(daysLeft: number): { reason: 'bill_overdue' | 'bill_due_soon' | 'bill_upcoming'; urgency: 'urgent' | 'normal' } {
@@ -49,13 +52,17 @@ const pad = (n: number) => String(n).padStart(2, '0');
 export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today: string): Bill | null {
   const text = `${message.subject}\n${message.body}`;
   if (!SPECIFIC_BILL_WORDS.test(text)) return null;
-  const total = TOTAL_AMOUNT.exec(text);
-  const anyAmount = total ? null : ANY_AMOUNT.exec(text);
-  const amountAt = (total ?? anyAmount)?.index ?? 0;
-  const m = [...text.matchAll(DUE_DATE)]
-    .filter(candidate => !EARLIER_BILL.test(text.slice(0, candidate.index + candidate[0].length).split(/\n|[.;,]\s/).at(-1)!))
-    .sort((a, b) => Math.abs(a.index - amountAt) - Math.abs(b.index - amountAt))[0];
-  if (!m) return null;
+  const own = (pattern: RegExp) => [...text.matchAll(pattern)]
+    .map(match => ({ match, at: match.index ?? 0 }))
+    .filter(({ match, at }) => !inEarlierBillClause(text, at + match[0].length));
+  const labelled = own(TOTAL_AMOUNT);
+  const amounts = (labelled.length ? labelled.map(({ match, at }) => ({ at, value: match[1] })) : own(ANY_AMOUNT).map(({ match, at }) => ({ at, value: match[0] })))
+    .map(({ at, value }) => ({ at, value: value.replace(/\s+/g, ' ').trim() }));
+  const gap = (at: number) => amounts.length ? Math.min(...amounts.map(amount => Math.abs(amount.at - at))) : at;
+  const dateFound = own(DUE_DATE).sort((a, b) => gap(a.at) - gap(b.at))[0];
+  if (!dateFound) return null;
+  const m = dateFound.match;
+  const amount = [...amounts].sort((a, b) => Math.abs(a.at - dateFound.at) - Math.abs(b.at - dateFound.at))[0]?.value ?? null;
   const [ty, tm, td] = today.split('-').map(Number);
   const todayNumber = dayNumber(ty, tm, td);
   if (todayNumber === null) return null;
@@ -67,8 +74,7 @@ export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today
   if (due === null) return null;
   const daysLeft = due - todayNumber;
   if (daysLeft < -OVERDUE_DAYS || daysLeft > FUTURE_DAYS) return null;
-  const amount = total?.[1] ?? anyAmount?.[0] ?? null;
-  return { dueDate: `${year}-${pad(month)}-${pad(day)}`, amount: amount ? amount.replace(/\s+/g, ' ').trim() : null, daysLeft };
+  return { dueDate: `${year}-${pad(month)}-${pad(day)}`, amount, daysLeft, ...(new Set(amounts.map(a => a.value)).size > 1 ? { amountsDiffer: true as const } : {}) };
 }
 
 function nearestYear(thisYear: number, month: number, day: number, todayNumber: number): number {

@@ -149,13 +149,16 @@ export class BriefingComposer {
             if (!bill && result.urgency === 'low') { found.distractions++; continue; }
             if (bill) {
               const filedAsPromotion = result.signals.includes('promotional_label');
+              const readsLikePromotion = result.urgency === 'low';
+              const doubtful = filedAsPromotion || readsLikePromotion || bill.amountsDiffer === true;
+              const marker = filedAsPromotion ? ' (Gmail: promoções)' : readsLikePromotion ? ' (parece promoção)' : '';
               const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
               const key = billKey(message, bill.dueDate, bill.amount);
               found.bills.push({
                 key,
                 item: {
-                  section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}${filedAsPromotion ? ' (Gmail: promoções)' : ''}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`,
-                  ...billTiming(bill.daysLeft), uncertainty: filedAsPromotion ? 'high' : 'medium', untrusted: true, startable: !filedAsPromotion && result.signals.includes('trusted_sender') && message.senderVerified, dueDate: bill.dueDate, billKey: key, ...(bill.amount ? { amount: bill.amount } : {}),
+                  section: 'bills', title: bounded(`${base} - due ${bill.dueDate}${bill.amount ? ` - ${bill.amount}` : ''}${marker}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`,
+                  ...billTiming(bill.daysLeft), uncertainty: doubtful ? 'high' : 'medium', untrusted: true, startable: !doubtful && result.signals.includes('trusted_sender') && message.senderVerified, dueDate: bill.dueDate, billKey: key, ...(bill.amount ? { amount: bill.amount } : {}),
                 },
               });
               continue;

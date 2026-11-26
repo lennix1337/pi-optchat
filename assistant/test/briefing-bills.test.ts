@@ -284,6 +284,55 @@ test('a trusted, DMARC-verified sender is still not startable when Gmail filed t
   assert.deepEqual([startable('p1'), startable('p2')], [false, false]);
 }));
 
+test('a bill with several distinct amounts, or one that reads like a billing newsletter, is listed with high uncertainty and is not startable', () => withGoogle(async rig => {
+  const base = { receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push(
+    { id: 'u1', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00', authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
+    { id: 'u2', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 80,00. Vencimento: 31/10/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')], ...base },
+    { id: 'u3', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Newsletter: sua fatura', body: 'Valor R$ 70,00. Vencimento: 01/11/2026. Para cancelar, unsubscribe aqui.', ...base },
+  );
+  await connectBoth(rig);
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
+  const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!;
+  assert.deepEqual([byRef('u1').uncertainty, byRef('u1').startable], ['high', false]);
+  assert.deepEqual([byRef('u2').uncertainty, byRef('u2').startable], ['medium', true]);
+  assert.deepEqual([byRef('u3').section, byRef('u3').uncertainty, byRef('u3').startable], ['bills', 'high', false]);
+  assert.match(byRef('u3').title, /parece promoção/);
+}));
+
+test('known limit: a bill already paid stays listed, urgent for 7 days after its due date and normal until 30', () => withGoogle(async rig => {
+  rig.fake.mail.personal.push({ id: 'o1', from: 'Luz <luz@luz.example.test>', subject: 'Fatura', body: 'Valor R$ 20,00. Vencimento: 22/10/2026', receivedAt: '2026-10-27T08:00:00.000Z' });
+  await connectBoth(rig);
+  const briefings = composer(rig, { bills: true, connections: ['personal'] });
+  assert.deepEqual(bills(await briefings.daily()).map(i => [i.reason, i.urgency]), [['bill_overdue', 'urgent']]);
+  rig.fake.mail.personal.length = 0;
+  rig.clock.now = Date.parse('2026-11-05T12:00:00.000Z');
+  assert.deepEqual(bills(await briefings.onDemand()).map(i => [i.reason, i.urgency]), [['bill_overdue', 'normal']]);
+}));
+
+test('DMARC is checked against the From domain: a trusted address whose DMARC failed is not startable', () => withGoogle(async rig => {
+  const base = { from: 'Energia <contas@energia.example.test>', subject: 'Fatura', receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push(
+    { id: 'f1', ...base, body: 'Valor R$ 20,00. Vencimento: 30/10/2026', authenticationResults: ['mx.google.com; dmarc=fail (p=REJECT) header.from=energia.example.test'] },
+    { id: 'f2', ...base, body: 'Valor R$ 21,00. Vencimento: 30/10/2026', authenticationResults: [GMAIL_DMARC('another.example.test')] },
+    { id: 'f3', ...base, body: 'Valor R$ 22,00. Vencimento: 30/10/2026', authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+  );
+  await connectBoth(rig);
+  const briefing = await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } }).daily();
+  const startable = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!.startable;
+  assert.deepEqual([startable('f1'), startable('f2'), startable('f3')], [false, false, true], 'only DMARC pass for the From domain, with the address in the list');
+}));
+
+test('trusted_sender comes only from google.trustedSenders: DMARC pass for an address that is not in the list is not startable', () => withGoogle(async rig => {
+  rig.fake.mail.personal.push({ id: 'n1', from: 'Energia <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 20,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z', authenticationResults: [GMAIL_DMARC('energia.example.test')] });
+  await connectBoth(rig);
+  const startable = async (trustedSenders: string[]) => bills(await composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders } }).onDemand())[0].startable;
+  assert.equal(await startable([]), false, 'empty list');
+  assert.equal(await startable(['outra@energia.example.test']), false, 'another address of the same domain');
+  assert.equal(await startable(['energia.example.test']), false, 'a domain is not an address');
+  assert.equal(await startable(['contas@energia.example.test']), true);
+}));
+
 test('two senders without a parsable address are two bills, not one', () => withGoogle(async rig => {
   rig.fake.mail.personal.push(
     { id: 'u1', from: 'Fake One', subject: 'Fatura um', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },

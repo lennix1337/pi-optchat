@@ -59,6 +59,15 @@ test('the whole clause before a date is read for an earlier-bill word, however l
   assert.equal(bill('Fatura', `Sua fatura${filler} e o novo vencimento: 30/10/2026`)?.dueDate, '2026-10-30');
 });
 
+test('the amount is the one nearest the due date; values of an earlier bill are ignored; several distinct values are flagged', () => {
+  assert.deepEqual(bill('Fatura', 'Fatura anterior: R$ 10,00 paga. Fatura atual R$ 50,00. Vencimento: 30/10/2026'), { dueDate: '2026-10-30', amount: 'R$ 50,00', daysLeft: 2 });
+  assert.equal(bill('Fatura', 'Mensalidade de setembro R$ 10,00 (paga)\n\n\n\nPague a de outubro: Vencimento: 30/10/2026 R$ 50,00')?.amount, 'R$ 50,00');
+  assert.equal(bill('Fatura', 'Fatura anterior: R$ 10,00 paga. Valor R$ 50,00. Vencimento: 30/10/2026')?.amountsDiffer, undefined, 'one value left after the earlier bill is ignored');
+  assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amountsDiffer, true);
+  assert.equal(bill('Fatura', 'Valor R$ 80,00 no boleto. Vencimento: 30/10/2026. Valor R$ 80,00 no cartao')?.amountsDiffer, undefined, 'the same value twice is one value');
+  assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amountsDiffer, undefined, 'a labelled total outweighs other values');
+});
+
 test('the amount: the total when labelled, otherwise the first one', () => {
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amount, 'R$ 1.234,56');
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amount, 'R$ 80,00');
