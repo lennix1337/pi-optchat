@@ -65,7 +65,8 @@ function taskThreadFixture(taskThreadAfterMs?: number, startPost?: () => Promise
       send = (text, topic) => tool.execute('fixture', { text, ...(topic ? { topic } : {}) });
     },
   });
-  const bridge = registerSlackBridge(pi, () => ({ dir, name: 'fixture' }), undefined, {
+  const owner = { dir, name: 'fixture' };
+  const bridge = registerSlackBridge(pi, () => owner, undefined, {
     taskThreadAfterMs: () => taskThreadAfterMs,
     request: async (_owner, path, body) => {
       if (path.startsWith('/v1/slack/inbox')) return { messages: inbox };
@@ -80,7 +81,7 @@ function taskThreadFixture(taskThreadAfterMs?: number, startPost?: () => Promise
     const message: AgentMessage = { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() };
     fire('message_end', { message });
   };
-  return { bridge, inbox, posted, send: (text: string, topic?: string) => send(text, topic), say,
+  return { bridge, owner, inbox, posted, send: (text: string, topic?: string) => send(text, topic), say,
     start: () => fire('agent_start'),
     receive: async () => { await bridge.poll(); return received.at(-1)!; },
     finish: (text: string) => fire('agent_end', { messages: replies(text) }),
@@ -124,6 +125,15 @@ test('task thread: the default opens once at 60s and the final and shell follow-
       { text: 'Testes concluídos.', threadTs: TASK_TS },
       { text: 'Fila validada.', threadTs: TASK_TS },
     ]);
+  } finally { f.close(); }
+});
+
+test('task thread: slack_send without a topic or thread preserves broadcast in the origin channel', async () => {
+  const f = taskThreadFixture();
+  try {
+    f.start(); f.say('[Slack] Algum progresso?');
+    await f.send('Fila lida.');
+    assert.deepEqual(f.posted, [{ text: 'Fila lida.', threadTs: null, broadcast: true }]);
   } finally { f.close(); }
 });
 
@@ -186,11 +196,37 @@ test('task thread: an unconfirmed start is not used for progress or the final an
     await f.finish('Feito.');
     assert.deepEqual(f.posted, [
       { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS },
-      { text: 'Fila lida.', threadTs: null },
+      { text: 'Fila lida.', threadTs: null, broadcast: true },
       { text: 'Feito.', threadTs: null },
     ]);
   } finally { f.close(); }
 });
+
+for (const sameProfile of [true, false]) {
+  test(`task thread: session closes while opening ${sameProfile ? 'and replies fall back to the DM' : 'without sending to a different profile'}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const confirmation = Promise.withResolvers<void>();
+    const f = taskThreadFixture(5_000, () => confirmation.promise);
+    try {
+      const dm = await f.receive();
+      f.start(); f.say(dm);
+      t.mock.timers.tick(5_000);
+      const progress = f.send('Fila lida.');
+      const final = f.finish('Feito.');
+      f.bridge.stop();
+      if (!sameProfile) f.owner.dir = join(f.owner.dir, 'other');
+      confirmation.resolve();
+      const results = await Promise.allSettled([progress, final]);
+      assert.deepEqual(f.posted[0], { text: 'Comecei: Confira a fila e os testes.', threadTs: TASK_TS });
+      assert.equal(f.posted.length, sameProfile ? 3 : 1);
+      if (sameProfile) assert.deepEqual(new Set(f.posted.slice(1)), new Set([
+        { text: 'Feito.', threadTs: null },
+        { text: 'Fila lida.', threadTs: null, broadcast: true },
+      ]));
+      assert.deepEqual(results.map(result => result.status), sameProfile ? ['fulfilled', 'fulfilled'] : ['rejected', 'fulfilled']);
+    } finally { f.close(); }
+  });
+}
 
 test('task thread: a DM steering an existing run does not open a task thread', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
