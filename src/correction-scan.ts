@@ -44,9 +44,9 @@ function toolCalls(event: Event): Content[] {
 
 type Message = NonNullable<Event['message']>;
 const plainText = (msg: Message): string => (typeof msg.content === 'string' ? msg.content : (Array.isArray(msg.content) ? msg.content : []).filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-const ASKS_MORE = /\be ate mesmo mais\b|\bqueremos mais\b|\bcade o mais\b|\bfaz(?:er)? mais\b|\balem disso\b/u;
+const ASKS_MORE = /\be ate mesmo mais\b|\bqueremos mais\b|\bcade o mais\b/u;
 const LISTED_COUNT = /\b(?:\d+|(?:dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez))\s+(?:itens|items|ideias|pontos|tarefas|passos)\b/u;
-const NAMES_EXTRA = /\balem\b|\bextras?\b|\ba mais\b|\badicion(?:ais|al)\b|\+\s?\d/u;
+const NAMES_EXTRA = /\balem\b|\bextras?\b|\ba mais\b|\badicion(?:ais|al)\b|\+\s?\d|\bmais\s+(?:um|uma|dois|duas|tres|quatro|cinco|\d+)\b/u;
 const reportsOnlyListedCount = (text: string): boolean => { const plain = withoutQuotes(text).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase(); return LISTED_COUNT.test(plain) && !NAMES_EXTRA.test(plain); };
 
 function nextPacing(previous: Pacing, event: Event): Pacing {
@@ -58,7 +58,7 @@ function nextPacing(previous: Pacing, event: Event): Pacing {
   } else if (event.type === 'message' && msg?.role === 'user') state = { ...state, more: ASKS_MORE.test(plainText(msg)), wake: false, wakeEdits: undefined, checked: false, verified: false, suites: 0, ripwired: false, sent: [], shipped: 0, clicked: false };
   if (event.type === 'message' && (msg?.role === 'user' || (msg?.role === 'assistant' && msg.stopReason === 'stop'))) {
     const text = plainText(msg);
-    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = noPacing();
+    if (/^quota pacing (?:ended|off)\b/u.test(text)) state = { ...noPacing(), more: state.more };
     else if (!text.includes('?') && (/^quota pacing active\b/u.test(text) || (
       /\b(?:quota|cota)(?: semanal)?\b[^.\n]{0,80}\b(?:acabando|apertando|gastando mais rapido)\b/u.test(text) &&
       (msg.role === 'assistant' || /^(?:ja falei[^.\n]{0,40}|use|usa|delegue|coloca)\b[^.\n]{0,80}\bworkers?\b/u.test(text))
