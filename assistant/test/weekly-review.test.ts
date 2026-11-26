@@ -33,7 +33,10 @@ async function seed(rig: GoogleRig) {
   rig.fake.mail.personal.push(
     { id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal for review', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' },
     { id: 'w2', from: 'Bob <bob@example.test>', subject: 'Lunch?', body: 'Thursday?', threadId: 'thread-bob', receivedAt: '2026-10-29T12:00:00.000Z' },
-    { id: 'w2-reply', from: 'Me <me@example.test>', subject: 'Re: Lunch?', body: 'Sure', labels: ['SENT'], threadId: 'thread-bob', receivedAt: '2026-10-30T09:00:00.000Z' },
+    { id: 'w2-reply', from: 'Me <me@example.test>', subject: 'Re: Lunch?', body: 'Sure', labels: ['SENT'], unlisted: true, threadId: 'thread-bob', receivedAt: '2026-10-30T09:00:00.000Z' },
+    { id: 'e1', from: 'Eve <eve@example.test>', subject: 'Budget', body: 'First ask', threadId: 'thread-eve', receivedAt: '2026-10-28T12:00:00.000Z' },
+    { id: 'e1-reply', from: 'Me <me@example.test>', subject: 'Re: Budget', body: 'Done', labels: ['SENT'], unlisted: true, threadId: 'thread-eve', receivedAt: '2026-10-29T12:00:00.000Z' },
+    { id: 'e2', from: 'Eve <eve@example.test>', subject: 'Re: Budget', body: 'One more thing', threadId: 'thread-eve', receivedAt: '2026-10-30T15:00:00.000Z' },
     { id: 'promo', from: 'Deals <deals@shop.example.test>', subject: 'Flash sale', body: 'Unsubscribe', labels: ['CATEGORY_PROMOTIONS'], receivedAt: '2026-10-31T08:00:00.000Z' },
     { id: 'old', from: 'Old <old@example.test>', subject: 'Eight days ago', body: 'Hello', receivedAt: '2026-10-23T12:00:00.000Z' },
   );
@@ -44,6 +47,8 @@ async function seed(rig: GoogleRig) {
     event('lunch', 'Lunch', '2026-11-03T15:00:00Z', '2026-11-03T16:00:00Z'),
     event('sync', 'Sync', '2026-11-03T16:00:00Z', '2026-11-03T16:30:00Z'),
     event('alone', 'Dentist', '2026-11-05T18:00:00Z', '2026-11-05T19:00:00Z'),
+    event('standup-1', 'Standup', '2026-11-06T12:00:00Z', '2026-11-06T12:30:00Z'),
+    event('standup-2', 'Standup', '2026-11-06T12:00:00Z', '2026-11-06T12:30:00Z'),
     event('later', 'The week after', '2026-11-09T15:00:00Z', '2026-11-09T16:00:00Z'),
   );
   rig.fake.events.dentai.push(
@@ -63,16 +68,16 @@ test('the weekly review lists open tasks, threads still waiting for the user, an
 
   assert.deepEqual(section(briefing, 'tasks').map(i => [i.title, i.reason]), [['Send the invoice', 'needs_input']], 'only open tasks');
   assert.deepEqual(section(briefing, 'messages').map(i => [i.sourceRef, i.reason]).sort(), [
-    ['gmail:dentai:d1', 'awaiting_reply'], ['gmail:personal:w1', 'awaiting_reply'],
-  ], 'a replied thread, promotions and mail older than the week are not waiting');
+    ['gmail:dentai:d1', 'awaiting_reply'], ['gmail:personal:e2', 'awaiting_reply'], ['gmail:personal:w1', 'awaiting_reply'],
+  ], 'a thread answered from Sent (not in the mail list), promotions and mail older than the week are not waiting; a newer message after the reply is');
   assert.ok(section(briefing, 'messages').every(i => i.untrusted && !i.startable));
   assert.match(section(briefing, 'messages').find(i => i.sourceRef.endsWith(':w1'))!.title, /ana@example\.test/, 'who is waiting is named');
 
   const agenda = section(briefing, 'agenda');
   assert.deepEqual(agenda.map(i => [i.title.replace(/^\S+ \S+ /, ''), i.reason, i.urgency]), [
-    ['Planning', 'conflict', 'urgent'], ['Client call', 'conflict', 'urgent'],
+    ['Planning', 'conflict', 'urgent'], ['Client call', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'], ['Standup', 'conflict', 'urgent'],
     ['Review', 'back_to_back', 'normal'], ['Lunch', 'back_to_back', 'normal'], ['Sync', 'back_to_back', 'normal'], ['Dentist', 'event', 'normal'],
-  ], 'conflicts first, then by time; a meeting copied on both calendars counts once and the week after is out of range');
+  ], 'conflicts first, then by time; a meeting copied on both calendars counts once, two distinct events with the same title and time on one calendar both stay, and the week after is out of range');
   assert.match(agenda[0].title, /^2026-11-02 09:00 Planning$/);
   assert.ok(agenda.every(i => i.untrusted && !i.startable));
 }));
@@ -101,8 +106,10 @@ test('a source that fails is listed, and the rest of the review still arrives', 
   await seed(rig);
   rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
   rig.clock.now = SUNDAY_EVENING;
-  const { briefing } = await composer(rig).weekly();
+  const c = composer(rig);
+  const { briefing, created, complete } = await c.weekly();
   assert.equal(briefing.sources.find(s => s.sourceId === 'personal:calendar')?.state, 'unavailable');
+  assert.deepEqual([created, complete, c.latestWeekly()], [false, false, null], 'an incomplete review is not stored as the final one');
   assert.equal(section(briefing, 'agenda').length, 0);
-  assert.equal(section(briefing, 'messages').length, 2);
+  assert.equal(section(briefing, 'messages').length, 3);
 }));

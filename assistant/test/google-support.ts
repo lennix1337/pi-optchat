@@ -24,7 +24,7 @@ export const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly
 type Grant = { account: AccountKey; scopes: string[] };
 type Code = Grant & { challenge: string; method: string; redirectUri: string; nonce: string; used: boolean };
 type Attachment = { filename: string; mimeType: string; size: number };
-export type FixtureMessage = { id: string; from: string; to?: string; subject: string; body: string; labels?: string[]; threadId?: string; receivedAt: string; attachments?: Attachment[] };
+export type FixtureMessage = { id: string; from: string; to?: string; subject: string; body: string; labels?: string[]; threadId?: string; unlisted?: boolean; receivedAt: string; attachments?: Attachment[] };
 export type FixtureEvent = Record<string, unknown> & { id: string; start: { dateTime?: string; date?: string; timeZone?: string } };
 export type Logged = { method: string; path: string; account?: AccountKey; params: Record<string, string> };
 
@@ -173,7 +173,7 @@ export class FakeGoogle {
     };
     if (url.pathname === '/gmail/v1/users/me/messages') {
       if (!grant.scopes.includes(MAIL_SCOPE)) { send(403, { error: 'insufficient_scope' }); return; }
-      const { slice, next } = page(this.mail[grant.account]);
+      const { slice, next } = page(this.mail[grant.account].filter(m => !m.unlisted));
       send(200, { messages: slice.map(m => ({ id: m.id, threadId: m.threadId ?? `thread-${m.id}` })), ...(next ? { nextPageToken: next } : {}) });
       return;
     }
@@ -185,6 +185,15 @@ export class FakeGoogle {
       const found = this.mail[grant.account].find(m => m.id === decodeURIComponent(message[1]));
       if (!found || !grant.scopes.includes(MAIL_SCOPE)) { send(404, { error: 'not_found' }); return; }
       send(200, gmailResource(found));
+      return;
+    }
+    const thread = /^\/gmail\/v1\/users\/me\/threads\/([^/]+)$/.exec(url.pathname);
+    if (thread) {
+      if (!grant.scopes.includes(MAIL_SCOPE)) { send(403, { error: 'insufficient_scope' }); return; }
+      const id = decodeURIComponent(thread[1]);
+      const messages = this.mail[grant.account].filter(m => (m.threadId ?? `thread-${m.id}`) === id).map(m => { const full = gmailResource(m); return { id: full.id, threadId: full.threadId, labelIds: full.labelIds, internalDate: full.internalDate }; });
+      if (!messages.length) { send(404, { error: 'not_found' }); return; }
+      send(200, { id, messages });
       return;
     }
     if (url.pathname === '/calendar/v3/calendars/primary/events') {
