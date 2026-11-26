@@ -9,6 +9,7 @@ import { registerEffectApprovals } from '../src/authorization-hooks.ts';
 import { EffectApprovals } from '../src/authorization.ts';
 import { forgetBrowserPages, observeBrowser, sensitivePage, withProductionHosts } from '../src/external-effects.ts';
 import { ciProblem, directMerges, mergeRefusal, openMajors, type Exec } from '../src/merge-ci-guard.ts';
+import { reviewBody } from '../scripts/ship-review.mjs';
 
 
 const repo: Repo = { slug: () => 'lennix1337/pi-optchat', branch: () => 'feat/x' };
@@ -283,13 +284,12 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   assert.deepEqual(openMajors(major), ['src/ideas.ts:107']);
   assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: nada grave.')), []);
   assert.deepEqual(openMajors('- [model_review:major] fora do bloco do Revisor'), []);
-  assert.deepEqual(openMajors(block('* [model_review:Major] a.ts:3: bullet e caixa diferentes.\n- [model_review:blocker]')), ['a.ts:3', 'sem local']);
-  assert.deepEqual(openMajors(block('- [model_review:major] Regex: aceita local vazio.')), ['sem local'], 'prose before a colon is not a location');
-  assert.deepEqual(openMajors(block('- [model_review:major] src/a.ts: sem linha.\n- [model_review:major] src/b.ts:10-12: faixa.')), ['src/a.ts', 'src/b.ts:10-12']);
-  assert.deepEqual(openMajors(block('1. [model_review:major] c.ts:4: numerado.\n\t[model_review:blocker] tab.')), ['c.ts:4', 'sem local'], 'any list format counts');
-  assert.deepEqual(openMajors(block('**[model_review:major]** d.ts:5: negrito.\n› [model_review:major] e.ts:6: seta.\nAchado: [model_review:critical] texto antes.')), ['d.ts:5', 'e.ts:6', 'sem local'], 'markup or text before the bracket still counts');
-  assert.deepEqual(openMajors(block('› - [model_review:major] f.ts:7: seta e bullet.\n- **[model_review:major]** g.ts:8: bullet e negrito.')), ['f.ts:7', 'g.ts:8']);
-  assert.deepEqual(openMajors(block('- [major] h.ts:9: sem categoria.\n- [model review: Major ] i.ts:1: espaço.\n- [review-major] j.ts:2.')), ['h.ts:9', 'i.ts:1', 'j.ts:2'], 'any label holding the word major counts');
+  const written = reviewBody('Problema: x', { verdict: 'changes', findings: [
+    { severity: 'major', file: 'src/a.ts', line: 3, text: 'grave.' }, { severity: 'blocker', file: 'src/b.ts', text: 'sem linha.' },
+    { code: 'cr', severity: 'major', text: 'sem arquivo.' }, { severity: 'minor', file: 'c.ts', line: 1, text: 'como [o major] disse, nada grave.' }] });
+  assert.deepEqual(openMajors(written), ['src/a.ts:3', 'src/b.ts', 'sem local'], 'parses what ship-review.mjs writes, majors and blockers only');
+  assert.deepEqual(openMajors(reviewBody('x', { verdict: 'changes', findings: [] })), ['sem local'], 'changes without detail stay open');
+  assert.deepEqual(openMajors(reviewBody('x', { verdict: 'approve', findings: [{ severity: 'minor', file: 'd.ts', line: 2, text: '[no major issues] ok.' }] })), [], 'a severity named in prose is not a finding');
   assert.deepEqual(openMajors(null), []);
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 1, stdout: '', stderr: 'HTTP 502' })))!, /could not read its checks/, 'an unreadable description never lets the merge through');
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 0, stdout: '{not json', stderr: '' })))!, /could not read its checks/);
