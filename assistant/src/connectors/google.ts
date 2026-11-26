@@ -42,7 +42,7 @@ export type GoogleOptions = {
 export type GoogleConnection = { connectionId: string; subject: string; email: string; scopes: string[]; state: 'active' | 'revoked' };
 export type SourceRef = { connectionId: string; account: string; kind: 'gmail.message' | 'calendar.event'; id: string };
 export type Attachment = { filename: string; mimeType: string; size: number; executable: boolean };
-export type MailMessage = { ref: SourceRef; threadId: string; from: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; attachments: Attachment[] };
+export type MailMessage = { ref: SourceRef; threadId: string; from: string; to: string; subject: string; receivedAt: string; labels: string[]; body: string; bodyTruncated: boolean; senderVerified: boolean; attachments: Attachment[] };
 export type CalendarEvent = { ref: SourceRef; title: string; start: string; end: string; allDay: boolean; localDate: string; localStart: string | null; recurring: boolean; updated: string | null };
 export type Page<T> = { items: T[]; truncated: boolean };
 export type MessageDraft = { kind: 'message'; connectionId: string; to: string[]; subject: string; body: string };
@@ -349,6 +349,7 @@ export class GoogleConnections {
       receivedAt: new Date(Number(m.internalDate)).toISOString(),
       labels: Array.isArray(m.labelIds) ? m.labelIds.filter(label => singleLine(label, 128)) : [],
       body: chars.slice(0, this.retention.maxBodyChars).join(''), bodyTruncated: chars.length > this.retention.maxBodyChars,
+      senderVerified: gmailVerifiedSender(headerText(header('from')), header('authentication-results')),
       attachments: attachments(m.payload, 0),
     };
   }
@@ -388,6 +389,15 @@ export class GoogleConnections {
 }
 
 type GmailPart = { mimeType?: unknown; filename?: unknown; headers?: { name?: unknown; value?: unknown }[]; body?: { size?: unknown; data?: unknown }; parts?: GmailPart[] };
+
+// external: Gmail writes its own verdict as the topmost Authentication-Results header, from mx.google.com; lower ones come from the sender's path.
+function gmailVerifiedSender(from: string, authentication: unknown): boolean {
+  const domain = /@([^@<>\s]+)>?\s*$/.exec(from)?.[1]?.toLowerCase();
+  if (!domain || typeof authentication !== 'string') return false;
+  const [server, ...results] = authentication.split(';');
+  return server.trim().toLowerCase() === 'mx.google.com'
+    && results.some(result => /^\s*dmarc=pass\b/i.test(result) && /\bheader\.from=([^\s;]+)/i.exec(result)?.[1].toLowerCase() === domain);
+}
 
 function headerText(value: unknown): string {
   return typeof value === 'string' && value.isWellFormed() ? value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, 500) : '';

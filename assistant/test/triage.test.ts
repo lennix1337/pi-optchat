@@ -11,7 +11,7 @@ const evalSet = JSON.parse(readFileSync(new URL('./fixtures/triage-eval.json', i
 const message = (input: Partial<MailMessage> & { id: string }): MailMessage => ({
   ref: { connectionId: 'personal', account: 'lucas.home@example.test', kind: 'gmail.message', id: input.id },
   threadId: `t-${input.id}`, from: 'someone@example.test', to: 'lucas.home@example.test', subject: '', receivedAt: '2026-10-28T10:00:00.000Z',
-  labels: ['INBOX'], body: '', bodyTruncated: false, attachments: [], ...input,
+  labels: ['INBOX'], body: '', bodyTruncated: false, senderVerified: false, attachments: [], ...input,
 });
 const rules: TriageRules = Object.freeze({ trustedSenders: Object.freeze(['boss@dentai.example.test']) });
 const vocabulary = new Set(['suspected_injection', 'executable_attachment', 'promotional', 'urgent_terms', 'trusted_sender', 'no_signal', 'private_data', 'promotional_label']);

@@ -40,6 +40,13 @@ test('generic words and loose labels are not enough', () => {
   assert.equal(bill('Your bill is due', 'Due on 2026-10-31')?.dueDate, '2026-10-31');
 });
 
+test('an earlier due date is not the due date: previous labels are skipped and the label nearest the amount wins', () => {
+  assert.equal(bill('Fatura', 'Fatura anterior vencida em 10/10/2026, paga.\nVencimento: 30/10/2026\nValor R$ 50,00')?.dueDate, '2026-10-30');
+  assert.equal(bill('Fatura', 'Previous invoice due 2026-10-10.\nVencimento: 30/10/2026\nValor R$ 50,00')?.dueDate, '2026-10-30');
+  assert.equal(bill('Fatura', 'Vencimento: 15/10/2026 (aviso de cobranca)\n\n\nValor R$ 50,00\nVence em 30/10/2026')?.dueDate, '2026-10-30', 'nearest to the amount');
+  assert.equal(bill('Fatura', 'Fatura anterior vencida em 10/10/2026.'), null, 'only a previous bill');
+});
+
 test('the amount: the total when labelled, otherwise the first one', () => {
   assert.equal(bill('Fatura', 'Desconto R$ 5,00. Valor total: R$ 1.234,56. Vencimento: 30/10/2026')?.amount, 'R$ 1.234,56');
   assert.equal(bill('Fatura', 'Vencimento: 30/10/2026. Pague R$ 80,00 ou R$ 90,00')?.amount, 'R$ 80,00');

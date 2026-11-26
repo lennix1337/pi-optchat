@@ -21,7 +21,8 @@ const MONTHS = ['janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho', 'julh
 const MONTH_NAMES = MONTHS.map(m => m === 'marco' ? 'mar[cç]o' : m).join('|');
 const DATE = `(\\d{4})-(\\d{2})-(\\d{2})|(\\d{1,2})/(\\d{1,2})(?:/(\\d{4}|\\d{2}))?|(\\d{1,2}) de (${MONTH_NAMES})(?: de (\\d{4}))?`;
 const LABEL_RIGHT_BEFORE_DATE = 'vencimento|venc\\.|vence(?:r[aá])?(?:\\s+(?:em|dia|no\\s+dia)|\\s*:)|vencid[oa]\\s+(?:em|desde|dia)|due(?:\\s+date|\\s+on|\\s+by)?|(?:pague|pagar|pagamento)\\s+at[eé]|payable\\s+by|pay\\s+by';
-const DUE_DATE = new RegExp(`\\b(?:${LABEL_RIGHT_BEFORE_DATE})(?![a-z])[\\s:.\\-–]{0,4}(?:(?:em|dia|no\\s+dia)\\s+)?(?:dia\\s+)?(?:${DATE})`, 'i');
+const DUE_DATE = new RegExp(`\\b(?:${LABEL_RIGHT_BEFORE_DATE})(?![a-z])[\\s:.\\-–]{0,4}(?:(?:em|dia|no\\s+dia)\\s+)?(?:dia\\s+)?(?:${DATE})`, 'gi');
+const EARLIER_BILL = /\b(?:anterior|anteriores|previous|prior|passad[ao])\b/i;
 const CURRENCY = '(?:R\\$|US\\$|BRL|USD|EUR|€|\\$)\\s*(\\d{1,3}(?:\\.\\d{3})+,\\d{2}|\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+[.,]\\d{2}|\\d+)';
 const TOTAL_AMOUNT = new RegExp(`\\b(?:total|valor|amount|value|montante)\\b[^\\d\\n]{0,20}?(${CURRENCY})`, 'i');
 const ANY_AMOUNT = new RegExp(CURRENCY, 'i');
@@ -48,7 +49,12 @@ const pad = (n: number) => String(n).padStart(2, '0');
 export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today: string): Bill | null {
   const text = `${message.subject}\n${message.body}`;
   if (!SPECIFIC_BILL_WORDS.test(text)) return null;
-  const m = DUE_DATE.exec(text);
+  const total = TOTAL_AMOUNT.exec(text);
+  const anyAmount = total ? null : ANY_AMOUNT.exec(text);
+  const amountAt = (total ?? anyAmount)?.index ?? 0;
+  const m = [...text.matchAll(DUE_DATE)]
+    .filter(candidate => !EARLIER_BILL.test(text.slice(Math.max(0, candidate.index - 60), candidate.index + candidate[0].length).split(/\n|[.;]\s/).at(-1)!))
+    .sort((a, b) => Math.abs(a.index - amountAt) - Math.abs(b.index - amountAt))[0];
   if (!m) return null;
   const [ty, tm, td] = today.split('-').map(Number);
   const todayNumber = dayNumber(ty, tm, td);
@@ -61,7 +67,7 @@ export function detectBill(message: Pick<MailMessage, 'subject' | 'body'>, today
   if (due === null) return null;
   const daysLeft = due - todayNumber;
   if (daysLeft < -OVERDUE_DAYS || daysLeft > FUTURE_DAYS) return null;
-  const amount = TOTAL_AMOUNT.exec(text)?.[1] ?? ANY_AMOUNT.exec(text)?.[0] ?? null;
+  const amount = total?.[1] ?? anyAmount?.[0] ?? null;
   return { dueDate: `${year}-${pad(month)}-${pad(day)}`, amount: amount ? amount.replace(/\s+/g, ' ').trim() : null, daysLeft };
 }
 

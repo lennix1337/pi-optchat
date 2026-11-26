@@ -172,21 +172,59 @@ test('everyday mail that only has a generic word and a date is not a bill', () =
   assert.equal(briefing.items.filter(i => i.section === 'messages').length, 3);
 }));
 
-test('mail text never makes a bill startable: only the operator\'s trusted senders do, and never with an executable attached', () => withGoogle(async rig => {
+const GMAIL_DMARC = (domain: string) => `mx.google.com; dkim=pass header.i=@${domain}; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=${domain}`;
+
+test('a bill is startable only when its sender is trusted and Gmail verified the sender domain; never with an executable attached', () => withGoogle(async rig => {
+  const base = { receivedAt: '2026-10-28T08:00:00.000Z', body: 'Valor R$ 20,00. Vencimento: 30/10/2026' };
   rig.fake.mail.personal.push(
-    { id: 's1', from: 'Stranger <x@stranger.example.test>', subject: 'Fatura', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
-    { id: 's2', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 20,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
-    { id: 's3', from: 'Energia Fake <contas@energia.example.test>', subject: 'Boleto', body: 'Valor R$ 30,00. Vencimento: 31/10/2026', attachments: [{ filename: 'boleto.exe', mimeType: 'application/x-msdownload', size: 10 }], receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 's1', from: 'Stranger <x@stranger.example.test>', subject: 'Fatura', ...base, authenticationResults: [GMAIL_DMARC('stranger.example.test')] },
+    { id: 's2', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', ...base, authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+    { id: 's3', from: 'Energia Fake <contas@energia.example.test>', subject: 'Boleto', ...base, body: 'Valor R$ 30,00. Vencimento: 31/10/2026', attachments: [{ filename: 'boleto.exe', mimeType: 'application/x-msdownload', size: 10 }], authenticationResults: [GMAIL_DMARC('energia.example.test')] },
+    { id: 's4', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', ...base, body: 'Valor R$ 99,00. Vencimento: 01/11/2026' },
+    { id: 's5', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', ...base, body: 'Valor R$ 98,00. Vencimento: 01/11/2026', authenticationResults: ['mx.google.com; dmarc=fail (p=REJECT) header.from=energia.example.test'] },
+    { id: 's6', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', ...base, body: 'Valor R$ 97,00. Vencimento: 01/11/2026', authenticationResults: [GMAIL_DMARC('other.example.test')] },
+    { id: 's7', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', ...base, body: 'Valor R$ 96,00. Vencimento: 01/11/2026', authenticationResults: ['mx.google.com; dmarc=fail header.from=energia.example.test', GMAIL_DMARC('energia.example.test')] },
+    { id: 's8', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', ...base, body: 'Valor R$ 95,00. Vencimento: 01/11/2026', authenticationResults: ['spoofer.example.test; dmarc=pass header.from=energia.example.test'] },
   );
   await connectBoth(rig);
   const briefings = composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } });
   const briefing = await briefings.daily();
   const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`))!;
-  assert.deepEqual([byRef('s1').section, byRef('s1').startable], ['bills', false]);
-  assert.deepEqual([byRef('s2').section, byRef('s2').startable], ['bills', true]);
+  const startable = (id: string) => [byRef(id).section, byRef(id).startable];
+  assert.deepEqual(startable('s1'), ['bills', false], 'verified but not a trusted sender');
+  assert.deepEqual(startable('s2'), ['bills', true]);
   assert.equal(byRef('s3').section, 'messages', 'a trusted sender with an executable attached is not turned into a bill');
-  assert.throws(() => briefings.start(briefing.briefingId, byRef('s1').itemId, rig.authority, startRequest('r1')), /briefing_item_not_startable/);
+  assert.deepEqual(startable('s4'), ['bills', false], 'trusted From address alone: a spoofed From with another amount stays unstartable');
+  assert.deepEqual(startable('s5'), ['bills', false], 'dmarc failed');
+  assert.deepEqual(startable('s6'), ['bills', false], 'verified for another domain than From');
+  assert.deepEqual(startable('s7'), ['bills', false], 'only the topmost result, Gmail\'s own, counts');
+  assert.deepEqual(startable('s8'), ['bills', false], 'a result written by another server does not count');
+  assert.throws(() => briefings.start(briefing.briefingId, byRef('s4').itemId, rig.authority, startRequest('r1')), /briefing_item_not_startable/);
   assert.ok(briefings.start(briefing.briefingId, byRef('s2').itemId, rig.authority, startRequest('r2')).taskId);
+}));
+
+test('a bill carried from an earlier briefing is never startable, whatever it was then', () => withGoogle(async rig => {
+  rig.fake.mail.personal.push({ id: 'k1', from: 'Energia Fake <contas@energia.example.test>', subject: 'Fatura', body: 'Valor R$ 20,00. Vencimento: 05/11/2026', receivedAt: '2026-10-28T08:00:00.000Z', authenticationResults: [GMAIL_DMARC('energia.example.test')] });
+  await connectBoth(rig);
+  const briefings = composer(rig, { bills: true, connections: ['personal'], rules: { trustedSenders: ['contas@energia.example.test'] } });
+  assert.deepEqual(bills(await briefings.daily()).map(i => i.startable), [true]);
+  rig.fake.mail.personal.length = 0;
+  rig.clock.now = Date.parse('2026-10-29T12:00:00.000Z');
+  assert.deepEqual(bills(await briefings.onDemand()).map(i => i.startable), [false]);
+}));
+
+test('bills with the same sender and date but no amount are not merged, and a carried one is not repeated', () => withGoogle(async rig => {
+  rig.fake.mail.personal.push(
+    { id: 'm1', from: 'Fake One', subject: 'Fatura de luz', body: 'Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 'm2', from: 'Fake One', subject: 'Fatura de agua', body: 'Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 'm3', from: 'Luz <luz@luz.example.test>', subject: 'Fatura', body: 'Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+    { id: 'm4', from: 'Luz <luz@luz.example.test>', subject: 'Fatura 2', body: 'Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
+  );
+  await connectBoth(rig);
+  const briefings = composer(rig, { bills: true, connections: ['personal'] });
+  assert.equal(bills(await briefings.daily()).length, 4);
+  rig.clock.now = Date.parse('2026-10-29T12:00:00.000Z');
+  assert.equal(bills(await briefings.onDemand()).length, 4, 'the same mails read again are listed once each');
 }));
 
 test('two senders without a parsable address are two bills, not one', () => withGoogle(async rig => {
