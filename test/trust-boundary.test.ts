@@ -288,6 +288,7 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   assert.deepEqual(openMajors(block('- [model_review:major] src/a.ts: sem linha.\n- [model_review:major] src/b.ts:10-12: faixa.')), ['src/a.ts', 'src/b.ts:10-12']);
   assert.deepEqual(openMajors(block('1. [model_review:major] c.ts:4: numerado.\n\t[model_review:blocker] tab.')), ['c.ts:4', 'sem local'], 'any list format counts');
   assert.deepEqual(openMajors(block('**[model_review:major]** d.ts:5: negrito.\n› [model_review:major] e.ts:6: seta.\nAchado: [model_review:critical] texto antes.')), ['sem local', 'e.ts:6', 'sem local'], 'markup or text before the bracket still counts');
+  assert.deepEqual(openMajors(block('› - [model_review:major] f.ts:7: seta e bullet.\n- **[model_review:major]** g.ts:8: bullet e negrito.')), ['f.ts:7', 'sem local']);
   assert.deepEqual(openMajors(null), []);
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 1, stdout: '', stderr: 'HTTP 502' })))!, /could not read its checks/, 'an unreadable description never lets the merge through');
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 0, stdout: '{not json', stderr: '' })))!, /could not read its checks/);
