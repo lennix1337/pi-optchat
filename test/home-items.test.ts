@@ -175,7 +175,8 @@ test('a running worker shows its worktree and goal, not the brief boilerplate', 
   assert.deepEqual(workerHome('Goal: radar reply deadlines\nAcceptance: x', 'C:\\Projetos\\dotfiles'), { label: 'dotfiles: radar reply deadlines', target: { repo: 'dotfiles' } });
   assert.deepEqual(workerHome('You are a subagent.'), { label: 'Trabalho em andamento' });
   assert.deepEqual(workerHome('You are a subagent.', '/p/x/worktrees/fix-a'), { label: 'fix-a: tarefa sem descrição', target: { repo: 'x' } });
-  assert.equal(workerHome('Edit src/home.ts and a.b.c now. then more.', '/p/x/worktrees/w').label, 'w: Edit src/home.ts and a.b.c now.');
+  assert.equal(workerHome('Edit src/home.ts v1. 2 now.\nThen more.', '/p/x/worktrees/w').label, 'w: Edit src/home.ts v1. 2 now.', 'the first line, never split inside it');
+  assert.equal(workerHome('Read the brief. Goal: not this\nGoal: this one', '/p/x').label, 'x: this one', 'Goal: counts only at a line start');
   assert.deepEqual(workerHome('You are a subagent.', '/p/x'), { label: 'x: tarefa sem descrição', target: { repo: 'x' } });
   assert.deepEqual(workerHome('Fix it.', '/p/x/worktrees'), { label: 'x: Fix it.', target: { repo: 'x' } });
   assert.equal(workerHome(`Goal: ${'a'.repeat(300)}`, '/p/x').label.length, 'x: '.length + 120);
