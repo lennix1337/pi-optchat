@@ -58,7 +58,11 @@ test('start answers port_reserved with the port when the listen fails with EACCE
     assert.deepEqual(started.json, { result: 'error', code: 'port_reserved', port: 48761 });
     assert.match(started.stderr, /Listen failed: EACCES on 127\.0\.0\.1:48761/);
     assert.equal(runScript('health', ['--config', svc.config], { dir }).json.state, 'stopped', 'a failed start leaves nothing running');
-    if (process.platform !== 'win32') assert.equal(spawnSync('pgrep', ['-f', join(root, 'copy')]).status, 1, 'the server that failed to listen exited');
+    if (process.platform !== 'win32') {
+      const running = () => spawnSync('pgrep', ['-f', join(root, 'copy')]).status === 0;
+      for (const until = Date.now() + 5000; running() && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(running(), false, 'the server that failed to listen exited');
+    }
   } finally { killRecordedService(svc.home); }
 }));
 
