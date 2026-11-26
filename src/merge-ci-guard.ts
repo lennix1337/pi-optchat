@@ -59,7 +59,7 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
  * the rest is malformed; a tag quoted mid-text of a minor does not, while a severity named in prose is not a finding. */
 export function openMajors(body?: string | null): string[] {
   const block = /<!-- ship:revisor:start -->([\s\S]*?)<!-- ship:revisor:end -->/.exec(body ?? '')?.[1] ?? '';
-  const majors = [...block.matchAll(/^[^\w\[\n]*\[[\w./-]+\s*:\s*(?:major|blocker|critical)\s*\].*$/gmu)].map(m => /^- \[[\w./-]+\s*:\s*\w+\s*\] (.+?): /u.exec(m[0])?.[1] ?? 'sem local');
+  const majors = [...block.matchAll(/^[^\w\[\n]*(?:\d+[.)]\s*)?\[[\w./-]+\s*:\s*(?:major|blocker|critical)\s*\].*$/gmu)].map(m => /\[[\w./-]+\s*:\s*\w+\s*\]\W*(\S+?): /u.exec(m[0])?.[1] ?? 'sem local');
   return /^O revisor pediu mudanças sem detalhar\.$/mu.test(block) ? [...majors, 'sem local'] : majors;
 }
 
