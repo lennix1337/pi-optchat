@@ -37,7 +37,7 @@ export type ComposerOptions = {
 };
 
 const DAY_MS = 86_400_000;
-const NEVER_A_BILL: readonly TriageSignal[] = ['suspected_injection', 'executable_attachment'];
+const NEVER_A_BILL: readonly TriageSignal[] = ['suspected_injection', 'executable_attachment', 'promotional_label'];
 const PRIVATE_TITLE = '[private content withheld]';
 const OPEN_STATUSES = new Set(['suggested', 'queued', 'working', 'needs_input', 'ready_for_review', 'failed']);
 const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
@@ -145,8 +145,8 @@ export class BriefingComposer {
           const page = await this.options.google.listMessages(connectionId);
           for (const message of page.items) {
             const result = triage(message, this.options.rules);
-            if (result.urgency === 'low') { found.distractions++; continue; }
             const bill = this.options.bills && !NEVER_A_BILL.some(signal => result.signals.includes(signal)) ? detectBill(message, localDate) : null;
+            if (!bill && result.urgency === 'low') { found.distractions++; continue; }
             if (bill) {
               const base = result.private ? PRIVATE_TITLE : bounded(message.subject || '(no subject)').slice(0, 120);
               found.bills.push({

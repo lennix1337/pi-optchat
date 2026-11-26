@@ -247,6 +247,27 @@ test('known limit: a trusted sender on a subdomain is not startable unless Gmail
   assert.deepEqual([startable('a1'), startable('a2')], [false, true]);
 }));
 
+test('a bill is found before the low-urgency discard: an unsubscribe footer does not hide it, a Gmail promotion label still does', () => withGoogle(async rig => {
+  const base = { receivedAt: '2026-10-28T08:00:00.000Z' };
+  rig.fake.mail.personal.push(
+    { id: 'l1', from: 'Banco Fake <fatura@banco.example.test>', subject: 'Sua fatura', body: `Valor R$ 80,00. Vencimento: 30/10/2026\nPara cancelar o envio, unsubscribe aqui.`, ...base },
+    { id: 'l2', from: 'Loja Fake <l@loja.example.test>', subject: 'Fatura com desconto', body: 'Vencimento: 31/10/2026', labels: ['CATEGORY_PROMOTIONS'], ...base },
+    { id: 'l3', from: 'News Fake <n@news.example.test>', subject: 'Newsletter', body: 'Novidades. unsubscribe', ...base },
+    { id: 'l4', from: 'Banco Fake <fatura@banco.example.test>', subject: `Fatura ${CARD}`, body: `Cartao ${CARD}. Vencimento: 02/11/2026. unsubscribe`, ...base },
+  );
+  await connectBoth(rig);
+  const briefing = await composer(rig, { bills: true, connections: ['personal'] }).daily();
+  const byRef = (id: string) => briefing.items.find(i => i.sourceRef.endsWith(`:${id}`));
+  assert.equal(byRef('l1')?.section, 'bills');
+  assert.equal(byRef('l2'), undefined, 'a promotion label stays hidden');
+  assert.equal(byRef('l3'), undefined, 'a promotional mail that is not a bill stays hidden');
+  assert.deepEqual([byRef('l4')?.section, byRef('l4')?.title.startsWith('[private content withheld]')], ['bills', true]);
+  assert.equal(briefing.distractions, 2);
+  assert.ok(!JSON.stringify(briefing).includes('4111'));
+  const off = await composer(rig, { connections: ['personal'] }).onDemand();
+  assert.equal(off.distractions, 4, 'with bills off every low-urgency mail is still a distraction');
+}));
+
 test('two senders without a parsable address are two bills, not one', () => withGoogle(async rig => {
   rig.fake.mail.personal.push(
     { id: 'u1', from: 'Fake One', subject: 'Fatura um', body: 'Valor R$ 10,00. Vencimento: 30/10/2026', receivedAt: '2026-10-28T08:00:00.000Z' },
@@ -278,5 +299,10 @@ test('configuration: google.bills is optional, boolean only', () => {
     assert.equal(read({ ...google, bills: true }).google?.bills, true);
     assert.equal(read({ ...google, bills: false }).google?.bills, false);
     assert.throws(() => read({ ...google, bills: 'yes' }), /Invalid configuration/);
+    assert.equal(read(google).google?.trustedSenders, undefined, 'no trusted senders unless the operator names them');
+    assert.deepEqual(read({ ...google, trustedSenders: ['contas@energia.example.test'] }).google?.trustedSenders, ['contas@energia.example.test']);
+    for (const bad of ['contas@energia.example.test', [42], ['not-an-address'], ['Nome <a@b.example.test>'], Array.from({ length: 51 }, (_, i) => `a${i}@b.example.test`)]) {
+      assert.throws(() => read({ ...google, trustedSenders: bad }), /Invalid configuration/, JSON.stringify(bad).slice(0, 60));
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

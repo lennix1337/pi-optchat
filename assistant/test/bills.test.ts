@@ -48,8 +48,9 @@ test('an earlier due date is not the due date: previous labels are skipped and t
 });
 
 test('known limit: an earlier-bill word in the same sentence drops a due date that is the right one', () => {
-  assert.equal(bill('Fatura', 'Fatura anterior paga, Vencimento: 30/10/2026'), null);
+  assert.equal(bill('Fatura', 'Sua fatura anterior foi paga e o novo vencimento: 30/10/2026'), null);
   assert.equal(bill('Fatura', 'Fatura anterior paga. Vencimento: 30/10/2026')?.dueDate, '2026-10-30', 'a sentence break keeps it');
+  assert.equal(bill('Fatura', 'Fatura anterior paga, Vencimento: 30/10/2026')?.dueDate, '2026-10-30', 'a comma keeps it');
 });
 
 test('the amount: the total when labelled, otherwise the first one', () => {

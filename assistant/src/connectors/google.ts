@@ -391,12 +391,32 @@ export class GoogleConnections {
 type GmailPart = { mimeType?: unknown; filename?: unknown; headers?: { name?: unknown; value?: unknown }[]; body?: { size?: unknown; data?: unknown }; parts?: GmailPart[] };
 
 // external: Gmail writes its own verdict as the topmost Authentication-Results header, from mx.google.com; lower ones come from the sender's path.
-function gmailVerifiedSender(from: string, authentication: unknown): boolean {
+/** True when Gmail's verdict says DMARC passed for the domain of the last address in `from`. */
+export function gmailVerifiedSender(from: string, authentication: unknown): boolean {
   const domain = /@([^@<>\s]+)>?\s*$/.exec(from)?.[1]?.toLowerCase();
   if (!domain || typeof authentication !== 'string') return false;
-  const [server, ...results] = authentication.split(';');
+  const [server, ...results] = authenticationParts(authentication);
   return server.trim().toLowerCase() === 'mx.google.com'
-    && results.some(result => /^\s*dmarc=pass\b/i.test(result) && /\bheader\.from=([^\s;]+)/i.exec(result)?.[1].toLowerCase() === domain);
+    && results.some(result => /^\s*dmarc\s*=\s*pass(?![\w-])/i.test(result)
+      && /(?:^|\s)header\.from\s*=\s*"?([^\s";]+)"?/i.exec(result)?.[1].toLowerCase() === domain);
+}
+
+// external: RFC 8601 Authentication-Results may hold comments and quoted strings; text inside either must never read as a verdict.
+function authenticationParts(value: string): string[] {
+  const parts = [''];
+  let comments = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === '\\' && (quoted || comments > 0)) { i++; continue; }
+    if (comments > 0) { comments += c === '(' ? 1 : c === ')' ? -1 : 0; continue; }
+    if (quoted) { if (c === '"') quoted = false; parts[parts.length - 1] += /[\s;=]/.test(c) ? '_' : c; continue; }
+    if (c === '(') comments = 1;
+    else if (c === '"') quoted = true;
+    else if (c === ';') parts.push('');
+    else parts[parts.length - 1] += c;
+  }
+  return parts;
 }
 
 function headerText(value: unknown): string {
