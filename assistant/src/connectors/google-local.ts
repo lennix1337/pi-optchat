@@ -147,13 +147,13 @@ export class GoogleLocal {
   }
 
   /** Runs `use` with a composer over the named connections and the service's task store, closing both after. */
-  async withComposer<T>(names: string[], timeZone: string, use: (composer: BriefingComposer) => T | Promise<T>): Promise<T> {
+  async withComposer<T>(names: string[], timeZone: string, use: (composer: BriefingComposer) => T | Promise<T>, meetingPrep = false): Promise<T> {
     const google = this.connections();
     const store = new TaskStore(this.options.databasePath, this.options.profileId);
     try {
       const composer = new BriefingComposer({
         databasePath: join(dirname(this.options.databasePath), 'briefings.sqlite'), profileId: this.options.profileId, operatorAuthority: this.authority,
-        timeZone, store, google, connections: names, rules: { trustedSenders: [] }, ...(this.options.now ? { now: this.options.now } : {}),
+        timeZone, store, google, connections: names, meetingPrep, rules: { trustedSenders: [] }, ...(this.options.now ? { now: this.options.now } : {}),
       });
       try { return await use(composer); } finally { composer.close(); }
     } finally { store.close(); google.close(); }

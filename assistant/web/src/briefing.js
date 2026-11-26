@@ -7,6 +7,19 @@ const uncertainty = { low: 'baixa', medium: 'média', high: 'alta' };
 const sourceState = { ok: 'disponível', partial: 'parcial', unavailable: 'indisponível' };
 function node(tag, text) { const n = document.createElement(tag); n.textContent = text; return n; }
 
+function renderMeetingPrep(cards) {
+  const list = node('ol', '');
+  for (const card of cards) {
+    const li = node('li', '');
+    const people = card.attendees.map(person => person.displayName || person.email).join(', ');
+    const threads = card.threads.map(thread => thread.subject).join('; ') || 'Nenhuma encontrada';
+    const open = card.openItems.map(item => `${item.title} (${item.reason === 'unread_thread' ? 'não lida' : 'tarefa aberta'})`).join('; ') || 'Nenhum encontrado';
+    li.append(node('strong', card.title), node('p', `${card.when}${card.allDay ? ' · dia inteiro' : ''} · ${people}`), node('p', `Conversas recentes: ${threads}`), node('p', `Itens em aberto: ${open}`));
+    list.append(li);
+  }
+  return list;
+}
+
 /** Sources stay text, not executable links or commands. Reading a stored summary starts no work. */
 export function renderBriefing(root, value) {
   root.replaceChildren();
@@ -14,6 +27,7 @@ export function renderBriefing(root, value) {
   const sources = node('ul', '');
   for (const source of value.sources) sources.append(node('li', `${source.sourceId}: ${sourceState[source.state]}${source.error ? ` (${source.error})` : ''}`));
   root.append(sources);
+  if (value.meetingPrep?.length) root.append(node('h3', 'Preparo para reuniões · próximas 24 horas'), renderMeetingPrep(value.meetingPrep));
   const items = node('ol', '');
   for (const item of value.items) {
     const li = node('li', '');
