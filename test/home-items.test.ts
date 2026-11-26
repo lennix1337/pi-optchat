@@ -181,4 +181,9 @@ test('a running worker shows its worktree and goal, not the brief boilerplate', 
   assert.deepEqual(workerHome('You are a subagent.', '/p/x'), { label: 'x: tarefa sem descrição', target: { repo: 'x' } });
   assert.deepEqual(workerHome('Fix it.', '/p/x/worktrees'), { label: 'x: Fix it.', target: { repo: 'x' } });
   assert.equal(workerHome(`Goal: ${'a'.repeat(300)}`, '/p/x').label.length, 'x: '.length + 120);
+  assert.equal(workerHome('Goal: crlf task\r\nAcceptance: x', '/p/x').label, 'x: crlf task', 'a CRLF brief ends the goal at the line break');
+  const { homeBlocks } = await import('../assistant/src/channels/slack-relay.ts');
+  const home = JSON.stringify(homeBlocks('', { team: [`agent · m · ${workerHome('Goal: ping <@U1> <!channel>', '/p/x').label}`] }));
+  assert.match(home, /&lt;@U1&gt; &lt;!channel&gt;/u, 'the Home escapes Slack markup in the label');
+  assert.doesNotMatch(home, /<@U1>|<!channel>/u);
 });
