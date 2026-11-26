@@ -310,7 +310,7 @@ test('weekly review: nothing without opt-in; with it exactly one review per week
 
   const service = await make();
   clock.now = sunday('01:30');
-  assert.equal(await service.weeklyTick(), null, 'Saturday 22:30 in Sao Paulo is not Sunday');
+  assert.equal(await service.weeklyTick(), null, 'Saturday 22:30 in Sao Paulo: a first review waits for its own boundary and does not look back');
   clock.now = sunday('20:59');
   assert.equal(await service.weeklyTick(), null, 'Sunday 17:59 is before the hour');
   assert.equal(gmailReads(fake), 0);
@@ -337,6 +337,47 @@ test('weekly review: nothing without opt-in; with it exactly one review per week
   const next = await service.weeklyTick();
   assert.equal(next?.localDate, '2026-11-08');
   assert.equal(sent.length, 2, 'one send per week');
+}));
+
+test('weekly review: a week the service missed is recovered on the next tick, once, until the next cycle starts', () => rig(async ({ fake, clock, local }) => {
+  fake.mail.personal.push({ id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' });
+  const sent: Briefing[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });
+  clock.now = sunday('21:00', '2026-10-25');
+  assert.equal((await service.weeklyTick())?.localDate, '2026-10-25');
+  clock.now = sunday('12:00', '2026-11-03');
+  const recovered = await service.weeklyTick();
+  assert.equal(recovered?.localDate, '2026-11-01', 'Tuesday recovers the Sunday the service was not running for');
+  assert.equal(sent.length, 2);
+  clock.now = sunday('12:00', '2026-11-04');
+  assert.equal(await service.weeklyTick(), null, 'only once');
+  clock.now = sunday('20:59', '2026-11-08');
+  assert.equal(await service.weeklyTick(), null, 'still the same cycle before the next boundary');
+  clock.now = sunday('21:00', '2026-11-08');
+  assert.equal((await service.weeklyTick())?.localDate, '2026-11-08');
+  assert.equal(sent.length, 3);
+}));
+
+test('weekly review: a source that fails keeps the week open: nothing is stored or announced, retries are spaced, and the complete review is sent once', () => rig(async ({ fake, clock, local }) => {
+  fake.mail.personal.push({ id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' });
+  const sent: Briefing[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });
+  fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  clock.now = sunday('21:00');
+  await assert.rejects(service.weeklyTick(), /weekly_review_incomplete/);
+  assert.deepEqual([sent.length, await service.latestWeekly()], [0, null]);
+  const reads = fake.log.length;
+  clock.now += 60_000;
+  assert.equal(await service.weeklyTick(), null, 'a retry a minute later waits');
+  assert.equal(fake.log.length, reads, 'and does not hit Google');
+  fake.failures.clear();
+  clock.now += 20 * 60_000;
+  const review = await service.weeklyTick();
+  assert.deepEqual(review?.sources.map(s => s.state), ['ok', 'ok', 'ok']);
+  assert.equal(sent.length, 1);
+  clock.now += 60_000;
+  assert.equal(await service.weeklyTick(), null);
+  assert.equal(sent.length, 1);
 }));
 
 test('weekly review: the background loop sends it, and the schedule defaults to Sunday evening', () => rig(async ({ clock, local }) => {

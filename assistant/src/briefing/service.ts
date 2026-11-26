@@ -15,7 +15,9 @@ type SourceBackoff = Map<string, { retryAt: number; delayMs: number }>;
  * (once per local date, kept across restarts by the composer) and announced; `refresh` reads now for a client that
  * asks. Concurrent callers of either share the read in flight. Mail stays untrusted data and nothing is started here.
  * With `weekly` set, one weekly review is read on that local weekday once the local time reaches its hour, and announced
- * once per week (a restart the same evening finds it stored and says nothing). Without `weekly` nothing is read for it.
+ * once per week (a restart the same evening finds it stored and says nothing). A week the service missed is read on the
+ * next tick, until the next boundary, once the feature has produced a review before. A review with an unavailable source is
+ * not stored: the tick fails with `weekly_review_incomplete` and retries every 15 minutes. Without `weekly` nothing is read for it.
  */
 export type BriefingServiceOptions = {
   local: Pick<GoogleLocal, 'withComposer'>;
@@ -33,11 +35,14 @@ export type BriefingServiceOptions = {
   onMeetingPrep?: (card: MeetingPrepCard) => void | Promise<void>;
 };
 
+const WEEKLY_RETRY_MS = 15 * 60_000;
+
 export class BriefingService {
   private readonly options: BriefingServiceOptions;
   private readonly now: () => number;
   private doneDate: string | null = null;
   private weeklyDate: string | null = null;
+  private weeklyRetryAt = 0;
   private timer: NodeJS.Timeout | undefined;
   private readonly meetingSourceBackoff: SourceBackoff = new Map();
 
@@ -113,9 +118,15 @@ export class BriefingService {
     if (!schedule) return null;
     const { date, time } = localDateTime(this.now(), this.options.timeZone);
     const [year, month, day] = date.split('-').map(Number);
-    if (new Date(Date.UTC(year, month - 1, day)).getUTCDay() !== schedule.day || time < schedule.at || this.weeklyDate === date) return null;
-    const { briefing, created } = await this.compose(composer => composer.weekly());
-    this.weeklyDate = date;
+    const daysSince = (new Date(Date.UTC(year, month - 1, day)).getUTCDay() - schedule.day + 7) % 7;
+    const dueToday = daysSince === 0 && time >= schedule.at;
+    const due = new Date(Date.UTC(year, month - 1, day - (daysSince === 0 && !dueToday ? 7 : daysSince))).toISOString().slice(0, 10);
+    if (this.weeklyDate === due || this.now() < this.weeklyRetryAt) return null;
+    const result = await this.compose(composer => dueToday || composer.latestWeekly() ? composer.weekly(due) : null);
+    if (!result) return null;
+    const { briefing, created, complete } = result;
+    if (!complete) { this.weeklyRetryAt = this.now() + WEEKLY_RETRY_MS; throw new Error('weekly_review_incomplete'); }
+    this.weeklyDate = due;
     if (!created) return null;
     this.options.onWeekly?.(briefing);
     return briefing;

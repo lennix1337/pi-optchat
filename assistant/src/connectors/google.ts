@@ -198,6 +198,19 @@ export class GoogleConnections {
     });
   }
 
+  /** When the account last sent a message in this conversation, or null; reads the whole thread, not the mail listing. */
+  async lastSentAt(connectionId: string, threadId: string): Promise<number | null> {
+    if (!singleLine(threadId, 256)) return fail('invalid_thread');
+    const thread = await this.get(connectionId, MAIL_SCOPE, `/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`, { format: 'minimal' }) as { messages?: unknown };
+    if (!Array.isArray(thread?.messages)) return fail('google_response_invalid');
+    let latest: number | null = null;
+    for (const entry of thread.messages as { labelIds?: unknown; internalDate?: unknown }[]) {
+      if (typeof entry?.internalDate !== 'string' || !/^\d{1,15}$/.test(entry.internalDate)) return fail('google_response_invalid');
+      if (Array.isArray(entry.labelIds) && entry.labelIds.includes('SENT')) latest = Math.max(latest ?? 0, Number(entry.internalDate));
+    }
+    return latest;
+  }
+
   /** Single instances (recurring series expanded by Google) in [from, to), placed on the profile's local calendar. */
   async listEvents(connectionId: string, range: { from: string; to: string; timeZone: string }): Promise<Page<CalendarEvent>> {
     const from = Date.parse(range?.from), to = Date.parse(range?.to);

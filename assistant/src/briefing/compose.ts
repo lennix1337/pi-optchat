@@ -107,14 +107,14 @@ export class BriefingComposer {
   }
 
   /** This local date's weekly review; `created` is false when it was already stored, so a caller announces it once. */
-  async weekly(): Promise<{ briefing: Briefing; created: boolean }> {
-    const localDate = localDateTime(this.now(), this.options.timeZone).date;
+  async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean }> {
     const existing = this.weeklyFor(localDate);
-    if (existing) return { briefing: existing, created: false };
+    if (existing) return { briefing: existing, created: false, complete: true };
     const briefing = await this.composeWeekly(localDate);
+    if (briefing.sources.some(source => source.state === 'unavailable')) return { briefing, created: false, complete: false };
     this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'weekly', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
     const stored = this.weeklyFor(localDate)!;
-    return { briefing: stored, created: stored.briefingId === briefing.briefingId };
+    return { briefing: stored, created: stored.briefingId === briefing.briefingId, complete: true };
   }
 
   async onDemand(): Promise<Briefing> {
@@ -275,7 +275,8 @@ export class BriefingComposer {
     const items: Omit<BriefingItem, 'itemId'>[] = [];
     const now = this.now();
     const taskSequence = this.readTasks(null, sources, items);
-    const { from, to } = weekRange(localDate, this.options.timeZone);
+    const range = weekRange(localDate, this.options.timeZone);
+    const from = new Date(Math.max(Date.parse(range.from), now)).toISOString(), to = range.to;
     let distractions = 0;
     const events: WeekEvent[] = [];
     const reads = await Promise.all(this.options.connections.map(async connectionId => {
@@ -292,6 +293,8 @@ export class BriefingComposer {
             if (message.labels.includes('SENT') || message.labels.includes('DRAFT')) continue;
             const result = triage(message, this.options.rules);
             if (result.urgency === 'low') { found.distractions++; continue; }
+            const answeredAt = await this.options.google.lastSentAt(connectionId, message.threadId);
+            if (answeredAt !== null && answeredAt >= Date.parse(message.receivedAt)) continue;
             const who = senderAddress(message.from) || bounded(message.from);
             found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: 'awaiting_reply', urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: false });
           }
@@ -447,10 +450,16 @@ async function readSource(sourceId: string, work: () => Promise<boolean>): Promi
 
 type WeekEvent = { connectionId: string; event: CalendarEvent };
 
+function sameSlot(a: CalendarEvent, b: CalendarEvent): boolean { return a.start === b.start && a.end === b.end && a.title === b.title; }
+
 function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
-  const seen = new Set<string>();
-  const unique = found.filter(({ event }) => { const key = `${event.start}|${event.end}|${event.title}`; return !seen.has(key) && !!seen.add(key); })
-    .sort((a, b) => a.event.start.localeCompare(b.event.start));
+  const unique: WeekEvent[] = [];
+  const merged = new Set<WeekEvent>();
+  for (const entry of found) {
+    const copyOf = unique.find(kept => kept.connectionId !== entry.connectionId && !merged.has(kept) && sameSlot(kept.event, entry.event));
+    if (copyOf) merged.add(copyOf); else unique.push(entry);
+  }
+  unique.sort((a, b) => a.event.start.localeCompare(b.event.start));
   const flag = new Map<WeekEvent, 'conflict' | 'back_to_back'>();
   const timed = unique.filter(({ event }) => !event.allDay);
   for (const [i, later] of timed.entries()) {
