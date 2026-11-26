@@ -1,3 +1,5 @@
+import type { Briefing } from './compose.ts';
+
 /** The weekly review's configuration: opt-in, Sunday 18:00 unless the operator names another weekday or hour. */
 export type WeeklySchedule = { day: number; at: string };
 export type WeeklyConfig = true | { day?: string; at?: string };
@@ -10,6 +12,11 @@ export function weeklySchedule(config: WeeklyConfig | undefined): WeeklySchedule
   if (!validWeekly(config)) throw new Error('invalid_options');
   const given = config === true ? {} : config;
   return { day: given.day === undefined ? 0 : WEEKDAYS.indexOf(given.day), at: given.at ?? '18:00' };
+}
+
+/** The notification for a stored weekly review: the degraded wording when any source was unavailable, so a missing agenda is never read as an empty one. */
+export function weeklyNotice(briefing: Pick<Briefing, 'sources'>): 'weekly_review_ready' | 'weekly_review_degraded' {
+  return briefing.sources.some(source => source.state === 'unavailable') ? 'weekly_review_degraded' : 'weekly_review_ready';
 }
 
 export function validWeekly(value: unknown): value is WeeklyConfig {

@@ -9,7 +9,7 @@ import { openArtifactService } from './artifacts/service.ts';
 import { validExecutorConfig, type ExecutorConfig } from './runtime/executor-config.ts';
 import { DisplayLearning } from './memory/display-learning.ts';
 import type { NotificationChannel } from './notifications/center.ts';
-import { validWeekly, weeklySchedule, type WeeklyConfig } from './briefing/weekly.ts';
+import { validWeekly, weeklyNotice, weeklySchedule, type WeeklyConfig } from './briefing/weekly.ts';
 
 const help = `Manual optional assistant server (Node.js >=24)
 Usage: node assistant/src/main.ts --config <absolute-path> [--web]
@@ -346,7 +346,7 @@ async function startGoogle(config: Config, settings: GoogleConfig, notices: Noti
     weekly: weeklySchedule(settings.weekly),
     onWeekly: briefing => {
       console.log(`Google weekly review ${briefing.localDate}: ${briefing.items.length} items; sources ${briefing.sources.map(s => `${s.sourceId} ${s.state}`).join(', ')}.`);
-      notices?.announce(`weekly-${briefing.localDate}`, `briefing-${briefing.briefingId}`, 'weekly_review_ready');
+      notices?.announce(`weekly-${briefing.localDate}`, `briefing-${briefing.briefingId}`, weeklyNotice(briefing));
     },
   });
   service.start(60_000, error => console.error(`Google briefing failed: ${error instanceof Error && /^[a-z][a-z_]{0,63}$/.test(error.message) ? error.message : 'error'}.`));

@@ -109,7 +109,12 @@ export class BriefingComposer {
     return { briefing, fresh: freshRead };
   }
 
-  /** This local date's weekly review; `created` is false when it was already stored, so a caller announces it once. */
+  /**
+   * The weekly review due on `localDate`; `created` is false when it was already stored, so a caller announces it once. It is
+   * stored under the boundary it was due, but reads the seven days after the day it is composed, so one recovered late is
+   * labelled with the missed boundary and describes the coming week. After three tries a review missing some sources is
+   * stored with an urgent item for each, so its absence is stated, never silent.
+   */
   async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean }> {
     const existing = this.weeklyFor(localDate);
     if (existing) return { briefing: existing, created: false, complete: true };
@@ -335,6 +340,11 @@ export class BriefingComposer {
       events.push(...found.events);
       distractions += found.distractions;
     }
+    for (const source of sources) {
+      if (source.state !== 'unavailable') continue;
+      const [connectionId, kind] = source.sourceId.split(':');
+      items.push({ section: kind === 'calendar' ? 'agenda' : 'messages', title: `${connectionId} ${kind} is unavailable: not included in this review`, sourceRef: `source:${source.sourceId}`, reason: 'source_unavailable', urgency: 'urgent', uncertainty: 'high', untrusted: false, startable: false });
+    }
     return this.assemble('weekly', localDate, now, taskSequence, sources, items, weekAgenda(events), distractions);
   }
 
@@ -469,19 +479,20 @@ async function readSource(sourceId: string, work: () => Promise<boolean>): Promi
   }
 }
 
-type WeekEvent = { connectionId: string; event: CalendarEvent };
+export type WeekEvent = { connectionId: string; event: CalendarEvent };
 
 function sameInvitation(a: CalendarEvent, b: CalendarEvent): boolean {
   if (a.start !== b.start || a.end !== b.end) return false;
   return a.uid !== null && b.uid !== null ? a.uid === b.uid : a.title === b.title;
 }
 
-function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
+/** The week's agenda items: copies of one meeting on several calendars merged, overlaps and back-to-back meetings flagged. */
+export function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
   const unique: WeekEvent[] = [];
-  const merged = new Set<WeekEvent>();
+  const absorbed = new Map<WeekEvent, Set<string>>();
   for (const entry of found) {
-    const copyOf = unique.find(kept => kept.connectionId !== entry.connectionId && !merged.has(kept) && sameInvitation(kept.event, entry.event));
-    if (copyOf) merged.add(copyOf); else unique.push(entry);
+    const copyOf = unique.find(kept => kept.connectionId !== entry.connectionId && !absorbed.get(kept)?.has(entry.connectionId) && sameInvitation(kept.event, entry.event));
+    if (copyOf) absorbed.set(copyOf, (absorbed.get(copyOf) ?? new Set()).add(entry.connectionId)); else unique.push(entry);
   }
   unique.sort((a, b) => a.event.start.localeCompare(b.event.start));
   const flag = new Map<WeekEvent, 'conflict' | 'back_to_back'>();
