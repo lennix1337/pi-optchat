@@ -295,6 +295,7 @@ test('a merge waits while the Revisor block in the PR description lists an open 
   assert.deepEqual(openMajors(block('- [model_review:minor] a.ts:1: texto cita [x:major] no meio.')), [], 'a tag quoted mid-text of a minor is not a major');
   assert.deepEqual(openMajors(block('1. [model_review:major] c.ts:4: numerada.\n2) [cr:blocker] d.ts:5: outra.')), ['c.ts:4', 'd.ts:5'], 'numbered list marks still count');
   assert.deepEqual(openMajors(block('Achado: [x:critical] e.ts:6: rotulado.')), ['e.ts:6'], 'a label before the tag still counts');
+  assert.deepEqual(openMajors(block('Ver [a:b] antes. [x:major] f.ts:7: depois de outra tag.')), ['f.ts:7'], 'a non-severity tag before the major does not hide it');
   assert.deepEqual(openMajors(null), []);
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 1, stdout: '', stderr: 'HTTP 502' })))!, /could not read its checks/, 'an unreadable description never lets the merge through');
   assert.match((await mergeRefusal('gh pr merge 602 --squash', 'C:/', async () => ({ code: 0, stdout: '{not json', stderr: '' })))!, /could not read its checks/);
