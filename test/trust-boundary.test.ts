@@ -288,6 +288,7 @@ test('a merge waits while the Revisor block in the PR description lists an open 
     { severity: 'major', file: 'src/a.ts', line: 3, text: 'grave.' }, { severity: 'blocker', file: 'src/b.ts', text: 'sem linha.' },
     { code: 'cr', severity: 'major', text: 'sem arquivo.' }, { severity: 'minor', file: 'c.ts', line: 1, text: 'como [o major] disse, nada grave.' }] });
   assert.deepEqual(openMajors(written), ['src/a.ts:3', 'src/b.ts', 'sem local'], 'parses what ship-review.mjs writes, majors and blockers only');
+  assert.deepEqual(openMajors(block('* **[model_review:major]** sem dois-pontos\n› [cr:blocker]')), ['sem local', 'sem local'], 'a malformed line with a major tag still counts');
   assert.deepEqual(openMajors(reviewBody('x', { verdict: 'changes', findings: [] })), ['sem local'], 'changes without detail stay open');
   assert.deepEqual(openMajors(reviewBody('x', { verdict: 'approve', findings: [{ severity: 'minor', file: 'd.ts', line: 2, text: '[no major issues] ok.' }] })), [], 'a severity named in prose is not a finding');
   assert.deepEqual(openMajors(null), []);

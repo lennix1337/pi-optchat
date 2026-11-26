@@ -55,10 +55,11 @@ export function ciProblem(view: Rollup, auto = false): string | undefined {
 
 
 /** The major findings ship.mjs's Revisor left open in the PR description (its `ship:revisor` block), as `file:line`. Parses exactly
- * the line scripts/ship-review.mjs findingLine writes (`- [code:severity] file:line: text`); a prose mention of a severity is not a finding. */
+ * the line scripts/ship-review.mjs findingLine writes (`- [code:severity] file:line: text`); any line with a `[code:major]` tag counts even when
+ * the rest is malformed, while a severity named in prose is not a finding. */
 export function openMajors(body?: string | null): string[] {
   const block = /<!-- ship:revisor:start -->([\s\S]*?)<!-- ship:revisor:end -->/.exec(body ?? '')?.[1] ?? '';
-  const majors = [...block.matchAll(/^- \[[\w-]+:(?:major|blocker)\](?: (.+?))?: /gmu)].map(m => m[1] ?? 'sem local');
+  const majors = [...block.matchAll(/^.*\[[\w-]+:(?:major|blocker)\].*$/gmu)].map(m => /^- \[[\w-]+:\w+\] (.+?): /u.exec(m[0])?.[1] ?? 'sem local');
   return /^O revisor pediu mudanças sem detalhar\.$/mu.test(block) ? [...majors, 'sem local'] : majors;
 }
 
