@@ -47,12 +47,6 @@ test('the helper source emits what the parser reads and uses one snapshot loop, 
   assert.doesNotMatch(HELPER_SOURCE, /Process\.Start|powershell|Get-CimInstance/i);
 });
 
-test('the helper retries a command line that was unreadable on first sight, a few samples at most', () => {
-  assert.match(HELPER_SOURCE, /Dictionary<uint, int> cmdRetries/);
-  assert.match(HELPER_SOURCE, /cmdRetries\[p\.pid\] = tries \+ 1/);
-  assert.match(HELPER_SOURCE, /tries < 5/);
-});
-
 test('off Windows the sampler says so and starts nothing', async t => {
   if (process.platform === 'win32') return t.skip('Windows has a helper');
   const statuses: string[] = [];

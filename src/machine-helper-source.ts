@@ -53,8 +53,6 @@ static class Sampler
     static Dictionary<uint, Known> tree = new Dictionary<uint, Known>();
     // Processes whose parent had already exited when first seen, by pid and start: the command line is read once.
     static Dictionary<uint, long> orphans = new Dictionary<uint, long>();
-    // Processes in the tree whose command line could not be read yet (a fresh process has no PEB for a moment): tries so far.
-    static Dictionary<uint, int> cmdRetries = new Dictionary<uint, int>();
 
     static string CommandLine(uint pid)
     {
@@ -165,21 +163,7 @@ static class Sampler
             List<uint> vanished = new List<uint>();
             foreach (uint o in orphans.Keys) if (!byPid.ContainsKey(o)) vanished.Add(o);
             foreach (uint o in vanished) orphans.Remove(o);
-            foreach (uint pending in new List<uint>(cmdRetries.Keys))
-            {
-                Proc again;
-                if (!byPid.TryGetValue(pending, out again)) { cmdRetries.Remove(pending); continue; }
-                if (!joined.Contains(again)) joined.Add(again);
-            }
-            foreach (Proc p in joined)
-            {
-                string cmd = CommandLine(p.pid);
-                int tries;
-                cmdRetries.TryGetValue(p.pid, out tries);
-                if (cmd != null) { p.cmd = cmd.Length > 200 ? cmd.Substring(0, 200) : cmd; cmdRetries.Remove(p.pid); }
-                else if (tries < 5) cmdRetries[p.pid] = tries + 1;
-                else cmdRetries.Remove(p.pid);
-            }
+            foreach (Proc p in joined) { string cmd = CommandLine(p.pid); if (cmd != null) p.cmd = cmd.Length > 200 ? cmd.Substring(0, 200) : cmd; }
 
             FILETIME i1, k1, u1; GetSystemTimes(out i1, out k1, out u1);
             long total = Ticks(k1) + Ticks(u1), idle = Ticks(i1);
