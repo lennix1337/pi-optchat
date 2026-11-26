@@ -47,6 +47,7 @@ const NEEDS_OWNER = new Set(['needs_input', 'ready_for_review', 'failed']);
 const URGENCY_ORDER: Record<Urgency, number> = { urgent: 0, normal: 1, low: 2 };
 const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 2, changes: 3 };
 const MAX_STORE_PAGES = 20;
+const MAX_THREAD_CHECKS = 25;
 const WEEK_LOOKBACK_DAYS = 7;
 const BACK_TO_BACK_MS = 5 * 60_000;
 const fail = (code: string): never => { throw new Error(code); };
@@ -74,6 +75,7 @@ export class BriefingComposer {
       CREATE TABLE IF NOT EXISTS briefings (profile TEXT NOT NULL, briefing_id TEXT NOT NULL, kind TEXT NOT NULL, local_date TEXT NOT NULL, created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, briefing_id));
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_daily ON briefings (profile, local_date) WHERE kind = 'daily';
       CREATE UNIQUE INDEX IF NOT EXISTS briefings_weekly ON briefings (profile, local_date) WHERE kind = 'weekly';
+      CREATE TABLE IF NOT EXISTS weekly_attempts (profile TEXT NOT NULL, local_date TEXT NOT NULL, attempted INTEGER NOT NULL, PRIMARY KEY (profile, local_date));
       CREATE TABLE IF NOT EXISTS meeting_prep_announced (profile TEXT NOT NULL, card_id TEXT NOT NULL, start_ms INTEGER NOT NULL, PRIMARY KEY (profile, card_id));
       CREATE TABLE IF NOT EXISTS briefing_reply_drafts (profile TEXT NOT NULL, id TEXT NOT NULL, last_used INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));
       CREATE TABLE IF NOT EXISTS briefing_triage_rules (profile TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (profile, id));`);
@@ -110,6 +112,7 @@ export class BriefingComposer {
   async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean }> {
     const existing = this.weeklyFor(localDate);
     if (existing) return { briefing: existing, created: false, complete: true };
+    this.db.prepare('INSERT OR REPLACE INTO weekly_attempts VALUES (?, ?, ?)').run(this.options.profileId, localDate, this.now());
     const briefing = await this.composeWeekly(localDate);
     if (briefing.sources.some(source => source.state === 'unavailable')) return { briefing, created: false, complete: false };
     this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'weekly', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
@@ -169,6 +172,12 @@ export class BriefingComposer {
 
   /** The newest stored daily or on-demand briefing, or null when none is kept. */
   latest(): Briefing | null { return this.one("AND kind != 'weekly' ORDER BY created DESC LIMIT 1"); }
+
+  /** When this week's review was last attempted without being stored, so a restart keeps the retry delay. */
+  lastWeeklyAttempt(localDate: string): number | null {
+    const row = this.db.prepare('SELECT attempted FROM weekly_attempts WHERE profile = ? AND local_date = ?').get(this.options.profileId, localDate) as { attempted: number } | undefined;
+    return row ? row.attempted : null;
+  }
 
   latestWeekly(): Briefing | null { return this.one("AND kind = 'weekly' ORDER BY created DESC LIMIT 1"); }
 
@@ -289,16 +298,23 @@ export class BriefingComposer {
             const seen = latest.get(message.threadId);
             if (!seen || Date.parse(message.receivedAt) > Date.parse(seen.receivedAt)) latest.set(message.threadId, message);
           }
-          for (const message of latest.values()) {
+          let checks = 0, uncertain = false;
+          for (const message of [...latest.values()].sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))) {
             if (message.labels.includes('SENT') || message.labels.includes('DRAFT')) continue;
             const result = triage(message, this.options.rules);
             if (result.urgency === 'low') { found.distractions++; continue; }
-            const answeredAt = await this.options.google.lastSentAt(connectionId, message.threadId);
-            if (answeredAt !== null && answeredAt >= Date.parse(message.receivedAt)) continue;
+            let uncertainty = result.uncertainty;
+            if (checks < MAX_THREAD_CHECKS) {
+              checks++;
+              try {
+                const answeredAt = await this.options.google.lastSentAt(connectionId, message.threadId);
+                if (answeredAt !== null && answeredAt >= Date.parse(message.receivedAt)) continue;
+              } catch { uncertainty = 'high'; uncertain = true; }
+            } else { uncertainty = 'high'; uncertain = true; }
             const who = senderAddress(message.from) || bounded(message.from);
-            found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: 'awaiting_reply', urgency: result.urgency, uncertainty: result.uncertainty, untrusted: true, startable: false });
+            found.waiting.push({ section: 'messages', title: result.private ? PRIVATE_TITLE : bounded(`${who}: ${message.subject || '(no subject)'}`), sourceRef: `gmail:${connectionId}:${message.ref.id}`, reason: 'awaiting_reply', urgency: result.urgency, uncertainty, untrusted: true, startable: false });
           }
-          return page.truncated;
+          return page.truncated || uncertain;
         }),
         this.read(`${connectionId}:calendar`, async () => {
           const page = await this.options.google.listEvents(connectionId, { from, to, timeZone: this.options.timeZone });
@@ -450,13 +466,13 @@ async function readSource(sourceId: string, work: () => Promise<boolean>): Promi
 
 type WeekEvent = { connectionId: string; event: CalendarEvent };
 
-function sameSlot(a: CalendarEvent, b: CalendarEvent): boolean { return a.start === b.start && a.end === b.end && a.title === b.title; }
+function sameInvitation(a: CalendarEvent, b: CalendarEvent): boolean { return a.uid !== null && a.uid === b.uid && a.start === b.start && a.end === b.end; }
 
 function weekAgenda(found: WeekEvent[]): (Omit<BriefingItem, 'itemId'> & { at: string })[] {
   const unique: WeekEvent[] = [];
   const merged = new Set<WeekEvent>();
   for (const entry of found) {
-    const copyOf = unique.find(kept => kept.connectionId !== entry.connectionId && !merged.has(kept) && sameSlot(kept.event, entry.event));
+    const copyOf = unique.find(kept => kept.connectionId !== entry.connectionId && !merged.has(kept) && sameInvitation(kept.event, entry.event));
     if (copyOf) merged.add(copyOf); else unique.push(entry);
   }
   unique.sort((a, b) => a.event.start.localeCompare(b.event.start));
