@@ -176,7 +176,8 @@ test('a running worker shows its worktree and goal, not the brief boilerplate', 
   assert.deepEqual(workerHome('You are a subagent.'), { label: 'Trabalho em andamento' });
   assert.deepEqual(workerHome('You are a subagent.', '/p/x/worktrees/fix-a'), { label: 'fix-a: tarefa sem descrição', target: { repo: 'x' } });
   assert.equal(workerHome('Edit src/home.ts v1. 2 now.\nThen more.', '/p/x/worktrees/w').label, 'w: Edit src/home.ts v1. 2 now.', 'the first line, never split inside it');
-  assert.equal(workerHome('Read the brief. Goal: not this\nGoal: this one', '/p/x').label, 'x: this one', 'Goal: counts only at a line start');
+  assert.equal(workerHome('Read the brief. Goal: not this\n  goal: this one', '/p/x').label, 'x: this one', 'Goal: counts only at a line start');
+  assert.equal(workerHome("You are a subagent. Don't write memory pages. Fix the radar.", '/p/x').label, 'x: Fix the radar.', 'boilerplate on the same line is dropped');
   assert.deepEqual(workerHome('You are a subagent.', '/p/x'), { label: 'x: tarefa sem descrição', target: { repo: 'x' } });
   assert.deepEqual(workerHome('Fix it.', '/p/x/worktrees'), { label: 'x: Fix it.', target: { repo: 'x' } });
   assert.equal(workerHome(`Goal: ${'a'.repeat(300)}`, '/p/x').label.length, 'x: '.length + 120);
