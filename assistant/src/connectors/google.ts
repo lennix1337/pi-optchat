@@ -197,7 +197,7 @@ export class GoogleConnections {
     });
   }
 
-  /** When the account last sent a message in this conversation, or null; reads the whole thread, not the mail listing. */
+  /** When the account last sent a message in this conversation (Gmail `internalDate` in ms, the same origin as `MailMessage.receivedAt`, so the two compare exactly), or null; reads the whole thread, not the mail listing. */
   async lastSentAt(connectionId: string, threadId: string): Promise<number | null> {
     if (!singleLine(threadId, 256)) return fail('invalid_thread');
     const thread = await this.get(connectionId, MAIL_SCOPE, `/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`, { format: 'minimal' }) as { messages?: unknown };

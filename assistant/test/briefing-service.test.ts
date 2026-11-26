@@ -192,6 +192,34 @@ test('weekly review: a source that fails keeps the week open: nothing is stored 
   assert.equal(sent.length, 1);
 }));
 
+test('weekly review: a degraded review is announced once, upgraded when its source returns, and never announced again', () => rig(async ({ fake, clock, local }) => {
+  fake.mail.personal.push({ id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' });
+  const sent: Briefing[] = [];
+  const service = new BriefingService({ local: await local(), connections: ['personal'], timeZone: TZ, dailyAt: '07:00', now: () => clock.now, weekly: { day: 0, at: '18:00' }, onWeekly: b => sent.push(b) });
+  fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  clock.now = sunday('21:00');
+  await assert.rejects(service.weeklyTick(), /weekly_review_incomplete/);
+  clock.now += 16 * 60_000;
+  await assert.rejects(service.weeklyTick(), /weekly_review_incomplete/);
+  clock.now += 16 * 60_000;
+  const degraded = await service.weeklyTick();
+  assert.deepEqual([sent.length, degraded?.sources.filter(s => s.state === 'unavailable').length], [1, 1]);
+  clock.now += 60_000;
+  const reads = fake.log.length;
+  assert.equal(await service.weeklyTick(), null, 'the next minute waits');
+  assert.equal(fake.log.length, reads);
+  fake.failures.clear();
+  clock.now += 16 * 60_000;
+  assert.equal(await service.weeklyTick(), null, 'the upgrade is not announced again');
+  const upgraded = (await service.latestWeekly())!;
+  assert.deepEqual([upgraded.briefingId, upgraded.sources.map(s => s.state)], [degraded!.briefingId, ['ok', 'ok', 'ok']]);
+  assert.equal(sent.length, 1);
+  const done = fake.log.length;
+  clock.now += 16 * 60_000;
+  assert.equal(await service.weeklyTick(), null);
+  assert.equal(fake.log.length, done, 'and a complete review is not read again');
+}));
+
 test('weekly review: the retry delay survives a restart: a new service does not read Google again until it is over', () => rig(async ({ fake, clock, local }) => {
   fake.mail.personal.push({ id: 'w1', from: 'Ana <ana@example.test>', subject: 'Proposal', body: 'Can you look?', receivedAt: '2026-10-30T12:00:00.000Z' });
   const sent: Briefing[] = [];

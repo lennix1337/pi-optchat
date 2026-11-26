@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { weekAgenda, type Briefing } from '../src/briefing/compose.ts';
-import { weeklyNotice } from '../src/briefing/weekly.ts';
+import { weeklyNotice, weeklySchedule } from '../src/briefing/weekly.ts';
 import type { CalendarEvent } from '../src/connectors/google.ts';
 
 const meeting = (id: string, uid: string | null, start = '2026-11-02T12:00:00Z'): CalendarEvent => ({
@@ -24,4 +24,9 @@ test('the notice says when a weekly review is missing sources', () => {
   const review = (...states: ('ok' | 'partial' | 'unavailable')[]) => ({ sources: states.map((state, i) => ({ sourceId: `s${i}`, state, error: null })) }) as Briefing;
   assert.equal(weeklyNotice(review('ok', 'partial')), 'weekly_review_ready');
   assert.equal(weeklyNotice(review('ok', 'unavailable')), 'weekly_review_degraded');
+});
+
+test('an explicit undefined day or hour is the default, not Sunday by accident or a NaN', () => {
+  assert.deepEqual(weeklySchedule({ day: undefined, at: undefined } as never), { day: 0, at: '18:00' });
+  assert.deepEqual(weeklySchedule({ day: 'wed', at: undefined } as never), { day: 3, at: '18:00' });
 });
