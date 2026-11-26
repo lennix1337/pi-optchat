@@ -21,6 +21,20 @@ export function homeShell(job: { id: string; label?: string; command: string; st
   };
 }
 
+/** What a running worker shows on the Home: its worktree and goal instead of the brief's boilerplate, and the repository it works on. */
+export function workerHome(task: string, cwd?: string): { label: string; target?: { repo: string } } {
+  const parts = (cwd ?? '').split(/[\\/]+/).filter(Boolean);
+  const at = parts.lastIndexOf('worktrees');
+  const repo = at > 0 ? parts[at - 1] : parts.at(-1);
+  const tree = (at > 0 ? parts[at + 1] : undefined) ?? repo;
+  const goal = /^[ \t]*goal:[ \t]*([^\r\n]+)/im.exec(task)?.[1]
+    ?? task.replace(/you are a subagent\.?|don'?t write memory pages\.?/gi, ' ').split('\n').map(s => s.trim()).find(Boolean) ?? '';
+  const text = goal.replace(/\s+/g, ' ').trim();
+  const what = text ? (text.length > 120 ? `${text.slice(0, 119)}…` : text) : tree ? 'tarefa sem descrição' : '';
+  const label = [tree, what].filter(Boolean).join(': ');
+  return { label: label || 'Trabalho em andamento', ...(repo ? { target: { repo } } : {}) };
+}
+
 export function homeGraph(work: HomeWork, state: string): import('../assistant/src/channels/home-graph.ts').HomeGraph {
   const nodes = [{ id: 'session', label: `Sessão · ${state}` }];
   const edges: { from: string; to: string }[] = [];

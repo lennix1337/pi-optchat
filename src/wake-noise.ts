@@ -12,10 +12,10 @@ export function memoryShapedReply(reply: string): boolean {
   const text = reply.trim();
   return /^\d{3,}(?:[-+]\d+)?[|\s]/.test(text)
     || /^(?:user|talk|tool|echo|work|note):\s/.test(text)
-    || /^(?:<compaction-line>\s*)?\d{1,2}\/\d{1,2}\s+(?:\d{1,2}:\d{2}\s+)?\d{3,}(?:[-+]\d*)?\b/.test(text)
-    || /^\d{1,2}\/\d{1,2}\s+(?:\d{1,2}:\d{2}\s+)?[A-Za-z][\w.-]*\s+\d{3,}-\d+\b/.test(text)
+    || /^(?:<compaction-line>\s*)?\d{1,2}\/\d{1,2}\s+(?:~?\d{1,2}:\d{2}\s+)?(?:·\s+)?\d{3,}(?:[-+]\d*)?\b/u.test(text)
+    || /^\d{1,2}\/\d{1,2}\s+(?:~?\d{1,2}:\d{2}\s+)?(?:·\s+)?[A-Za-z][\w.-]*\s+\d{3,}-\d+\b/u.test(text)
     || /^<compaction-line>/.test(text)
-    || /^\d{1,2}\/\d{1,2}\s+(?:\d{1,2}:\d{2}\s+)?(?:OptChat\b|wake\b|heartbeat\b)/.test(text)
+    || /^\d{1,2}\/\d{1,2}\s+(?:~?\d{1,2}:\d{2}\s+)?(?:·\s+)?(?:OptChat\b|wake\b|heartbeat\b)/u.test(text)
     || /\(machine,?\s+(?:notices?,?\s+)?not (?:the )?operator(?:'s)?(?: words)?\)|\(not operator words\)/i.test(text)
     || /\(machine notices?,? not (?:the )?user(?:'s)? words\b/i.test(text);
 }
