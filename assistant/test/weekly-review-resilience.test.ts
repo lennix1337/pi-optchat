@@ -61,7 +61,7 @@ test('a source that stays down degrades the review after a few tries, a total ou
   assert.deepEqual(results, [false, false, true]);
   const stored = c.latestWeekly()!;
   assert.deepEqual(stored.sources.filter(s => s.state === 'unavailable').map(s => s.sourceId), ['personal:calendar', 'dentai:calendar']);
-  assert.equal(c.weeklyAttempt('2026-11-01'), null, 'cleared after the save');
+  assert.equal(c.weeklyAttempt('2026-11-01')?.tries, 3, 'a degraded review keeps its attempt as the clock for recovering it');
   const missing = stored.items.filter(i => i.reason === 'source_unavailable');
   assert.deepEqual(missing.map(i => [i.section, i.sourceRef, i.urgency, i.uncertainty]), [['agenda', 'source:personal:calendar', 'urgent', 'high'], ['agenda', 'source:dentai:calendar', 'urgent', 'high']], 'the review says what is missing, so no conflicts is not read as none exist');
   assert.ok(missing.every(i => /not included/.test(i.title) && !i.untrusted && !i.startable));
@@ -76,4 +76,67 @@ test('when every Google source is down the review is held, however many tries', 
   const c = composer(rig);
   for (let i = 0; i < 5; i++) { assert.equal((await c.weekly()).complete, false); rig.clock.now += 16 * 60_000; }
   assert.equal(c.latestWeekly(), null);
+}));
+
+test('a degraded review is upgraded in place once its missing source returns, keeping its identity, and is final after that', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  for (let i = 0; i < 3; i++) { await c.weekly(); rig.clock.now += 16 * 60_000; }
+  const degraded = c.latestWeekly()!;
+  assert.ok(degraded.items.some(i => i.reason === 'source_unavailable'));
+  rig.fake.failures.clear();
+  const upgraded = await c.weekly();
+  assert.deepEqual([upgraded.complete, upgraded.created, upgraded.degraded], [true, false, false]);
+  assert.equal(upgraded.briefing.briefingId, degraded.briefingId, 'the notification still points at it');
+  assert.ok(section(upgraded.briefing, 'agenda').length > 0 && !upgraded.briefing.items.some(i => i.reason === 'source_unavailable'));
+  assert.deepEqual(c.latestWeekly(), upgraded.briefing);
+  assert.equal(c.weeklyAttempt('2026-11-01'), null, 'cleared once nothing is missing');
+  const reads = rig.fake.log.length;
+  assert.deepEqual((await c.weekly()).degraded, false);
+  assert.equal(rig.fake.log.length, reads, 'a complete review is never read again');
+}));
+
+test('a review that stays degraded stops being retried after a few more tries, and the older weeks leave no attempt behind', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  const degraded: boolean[] = [];
+  for (let i = 0; i < 9; i++) { degraded.push((await c.weekly()).degraded); rig.clock.now += 16 * 60_000; }
+  assert.deepEqual(degraded, [false, false, true, true, true, true, false, false, false]);
+  assert.equal(c.weeklyAttempt('2026-11-01')?.tries, 7, 'the attempt stays as the proof that it is final');
+  const reads = rig.fake.log.length;
+  await c.weekly();
+  assert.equal(rig.fake.log.length, reads, 'a final degraded review is not read again');
+  rig.clock.now = Date.parse('2026-11-08T21:30:00.000Z');
+  await c.weekly('2026-11-08');
+  assert.equal(c.weeklyAttempt('2026-11-01'), null);
+}));
+
+test('an unexpected failure is not counted as an unavailable source, so it never degrades a review early', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.clock.now = SUNDAY_EVENING;
+  const c = composer(rig);
+  const internals = c as unknown as { assemble: () => never };
+  const assemble = internals.assemble;
+  internals.assemble = () => { throw new Error('store_down'); };
+  for (let i = 0; i < 3; i++) { await assert.rejects(c.weekly(), /store_down/); rig.clock.now += 16 * 60_000; }
+  assert.equal(c.weeklyAttempt('2026-11-01')?.tries, 0, 'three exceptions burned nothing');
+  assert.ok(c.weeklyAttempt('2026-11-01')!.at > 0, 'but the retry delay still applies');
+  internals.assemble = assemble;
+  rig.fake.failures.set('/calendar/v3/calendars/primary/events', 500);
+  assert.equal((await c.weekly()).complete, false, 'the first unavailable source is still only the first try');
+  assert.equal(c.latestWeekly(), null);
+}));
+
+test('an unavailable task store is named as missing, not as a calendar or mail', () => withGoogle(async rig => {
+  await seed(rig);
+  rig.clock.now = SUNDAY_EVENING;
+  rig.store.list = () => { throw new Error('store_down'); };
+  const c = composer(rig);
+  for (let i = 0; i < 3; i++) { await c.weekly(); rig.clock.now += 16 * 60_000; }
+  const missing = c.latestWeekly()!.items.filter(i => i.reason === 'source_unavailable');
+  assert.deepEqual(missing.map(i => [i.section, i.title]), [['tasks', 'tasks is unavailable: not included in this review']]);
 }));

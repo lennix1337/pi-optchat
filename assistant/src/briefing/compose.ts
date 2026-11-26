@@ -49,6 +49,7 @@ const SECTION_ORDER: Record<Section, number> = { tasks: 0, agenda: 1, messages: 
 const MAX_STORE_PAGES = 20;
 const MAX_THREAD_CHECKS = 25;
 const MAX_WEEKLY_TRIES = 3;
+const MAX_UPGRADE_TRIES = 4;
 const WEEK_LOOKBACK_DAYS = 7;
 const BACK_TO_BACK_MS = 5 * 60_000;
 const fail = (code: string): never => { throw new Error(code); };
@@ -113,21 +114,34 @@ export class BriefingComposer {
    * The weekly review due on `localDate`; `created` is false when it was already stored, so a caller announces it once. It is
    * stored under the boundary it was due, but reads the seven days after the day it is composed, so one recovered late is
    * labelled with the missed boundary and describes the coming week. After three tries a review missing some sources is
-   * stored with an urgent item for each, so its absence is stated, never silent.
+   * stored with an urgent item for each, so its absence is stated, never silent; it is then `degraded` and each later call
+   * re-reads it, replacing the stored review in place (same id, so no second announcement) once fewer sources are missing,
+   * until a few more tries pass (its attempt then stays, as the proof it is final, until the next week prunes it). Only a source that is unavailable counts as a try; an exception counts for nothing.
    */
-  async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean }> {
+  async weekly(localDate = localDateTime(this.now(), this.options.timeZone).date): Promise<{ briefing: Briefing; created: boolean; complete: boolean; degraded: boolean }> {
+    const profile = this.options.profileId;
+    this.db.prepare('DELETE FROM weekly_attempts WHERE profile = ? AND local_date < ?').run(profile, localDate);
     const existing = this.weeklyFor(localDate);
-    if (existing) return { briefing: existing, created: false, complete: true };
-    const tries = (this.weeklyAttempt(localDate)?.tries ?? 0) + 1;
-    this.db.prepare('INSERT OR REPLACE INTO weekly_attempts VALUES (?, ?, ?, ?)').run(this.options.profileId, localDate, this.now(), tries);
-    const briefing = await this.composeWeekly(localDate);
-    const google = briefing.sources.filter(source => source.sourceId !== 'tasks');
-    const down = google.filter(source => source.state === 'unavailable').length;
-    if (down && (down === google.length || tries < MAX_WEEKLY_TRIES)) return { briefing, created: false, complete: false };
-    this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(this.options.profileId, briefing.briefingId, 'weekly', localDate, Date.parse(briefing.createdAt), JSON.stringify(briefing));
-    this.db.prepare('DELETE FROM weekly_attempts WHERE profile = ? AND local_date = ?').run(this.options.profileId, localDate);
+    const held = existing ? unavailableSources(existing) : 0;
+    const prior = this.weeklyAttempt(localDate)?.tries ?? 0;
+    if (existing && (!held || prior >= MAX_WEEKLY_TRIES + MAX_UPGRADE_TRIES)) return { briefing: existing, created: false, complete: true, degraded: false };
+    this.db.prepare('INSERT INTO weekly_attempts VALUES (?, ?, ?, 0) ON CONFLICT (profile, local_date) DO UPDATE SET attempted = excluded.attempted').run(profile, localDate, this.now());
+    const fresh = await this.composeWeekly(localDate);
+    const down = unavailableSources(fresh);
+    const google = fresh.sources.filter(source => source.sourceId !== 'tasks').length;
+    const tries = down ? prior + 1 : prior;
+    this.db.prepare('UPDATE weekly_attempts SET tries = ? WHERE profile = ? AND local_date = ?').run(tries, profile, localDate);
+    if (!existing) {
+      if (down && (down === google || tries < MAX_WEEKLY_TRIES)) return { briefing: fresh, created: false, complete: false, degraded: false };
+      this.db.prepare('INSERT INTO briefings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(profile, fresh.briefingId, 'weekly', localDate, Date.parse(fresh.createdAt), JSON.stringify(fresh));
+    } else if (down < held) {
+      const upgraded = { ...fresh, briefingId: existing.briefingId };
+      this.db.prepare("UPDATE briefings SET body = ?, created = ? WHERE profile = ? AND kind = 'weekly' AND local_date = ?").run(JSON.stringify(upgraded), Date.parse(upgraded.createdAt), profile, localDate);
+    }
     const stored = this.weeklyFor(localDate)!;
-    return { briefing: stored, created: stored.briefingId === briefing.briefingId, complete: true };
+    const degraded = unavailableSources(stored) > 0 && tries < MAX_WEEKLY_TRIES + MAX_UPGRADE_TRIES;
+    if (!unavailableSources(stored)) this.db.prepare('DELETE FROM weekly_attempts WHERE profile = ? AND local_date = ?').run(profile, localDate);
+    return { briefing: stored, created: !existing && stored.briefingId === fresh.briefingId, complete: true, degraded };
   }
 
   async onDemand(): Promise<Briefing> {
@@ -343,7 +357,7 @@ export class BriefingComposer {
     for (const source of sources) {
       if (source.state !== 'unavailable') continue;
       const [connectionId, kind] = source.sourceId.split(':');
-      items.push({ section: kind === 'calendar' ? 'agenda' : 'messages', title: `${connectionId} ${kind} is unavailable: not included in this review`, sourceRef: `source:${source.sourceId}`, reason: 'source_unavailable', urgency: 'urgent', uncertainty: 'high', untrusted: false, startable: false });
+      items.push({ section: kind === 'calendar' ? 'agenda' : kind === 'mail' ? 'messages' : 'tasks', title: `${kind ? `${connectionId} ${kind}` : connectionId} is unavailable: not included in this review`, sourceRef: `source:${source.sourceId}`, reason: 'source_unavailable', urgency: 'urgent', uncertainty: 'high', untrusted: false, startable: false });
     }
     return this.assemble('weekly', localDate, now, taskSequence, sources, items, weekAgenda(events), distractions);
   }
@@ -478,6 +492,8 @@ async function readSource(sourceId: string, work: () => Promise<boolean>): Promi
     return { sourceId, state: 'unavailable', error: errorCode(error) };
   }
 }
+
+function unavailableSources(briefing: Briefing): number { return briefing.sources.filter(source => source.state === 'unavailable').length; }
 
 export type WeekEvent = { connectionId: string; event: CalendarEvent };
 

@@ -128,9 +128,9 @@ export class BriefingService {
       return attempt && this.now() < attempt.at + WEEKLY_RETRY_MS ? null : composer.weekly(due);
     });
     if (!result) return null;
-    const { briefing, created, complete } = result;
+    const { briefing, created, complete, degraded } = result;
     if (!complete) throw new Error('weekly_review_incomplete');
-    this.weeklyDate = due;
+    if (!degraded) this.weeklyDate = due;
     if (!created) return null;
     this.options.onWeekly?.(briefing);
     return briefing;
