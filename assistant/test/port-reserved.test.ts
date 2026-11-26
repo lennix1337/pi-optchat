@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listenFailureMessage } from '../src/main.ts';
@@ -57,6 +57,12 @@ test('start answers port_reserved with the port when the listen fails with EACCE
     assert.deepEqual(started.json, { result: 'error', code: 'port_reserved', port: 48761 });
     assert.match(started.stderr, /Listen failed: EACCES on 127\.0\.0\.1:48761/);
     assert.equal(runScript('health', ['--config', svc.config], { dir }).json.state, 'stopped', 'a failed start leaves nothing running');
+    if (process.platform !== 'win32') {
+      const copyDir = join(root, 'copy');
+      const running = () => readdirSync('/proc').some(pid => /^\d+$/.test(pid) && (() => { try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').some(arg => arg.startsWith(copyDir + '/')); } catch { return false; } })());
+      for (const until = Date.now() + 5000; running() && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(running(), false, 'the server that failed to listen exited');
+    }
   } finally { killRecordedService(svc.home); }
 }));
 

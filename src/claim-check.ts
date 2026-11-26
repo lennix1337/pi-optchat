@@ -169,7 +169,21 @@ export function utcTimes(reply: string): string[] {
   return sentences(reply).filter(s => UTC_CLOCK.test(withoutQuotes(s)));
 }
 
-export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = [], utc: readonly string[] = [], freeActions: readonly string[] = [], memoryShaped = false): string {
+/**
+ * A final reply that promises later work ("vou medir depois", "amanhã reviso", "te aviso") ends the run, so nothing keeps the
+ * promise unless the run left a commitment, a background shell, a started worker, a gitwatch follow or a reload behind it, one per promise (operator 25/11: "i dont
+ * want false promises"; the same day a reply promised five fixes with no PR, commitment or job behind any).
+ */
+export const PROMISE = /(?<!\bn[ãa]o\s)\b(?:vou|irei|vamos|prometo|amanh[ãa]\s+(?:eu\s+)?\p{L}+(?:o|ei|a)|depois\s+(?:eu\s+)?(?:te\s+)?(?:aviso|mando|reviso|meço|corrijo|fa[çc]o)|te\s+(?:aviso|mando|conto|passo)|aviso\s+(?:quando|assim|depois)|I'll|I\s+will|will\s+report)(?![\p{L}\p{N}_])/iu;
+const PROMISE_BACKING = /^Added .*\bc_[0-9a-f]{6}|\bmoved to background shell\b|\bBackground shell \S+ started\b|\[gitwatch\] now following\b|\bReload requested\b|^Started: .*Reports? will arrive|^Started: .*reports will arrive/mu;
+
+export function unbackedPromises(reply: string, evidence: string): string[] {
+  const promises = sentences(reply).filter(s => PROMISE.test(withoutQuotes(s)));
+  const backed = evidence.match(new RegExp(PROMISE_BACKING.source, 'gmu'))?.length ?? 0;
+  return backed >= promises.length ? [] : promises;
+}
+
+export function claimRetryText(claims: readonly string[], admissions: readonly string[] = [], causes: readonly string[] = [], utc: readonly string[] = [], freeActions: readonly string[] = [], promises: readonly string[] = [], memoryShaped = false): string {
   const parts = [`${CLAIM_CHECK_PREFIX}`];
   if (memoryShaped) parts.push('Your reply is written as a memory summary line (an id range such as `199529-199533`, `id+n|`, `talk:`/`echo:` tags or machine-notice wording), and the operator reads it as a broken answer. Rewrite it for him in Portuguese (pt-BR), in plain sentences, outcome first.');
   if (claims.length) parts.push(`Your reply states facts that no output of this run shows: ${claims.join(', ')}.`);
@@ -177,6 +191,7 @@ export function claimRetryText(claims: readonly string[], admissions: readonly s
   if (causes.length) parts.push(`Your reply gives up on a cause: ${causes.map(a => `"${a}"`).join(' ')} Take one more cheap step before sending (read the failing log, run the narrowest test, diff against the last good state) and report what it showed, or ship the diagnostic that would answer it.`);
   if (utc.length) parts.push(`Your reply gives a time in UTC: ${utc.map(a => `"${a}"`).join(' ')} The operator reads Brasília time (UTC-3): convert every time and write it as HH:MM, without Z.`);
   if (freeActions.length) parts.push(`Your reply asks permission for a free action: ${freeActions.map(a => `"${a}"`).join(' ')} Do the action now (it is free) or drop the question. Ask permission only for the operator's reserved actions: production deploy, spending, messages to third parties, account or credential changes, force-push, destructive data deletion, or stopping processes that are not yours or are in use by someone else.`);
+  if (promises.length) parts.push(`Your reply promises later work with nothing in this run to keep it: ${promises.map(a => `"${a}"`).join(' ')} The run ends with this reply, so do it now; if it truly waits on a date or an event, record it with the commitments tool (due + probe) or start the background job that delivers it, then say that; otherwise drop the promise.`);
   if (claims.length || admissions.length || causes.length || utc.length) parts.push('Before it reaches the operator, check each one with a read-only tool (test run, gh, curl, git log) and correct the reply' +
     (admissions.length ? '' : '. Make the checking call now, in this round; "not verified" is kept only for what needs something only the operator holds, naming that thing') +
     '. Then give the final reply again, in Portuguese.');

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, freeActionQuestions, uncheckedAdmissions, unbackedClaims, utcTimes } from '../src/claim-check.ts';
+import { abandonedCauses, branchEvidenceMessages, claimRetryText, evidenceText, freeActionQuestions, uncheckedAdmissions, unbackedClaims, unbackedPromises, utcTimes } from '../src/claim-check.ts';
 import { memoryShapedReply } from '../src/wake-noise.ts';
 
 test('multiple hash claims normalize the evidence at most once', () => {
@@ -115,7 +115,7 @@ test('a reply written as a memory line goes back once to be rewritten for the op
     '198939+1|talk: 25/11 15:56 BRT wake (heartbeat ordered a delivery).',
   ]) assert.equal(memoryShapedReply(reply), true, reply);
   assert.equal(memoryShapedReply('O PR #602 foi mesclado às 18:16.'), false);
-  assert.match(claimRetryText([], [], [], [], [], true), /memory summary line[\s\S]*Portuguese/);
+  assert.match(claimRetryText([], [], [], [], [], [], true), /memory summary line[\s\S]*Portuguese/);
   assert.doesNotMatch(claimRetryText(['#5 mesclado']), /memory summary line/);
 });
 
@@ -186,4 +186,24 @@ test('assistant-only file:line mentions do not back a path:line claim', () => {
   const evidence = evidenceText(messages);
   assert.deepEqual(unbackedClaims('Confirmado em src/x.ts:10 e src/x.ts:63.', evidence), ['src/x.ts:63']);
   assert.deepEqual(unbackedClaims('Veja src/x.ts:63.', '<other l="63"> texto p="src/x.ts" </other>'), ['src/x.ts:63']);
+});
+
+test('a final reply that promises later work needs a commitment, a background job or a watch behind it (operator 25/11: no false promises)', () => {
+  assert.deepEqual(unbackedPromises('PR aberto. Amanhã reviso o resto e te aviso.', ''), ['Amanhã reviso o resto e te aviso.']);
+  assert.deepEqual(unbackedPromises('Vou medir a CPU depois do merge.', ''), ['Vou medir a CPU depois do merge.']);
+  assert.equal(unbackedPromises("I'll check it tomorrow.", '').length, 1);
+  assert.equal(unbackedPromises('Amanhã começo pelo radar.', '').length, 1);
+  assert.equal(unbackedPromises('Amanhã verificarei o deploy.', '').length, 1);
+  assert.deepEqual(unbackedPromises('A vovó chegou; o devoto rezou.', ''), []);
+  assert.deepEqual(unbackedPromises('Vou medir a CPU depois do merge.', 'Added c_ab12cd [optchat · open] medir CPU'), []);
+  assert.deepEqual(unbackedPromises('Te aviso quando o CI terminar.', '[gitwatch] now following lennix1337/x #3: you are woken when CI finishes'), []);
+  assert.deepEqual(unbackedPromises('Te aviso quando terminar.', 'Background shell 5c02 started.'), []);
+  assert.deepEqual(unbackedPromises('Quando ele terminar, eu reviso e te mando o print.', 'Started: a1b2 on openai-codex/gpt-6.2-sol. Reports will arrive automatically.'), []);
+  assert.equal(unbackedPromises('Se cair de novo, vou investigar o teste.', '').length, 1, 'a conditional promise with nothing watching the condition is still unkept');
+  assert.deepEqual(unbackedPromises('Se cair de novo, vou investigar o teste.', '[gitwatch] now following lennix1337/x #3: you are woken when CI finishes'), []);
+  assert.equal(unbackedPromises('Te aviso quando o CI terminar. Amanhã reviso o Grafana.', '[gitwatch] now following lennix1337/x #3: you are woken').length, 2, 'one backing does not cover two promises');
+  assert.deepEqual(unbackedPromises('Não vou mexer no Grafana.', ''), []);
+  assert.deepEqual(unbackedPromises('O guard pega frases como "vou fazer depois".', ''), []);
+  assert.deepEqual(unbackedPromises('Corrigi o teste e mesclei.', ''), []);
+  assert.match(claimRetryText([], [], [], [], [], ['Vou medir depois.']), /promises later work[\s\S]*commitments/);
 });
