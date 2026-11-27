@@ -227,7 +227,7 @@ function quotaBlocks(text: string): unknown[] {
   for (const line of quota.split('\n').slice(0, 30)) {
     const fields = [gauge('5 horas', /5h (\d+)% \(([^)]*)\)/.exec(line)), gauge('Semana', /7d (\d+)% \(([^)]*)\)/.exec(line))].filter(Boolean);
     const name = line.replace(/^•\s*/, '').split(/`|5h |7d /)[0]!.trim(), stale = /_leitura de [^_]+_/.exec(line)?.[0];
-    blocks.push(fields.length ? { type: 'section', text: { type: 'mrkdwn', text: `*${homeEscape(name)}*${stale ? ` · ${stale}` : ''}` }, fields } : homeSection(homeEscape(line.slice(0, 200))));
+    blocks.push(fields.length ? { type: 'section', text: { type: 'mrkdwn', text: `*${homeEscape(name)}*${stale ? ` · ${stale}` : ''}` }, fields } : homeSection(homeEscape(line)));
   }
   return blocks;
 }

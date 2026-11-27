@@ -5,6 +5,7 @@ import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import type { Economy } from './quota-economy.ts';
 import { paceText, type PaceForecast } from './quota-pace.ts';
 import { safeIdentifier } from './diagnostic-metadata.ts';
+import { isCodexAccount, type CodexLogin, type CodexLogins } from './codex-home-login.ts';
 
 /**
  * Commands the operator sends from a remote channel (Slack today, any other channel later) and that the extension
@@ -185,25 +186,49 @@ export function modelName(ref: string | undefined): string {
 
 
 
-function homeQuota(state: CommandState): string[] {
-  const failover = record(state.failover());
+function loginText(login: CodexLogin | undefined, now: number, rejected: boolean): string {
+  if (!login) return '⚠️ login ausente — refazer';
+  if (login.type === 'api_key') return `${rejected ? '⚠️ chave recusada — atualizar · ' : ''}api_key · sem vencimento informado`;
+  const expired = login.expires <= now;
+  const warning = expired ? '⚠️ login vencido — refazer · ' : rejected ? '⚠️ login recusado — refazer · ' : '';
+  return `${warning}oauth · ${login.maskedEmail ?? 'e-mail indisponível'} · ${expired ? 'venceu' : 'vence'} ${brasiliaDayTime(login.expires)} BRT`;
+}
+
+function knownCodexAccounts(state: CommandState, failover: Record<string, unknown>, logins?: CodexLogins): Set<string> {
+  if (!logins) return new Set();
+  const ids = [...logins.keys(), ...state.models().map(m => m.provider), state.model()?.split('/')[0] ?? ''];
+  for (const key of ['usageByProvider', 'exhaustedUntilByProvider', 'authTypeByProvider', 'invalidatedByProvider']) ids.push(...Object.keys(record(failover[key])));
+  return new Set(ids.filter(id => safeIdentifier(id) && isCodexAccount(id)));
+}
+
+function codexQuotaLine(id: string, login: CodexLogin | undefined, now: number, rejected: boolean, entry: ReturnType<typeof accounts>[number] | undefined, meter: (id: string) => string): string {
+  const quota = entry?.blockedUntil ? `: *esgotada* até ${brasiliaDayTime(entry.blockedUntil)}`
+    : entry && !rejected ? ` ${meter(id)}` : login?.type === 'api_key' && !rejected ? ': sem limite de cota' : ': sem leitura de cota';
+  return `• ${account(id).label} · ${loginText(login, now, rejected)}${quota}`;
+}
+
+function homeQuota(state: CommandState, logins?: CodexLogins): string[] {
+  const failover = record(state.failover()), usage = record(failover.usageByProvider), now = state.now();
   const recordedAuth = record(failover.authTypeByProvider);
   const tagOf = (id: string) => {
     const raw = recordedAuth[id];
     return raw === 'oauth' || raw === 'api_key' ? authTag(raw) : '';
   };
   const invalidated = record(failover.invalidatedByProvider);
-  const invalidIds = Object.keys(invalidated).filter(id => safeIdentifier(id) && invalidated[id] && typeof invalidated[id] === 'object').sort();
-  const invalidSet = new Set(invalidIds);
-  const all = accounts(failover, state.now()).filter(a => safeIdentifier(a.id) && !invalidSet.has(a.id));
-  const apiOnlyIds = Object.keys(recordedAuth).filter(id => safeIdentifier(id) && recordedAuth[id] === 'api_key' && !invalidSet.has(id) && !all.some(a => a.id === id)).sort();
-  if (!all.length && !invalidIds.length && !apiOnlyIds.length) return ['• sem leitura de cota ainda'];
-  const economy = state.economy?.();
+  const invalid = new Set(Object.keys(invalidated).filter(id => safeIdentifier(id) && invalidated[id] && typeof invalidated[id] === 'object'));
+  const metered = accounts(failover, now);
+  const economy = metered.length ? state.economy?.() : undefined;
+  const meter = (id: string) => homeWindows(usage[id], now, economy?.accounts.find(e => e.provider === id)?.pace);
+  const codexIds = knownCodexAccounts(state, failover, logins);
+  const codexAccountRows = [...codexIds].sort().map(id => codexQuotaLine(id, logins?.get(id), now, invalid.has(id), metered.find(a => a.id === id), meter));
+  const invalidIds = [...invalid].filter(id => !codexIds.has(id)).sort();
+  const all = metered.filter(a => !invalid.has(a.id) && !codexIds.has(a.id));
+  const apiOnlyIds = Object.keys(recordedAuth).filter(id => safeIdentifier(id) && recordedAuth[id] === 'api_key' && !invalid.has(id) && !codexIds.has(id) && !all.some(a => a.id === id)).sort();
   const families = new Map<string, typeof all>();
   for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
   const lines = [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
     ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
-    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}${tagOf(a.id)}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label}${tagOf(a.id)} ${homeWindows(record(failover.usageByProvider)[a.id], state.now(), economy?.accounts.find(e => e.provider === a.id)?.pace)}`));
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}${tagOf(a.id)}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label}${tagOf(a.id)} ${meter(a.id)}`));
   for (const id of apiOnlyIds) {
     lines.push(`• ${account(id).label} [API key]: sem limite de cota`);
   }
@@ -213,7 +238,7 @@ function homeQuota(state: CommandState): string[] {
       ? `• ${account(id).label} [API key]: 🔐 *chave recusada* — atualize com \`/login\` no terminal`
       : `• ${account(id).label}${tagOf(id)}: 🔐 *login OAuth expirado* — mande *login ${id}*`);
   }
-  return lines;
+  return codexAccountRows.length || lines.length ? [...codexAccountRows, ...lines] : ['• sem leitura de cota ainda'];
 }
 
 
@@ -242,8 +267,8 @@ export function usageBar(used: number): string {
  * The status block of the App Home: model, account and quota under what the agent is doing. With the Home's model menus
  * the model line only repeated what the menu right below shows (17/11), so it goes out only without them.
  */
-export function homeStatus(state: CommandState, menus = false): string {
-  return [...state.proactivityPaused?.() ? ['⏸️ Proatividade pausada'] : [], ...menus ? [] : [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`], '\ud83d\udd0b *Cota* (cache):', ...homeQuota(state), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
+export function homeStatus(state: CommandState, menus = false, logins?: CodexLogins): string {
+  return [...state.proactivityPaused?.() ? ['⏸️ Proatividade pausada'] : [], ...menus ? [] : [`*Modelo:* ${modelName(state.model())}${thinkingNote(state)}`], '\ud83d\udd0b *Cota* (cache):', ...homeQuota(state, logins), '_Mande *comandos* na DM para ver o que posso responder na hora._'].join('\n');
 }
 
 export function failoverReader(file: string): () => unknown { return () => readQuotaState(file); }
