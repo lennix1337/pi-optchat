@@ -465,7 +465,12 @@ export class SlackBridge {
           const loginStep = await this.options.remoteLogin.tryConsumeInput(m.text);
           if (loginStep) {
             atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
-            await this.send(loginStep.text, null, null, loginStep.choices ? { choices: loginStep.choices } : {}).catch(error => {
+            const activeModel = loginStep.provider && loginStep.text.startsWith('✅')
+              ? await this.activateLoggedInProvider(loginStep.provider) : undefined;
+            const replyText = activeModel
+              ? `${loginStep.text.replace(/ Conta pronta para uso\.$/, '')} Cérebro ativo em *${activeModel}*.`
+              : loginStep.text;
+            await this.send(replyText, null, null, loginStep.choices ? { choices: loginStep.choices } : {}).catch(error => {
               this.options.warn(`Slack login reply not sent: ${error instanceof Error ? error.message : String(error)}`);
             });
             this.answered(null);
@@ -666,9 +671,28 @@ export class SlackBridge {
     this.pi.sendUserMessage(prompt.text, { deliverAs: 'steer' });
   }
 
+  private async activateLoggedInProvider(provider: string): Promise<string | undefined> {
+    const current = this.options.model();
+    if (current?.split('/')[0] === provider) return current;
+    const pool = this.options.models().filter(m => m.provider === provider);
+    if (!pool.length) return this.options.model();
+    const currentId = current?.includes('/') ? current.slice(current.indexOf('/') + 1) : undefined;
+    const target =
+      (currentId ? pool.find(m => m.id === currentId) : undefined)
+      ?? pool.find(m => /opus/i.test(m.id))
+      ?? pool.find(m => /sonnet|gpt-6\.2-sol|gpt-6\.1-sol/i.test(m.id))
+      ?? pool[0]!;
+    const ok = await this.options.select(target).catch(() => false);
+    return ok ? `${target.provider}/${target.id}` : this.options.model();
+  }
+
   async handleBackgroundLogin(event: LoginCompletionEvent): Promise<void> {
     if (!this.owner()) return;
-    await this.send(event.text).catch(error => {
+    const activeModel = event.ok ? await this.activateLoggedInProvider(event.provider) : undefined;
+    const text = activeModel
+      ? `${event.text.replace(/ Conta pronta para uso\.$/, '')} Cérebro ativo em *${activeModel}*.`
+      : event.text;
+    await this.send(text).catch(error => {
       this.options.warn(`Slack login completion not sent: ${error instanceof Error ? error.message : String(error)}`);
     });
     this.answered(null);
@@ -1112,7 +1136,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
   const ownsLogin = !options.remoteLogin;
   const remoteLogin = options.remoteLogin ?? new RemoteLoginManager({
     authStorage: () => registry?.authStorage,
-    onUpdated: (provider, meta) => pi.events?.emit?.('pi:auth:updated:v1', { provider, skipPendingResume: meta.skipPendingResume }),
+    onUpdated: (provider, meta) => pi.events?.emit?.('pi:auth:updated:v1', { provider, activate: true, skipPendingResume: meta.skipPendingResume }),
     onBackgroundComplete: event => { void bridge.handleBackgroundLogin(event); },
   });
   const bridge = new SlackBridge(pi, owner, {

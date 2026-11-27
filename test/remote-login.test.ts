@@ -328,3 +328,74 @@ test('proactive invalidation notice sends one-tap login buttons once and cota/Ho
   assert.match(home, /Claude conta 2 \[OAuth\]: 🔐 \*login OAuth expirado\* — mande \*login anthropic-account-2\*/);
   assert.match(home, /Claude conta 1 \[API key\]: 🔐 \*chave recusada\* — atualize com `\/login` no terminal/);
 });
+
+test('completing Slack login automatically switches the main thread onto the newly authenticated account', async t => {
+  const agentDir = tempDir('remote-login-switch-');
+  const profileDir = tempDir('remote-login-switch-profile-');
+  t.after(() => {
+    rmSync(agentDir, { recursive: true, force: true });
+    rmSync(profileDir, { recursive: true, force: true });
+  });
+  writeFileSync(join(agentDir, 'auth.json'), JSON.stringify({
+    anthropic: { type: 'oauth', access: 'old', refresh: 'old-ref', expires: NOW - 10_000 },
+    google: { type: 'api_key', key: 'free-key' },
+  }));
+  const auth = makeAuthStorage(agentDir);
+  const fakeAnthropic: OAuthProviderDriver = {
+    async login(interaction) {
+      await interaction.prompt({ type: 'select', message: 'method' });
+      interaction.notify({ type: 'auth_url', url: 'https://claude.ai/oauth/authorize?code=true&state=s2' });
+      await interaction.prompt({ type: 'manual_code', message: 'paste' });
+      return { type: 'oauth', access: 'fresh-acc', refresh: 'fresh-ref', expires: NOW + 28_800_000 };
+    },
+  };
+  const manager = new RemoteLoginManager({
+    agentDir,
+    now: () => NOW,
+    authStorage: () => auth.storage,
+    oauthDriver: family => family === 'anthropic' ? fakeAnthropic : undefined,
+  });
+  t.after(() => manager.stop());
+
+  let currentModel = 'google/gemini-4-neon';
+  const selected: string[] = [];
+  const sends: string[] = [];
+  const inbox = [
+    { seq: 1, ts: '10.1', thread: null, channel: 'D1', text: 'login anthropic' },
+    { seq: 2, ts: '10.2', thread: null, channel: 'D1', text: 'codeFresh1234567890#stateFresh1234567890' },
+  ];
+  const bridge = new SlackBridge(
+    { sendUserMessage: (() => {}) as never },
+    () => ({ dir: profileDir, name: 'swlucas05' }),
+    {
+      now: () => NOW,
+      model: () => currentModel,
+      failover: () => ({}),
+      models: () => [
+        { provider: 'google', id: 'gemini-4-neon' },
+        { provider: 'anthropic', id: 'claude-sonnet-5-5' },
+        { provider: 'anthropic', id: 'claude-opus-5-5' },
+      ],
+      select: async m => {
+        currentModel = `${m.provider}/${m.id}`;
+        selected.push(currentModel);
+        return true;
+      },
+      remoteLogin: manager,
+      schedule: () => {},
+      request: async (_owner, path, body) => {
+        if (path.startsWith('/v1/slack/inbox')) {
+          const after = Number(new URLSearchParams(path.split('?')[1]).get('after'));
+          return { messages: inbox.filter(m => m.seq > after) };
+        }
+        if (path === '/v1/slack/send') sends.push((body as { text: string }).text);
+        return { parts: 1, ts: '11.1', channel: 'D1' };
+      },
+    },
+  );
+
+  await bridge.poll();
+  assert.deepEqual(selected, ['anthropic/claude-opus-5-5']);
+  assert.equal(currentModel, 'anthropic/claude-opus-5-5');
+  assert.match(sends.at(-1)!, /Cérebro ativo em \*anthropic\/claude-opus-5-5\*/);
+});
