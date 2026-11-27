@@ -13,6 +13,7 @@ import { delivers, projectOf, projectOfRepo, toolCalls } from './projects.ts';
 import { awayRecap } from './away-recap.ts';
 import { readDay, recordRun, renderDay } from './home-day.ts';
 import type { Economy } from './quota-economy.ts';
+import { codexHomeLoginReader, type CodexLogins } from './codex-home-login.ts';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { failoverReader, homeStatus, modelName, remoteCommand, type CommandState, type ModelRef } from './remote-commands.ts';
 import { randomUUID } from 'node:crypto';
@@ -279,6 +280,7 @@ export class SlackBridge {
     models: () => readonly ModelRef[]; select: (model: ModelRef) => Promise<boolean>;
     /** The quota economy (US$ per 1%) the `cota` command adds to each account, when there is one. */
     economy?: () => Economy | undefined;
+    codexLogins?: () => CodexLogins;
     memoryUndo?: (command: UndoCommand) => string;
     /** The thinking level as `/thinking` sees it, and setting it: the `thinking` command and the Home's menu. */
     thinking?: CommandState['thinking']; setThinking?: CommandState['setThinking']; proactivityPaused?: CommandState['proactivityPaused'];
@@ -585,7 +587,7 @@ export class SlackBridge {
     let status = SlackBridge.waitingBlock(waiting) + (items.text ? `\n\n${items.text}` : '');
     try { if (owner) { const today = renderDay(readDay(owner.dir, this.options.now()), this.options.now(), this.options.nextWake()); if (today) status += `\n\n${today}`; } } catch {   }
     const settings = this.settings();
-    try { status += `\n\n${homeStatus(this.commandState(), !!settings)}`; } catch {   }
+    try { status += `\n\n${homeStatus(this.commandState(), !!settings, owner ? this.options.codexLogins?.() : undefined)}`; } catch {   }
 
     const approval = [...this.approvals].filter(([, p]) => p.request.expires > this.options.now()).at(-1)?.[0];
     if (!owner) return;
@@ -1153,6 +1155,7 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
 
     select: async ({ provider, id }) => { const found = registry?.find(provider, id); return found ? pi.setModel(found as never) : false; },
     remoteLogin,
+    codexLogins: codexHomeLoginReader(),
     ...options,
   });
   let unsubInvalidated: (() => void) | undefined;
