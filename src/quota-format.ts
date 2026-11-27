@@ -35,6 +35,10 @@ export function economyText(a: AccountEconomy | undefined): string | undefined {
  * (a window at 100%, a cooldown, or a fresh `serviceable: false`), `API key, sem limite de cota` for an API-key account.
  */
 export function accountText(id: string, state: unknown, now: number, economy?: AccountEconomy): string {
+  const invalidated = record(record(state).invalidatedByProvider)[id];
+  if (invalidated && typeof invalidated === 'object') {
+    return `🔐 *login expirado* — mande *login ${id}*`;
+  }
   const usage = record(record(record(state).usageByProvider)[id]), { w5h, w7d } = quotaWindows(usage);
   const until = routeBlock(state, id, '', now);
   const parts = usage.plan === 'api-key' && !w5h && !w7d ? ['API key, sem limite de cota']
@@ -47,10 +51,14 @@ export function accountText(id: string, state: unknown, now: number, economy?: A
   return [...parts, ...worth ? [worth] : []].join(' · ');
 }
 
-/** The ids of every account in the cache (a reading or a cooldown), sorted; unsafe ids never reach a message. */
+/** The ids of every account in the cache (a reading, cooldown or invalidation), sorted; unsafe ids never reach a message. */
 export function accountIds(state: unknown): string[] {
   const data = record(state);
-  return [...new Set([...Object.keys(record(data.usageByProvider)), ...Object.keys(record(data.exhaustedUntilByProvider))])].filter(id => safeIdentifier(id)).sort();
+  return [...new Set([
+    ...Object.keys(record(data.usageByProvider)),
+    ...Object.keys(record(data.exhaustedUntilByProvider)),
+    ...Object.keys(record(data.invalidatedByProvider)),
+  ])].filter(id => safeIdentifier(id)).sort();
 }
 
 /** One bullet per account: the `cota` command, the morning summary and the terminal command share it. */

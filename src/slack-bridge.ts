@@ -30,6 +30,14 @@ import { WAKE_LOG_CHANNEL, councilThread, wakeLogPost } from './wake-log.ts';
 import type { WaitingItem } from './commitments.ts';
 import { activeRefusals, recordRefusal, rememberWake, revokeRefusal } from './wake-refusal.ts';
 import { canCard, extractPlan, planShape } from '../assistant/src/channels/plan-card.ts';
+import {
+  RemoteLoginManager,
+  accountLabel,
+  authFailureFromMessages,
+  type AuthStorageLike,
+  type LoginCompletionEvent,
+  type ResumePrompt,
+} from './remote-login.ts';
 
 /**
  * The operator's Slack DM as a second door into this chat. The assistant service queues the operator's DMs; this
@@ -51,7 +59,7 @@ export type SlackOwner = { dir: string; name: string };
 type SlackFile = { id: string; name: string; mimetype: string; url: string };
 type Inbound = { seq: number; ts: string; thread: string | null; text: string; channel?: string; channelName?: string | null; files?: SlackFile[]; operatorText?: { text: string; ts: string }; undoTs?: string };
 
-type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<string | null> };
+type Origin = { thread: string | null; channel: string | null; id?: string; ts?: string; threaded?: boolean; startText?: string; opening?: Promise<string | null>; promptText?: string };
 const REAL_CHANNEL = /^[CDG][A-Z0-9]{2,20}$/;
 
 const FILE_READS = 4;
@@ -281,7 +289,9 @@ export class SlackBridge {
     /** Notifies listeners when an inbound operator message is recorded, so timers can adjust without polling. */
     onInbound?: (channel: string | null, at: number) => void;
     /** A voice note he sent, as text (src/transcribe.ts). */
-    transcribe: (path: string) => Promise<string> };
+    transcribe: (path: string) => Promise<string>;
+    /** Remote OAuth login coordinator for headless re-authentication via Slack DM. */
+    remoteLogin?: RemoteLoginManager };
   /** First line of the App Home: what the agent is doing now. */
   private activity = '\u2705 *Livre*';
   /** The current run as the App Home shows it: since when, from where, what was asked, its latest step and how many. */
@@ -295,6 +305,7 @@ export class SlackBridge {
   private shellEnd = false;
   private waiting: () => readonly (string | WaitingItem)[] = () => [];
   private homeText = '';
+  private readonly loginNotices = new Map<string, { at: number; notifiedAt: number }>();
   /** The Home's Ver tudo: every PR, commitment and job instead of the first few; Ver menos folds them again. */
   private expanded = false;
 
@@ -450,6 +461,19 @@ export class SlackBridge {
           continue;
         }
         const command = channel ? undefined : remoteCommand(m.text);
+        if (!channel && this.options.remoteLogin && !command) {
+          const loginStep = await this.options.remoteLogin.tryConsumeInput(m.text);
+          if (loginStep) {
+            atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
+            await this.send(loginStep.text, null, null, loginStep.choices ? { choices: loginStep.choices } : {}).catch(error => {
+              this.options.warn(`Slack login reply not sent: ${error instanceof Error ? error.message : String(error)}`);
+            });
+            this.answered(null);
+            this.refreshHome();
+            if (loginStep.resumePrompt) this.resumeAfterLogin(loginStep.resumePrompt);
+            continue;
+          }
+        }
         if (command) {
 
           try { await this.command(command); }
@@ -465,7 +489,7 @@ export class SlackBridge {
         if (id) this.react(owner, id, m.ts, SEEN);
         const extras = await this.enrich(owner, m, id);
         const text = `${slackPrefix(channel)}${m.text}${extras}\n\n${budgetNote(wordBudget(channel, this.options.wordBudgets))}${this.running ? MID_RUN : ''}`;
-        this.threads.set(text, this.inboundOrigin(m, channel, id));
+        this.threads.set(text, { ...this.inboundOrigin(m, channel, id), promptText: text });
         this.pi.sendUserMessage(text, { deliverAs: 'steer' });
         atomicWrite(join(owner.dir, CURSOR), JSON.stringify({ seq: m.seq }));
         const inboundAt = this.options.now();
@@ -607,8 +631,10 @@ export class SlackBridge {
 
   /** What the remote commands read: the live model and activity, and pi-multi-account's cached quota. */
   commandState(): CommandState {
-    const { model, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused } = this.options;
-    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused, recap: () => { const owner = this.owner(); return owner ? awayRecap(owner.dir, now()) : 'Perfil indisponível.'; }, wakeRefusals: ts => {
+    const { model, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused, remoteLogin } = this.options;
+    return { model, activity: () => this.activity, failover, now, models, select, abort, economy, thinking, setThinking, proactivityPaused,
+      ...(remoteLogin ? { login: (arg: string) => this.runLoginCommand(arg) } : {}),
+      recap: () => { const owner = this.owner(); return owner ? awayRecap(owner.dir, now()) : 'Perfil indisponível.'; }, wakeRefusals: ts => {
       const owner = this.owner();
       if (!owner) return 'Perfil indisponível.';
       if (ts) return revokeRefusal(owner.dir, ts) ? 'Assunto liberado.' : 'Recusa não encontrada.';
@@ -617,10 +643,76 @@ export class SlackBridge {
     } };
   }
 
+  private async runLoginCommand(arg: string): Promise<{ text: string; choices?: readonly string[] }> {
+    const login = this.options.remoteLogin!;
+    const failover = this.options.failover() as { invalidatedByProvider?: Record<string, unknown> } | undefined;
+    const invalidated = failover?.invalidatedByProvider && typeof failover.invalidatedByProvider === 'object'
+      ? Object.keys(failover.invalidatedByProvider) : [];
+    const resolved = login.resolveAccount(arg, this.options.models().map(m => m.provider), invalidated);
+    if ('provider' in resolved) return login.start(resolved.provider, { reason: 'manual' });
+    const choices = resolved.candidates.length >= 2 && resolved.candidates.length <= 5
+      ? resolved.candidates.map(id => `login ${id}`) : undefined;
+    return { text: resolved.message, ...(choices ? { choices } : {}) };
+  }
+
+  private resumeAfterLogin(prompt: ResumePrompt): void {
+    this.threads.set(prompt.text, {
+      thread: prompt.thread,
+      channel: prompt.channel,
+      ...(prompt.id ? { id: prompt.id } : {}),
+      ...(prompt.ts ? { ts: prompt.ts } : {}),
+      promptText: prompt.text,
+    });
+    this.pi.sendUserMessage(prompt.text, { deliverAs: 'steer' });
+  }
+
+  async handleBackgroundLogin(event: LoginCompletionEvent): Promise<void> {
+    if (!this.owner()) return;
+    await this.send(event.text).catch(error => {
+      this.options.warn(`Slack login completion not sent: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    this.answered(null);
+    this.refreshHome();
+    if (event.ok && event.resumePrompt) this.resumeAfterLogin(event.resumePrompt);
+  }
+
+  async notifyAuthInvalidated(event: { provider?: unknown; reason?: unknown; at?: unknown }): Promise<void> {
+    const provider = typeof event.provider === 'string' && event.provider ? event.provider : undefined;
+    if (!provider || !this.owner()) return;
+    const login = this.options.remoteLogin;
+    if (login?.activeProvider === provider) return;
+    const now = this.options.now();
+    const at = typeof event.at === 'number' ? event.at : now;
+    const prev = this.loginNotices.get(provider);
+    if (prev && (prev.at === at || now - prev.notifiedAt < 10 * 60_000)) return;
+    this.loginNotices.set(provider, { at, notifiedAt: now });
+    this.refreshHome();
+    const label = accountLabel(provider);
+    if (login?.canRemoteLogin(provider)) {
+      await this.send(
+        `🔐 *${label}* (\`${provider}\`) perdeu o login e saiu da rotação. Toque abaixo ou mande *login ${provider}* para reconectar.`,
+        null, null, { choices: [`login ${provider}`, 'status'] },
+      ).catch(error => {
+        this.options.warn(`Slack auth invalidation notice not sent: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return;
+    }
+    await this.send(
+      `🔐 *${label}* (\`${provider}\`) teve a autenticação recusada e saiu da rotação. Atualize no terminal com \`/login\`.`,
+    ).catch(error => {
+      this.options.warn(`Slack auth invalidation notice not sent: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   /** Answers a remote command in the DM; an effect it asks to confirm goes out as an approval post first. */
   private async command({ command, arg }: NonNullable<ReturnType<typeof remoteCommand>>): Promise<void> {
     const result = await command.run(this.commandState(), arg);
-    if (!result.confirm) { await this.send(result.text); this.answered(null); this.refreshHome(); return; }
+    if (!result.confirm) {
+      await this.send(result.text, null, null, result.choices ? { choices: result.choices } : {});
+      this.answered(null);
+      this.refreshHome();
+      return;
+    }
     const { summary, apply } = result.confirm;
     let ran = false;
     const posted = await this.askApproval({
@@ -763,13 +855,37 @@ export class SlackBridge {
       this.lastSlack = { origin: { ...answering, threaded: false }, at: this.options.now() };
 
       if (last && last === delivered) return;
-      await this.answer(answering, last || failure(messages) || EMPTY_RUN, true);
+      let reply = last;
+      if (!reply) {
+        const authFail = authFailureFromMessages(messages, this.options.model()?.split('/')[0]);
+        if (authFail && this.options.remoteLogin) {
+          const resumePrompt: ResumePrompt | undefined = answering.promptText
+            ? { text: answering.promptText, thread: answering.thread, channel: answering.channel, ...(answering.id ? { id: answering.id } : {}), ...(answering.ts ? { ts: answering.ts } : {}) }
+            : undefined;
+          const step = await this.options.remoteLogin.handleAuthFailure(authFail.provider, authFail.errorMessage, resumePrompt);
+          reply = step.text;
+        } else if (authFail) {
+          const label = authFail.provider ? `*${accountLabel(authFail.provider)}* (\`${authFail.provider}\`)` : 'a conta atual';
+          reply = `🔐 *Sessão expirada em ${label}.* Mande *login* aqui na DM ou rode \`/login\` no terminal para reconectar.`;
+        }
+      }
+      await this.answer(answering, reply || failure(messages) || EMPTY_RUN, true);
       return;
     }
     const followUp = this.lastSlack && this.options.now() - this.lastSlack.at <= SHELL_FOLLOW_UP_MS ? this.lastSlack.origin : undefined;
     if (!waking && shellEnd && !whatsapp && followUp && last) { await this.answer(followUp, last, false); return; }
     if (!waking) {
-      const text = whatsapp || !this.options.everyAnswer?.() ? '' : progressOnly ? failure(messages) : last || failure(messages);
+      let text = whatsapp || !this.options.everyAnswer?.() ? '' : progressOnly ? failure(messages) : last || failure(messages);
+      if (!whatsapp && this.options.everyAnswer?.() && !last) {
+        const authFail = authFailureFromMessages(messages, this.options.model()?.split('/')[0]);
+        if (authFail && this.options.remoteLogin) {
+          const step = await this.options.remoteLogin.handleAuthFailure(authFail.provider, authFail.errorMessage);
+          text = step.text;
+        } else if (authFail) {
+          const label = authFail.provider ? `*${accountLabel(authFail.provider)}* (\`${authFail.provider}\`)` : 'a conta atual';
+          text = `🔐 *Sessão expirada em ${label}.* Mande *login* aqui na DM ou rode \`/login\` no terminal para reconectar.`;
+        }
+      }
       if (text) try { await this.publish(text, null, null); this.answered(null); }
       catch (error) { this.options.warn(`Answer not sent to Slack: ${error instanceof Error ? error.message : String(error)}`); }
       return;
@@ -986,13 +1102,19 @@ export class SlackBridge {
 
 /** Wires the bridge into Pi: polling per session, replies at run end, and the `slack_send` tool. */
 export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | undefined, sent: (channel: string | null, text: string) => void = () => {},
-  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void; taskThreadAfterMs?: () => number | undefined; memoryUndo?: (command: UndoCommand) => string } = {}): SlackBridge {
+  options: { request?: Request; accepting?: () => boolean; nextWake?: () => number | undefined; items?: () => HomeWork; wordBudgets?: WordBudgets; deferEnd?: boolean; economy?: () => Economy | undefined; everyAnswer?: () => boolean; proactivityPaused?: () => boolean; onInbound?: (channel: string | null, at: number) => void; taskThreadAfterMs?: () => number | undefined; memoryUndo?: (command: UndoCommand) => string; remoteLogin?: RemoteLoginManager } = {}): SlackBridge {
   let abort: () => boolean = () => false;
   let warn: (text: string) => void = () => {};
   let model: string | undefined;
   const named = (m: { provider: string; id: string } | undefined) => m ? `${m.provider}/${m.id}` : undefined;
-  let registry: { getAvailable(): readonly ModelRef[]; find(provider: string, id: string): unknown } | undefined;
+  let registry: { getAvailable(): readonly ModelRef[]; find(provider: string, id: string): unknown; authStorage?: AuthStorageLike } | undefined;
   let selected: Parameters<typeof getSupportedThinkingLevels>[0] | undefined;
+  const ownsLogin = !options.remoteLogin;
+  const remoteLogin = options.remoteLogin ?? new RemoteLoginManager({
+    authStorage: () => registry?.authStorage,
+    onUpdated: (provider, meta) => pi.events?.emit?.('pi:auth:updated:v1', { provider, skipPendingResume: meta.skipPendingResume }),
+    onBackgroundComplete: event => { void bridge.handleBackgroundLogin(event); },
+  });
   const bridge = new SlackBridge(pi, owner, {
     warn: text => warn(text), sent, model: () => model, abort: () => abort(),
     thinking: () => selected ? { level: pi.getThinkingLevel(), levels: getSupportedThinkingLevels(selected) } : undefined,
@@ -1001,12 +1123,24 @@ export function registerSlackBridge(pi: ExtensionAPI, owner: () => SlackOwner | 
     models: () => registry?.getAvailable().map(m => ({ provider: m.provider, id: m.id })) ?? [],
 
     select: async ({ provider, id }) => { const found = registry?.find(provider, id); return found ? pi.setModel(found as never) : false; },
+    remoteLogin,
     ...options,
   });
-  pi.on('session_start', (_event, ctx) => { abort = () => { if (ctx.isIdle()) return false; ctx.abort(); return true; }; warn = text => ctx.ui.notify(text, 'warning'); model = named(ctx.model); selected = ctx.model; registry = ctx.modelRegistry; bridge.start(); });
+  let unsubInvalidated: (() => void) | undefined;
+  pi.on('session_start', (_event, ctx) => {
+    abort = () => { if (ctx.isIdle()) return false; ctx.abort(); return true; };
+    warn = text => ctx.ui.notify(text, 'warning');
+    model = named(ctx.model); selected = ctx.model; registry = ctx.modelRegistry as typeof registry;
+    unsubInvalidated?.();
+    const unsub = pi.events?.on?.('pi:auth:invalidated:v1', payload => {
+      void bridge.notifyAuthInvalidated((payload ?? {}) as { provider?: unknown; reason?: unknown; at?: unknown });
+    });
+    unsubInvalidated = typeof unsub === 'function' ? unsub : undefined;
+    bridge.start();
+  });
 
   pi.on('model_select', event => { model = named(event.model); selected = event.model; });
-  pi.on('session_shutdown', () => bridge.stop());
+  pi.on('session_shutdown', () => { unsubInvalidated?.(); unsubInvalidated = undefined; if (ownsLogin) remoteLogin.stop(); bridge.stop(); });
   pi.on('message_end', ({ message }) => { const text = promptText(message); if (text !== undefined) bridge.sawUserMessage(text, message); else bridge.assistantSaid(message); });
   pi.on('agent_start', () => bridge.runStarted(options.deferEnd));
   pi.on('tool_execution_start', event => bridge.toolStarted(event.toolName, event.args));

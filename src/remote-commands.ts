@@ -37,10 +37,12 @@ export interface CommandState {
   wakeRefusals?(ts: string): string;
   /** What happened since the operator's last message, from the profile's records. */
   recap?(): string;
+  /** Starts remote OAuth re-authentication for an account (without a model turn). */
+  login?(arg: string): CommandResult | Promise<CommandResult>;
 }
 
 /** A command's answer; `confirm` is an effect that runs only after the operator approves it. */
-export type CommandResult = { text: string; confirm?: { summary: string; apply: () => Promise<string> } };
+export type CommandResult = { text: string; choices?: readonly string[]; confirm?: { summary: string; apply: () => Promise<string> } };
 export interface RemoteCommand { name: string; aliases: readonly string[]; summary: string; run(state: CommandState, arg: string): CommandResult | Promise<CommandResult> }
 
 const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -129,23 +131,28 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
     },
   },
   {
+    name: 'login', aliases: ['relogin', 'auth'], summary: 'reconecta conta OAuth (ex: *login anthropic-account-2* ou *login claude 2*)',
+    run: (state, arg) => state.login ? state.login(arg) : { text: 'Login remoto indisponível nesta sessão. Rode `/login` no terminal.' },
+  },
+  {
     name: 'comandos', aliases: ['ajuda', 'help'], summary: 'esta lista',
     run: () => ({ text: ['*Comandos* (mande só a palavra):', ...REMOTE_COMMANDS.map(c => `• *${c.name}*: ${c.summary}`)].join('\n') }),
   },
 ];
 
 
-const TAKES_ARG = new Set(['modelo', 'thinking', 'recusas']);
+const TAKES_ARG = new Set(['modelo', 'thinking', 'recusas', 'login']);
 
 /**
- * The command a whole message names (`status`, `/cota`, `Jarvis modelo`, `modelo sonnet`), or undefined for anything
- * else. A question (`status?`) or a sentence stays a message to the agent.
+ * The command a whole message names (`status`, `/cota`, `Jarvis modelo`, `modelo sonnet`, `login claude 2`), or undefined
+ * for anything else. A question (`status?`) or a sentence stays a message to the agent.
  */
 export function remoteCommand(text: string): { command: RemoteCommand; arg: string } | undefined {
-  const match = /^\s*(?:jarvis[\s,:]+)?[/!]?([a-zçã]+)(?:\s+([\w./:-]{1,80}))?\s*$/i.exec(text);
+  const match = /^\s*(?:jarvis[\s,:]+)?[/!]?([a-zçã]+)(?:\s+([\w./:-]{1,80}(?:\s+\d{1,2})?))?\s*$/i.exec(text);
   const word = match?.[1]?.toLowerCase(), arg = match?.[2] ?? '';
   const command = word ? REMOTE_COMMANDS.find(c => c.name === word || c.aliases.includes(word)) : undefined;
   if (!command || (arg && !TAKES_ARG.has(command.name))) return undefined;
+  if (/\s/.test(arg) && command.name !== 'login') return undefined;
   return { command, arg };
 }
 
@@ -173,14 +180,22 @@ export function modelName(ref: string | undefined): string {
 
 
 function homeQuota(state: CommandState): string[] {
-  const all = accounts(record(state.failover()), state.now()).filter(a => safeIdentifier(a.id));
-  if (!all.length) return ['• sem leitura de cota ainda'];
+  const failover = record(state.failover());
+  const invalidated = record(failover.invalidatedByProvider);
+  const invalidIds = Object.keys(invalidated).filter(id => safeIdentifier(id) && invalidated[id] && typeof invalidated[id] === 'object').sort();
+  const invalidSet = new Set(invalidIds);
+  const all = accounts(failover, state.now()).filter(a => safeIdentifier(a.id) && !invalidSet.has(a.id));
+  if (!all.length && !invalidIds.length) return ['• sem leitura de cota ainda'];
   const economy = state.economy?.();
   const families = new Map<string, typeof all>();
   for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
-  return [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
+  const lines = [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
     ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
-    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(record(state.failover()).usageByProvider)[a.id], state.now(), economy?.accounts.find(e => e.provider === a.id)?.pace)}`));
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(failover.usageByProvider)[a.id], state.now(), economy?.accounts.find(e => e.provider === a.id)?.pace)}`));
+  for (const id of invalidIds) {
+    lines.push(`• ${account(id).label}: 🔐 *login expirado* — mande *login ${id}*`);
+  }
+  return lines;
 }
 
 
