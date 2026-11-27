@@ -78,6 +78,7 @@ const TASK_THREAD_AFTER_MS = 60_000;
 const COMMAND_APPROVAL_MS = 10 * 60_000;
 // external: pi-multi-account injects resume prompts after quota, rate-limit or transient provider errors.
 const PROVIDER_RESUME = /^Provider (?:failover|retry|quota recovery) activated:/, RESUME_WINDOW_MS = 30 * 60_000;
+const CONTINUATION = /^(?:Provider (?:failover|retry|quota recovery) activated:|The conversation history above was just compacted automatically)/;
 const EMPTY_RUN = 'Recebi, mas a execução terminou sem resposta em texto (erro ou interrupção). Manda de novo se precisar.';
 
 
@@ -243,6 +244,8 @@ export class SlackBridge {
   private whatsapp = false;
   /** Every message of this run so far was a still-running worker's progress note: its answer is chatter, not news for the DM. */
   private progressOnly: boolean | undefined;
+  private continuationOnly: boolean | undefined;
+  private lastAnswerAt = 0;
   private homeNext: { owner: NonNullable<ReturnType<SlackBridge['owner']>>; body: object; old: object } | undefined;
   private offUntil = 0;
   /** Set when a `[Slack]` message entered the current run: its final answer goes back to the DM. */
@@ -767,6 +770,7 @@ export class SlackBridge {
     if (FROM_WHATSAPP.test(text)) this.whatsapp = true;
     if (SHELL_END.test(text)) this.shellEnd = true;
     this.progressOnly = (this.progressOnly ?? true) && !match && WORKER_PROGRESS.test(text);
+    this.continuationOnly = (this.continuationOnly ?? true) && !match && CONTINUATION.test(text);
     if (!match) {
 
       if (this.answering && this.replied && this.replied !== this.delivered) {
@@ -863,7 +867,8 @@ export class SlackBridge {
   /** `quiet`: a wake that delivered nothing (heartbeat-report silentWake): its effects reach the wake log, its text reaches nobody; an `unverified` warning still does. */
   async runEnded(messages: readonly AgentMessage[], unverified?: string, quiet = false): Promise<void> {
     const answering = this.answering, waking = this.waking, delivered = this.delivered, whatsapp = this.whatsapp, progressOnly = this.progressOnly === true, shellEnd = this.shellEnd;
-    this.progressOnly = undefined; this.shellEnd = false;
+    const repeat = this.continuationOnly === true && this.options.now() - this.lastAnswerAt <= RESUME_WINDOW_MS;
+    this.progressOnly = undefined; this.continuationOnly = undefined; this.shellEnd = false;
     this.answering = undefined; this.waking = false; this.whatsapp = false; this.replied = ''; this.delivered = '';
     this.running = false;
     this.cancelTaskThread();
@@ -899,7 +904,7 @@ export class SlackBridge {
     const followUp = this.lastSlack && this.options.now() - this.lastSlack.at <= SHELL_FOLLOW_UP_MS ? this.lastSlack.origin : undefined;
     if (!waking && shellEnd && !whatsapp && followUp && last) { await this.answer(followUp, last, false); return; }
     if (!waking) {
-      let text = whatsapp || !this.options.everyAnswer?.() ? '' : progressOnly ? failure(messages) : last || failure(messages);
+      let text = whatsapp || repeat || !this.options.everyAnswer?.() ? '' : progressOnly ? failure(messages) : last || failure(messages);
       if (!whatsapp && this.options.everyAnswer?.() && !last) {
         const authFail = authFailureFromMessages(messages, this.options.model()?.split('/')[0]);
         if (authFail && this.options.remoteLogin) {
@@ -1110,7 +1115,7 @@ export class SlackBridge {
   }
 
   /** An answer the operator received in `channel` (a run's final answer, or a slack_send), for the scoreboard. */
-  answered(channel: string | null): void { this.measure(dir => recordAnswer(dir, channel, this.options.now())); }
+  answered(channel: string | null): void { this.lastAnswerAt = this.options.now(); this.measure(dir => recordAnswer(dir, channel, this.options.now())); }
 
   /** The scoreboard's log never gets in the way of a message. */
   private measure(write: (dir: string) => void): void {

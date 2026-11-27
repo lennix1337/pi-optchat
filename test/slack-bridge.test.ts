@@ -480,6 +480,24 @@ test('with every answer on, a run from anywhere but Slack or WhatsApp sends its 
   } finally { f.close(); }
 });
 
+test('with every answer on, a failover or compaction continuation right after an answer does not send it again', async () => {
+  const f = fixture([], { everyAnswer: () => true });
+  const sent = () => f.requests.filter(r => r.path === '/v1/slack/send').length;
+  try {
+    f.bridge.sawUserMessage('[gitwatch] lennix1337/pi-optchat #56 MERGED');
+    await f.bridge.runEnded(replies('O #56 entrou.'));
+    f.bridge.sawUserMessage('Provider failover activated: switched to x/y after a/b hit a quota or rate limit. Continue the interrupted task.');
+    await f.bridge.runEnded(replies('O #56 entrou, conferi de novo.'));
+    f.bridge.sawUserMessage('The conversation history above was just compacted automatically: carry on.');
+    await f.bridge.runEnded(replies('O #56 continua na main.'));
+    assert.equal(sent(), 1, 'the same answer goes out once');
+    f.advance(31 * 60_000);
+    f.bridge.sawUserMessage('Provider failover activated: switched to x/y after a/b hit a quota or rate limit.');
+    await f.bridge.runEnded(replies('Retomei e terminei.'));
+    assert.equal(sent(), 2, 'a continuation long after the last answer still reports');
+  } finally { f.close(); }
+});
+
 test('with every answer on, a run woken only by a running worker\'s progress posts nothing to the DM', async () => {
   const f = fixture([], { everyAnswer: () => true });
   const sent = () => f.requests.filter(r => r.path === '/v1/slack/send').length;
