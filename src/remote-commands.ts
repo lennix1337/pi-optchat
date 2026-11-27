@@ -1,6 +1,6 @@
 import { brasiliaDayTime } from './pc-health.ts';
 import { accounts, readQuotaState } from './quota-health.ts';
-import { accountLines, resetText } from './quota-format.ts';
+import { accountLines, authTag, authTypeOf, resetText } from './quota-format.ts';
 import { quotaWindows, type QuotaWindowRow } from './quota-history.ts';
 import type { Economy } from './quota-economy.ts';
 import { paceText, type PaceForecast } from './quota-pace.ts';
@@ -126,7 +126,13 @@ export const REMOTE_COMMANDS: readonly RemoteCommand[] = [
       if (!all.length) return { text: 'Nenhum modelo com credencial disponível.' };
       const by = new Map<string, string[]>();
       for (const m of all) by.set(m.provider, [...by.get(m.provider) ?? [], m.id]);
-      const lines = [...by].map(([provider, ids]) => `• *${provider}*: ${ids.join(', ')}`);
+      const failover = state.failover();
+      const recordedAuth = record(record(failover).authTypeByProvider);
+      const lines = [...by].map(([provider, ids]) => {
+        const raw = recordedAuth[provider];
+        const tag = raw === 'oauth' || raw === 'api_key' ? authTag(raw) : '';
+        return `• *${provider}*${tag}: ${ids.join(', ')}`;
+      });
       return { text: ['*Modelos disponíveis*:', ...lines.slice(0, MAX_LISTED)].join('\n') };
     },
   },
@@ -181,19 +187,31 @@ export function modelName(ref: string | undefined): string {
 
 function homeQuota(state: CommandState): string[] {
   const failover = record(state.failover());
+  const recordedAuth = record(failover.authTypeByProvider);
+  const tagOf = (id: string) => {
+    const raw = recordedAuth[id];
+    return raw === 'oauth' || raw === 'api_key' ? authTag(raw) : '';
+  };
   const invalidated = record(failover.invalidatedByProvider);
   const invalidIds = Object.keys(invalidated).filter(id => safeIdentifier(id) && invalidated[id] && typeof invalidated[id] === 'object').sort();
   const invalidSet = new Set(invalidIds);
   const all = accounts(failover, state.now()).filter(a => safeIdentifier(a.id) && !invalidSet.has(a.id));
-  if (!all.length && !invalidIds.length) return ['• sem leitura de cota ainda'];
+  const apiOnlyIds = Object.keys(recordedAuth).filter(id => safeIdentifier(id) && recordedAuth[id] === 'api_key' && !invalidSet.has(id) && !all.some(a => a.id === id)).sort();
+  if (!all.length && !invalidIds.length && !apiOnlyIds.length) return ['• sem leitura de cota ainda'];
   const economy = state.economy?.();
   const families = new Map<string, typeof all>();
   for (const a of all) families.set(account(a.id).family, [...families.get(account(a.id).family) ?? [], a]);
   const lines = [...families].flatMap(([family, list]) => list.every(a => a.blockedUntil)
     ? [`• ${family} *esgotado* até ${brasiliaDayTime(Math.min(...list.map(a => a.blockedUntil!)))}`]
-    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label} ${homeWindows(record(failover.usageByProvider)[a.id], state.now(), economy?.accounts.find(e => e.provider === a.id)?.pace)}`));
+    : list.map(a => a.blockedUntil ? `• ${account(a.id).label}${tagOf(a.id)}: *esgotada* até ${brasiliaDayTime(a.blockedUntil)}` : `• ${account(a.id).label}${tagOf(a.id)} ${homeWindows(record(failover.usageByProvider)[a.id], state.now(), economy?.accounts.find(e => e.provider === a.id)?.pace)}`));
+  for (const id of apiOnlyIds) {
+    lines.push(`• ${account(id).label} [API key]: sem limite de cota`);
+  }
   for (const id of invalidIds) {
-    lines.push(`• ${account(id).label}: 🔐 *login expirado* — mande *login ${id}*`);
+    const kind = authTypeOf(id, failover);
+    lines.push(kind === 'api_key'
+      ? `• ${account(id).label} [API key]: 🔐 *chave recusada* — atualize com \`/login\` no terminal`
+      : `• ${account(id).label}${tagOf(id)}: 🔐 *login OAuth expirado* — mande *login ${id}*`);
   }
   return lines;
 }

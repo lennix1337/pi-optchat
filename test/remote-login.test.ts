@@ -208,12 +208,10 @@ test('Anthropic expired OAuth run triggers graceful Slack login link, accepts pa
   assert.match(loginPost, /https:\/\/claude\.ai\/oauth\/authorize\?code=true&state=s1/);
   assert.doesNotMatch(loginPost, /"type":"error"/);
 
-  // Normal chat while login is pending is NOT swallowed as an OAuth code.
   inbox.push({ seq: 2, ts: '100.2', thread: null, channel: 'D1', text: 'espera um segundo' });
   await bridge.poll();
   assert.equal(sentToPi.length, 2);
 
-  // Pasting the Anthropic code#state completes login without sending it to Pi or echoing it.
   const secretCode = 'antCodeSecret1234567890#stateSecret1234567890';
   inbox.push({ seq: 3, ts: '100.3', thread: null, channel: 'D1', text: secretCode });
   await bridge.poll();
@@ -287,8 +285,12 @@ test('proactive invalidation notice sends one-tap login buttons once and cota/Ho
   t.after(() => manager.stop());
   const sends: any[] = [];
   const failover = {
+    authTypeByProvider: { 'anthropic-account-2': 'oauth', anthropic: 'api_key' },
     usageByProvider: { 'anthropic-account-2': { primary: { usedPercent: 16, resetAt: NOW + 3_600_000 } } },
-    invalidatedByProvider: { 'anthropic-account-2': { tokenHash: 'abc', at: NOW, reason: 'invalid_grant' } },
+    invalidatedByProvider: {
+      'anthropic-account-2': { tokenHash: 'abc', at: NOW, reason: 'invalid_grant' },
+      anthropic: { tokenHash: 'def', at: NOW, reason: 'invalid x-api-key' },
+    },
   };
   const bridge = new SlackBridge(
     { sendUserMessage: (() => {}) as never },
@@ -312,7 +314,8 @@ test('proactive invalidation notice sends one-tap login buttons once and cota/Ho
   assert.deepEqual(sends[0].choices, ['login anthropic-account-2', 'status']);
 
   const quota = accountLines(failover, NOW).join('\n');
-  assert.match(quota, /anthropic-account-2: 🔐 \*login expirado\* — mande \*login anthropic-account-2\*/);
+  assert.match(quota, /anthropic-account-2 \[OAuth\]: 🔐 \*login OAuth expirado\* — mande \*login anthropic-account-2\*/);
+  assert.match(quota, /anthropic \[API key\]: 🔐 \*API key recusada\* — atualize com `\/login` no terminal/);
   const state: CommandState = {
     model: () => 'anthropic-account-2/claude-opus-5-5',
     activity: () => '✅ *Livre*',
@@ -321,5 +324,7 @@ test('proactive invalidation notice sends one-tap login buttons once and cota/Ho
     models: () => [],
     select: async () => true,
   };
-  assert.match(homeStatus(state), /Claude conta 2: 🔐 \*login expirado\* — mande \*login anthropic-account-2\*/);
+  const home = homeStatus(state);
+  assert.match(home, /Claude conta 2 \[OAuth\]: 🔐 \*login OAuth expirado\* — mande \*login anthropic-account-2\*/);
+  assert.match(home, /Claude conta 1 \[API key\]: 🔐 \*chave recusada\* — atualize com `\/login` no terminal/);
 });

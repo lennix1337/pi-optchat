@@ -30,18 +30,33 @@ export function economyText(a: AccountEconomy | undefined): string | undefined {
   return parts.length ? `1% = ${parts.join(', ')}` : undefined;
 }
 
+/** The credential kind pi-multi-account recorded for `id` (`oauth` or `api_key`), or undefined when unknown. */
+export function authTypeOf(id: string, state: unknown): 'oauth' | 'api_key' | undefined {
+  const recorded = record(record(state).authTypeByProvider)[id];
+  if (recorded === 'oauth' || recorded === 'api_key') return recorded;
+  const plan = record(record(record(state).usageByProvider)[id]).plan;
+  return plan === 'api-key' ? 'api_key' : undefined;
+}
+
+export function authTag(type: 'oauth' | 'api_key' | undefined): string {
+  return type === 'oauth' ? ' [OAuth]' : type === 'api_key' ? ' [API key]' : '';
+}
+
 /**
  * One account's line (without its name): both windows with their resets, `esgotada até` when the cache says it cannot serve
  * (a window at 100%, a cooldown, or a fresh `serviceable: false`), `API key, sem limite de cota` for an API-key account.
  */
 export function accountText(id: string, state: unknown, now: number, economy?: AccountEconomy): string {
+  const authType = authTypeOf(id, state);
   const invalidated = record(record(state).invalidatedByProvider)[id];
   if (invalidated && typeof invalidated === 'object') {
-    return `🔐 *login expirado* — mande *login ${id}*`;
+    return authType === 'api_key'
+      ? '🔐 *API key recusada* — atualize com `/login` no terminal'
+      : `🔐 *login OAuth expirado* — mande *login ${id}*`;
   }
   const usage = record(record(record(state).usageByProvider)[id]), { w5h, w7d } = quotaWindows(usage);
   const until = routeBlock(state, id, '', now);
-  const parts = usage.plan === 'api-key' && !w5h && !w7d ? ['API key, sem limite de cota']
+  const parts = (usage.plan === 'api-key' || authType === 'api_key') && !w5h && !w7d ? ['API key, sem limite de cota']
     : [windowText('5h', w5h, now), windowText('7d', w7d, now)].filter((p): p is string => Boolean(p));
   if (!parts.length) parts.push(until ? 'sem medição de cota' : 'sem medição');
   if (until) parts.push(`*esgotada até ${resetText(until, now, true)}*`);
@@ -51,13 +66,14 @@ export function accountText(id: string, state: unknown, now: number, economy?: A
   return [...parts, ...worth ? [worth] : []].join(' · ');
 }
 
-/** The ids of every account in the cache (a reading, cooldown or invalidation), sorted; unsafe ids never reach a message. */
+/** The ids of every account in the cache (a reading, cooldown, invalidation or auth type), sorted; unsafe ids never reach a message. */
 export function accountIds(state: unknown): string[] {
   const data = record(state);
   return [...new Set([
     ...Object.keys(record(data.usageByProvider)),
     ...Object.keys(record(data.exhaustedUntilByProvider)),
     ...Object.keys(record(data.invalidatedByProvider)),
+    ...Object.keys(record(data.authTypeByProvider)),
   ])].filter(id => safeIdentifier(id)).sort();
 }
 
@@ -65,7 +81,12 @@ export function accountIds(state: unknown): string[] {
 export function accountLines(state: unknown, now: number, economy?: Economy, label: (id: string) => string = id => id): string[] {
   const ids = accountIds(state);
   if (!ids.length) return ['sem leitura de cota (o pi-multi-account ainda não mediu nenhuma conta)'];
-  return ids.map(id => `• ${label(id)}: ${accountText(id, state, now, economy?.accounts.find(a => a.provider === id))}`);
+  const recordedAuth = record(record(state).authTypeByProvider);
+  return ids.map(id => {
+    const rawKind = recordedAuth[id];
+    const tag = rawKind === 'oauth' || rawKind === 'api_key' ? authTag(rawKind) : '';
+    return `• ${label(id)}${tag}: ${accountText(id, state, now, economy?.accounts.find(a => a.provider === id))}`;
+  });
 }
 
 const ROLE_LABEL: Record<RoleKey, string> = { main: 'main', subagent: 'subagent', compactor: 'compactor', other: 'outros' };
